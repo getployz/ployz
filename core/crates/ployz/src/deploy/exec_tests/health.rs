@@ -129,7 +129,7 @@ async fn a_dependency_wait_reports_its_elapsed_and_deadline_clocks() {
 
     super::super::execute_operation_sequence(
         &crate::deploy::DeployPlan::for_execution_test(plan, test_namespace()),
-        "run",
+        &run_id(),
         &client,
         &CancellationToken::new(),
         Some(tx),
@@ -311,16 +311,19 @@ async fn a_failed_verdict_fails_the_start_naming_the_container_without_polling_i
         spec(Some(0), Some(healthcheck()), None),
         false,
     )];
-    let client = Scripted::new(vec![Step(
-        Call::Run(machine, ContainerKind::ServiceContainer),
-        Reply::Settled(
-            new,
-            HealthVerdict::Failed {
-                observation: unhealthy(),
-                last_check: Some(last_check.clone()),
-            },
+    let client = Scripted::new(vec![
+        Step(
+            Call::Run(machine, ContainerKind::ServiceContainer),
+            Reply::Settled(
+                new,
+                HealthVerdict::Failed {
+                    observation: unhealthy(),
+                    last_check: Some(last_check.clone()),
+                },
+            ),
         ),
-    )]);
+        ok(Call::Discard(machine, new)),
+    ]);
 
     let DeployOutcome::Failed {
         failed: FailedOperation::Operation { error, .. },
@@ -357,16 +360,19 @@ async fn a_timed_out_verdict_fails_the_start() {
         spec(Some(0), Some(healthcheck()), None),
         false,
     )];
-    let client = Scripted::new(vec![Step(
-        Call::Run(machine, ContainerKind::ServiceContainer),
-        Reply::Settled(
-            new,
-            HealthVerdict::TimedOut {
-                deadline_millis: None,
-                last_check: None,
-            },
+    let client = Scripted::new(vec![
+        Step(
+            Call::Run(machine, ContainerKind::ServiceContainer),
+            Reply::Settled(
+                new,
+                HealthVerdict::TimedOut {
+                    deadline_millis: None,
+                    last_check: None,
+                },
+            ),
         ),
-    )]);
+        ok(Call::Discard(machine, new)),
+    ]);
 
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
 

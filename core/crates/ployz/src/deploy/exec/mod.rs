@@ -1,13 +1,20 @@
-use std::{future::Future, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    future::Future,
+    time::Duration,
+};
 
+use futures_util::future::{Either, join_all};
 use ployz_core::{
     AnonymousVolumes, AnswerWhen, ContainerDetails, ContainerId, ContainerKind, ContainerLocator,
     ContainerNow, ContainerObservation, ContainerRuntimeObservation, ContainerWant, CreationKey,
-    DeployEvent, DockerVolumeId, Drain, ExecutionError, FailedOperation, HEALTH_POLL_INTERVAL,
-    HealthFailure, HealthVerdict, HookFailure, InspectContainerRequest, ListContainersRequest,
-    MachineAction, MachineId, MachineTarget, MembershipObservation, Namespace, NewContainer,
-    OperationPhase, QualifiedService, RemoveVolumeRequest, ResolvedServiceSpec, RpcError,
-    RpcErrorCode, RunTarget, SlotKey, StopOptions, UpdateOrder, op,
+    DependencyHealthFailure, DeployEvent, DeploymentLogId, DockerVolumeId, Drain, ExecutionError,
+    FailedOperation, HEALTH_POLL_INTERVAL, HealthFailure, HealthVerdict, HookFailure,
+    InspectContainerRequest, ListContainersRequest, MachineAction, MachineId, MachineTarget,
+    MembershipObservation, Namespace, NewContainer, OperationPhase, PublishServingPointerRequest,
+    PullPolicy, QualifiedService, RemoveVolumeRequest, ResolvedServiceSpec, RpcError, RpcErrorCode,
+    RunTarget, ServingPointer, ServingPointerPublication, ServingPointerRead, SlotKey, StopOptions,
+    UpdateOrder, op,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc::UnboundedSender;
@@ -20,6 +27,7 @@ use ployz_core::EnvironmentValues;
 use super::{
     DeployOperation, DeployOutcome, ReplacementCompensation, ReplacementOperation, RestartAttempt,
     StopAttempt,
+    schedule::{Action, Event, Schedule, ServiceGroup, Task, starts_container},
 };
 
 pub(super) use super::progress::Progress;
@@ -30,44 +38,88 @@ use health::wait_healthy;
 const DEFAULT_HOOK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const RESTART_WAIT: Duration = Duration::from_secs(60);
 const RESTART_POLL: Duration = Duration::from_millis(250);
+/// How often a Deploy re-reads acks while a dependent waits on them.
+const ACK_POLL: Duration = Duration::from_secs(1);
+/// How long a dependent waits for one Machine to route its dependency's Deploy.
+const ACK_WAIT: Duration = Duration::from_secs(300);
 
-fn failure_outcome_from<E>(
-    operations: &[DeployOperation],
-    completed_count: usize,
-    error: E,
-) -> Option<DeployOutcome<E>> {
-    let completed = operations.get(..completed_count)?;
-    let (failed, unexecuted) = operations.get(completed_count..)?.split_first()?;
-    Some(DeployOutcome::Failed {
-        completed: completed.to_vec(),
-        failed: FailedOperation::Operation {
-            operation: failed.clone(),
-            error,
-        },
-        unexecuted: unexecuted.to_vec(),
-    })
+/// Why the Deploy stopped starting work, in the order it happened.
+#[allow(clippy::large_enum_variant)]
+enum Stop {
+    Failed {
+        index: usize,
+        error: ExecutionError,
+        compensation: Option<ReplacementCompensation<ExecutionError>>,
+    },
+    Superseded(QualifiedService),
 }
 
-fn replacement_failure_outcome_from<E>(
+fn operation_at(operations: &[DeployOperation], index: usize) -> &DeployOperation {
+    operations
+        .get(index)
+        .expect("schedule indices come from this plan")
+}
+
+fn outcome_from(
     operations: &[DeployOperation],
-    completed_count: usize,
-    error: E,
-    compensation: ReplacementCompensation<E>,
-) -> Option<DeployOutcome<E>> {
-    let completed = operations.get(..completed_count)?;
-    let (failed, unexecuted) = operations.get(completed_count..)?.split_first()?;
-    let DeployOperation::ReplaceContainer(operation) = failed else {
-        return None;
+    completed: &BTreeSet<usize>,
+    stop: Option<Stop>,
+) -> DeployOutcome<ExecutionError> {
+    let done = |skip: Option<usize>, wanted: bool| {
+        operations
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| Some(*index) != skip && completed.contains(index) == wanted)
+            .map(|(_, operation)| operation.clone())
+            .collect::<Vec<_>>()
     };
-    Some(DeployOutcome::Failed {
-        completed: completed.to_vec(),
-        failed: FailedOperation::Replacement {
-            operation: operation.clone(),
+    match stop {
+        None if completed.len() == operations.len() => DeployOutcome::Success {
+            completed: done(None, true),
+        },
+        None => {
+            let index = (0..operations.len())
+                .find(|index| !completed.contains(index))
+                .unwrap_or_default();
+            DeployOutcome::Failed {
+                completed: done(Some(index), true),
+                failed: FailedOperation::Operation {
+                    operation: operation_at(operations, index).clone(),
+                    error: ExecutionError::Cancelled,
+                },
+                unexecuted: done(Some(index), false),
+            }
+        }
+        Some(Stop::Failed {
+            index,
             error,
             compensation,
+        }) => {
+            let failed = match (operation_at(operations, index), compensation) {
+                (DeployOperation::ReplaceContainer(operation), Some(compensation)) => {
+                    FailedOperation::Replacement {
+                        operation: operation.clone(),
+                        error,
+                        compensation,
+                    }
+                }
+                (operation, _) => FailedOperation::Operation {
+                    operation: operation.clone(),
+                    error,
+                },
+            };
+            DeployOutcome::Failed {
+                completed: done(Some(index), true),
+                failed,
+                unexecuted: done(Some(index), false),
+            }
+        }
+        Some(Stop::Superseded(service)) => DeployOutcome::Superseded {
+            completed: done(None, true),
+            service,
+            unexecuted: done(None, false),
         },
-        unexecuted: unexecuted.to_vec(),
-    })
+    }
 }
 
 pub(super) trait MachineOperations {
@@ -99,9 +151,47 @@ pub(super) trait MachineOperations {
         slot: &SlotKey,
         spec: &ResolvedServiceSpec,
     ) -> Result<bool, RpcError>;
+    /// Make `image` present on `machine_id` before any Container changes.
+    async fn ensure_image(
+        &self,
+        machine_id: &MachineId,
+        image: &str,
+        policy: PullPolicy,
+    ) -> Result<(), RpcError>;
+    async fn read_pointer(
+        &self,
+        service: &QualifiedService,
+    ) -> Result<ServingPointerRead, RpcError>;
+    async fn publish_pointer(
+        &self,
+        request: PublishServingPointerRequest,
+    ) -> Result<ServingPointerPublication, RpcError>;
 }
 
 impl MachineOperations for Client {
+    async fn ensure_image(
+        &self,
+        machine_id: &MachineId,
+        image: &str,
+        policy: PullPolicy,
+    ) -> Result<(), RpcError> {
+        crate::image::ensure_cluster_image(self, machine_id, image, policy).await
+    }
+
+    async fn read_pointer(
+        &self,
+        service: &QualifiedService,
+    ) -> Result<ServingPointerRead, RpcError> {
+        self.clone().serving_pointer_read(service).await
+    }
+
+    async fn publish_pointer(
+        &self,
+        request: PublishServingPointerRequest,
+    ) -> Result<ServingPointerPublication, RpcError> {
+        self.clone().publish_serving_pointer(request).await
+    }
+
     async fn prepare_volumes(
         &self,
         machine_id: &MachineId,
@@ -355,6 +445,32 @@ impl<C: MachineOperations> MachineOperations for RestartTolerant<'_, C> {
         })
         .await
     }
+
+    async fn ensure_image(
+        &self,
+        machine_id: &MachineId,
+        image: &str,
+        policy: PullPolicy,
+    ) -> Result<(), RpcError> {
+        wait_out_restart(self.cancellation, || {
+            self.inner.ensure_image(machine_id, image, policy)
+        })
+        .await
+    }
+
+    async fn read_pointer(
+        &self,
+        service: &QualifiedService,
+    ) -> Result<ServingPointerRead, RpcError> {
+        wait_out_restart(self.cancellation, || self.inner.read_pointer(service)).await
+    }
+
+    async fn publish_pointer(
+        &self,
+        request: PublishServingPointerRequest,
+    ) -> Result<ServingPointerPublication, RpcError> {
+        self.inner.publish_pointer(request).await
+    }
 }
 
 fn is_unavailable(error: &RpcError) -> bool {
@@ -445,82 +561,365 @@ fn slot_key(namespace: &Namespace, kind: ContainerKind, key: String) -> SlotKey 
 
 pub(super) async fn execute_operation_sequence<C: MachineOperations>(
     plan: &super::DeployPlan,
-    run: &str,
+    run: &DeploymentLogId,
     client: &C,
     cancellation: &CancellationToken,
     tx: Option<UnboundedSender<DeployEvent>>,
 ) -> DeployOutcome<ExecutionError> {
     // TODO: there is deliberately no persisted "already run" guard at this boundary.
     let operations = plan.operations();
-    let slots = Slots::new(run, &plan.namespace, operations);
-    let mut progress = Progress::new(plan.pending_rows(), tx);
+    let slots = Slots::new(run.as_str(), &plan.namespace, operations);
+    let progress = Progress::new(plan.pending_rows(), tx);
     progress.emit();
     let client = RestartTolerant {
         inner: client,
         cancellation,
     };
-    for (index, operation) in operations.iter().enumerate() {
-        if cancellation.is_cancelled() {
-            progress.fail(index, ExecutionError::Cancelled);
-            let outcome = failure_outcome_from(operations, index, ExecutionError::Cancelled)
-                .expect("the failed operation belongs to this plan");
-            progress.outcome(outcome.clone());
-            return outcome;
-        }
-        match execute_operation(
-            operation,
-            index,
-            &mut progress,
-            &client,
-            cancellation,
-            &slots,
-        )
-        .await
-        {
-            Ok(()) => {
-                progress.set_completed(index);
-            }
-            Err(OperationFailure::Ordinary(error)) => {
-                progress.fail(index, error.clone());
-                let outcome = failure_outcome_from(operations, index, error)
-                    .expect("the failed operation belongs to this plan");
-                progress.outcome(outcome.clone());
-                return outcome;
-            }
-            Err(OperationFailure::Replacement {
+    let mut completed = BTreeSet::new();
+
+    if let Err((index, error)) = pull_images(&client, operations).await {
+        progress.fail(index, error.clone());
+        progress.settle_unexecuted();
+        let outcome = outcome_from(
+            operations,
+            &completed,
+            Some(Stop::Failed {
+                index,
                 error,
-                compensation,
-            }) => {
-                progress.fail(index, error.clone());
-                let outcome =
-                    replacement_failure_outcome_from(operations, index, error, *compensation)
-                        .expect("replacement failure belongs to the replacement operation");
-                progress.outcome(outcome.clone());
-                return outcome;
+                compensation: None,
+            }),
+        );
+        progress.outcome(outcome.clone());
+        return outcome;
+    }
+
+    let tasks = operations
+        .iter()
+        .map(|operation| Task {
+            machine: operation.machine_id(),
+            starts: starts_container(operation),
+        })
+        .collect();
+    let mut schedule = Schedule::new(plan.groups().to_vec(), tasks);
+    // New Containers each group started, removed if the group never switches.
+    let mut started: BTreeMap<usize, Vec<(MachineId, ContainerId)>> = BTreeMap::new();
+    // Old Containers each group replaced start-first; they retire after the flip.
+    let mut replaced: BTreeMap<usize, Vec<ContainerId>> = BTreeMap::new();
+    let mut cleaned = BTreeSet::new();
+    let mut stop = None;
+    let mut blocked_since: Option<tokio::time::Instant> = None;
+
+    while !schedule.finished() {
+        let actions = schedule.next();
+        if actions.is_empty() {
+            let blocked = schedule.blocked_on_acks();
+            if blocked.is_empty() {
+                break;
+            }
+            let expired = blocked_since.is_some_and(|since| since.elapsed() >= ACK_WAIT);
+            if cancellation.is_cancelled() || expired {
+                for (task, dependency) in blocked {
+                    let error = if cancellation.is_cancelled() {
+                        ExecutionError::Cancelled
+                    } else {
+                        ExecutionError::DependencyHealth {
+                            dependency: QualifiedService::new(plan.namespace.clone(), dependency),
+                            failure: DependencyHealthFailure::NotRouted {
+                                machine_id: operation_at(operations, task).machine_id(),
+                            },
+                        }
+                    };
+                    progress.fail(task, error.clone());
+                    stop.get_or_insert(Stop::Failed {
+                        index: task,
+                        error,
+                        compensation: None,
+                    });
+                    schedule.apply(Event::Failed(task));
+                }
+                continue;
+            }
+            if blocked_since.is_some() {
+                tokio::select! {
+                    () = cancellation.cancelled() => {}
+                    () = tokio::time::sleep(ACK_POLL) => {}
+                }
+            } else {
+                blocked_since = Some(tokio::time::Instant::now());
+            }
+            let services: BTreeSet<_> = blocked.iter().map(|(_, service)| service).collect();
+            for service in services {
+                let qualified = QualifiedService::new(plan.namespace.clone(), service.clone());
+                match client.read_pointer(&qualified).await {
+                    Ok(read) => {
+                        if read.pointer.is_some_and(|pointer| &pointer.deploy == run) {
+                            for (machine, deploy) in read.acks {
+                                if &deploy == run {
+                                    schedule.apply(Event::Acked {
+                                        service: service.clone(),
+                                        machine,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        let error = machine_error(MachineAction::ReadServingPointer, error);
+                        for (task, _) in blocked.iter().filter(|(_, blocker)| blocker == service) {
+                            progress.fail(*task, error.clone());
+                            stop.get_or_insert(Stop::Failed {
+                                index: *task,
+                                error: error.clone(),
+                                compensation: None,
+                            });
+                            schedule.apply(Event::Failed(*task));
+                        }
+                    }
+                }
+            }
+            continue;
+        }
+        blocked_since = None;
+
+        let (progress, client, slots) = (&progress, &client, &slots);
+        let round = actions.into_iter().map(|action| match action {
+            Action::Start(index) => Either::Left(async move {
+                let result = if cancellation.is_cancelled() {
+                    Err(ExecutionError::Cancelled.into())
+                } else {
+                    execute_operation(
+                        operation_at(operations, index),
+                        index,
+                        progress,
+                        client,
+                        cancellation,
+                        slots,
+                    )
+                    .await
+                };
+                Done::Task(index, result)
+            }),
+            Action::Publish(group) => {
+                let spec = schedule.group(group).clone();
+                let new = started.get(&group).cloned().unwrap_or_default();
+                let old = replaced.get(&group).cloned().unwrap_or_default();
+                Either::Right(async move {
+                    let result = if cancellation.is_cancelled() {
+                        Err(ExecutionError::Cancelled)
+                    } else {
+                        publish_group(client, run, &plan.namespace, &spec, &new, &old).await
+                    };
+                    Done::Publish(group, result)
+                })
+            }
+        });
+        for done in join_all(round).await {
+            match done {
+                Done::Task(index, result) => {
+                    let group = schedule.group_of(index);
+                    let operation = operation_at(operations, index);
+                    let new_container = match &result {
+                        Ok(id) => *id,
+                        Err(OperationFailure::Ordinary(ExecutionError::Health {
+                            container_id,
+                            ..
+                        })) if starts_container(operation) => Some(*container_id),
+                        Err(_) => None,
+                    };
+                    if let Some(id) = new_container {
+                        started
+                            .entry(group)
+                            .or_default()
+                            .push((operation.machine_id(), id));
+                    }
+                    match result {
+                        Ok(_) => {
+                            completed.insert(index);
+                            progress.set_completed(index);
+                            if let DeployOperation::ReplaceContainer(replacement) = operation
+                                && starts_container(operation)
+                            {
+                                replaced
+                                    .entry(group)
+                                    .or_default()
+                                    .push(replacement.old_container_id);
+                            }
+                            schedule.apply(Event::Completed(index));
+                        }
+                        Err(failure) => {
+                            let (error, compensation) = match failure {
+                                OperationFailure::Ordinary(error) => (error, None),
+                                OperationFailure::Replacement {
+                                    error,
+                                    compensation,
+                                } => (error, Some(*compensation)),
+                            };
+                            progress.fail(index, error.clone());
+                            stop.get_or_insert(Stop::Failed {
+                                index,
+                                error,
+                                compensation,
+                            });
+                            schedule.apply(Event::Failed(index));
+                        }
+                    }
+                }
+                Done::Publish(group, Ok(ServingPointerPublication::Published)) => {
+                    schedule.apply(Event::Published(group));
+                }
+                Done::Publish(group, Ok(ServingPointerPublication::Superseded { .. })) => {
+                    let service = schedule.group(group).service.clone();
+                    stop.get_or_insert(Stop::Superseded(QualifiedService::new(
+                        plan.namespace.clone(),
+                        service.expect("only Service groups publish"),
+                    )));
+                    schedule.apply(Event::PublishFailed(group));
+                }
+                Done::Publish(group, Err(error)) => {
+                    // A publish has no row of its own; its Service's last
+                    // operation carries the failure.
+                    let index = schedule.last_task(group);
+                    completed.remove(&index);
+                    progress.fail(index, error.clone());
+                    stop.get_or_insert(Stop::Failed {
+                        index,
+                        error,
+                        compensation: None,
+                    });
+                    schedule.apply(Event::PublishFailed(group));
+                }
+            }
+        }
+        // A group that never switched leaves no new Containers behind.
+        for group in schedule.failed_groups() {
+            if !cleaned.insert(group) {
+                continue;
+            }
+            for (machine, id) in started.get(&group).into_iter().flatten() {
+                let _ = gone(
+                    client,
+                    machine,
+                    ContainerLocator::Id(*id),
+                    Drain::NONE,
+                    AnonymousVolumes::Remove,
+                )
+                .await;
             }
         }
     }
-    let outcome = DeployOutcome::Success {
-        completed: operations.to_vec(),
-    };
+
+    progress.settle_unexecuted();
+    let outcome = outcome_from(operations, &completed, stop);
     progress.outcome(outcome.clone());
     outcome
+}
+
+enum Done {
+    Task(usize, Result<Option<ContainerId>, OperationFailure>),
+    Publish(usize, Result<ServingPointerPublication, ExecutionError>),
+}
+
+/// Pull every Service image on every Machine it will run on, together. The
+/// first failure names the first operation needing that image there.
+async fn pull_images<C: MachineOperations>(
+    client: &C,
+    operations: &[DeployOperation],
+) -> Result<(), (usize, ExecutionError)> {
+    let mut pulls: BTreeMap<(MachineId, String), (usize, PullPolicy)> = BTreeMap::new();
+    for (index, operation) in operations.iter().enumerate() {
+        let Some(spec) = operation.spec() else {
+            continue;
+        };
+        pulls
+            .entry((operation.machine_id(), spec.container.image.clone()))
+            .or_insert((index, spec.container.pull_policy));
+    }
+    let results = join_all(
+        pulls
+            .iter()
+            .map(|((machine, image), (index, policy))| async move {
+                client
+                    .ensure_image(machine, image, *policy)
+                    .await
+                    .map_err(|error| (*index, machine_error(MachineAction::PullImage, error)))
+            }),
+    )
+    .await;
+    results
+        .into_iter()
+        .filter_map(Result::err)
+        .min_by_key(|(index, _)| *index)
+        .map_or(Ok(()), Err)
+}
+
+/// Flip one Service's pointer to the Containers this Deploy started, by
+/// compare-and-set against the pointer it read.
+async fn publish_group<C: MachineOperations>(
+    client: &C,
+    run: &DeploymentLogId,
+    namespace: &Namespace,
+    group: &ServiceGroup,
+    started: &[(MachineId, ContainerId)],
+    replaced: &[ContainerId],
+) -> Result<ServingPointerPublication, ExecutionError> {
+    let service = QualifiedService::new(
+        namespace.clone(),
+        group.service.clone().expect("only Service groups publish"),
+    );
+    let read = client
+        .read_pointer(&service)
+        .await
+        .map_err(|error| machine_error(MachineAction::ReadServingPointer, error))?;
+    let mut containers: Vec<ContainerId> = read
+        .pointer
+        .iter()
+        .flat_map(|current| current.containers.iter().copied())
+        .filter(|id| !replaced.contains(id))
+        .collect();
+    containers.extend(started.iter().map(|(_, id)| *id));
+    let mut retiring: Vec<ContainerId> = read
+        .pointer
+        .iter()
+        .flat_map(|current| current.retiring.iter().copied())
+        .collect();
+    for id in replaced {
+        if !retiring.contains(id) {
+            retiring.push(*id);
+        }
+    }
+    let pointer = ServingPointer {
+        deploy: run.clone(),
+        containers,
+        previous: read.pointer.as_ref().map_or_else(
+            || group.previous.clone(),
+            |current| Some(current.deploy.clone()),
+        ),
+        retiring,
+    };
+    client
+        .publish_pointer(PublishServingPointerRequest {
+            service,
+            read: read.pointer,
+            pointer,
+        })
+        .await
+        .map_err(|error| machine_error(MachineAction::PublishServingPointer, error))
 }
 
 async fn execute_operation<C: MachineOperations>(
     operation: &DeployOperation,
     index: usize,
-    progress: &mut Progress,
+    progress: &Progress,
     client: &C,
     cancellation: &CancellationToken,
     slots: &Slots<'_>,
-) -> Result<(), OperationFailure> {
+) -> Result<Option<ContainerId>, OperationFailure> {
     progress.set_running(index, OperationPhase::Starting);
     match operation {
         DeployOperation::PrepareVolumes { machine_id, specs } => client
             .prepare_volumes(machine_id, specs)
             .await
-            .map(|_| ())
+            .map(|_| None)
             .map_err(|mut error| {
                 if !error.details.is_object() {
                     error.details = serde_json::json!({});
@@ -535,6 +934,7 @@ async fn execute_operation<C: MachineOperations>(
         DeployOperation::WaitHealthy { dependency, .. } => {
             wait_healthy(client, index, progress, dependency, cancellation)
                 .await
+                .map(|()| None)
                 .map_err(Into::into)
         }
         DeployOperation::RunContainer {
@@ -554,7 +954,7 @@ async fn execute_operation<C: MachineOperations>(
                 cancellation,
             )
             .await
-            .map(|_| ())
+            .map(Some)
             .map_err(Into::into)
         }
         DeployOperation::StopContainer {
@@ -565,6 +965,7 @@ async fn execute_operation<C: MachineOperations>(
             progress.set_running(index, OperationPhase::StoppingContainer);
             stop(client, machine_id, container_id, Drain::DEFAULT, None)
                 .await
+                .map(|()| None)
                 .map_err(Into::into)
         }
         DeployOperation::RemoveContainer {
@@ -581,6 +982,7 @@ async fn execute_operation<C: MachineOperations>(
                 (*purpose).into(),
             )
             .await
+            .map(|()| None)
             .map_err(Into::into)
         }
         DeployOperation::ReplaceContainer(replacement) => {
@@ -599,6 +1001,7 @@ async fn execute_operation<C: MachineOperations>(
             progress.set_running(index, OperationPhase::StoppingContainer);
             stop(client, machine_id, container_id, Drain::NONE, None)
                 .await
+                .map(|()| None)
                 .map_err(Into::into)
         }
         DeployOperation::RunHook {
@@ -618,11 +1021,13 @@ async fn execute_operation<C: MachineOperations>(
                 cancellation,
             )
             .await
+            .map(|()| None)
             .map_err(Into::into)
         }
         DeployOperation::RemoveVolume { id } => {
             progress.set_running(index, OperationPhase::RemovingVolume);
             ignore_not_found(client.remove_volume(id).await)
+                .map(|()| None)
                 .map_err(|error| machine_error(MachineAction::RemoveVolume, error).into())
         }
     }
@@ -743,11 +1148,11 @@ pub(in crate::deploy) async fn move_container<C: MachineOperations>(
     };
     let slot = slot_key(namespace, ContainerKind::ServiceContainer, key);
     let adopts = global && adopts_running(&client, to, &slot, spec).await;
-    let mut progress = Progress::new(Vec::new(), None);
+    let progress = Progress::new(Vec::new(), None);
     let started = run_new(
         &client,
         0,
-        &mut progress,
+        &progress,
         to,
         slot.clone(),
         spec,
@@ -789,7 +1194,7 @@ pub(in crate::deploy) async fn move_container<C: MachineOperations>(
 async fn start<C: MachineOperations>(
     client: &C,
     index: usize,
-    progress: &mut Progress,
+    progress: &Progress,
     machine_id: &MachineId,
     slot: SlotKey,
     spec: &ResolvedServiceSpec,
@@ -862,7 +1267,7 @@ async fn discard_attempt<C: MachineOperations>(
 async fn run_new<C: MachineOperations>(
     client: &C,
     index: usize,
-    progress: &mut Progress,
+    progress: &Progress,
     machine_id: &MachineId,
     slot: SlotKey,
     spec: &ResolvedServiceSpec,
@@ -950,7 +1355,7 @@ fn health_error(container_id: ContainerId, failure: HealthFailure) -> ExecutionE
 async fn run_container<C: MachineOperations>(
     client: &C,
     index: usize,
-    progress: &mut Progress,
+    progress: &Progress,
     machine_id: &MachineId,
     slot: SlotKey,
     spec: &ResolvedServiceSpec,
@@ -981,15 +1386,31 @@ fn answer_when(skip_health_monitor: bool) -> AnswerWhen {
 async fn replace_container<C: MachineOperations>(
     client: &C,
     index: usize,
-    progress: &mut Progress,
+    progress: &Progress,
     operation: &ReplacementOperation,
     slot: SlotKey,
     cancellation: &CancellationToken,
-) -> Result<(), OperationFailure> {
-    let stop_first = operation.spec.update.order == UpdateOrder::StopFirst;
+) -> Result<Option<ContainerId>, OperationFailure> {
+    if operation.spec.update.order != UpdateOrder::StopFirst {
+        // The old Container keeps serving until the Service's pointer flips;
+        // it retires with the pointer, not here.
+        return start(
+            client,
+            index,
+            progress,
+            &operation.machine_id,
+            slot,
+            &operation.spec,
+            answer_when(operation.skip_health_monitor),
+            cancellation,
+        )
+        .await
+        .map(Some)
+        .map_err(Into::into);
+    }
     // StopFirst stops, not removes, the old Container first, so a failed new one can
     // hand the slot back to it.
-    let old_stopped = if stop_first {
+    let old_stopped = {
         let old = match client
             .inspect_container(&operation.machine_id, &operation.old_container_id)
             .await
@@ -1030,8 +1451,6 @@ async fn replace_container<C: MachineOperations>(
             }
             None => false,
         }
-    } else {
-        false
     };
 
     let started = start(
@@ -1071,6 +1490,7 @@ async fn replace_container<C: MachineOperations>(
         Drain::DEFAULT,
     )
     .await
+    .map(|()| None)
     .map_err(Into::into)
 }
 
@@ -1079,7 +1499,7 @@ async fn replace_container<C: MachineOperations>(
 async fn compensate<C: MachineOperations>(
     client: &C,
     index: usize,
-    progress: &mut Progress,
+    progress: &Progress,
     operation: &ReplacementOperation,
     old_stopped: bool,
     new_container: Option<ContainerId>,
@@ -1136,7 +1556,7 @@ async fn restore_old_container<C: MachineOperations>(
 async fn run_hook<C: MachineOperations>(
     client: &C,
     index: usize,
-    progress: &mut Progress,
+    progress: &Progress,
     machine_id: &MachineId,
     slot: SlotKey,
     spec: &ResolvedServiceSpec,

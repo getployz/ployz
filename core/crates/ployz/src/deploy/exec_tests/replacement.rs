@@ -1,17 +1,17 @@
 use super::*;
 
 #[tokio::test]
-async fn start_first_health_failure_stops_then_removes_the_replacement_and_never_touches_old() {
-    for stop_succeeds in [true, false] {
+async fn start_first_health_failure_removes_the_replacement_and_never_flips() {
+    for remove_succeeds in [true, false] {
         let machine = machine('1');
         let old = container('a');
         let new = container('b');
         let plan = vec![replacement(&machine, &old, UpdateOrder::StartFirst)];
         let mut steps = vec![unhealthy_run(machine, &new)];
-        if stop_succeeds {
+        if remove_succeeds {
             steps.push(ok(Call::Discard(machine, new)));
         } else {
-            steps.push(failed(Call::Discard(machine, new), "stop new failed"));
+            steps.push(failed(Call::Discard(machine, new), "remove new failed"));
         }
         let client = Scripted::new(steps);
 
@@ -19,13 +19,15 @@ async fn start_first_health_failure_stops_then_removes_the_replacement_and_never
 
         assert!(matches!(
             outcome,
-            DeployOutcome::Failed { failed: FailedOperation::Replacement {
-                compensation: ReplacementCompensation::OldUntouched {
-                    stop_new_container,
+            DeployOutcome::Failed {
+                failed: FailedOperation::Operation {
+                    error: ExecutionError::Health { container_id, .. },
+                    ..
                 },
                 ..
-            }, .. } if stop_new_container.stopped() == stop_succeeds
+            } if container_id == new
         ));
+        assert!(client.publications().is_empty());
         client.assert_done();
     }
 }
@@ -361,11 +363,13 @@ async fn replacement_tolerates_an_old_container_missing_from_its_machine() {
                 Reply::Error(missing.clone()),
             ));
         }
-        steps.extend([created(
+        steps.push(created(
             Call::Run(machine, ContainerKind::ServiceContainer),
             &new,
-        )]);
-        steps.push(ok(Call::Remove(machine, old)));
+        ));
+        if order == UpdateOrder::StopFirst {
+            steps.push(ok(Call::Remove(machine, old)));
+        }
         let client = Scripted::new(steps);
 
         let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
@@ -394,11 +398,13 @@ async fn replacement_does_not_apply_the_new_stop_grace_to_the_old_container() {
                 ok(Call::Stop(machine, old)),
             ]);
         }
-        steps.extend([created(
+        steps.push(created(
             Call::Run(machine, ContainerKind::ServiceContainer),
             &new,
-        )]);
-        steps.push(ok(Call::Remove(machine, old)));
+        ));
+        if order == UpdateOrder::StopFirst {
+            steps.push(ok(Call::Remove(machine, old)));
+        }
         let client = Scripted::new(steps);
 
         assert!(matches!(

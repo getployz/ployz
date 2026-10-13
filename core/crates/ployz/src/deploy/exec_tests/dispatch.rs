@@ -72,7 +72,6 @@ async fn dispatches_the_complete_algebra() {
             Call::Run(first, ContainerKind::ServiceContainer),
             &replacement,
         ),
-        ok(Call::Remove(first, old)),
         ok(Call::StopNow(second, hook)),
         ok(Call::Discard(second, hook)),
         created(Call::Run(first, ContainerKind::PreDeployHook), &new_hook),
@@ -92,6 +91,17 @@ async fn dispatches_the_complete_algebra() {
             completed: operations,
         }
     );
+    let publications = client.publications();
+    let [publication] = publications.as_slice() else {
+        panic!("one pointer flip for the one Service");
+    };
+    assert_eq!(publication.pointer.deploy, run_id());
+    assert_eq!(
+        publication.pointer.containers,
+        vec![new_run, replacement, nested]
+    );
+    assert_eq!(publication.pointer.retiring, vec![old]);
+    assert_eq!(publication.pointer.previous, None);
     client.assert_done();
 }
 
@@ -568,10 +578,10 @@ async fn global_replacement_scopes_creation_to_the_old_container_and_retires_it_
     let new = container('b');
     let mut service = spec(None, None, None);
     service.mode = ployz_core::ServiceMode::Global;
-    let client = Scripted::new(vec![
-        created(Call::Run(machine, ContainerKind::ServiceContainer), &new),
-        ok(Call::Remove(machine, old)),
-    ]);
+    let client = Scripted::new(vec![created(
+        Call::Run(machine, ContainerKind::ServiceContainer),
+        &new,
+    )]);
     let operation = DeployOperation::ReplaceContainer(ReplacementOperation {
         machine_id: machine,
         old_container_id: old,
@@ -582,6 +592,11 @@ async fn global_replacement_scopes_creation_to_the_old_container_and_retires_it_
         execute_with(&[operation], &client, &CancellationToken::new()).await,
         DeployOutcome::Success { .. }
     ));
+    let publications = client.publications();
+    let [publication] = publications.as_slice() else {
+        panic!("one pointer flip");
+    };
+    assert_eq!(publication.pointer.retiring, vec![old]);
     let slots = client.slots.lock().unwrap();
     let [slot] = slots.as_slice() else {
         panic!("expected one new Container");
@@ -757,7 +772,8 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
     );
     let first = plan_deploy(&intent, &snapshot(1)).unwrap();
     assert!(matches!(
-        execute_operation_sequence(&first, "run", &client, &CancellationToken::new(), None).await,
+        execute_operation_sequence(&first, &run_id(), &client, &CancellationToken::new(), None)
+            .await,
         DeployOutcome::Failed { .. }
     ));
     assert_eq!(

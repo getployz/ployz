@@ -588,3 +588,127 @@ fn global_replacement_stops_other_containers_with_conflicting_host_ports_first()
             && removed == &container_id('c')
     ));
 }
+
+#[test]
+fn each_service_is_one_group_with_its_hook_inside_and_edges_from_depends_on() {
+    use ployz::deploy::{ServiceGroup, Step};
+    use ployz_core::{DependencyCondition, DeployIntent, ServiceDependency};
+
+    let mut db = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(2).unwrap(),
+    });
+    db.name = ServiceName::parse("db").unwrap();
+    db.pre_deploy = Some(PreDeployHook {
+        command: vec!["db".into(), "migrate".into()].try_into().unwrap(),
+        environment: Default::default(),
+        privileged: None,
+        timeout_millis: None,
+        user: None,
+    });
+    let mut web = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    web.name = ServiceName::parse("web").unwrap();
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&db, &web],
+        PlanOptions::default(),
+    )
+    .with_dependencies(BTreeMap::from([(
+        web.name.clone(),
+        vec![ServiceDependency {
+            service: db.name.clone(),
+            condition: DependencyCondition::ServiceStarted,
+        }],
+    )]));
+    let snapshot = DeploySnapshot {
+        machines: vec![machine('1', "first"), machine('2', "second")],
+        ..Default::default()
+    };
+
+    let plan = ployz::deploy::plan_deploy(&intent, &snapshot).unwrap();
+
+    assert!(matches!(
+        operations(&plan).as_slice(),
+        [
+            DeployOperation::RunHook { .. },
+            DeployOperation::RunContainer { .. },
+            DeployOperation::RunContainer { .. },
+            DeployOperation::RunContainer { .. },
+        ]
+    ));
+    assert_eq!(
+        plan.groups(),
+        [
+            ServiceGroup {
+                service: Some(db.name.clone()),
+                dependencies: Vec::new(),
+                steps: vec![Step::Serial(0), Step::Parallel(vec![1, 2])],
+                publish: true,
+                previous: None,
+            },
+            ServiceGroup {
+                service: Some(web.name),
+                dependencies: vec![db.name],
+                steps: vec![Step::Parallel(vec![3])],
+                publish: true,
+                previous: None,
+            },
+        ]
+    );
+}
+
+#[test]
+fn a_stop_first_service_keeps_its_serial_walk_and_never_flips() {
+    use ployz::deploy::{ServiceGroup, Step};
+    use ployz_core::DeployIntent;
+
+    let mut current = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    current.container.image = "ghcr.io/getployz/api:old".into();
+    let snapshot = DeploySnapshot {
+        machines: vec![machine('1', "first")],
+        containers: vec![container('b', '1', &current, &service_id('a'))],
+        capacity: capacity([('1', 1)]),
+        ..Default::default()
+    };
+    let groups = |order| {
+        let mut requested = requested(ServiceMode::Replicated {
+            replicas: NonZeroU32::new(1).unwrap(),
+        });
+        requested.update.order = Some(order);
+        let intent = DeployIntent::apply_all(
+            Namespace::parse("app").unwrap(),
+            [&requested],
+            PlanOptions::default(),
+        );
+        let plan = ployz::deploy::plan_deploy(&intent, &snapshot).unwrap();
+        assert!(matches!(
+            operations(&plan).as_slice(),
+            [DeployOperation::ReplaceContainer(..)]
+        ));
+        plan.groups().to_vec()
+    };
+
+    assert_eq!(
+        groups(UpdateOrder::StopFirst),
+        [ServiceGroup {
+            service: Some(ServiceName::parse("api").unwrap()),
+            dependencies: Vec::new(),
+            steps: vec![Step::Serial(0)],
+            publish: false,
+            previous: None,
+        }]
+    );
+    assert_eq!(
+        groups(UpdateOrder::StartFirst),
+        [ServiceGroup {
+            service: Some(ServiceName::parse("api").unwrap()),
+            dependencies: Vec::new(),
+            steps: vec![Step::Parallel(vec![0])],
+            publish: true,
+            previous: None,
+        }]
+    );
+}

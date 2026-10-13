@@ -996,7 +996,7 @@ config: ConfigName, };
 
 export type DependencyCondition = "service_started" | "service_healthy";
 
-export type DependencyHealthFailure = { "type": "cancelled" } | { "type": "no_containers" } | { "type": "observation", error: RpcError, } | { "type": "container", container_id: ContainerId, failure: HealthFailure, };
+export type DependencyHealthFailure = { "type": "cancelled" } | { "type": "no_containers" } | { "type": "observation", error: RpcError, } | { "type": "container", container_id: ContainerId, failure: HealthFailure, } | { "type": "not_routed", machine_id: MachineId, };
 
 export type Deploy = { id: DeploymentId, environment: EnvironmentRef,
 /**
@@ -2225,7 +2225,7 @@ accepts_ingress: boolean, id: MachineId, name: MachineName, subnet: MachineSubne
  */
 build_concurrency: BuildConcurrency | null, };
 
-export type MachineAction = "PrepareVolumes" | "CreateContainer" | "StartContainer" | "InspectContainer" | "StopContainer" | "RemoveContainer" | "RemoveVolume";
+export type MachineAction = "PrepareVolumes" | "CreateContainer" | "StartContainer" | "InspectContainer" | "StopContainer" | "RemoveContainer" | "RemoveVolume" | "PullImage" | "ReadServingPointer" | "PublishServingPointer";
 
 export type MachineCleanupResult = { "status": "cleaned", removals: Array<ImageRemoval>, } | { "status": "unsupported" } | { "status": "unknown", message: string, };
 

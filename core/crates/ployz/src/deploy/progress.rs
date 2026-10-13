@@ -1,6 +1,6 @@
 //! Pending operation rows and a progress sink for one Deploy.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Mutex};
 
 use ployz_core::{
     ContainerId, DeployEvent, DeployOperation, DeployOutcome, ExecutionError, MachineId,
@@ -69,58 +69,73 @@ fn container_labels(
         .collect()
 }
 
+/// Rows sit behind a lock so operations running together can each report.
 pub(super) struct Progress {
-    rows: Vec<OperationRow>,
+    rows: Mutex<Vec<OperationRow>>,
     tx: Option<UnboundedSender<DeployEvent>>,
 }
 
 impl Progress {
     pub(super) fn new(rows: Vec<OperationRow>, tx: Option<UnboundedSender<DeployEvent>>) -> Self {
-        Self { rows, tx }
+        Self {
+            rows: Mutex::new(rows),
+            tx,
+        }
+    }
+
+    fn rows(&self) -> std::sync::MutexGuard<'_, Vec<OperationRow>> {
+        self.rows
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     pub(super) fn emit(&self) {
         let Some(tx) = &self.tx else {
             return;
         };
-        let completed = self
-            .rows
+        let rows = self.rows();
+        let completed = rows
             .iter()
             .filter(|row| matches!(row.status, OperationStatus::Completed))
             .count();
         let _ = tx.send(DeployEvent::Progress {
             completed: u32::try_from(completed).unwrap_or(u32::MAX),
-            total: u32::try_from(self.rows.len()).unwrap_or(u32::MAX),
-            rows: self.rows.clone(),
+            total: u32::try_from(rows.len()).unwrap_or(u32::MAX),
+            rows: rows.clone(),
         });
     }
 
-    pub(super) fn set_running(&mut self, index: usize, phase: OperationPhase) {
-        if let Some(row) = self.rows.get_mut(index) {
+    pub(super) fn set_running(&self, index: usize, phase: OperationPhase) {
+        if let Some(row) = self.rows().get_mut(index) {
             row.status = OperationStatus::Running { phase };
         }
         self.emit();
     }
 
-    pub(super) fn set_display_name(&mut self, index: usize, display_name: String) {
-        if let Some(row) = self.rows.get_mut(index) {
+    pub(super) fn set_display_name(&self, index: usize, display_name: String) {
+        if let Some(row) = self.rows().get_mut(index) {
             row.display_name = Some(display_name);
         }
     }
 
-    pub(super) fn set_completed(&mut self, index: usize) {
-        if let Some(row) = self.rows.get_mut(index) {
+    pub(super) fn set_completed(&self, index: usize) {
+        if let Some(row) = self.rows().get_mut(index) {
             row.status = OperationStatus::Completed;
         }
         self.emit();
     }
 
-    pub(super) fn fail(&mut self, index: usize, error: ExecutionError) {
-        if let Some(row) = self.rows.get_mut(index) {
+    pub(super) fn fail(&self, index: usize, error: ExecutionError) {
+        if let Some(row) = self.rows().get_mut(index) {
             row.status = OperationStatus::Failed { error };
         }
-        for (candidate, row) in self.rows.iter_mut().enumerate() {
-            if candidate != index && !matches!(row.status, OperationStatus::Completed) {
+        self.emit();
+    }
+
+    /// Rows nothing ran become unexecuted once the Deploy stops starting work.
+    pub(super) fn settle_unexecuted(&self) {
+        for row in self.rows().iter_mut() {
+            if matches!(row.status, OperationStatus::Pending) {
                 row.status = OperationStatus::Unexecuted;
             }
         }

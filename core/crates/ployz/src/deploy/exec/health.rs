@@ -12,7 +12,7 @@ use super::{MachineOperations, Progress};
 pub(super) async fn wait_healthy<C: MachineOperations>(
     client: &C,
     index: usize,
-    progress: &mut Progress,
+    progress: &Progress,
     dependency: &QualifiedService,
     cancellation: &CancellationToken,
 ) -> Result<(), ExecutionError> {

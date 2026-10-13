@@ -745,6 +745,10 @@ pub enum MachineAction {
     StopContainer,
     RemoveContainer,
     RemoveVolume,
+    /// Make a Service image present before any Container changes.
+    PullImage,
+    ReadServingPointer,
+    PublishServingPointer,
 }
 
 impl Display for MachineAction {
@@ -757,6 +761,9 @@ impl Display for MachineAction {
             Self::StopContainer => "stop Container",
             Self::RemoveContainer => "remove Container",
             Self::RemoveVolume => "remove Volume",
+            Self::PullImage => "pull image",
+            Self::ReadServingPointer => "read Serving Pointer",
+            Self::PublishServingPointer => "publish Serving Pointer",
         })
     }
 }
@@ -831,6 +838,9 @@ pub enum DependencyHealthFailure {
         container_id: ContainerId,
         failure: HealthFailure,
     },
+    /// The Machine a dependent starts on never routed the dependency's new Deploy.
+    #[error("machine {machine_id} did not route the dependency's Deploy in time")]
+    NotRouted { machine_id: MachineId },
 }
 
 /// Why a pre-deploy hook container did not succeed.

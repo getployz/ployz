@@ -1,4 +1,7 @@
-use std::{collections::VecDeque, sync::Mutex};
+use std::{
+    collections::{BTreeMap, BTreeSet, VecDeque},
+    sync::Mutex,
+};
 
 use ployz_core::{
     ContainerRuntimeObservation, DependencyHealthFailure, DockerVolumeId, DockerVolumeName,
@@ -32,12 +35,16 @@ async fn execute_with<C: MachineOperations>(
 ) -> DeployOutcome<ExecutionError> {
     super::execute_operation_sequence(
         &crate::deploy::DeployPlan::for_execution_test(plan.to_vec(), test_namespace()),
-        "run",
+        &run_id(),
         client,
         cancellation,
         None,
     )
     .await
+}
+
+fn run_id() -> DeploymentLogId {
+    DeploymentLogId::parse("run").unwrap()
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -91,6 +98,16 @@ struct Scripted {
     answers: Mutex<Vec<AnswerWhen>>,
     cancel_on_prepare: Option<CancellationToken>,
     runs_global: bool,
+    /// Every pull fails with this.
+    pull_error: Option<RpcError>,
+    /// Machines images were pulled on; each acks every pointer at once.
+    pulled: Mutex<BTreeSet<MachineId>>,
+    /// Routing never catches up for this Service's pointer.
+    unrouted: Option<ServiceName>,
+    /// Another Deploy wins this Service's compare-and-set.
+    superseded: Option<ServiceName>,
+    pointers: Mutex<BTreeMap<QualifiedService, ServingPointer>>,
+    publications: Mutex<Vec<PublishServingPointerRequest>>,
 }
 
 impl Scripted {
@@ -102,7 +119,17 @@ impl Scripted {
             answers: Mutex::new(Vec::new()),
             cancel_on_prepare: None,
             runs_global: false,
+            pull_error: None,
+            pulled: Mutex::new(BTreeSet::new()),
+            unrouted: None,
+            superseded: None,
+            pointers: Mutex::new(BTreeMap::new()),
+            publications: Mutex::new(Vec::new()),
         }
+    }
+
+    fn publications(&self) -> Vec<PublishServingPointerRequest> {
+        self.publications.lock().unwrap().clone()
     }
 
     fn answers(&self) -> Vec<AnswerWhen> {
@@ -293,6 +320,49 @@ impl MachineOperations for Scripted {
     ) -> Result<bool, RpcError> {
         Ok(self.runs_global)
     }
+
+    async fn ensure_image(
+        &self,
+        machine_id: &MachineId,
+        _image: &str,
+        _policy: PullPolicy,
+    ) -> Result<(), RpcError> {
+        self.pulled.lock().unwrap().insert(*machine_id);
+        self.pull_error.clone().map_or(Ok(()), Err)
+    }
+
+    async fn read_pointer(
+        &self,
+        service: &QualifiedService,
+    ) -> Result<ServingPointerRead, RpcError> {
+        let pointer = self.pointers.lock().unwrap().get(service).cloned();
+        let routed = self.unrouted.as_ref() != Some(&service.name);
+        let acks = match &pointer {
+            Some(pointer) if routed => self
+                .pulled
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|machine| (*machine, pointer.deploy.clone()))
+                .collect(),
+            _ => BTreeMap::new(),
+        };
+        Ok(ServingPointerRead { pointer, acks })
+    }
+
+    async fn publish_pointer(
+        &self,
+        request: PublishServingPointerRequest,
+    ) -> Result<ServingPointerPublication, RpcError> {
+        self.publications.lock().unwrap().push(request.clone());
+        let mut pointers = self.pointers.lock().unwrap();
+        let current = pointers.get(&request.service).cloned();
+        if self.superseded.as_ref() == Some(&request.service.name) || current != request.read {
+            return Ok(ServingPointerPublication::Superseded { current });
+        }
+        pointers.insert(request.service, request.pointer);
+        Ok(ServingPointerPublication::Published)
+    }
 }
 
 fn unit(reply: Reply) -> Result<(), RpcError> {
@@ -321,6 +391,8 @@ fn id_of(locator: &ContainerLocator) -> ContainerId {
 
 #[path = "exec_tests/dispatch.rs"]
 mod dispatch;
+#[path = "exec_tests/flip.rs"]
+mod flip;
 #[path = "exec_tests/health.rs"]
 mod health;
 #[path = "exec_tests/hooks.rs"]

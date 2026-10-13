@@ -83,7 +83,10 @@ impl FailedAt {
                 MachineAction::StartContainer => Some(Self::Start),
                 MachineAction::StopContainer => Some(Self::Stop),
                 MachineAction::RemoveContainer => Some(Self::Remove),
-                MachineAction::InspectContainer => from_phase(),
+                MachineAction::PullImage => Some(Self::Create),
+                MachineAction::InspectContainer
+                | MachineAction::ReadServingPointer
+                | MachineAction::PublishServingPointer => from_phase(),
             },
             ExecutionError::Health { .. } | ExecutionError::DependencyHealth { .. } => {
                 Some(Self::Health)
@@ -248,6 +251,7 @@ impl From<&ExecutionError> for Failure {
                     }
                     DependencyHealthFailure::Cancelled
                     | DependencyHealthFailure::NoContainers
+                    | DependencyHealthFailure::NotRouted { .. }
                     | DependencyHealthFailure::Container { .. } => vec![failure.to_string()],
                 },
             ),
@@ -379,7 +383,10 @@ fn container(row: &OperationRow, last: Option<ContainerId>) -> Option<ContainerI
                 MachineAction::CreateContainer
                 | MachineAction::StartContainer
                 | MachineAction::PrepareVolumes
-                | MachineAction::RemoveVolume => None,
+                | MachineAction::RemoveVolume
+                | MachineAction::PullImage
+                | MachineAction::ReadServingPointer
+                | MachineAction::PublishServingPointer => None,
             },
             ExecutionError::DependencyHealth { .. } | ExecutionError::Cancelled => None,
         },

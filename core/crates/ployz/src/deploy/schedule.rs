@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ployz_core::{DeploymentLogId, MachineId, ServiceName};
+use ployz_core::{DeployOperation, DeploymentLogId, MachineId, ServiceName, UpdateOrder};
 
 /// New Containers one Machine starts at once for one Deploy. Containers still
 /// draining from an earlier Deploy are not tasks here, so they never count.
@@ -22,22 +22,23 @@ pub(crate) struct Task {
 
 /// Operation indices that run one after another, or together.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum Step {
+pub enum Step {
     Serial(usize),
     Parallel(Vec<usize>),
 }
 
 /// One Service's operations and the Services it starts after.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ServiceGroup {
-    /// `None` is the namespace tail: removals and Volume work after every Service.
-    pub(crate) service: Option<ServiceName>,
-    pub(crate) dependencies: Vec<ServiceName>,
-    pub(crate) steps: Vec<Step>,
+pub struct ServiceGroup {
+    /// `None` with no dependencies is a prelude every Service waits for, such
+    /// as Volume preparation; `None` with dependencies is the namespace tail.
+    pub service: Option<ServiceName>,
+    pub dependencies: Vec<ServiceName>,
+    pub steps: Vec<Step>,
     /// Flip this Service's pointer once its steps complete.
-    pub(crate) publish: bool,
+    pub publish: bool,
     /// Deploy the Service's current Containers carry, for a first publish's `previous`.
-    pub(crate) previous: Option<DeploymentLogId>,
+    pub previous: Option<DeploymentLogId>,
 }
 
 /// What the executor does next.
@@ -74,23 +75,38 @@ enum Phase {
     Failed,
 }
 
+struct Slot {
+    group: ServiceGroup,
+    phase: Phase,
+}
+
 pub(crate) struct Schedule {
-    groups: Vec<ServiceGroup>,
+    slots: Vec<Slot>,
     tasks: Vec<Task>,
-    phases: Vec<Phase>,
     published: BTreeSet<ServiceName>,
     publish_requested: BTreeSet<usize>,
     acked: BTreeSet<(ServiceName, MachineId)>,
     failed: bool,
 }
 
+impl ServiceGroup {
+    fn is_prelude(&self) -> bool {
+        self.service.is_none() && self.dependencies.is_empty()
+    }
+}
+
 impl Schedule {
     pub(crate) fn new(groups: Vec<ServiceGroup>, tasks: Vec<Task>) -> Self {
-        let phases = vec![Phase::Waiting; groups.len()];
+        let slots = groups
+            .into_iter()
+            .map(|group| Slot {
+                group,
+                phase: Phase::Waiting,
+            })
+            .collect();
         Self {
-            groups,
+            slots,
             tasks,
-            phases,
             published: BTreeSet::new(),
             publish_requested: BTreeSet::new(),
             acked: BTreeSet::new(),
@@ -98,15 +114,33 @@ impl Schedule {
         }
     }
 
+    fn slot(&self, group: usize) -> &Slot {
+        self.slots
+            .get(group)
+            .expect("group indices come from this schedule")
+    }
+
+    fn slot_mut(&mut self, group: usize) -> &mut Slot {
+        self.slots
+            .get_mut(group)
+            .expect("group indices come from this schedule")
+    }
+
+    fn task(&self, task: usize) -> &Task {
+        self.tasks
+            .get(task)
+            .expect("task indices come from this schedule")
+    }
+
     pub(crate) fn group(&self, index: usize) -> &ServiceGroup {
-        &self.groups[index]
+        &self.slot(index).group
     }
 
     pub(crate) fn group_of(&self, task: usize) -> usize {
-        self.groups
+        self.slots
             .iter()
-            .position(|group| {
-                group.steps.iter().any(|step| match step {
+            .position(|slot| {
+                slot.group.steps.iter().any(|step| match step {
                     Step::Serial(index) => *index == task,
                     Step::Parallel(indices) => indices.contains(&task),
                 })
@@ -114,13 +148,34 @@ impl Schedule {
             .expect("every task belongs to one group")
     }
 
+    #[cfg(test)]
     pub(crate) fn failed(&self) -> bool {
         self.failed
     }
 
+    /// Groups whose own task or publish failed.
+    pub(crate) fn failed_groups(&self) -> Vec<usize> {
+        self.slots
+            .iter()
+            .enumerate()
+            .filter(|(_, slot)| matches!(slot.phase, Phase::Failed))
+            .map(|(group, _)| group)
+            .collect()
+    }
+
+    /// The operation index a group's publish reports under.
+    pub(crate) fn last_task(&self, group: usize) -> usize {
+        self.group(group)
+            .steps
+            .iter()
+            .flat_map(step_tasks)
+            .max()
+            .expect("a publishing group has at least one task")
+    }
+
     /// Nothing runs and nothing more can start.
     pub(crate) fn finished(&self) -> bool {
-        self.phases.iter().all(|phase| match phase {
+        self.slots.iter().all(|slot| match slot.phase {
             Phase::Done | Phase::Failed => true,
             Phase::Waiting => self.failed,
             Phase::Active { .. } | Phase::Publishing => false,
@@ -130,13 +185,13 @@ impl Schedule {
     /// Tasks whose only block is a missing ack, with the Service each waits on.
     pub(crate) fn blocked_on_acks(&self) -> Vec<(usize, ServiceName)> {
         let mut blocked = Vec::new();
-        for (group, phase) in self.groups.iter().zip(&self.phases) {
+        for Slot { group, phase } in &self.slots {
             let pending = match phase {
                 Phase::Waiting if !self.failed && self.dependencies_done(group) => {
                     group.steps.first().map_or(Vec::new(), step_tasks)
                 }
                 Phase::Active { pending, .. } => pending.clone(),
-                _ => Vec::new(),
+                Phase::Waiting | Phase::Publishing | Phase::Done | Phase::Failed => Vec::new(),
             };
             for task in pending {
                 if let Some(service) = self.missing_ack(group, task) {
@@ -151,27 +206,25 @@ impl Schedule {
         match event {
             Event::Completed(task) => {
                 let group = self.group_of(task);
-                if let Phase::Active { running, .. } = &mut self.phases[group] {
+                if let Phase::Active { running, .. } = &mut self.slot_mut(group).phase {
                     running.remove(&task);
                 }
                 self.advance(group);
             }
             Event::Failed(task) => {
                 let group = self.group_of(task);
-                if let Phase::Active { running, .. } = &mut self.phases[group] {
-                    running.remove(&task);
-                }
-                self.phases[group] = Phase::Failed;
+                self.slot_mut(group).phase = Phase::Failed;
                 self.failed = true;
             }
             Event::Published(group) => {
-                self.phases[group] = Phase::Done;
-                if let Some(service) = &self.groups[group].service {
-                    self.published.insert(service.clone());
+                let slot = self.slot_mut(group);
+                slot.phase = Phase::Done;
+                if let Some(service) = slot.group.service.clone() {
+                    self.published.insert(service);
                 }
             }
             Event::PublishFailed(group) => {
-                self.phases[group] = Phase::Failed;
+                self.slot_mut(group).phase = Phase::Failed;
                 self.failed = true;
             }
             Event::Acked { service, machine } => {
@@ -184,33 +237,37 @@ impl Schedule {
     pub(crate) fn next(&mut self) -> Vec<Action> {
         let mut actions = Vec::new();
         let mut windows = self.windows();
-        for group in 0..self.groups.len() {
-            if matches!(self.phases[group], Phase::Waiting)
+        for group in 0..self.slots.len() {
+            if matches!(self.slot(group).phase, Phase::Waiting)
                 && !self.failed
-                && self.dependencies_done(&self.groups[group])
+                && self.dependencies_done(&self.slot(group).group)
             {
-                self.phases[group] = self.step_phase(group, 0);
+                let first = self.step_phase(group, 0);
+                self.slot_mut(group).phase = first;
             }
             let Phase::Active {
                 step,
                 pending,
                 running,
-            } = &self.phases[group]
+            } = &self.slot(group).phase
             else {
                 continue;
             };
             let (step, mut pending, mut running) = (*step, pending.clone(), running.clone());
-            let serial = matches!(self.groups[group].steps[step], Step::Serial(_));
+            let serial = matches!(
+                self.slot(group).group.steps.get(step),
+                Some(Step::Serial(_))
+            );
             let mut still_pending = Vec::new();
             for task in pending.drain(..) {
                 if serial && !running.is_empty() {
                     still_pending.push(task);
                     continue;
                 }
-                let Task { machine, starts } = &self.tasks[task];
+                let Task { machine, starts } = self.task(task);
                 let window = windows.entry(*machine).or_insert(0);
                 let room = !*starts || *window < MACHINE_WINDOW;
-                if room && self.missing_ack(&self.groups[group], task).is_none() {
+                if room && self.missing_ack(&self.slot(group).group, task).is_none() {
                     if *starts {
                         *window += 1;
                     }
@@ -220,14 +277,14 @@ impl Schedule {
                     still_pending.push(task);
                 }
             }
-            self.phases[group] = Phase::Active {
+            self.slot_mut(group).phase = Phase::Active {
                 step,
                 pending: still_pending,
                 running,
             };
         }
-        for group in 0..self.groups.len() {
-            if matches!(self.phases[group], Phase::Publishing)
+        for group in 0..self.slots.len() {
+            if matches!(self.slot(group).phase, Phase::Publishing)
                 && self.publish_requested.insert(group)
             {
                 actions.push(Action::Publish(group));
@@ -238,11 +295,11 @@ impl Schedule {
 
     fn windows(&self) -> BTreeMap<MachineId, usize> {
         let mut windows = BTreeMap::new();
-        for phase in &self.phases {
-            if let Phase::Active { running, .. } = phase {
-                for task in running {
-                    if self.tasks[*task].starts {
-                        *windows.entry(self.tasks[*task].machine).or_insert(0) += 1;
+        for slot in &self.slots {
+            if let Phase::Active { running, .. } = &slot.phase {
+                for task in running.iter().map(|task| self.task(*task)) {
+                    if task.starts {
+                        *windows.entry(task.machine).or_insert(0) += 1;
                     }
                 }
             }
@@ -251,13 +308,14 @@ impl Schedule {
     }
 
     fn step_phase(&self, group: usize, step: usize) -> Phase {
-        match self.groups[group].steps.get(step) {
+        let group = self.group(group);
+        match group.steps.get(step) {
             Some(tasks) => Phase::Active {
                 step,
                 pending: step_tasks(tasks),
                 running: BTreeSet::new(),
             },
-            None if self.groups[group].publish => Phase::Publishing,
+            None if group.publish => Phase::Publishing,
             None => Phase::Done,
         }
     }
@@ -267,28 +325,36 @@ impl Schedule {
             step,
             pending,
             running,
-        } = &self.phases[group]
+        } = &self.slot(group).phase
         else {
             return;
         };
         if pending.is_empty() && running.is_empty() {
-            self.phases[group] = self.step_phase(group, step + 1);
+            let next = self.step_phase(group, step + 1);
+            self.slot_mut(group).phase = next;
         }
     }
 
     fn dependencies_done(&self, group: &ServiceGroup) -> bool {
-        group.dependencies.iter().all(|dependency| {
-            self.groups
+        let preludes_done = group.is_prelude()
+            || self
+                .slots
                 .iter()
-                .position(|candidate| candidate.service.as_ref() == Some(dependency))
-                .is_none_or(|index| matches!(self.phases[index], Phase::Done))
-        })
+                .filter(|slot| slot.group.is_prelude())
+                .all(|slot| matches!(slot.phase, Phase::Done));
+        preludes_done
+            && group.dependencies.iter().all(|dependency| {
+                self.slots
+                    .iter()
+                    .find(|slot| slot.group.service.as_ref() == Some(dependency))
+                    .is_none_or(|slot| matches!(slot.phase, Phase::Done))
+            })
     }
 
     /// The published dependency `task`'s Machine has not acked yet, if any.
     /// Only a new Container needs its dependencies routable where it runs.
     fn missing_ack(&self, group: &ServiceGroup, task: usize) -> Option<ServiceName> {
-        let Task { machine, starts } = self.tasks[task];
+        let Task { machine, starts } = self.task(task);
         if !starts {
             return None;
         }
@@ -297,9 +363,27 @@ impl Schedule {
             .iter()
             .find(|dependency| {
                 self.published.contains(*dependency)
-                    && !self.acked.contains(&((*dependency).clone(), machine))
+                    && !self.acked.contains(&((*dependency).clone(), *machine))
             })
             .cloned()
+    }
+}
+
+/// A new Container of the Service starts here, so the task takes a window
+/// slot and the Deploy removes the Container if the Service never switches.
+pub(crate) fn starts_container(operation: &DeployOperation) -> bool {
+    match operation {
+        DeployOperation::RunContainer { .. } => true,
+        DeployOperation::ReplaceContainer(replacement) => {
+            replacement.spec.update.order != UpdateOrder::StopFirst
+        }
+        DeployOperation::PrepareVolumes { .. }
+        | DeployOperation::WaitHealthy { .. }
+        | DeployOperation::StopContainer { .. }
+        | DeployOperation::RemoveContainer { .. }
+        | DeployOperation::StopHook { .. }
+        | DeployOperation::RunHook { .. }
+        | DeployOperation::RemoveVolume { .. } => false,
     }
 }
 
@@ -384,7 +468,10 @@ mod tests {
         assert_eq!(publishes(&mut schedule), vec![0]);
         assert!(starts(&mut schedule).is_empty(), "api waits on the publish");
         schedule.apply(Event::Published(0));
-        assert!(starts(&mut schedule).is_empty(), "api waits on Machine 1's ack");
+        assert!(
+            starts(&mut schedule).is_empty(),
+            "api waits on Machine 1's ack"
+        );
         assert_eq!(schedule.blocked_on_acks(), vec![(1, name("db"))]);
         schedule.apply(ack("db", '1'));
         assert_eq!(starts(&mut schedule), vec![1]);
@@ -413,7 +500,11 @@ mod tests {
         schedule.apply(Event::Completed(0));
         schedule.apply(Event::Published(0));
         schedule.apply(ack("db", '1'));
-        assert_eq!(starts(&mut schedule), vec![1], "queue's Machine 2 has not acked db");
+        assert_eq!(
+            starts(&mut schedule),
+            vec![1],
+            "queue's Machine 2 has not acked db"
+        );
         schedule.apply(ack("db", '2'));
         assert_eq!(starts(&mut schedule), vec![2]);
         schedule.apply(Event::Completed(1));
@@ -422,7 +513,10 @@ mod tests {
         assert!(starts(&mut schedule).is_empty(), "queue has not published");
         schedule.apply(Event::Completed(2));
         schedule.apply(Event::Published(2));
-        assert!(starts(&mut schedule).is_empty(), "Machine 2 has not acked queue");
+        assert!(
+            starts(&mut schedule).is_empty(),
+            "Machine 2 has not acked queue"
+        );
         schedule.apply(ack("queue", '2'));
         assert_eq!(starts(&mut schedule), vec![3]);
     }
@@ -468,7 +562,13 @@ mod tests {
     fn the_window_counts_only_this_deploys_starts_and_is_per_machine() {
         let steps = vec![Step::Parallel((0..12).collect())];
         let tasks = (0..12)
-            .map(|index| if index % 2 == 0 { start('1') } else { start('2') })
+            .map(|index| {
+                if index % 2 == 0 {
+                    start('1')
+                } else {
+                    start('2')
+                }
+            })
             .collect();
         let mut schedule = Schedule::new(vec![group("api", &[], steps)], tasks);
         let first = starts(&mut schedule);
@@ -477,16 +577,15 @@ mod tests {
             machine: machine('1'),
             starts: false,
         };
-        assert!(!draining.starts, "a draining copy is never a task of this Deploy");
+        assert!(
+            !draining.starts,
+            "a draining copy is never a task of this Deploy"
+        );
     }
 
     #[test]
     fn serial_steps_run_one_at_a_time_and_a_non_start_takes_no_window_slot() {
-        let steps = vec![
-            Step::Serial(0),
-            Step::Serial(1),
-            Step::Parallel(vec![2, 3]),
-        ];
+        let steps = vec![Step::Serial(0), Step::Serial(1), Step::Parallel(vec![2, 3])];
         let tasks = vec![
             Task {
                 machine: machine('1'),
@@ -531,7 +630,11 @@ mod tests {
         assert!(schedule.failed());
         assert!(!schedule.finished(), "1, 2 and 4 still run");
         schedule.apply(Event::Completed(2));
-        assert_eq!(publishes(&mut schedule), vec![1], "b finishes with its publish");
+        assert_eq!(
+            publishes(&mut schedule),
+            vec![1],
+            "b finishes with its publish"
+        );
         schedule.apply(Event::Published(1));
         schedule.apply(ack("b", '2'));
         assert!(starts(&mut schedule).is_empty(), "c never starts");
@@ -563,6 +666,35 @@ mod tests {
         assert!(schedule.failed());
         assert!(starts(&mut schedule).is_empty());
         assert!(schedule.finished());
+    }
+
+    #[test]
+    fn every_service_waits_for_the_prelude() {
+        let mut schedule = Schedule::new(
+            vec![
+                ServiceGroup {
+                    service: None,
+                    dependencies: Vec::new(),
+                    steps: vec![Step::Serial(0)],
+                    publish: false,
+                    previous: None,
+                },
+                group("a", &[], vec![Step::Serial(1)]),
+                group("b", &[], vec![Step::Serial(2)]),
+            ],
+            vec![
+                Task {
+                    machine: machine('1'),
+                    starts: false,
+                },
+                start('1'),
+                start('1'),
+            ],
+        );
+        assert_eq!(starts(&mut schedule), vec![0]);
+        assert_eq!(starts(&mut schedule), Vec::<usize>::new());
+        schedule.apply(Event::Completed(0));
+        assert_eq!(starts(&mut schedule), vec![1, 2]);
     }
 
     #[test]

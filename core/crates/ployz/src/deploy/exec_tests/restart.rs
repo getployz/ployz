@@ -28,16 +28,16 @@ async fn a_run_lost_to_a_daemon_restart_is_resent_to_the_same_slot() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn two_consecutive_run_containers_each_survive_a_target_restart() {
+async fn two_parallel_run_containers_each_survive_a_target_restart() {
     let first_machine = machine('1');
     let second_machine = machine('2');
     let plan = vec![
         run(&first_machine, spec(None, None, None), true),
         run(&second_machine, spec(None, None, None), true),
     ];
-    let mut steps = Vec::from(resent(first_machine, &container('a')));
-    steps.extend(resent(second_machine, &container('b')));
-    let client = Scripted::new(steps);
+    let [first_lost, first_created] = resent(first_machine, &container('a'));
+    let [second_lost, second_created] = resent(second_machine, &container('b'));
+    let client = Scripted::new(vec![first_lost, second_lost, first_created, second_created]);
 
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
 
