@@ -441,6 +441,14 @@ it.live("fails a Deploy whose restore it didn't stamp before any run, and refuse
   yield* failStoreDeploymentStorage(ORGANIZATION, environment.id, deployment, "storage-run", failed.kind === "failed" ? failed.message : "").pipe(Effect.provide(services));
   expect(yield* discardPlacement(ORGANIZATION, null, volumeId, shop).pipe(Effect.provide(services))).toEqual({ ok: true, placement: null });
   expect((yield* Effect.promise(() => store.read(ORGANIZATION, { query: "volumes", environment: shop }))).volumes.map((volume) => volume.name)).toEqual(["data"]);
+
+  const writes: ConfigCommand[] = [];
+  const redeploy = yield* writeAdmitted(ORGANIZATION, { command: "admit", admit: "retry", id: "00000000-0000-4000-8000-00000000d016", deployment }, (command) => {
+    writes.push(command);
+    return storeTry(() => store.write(ORGANIZATION, command, { ...acmeWeb(), servers: 1 }));
+  }).pipe(Effect.flip, Effect.provide(services));
+  expect(redeploy).toMatchObject({ _tag: "StoreRefused", code: "conflict", message: "Restore failed. Restore again." });
+  expect(writes).toEqual([]);
 }));
 
 it.live("waits for the admission's stamp before judging a Deploy's restore, when the worker starts between the Store write and the stamp", () => Effect.gen(function* () {
