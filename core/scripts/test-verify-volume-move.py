@@ -131,19 +131,21 @@ def stamped(output):
 
 
 def nth_after(lines, moment, nth):
-    later = [line for at, line in lines if at > moment]
+    later = [(at, line) for at, line in lines if at > moment]
     return later[nth - 1] if len(later) >= nth else None
 
 
 TERMINAL = {"done", "failed", "cancelled", "lost", "not_started"}
 AUXILIARY = "Failed to send signal SIGKILL to auxiliary processes"
 BUSY_LIMIT = 180
-# The barrier restart returns once the daemon is up, and a `docker stop` it already handed to dockerd still lands
-# within Docker's default 10 s; the trigger window opens past that.
+# The trigger window opens this long after the barrier restart returns. It is a hold, not a bound: Moby's
+# containerStop runs without cancellation, so a `docker stop` dockerd already took is not sure to land within
+# Docker's default 10 s.
 STOP_HOLD = 12
-# The kernel slews a clock by at most 500 ppm, so over the 900 s trigger limit drift moves an offset by at most
-# 0.45 s. Anything larger is a step.
-CLOCK_ALLOWANCE = 0.5
+# How fast an offset may move after calibration before the case fails. No rate caps a real clock: chrony slews up to
+# 83333 ppm and timesyncd steps at 0.4 s. So this is a tolerance, not a claim. clock_moved measures each offset again
+# at the trigger and at the case end, and the trigger's ownership bound includes the same tolerance.
+CLOCK_RATE = 500e-6
 RESTART = ("systemctl restart ployz.service; systemctl stop ployz-volume-plugin.service || true; "
            "for i in $(seq 60); do systemctl is-active --quiet ployz.service && break; sleep 1; done; "
            "systemctl is-active --quiet ployz.service")
@@ -153,11 +155,12 @@ VOLUME = "data"
 IMAGE = "postgres:16-alpine"
 
 
-def trigger_not_its(run, seen):
-    """Cloud lets one run act on a Volume at a time, so a trigger seen after the first run ended is a later run's.
+def trigger_not_its(run, latest):
+    """Cloud lets one run act on a Volume at a time, so a trigger that may have happened after the first run ended
+    may be a later run's.
 
-    Both times are on the host: the harness clock and the worker's finished_at. Seeing a trigger is never earlier
-    than it happened, so Machine clock skew cannot credit a later run's trigger to the first run.
+    Both times are on the host: latest is the last host time the trigger could have happened, from its own stamp
+    plus every uncertainty, or from the poll that saw it when it has no stamp. The worker stamps finished_at.
     """
     if run.get("state") not in TERMINAL:
         return None
@@ -165,10 +168,10 @@ def trigger_not_its(run, seen):
         return (f"the first run {run.get('id')} ended {run.get('state')} with no finished_at, so the trigger "
                 "cannot be tied to it")
     ended = datetime.fromisoformat(run["finished_at"].replace("Z", "+00:00")).timestamp()
-    if ended < seen:
-        when = datetime.fromtimestamp(seen, timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    if ended < latest:
+        when = datetime.fromtimestamp(latest, timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
         return (f"the first run {run.get('id')} ended {run.get('state')} at {run['finished_at']}, before the trigger "
-                f"was seen at {when}, so the trigger evidence is not its")
+                f"could have happened as late as {when}, so the trigger evidence is not its")
     return None
 
 
@@ -368,7 +371,7 @@ class VolumeMove:
         self.started_runs = set()
         self.busy_waits = []
         # Machine name to (offset, uncertainty) in seconds: its clock reads offset ahead of the host's.
-        self.clocks = {}
+        self.clocks, self.clocks_at = {}, None
 
     def command(self, *args, check=True, timeout=600):
         command = [str(HELPER), *map(str, args)]
@@ -468,6 +471,7 @@ class VolumeMove:
 
     def measure_clocks(self):
         self.clocks = self.read_clocks()
+        self.clocks_at = self.clock()
         return clock_report(self.clocks)
 
     def read_clocks(self, samples=3):
@@ -501,11 +505,19 @@ class VolumeMove:
         failures = []
         for machine, (offset, error) in clocks.items():
             start, start_error = self.clocks[machine]
-            bound = start_error + error + CLOCK_ALLOWANCE
+            bound = start_error + error + self.movement(self.clock())
             if abs(offset - start) > bound:
                 failures.append(f"the clock on {machine} moved {offset - start:+.3f}s between the clean start and "
                                 f"{when}, past the {bound:.3f}s its readings and drift allow")
         return failures
+
+    def movement(self, at):
+        """How far an offset may move from calibration to host time at before clock_moved fails the case."""
+        return CLOCK_RATE * max(at - self.clocks_at, 0)
+
+    def latest(self, machine, at):
+        """The last host time an event machine stamped, converted to host time at, could have happened."""
+        return at + self.clocks[machine][1] + self.movement(at)
 
     def window(self, machine, since):
         """journalctl's --since for a host time, in machine's clock, with slack the host-side filter discards."""
@@ -559,10 +571,9 @@ class VolumeMove:
         return [target for target in targets if self.sh(target, script, check=check).returncode]
 
     def fired(self, since):
-        for machine in self.machines:
-            if lines := self.fault_lines(machine, since):
-                return f"{machine}: {lines[0][1][:300]}"
-        return None
+        found = [(self.latest(machine, lines[0][0]), f"{machine}: {lines[0][1][:300]}")
+                 for machine in self.machines if (lines := self.fault_lines(machine, since))]
+        return min(found)[::-1] if found else None
 
     def fault_lines(self, machine, since):
         """machine's fault lines in host time, kept only when they are after since by more than its uncertainty."""
@@ -583,7 +594,7 @@ class VolumeMove:
 
     def stopped(self, writer, since):
         at = self.stopped_at(writer, since)
-        return f"{writer}: db stopped at {at}" if at else None
+        return (f"{writer}: db stopped at {at}", self.latest(writer, at)) if at else None
 
     def fault_after_stop(self, writer, machine, since, nth):
         """Each uncertainty counts against the trigger, so skew can delay crediting a fault but never move it past the stop."""
@@ -592,8 +603,11 @@ class VolumeMove:
             return None
         error = self.clocks[machine][1]
         lines = [(at - error, line) for at, line in self.fault_lines(machine, since)]
-        line = nth_after(lines, stopped + self.clocks[writer][1], nth)
-        return f"{machine}: {line[:300]}" if line else None
+        found = nth_after(lines, stopped + self.clocks[writer][1], nth)
+        if not found:
+            return None
+        at, line = found
+        return f"{machine}: {line[:300]}", self.latest(machine, at + error)
 
     def receiving(self, machine):
         """The receiving trigger: a receive into this Volume's mirror. An unread poll only withholds credit."""
@@ -788,18 +802,19 @@ class VolumeMove:
         return dict(last, state=f"still {last.get('state')} after {limit}s")
 
     def wait_trigger(self, case, row, since, side, limit=900):
+        """What the trigger saw, and the last host time it could have happened."""
         machine = side[case.get("trigger_machine", case["machine"])]
         triggers = {
             "fault": lambda: self.fired(since),
-            "receiving": lambda: f"{machine}: zfs receive running" if self.receiving(machine) else None,
+            # A process has no stamp, so the poll that saw it bounds when it ran.
+            "receiving": lambda: (f"{machine}: zfs receive running", self.clock()) if self.receiving(machine) else None,
             "stopped": lambda: self.stopped(side["writer"], since),
             "fault-after-stop": lambda: self.fault_after_stop(side["writer"], machine, since, case.get("nth", 1)),
         }
         deadline = self.clock() + limit
         while self.clock() < deadline:
-            seen = triggers[case["trigger"]]()
-            if seen:
-                return seen
+            if found := triggers[case["trigger"]]():
+                return dict(seen=found[0], latest=found[1])
             current = next((found for found in self.runs() if found["id"] == row.get("id")), row)
             if current.get("state") in TERMINAL | {"refused"}:
                 return None
@@ -863,8 +878,12 @@ class VolumeMove:
 
     def act(self, action, machine, row):
         if action == "cancel":
-            self.runner_state("kill")
-            return self.cancel(row)
+            # Every later case needs the runner, so it starts again however the cancel ends.
+            try:
+                self.runner_state("kill")
+                return self.cancel(row)
+            finally:
+                self.runner_state("start")
         if action == "runner-kill":
             return self.runner_kill()
         if action in ("kill-ployz", "kill-docker"):
@@ -921,15 +940,14 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
             raise RuntimeError(f"{case['op']} was refused: {json.dumps(row.get('reply'))[:1500]}")
         result["run"] = row
         if case["trigger"]:
-            result["triggered"] = self.wait_trigger(case, row, started, side)
-            if result["triggered"]:
-                result["triggered_at"] = self.clock()
+            found = self.wait_trigger(case, row, started, side)
+            result["triggered"] = found and found["seen"]
+            if found:
+                result["triggered_at"] = found["latest"]
                 moved += self.clock_moved("the trigger", readings)
                 result["action_evidence"] = self.act(case["action"], side[case["machine"]], row)
         if case["fault"]:
             self.fault(None)
-        if case["action"] == "cancel":
-            self.runner_state("start")
         result["run"] = self.wait_run(row)
         result["recovery"] = []
         if result["run"].get("state") != "done":
