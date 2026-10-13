@@ -754,7 +754,7 @@ it.live(
 
         const removal = yield* cli("POST", `servers/${fra1}/forget`, alice, {});
         assert.strictEqual(removal.status, 409);
-        assert.deepStrictEqual(removal.json.error?.details.operation, { verb: "remove", name: "fra-1" });
+        assert.deepStrictEqual(removal.json.error?.details.operation, { verb: "forget", name: "fra-1" });
 
         const drain = yield* cli("POST", `servers/${fra1}/drain`, alice);
         assert.strictEqual(drain.status, 202);
@@ -924,7 +924,7 @@ const operationClusterOf = (plan: FraRunsGlobal) => Layer.succeed(OrganizationRu
 });
 
 const operations = [
-  { verb: "remove", name: "fra-1", method: "POST", path: `servers/${fra1}/forget`, body: {} },
+  { verb: "forget", name: "fra-1", method: "POST", path: `servers/${fra1}/forget`, body: {} },
   { verb: "clean", name: "left-behind", method: "POST", path: "namespaces/left-behind/clean", body: undefined },
   { verb: "drain", name: "fra-1", method: "POST", path: `servers/${fra1}/drain`, body: undefined },
 ] as const;
@@ -978,7 +978,7 @@ for (const operation of operations) {
               reason,
             );
 
-            const plans = operation.verb === "remove" ? [true] : [true, false];
+            const plans = operation.verb === "forget" ? [true] : [true, false];
             for (const destroys of plans) {
               plan.destroys = destroys;
               const retried = yield* cli(operation.method, operation.path, { ...alice, approval: approvalId }, operation.body);
