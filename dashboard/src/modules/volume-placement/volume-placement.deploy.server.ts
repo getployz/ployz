@@ -149,11 +149,11 @@ const unseededVolume = Effect.fn("VolumePlacement.unseededVolume")(function* (
   const { drizzle } = yield* Database;
   const failed = yield* drizzle.select({ volumeId: failedRestore.volumeId }).from(failedRestore)
     .where(and(eq(failedRestore.organizationId, organizationId), inArray(failedRestore.volumeId, ids)));
-  // Waits on an admission still holding the rows, so a stamp it is about to commit is seen.
+  // Waits on an admission still holding the rows, so a stamp it is about to commit is seen. Locked in admission's order.
   const unstamped = yield* drizzle.select({ volumeId: volumePlacement.volumeId }).from(volumePlacement).where(and(
     eq(volumePlacement.organizationId, organizationId), inArray(volumePlacement.volumeId, ids),
     sql`${volumePlacement.staged} ? 'seed' and ${volumePlacement.deploymentId} is distinct from ${deploymentId}`,
-  )).for("share");
+  )).orderBy(volumePlacement.volumeId).for("share");
   const name = (volumeId: string) => held.find((node) => node.id === volumeId)?.name ?? volumeId;
   if (failed[0] !== undefined) return restoreFailed(failed[0].volumeId, environment, `${name(failed[0].volumeId)}: ${RESTORE_FAILED.message}`);
   if (unstamped[0] !== undefined) return { kind: "failed", message: `${name(unstamped[0].volumeId)}: the restore waits for the next Deploy.` } satisfies PlacementAdvance;
