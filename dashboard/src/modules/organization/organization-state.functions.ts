@@ -1,8 +1,8 @@
 import { createServerFn } from "@tanstack/react-start";
 import { Schema } from "effect";
 import { actorMiddleware, publicErrorMiddleware, runActor, strictValidator } from "#/server/tanstack";
-import { OrganizationSlug, SyncOrganizationSlug } from "./organization-state";
-import { getOrganizationState, openOrCreateOrganization, syncOrganizationSlug } from "./organization-state.server";
+import { CreateOrganization, OrganizationSlug, SyncOrganizationSlug } from "./organization-state";
+import { createOrganization, getOrganizationState, openOrCreateOrganization, syncOrganizationSlug } from "./organization-state.server";
 
 const middleware = [publicErrorMiddleware, actorMiddleware] as const;
 
@@ -24,3 +24,9 @@ export const syncOrganizationSlugServerFn = createServerFn({ method: "POST" })
 export const openOrCreateOrganizationServerFn = createServerFn({ method: "POST" })
   .middleware(middleware)
   .handler(({ context }) => runActor(context, openOrCreateOrganization(context.actor)));
+
+/** Creates an Organization the actor owns and opens it for their sessions. Returns its slug. */
+export const createOrganizationServerFn = createServerFn({ method: "POST" })
+  .middleware(middleware)
+  .validator(strictValidator(CreateOrganization))
+  .handler(({ context, data }) => runActor(context, createOrganization(context.actor, data)));
