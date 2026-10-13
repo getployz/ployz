@@ -19,7 +19,8 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     corrosion::{
         CertificateChallenge, CertificateMaterial, CertificateRow, Error as CorrosionError,
-        IngressRouteAck, ReplicatedStore, ServingPointers, Subscription, published_cover,
+        IngressRouteAck, IngressRouteChange, ReplicatedStore, ServingPointers, Subscription,
+        published_cover,
     },
     docker::LABEL_DEPLOYMENT,
     filesystem::{atomic_write, set_ployz_group},
@@ -479,7 +480,6 @@ where
     }
 }
 
-/// Ack every pointed Service with the Containers this Machine's view selects to serve it.
 fn route_acks(
     observations: &[ContainerObservation],
     pointers: &ServingPointers,
@@ -504,7 +504,6 @@ fn route_acks(
     acks
 }
 
-/// Write only the acks that differ from the last written set. A failed write retries next pass.
 async fn publish_route_acks(
     replicated: &ReplicatedStore,
     machine_id: &MachineId,
@@ -514,11 +513,11 @@ async fn publish_route_acks(
     let mut changes: BTreeMap<_, _> = acked
         .keys()
         .filter(|service| !acks.contains_key(*service))
-        .map(|service| (service.clone(), None))
+        .map(|service| (service.clone(), IngressRouteChange::Delete))
         .collect();
     for (service, ack) in &acks {
         if acked.get(service) != Some(ack) {
-            changes.insert(service.clone(), Some(ack.clone()));
+            changes.insert(service.clone(), IngressRouteChange::Upsert(ack.clone()));
         }
     }
     match replicated

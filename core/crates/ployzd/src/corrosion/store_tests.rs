@@ -12,7 +12,7 @@ use ployz_core::{
 };
 use serde_json::json;
 
-use super::{IngressRouteAck, ReplicatedStore};
+use super::{IngressRouteAck, IngressRouteChange, ReplicatedStore};
 use crate::corrosion::{ApiClient, Statement};
 use crate::machine::{
     LocalMachine, LocalMachineBody, LocalMachinePrior, LocalMachineRecord, LocalMachineStore,
@@ -620,8 +620,11 @@ async fn ingress_route_acks_upsert_and_delete_against_the_schema() {
         .publish_ingress_routes(
             &machine,
             &BTreeMap::from([
-                (api.clone(), Some(ack("d1", &["b", "a"]))),
-                (web.clone(), Some(ack("d1", &[]))),
+                (
+                    api.clone(),
+                    IngressRouteChange::Upsert(ack("d1", &["b", "a"])),
+                ),
+                (web.clone(), IngressRouteChange::Upsert(ack("d1", &[]))),
             ]),
         )
         .await
@@ -629,7 +632,10 @@ async fn ingress_route_acks_upsert_and_delete_against_the_schema() {
     store
         .publish_ingress_routes(
             &machine,
-            &BTreeMap::from([(api, Some(ack("d2", &["c"]))), (web, None)]),
+            &BTreeMap::from([
+                (api, IngressRouteChange::Upsert(ack("d2", &["c"]))),
+                (web, IngressRouteChange::Delete),
+            ]),
         )
         .await
         .unwrap();

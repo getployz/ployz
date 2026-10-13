@@ -703,11 +703,10 @@ impl ReplicatedStore {
             .await
     }
 
-    /// Write changed Ingress Route Acks for one Machine in one transaction. `None` deletes the row.
     pub(crate) async fn publish_ingress_routes(
         &self,
         machine_id: &MachineId,
-        changes: &BTreeMap<QualifiedService, Option<IngressRouteAck>>,
+        changes: &BTreeMap<QualifiedService, IngressRouteChange>,
     ) -> Result<(), Error> {
         if changes.is_empty() {
             return Ok(());
@@ -715,7 +714,7 @@ impl ReplicatedStore {
         let mut statements = Vec::with_capacity(changes.len());
         for (service, ack) in changes {
             statements.push(match ack {
-                Some(ack) => Statement::new(
+                IngressRouteChange::Upsert(ack) => Statement::new(
                     INGRESS_ROUTE_UPSERT,
                     [
                         json!(machine_id),
@@ -724,7 +723,7 @@ impl ReplicatedStore {
                         json!(serde_json::to_string(&ack.containers)?),
                     ],
                 ),
-                None => Statement::new(
+                IngressRouteChange::Delete => Statement::new(
                     INGRESS_ROUTE_DELETE,
                     [json!(machine_id), json!(service.to_string())],
                 ),
@@ -1010,11 +1009,16 @@ const INGRESS_ROUTE_UPSERT: &str = "INSERT INTO ingress_routes (machine_id, serv
 const INGRESS_ROUTE_DELETE: &str =
     "DELETE FROM ingress_routes WHERE machine_id = ? AND service_id = ?";
 
-/// One Machine applied this Serving Pointer deploy and routes to exactly these Containers.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct IngressRouteAck {
     pub(crate) deploy: DeploymentLogId,
     pub(crate) containers: BTreeSet<ContainerId>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum IngressRouteChange {
+    Upsert(IngressRouteAck),
+    Delete,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

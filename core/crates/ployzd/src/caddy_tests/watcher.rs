@@ -580,14 +580,14 @@ async fn ingress_never_reads_or_subscribes_to_ingress_routes() {
     assert!(
         statements
             .iter()
-            .any(|(kind, sql)| *kind == "transaction"
+            .any(|(kind, sql)| *kind == Sent::Transaction
                 && sql.starts_with("INSERT INTO ingress_routes")),
         "{statements:?}"
     );
     for (kind, sql) in &statements {
         assert!(
-            *kind == "transaction" || !sql.contains("ingress_routes"),
-            "the ingress read its own acks: {kind} {sql}"
+            *kind == Sent::Transaction || !sql.contains("ingress_routes"),
+            "the ingress read its own acks: {kind:?} {sql}"
         );
     }
 
@@ -916,8 +916,7 @@ struct WatchState {
     pointers: Arc<Mutex<Vec<(String, String)>>>,
     pointer_subscriptions: Arc<Mutex<Vec<mpsc::UnboundedSender<Bytes>>>>,
     certificates: Arc<Mutex<Vec<(String, String)>>>,
-    /// Every SQL string the watcher sent, tagged `query`, `subscription`, or `transaction`.
-    statements: Arc<Mutex<Vec<(&'static str, String)>>>,
+    statements: Arc<Mutex<Vec<(Sent, String)>>>,
     transactions: Arc<Mutex<Vec<Vec<Statement>>>>,
 }
 
@@ -989,7 +988,7 @@ impl WatchState {
             .lock()
             .unwrap()
             .iter()
-            .filter(|(kind, sql)| *kind == "query" && sql.contains("FROM containers"))
+            .filter(|(kind, sql)| *kind == Sent::Query && sql.contains("FROM containers"))
             .count()
     }
 
@@ -1033,6 +1032,13 @@ impl WatchState {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Sent {
+    Query,
+    Subscription,
+    Transaction,
+}
+
 #[derive(Clone, Deserialize)]
 struct Statement {
     query: String,
@@ -1045,7 +1051,7 @@ async fn query(State(state): State<WatchState>, body: Bytes) -> Bytes {
         .statements
         .lock()
         .unwrap()
-        .push(("query", statement.query.clone()));
+        .push((Sent::Query, statement.query.clone()));
     if statement.query == "SELECT id, machine_id, container FROM containers ORDER BY id" {
         let containers = state.containers.lock().unwrap();
         events(
@@ -1087,7 +1093,7 @@ async fn subscribe(State(state): State<WatchState>, body: Bytes) -> Response {
         .statements
         .lock()
         .unwrap()
-        .push(("subscription", statement.query.clone()));
+        .push((Sent::Subscription, statement.query.clone()));
     let (columns, subscriptions, stall) =
         if statement.query == "SELECT id, machine_id, container FROM containers" {
             state.container_opens.fetch_add(1, Ordering::SeqCst);
@@ -1133,7 +1139,7 @@ async fn transact(State(state): State<WatchState>, body: Bytes) -> Bytes {
     state.statements.lock().unwrap().extend(
         statements
             .iter()
-            .map(|statement| ("transaction", statement.query.clone())),
+            .map(|statement| (Sent::Transaction, statement.query.clone())),
     );
     let results = vec![json!({"rows_affected": 1, "time": 0.0}); statements.len()];
     state.transactions.lock().unwrap().push(statements);
