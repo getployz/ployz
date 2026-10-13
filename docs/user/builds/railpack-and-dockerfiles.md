@@ -99,8 +99,9 @@ A token can't get a Dockerfile `FROM` a private image: use a public base image.
 
 To deploy a Dockerfile service, switch it to Railpack, or run it on one kind of server:
 
-1. Turn off services on the servers of the other kind. This is CLI-only for now, and applies
-   to every service on those servers:
+1. Turn off services on the servers of the other kind: on each one's page, under **Services**,
+   turn off **Run services here**. This applies to every service on that server. What already
+   runs there stays until you [drain it](../servers/manage-servers.md#change-what-a-server-does). From the CLI:
 
    ```sh
    ployz server set arm-1 --accepts-services=false
