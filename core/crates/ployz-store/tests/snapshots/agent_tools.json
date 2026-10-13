@@ -1190,6 +1190,15 @@
             "description": "File name to contents.",
             "type": "object"
           },
+          "gid": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "mode": {
+            "description": "Octal, e.g. 0440. Omit to keep.",
+            "pattern": "^0?[0-7]{1,3}$",
+            "type": "string"
+          },
           "path": {
             "description": "Absolute directory in the Service's containers, with service.",
             "pattern": "^/",
@@ -1204,6 +1213,10 @@
             "description": "Service to mount it into, with path.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
+          },
+          "uid": {
+            "minimum": 0,
+            "type": "integer"
           }
         },
         "required": [

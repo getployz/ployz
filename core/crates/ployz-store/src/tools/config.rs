@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use ployz_core::config::FileMode;
 use ployz_core::{ConfigFileName, ConfigName, ServiceName};
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -24,6 +25,14 @@ pub(crate) struct ConfigWrite {
     /// File name to contents.
     #[schemars(length(min = 1))]
     files: BTreeMap<String, String>,
+    /// Octal, e.g. 0440. Omit to keep.
+    #[serde(default)]
+    #[schemars(with = "Option<String>", pattern("^0?[0-7]{1,3}$"))]
+    mode: Option<FileMode>,
+    #[serde(default)]
+    uid: Option<u32>,
+    #[serde(default)]
+    gid: Option<u32>,
     /// Service to mount it into, with path.
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(NODE_NAME))]
@@ -112,9 +121,9 @@ impl Tool for ConfigWrite {
                 config: self.config.clone(),
                 file,
                 content,
-                mode: None,
-                uid: None,
-                gid: None,
+                mode: self.mode,
+                uid: self.uid,
+                gid: self.gid,
             }));
         }
         if let Some((service, dir)) = &mount {
