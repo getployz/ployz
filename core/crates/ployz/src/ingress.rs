@@ -98,12 +98,12 @@ pub(crate) async fn fill_slots(
         return Ok(IngressCheck::default());
     }
     let client = &*client;
-    let repairs = join_all(runs.into_iter().map(|(shown, work)| async move {
+    let settled = join_all(runs.into_iter().map(|(shown, work)| async move {
         let failure = match work {
-            None => return shown,
+            None => return Ok(shown),
             Some(Work::Create(plan)) => failure(&client.confirm(&plan, cancel, None).await),
             Some(Work::Start(container_id)) => {
-                started(
+                match started(
                     client.ensure_container(
                         &shown.machine,
                         ContainerWant::Running {
@@ -115,12 +115,31 @@ pub(crate) async fn fill_slots(
                     cancel,
                 )
                 .await
+                {
+                    Started::Settled(failure) => failure,
+                    Started::Cancelled => {
+                        return Err(format!(
+                            "{} was still starting its Ingress Proxy when the Deploy was cancelled",
+                            shown.server
+                        ));
+                    }
+                }
             }
         };
-        IngressRepair { failure, ..shown }
+        Ok(IngressRepair { failure, ..shown })
     }))
     .await;
-    Ok(IngressCheck { repairs, unchecked })
+    let mut check = IngressCheck {
+        repairs: Vec::new(),
+        unchecked,
+    };
+    for slot in settled {
+        match slot {
+            Ok(repair) => check.repairs.push(repair),
+            Err(cause) => check.unchecked.push(cause),
+        }
+    }
+    Ok(check)
 }
 
 /// The repairs [`fill_slots`] would run, by Server; runs nothing.
@@ -214,23 +233,31 @@ async fn slot_repairs(client: &mut Client) -> Result<Slots, Failure> {
     Ok(slots)
 }
 
-/// The failure of starting a stopped Ingress Proxy: the start itself, or the container
-/// not staying up through the readiness window `ployz service start` waits.
+/// How starting a stopped Ingress Proxy ended.
+#[derive(Debug, PartialEq)]
+enum Started {
+    /// The failure of the start itself, or of the container staying up through the
+    /// readiness window `ployz service start` waits; none once it stayed up.
+    Settled(Option<IngressFailure>),
+    /// The Deploy was cancelled before it knew whether the container stayed up.
+    Cancelled,
+}
+
 async fn started(
     ensured: impl Future<Output = Result<ContainerNow, RpcError>>,
     ready: impl Future<Output = Result<(), HealthWaitError<RpcError>>>,
     cancel: &CancellationToken,
-) -> Option<IngressFailure> {
+) -> Started {
     let ensured = tokio::select! {
         ensured = ensured => ensured,
-        () = cancel.cancelled() => return Some(cancelled()),
+        () = cancel.cancelled() => return Started::Cancelled,
     };
     if let Err(error) = ensured {
-        return Some(classify(crate::ui::row(&error)));
+        return Started::Settled(Some(classify(crate::ui::row(&error))));
     }
-    match ready.await {
+    Started::Settled(match ready.await {
         Ok(()) => None,
-        Err(HealthWaitError::Health(HealthFailure::Cancelled)) => Some(cancelled()),
+        Err(HealthWaitError::Health(HealthFailure::Cancelled)) => return Started::Cancelled,
         Err(HealthWaitError::Health(failure)) => Some(IngressFailure::Failed {
             cause: format!("it stopped right after starting: {failure}"),
         }),
@@ -238,13 +265,7 @@ async fn started(
             "it started, but checking that it stayed up failed: {}",
             crate::ui::row(&error)
         ))),
-    }
-}
-
-fn cancelled() -> IngressFailure {
-    IngressFailure::Failed {
-        cause: "the Deploy was cancelled while it started".into(),
-    }
+    })
 }
 
 fn failure(outcome: &Outcome) -> Option<IngressFailure> {
@@ -347,7 +368,7 @@ mod tests {
                 &CancellationToken::new()
             )
             .await,
-            None
+            Started::Settled(None)
         );
     }
 
@@ -357,7 +378,20 @@ mod tests {
         cancel.cancel();
         assert_eq!(
             started(std::future::pending(), ready(Ok(())), &cancel).await,
-            Some(cancelled())
+            Started::Cancelled
+        );
+    }
+
+    #[tokio::test]
+    async fn a_deploy_cancelled_while_a_start_proves_it_stays_up_leaves_it_unchecked() {
+        let cancel = CancellationToken::new();
+        let cancelled_wait = async {
+            cancel.cancel();
+            Err(HealthWaitError::Health(HealthFailure::Cancelled))
+        };
+        assert_eq!(
+            started(ready(Ok(absent())), cancelled_wait, &cancel).await,
+            Started::Cancelled
         );
     }
 
@@ -374,7 +408,7 @@ mod tests {
                     .into(),
             ],
         };
-        let Some(IngressFailure::PortTaken { cause }) = started(
+        let Started::Settled(Some(IngressFailure::PortTaken { cause })) = started(
             ready(Err(refused)),
             ready(Ok(())),
             &CancellationToken::new(),
@@ -395,7 +429,7 @@ mod tests {
             observation: ContainerRuntimeObservation::Exited { code: 1 },
             last_check: None,
         });
-        let Some(IngressFailure::Failed { cause }) = started(
+        let Started::Settled(Some(IngressFailure::Failed { cause })) = started(
             ready(Ok(absent())),
             ready(Err(exited)),
             &CancellationToken::new(),
