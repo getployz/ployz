@@ -57,8 +57,13 @@ const fail = Effect.fn("VolumePlacement.fail")(function* (
   organizationId: string, deploymentId: string, volumeId: string, remaining: Placement | null, message: string,
 ) {
   const { drizzle } = yield* Database;
-  yield* drizzle.update(volumePlacement).set({ staged: remaining, updatedAt: new Date() })
-    .where(and(eq(volumePlacement.volumeId, volumeId), eq(volumePlacement.deploymentId, deploymentId)));
+  const claim = and(eq(volumePlacement.volumeId, volumeId), eq(volumePlacement.deploymentId, deploymentId));
+  // Kept whole, the failed change landed or handed over: the Deploy reached the row, and a Redeploy finishes it.
+  if (remaining !== null) {
+    yield* drizzle.update(volumePlacement).set({ deploymentId: null, updatedAt: new Date() })
+      .where(and(claim, eq(volumePlacement.staged, remaining)));
+  }
+  yield* drizzle.update(volumePlacement).set({ staged: remaining, updatedAt: new Date() }).where(claim);
   yield* release(organizationId, deploymentId, true);
   const failed: PlacementAdvance = { kind: "failed", message };
   return failed;
