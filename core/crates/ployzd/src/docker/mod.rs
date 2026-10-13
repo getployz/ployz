@@ -64,6 +64,8 @@ pub const LABEL_SERVICE_ID: &str = "ployz.service.id";
 pub const LABEL_SERVICE_NAME: &str = "ployz.service.name";
 pub const LABEL_NAMESPACE: &str = "ployz.namespace";
 pub const LABEL_HOOK: &str = "ployz.service.hook";
+/// Deployment attempt that created a Service Container.
+pub const LABEL_DEPLOYMENT: &str = "ployz.deployment.id";
 pub const LABEL_HOOK_PRE_DEPLOY: &str = "pre-deploy";
 
 #[derive(Clone)]

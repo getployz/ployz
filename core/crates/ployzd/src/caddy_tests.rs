@@ -19,6 +19,8 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::Mutex;
 
+#[path = "caddy_tests/trace.rs"]
+mod trace;
 #[path = "caddy_tests/watcher.rs"]
 mod watcher;
 
