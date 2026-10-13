@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use ployz_core::MachineId;
+use ployz_core::{MachineId, RpcErrorCode};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -14,9 +14,9 @@ use super::release::place;
 use super::step::RequestKey;
 use crate::catalog::NODE_NAME;
 use crate::{
-    Admit, Cancel, DeployedNode, DeploymentSummary, DeploymentView, DeploymentsQuery,
-    EnvironmentName, EnvironmentRef, NodeOutcome, NumberedDeploymentQuery, Outcome, ProjectName,
-    Retry, RowState, Start,
+    Admit, Cancel, DeployedNode, DeploymentId, DeploymentQuery, DeploymentSummary, DeploymentView,
+    DeploymentsQuery, DeploymentsView, EnvironmentName, EnvironmentRef, EnvironmentSummary,
+    NodeOutcome, NumberedDeploymentQuery, Outcome, ProjectName, Retry, RowState, Start,
 };
 
 const REQUEST_KEY: &str = "^[A-Za-z0-9_-]{8,64}$";
@@ -29,27 +29,31 @@ fn find(
 ) -> Result<NumberedDeploymentQuery, Stop> {
     let number = match number {
         Some(number) => number,
-        None => {
-            let page = cx.one(&DeploymentsQuery {
-                environment: environment.clone(),
-                limit: Some(1),
-                cursor: None,
-            })?;
-            page.deployments
-                .first()
-                .map(|latest| latest.number)
-                .ok_or_else(|| {
-                    Stop::from(
-                        Refusal::not_found("This Environment has no Deployment yet")
-                            .with_next(Call::new("deploy", json!({}))),
-                    )
-                })?
-        }
+        None => latest(cx.one(&newest(&environment))?)?,
     };
     Ok(NumberedDeploymentQuery {
         environment,
         number,
     })
+}
+
+fn newest(environment: &EnvironmentRef) -> DeploymentsQuery {
+    DeploymentsQuery {
+        environment: environment.clone(),
+        limit: Some(1),
+        cursor: None,
+    }
+}
+
+fn latest(page: DeploymentsView) -> Result<u64, Stop> {
+    page.deployments
+        .first()
+        .map(|latest| latest.number)
+        .ok_or_else(|| {
+            Refusal::not_found("This Environment has no Deployment yet")
+                .with_next(Call::new("deploy", json!({})))
+                .into()
+        })
 }
 
 /// Why the Deployment ended as it did, when its runner said.
@@ -356,22 +360,54 @@ impl Tool for DeploymentRetry {
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
         let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
-        let query = find(cx, scope, self.deployment)?;
+        let id: DeploymentId = cx.mint(self.request_key)?;
+        let number = match self.deployment {
+            Some(number) => number,
+            // A replay must not resolve the latest again: by now that is the retry itself.
+            None => {
+                let asks = vec![
+                    store(&DeploymentQuery { id: id.clone() })?,
+                    store(&newest(&scope))?,
+                ];
+                let mut answers = cx.read(asks)?.into_iter();
+                let replay = answers.next();
+                if !matches!(&replay, Some(Err(error)) if error.code == RpcErrorCode::NotFound) {
+                    let recorded = cx.view::<DeploymentQuery>(replay)?;
+                    let environment = &recorded.environment;
+                    return Ok(retried(cx, environment, &recorded.deployment, None));
+                }
+                latest(cx.view::<DeploymentsQuery>(answers.next())?)?
+            }
+        };
+        let query = NumberedDeploymentQuery {
+            environment: scope,
+            number,
+        };
         let source = cx.one(&query)?;
         let retry = Admit::Retry(Retry {
-            id: cx.mint(self.request_key)?,
+            id,
             deployment: source.deployment.id.clone(),
         });
-        let retried = cx.write(&retry)?;
-        Ok(json!({
-            "at": at(&source.environment),
-            "deployment": retried.number,
-            "retries": source.deployment.number,
-            "status": retried.status,
-            "saved_revision": retried.saved.0,
-            "next": follow(cx.call(), retried.number),
-        }))
+        let summary = cx.write(&retry)?;
+        let retries = Some(source.deployment.number);
+        Ok(retried(cx, &source.environment, &summary, retries))
     }
+}
+
+fn retried(
+    cx: &Cx<'_>,
+    environment: &EnvironmentSummary,
+    retried: &DeploymentSummary,
+    retries: Option<u64>,
+) -> Value {
+    json!({
+        "at": at(environment),
+        "deployment": retried.number,
+        "retries": retries,
+        "status": retried.status,
+        "saved_revision": retried.saved.0,
+        "next": follow(cx.call(), retried.number),
+    })
 }
 
 #[derive(Deserialize, JsonSchema)]

@@ -1211,6 +1211,22 @@ fn a_queued_deployment_starts_and_a_cancelled_one_retries_once_per_key() {
 }
 
 #[test]
+fn a_keyed_retry_of_the_latest_replays_after_it_becomes_the_latest() {
+    let (store, _) = deploying();
+    call(&store, "deployment_cancel", json!({}), "cancel-1").ok();
+
+    let retry = json!({ "request_key": "retry-latest-1" });
+    let retried = call(&store, "deployment_retry", retry.clone(), "retry-1").ok();
+    assert_eq!(retried["deployment"], 2);
+    assert_eq!(retried["retries"], 1);
+    let again = call(&store, "deployment_retry", retry, "retry-2");
+    assert_eq!(again.writes, 0);
+    let again = again.ok();
+    assert_eq!(again["deployment"], 2, "{again}");
+    assert_eq!(again["saved_revision"], retried["saved_revision"]);
+}
+
+#[test]
 fn an_applied_deployment_has_nothing_to_retry() {
     let (store, _) = ended(
         json!({ "type": "completed" }),
