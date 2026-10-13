@@ -404,6 +404,10 @@ async fn get_answers_absent_without_a_pool_and_hangs_up_while_one_is_not_importe
         json!({"Err":"Provisioned Volume data does not exist"})
     );
 
+    fs::create_dir(test.0.join("ployz-volumes")).unwrap();
+    assert_hangs_up(&socket, "/VolumeDriver.Get", br#"{"Name":"data"}"#).await;
+
+    fs::remove_dir(test.0.join("ployz-volumes")).unwrap();
     fs::write(test.0.join("machine-pool"), "").unwrap();
     assert_hangs_up(&socket, "/VolumeDriver.Get", br#"{"Name":"data"}"#).await;
     server.abort();
