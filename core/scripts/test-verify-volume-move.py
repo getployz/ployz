@@ -62,8 +62,9 @@ CELLS = ["Writer>Mirror", "Writer>Snapshot", "Writer>Forget", "Mirror>Writer", "
 # `fault` is a daemon fault point, set on `fault_on` or on both Machines; only the side that serves it fires it.
 # `mirror` is whether the other Machine must hold a mirror before the case starts.
 # `trigger` says when `action` runs: once a fault line appears in a journal, once `zfs receive` runs on
-# `machine`, once the writer's db Container stops (the cut), or on the `nth` fault line `machine` logs after
-# that stop. A `delay-rpc` names one cell, so it never slows the pull polls of another step past Cloud's timeout.
+# `machine`, once the first run's cut has stopped every holder of the Volume on the writer, or on the `nth`
+# fault line `machine` logs after that. A `delay-rpc` names one cell, so it never slows the pull polls of another
+# step past Cloud's timeout.
 KILLS = [
     # A restart check, not a mid-effect resume: the kill lands after the take, so the resend finds the snapshot and only prunes.
     dict(name="kill-snapshot", cell="Writer>Snapshot", step="1-rounds", op="move", machine="writer",
@@ -148,10 +149,9 @@ RESTART = (f"systemctl restart {DAEMON} || {{ echo 'failed {DAEMON}'; exit 1; }}
            f"systemctl stop {PLUGIN} || {{ echo 'failed {PLUGIN}'; exit 1; }}; "
            f"for i in $(seq 60); do systemctl is-active --quiet {DAEMON} && break; sleep 1; done; "
            f"systemctl is-active --quiet {DAEMON} || {{ echo 'failed {DAEMON}'; exit 1; }}")
-# WriterToMirror logs this as it starts, before it stops the writer's db, so a stop after it on the writer's own
-# clock is this run's cut. The delay is 0, so it changes nothing the run does.
-WITNESS = "delay-rpc:SetVolumeCopy.WriterToMirror:0"
-STOP_TRIGGERS = {"stopped", "fault-after-stop"}
+# WriterToMirror logs this under the exclusive turn once every holder of the Volume stopped, naming the Volume and
+# the want's target snapshot (local_volume_copy.rs).
+CUT_LINE = "cut: holders stopped"
 # Every unit that could step or slew a lab VM's clock. setup turns NTP off, and each clean start and case end checks
 # that none of these is active.
 SYNC_UNITS = ("systemd-timesyncd", "chrony", "chronyd", "ntp", "ntpsec", "openntpd")
@@ -165,30 +165,18 @@ VOLUME = "data"
 IMAGE = "postgres:16-alpine"
 
 
-def is_witness(line):
-    return "fault: delaying switch verb" in line and "SetVolumeCopy.WriterToMirror" in line
-
-
-def witnessed_stop(witnesses, stops):
-    """The first stop after this run's first cut witness. Both are the writer's own stamps, so no conversion sits
-    between them."""
-    if not witnesses:
-        return None
-    return min((at for at in stops if at > min(witnesses)), default=None)
+def cut_of(line):
+    """The Volume and target a cut line names, or None for any other line."""
+    found = re.search(re.escape(CUT_LINE) + r" volume=(\S+) target=(\S+)", line)
+    return found and found.groups()
 
 
 def arming(case, side):
-    """Each Machine's PLOYZD_FAULT for the case: its own fault, and the cut witness on the writer when a stop is the
-    trigger. A daemon holds one fault, so a writer that already carries one cannot also witness."""
-    plan = {}
-    if case["fault"]:
-        targets = [side[case["fault_on"]]] if case.get("fault_on") else [side["writer"], side["other"]]
-        plan.update({machine: case["fault"] for machine in targets})
-    if case["trigger"] in STOP_TRIGGERS:
-        if side["writer"] in plan:
-            raise RuntimeError(f"{case['name']} arms {plan[side['writer']]} on the writer, so it cannot witness the cut")
-        plan[side["writer"]] = WITNESS
-    return plan
+    """Each Machine's PLOYZD_FAULT for the case."""
+    if not case["fault"]:
+        return {}
+    targets = [side[case["fault_on"]]] if case.get("fault_on") else [side["writer"], side["other"]]
+    return {machine: case["fault"] for machine in targets}
 
 
 class HostWatch:
@@ -457,6 +445,8 @@ class VolumeMove:
         self.case_name = None
         self.started_runs = set()
         self.busy_waits = []
+        # Run id to the snapshot its cut names, once Cloud recorded the run's epoch.
+        self.targets = {}
         # Machine name to (offset, uncertainty) in seconds: its clock reads offset ahead of the host's.
         self.clocks = {}
         # Machine name to the most its offset has measurably moved since the clean start, uncertainty included.
@@ -616,7 +606,7 @@ class VolumeMove:
         if case["trigger"] == "receiving" or not result.get("triggered"):
             return []
         margins = self.margins()
-        found = self.trigger(case, side, since, margins)
+        found = self.trigger(case, side, since, margins, result["run"])
         if not found:
             moved = ", ".join(f"{machine} {self.moved[machine]:.3f}s" for machine in self.machines)
             return [f"the trigger no longer holds once clock movement since the clean start is counted at {when}: "
@@ -701,21 +691,21 @@ class VolumeMove:
         return [target for target in targets if self.sh(target, script, check=check).returncode]
 
     def journal(self, machine, since):
-        """machine's fault lines with their raw stamps, or None when the read did not finish."""
+        """machine's fault and cut lines with their raw stamps, or None when the read did not finish."""
         result = self.sh(machine, f"set -o pipefail; journalctl -u {DAEMON} -u {PLUGIN} "
                                   f"--since @{self.window(machine, since)} --no-pager -o short-unix "
-                                  "| { grep -F 'fault:' || test $? = 1; }", check=False)
+                                  f"| {{ grep -F -e 'fault:' -e '{CUT_LINE}' || test $? = 1; }}", check=False)
         return None if result.returncode else stamped(result.stdout)
 
     def fault_lines(self, machine, since, margins):
-        """machine's fault lines, not the cut witness, as (host time, line), kept only when after since by more
-        than its margin. An unread journal gives None."""
+        """machine's fault lines as (host time, line), kept only when after since by more than its margin. An unread
+        journal gives None."""
         lines = self.journal(machine, since)
         if lines is None:
             return None
         offset = self.clocks[machine][0]
         return [(at - offset, line) for at, line in lines
-                if not is_witness(line) and at - offset - margins[machine] >= since]
+                if not cut_of(line) and at - offset - margins[machine] >= since]
 
     def fired(self, since, margins):
         found = [(at + margins[machine], f"{machine}: {line[:300]}")
@@ -723,29 +713,37 @@ class VolumeMove:
                  for at, line in lines[:1]]
         return min(found)[::-1] if found else None
 
-    def stopped_at(self, writer, since, margins):
-        """The writer's first db stop after this run's cut witness, in host time. The witness must be after since by
-        more than the writer's margin; the stop is ordered against it on the writer's own clock."""
-        lines = self.journal(writer, since)
-        result = self.sh(writer, f"set -o pipefail; /usr/bin/docker ps -aq --filter volume={shlex.quote(self.physical)} "
-                                 "--filter status=exited | xargs -r /usr/bin/docker inspect -f '{{.State.FinishedAt}}' "
-                                 "| xargs -r -n1 date +%s.%N -d", check=False)
-        if lines is None or result.returncode:
+    def target(self, run):
+        """The snapshot run's cut names: a move cuts to f-<epoch>, with the epoch the run takes once and records on its
+        row. None until it took one, or when the read fails."""
+        if run.get("id") not in self.targets:
+            query = self.psql(f"select epoch from volume_run where id = '{run.get('id')}'")
+            if query.returncode or not query.stdout.strip().isdigit():
+                return None
+            self.targets[run["id"]] = f"f-{query.stdout.strip()}"
+        return self.targets[run["id"]]
+
+    def stopped_at(self, writer, since, margins, run):
+        """When the first run's cut finished stopping this Volume's holders, in host time: the first cut line on the
+        writer naming this Volume and the target the run asked for, after since by more than the writer's margin.
+        The line is the event itself, so it does not matter who signalled the Container."""
+        target = self.target(run)
+        lines = self.journal(writer, since) if target else None
+        if lines is None:
             return None
         offset = self.clocks[writer][0]
-        witnesses = [at for at, line in lines if is_witness(line) and at - offset - margins[writer] >= since]
-        stops = [float(word) for word in result.stdout.split() if re.fullmatch(r"\d+\.\d+", word)]
-        stop = witnessed_stop(witnesses, stops)
-        return None if stop is None else stop - offset
+        return min((at - offset for at, line in lines
+                    if cut_of(line) == (self.physical, target) and at - offset - margins[writer] >= since),
+                   default=None)
 
-    def stopped(self, writer, since, margins):
-        at = self.stopped_at(writer, since, margins)
-        return (f"{writer}: db stopped at {at}", at + margins[writer]) if at is not None else None
+    def stopped(self, writer, since, margins, run):
+        at = self.stopped_at(writer, since, margins, run)
+        return (f"{writer}: cut stopped the holders at {at}", at + margins[writer]) if at is not None else None
 
-    def fault_after_stop(self, writer, machine, since, nth, margins):
+    def fault_after_stop(self, writer, machine, since, nth, margins, run):
         """Each margin counts against the trigger, so movement can delay crediting a fault but never move it past
-        the stop."""
-        stopped = self.stopped_at(writer, since, margins)
+        the cut line."""
+        stopped = self.stopped_at(writer, since, margins, run)
         if stopped is None:
             return None
         lines = self.fault_lines(machine, since, margins)
@@ -763,7 +761,7 @@ class VolumeMove:
         result = self.sh(machine, f"set +e; pgrep -f {pattern} >/dev/null; echo \"pgrep $?\"", check=False)
         return not result.returncode and result.stdout.strip() == "pgrep 0"
 
-    def trigger(self, case, side, since, margins):
+    def trigger(self, case, side, since, margins, run):
         """What the trigger saw, and the last host time it could have happened, or None."""
         machine = side[case.get("trigger_machine", case["machine"])]
         if case["trigger"] == "fault":
@@ -772,8 +770,8 @@ class VolumeMove:
             # A process has no stamp, so the poll that saw it bounds when it ran.
             return (f"{machine}: zfs receive running", self.clock()) if self.receiving(machine) else None
         if case["trigger"] == "stopped":
-            return self.stopped(side["writer"], since, margins)
-        return self.fault_after_stop(side["writer"], machine, since, case.get("nth", 1), margins)
+            return self.stopped(side["writer"], since, margins, run)
+        return self.fault_after_stop(side["writer"], machine, since, case.get("nth", 1), margins, run)
 
     def busy_work(self, machine, op):
         """What on machine could still act on a Volume: datasets with a `ployz:pull` set and zfs receive processes.
@@ -1022,7 +1020,7 @@ class VolumeMove:
         margins = {machine: error for machine, (_, error) in self.clocks.items()}
         deadline = self.clock() + limit
         while self.clock() < deadline:
-            if found := self.trigger(case, side, since, margins):
+            if found := self.trigger(case, side, since, margins, row):
                 return dict(seen=found[0], latest=found[1])
             current = next((found for found in self.runs() if found["id"] == row.get("id")), row)
             if current.get("state") in TERMINAL | {"refused"}:
@@ -1039,12 +1037,15 @@ class VolumeMove:
                  if "=" in line)
         return dict(pairs), "ployz-verify-" + hashlib.sha1(str(dashboard.parent).encode()).hexdigest()[:10]
 
+    def psql(self, sql):
+        _, postgres = self.dashboard_env()
+        return self.runner(["docker", "exec", postgres, "psql", "-U", "postgres", "-d", "ployz_cloud", "-Atc", sql],
+                           capture_output=True, text=True, timeout=60)
+
     def inngest_run(self, row):
         """Cloud records the Inngest run that claimed a request; a request no run picked up has none."""
-        _, postgres = self.dashboard_env()
         sql = f"select inngest_run_id from volume_run where id = '{row['id']}'"
-        query = self.runner(["docker", "exec", postgres, "psql", "-U", "postgres", "-d", "ployz_cloud", "-Atc", sql],
-                            capture_output=True, text=True, timeout=60)
+        query = self.psql(sql)
         if query.returncode:
             raise RuntimeError(f"psql exited {query.returncode} on {sql!r}: {(query.stderr or '').strip()[:500]}")
         return query.stdout.strip()
@@ -1237,8 +1238,7 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
                     if isinstance(error, Skipped):
                         result["skipped"] = str(error)
                     try:
-                        failed = (self.fault(None, check=False)
-                                  if case["fault"] or case["trigger"] in STOP_TRIGGERS else [])
+                        failed = self.fault(None, check=False) if case["fault"] else []
                         if failed:
                             raise RuntimeError(f"disarming the fault failed on {', '.join(failed)}")
                         result["heal"] = self.heal(self.other(self.writer()))

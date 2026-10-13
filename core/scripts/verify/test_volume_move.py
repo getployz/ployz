@@ -1560,7 +1560,7 @@ class VolumeMoveTests(unittest.TestCase):
 
                     def effect(begun, model=model, case=case, trips=trips):
                         if case["trigger"] == "stopped":
-                            model.cut("machine-1", begun + trips)
+                            model.cut("machine-1", begun + trips - 0.1)
                         else:
                             model.cut("machine-1", begun + trips - 0.5)
                             model.log_fault("machine-2", begun + trips)
@@ -1961,7 +1961,7 @@ class VolumeMoveTests(unittest.TestCase):
             self.assertTrue(result["passed"], result)
             self.assertGreaterEqual(model.kills[0], begun[0] + 6.1, (model.kills, begun))
 
-    def test_arming_puts_the_cut_witness_on_the_writer_for_every_stop_trigger(self):
+    def test_arming_puts_only_the_cases_own_fault_on_its_machines(self):
         side = dict(writer="machine-1", other="machine-2")
         for case in volume_move.CASES + volume_move.soak_cases():
             with self.subTest(case["name"]):
@@ -1969,16 +1969,9 @@ class VolumeMoveTests(unittest.TestCase):
                 if case["fault"]:
                     targets = [side[case["fault_on"]]] if case.get("fault_on") else ["machine-1", "machine-2"]
                     expect.update({machine: case["fault"] for machine in targets})
-                if case["trigger"] in ("stopped", "fault-after-stop"):
-                    self.assertNotIn("machine-1", expect)
-                    expect["machine-1"] = WITNESS
                 self.assertEqual(volume_move.arming(case, side), expect)
-        clash = dict(volume_move.CASES[0], fault="kill-daemon:SetVolumeCopy.WriterToMirror", fault_on="writer",
-                     trigger="stopped")
-        with self.assertRaises(RuntimeError):
-            volume_move.arming(clash, side)
 
-    def test_a_stop_counts_only_after_this_runs_cut_witness(self):
+    def test_a_stop_counts_only_from_this_runs_cut_line(self):
         # Codex r8 A: Docker lands a stop from earlier work after since, and no WriterToMirror ran in this case.
         def old_stop(model):
             model.stop("machine-1", model.clock() + 30)
@@ -1994,7 +1987,8 @@ class VolumeMoveTests(unittest.TestCase):
         with self.subTest("this run's cut"):
             result, model = self.run_cut()
             self.assertTrue(result["passed"], result)
-            self.assertIn(WITNESS_LINE, [text for machine, _, text in model.journal if machine == "machine-1"])
+            self.assertIn(" INFO cut: holders stopped volume=verify-production_vol-1 target=f-1",
+                          [text for machine, _, text in model.journal if machine == "machine-1"])
 
     def test_a_writer_db_that_is_not_accepting_connections_after_the_hold_skips_the_case(self):
         def stopping(model):
@@ -2007,11 +2001,11 @@ class VolumeMoveTests(unittest.TestCase):
 
     def test_clock_movement_since_the_clean_start_counts_against_every_credit(self):
         # Codex r8 B: machine-2 moves 0.2 s, inside the old 500 ppm allowance by +500, and its fault from before the
-        # stop is stamped after it.
+        # cut line is stamped after it.
         def effect(begun):
             model = self.model
             model.at(begun + 1, lambda: model.offset.update({"machine-2": 0.2}))
-            model.log_fault("machine-2", begun + 499.9, "fault: delaying switch verb")
+            model.log_fault("machine-2", begun + 500.0, "fault: delaying switch verb")
             model.cut("machine-1", begun + 500)
         result, _ = self.run_with("soak-4-final-runner-kill", lambda model: setattr(self, "model", model), 510, effect)
         self.assertFalse(result["passed"], result)
