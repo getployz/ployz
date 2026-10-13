@@ -408,7 +408,7 @@ where
                 replicated.serving_pointers().await,
             ) {
                 (Ok(containers), Ok(certificates), Ok(pointers)) => {
-                    pointers.warn_malformed(&mut warned_pointers);
+                    pointers.warn_newly_malformed(&mut warned_pointers);
                     Ok((
                         IngressProjection::derive(
                             &machine,

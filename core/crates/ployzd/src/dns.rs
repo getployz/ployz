@@ -95,7 +95,7 @@ impl ProjectionInputs {
     }
 
     fn replace_snapshot(&mut self, (observations, pointers): Snapshot) {
-        pointers.warn_malformed(&mut self.warned_pointers);
+        pointers.warn_newly_malformed(&mut self.warned_pointers);
         self.observations = observations;
         self.pointers = pointers;
     }

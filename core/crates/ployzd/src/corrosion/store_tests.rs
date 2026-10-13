@@ -556,7 +556,7 @@ async fn serving_pointers_round_trip_and_set_aside_malformed_rows() {
     let broken = QualifiedService::parse("app/broken").unwrap();
     assert_eq!(pointers.get(&broken), None);
     let mut warned = BTreeSet::new();
-    pointers.warn_malformed(&mut warned);
+    pointers.warn_newly_malformed(&mut warned);
     assert_eq!(warned, BTreeSet::from(["serving/app/broken".to_owned()]));
     task.abort();
 }
