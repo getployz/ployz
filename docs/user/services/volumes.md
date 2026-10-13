@@ -66,16 +66,24 @@ keep deploying your other services meanwhile, see
 [When a server goes down](scaling.md#when-a-server-goes-down).
 
 > [!WARNING]
-> Ployz doesn't replicate or back up volumes. A [mirror](move-a-volume.md#mirror-a-volume)
-> holds the data as of its last sync, nothing newer, and Ployz doesn't switch to it when the
-> server goes down. Keep your own copies off the server; see
+> Ployz doesn't back up volumes. A [mirror](move-a-volume.md#mirror-a-volume) holds the data as
+> of its last refresh, nothing newer, and Ployz doesn't switch to it when the server goes down.
+> Keep your own copies off your servers. See
 > [Back up a database](databases.md#back-up-a-database).
+
+## Copies
+
+A volume's copies are the places its data lives besides the server that writes it. With Ployz
+Cloud a volume can have a mirror, a read-only copy on a second server that refreshes on every
+deploy and every 15 minutes. A move leaves an old copy on the server it left. Open the volume and
+look under **Copies**. Its top line says "No copies" in amber until the volume has a mirror, and
+"Mirror behind" when the mirror is more than an hour old.
 
 ## Move a volume
 
-With Ployz Cloud, `ployz volume move data --to web-2` moves a volume and the service that
-mounts it to another server, stopping the service only for the last copy. `ployz volume mirror` keeps a read-only
-copy on a second server. See [Move a volume](move-a-volume.md).
+With Ployz Cloud, **Make primary** on a mirror or `ployz volume move data --to web-2` moves a
+volume and the service that mounts it to another server, stopping the service only for the last
+copy. See [Move a volume](move-a-volume.md).
 
 ## When a volume has no writer
 
