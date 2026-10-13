@@ -41,9 +41,10 @@ impl<'serving> ServingContainer<'serving> {
 /// Serving Shape when `pointer_for` has none.
 ///
 /// With a pointer, the pointed Containers serve alone while every pointed id is
-/// visible and one of them may serve. Otherwise the retiring Containers and the
-/// previous deploy's Containers serve beside them, so an identity routes nothing
-/// only when none of those may serve.
+/// visible and one of them may serve. Otherwise the previous deploy's Containers
+/// serve beside them, so an identity routes nothing only when none of those may
+/// serve. The retiring list never routes: it can name a generation older than
+/// the previous deploy whose retirement is already under way.
 #[must_use]
 pub fn serving_containers<'serving, 'pointer>(
     containers: impl IntoIterator<Item = &'serving ServiceContainer>,
@@ -122,14 +123,13 @@ fn pointed_or_fallback<'serving>(
     }
     let previous = pointer.previous.as_ref().map(DeploymentLogId::as_str);
     let fallback = others.into_iter().filter(|container| {
-        let observation = container.as_observation();
-        pointer.retiring.contains(&observation.container_id)
-            || previous.is_some_and(|previous| {
-                observation
-                    .labels
-                    .get(DEPLOYMENT_ID_LABEL)
-                    .is_some_and(|deploy| deploy == previous)
-            })
+        previous.is_some_and(|previous| {
+            container
+                .as_observation()
+                .labels
+                .get(DEPLOYMENT_ID_LABEL)
+                .is_some_and(|deploy| deploy == previous)
+        })
     });
     pointed.into_iter().chain(fallback).collect()
 }
@@ -691,10 +691,14 @@ mod tests {
             pointer_routes(&rows, &pointer_of("d3", &['a'], Some("d2"), &['b'])),
             vec!['b']
         );
+    }
+
+    #[test]
+    fn a_new_pointer_never_revives_a_retiring_container_older_than_previous() {
+        let rows = [('a', 1, HEALTHY), ('b', 2, HEALTHY)];
         assert_eq!(
-            pointer_routes(&rows, &pointer_of("d3", &['a'], None, &['b'])),
-            vec!['b'],
-            "the retiring list alone names B"
+            pointer_routes(&rows, &pointer_of("d3", &['c'], Some("d2"), &['a', 'b'])),
+            vec!['b']
         );
     }
 

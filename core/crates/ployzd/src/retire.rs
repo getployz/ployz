@@ -29,7 +29,6 @@ const DEBOUNCE: Duration = Duration::from_millis(200);
 const DEBOUNCE_LIMIT: Duration = Duration::from_secs(2);
 const MEMBERSHIP_SAMPLE_TIMEOUT: Duration = Duration::from_secs(1);
 const LIST_TIMEOUT: Duration = Duration::from_secs(10);
-const UNDER_TURN_READ_TIMEOUT: Duration = Duration::from_secs(1);
 
 pub(crate) trait RetireHost: Clone + Send + Sync + 'static {
     fn local_containers(&self) -> impl Future<Output = io::Result<BTreeSet<ContainerId>>> + Send;
@@ -218,13 +217,15 @@ impl Candidate {
             && (self.serving.is_empty() || !ack.containers.is_disjoint(&self.serving))
     }
 
+    /// Still retired only under the pointer deploy it was decided against; a
+    /// newer pointer is decided again next round against its own acks.
     fn still_retired_by(&self, pointers: &ServingPointers) -> bool {
         let pointed = pointers
             .iter()
             .any(|(_, pointer)| pointer.containers.contains(&self.container));
-        let retiring = pointers
-            .get(&self.service)
-            .is_some_and(|pointer| pointer.retiring.contains(&self.container));
+        let retiring = pointers.get(&self.service).is_some_and(|pointer| {
+            pointer.deploy == self.deploy && pointer.retiring.contains(&self.container)
+        });
         retiring && !pointed
     }
 }
@@ -498,7 +499,7 @@ async fn retire<H: RetireHost>(
     host.drain().await;
     host.remove(
         candidate.container,
-        still_retired_under_turn(replicated.clone(), candidate.clone()),
+        still_retired(replicated.clone(), candidate.clone()),
     )
     .await
 }
@@ -508,23 +509,6 @@ async fn still_retired(
     candidate: Candidate,
 ) -> Result<bool, CorrosionError> {
     Ok(candidate.still_retired_by(&replicated.serving_pointers().await?))
-}
-
-async fn still_retired_under_turn(
-    replicated: ReplicatedStore,
-    candidate: Candidate,
-) -> Result<bool, CorrosionError> {
-    tokio::time::timeout(
-        UNDER_TURN_READ_TIMEOUT,
-        still_retired(replicated, candidate),
-    )
-    .await
-    .unwrap_or_else(|_| {
-        Err(CorrosionError::Io(io::Error::new(
-            io::ErrorKind::TimedOut,
-            "serving pointer read under the admission turn timed out",
-        )))
-    })
 }
 
 /// Clears the stopping mark however the retire ends: a removed Container is
@@ -1750,6 +1734,103 @@ mod tests {
     async fn a_pointer_naming_the_container_during_the_last_inspect_keeps_it_while_still_retiring_it()
      {
         repoint_during_the_last_inspect_before_the_stop(true).await;
+    }
+
+    #[tokio::test]
+    async fn a_newer_pointer_whose_ack_routes_the_container_keeps_it() {
+        let cluster = FakeCluster::start();
+        let store = cluster.store();
+        let machine = RealMachine::start(&cluster).await;
+        let hold = Arc::new(tokio::sync::Barrier::new(2));
+        *machine.inspect_hold.lock().unwrap() = Some(hold.clone());
+        let mut stopping = JoinSet::new();
+        round(
+            &machine.host,
+            &store,
+            &mut Retirer::default(),
+            &mut stopping,
+        )
+        .await;
+        hold.wait().await;
+
+        cluster.write_serving_pointer(
+            &ServingPointer::key(&service()),
+            &serde_json::to_string(&ServingPointer {
+                deploy: deploy("d3"),
+                containers: vec![id("c")],
+                previous: Some(deploy("d2")),
+                retiring: vec![machine.a, machine.b],
+            })
+            .unwrap(),
+        );
+        let Ackers::Known(required) = &machine.host.ackers.ackers else {
+            unreachable!("RealMachine knows its ackers")
+        };
+        let acker = *required.keys().next().unwrap();
+        store
+            .publish_ingress_routes(
+                &acker,
+                &BTreeMap::from([(
+                    service(),
+                    IngressRouteChange::Upsert(ack("d3", &[machine.a, machine.b])),
+                )]),
+            )
+            .await
+            .unwrap();
+        hold.wait().await;
+
+        assert!(matches!(next_outcome(&mut stopping).await, Outcome::Kept));
+        assert!(!machine.stopped(machine.a), "the d3 ack routes A");
+        assert!(machine.exists(machine.a), "the d3 ack routes A");
+        assert!(machine.host.containers.stopping_ids_for_test().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_pointer_read_slower_than_a_second_still_lets_a_forced_retire_finish() {
+        use axum::{Router, extract::State, routing::post};
+        async fn slow_query(State(body): State<Arc<String>>) -> String {
+            tokio::time::sleep(Duration::from_millis(1100)).await;
+            (*body).clone()
+        }
+        let encoded = serde_json::to_string(pointers().get(&service()).unwrap()).unwrap();
+        let body = format!(
+            "{}\n{}\n{}\n",
+            serde_json::json!({"columns": ["serving_key", "value"]}),
+            serde_json::json!({"row": [1, ["serving/app/api", encoded]]}),
+            serde_json::json!({"eoq": {"time": 0.0}}),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let app = Router::new()
+            .route("/v1/queries", post(slow_query))
+            .with_state(Arc::new(body));
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let store = ReplicatedStore::new(
+            crate::corrosion::ApiClient::http1(address, &"a".repeat(64)).unwrap(),
+        );
+        let local = machine("local", 1);
+        let mut retirer = Retirer::default();
+        retirer.note_local(&pointers(), &BTreeSet::from([id("a")]));
+        retirer.first_seen.insert(
+            id("a"),
+            Instant::now() - FORCE_AFTER - Duration::from_secs(1),
+        );
+        let decided = retirer.decide(
+            retirer.candidates(&pointers()),
+            &Acks::new(),
+            &ackers(&[&local]),
+            Instant::now(),
+        );
+        let [(candidate, Verdict::Forced { .. })] = &decided[..] else {
+            panic!("expected one forced decision, got {decided:?}")
+        };
+        let host = FakeHost::new(&[id("a"), id("b")], ackers(&[&local]));
+
+        let outcome = super::retire(&host, &store, candidate).await;
+        server.abort();
+
+        assert!(matches!(outcome, Outcome::Retired));
+        assert_eq!(*host.retired.lock().unwrap(), vec![id("a")]);
     }
 
     #[tokio::test]
