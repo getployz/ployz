@@ -559,5 +559,9 @@ async fn the_transport_child_leaves_the_terminal_process_group() {
     child.read_to_string(&mut out).await.unwrap();
     let ids: Vec<&str> = out.split_whitespace().collect();
     assert_eq!(ids.len(), 2, "pid and process group: {out:?}");
-    assert_eq!(ids.first(), ids.last(), "the child leads its own process group");
+    assert_eq!(
+        ids.first(),
+        ids.last(),
+        "the child leads its own process group"
+    );
 }
