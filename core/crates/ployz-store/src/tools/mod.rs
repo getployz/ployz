@@ -81,6 +81,7 @@ pub(crate) const TOOLS: &[Entry] = &[
     entry::<copies::VolumeMirrorRemove>(),
     entry::<copies::VolumeMove>(),
     entry::<copies::VolumeRelease>(),
+    entry::<copies::VolumeRestore>(),
     entry::<removal::EnvironmentRemove>(),
     entry::<removal::ProjectRemove>(),
     entry::<server::ServerRemove>(),

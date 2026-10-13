@@ -28,9 +28,10 @@ replied. It can:
 - Restart, start or stop a service (**service restart**, **service start**, **service stop**).
 - Drain, upgrade, clean up after or remove a server (**server drain**, **server upgrade**,
   **server clean**, **server remove**).
-- Mirror a volume to another server, refresh that mirror, move a volume, release it, or remove a
-  mirror (**volume mirror**, **volume move**, **volume release**, **volume mirror remove**). To
-  refresh a mirror, ask for a **volume mirror** to the same server again.
+- Mirror a volume to another server, refresh that mirror, move a volume, release it, remove a
+  mirror, or restore a volume from a server's copy (**volume mirror**, **volume move**,
+  **volume release**, **volume mirror remove**, **volume restore**). To refresh a mirror, ask for a
+  **volume mirror** to the same server again.
 - Read a connected GitHub repository, or tell you how to connect one (**github ls**,
   **github connect**).
 

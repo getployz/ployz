@@ -2146,6 +2146,50 @@
       "read_only": false
     },
     {
+      "description": "Make server from's copy a Volume's writer when no server has one. from must hold the only copy; a mirror's copy lacks writes after its last sync. The Service stays down; deploy next. It may stop to ask a human to approve; call it alone, never alongside another tool.",
+      "gate": "cloud",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "environment": {
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "from": {
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "project": {
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "request_key": {
+            "pattern": "^[A-Za-z0-9_-]{8,64}$",
+            "type": "string"
+          },
+          "volume": {
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "wait_seconds": {
+            "maximum": 300,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "volume",
+          "from"
+        ],
+        "type": "object"
+      },
+      "name": "volume_restore",
+      "output_schema": {
+        "type": "object"
+      },
+      "read_only": false
+    },
+    {
       "description": "Delete an Environment, its Volumes and their data, once no server runs it. A server that does not answer holds its part until it answers or is removed. The result says removed or removing. It may stop to ask a human to approve; call it alone, never alongside another tool.",
       "gate": "store",
       "input_schema": {

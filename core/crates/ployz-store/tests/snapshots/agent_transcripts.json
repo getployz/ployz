@@ -6349,6 +6349,140 @@
     ]
   },
   {
+    "tool": "volume_restore",
+    "input": {
+      "from": "db-2",
+      "volume": "pgdata",
+      "wait_seconds": 120
+    },
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
+    },
+    "call_key": "call-volume_restore",
+    "turns": [
+      {
+        "step": {
+          "step": "read",
+          "asks": [
+            {
+              "at": "store",
+              "ask": {
+                "query": "volume",
+                "environment": {
+                  "project": "shop",
+                  "environment": null
+                },
+                "volume": "pgdata"
+              }
+            },
+            {
+              "at": "cloud",
+              "ask": {
+                "query": "servers",
+                "only": null
+              }
+            }
+          ]
+        },
+        "answers": [
+          {
+            "error": {
+              "code": "not_found",
+              "message": "No Volume named pgdata in Environment production",
+              "details": {
+                "valid_children": []
+              }
+            }
+          },
+          {
+            "error": {
+              "code": "unavailable",
+              "message": "no Ployz Cloud in this transcript",
+              "details": null
+            }
+          }
+        ]
+      },
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": false,
+            "refusal": {
+              "code": "not_found",
+              "message": "No Volume named pgdata in Environment production",
+              "retry": {
+                "tool": "volume_restore",
+                "input": {
+                  "from": "db-2",
+                  "volume": "pgdata",
+                  "wait_seconds": 120
+                }
+              },
+              "writes": "none",
+              "next": []
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "tool": "volume_restore",
+    "input": {
+      "from": "db-2",
+      "volume": "pgdata",
+      "wait_seconds": 120
+    },
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": {
+        "at": "local"
+      }
+    },
+    "call_key": "call-volume_restore",
+    "turns": [
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": false,
+            "refusal": {
+              "code": "not_here",
+              "message": "This needs Ployz Cloud; a local Config Store cannot answer it",
+              "retry": {
+                "tool": "volume_restore",
+                "input": {
+                  "from": "db-2",
+                  "volume": "pgdata",
+                  "wait_seconds": 120
+                }
+              },
+              "writes": "none",
+              "next": [
+                {
+                  "tool": "environment_show",
+                  "input": {}
+                }
+              ],
+              "details": {
+                "fix": {
+                  "fix": "use_cloud"
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
     "tool": "environment_remove",
     "input": {
       "environment": "preview",

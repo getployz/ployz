@@ -11,7 +11,7 @@ use ployz_core::{DeployOutcome, DeployPreview, ServiceName};
 use ployz_core::{RpcError, RpcErrorCode};
 use ployz_store::tools::{
     Act, Action, Ask, Call, CloudQuery, Fix, Gate, INSTRUCTIONS, MetricsQuery, MetricsSince,
-    MetricsSubject, Place, Refusal, STEP_BUDGET, Step, StoreAt, Timestamp, ToolResult,
+    MetricsSubject, Place, Refusal, STEP_BUDGET, Step, StoreAt, Timestamp, ToolResult, VolumeRun,
     WAIT_CAP_SECONDS, Write, Writes, catalog, example, lint, resume, start,
 };
 use ployz_store::{
@@ -247,6 +247,7 @@ fn the_catalog_has_the_agreed_tools() {
             "volume_mirror_remove",
             "volume_move",
             "volume_release",
+            "volume_restore",
             "environment_remove",
             "project_remove",
             "server_remove",
@@ -277,6 +278,7 @@ fn the_store_and_cloud_decide_who_asks_a_human() {
             ("volume_mirror_remove", Gate::Cloud),
             ("volume_move", Gate::Cloud),
             ("volume_release", Gate::Cloud),
+            ("volume_restore", Gate::Cloud),
         ])
     );
 }
@@ -548,7 +550,7 @@ fn two_organizations_create_with_the_same_key() {
 }
 
 /// The tools that need Ployz Cloud's view of the Servers.
-const CLOUD_TOOLS: [&str; 18] = [
+const CLOUD_TOOLS: [&str; 19] = [
     "server_show",
     "server_metrics",
     "service_status",
@@ -565,6 +567,7 @@ const CLOUD_TOOLS: [&str; 18] = [
     "volume_mirror_remove",
     "volume_move",
     "volume_release",
+    "volume_restore",
     "server_remove",
     "server_forget",
 ];
@@ -845,6 +848,41 @@ fn a_second_mirror_is_refused_rather_than_replacing_the_first() {
             json!({ "volume": "pgdata" })
         )]
     );
+}
+
+#[test]
+fn a_restore_names_the_server_it_restores_from() {
+    let store = with_volume();
+    let mut acted = Vec::new();
+    let mut cloud = |cloud: Cloud| match cloud {
+        Cloud::Ask(CloudQuery::Servers { .. }) => Ok(servers(&[("db-1", 'a'), ("db-2", 'b')])),
+        Cloud::Ask(query) => panic!("unexpected read: {query:?}"),
+        Cloud::Act(act) => {
+            acted.push(act.action.clone());
+            Ok(operation(&act, "done"))
+        }
+    };
+
+    drive(
+        &store,
+        in_org(),
+        "volume_restore",
+        json!({ "volume": "pgdata", "from": "db-2" }),
+        "restore-1",
+        &mut cloud,
+    )
+    .ok();
+
+    let [
+        Action::Volume {
+            run: VolumeRun::Restore { from },
+            ..
+        },
+    ] = acted.as_slice()
+    else {
+        panic!("restore acts once, as a restore: {acted:?}");
+    };
+    assert_eq!(from.name.as_str(), "db-2");
 }
 
 #[test]

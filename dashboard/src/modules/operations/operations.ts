@@ -301,12 +301,19 @@ export const OPERATIONS = {
     },
   }),
   "volume.restore": operation({
-    options: Schema.Struct({ volume: Name, environment: Name, from: Name }),
+    options: Schema.Struct({ volume: Name, environment: Name, from: Name, wait: Seconds }),
     gate: "approval",
     idempotency: "volume_restore",
     surfaces: {
-      cli: { route: VOLUME_RUNS, body: VOLUME_RUN_BODIES.restore, options: { volume: { via: ":id" }, environment: { via: "environment" }, from: { via: "from" } } },
-      agent: { absent: "No agent tool restores from a Server's copy." },
+      cli: {
+        route: VOLUME_RUNS,
+        body: VOLUME_RUN_BODIES.restore,
+        options: { volume: { via: ":id" }, environment: { via: "environment" }, from: { via: "from" }, wait: CLI_FOLLOWS },
+      },
+      agent: {
+        tool: "volume_restore",
+        options: { volume: { via: "volume" }, environment: AGENT_ENVIRONMENT, from: { via: "from" }, wait: { via: "wait_seconds" } },
+      },
       ui: STAGED,
     },
   }),
