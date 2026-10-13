@@ -34,6 +34,7 @@ export type ReadServerMetricsInput = typeof ReadServerMetricsInput.Type;
 /** The range a read covers, in Unix milliseconds. */
 export type MetricWindow = { readonly from: number; readonly to: number };
 
+/** `at` is when the server read, so a chart anchors on the same instant when it renders and when it hydrates. */
 export type MetricRead =
-  | { readonly type: "offline"; readonly window: MetricWindow }
-  | { readonly type: "history"; readonly window: MetricWindow; readonly history: MetricHistory };
+  | { readonly type: "offline"; readonly window: MetricWindow; readonly at: number }
+  | { readonly type: "history"; readonly window: MetricWindow; readonly at: number; readonly history: MetricHistory };

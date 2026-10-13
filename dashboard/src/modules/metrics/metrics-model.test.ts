@@ -26,6 +26,7 @@ const nothing = (reason: "not_sampled" | "timeout" = "not_sampled"): MetricHisto
 const read = (history: Partial<MetricHistory>): MetricRead => ({
   type: "history",
   window,
+  at: window.to,
   history: { step_nanos: ms(1000), points: { service: [] }, machines: [], unanswered: [], ...history },
 });
 const answering = (machine: string, value: MetricHistoryReply) => ({ machine_id: id(machine), value });
@@ -107,7 +108,7 @@ describe("serviceMetrics availability", () => {
   });
 
   it("is offline with empty series over the read's window", () => {
-    expect(serviceMetrics({ type: "offline", window }, names)).toEqual({
+    expect(serviceMetrics({ type: "offline", window, at: window.to }, names)).toEqual({
       availability: { type: "offline" },
       window,
       stepMs: null,

@@ -22,6 +22,7 @@ const openedAt = new Date(now - 12 * 60_000).toISOString();
 const failing = (status: number): IncidentObservation =>
   ({ region: "ams", kind: "confirm", verdict: "fail", status, failedPhase: null, error: null, remoteIp: null, at: openedAt });
 const uptime = (patch: Partial<ServiceUptime> = {}): ServiceUptime => ({
+  at: now,
   check: { id: "chk", url: "https://api.acme.dev/health", intervalSeconds: 300 },
   status: "up", uptime: 1, points: [], checks: null, latest: [], incidents: [], regions: {}, probe: null, ...patch,
 });
@@ -44,6 +45,7 @@ const answered = (machine_id: MachineId) => ({ machine_id, value: { points: samp
 const metrics = (history: Partial<MetricHistory> = {}): MetricRead => ({
   type: "history",
   window: { from: now - 3_600_000, to: now },
+  at: now,
   history: { step_nanos: nanos(60_000), points: { service: [] }, machines: [], unanswered: [], ...history },
 });
 
@@ -52,7 +54,7 @@ const store = { project: "shop", environment: "production" };
 
 const settled = () => screen.findAllByRole("heading", { level: 3, name: /^(Disk|Upgrade .*|Your servers are offline)$/ });
 
-async function open({ shown = uptime(), change, checker = true, read = metrics(), placedOn = 1, listed = "ready", until = settled }: {
+async function open({ shown = uptime(), change, checker = true, read = metrics(), placedOn = 1, listed = "ready", until = settled, receivedAt = now }: {
   shown?: ServiceUptime | null;
   change?: ServiceSettingChange;
   checker?: boolean;
@@ -60,6 +62,7 @@ async function open({ shown = uptime(), change, checker = true, read = metrics()
   placedOn?: number;
   listed?: "ready" | "loading";
   until?: () => Promise<HTMLElement[]>;
+  receivedAt?: number;
 } = {}) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
   const scope = { queryClient, sessionId: "session", userId: "user" };
@@ -68,8 +71,8 @@ async function open({ shown = uptime(), change, checker = true, read = metrics()
     state: listed,
     servers: listed === "loading" ? [] : [{ machine: { id: WEB_1 }, name: "web-1" }, { machine: { id: WEB_2 }, name: "web-2" }],
   } as never);
-  queryClient.setQueryData(["uptime", "env", "api", range.from, range.to], shown, { updatedAt: now });
-  queryClient.setQueryData(["metrics", "env", "api", range.from, range.to], read, { updatedAt: now });
+  queryClient.setQueryData(["uptime", "env", "api", range.from, range.to], shown, { updatedAt: receivedAt });
+  queryClient.setQueryData(["metrics", "env", "api", range.from, range.to], read, { updatedAt: receivedAt });
   queryClient.setQueryData(storeDeploymentsOptions("acme", scope, store).queryKey,
     { pages: [{ view: "deployments", deployments: [], next_cursor: null }], pageParams: [null] } as never);
   const set = vi.fn((_: JsonValue | null) => ({ isPersisted: { promise: Promise.resolve() } }));
@@ -101,6 +104,11 @@ const charts = () => screen.queryAllByRole("heading", { level: 3 }).map((heading
 
 it("keeps the checked URL in the status line while an incident is open", async () => {
   await open({ shown: down(502, 0.5) });
+  expect(statusLine()).toBe("Unreachable· 12m ·api.acme.dev/health→ 502");
+});
+
+it("measures an open incident from when the server read, not from when the browser received the read", async () => {
+  await open({ shown: down(502, 0.5), receivedAt: now + 5 * 60_000 });
   expect(statusLine()).toBe("Unreachable· 12m ·api.acme.dev/health→ 502");
 });
 

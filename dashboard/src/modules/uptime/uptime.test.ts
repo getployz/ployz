@@ -29,6 +29,7 @@ const probe = (region: string, at: number, ms: number | null, failed: FailureCla
   lastError: failed === null ? null : { at: new Date(at).toISOString(), cls: failed, text: failed },
 });
 const uptime = (patch: Partial<ServiceUptime>): ServiceUptime => ({
+  at: 0,
   check: { id: "chk", url: "https://acme.com/health", intervalSeconds: 300 },
   status: "up",
   uptime: null,

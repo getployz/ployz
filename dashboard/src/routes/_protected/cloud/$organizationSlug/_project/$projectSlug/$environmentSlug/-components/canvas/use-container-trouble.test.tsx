@@ -26,6 +26,7 @@ const oomAt = (atMs: number): MetricMarker => ({
 const readWith = (marker: MetricMarker): MetricRead => ({
   type: "history",
   window: { from: marker.ts / 1e6 - MINUTE, to: marker.ts / 1e6 + MINUTE },
+  at: marker.ts / 1e6,
   history: {
     step_nanos: 60 * MINUTE * 1e6, points: { service: [] }, unanswered: [],
     machines: [{ machine_id: machine as MachineId, value: { points: { service: [] }, step_nanos: 60 * MINUTE * 1e6, gaps: [], markers: [marker] } }],
