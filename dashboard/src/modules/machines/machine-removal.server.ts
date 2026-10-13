@@ -159,7 +159,6 @@ export const removeMachineActivity = Effect.fn("MachineRemoval.remove")(
   },
 );
 
-/** The leaving Server's name and the Volumes it writes, read while the Cluster still lists it. */
 export const observeLeavingServerActivity = Effect.fn("MachineRemoval.observeLeaving")(function* (input: {
   organizationId: string; machineId: string;
 }) {
@@ -169,7 +168,6 @@ export const observeLeavingServerActivity = Effect.fn("MachineRemoval.observeLea
   return { machine, writes };
 });
 
-/** Releases each warm lane the removed Server was part of; the releases run on their own and nothing here waits. */
 export const releaseLeavingLanesActivity = (input: {
   organizationId: string; machineId: string; name: string | null; writes: readonly string[];
 }) => releaseLanesOff(input.organizationId, { id: asMachineId(input.machineId), name: input.name }, input.writes);
