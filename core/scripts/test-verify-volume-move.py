@@ -465,8 +465,8 @@ class VolumeMove:
             script += f"echo {shlex.quote('PLOYZD_FAULT=' + value)} >> /etc/default/ployz; "
         script += ("systemctl restart ployz.service; systemctl stop ployz-volume-plugin.service || true; "
                    "for i in $(seq 60); do systemctl is-active --quiet ployz.service && break; sleep 1; done")
-        for target in [machine] if machine else self.machines:
-            self.sh(target, script, check=check)
+        targets = [machine] if machine else self.machines
+        return [target for target in targets if self.sh(target, script, check=check).returncode]
 
     def fired(self, since):
         for machine in self.machines:
@@ -740,11 +740,20 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
                     result = dict(case, passed=False, failures=[f"{type(error).__name__}: {error}"[:2000]])
                     if isinstance(error, Skipped):
                         result["skipped"] = str(error)
-                    if case["fault"]:
-                        self.fault(None, check=False)
-                    result["heal"] = self.heal(self.other(self.writer()))
+                    stopped = False
+                    try:
+                        armed = self.fault(None, check=False) if case["fault"] else []
+                        if armed:
+                            raise RuntimeError(f"the fault stayed armed on {', '.join(armed)}")
+                        result["heal"] = self.heal(self.other(self.writer()))
+                    except (AssertionError, RuntimeError, subprocess.TimeoutExpired) as cleanup:
+                        # A later case would run on a Machine left armed or unhealed and could pass on what this one left.
+                        result["failures"].append(f"the run stopped after this case: {cleanup}"[:2000])
+                        stopped = True
                     (self.out / f"{case['name']}.json").write_text(json.dumps(result, indent=2) + "\n")
                     results.append(result)
+                    if stopped:
+                        break
         finally:
             report = self.stop_probe()
         acks = read_acks(self.probe_log)

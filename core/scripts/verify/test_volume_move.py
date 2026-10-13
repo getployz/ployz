@@ -573,13 +573,30 @@ class VolumeMoveTests(unittest.TestCase):
         self.assertEqual(row["state"], "done")
         self.assertEqual([wait["holder"] for wait in checks.busy_waits], ["sync-a"])
 
-    def test_a_failed_disarm_after_a_case_error_still_writes_the_summary(self):
+    def test_a_failed_disarm_stops_the_run_and_still_writes_the_summary(self):
         checks, model = self.checks()
         model.disarm_fails = True
         with redirect_stdout(io.StringIO()):
             summary = checks.run_all([volume_move.KILLS[0], volume_move.CASES[0]])
-        self.assertEqual([case["name"] for case in summary["cases"]], [volume_move.KILLS[0]["name"], "clean"])
-        self.assertTrue(summary["cases"][1]["passed"], summary["cases"][1])
+        self.assertEqual([case["name"] for case in summary["cases"]], [volume_move.KILLS[0]["name"]])
+        self.assertIn("the fault stayed armed on machine-1, machine-2", summary["cases"][0]["failures"][-1])
+        self.assertFalse(summary["passed"])
+        self.assertEqual(json.loads((self.root / "out" / "summary.json").read_text())["passed"], False)
+
+    def test_a_cleanup_that_cannot_read_the_machines_stops_the_run_and_still_writes_the_summary(self):
+        checks, model = self.checks()
+        guest, disarmed = model.guest, []
+        def unreadable(machine, script):
+            if "PLOYZD_FAULT" in script and "echo" not in script:
+                disarmed.append(machine)
+            if disarmed and script.startswith("for d in"):
+                return 255, ""
+            return guest(machine, script)
+        model.guest = unreadable
+        with redirect_stdout(io.StringIO()):
+            summary = checks.run_all([volume_move.KILLS[0], volume_move.CASES[0]])
+        self.assertEqual([case["name"] for case in summary["cases"]], [volume_move.KILLS[0]["name"]])
+        self.assertIn("the run stopped after this case", summary["cases"][0]["failures"][-1])
         self.assertTrue((self.root / "out" / "summary.json").exists())
 
     def test_each_planted_defect_fails_the_run(self):
