@@ -255,12 +255,12 @@ class Cluster:
     # Faults
 
     def fault(self, machine, value):
-        script = "touch /etc/default/ployz; sed -i '/^PLOYZD_FAULT=/d' /etc/default/ployz; "
+        """Arm or disarm without a restart: the daemons read /run/ployz/fault on every check."""
         if value:
-            script += f"echo {shlex.quote('PLOYZD_FAULT=' + value)} >> /etc/default/ployz; "
-        script += ("systemctl restart ployz.service; systemctl stop ployz-volume-plugin.service || true; "
-                   "for i in $(seq 60); do systemctl is-active --quiet ployz.service && break; sleep 1; done")
-        self.sh(machine, script)
+            self.sh(machine, f"mkdir -p /run/ployz && printf '%s\\n' {shlex.quote(value)} > /run/ployz/fault.tmp "
+                             "&& mv /run/ployz/fault.tmp /run/ployz/fault")
+        else:
+            self.sh(machine, "rm -f /run/ployz/fault")
 
     def fault_lines(self, machine, since):
         output = self.sh(machine, f"journalctl -u ployz.service --since @{int(since) - 2} --no-pager -o short-unix "

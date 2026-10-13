@@ -1,7 +1,7 @@
 //! Fault injection for verify-cluster.
 
 #[cfg(feature = "verify-faults")]
-pub(crate) use enabled::{apply, check_env};
+pub(crate) use enabled::{apply, check};
 #[cfg(feature = "verify-faults")]
 pub use enabled::{kill_inside, leak_memory};
 
@@ -28,15 +28,22 @@ pub fn kill_inside(_verb: &'static str) {}
 pub fn leak_memory() {}
 
 #[cfg(not(feature = "verify-faults"))]
-pub(crate) fn check_env() -> std::io::Result<()> {
+pub(crate) fn check() -> std::io::Result<()> {
     Ok(())
 }
 
 #[cfg(feature = "verify-faults")]
 mod enabled {
-    use std::{io, str::FromStr, time::Duration};
+    use std::{
+        io,
+        path::Path,
+        str::FromStr,
+        time::{Duration, Instant},
+    };
 
-    pub(crate) const ENV: &str = "PLOYZD_FAULT";
+    /// Read on every check, so a run arms and disarms a fault without restarting a daemon.
+    const PATH: &str = "/run/ployz/fault";
+    const POLL: Duration = Duration::from_secs(1);
 
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub(crate) enum FaultPoint {
@@ -56,7 +63,7 @@ mod enabled {
 
     #[derive(Debug, thiserror::Error)]
     #[error(
-        "{ENV}={0:?} is not a fault point (delay-rpc:<verb>:<secs>, kill-daemon:<verb>, unanswered, leak-memory:<mib-per-sec>)"
+        "{0:?} is not a fault point (delay-rpc:<verb>:<secs>, kill-daemon:<verb>, unanswered, leak-memory:<mib-per-sec>)"
     )]
     pub(crate) struct FaultParseError(String);
 
@@ -92,28 +99,35 @@ mod enabled {
         }
     }
 
-    impl FaultPoint {
-        pub(crate) fn from_env() -> Result<Option<Self>, FaultParseError> {
-            match std::env::var(ENV) {
-                Ok(value) => value.parse().map(Some),
-                Err(_) => Ok(None),
-            }
+    fn read(path: &Path) -> io::Result<Option<FaultPoint>> {
+        match std::fs::read_to_string(path) {
+            Ok(text) => text
+                .trim()
+                .parse()
+                .map(Some)
+                .map_err(|error| io::Error::other(format!("{}: {error}", path.display()))),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
         }
     }
 
+    fn armed() -> Option<FaultPoint> {
+        read(Path::new(PATH)).ok().flatten()
+    }
+
     /// Refuses to start a daemon whose fault is misspelled, so a run cannot pass without it.
-    pub(crate) fn check_env() -> io::Result<()> {
-        FaultPoint::from_env().map(|_| ()).map_err(io::Error::other)
+    pub(crate) fn check() -> io::Result<()> {
+        read(Path::new(PATH)).map(|_| ())
     }
 
     pub(crate) async fn apply(verb: &'static str) {
-        let Ok(Some(fault)) = FaultPoint::from_env() else {
+        let Some(fault) = armed() else {
             return;
         };
-        match fault {
+        match &fault {
             FaultPoint::DelayRpc { verb: wanted, secs } if wanted == verb => {
                 tracing::warn!(verb, secs, "fault: delaying switch verb");
-                tokio::time::sleep(Duration::from_secs(secs)).await;
+                hold(Path::new(PATH), &fault, Some(Duration::from_secs(*secs))).await;
             }
             FaultPoint::KillDaemon { verb: wanted }
                 if wanted == verb && !super::LONG_EFFECTS.contains(&verb) =>
@@ -123,7 +137,7 @@ mod enabled {
             }
             FaultPoint::Unanswered => {
                 tracing::warn!(verb, "fault: leaving switch verb unanswered");
-                std::future::pending::<()>().await;
+                hold(Path::new(PATH), &fault, None).await;
             }
             FaultPoint::DelayRpc { .. }
             | FaultPoint::KillDaemon { .. }
@@ -131,10 +145,26 @@ mod enabled {
         }
     }
 
-    /// Starts a thread that leaks memory when `leak-memory:<mib-per-sec>` is set, so a run
+    /// Holds while `path` still names `fault`, so disarming frees the held verb and the
+    /// switch lock it may own.
+    async fn hold(path: &Path, fault: &FaultPoint, limit: Option<Duration>) {
+        let until = limit.map(|limit| Instant::now() + limit);
+        loop {
+            let left = until.map(|until| until.saturating_duration_since(Instant::now()));
+            if left == Some(Duration::ZERO) {
+                return;
+            }
+            tokio::time::sleep(left.map_or(POLL, |left| left.min(POLL))).await;
+            if read(path).ok().flatten().as_ref() != Some(fault) {
+                return;
+            }
+        }
+    }
+
+    /// Starts a thread that leaks memory when `leak-memory:<mib-per-sec>` is armed, so a run
     /// can watch the kernel kill the process at its unit's `MemoryMax`.
     pub fn leak_memory() {
-        let Ok(Some(FaultPoint::LeakMemory { mib_per_sec })) = FaultPoint::from_env() else {
+        let Some(FaultPoint::LeakMemory { mib_per_sec }) = armed() else {
             return;
         };
         tracing::warn!(mib_per_sec, "fault: leaking memory");
@@ -148,7 +178,7 @@ mod enabled {
 
     /// Aborts the process running `verb`'s effect when `kill-daemon:<verb>` names it.
     pub fn kill_inside(verb: &'static str) {
-        if let Ok(Some(FaultPoint::KillDaemon { verb: wanted })) = FaultPoint::from_env()
+        if let Some(FaultPoint::KillDaemon { verb: wanted }) = armed()
             && wanted == verb
         {
             tracing::warn!(verb, "fault: killing daemon inside the effect");
@@ -161,7 +191,7 @@ mod enabled {
         use super::*;
 
         #[test]
-        fn fault_points_parse_their_env_form() {
+        fn fault_points_parse_their_file_form() {
             for (value, fault) in [
                 (
                     "delay-rpc:SetVolumeCopy:30",
@@ -200,6 +230,39 @@ mod enabled {
             ] {
                 assert!(value.parse::<FaultPoint>().is_err(), "{value:?}");
             }
+        }
+
+        #[test]
+        fn the_file_arms_a_fault_and_names_itself_when_malformed() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("fault");
+            assert!(read(&path).unwrap().is_none());
+            std::fs::write(&path, "delay-rpc:SetVolumeCopy:30\n").unwrap();
+            assert_eq!(
+                read(&path).unwrap(),
+                Some(FaultPoint::DelayRpc {
+                    verb: "SetVolumeCopy".into(),
+                    secs: 30
+                })
+            );
+            std::fs::write(&path, "explode").unwrap();
+            let error = read(&path).unwrap_err().to_string();
+            assert!(error.contains(&path.display().to_string()), "{error}");
+        }
+
+        #[tokio::test]
+        async fn disarming_ends_a_hold() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("fault");
+            std::fs::write(&path, "unanswered").unwrap();
+            let held = tokio::spawn({
+                let path = path.clone();
+                async move { hold(&path, &FaultPoint::Unanswered, None).await }
+            });
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            assert!(!held.is_finished(), "an armed hold waits");
+            std::fs::remove_file(&path).unwrap();
+            tokio::time::timeout(3 * POLL, held).await.unwrap().unwrap();
         }
     }
 }

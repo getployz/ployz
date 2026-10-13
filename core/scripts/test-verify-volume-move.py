@@ -89,8 +89,9 @@ IMAGE = "postgres:16-alpine"
 # (1.3 s max measured), so 20 s over the baseline covers the measured spread twice over and still fails a Deploy
 # that sat out more than 20 s of a hold.
 DEPLOY_MARGIN = 20
-# Cloud already answers a SetVolumeCopy held 90 s, and 90 s is more than twice the slowest measured Deploy plus the
-# margin, so a Deploy that does not wait on the move finishes well inside the hold.
+# A SetVolumeCopy held 90 s outlasts Cloud's 10 s call, but Inngest retries the step for about 2.5 min, so the move
+# survives the hold. 90 s is more than twice the slowest measured Deploy plus the margin, so a Deploy that does not
+# wait on the move finishes well inside the hold.
 HOLD = 90
 # A takeover ends the taken row in the same transaction, so a row still open this long after it never will.
 TAKEN_LIMIT = 60
@@ -101,11 +102,12 @@ CELLS = ["Writer>Mirror", "Writer>Snapshot", "Writer>Forget", "Mirror>Writer", "
 
 # `machine` is the side the effect runs on: the Volume's writer before the case, or the other Machine.
 # `fault` is a daemon fault point, set on `fault_on` or on both Machines; only the side that serves it fires it.
+# A `delay-rpc` holds every request to its cell, and the warm rounds and the final pull send the same one, so
+# `arm="stopped"` arms it only once the writer's db stops, past the warm rounds.
 # `mirror` is whether the other Machine must hold a mirror before the case starts.
 # `trigger` says when `action` runs: once a fault line appears in a journal, once `zfs receive` runs on
 # `machine`, once the writer's db Container stops (the cut), or on the `nth` fault line `machine` logs after
-# that stop; `warm-after-cut` and `committed` read the move row's phase from Cloud's Postgres. A `delay-rpc`
-# names one cell, so it never slows the pull polls of another step past Cloud's timeout.
+# that stop; `committed` reads the move row's phase from Cloud's Postgres.
 # `expect` names what `judge` checks beyond `assess`; a side name in it means that side's Machine.
 KILLS = [
     # A restart check, not a mid-effect resume: the kill lands after the take, so the resend finds the snapshot and only prunes.
@@ -144,7 +146,7 @@ CASES = [
               expect=dict(move="yielded", requeues=1, writer="other", on_writer=True, inside_hold=True,
                           version=True))),
     held(dict(name="deploy-after-cut", cell="Mirror>Mirror", step="4-final", op="move", machine="other",
-              trigger="warm-after-cut", action="deploy", recover="rerun",
+              arm="stopped", trigger="fault-after-stop", action="deploy", recover="rerun",
               expect=dict(move="yielded", requeues=1, writer="other", on_writer=True, inside_hold=True,
                           version=True))),
     held(dict(name="deploy-committed", cell="Mirror>Writer", step="5-writer", op="move", machine="other",
@@ -156,7 +158,7 @@ CASES = [
     held(dict(name="undo-after-cut", cell="Mirror>Writer", step="5-writer", op="move", machine="other",
               trigger="committed", action="release", recover="release",
               expect=dict(move="done", requeues=0, writer="other",
-                          refusal=f"{SERVICE} is starting on {{other}}; it finishes there"))),
+                          refusal=f"{VOLUME} is starting on {{other}}; it finishes there"))),
     *KILLS,
 ]
 
@@ -181,6 +183,14 @@ def soak_cases():
                 trigger=trigger, nth=nth, action=action, recover="rerun",
                 mirror="absent" if trigger == "receiving" else None))
     return clean + faulted
+
+
+def fault_script(value):
+    """The file the daemons read a fault from, written whole so no check reads half a value."""
+    if not value:
+        return "rm -f /run/ployz/fault"
+    return (f"mkdir -p /run/ployz && printf '%s\\n' {shlex.quote(value)} > /run/ployz/fault.tmp "
+            "&& mv /run/ployz/fault.tmp /run/ployz/fault")
 
 
 def stamped(output):
@@ -647,10 +657,9 @@ class VolumeMove:
         return sorted(acked - {int(line) for line in result.stdout.split() if line.isdigit()})
 
     def fault(self, value, machine=None, check=True):
-        script = "touch /etc/default/ployz; sed -i '/^PLOYZD_FAULT=/d' /etc/default/ployz; "
-        if value:
-            script += f"echo {shlex.quote('PLOYZD_FAULT=' + value)} >> /etc/default/ployz; "
-        script += RESTART
+        """Arm or disarm without a restart: the daemons read the file on every check, and a restart would leave a
+        Machine unanswered mid-move."""
+        script = fault_script(value)
         targets = [machine] if machine else self.machines
         return [target for target in targets if self.sh(target, script, check=check).returncode]
 
@@ -797,8 +806,8 @@ class VolumeMove:
                 if arm:
                     arm()
                     armed = True
-                    # A run that started and ended while arm() restarted the daemon may have fired the fault, and
-                    # wait_trigger would credit its fault line to this op.
+                    # A run that started and ended around arm() may have fired the fault, and wait_trigger would
+                    # credit its fault line to this op.
                     if others := [row for row in self.listed_runs(op) if row["id"] not in settled]:
                         holder = others[0]
                         skip = f"a run took the Volume while the fault was armed on {op}"
@@ -908,7 +917,6 @@ class VolumeMove:
             "receiving": lambda: (f"{machine}: zfs receive running", self.clock()) if self.receiving(machine) else None,
             "stopped": lambda: self.stopped(side["writer"], since),
             "fault-after-stop": lambda: self.fault_after_stop(side["writer"], machine, since, case.get("nth", 1)),
-            "warm-after-cut": lambda: self.stopped(side["writer"], since) and self.phase(row, "warm"),
             "committed": lambda: self.phase(row, "committed"),
         }
         deadline = self.clock() + limit
@@ -1091,8 +1099,10 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
         known = {row["id"] for row in self.runs()}
         # Arm only once the Volume is idle: a cron sync crosses the same SetVolumeCopy points and would trip it.
         arm = (lambda: self.fault(case["fault"], side.get(case.get("fault_on")))) if case["fault"] else None
+        late = case.get("arm") == "stopped"
         # A trigger must be the first run's, so it starts behind the clean-start barrier on every Machine.
-        row = self.start_op(case["op"], destination, arm, clean=bool(case["trigger"])) if case["op"] else None
+        row = (self.start_op(case["op"], destination, None if late else arm, clean=bool(case["trigger"]))
+               if case["op"] else None)
         if case["trigger"]:
             started, clocks = self.since, self.calibration
         readings = [dict(at="the clean start", clocks=clocks)]
@@ -1102,6 +1112,8 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
             # Busy refusals are skips and approvals are answered, so this is a defect; a rerun would pass it.
             raise RuntimeError(f"{case['op']} was refused: {json.dumps(row.get('reply'))[:1500]}")
         result["run"] = row
+        if late and self.wait_trigger(dict(case, trigger="stopped"), row, started, side):
+            arm()
         if case["trigger"]:
             found = self.wait_trigger(case, row, started, side)
             result["triggered"] = found and found["seen"]

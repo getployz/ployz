@@ -33,6 +33,14 @@ CANCEL_UNDOS = {
 }
 
 
+def arms(script):
+    return "/run/ployz/fault.tmp" in script
+
+
+def disarms(script):
+    return script == volume_move.fault_script(None)
+
+
 class Runaway(Exception):
     """Not one of the errors run_all catches, so a loop that never sleeps fails the test instead of hanging it."""
 
@@ -77,11 +85,11 @@ MOUNT_FAILURE = ("Error: invalid Docker Provisioned Volume observation: Provisio
 class ClusterModel:
     """Two Machines and a Cloud whose moves run step by step on the test clock, with optional planted defects.
 
-    A move with no HOLD-second delay fault armed ends at once: failed with any fault armed, else done on the
-    destination. With a held case's delay fault armed it runs in a lane, step by step. A Deploy takes a warm lane (the move yields and is
+    A move with a fault armed other than a held case's delay fails at once. Any other move runs in a lane, step by
+    step, so a fault armed mid-move still holds a later step. A Deploy takes a warm lane (the move yields and is
     requeued once) and follows a committed one to B; release takes a warm lane back to A and refuses a committed
-    one. A delay fault holds a step until the fault clears, since clearing it restarts the daemon; a kill fault
-    fails the row once cleared, and onFailure releases.
+    one. A delay fault holds a step until the fault clears, which frees the step to run; a kill fault fails the row
+    once cleared, and onFailure releases.
     """
 
     def __init__(self, mutation=None):
@@ -331,8 +339,19 @@ class ClusterModel:
             self.copies[lane["destination"]] = "mirror"
         return lane
 
+    def recheck(self, machine):
+        """A pull's next check, a second on, resends its request, so a delay armed mid-pull holds that check."""
+        lane = self.lane
+        if lane is None or lane["index"] < 0 or lane["held"]:
+            return
+        name, at_machine, transition = lane["stages"][lane["index"]]
+        if (name in ("round", "final") and at_machine == machine
+                and (self.fault[machine] or "").startswith(f"delay-rpc:SetVolumeCopy.{transition}:")):
+            lane["until"] = self.clock() + 1
+            self.enter(lane)
+
     def disarm(self, machine):
-        """Clearing a fault restarts the daemon: a held step is dropped and Cloud resends it; a killed row fails."""
+        """Clearing a fault frees a held step, which then runs; a killed row fails."""
         lane = self.lane
         if lane and lane["held"] == machine:
             lane["until"], lane["held"] = min(lane["until"], self.clock() + STEP), None
@@ -373,7 +392,7 @@ class ClusterModel:
         if lane and lane["row"]["phase"] == "committed":
             if self.mutation == "release-changes-row":
                 self.row("release", "failed")
-            message = f"{volume_move.SERVICE} is starting on {lane['destination']}; it finishes there"
+            message = f"{volume_move.VOLUME} is starting on {lane['destination']}; it finishes there"
             return 1, json.dumps(dict(error=dict(code="conflict", message=message)))
         if lane:
             self.take("cancelled")
@@ -410,17 +429,14 @@ class ClusterModel:
         if args[:2] == ["volume", "move"]:
             row = self.row("move", "running")
             row["finished_at"] = self.now()
-            if any((fault or "").startswith("delay-rpc:") and fault.endswith(f":{volume_move.HOLD}")
-                   for fault in self.fault.values()) or self.lane:
-                self.queued.append((row, args[-1]))
-                self.advance()
-            elif any(self.fault.values()):
+            held = any((fault or "").startswith("delay-rpc:") and fault.endswith(f":{volume_move.HOLD}")
+                       for fault in self.fault.values())
+            if any(self.fault.values()) and not held and not self.lane:
                 self.fired = True
                 row["state"] = "failed"
             else:
-                if args[-1] != self.writer:
-                    self.mirror, self.writer = self.writer, args[-1]
-                row["state"] = "done"
+                self.queued.append((row, args[-1]))
+                self.advance()
             return 0, json.dumps(row)
         if args[:2] == ["volume", "mirror"]:
             row = self.row("mirror")
@@ -436,12 +452,11 @@ class ClusterModel:
     def guest(self, machine, script):
         if "systemctl restart ployz.service" in script:
             self.restart(machine)
-            if "PLOYZD_FAULT" not in script:
-                return 0, ""
+            return 0, ""
         if "ployz:pull" in script:
             return self.quiet(machine)
-        if "PLOYZD_FAULT" in script:
-            value = re.search(r"echo '?PLOYZD_FAULT=([^'\s]+)", script)
+        if "/run/ployz/fault" in script:
+            value = re.search(r"printf '%s\\n' '?([^'\s]+)'? >", script)
             value = value and value[1]
             if value is None and self.disarm_fails:
                 return 255, ""
@@ -453,6 +468,8 @@ class ClusterModel:
             self.fault[machine] = value
             if value is None:
                 self.disarm(machine)
+            else:
+                self.recheck(machine)
             return 0, ""
         if script == "date +%s.%N":
             self.clock.now += self.latency[machine] / 2
@@ -699,7 +716,8 @@ class VolumeMoveTests(unittest.TestCase):
                 self.assertIn(row["action"], {"none", "deploy", "release", "runner-kill", "kill-ployz", "kill-docker"})
                 self.assertIn(row["recover"], {"rerun", "release"})
                 self.assertIn(row["trigger"], {None, "fault", "receiving", "stopped", "fault-after-stop",
-                                               "warm-after-cut", "committed"})
+                                               "committed"})
+                self.assertIn(row.get("arm"), {None, "stopped"})
                 self.assertTrue(row["step"])
                 self.assertNotIn("after-record", row["fault"] or "")
         self.assertEqual(len({row["name"] for row in volume_move.CASES}), len(volume_move.CASES))
@@ -714,7 +732,7 @@ class VolumeMoveTests(unittest.TestCase):
     def test_held_cases_hold_the_lane_phase_their_action_needs_on_the_destination(self):
         cases = {row["name"]: row for row in volume_move.CASES}
         expected = {"deploy-warm": ("MirrorToMirror", "fault"), "undo-before-cut": ("MirrorToMirror", "fault"),
-                    "deploy-after-cut": ("MirrorToMirror", "warm-after-cut"),
+                    "deploy-after-cut": ("MirrorToMirror", "fault-after-stop"),
                     "deploy-committed": ("MirrorToWriter", "committed"), "undo-after-cut": ("MirrorToWriter", "committed")}
         for name, (transition, trigger) in expected.items():
             with self.subTest(name):
@@ -911,7 +929,7 @@ class VolumeMoveTests(unittest.TestCase):
                         return 1, "Cloud did not answer"
                     return cli(args)
                 def arming(machine, script):
-                    if "echo" in script and "PLOYZD_FAULT" in script and not model.holds:
+                    if arms(script) and not model.holds:
                         model.hold(5, "cron-sync")
                         reply = guest(machine, script)
                         model.clock.now += 10
@@ -941,7 +959,7 @@ class VolumeMoveTests(unittest.TestCase):
         guest = model.guest
 
         def arming(machine, script):
-            if "echo" in script and "PLOYZD_FAULT" in script and not model.holds:
+            if arms(script) and not model.holds:
                 model.hold(30, "cron-sync")
             return guest(machine, script)
         model.guest = arming
@@ -959,7 +977,7 @@ class VolumeMoveTests(unittest.TestCase):
         cli, guest, armed_ops = model.cli, model.guest, []
 
         def arming(machine, script):
-            if "echo" in script and "PLOYZD_FAULT" in script and not model.holds:
+            if arms(script) and not model.holds:
                 model.hold(5, "cron-sync")
                 reply = guest(machine, script)
                 model.clock.now += 10
@@ -1054,23 +1072,17 @@ class VolumeMoveTests(unittest.TestCase):
         self.assertFalse(summary["passed"])
         self.assertEqual(json.loads((self.root / "out" / "summary.json").read_text())["passed"], False)
 
-    def test_a_disarm_whose_daemon_never_comes_back_reports_the_machine(self):
-        stubs = self.root / "stubs"
-        stubs.mkdir()
-        for name, body in (("touch", "exit 0"), ("sed", "exit 0"), ("sleep", "exit 0"), ("seq", "echo 1 2 3"),
-                           ("systemctl", '[ "$1" = is-active ] && exec /bin/sh is-active; exit 0')):
-            (stubs / name).write_text(f"#!/bin/sh\n{body}\n")
-            (stubs / name).chmod(0o755)
+    def test_the_fault_file_holds_the_armed_value_and_disarming_removes_it(self):
         bash = shutil.which("bash")
-        def guest(args, **kwargs):
-            return subprocess.run([bash, *args[-2:]], cwd=self.root, env=dict(PATH=str(stubs)),
-                                  capture_output=True, text=True)
-        checks = volume_move.VolumeMove(self.manifest, runner=guest, out=self.root / "out")
-        for active, failed in (("exit 0", []), ("exit 3", ["machine-1"])):
-            with self.subTest(active):
-                (self.root / "is-active").write_text(active)
-                with redirect_stdout(io.StringIO()):
-                    self.assertEqual(checks.fault(None, "machine-1", check=False), failed)
+        def run(value):
+            script = volume_move.fault_script(value).replace("/run/ployz", str(self.root / "run"))
+            subprocess.run([bash, "-c", script], check=True)
+        path = self.root / "run" / "fault"
+        run("delay-rpc:SetVolumeCopy.MirrorToMirror:90")
+        self.assertEqual(path.read_text(), "delay-rpc:SetVolumeCopy.MirrorToMirror:90\n")
+        self.assertEqual(sorted(entry.name for entry in path.parent.iterdir()), ["fault"])
+        run(None)
+        self.assertFalse(path.exists())
 
     def test_a_runs_list_that_times_out_in_the_heal_stops_the_run_and_still_writes_the_summary(self):
         checks, model = self.checks("two-writers")
@@ -1093,7 +1105,7 @@ class VolumeMoveTests(unittest.TestCase):
         checks, model = self.checks()
         guest, disarmed = model.guest, []
         def unreadable(machine, script):
-            if "PLOYZD_FAULT" in script and "echo" not in script:
+            if disarms(script):
                 disarmed.append(machine)
             if disarmed and script.startswith("for d in"):
                 return 255, ""

@@ -144,7 +144,7 @@ impl Daemon {
             })
         });
         let started: Result<Self, Error> = async {
-            crate::faults::check_env()?;
+            crate::faults::check()?;
             let socket = MachineApiSocket::claim(&config.socket)?;
             let run_dir = config
                 .socket
