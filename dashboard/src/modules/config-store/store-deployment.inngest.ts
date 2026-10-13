@@ -65,13 +65,14 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Store
       await step.run("sync-uptime", () =>
         runEffect(syncUptimeChecks(event.data.organizationId, event.data.environmentId, applied ? event.data.deploymentId : undefined)));
       await step.run("forget-run", () => runEffect(forgetStoreDeploymentRun(runId)));
-      // An applied Deployment can drop a Volume or an Environment, leaving its mirrors orphaned.
-      if (applied) {
-        await step.run("delete-orphan-mirrors", () => runEffect(cleanOrphanSlots(event.data.organizationId)));
-      }
       // A closed Branch whose removal applied goes now, without its closer coming back for it.
       if (applied && ran.ran.remove) {
         await followUp(step, await step.run("sweep", () => runEffect(sweepStore(event.data.organizationId, new Date()))), runEffect);
+      }
+      // An applied Deployment can drop a Volume or an Environment, leaving its mirrors orphaned. A removed Environment
+      // holds its Volumes' names until the sweep deletes it, so the scan comes after.
+      if (applied) {
+        await step.run("delete-orphan-mirrors", () => runEffect(cleanOrphanSlots(event.data.organizationId)));
       }
       return ran;
     },
