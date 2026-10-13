@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use super::support::*;
-use ployz::deploy::preview_deploy;
+use ployz::deploy::{SlotAction, plan_slot_repairs, preview_deploy};
 use ployz_core::{
     ConfiguredHealthcheck, DependencyCondition, DeployWarning, HealthcheckCommand, HealthcheckSpec,
     PreDeployHook, ServiceDependency, ServiceName,
@@ -368,6 +368,93 @@ fn user_namespace_deploy_does_not_replace_or_remove_system_ingress() {
     .unwrap();
     assert!(!targets_container(&full, &container_id('c')));
     assert_eq!(run_names(&full), ["web"]);
+}
+
+fn ingress_container(
+    hex: char,
+    machine_hex: char,
+    image: &str,
+    runtime: ployz_core::ContainerRuntimeObservation,
+) -> ployz_core::ContainerObservation {
+    let ingress = ployz_core::caddy_service_spec(image.into(), Default::default());
+    let mut observed = container(hex, machine_hex, &ingress, &service_id('a'));
+    observed
+        .try_update(|parts| {
+            parts.namespace = Namespace::system();
+            parts.runtime = runtime;
+            parts
+                .labels
+                .insert("ployz.creation.key".into(), hex.to_string());
+        })
+        .unwrap();
+    observed
+}
+
+fn ingress_repairs(snapshot: &DeploySnapshot) -> Vec<(MachineId, SlotAction)> {
+    let ingress = ployz_core::caddy_service_spec("caddy:test".into(), Default::default());
+    let intent = DeployIntent::apply_all(Namespace::system(), [&ingress], PlanOptions::default());
+    plan_slot_repairs(&intent, snapshot)
+        .unwrap()
+        .into_iter()
+        .map(|repair| {
+            assert!(operations(repair.plan.preview()).iter().all(|operation| {
+                operation.machine_id() == repair.machine_id
+                    && matches!(operation, DeployOperation::RunContainer { .. })
+            }));
+            (repair.machine_id, repair.action)
+        })
+        .collect()
+}
+
+#[test]
+fn ingress_repair_creates_a_missing_slot_and_starts_a_stopped_one() {
+    let running = ployz_core::ContainerRuntimeObservation::Running {
+        health: ployz_core::HealthObservation::Healthy,
+    };
+    let exited = ployz_core::ContainerRuntimeObservation::Exited { code: 0 };
+    let snapshot = DeploySnapshot {
+        machines: vec![
+            machine('1', "serving"),
+            machine('2', "missing"),
+            machine('3', "stopped"),
+        ],
+        containers: vec![
+            ingress_container('a', '1', "caddy:test", running),
+            ingress_container('c', '3', "caddy:test", exited),
+        ],
+        ..Default::default()
+    };
+    assert_eq!(
+        ingress_repairs(&snapshot),
+        [
+            (machine_id('2'), SlotAction::Create),
+            (machine_id('3'), SlotAction::Start)
+        ]
+    );
+}
+
+#[test]
+fn ingress_repair_never_touches_a_drifted_or_unwanted_slot() {
+    let running = ployz_core::ContainerRuntimeObservation::Running {
+        health: ployz_core::HealthObservation::Healthy,
+    };
+    let exited = ployz_core::ContainerRuntimeObservation::Exited { code: 0 };
+    let mut no_ingress = machine('3', "no-ingress");
+    no_ingress.machine.accepts_ingress = false;
+    let snapshot = DeploySnapshot {
+        machines: vec![
+            machine('1', "older"),
+            machine('2', "older-stopped"),
+            no_ingress,
+        ],
+        containers: vec![
+            ingress_container('a', '1', "caddy:old", running.clone()),
+            ingress_container('b', '2', "caddy:old", exited),
+            ingress_container('c', '3', "caddy:test", running),
+        ],
+        ..Default::default()
+    };
+    assert_eq!(ingress_repairs(&snapshot), []);
 }
 
 #[test]

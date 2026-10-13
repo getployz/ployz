@@ -60,9 +60,10 @@ pub use build::{
 pub use builders::{BuildOrder, BuildOrderQuery, BuildOrderView, Builder, SetBuildOrder};
 pub use command::*;
 pub use deployment::{
-    Claimed, DeployedNode, DeploymentStatus, DeploymentSummary, DeploymentView, FailedAt, Failure,
-    NodeOutcome, NodeStatus, Outcome, RowPhase, RowState, RowTracker, RunEvidence, ServerProgress,
-    ServerRow, Unclaimed, UploadBase, UploadedSource,
+    Claimed, DeployedNode, DeploymentStatus, DeploymentSummary, DeploymentView, DeploymentWarning,
+    FailedAt, Failure, IngressAction, IngressFailure, IngressRepair, NodeOutcome, NodeStatus,
+    Outcome, RowPhase, RowState, RowTracker, RunEvidence, ServerProgress, ServerRow, Unclaimed,
+    UploadBase, UploadedSource,
 };
 pub use domain::{
     AddDomain, ClusterDomain, ClusterDomainStatus, DnsLookup, DnsRecord, DnsRecordKind, Domain,

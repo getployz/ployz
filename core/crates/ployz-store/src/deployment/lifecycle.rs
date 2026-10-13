@@ -114,6 +114,7 @@ pub(crate) fn admit(
         in_flight: DeploymentStatus::Queued.in_flight(),
         outcome: None,
         warnings: Vec::new(),
+        ingress: Vec::new(),
     };
     Ok(summary)
 }
@@ -351,6 +352,7 @@ pub(crate) fn retry(
         in_flight: DeploymentStatus::Queued.in_flight(),
         outcome: None,
         warnings: Vec::new(),
+        ingress: Vec::new(),
         ..stored.summary
     })
 }
@@ -558,8 +560,8 @@ pub(crate) fn claim(
         Some(sealing),
     )?;
     if stored.run.warnings != warnings {
-        stored.run.warnings = warnings.clone();
-        stored.summary.warnings = warnings;
+        stored.run.warnings = warnings;
+        stored.summary.warnings = stored.run.summary_warnings();
         save(tx, &mut stored)?;
     }
     let credentials = tx.query(
@@ -913,6 +915,14 @@ pub(crate) fn record(
                 },
                 DeploymentStatus::Failed,
             )
+        }
+        RunEvidence::Ingress(ingress) => {
+            running(&stored)?;
+            stored.run.ingress = ingress;
+            stored.summary.warnings = stored.run.summary_warnings();
+            stored.summary.ingress.clone_from(&stored.run.ingress);
+            save(tx, &mut stored)?;
+            Ok(stored.summary)
         }
         RunEvidence::UploadNeeded(services) => {
             let names = services

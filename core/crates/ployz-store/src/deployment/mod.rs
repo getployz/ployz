@@ -29,7 +29,7 @@ use ployz_core::config::{
 };
 use ployz_core::{
     ConfigFileName, ConfigName, DeployIntent, DeployOutcome, DeployPreview, DockerVolumeId,
-    ExecutionError, FailedOperation, Namespace, RpcError, ServiceAttempt, ServiceName,
+    ExecutionError, FailedOperation, MachineId, Namespace, RpcError, ServiceAttempt, ServiceName,
     ServiceRemovals, VolumeRemoval, VolumeRemovalOutcome,
 };
 
@@ -125,6 +125,10 @@ pub struct DeploymentSummary {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(optional, as = "Option<Vec<DeploymentWarning>>")]
     pub warnings: Vec<DeploymentWarning>,
+    /// Each Server's Ingress Proxy it created or started.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, as = "Option<Vec<IngressRepair>>")]
+    pub ingress: Vec<IngressRepair>,
 }
 
 /// What a Deployment ships despite. It still ships.
@@ -152,6 +156,51 @@ pub enum DeploymentWarning {
         /// The variable as the file references it, such as `api.TOKEN`.
         secret: String,
     },
+    /// A Server's Ingress Proxy the Deploy created or started isn't running.
+    IngressNotServing {
+        server: String,
+        ingress: IngressFailure,
+    },
+}
+
+/// What a Deploy did to one Server's missing or stopped Ingress Proxy. It only
+/// creates or starts one; it never replaces or removes what runs.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct IngressRepair {
+    pub machine: MachineId,
+    pub server: String,
+    pub action: IngressAction,
+    /// Why it isn't running; none once it started.
+    pub failure: Option<IngressFailure>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum IngressAction {
+    Create,
+    Start,
+}
+
+/// Why a Server's Ingress Proxy didn't start. Users read `cause`.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum IngressFailure {
+    /// Something else holds port 80 or 443. The Server starts it once they're free.
+    PortTaken {
+        cause: String,
+    },
+    Failed {
+        cause: String,
+    },
+}
+
+impl IngressFailure {
+    #[must_use]
+    pub fn cause(&self) -> &str {
+        match self {
+            Self::PortTaken { cause } | Self::Failed { cause } => cause,
+        }
+    }
 }
 
 /// The most characters a Deployment message has.
@@ -327,6 +376,9 @@ pub enum RunEvidence {
     /// Nothing executed: these uploaded Services have no upload to build from and no
     /// usable image to reuse.
     UploadNeeded(Vec<ServiceName>),
+    /// What filling the Cluster's missing or stopped Ingress Proxies did after
+    /// execution. A failure warns; it never fails the Deployment.
+    Ingress(Vec<IngressRepair>),
     /// The runner still holds the Deployment: it renews the lease and reads the
     /// status back, which says whether it was cancelled.
     Alive,
@@ -546,6 +598,23 @@ struct Run {
     nodes: BTreeMap<String, NodeStatus>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     warnings: Vec<DeploymentWarning>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    ingress: Vec<IngressRepair>,
+}
+
+impl Run {
+    /// The lowering's warnings, then one per ingress repair that left its Server's
+    /// Ingress Proxy not running.
+    fn summary_warnings(&self) -> Vec<DeploymentWarning> {
+        let failed = self.ingress.iter().filter_map(|repair| {
+            let ingress = repair.failure.clone()?;
+            Some(DeploymentWarning::IngressNotServing {
+                server: repair.server.clone(),
+                ingress,
+            })
+        });
+        self.warnings.iter().cloned().chain(failed).collect()
+    }
 }
 
 pub(crate) struct Stored {
@@ -747,7 +816,8 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
             message: row.optional_text(17)?.map(str::to_owned),
             in_flight: status.in_flight(),
             outcome: run.outcome.clone(),
-            warnings: run.warnings.clone(),
+            warnings: run.summary_warnings(),
+            ingress: run.ingress.clone(),
         },
         nodes: row.json(6, "Deployment")?,
         namespace: row.parse::<Namespace>(7, "Namespace")?,

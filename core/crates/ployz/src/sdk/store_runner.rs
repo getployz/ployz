@@ -16,6 +16,7 @@ use ployz_store::{
 };
 use serde::Deserialize as _;
 use serde_json::Value;
+use tokio_util::sync::CancellationToken;
 
 use super::build::BuildOutcome;
 use super::preparation::{BuildReceipt, PreparationInput, UploadDigest, needs_upload};
@@ -308,6 +309,7 @@ impl Run {
                 } else {
                     Vec::new()
                 };
+                self.fill_ingress(session).await;
                 self.record(RunEvidence::Executed {
                     progress,
                     outcome: Box::new(outcome),
@@ -317,6 +319,28 @@ impl Run {
             }
             // The session ended mid-execution: what ran is unknown.
             Err(_) => self.record(RunEvidence::Abandoned).await,
+        }
+    }
+
+    /// Bring back a missing or stopped Ingress Proxy on each ingress Server, and
+    /// record what that did. It never fails the Deployment: the app work stands, and
+    /// a Server whose ingress stays down shows as a warning.
+    async fn fill_ingress(&self, session: &Session) {
+        let Ok(mut client) = session.client() else {
+            return;
+        };
+        let stop = CancellationToken::new();
+        // An observation or planning failure leaves ingress as it was; the next
+        // Deploy tries again and Cloud's domain check shows it down.
+        let repairs = self
+            .renewing(crate::ingress::fill_slots(&mut client, &stop), || {
+                stop.cancel()
+            })
+            .await
+            .unwrap_or_default();
+        if !repairs.is_empty() {
+            // Losing this record loses only the ingress note, never the app's evidence.
+            let _ = self.record(RunEvidence::Ingress(repairs)).await;
         }
     }
 

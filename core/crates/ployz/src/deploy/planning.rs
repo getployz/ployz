@@ -252,6 +252,99 @@ pub fn plan_deploy(
     Ok(plan)
 }
 
+/// How a slot repair brings back one Machine's missing Global container.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SlotAction {
+    /// No container is observed there, so one is created.
+    Create,
+    /// A stopped container with the same spec is started again.
+    Start,
+}
+
+/// One Machine's plan to fill its slot of a Global Service.
+#[derive(Clone, Debug)]
+pub struct SlotRepair {
+    pub machine_id: MachineId,
+    pub action: SlotAction,
+    pub plan: DeployPlan,
+}
+
+/// Plan only the Machines where `intent` would create or start a container and
+/// nothing else: a Machine whose plan replaces, stops or removes anything is
+/// left alone, so a repair never changes a running or drifted container.
+///
+/// # Errors
+/// Returns the same admission failures as [`plan_deploy`].
+pub fn plan_slot_repairs(
+    intent: &DeployIntent,
+    snapshot: &DeploySnapshot,
+) -> Result<Vec<SlotRepair>, PlanError> {
+    let planned = plan_operations(intent, snapshot)?;
+    let mut by_machine = BTreeMap::<MachineId, Vec<DeployOperation>>::new();
+    for operation in planned.operations {
+        by_machine
+            .entry(operation.machine_id())
+            .or_default()
+            .push(operation);
+    }
+    Ok(by_machine
+        .into_iter()
+        .filter_map(|(machine_id, operations)| {
+            let action = slot_action(machine_id, &operations, snapshot)?;
+            let plan = seal_plan(
+                Planned {
+                    operations,
+                    volumes: PlannedVolumes {
+                        creates: Vec::new(),
+                        budgets: Vec::new(),
+                    },
+                    would_remove: Vec::new(),
+                    preserved_volumes: Vec::new(),
+                    prune_refusal: None,
+                    warnings: Vec::new(),
+                },
+                snapshot,
+                &intent.namespace,
+            );
+            Some(SlotRepair {
+                machine_id,
+                action,
+                plan,
+            })
+        })
+        .collect())
+}
+
+fn slot_action(
+    machine_id: MachineId,
+    operations: &[DeployOperation],
+    snapshot: &DeploySnapshot,
+) -> Option<SlotAction> {
+    let mut action = None;
+    for operation in operations {
+        match operation {
+            DeployOperation::RunContainer { spec, .. } => {
+                let stopped = snapshot.containers.iter().any(|container| {
+                    container.machine_id == machine_id && container.resolved_spec == *spec
+                });
+                action = Some(if stopped {
+                    SlotAction::Start
+                } else {
+                    SlotAction::Create
+                });
+            }
+            DeployOperation::PrepareVolumes { .. } | DeployOperation::WaitHealthy { .. } => {}
+            DeployOperation::StopContainer { .. }
+            | DeployOperation::RemoveContainer { .. }
+            | DeployOperation::ReplaceContainer(_)
+            | DeployOperation::StopHook { .. }
+            | DeployOperation::RunHook { .. }
+            | DeployOperation::RemoveVolume { .. } => return None,
+        }
+    }
+    action
+}
+
 fn seal_plan(planned: Planned, snapshot: &DeploySnapshot, namespace: &Namespace) -> DeployPlan {
     let preview = DeployPreview {
         storage: Vec::new(),

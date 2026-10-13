@@ -25,10 +25,11 @@ pub(crate) use apply::{Outcome, apply_requested};
 pub(crate) use convergence::{Converged, converge};
 pub use convergence::{DrainStop, MachineRef, Move, MoveFailure, StayReason};
 pub use pipeline::DeployError;
+pub(crate) use pipeline::plan_options;
 pub(crate) use planning::capacity::endpoint_capacity_error;
 pub use planning::{
-    DeployPlan, VolumeFate, data_loss_from_plan, plan_deploy, plan_namespace_removal,
-    preview_deploy,
+    DeployPlan, SlotAction, SlotRepair, VolumeFate, data_loss_from_plan, plan_deploy,
+    plan_namespace_removal, plan_slot_repairs, preview_deploy,
 };
 pub use ployz_core::{
     DeployEvent, DeployIntent, DeployOperation, DeployOutcome, DeployPreview, DeployWarning,

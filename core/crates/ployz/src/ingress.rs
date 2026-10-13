@@ -2,12 +2,19 @@
 
 use std::collections::BTreeSet;
 
+use futures_util::future::join_all;
 use ployz_core::{
-    ContainerObservation, EnvironmentValues, PlacementConstraint, QualifiedService,
-    RequestedServiceSpec, caddy_service_spec,
+    ContainerObservation, DeployOutcome, EnvironmentValues, FailedOperation, MachineObservation,
+    PlacementConstraint, QualifiedService, RequestedServiceSpec, caddy_service_spec,
 };
+use ployz_store::{IngressAction, IngressFailure, IngressRepair};
+use tokio_util::sync::CancellationToken;
 
-use crate::{connect::Client, deploy::Outcome, failure::Failure};
+use crate::{
+    connect::Client,
+    deploy::{DeployIntent, Outcome, SlotAction, SlotRepair},
+    failure::Failure,
+};
 
 mod caddy;
 pub use caddy::IngressImageError;
@@ -56,6 +63,91 @@ pub(crate) async fn follow_roles(
     client: &mut Client,
     image: IngressImage,
 ) -> Result<Option<Outcome>, Failure> {
+    let (_, Some(requested)) = wanted(client, image).await? else {
+        return Ok(None);
+    };
+    Ok(Some(
+        crate::deploy::apply_requested(client, &requested, false, false, "the Cluster").await?,
+    ))
+}
+
+/// Bring back the Ingress Proxy on every Server with the ingress role where it is
+/// missing or stopped, with the image it runs elsewhere. Never replaces, stops or
+/// removes one; each Server's repair runs on its own, and a failure only reports.
+///
+/// # Errors
+///
+/// Fails when observation, image discovery or planning fails.
+pub(crate) async fn fill_slots(
+    client: &mut Client,
+    cancel: &CancellationToken,
+) -> Result<Vec<IngressRepair>, Failure> {
+    let (machines, Some(requested)) = wanted(client, IngressImage::Keep).await? else {
+        return Ok(Vec::new());
+    };
+    let intent = DeployIntent::apply_one(
+        QualifiedService::system_ingress().namespace,
+        requested,
+        crate::deploy::plan_options(false, false),
+    );
+    let repairs = client.plan_slot_repairs(intent).await?;
+    let client = &*client;
+    Ok(join_all(repairs.into_iter().map(|repair| {
+        let server = machines
+            .iter()
+            .find(|entry| entry.machine.id == repair.machine_id)
+            .map_or_else(
+                || repair.machine_id.to_string(),
+                |entry| entry.machine.name.to_string(),
+            );
+        fill_slot(client, cancel, server, repair)
+    }))
+    .await)
+}
+
+async fn fill_slot(
+    client: &Client,
+    cancel: &CancellationToken,
+    server: String,
+    repair: SlotRepair,
+) -> IngressRepair {
+    let outcome = client.confirm(&repair.plan, cancel, None).await;
+    IngressRepair {
+        machine: repair.machine_id,
+        server,
+        action: match repair.action {
+            SlotAction::Create => IngressAction::Create,
+            SlotAction::Start => IngressAction::Start,
+        },
+        failure: failure(&outcome),
+    }
+}
+
+fn failure(outcome: &Outcome) -> Option<IngressFailure> {
+    let DeployOutcome::Failed { failed, .. } = outcome else {
+        return None;
+    };
+    let cause = match failed {
+        FailedOperation::Operation { error, .. } | FailedOperation::Replacement { error, .. } => {
+            error.to_string()
+        }
+    };
+    Some(
+        if cause.contains("address already in use") || cause.contains("port is already allocated") {
+            IngressFailure::PortTaken { cause }
+        } else {
+            IngressFailure::Failed { cause }
+        },
+    )
+}
+
+/// The Cluster's Machines and the Ingress Proxy spec to run with `image`, keeping its
+/// observed placement constraints. No spec when no Ingress Proxy runs and no Server holds
+/// the role.
+async fn wanted(
+    client: &mut Client,
+    image: IngressImage,
+) -> Result<(Vec<MachineObservation>, Option<RequestedServiceSpec>), Failure> {
     let machines = client.machines().await?;
     let live = client
         .live_services_from(&machines, EnvironmentValues::Redacted)
@@ -72,12 +164,10 @@ pub(crate) async fn follow_roles(
         });
     let any_role = machines.iter().any(|entry| entry.machine.accepts_ingress);
     let Some((image, constraints)) = desired(image, observed.as_ref(), any_role) else {
-        return Ok(None);
+        return Ok((machines, None));
     };
-    let requested = service_spec(image, constraints).await?;
-    Ok(Some(
-        crate::deploy::apply_requested(client, &requested, false, false, "the Cluster").await?,
-    ))
+    let spec = service_spec(image, constraints).await?;
+    Ok((machines, Some(spec)))
 }
 
 /// What the observed Ingress Proxy runs.
