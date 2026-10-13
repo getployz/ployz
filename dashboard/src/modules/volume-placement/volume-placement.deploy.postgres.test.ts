@@ -9,6 +9,7 @@ import {
   advancePlacement, type MemberInspector, refreshMirrors, releasePlacementClaims, stageOffServer, unlessPlacementRefused,
 } from "#/modules/volume-placement/volume-placement.deploy.server";
 import { listPlacements, stagePlacement, stampPlacements } from "#/modules/volume-placement/volume-placement.server";
+import { placementTargets } from "#/modules/volume-placement/volume-placement";
 import type { Member } from "#/modules/volume-run/volume-run";
 import { member } from "#/modules/volume-run/volume-run.test-fixture";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
@@ -129,6 +130,22 @@ describe("deploying a Volume placement", () => {
     expect(await placement()).toEqual(expect.objectContaining({
       mirrors: [web("web-2")], staged: { primary: web("web-2"), mirrors: [], deletes: [] }, unreached: true, deploymentId: null,
     }));
+  });
+
+  it("settles a mirror whose removal landed despite the failed run, so Add copy offers its Server again", async () => {
+    members = [member("web-1", "writer"), member("web-2", "mirror")];
+    await run(stagePlacement(organizationId, { environment, volumeId, staged: { primary: web("web-1"), mirrors: [], deletes: [] }, mirrors: [web("web-2")] }));
+    await run(stampPlacements(organizationId, [volumeId], "dep-1"));
+    const started = await run(advancePlacement(organizationId, "dep-1", null, inspect, answered));
+    if (started.kind !== "wait") throw new Error("expected a run");
+
+    await endRun(started.wait.runId, "failed", "web-2 lost the reply");
+    members = [member("web-1", "writer"), member("web-2", "empty", { pool: true })];
+    expect(await run(advancePlacement(organizationId, "dep-1", started.wait, inspect, answered))).toEqual({ kind: "failed", message: "data: web-2 lost the reply" });
+    const row = await placement();
+    expect(row).toMatchObject({ mirrors: [], staged: null, deploymentId: null });
+    if (row === undefined) throw new Error("expected the row");
+    expect(placementTargets({ id: volumeId, name: "data" }, members, row, [web("web-2")]).mirror.map((server) => server.name)).toEqual(["web-2"]);
   });
 
   it("keeps a move that failed after handover reached, and marks only the Volumes the Deploy never got to", async () => {

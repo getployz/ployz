@@ -275,7 +275,7 @@ export const changeKey = (change: PlacementChange): ChangeKey => {
   return { kind: change.kind, server: change.kind === "seed" ? change.to.id : change.server.id };
 };
 
-const sameChange = (a: ChangeKey, b: ChangeKey) => a.kind === b.kind && a.server === b.server;
+export const sameChange = (a: ChangeKey, b: ChangeKey) => a.kind === b.kind && a.server === b.server;
 
 /** The next run a Deploy makes, and the mirrors once it ends: a change's mirrors move only with its last run. */
 export type PlacementStep = { readonly run: VolumeRunInput; readonly mirrors: readonly MachineId[]; readonly change: ChangeKey };
