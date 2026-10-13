@@ -782,8 +782,44 @@ mod set_volume_copy {
     /// A running Container that mounts the Volume, as Docker lists it for the cut,
     /// beside any holder already there.
     async fn running_holder(service: &MachineService, fake: &FakeDocker) -> ContainerId {
+        let created = kept_holder(service, fake).await;
+        start_holder(fake, &created);
+        created
+    }
+
+    /// A stopped Container that mounts the Volume: Docker lists it for the cut too.
+    async fn kept_holder(service: &MachineService, fake: &FakeDocker) -> ContainerId {
         let created = stopped_container(service).await;
-        let id = created.to_string();
+        fake.volume_users
+            .lock()
+            .unwrap()
+            .entry(VOLUME.into())
+            .or_default()
+            .push(json!({"Id": created.to_string()}));
+        created
+    }
+
+    /// The cut inspects a holder, then drains it. Waiting for that inspect rather than a
+    /// fixed time keeps a slow test host from fencing the cut before its drain.
+    async fn drain_started(fake: &FakeDocker, holder: &ContainerId, seen: usize) {
+        let inspect = format!("/containers/{holder}/json");
+        loop {
+            let inspected = fake
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .skip(seen)
+                .any(|(method, path)| *method == http::Method::GET && path.ends_with(&inspect));
+            if inspected {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
+    fn start_holder(fake: &FakeDocker, id: &ContainerId) {
+        let id = id.to_string();
         for container in fake
             .named_containers
             .as_ref()
@@ -795,13 +831,6 @@ mod set_volume_copy {
         {
             container["State"] = json!({"Status":"running", "Running":true});
         }
-        fake.volume_users
-            .lock()
-            .unwrap()
-            .entry(VOLUME.into())
-            .or_default()
-            .push(json!({"Id": id}));
-        created
     }
 
     async fn stopped_container(service: &MachineService) -> ContainerId {
@@ -1386,10 +1415,11 @@ mod set_volume_copy {
         let plugin = cutting_plugin();
         let (socket, server) = plugin.serve(&data_dir);
         let service = service.with_volume_plugin(socket);
-        running_holder(&service, &fake).await;
+        let holder = running_holder(&service, &fake).await;
+        let seen = fake.requests.lock().unwrap().len();
 
         let (refused, _) = tokio::join!(set_copy(&service, at_gen(draining_cut(300), 1)), async {
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            drain_started(&fake, &holder, seen).await;
             set_copy(&service, floor(2)).await
         });
         let error = refusal(&refused);
@@ -1397,6 +1427,42 @@ mod set_volume_copy {
         assert_eq!(error.details["floor"], json!(2));
         assert_eq!(error.details["copy"], writer_root(0, None)["Ok"]);
         assert_eq!(holder_status(&fake), vec![json!("exited")]);
+        assert!(
+            !plugin
+                .routes_called()
+                .iter()
+                .any(|route| route == CUT_ROUTE)
+        );
+        server.abort();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    /// A Deploy floors the writer and then starts its Container. A cut that was already
+    /// draining an older holder must not stop that Container on its way to Stale.
+    #[tokio::test]
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    async fn a_cut_fenced_during_its_drain_leaves_a_holder_started_after_the_floor_running() {
+        let (data_dir, _store, service, fake) =
+            fake_docker_service("ployzd-copy-fenced-late").await;
+        let plugin = cutting_plugin();
+        let (socket, server) = plugin.serve(&data_dir);
+        let service = service.with_volume_plugin(socket);
+        let older = running_holder(&service, &fake).await;
+        let deployed = kept_holder(&service, &fake).await;
+        let seen = fake.requests.lock().unwrap().len();
+
+        let (refused, _) = tokio::join!(set_copy(&service, at_gen(draining_cut(300), 1)), async {
+            drain_started(&fake, &older, seen).await;
+            let floored = set_copy(&service, floor(2)).await;
+            start_holder(&fake, &deployed);
+            floored
+        });
+        let error = refusal(&refused);
+        assert_eq!(error.details["reason"], json!("stale"), "{error:?}");
+        assert_eq!(error.details["floor"], json!(2));
+        let mut status = holder_status(&fake);
+        status.sort_by_key(ToString::to_string);
+        assert_eq!(status, vec![json!("exited"), json!("running")]);
         assert!(
             !plugin
                 .routes_called()

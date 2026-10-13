@@ -284,9 +284,11 @@ impl LocalMachine {
     /// under the turn, so one started during the drain is `Busy` too, as is one the
     /// stop left running. A `Busy` cut leaves the root a writer.
     ///
-    /// The floor lock is held from the last `gen` check through `zfs`, so a floor raised
-    /// during the drain makes the cut `Stale`, and a floor read never sees the flip
-    /// half done. A `Stale` cut leaves the root a writer and its holders stopped.
+    /// `gen` is checked against the floor before each holder's drain and again under the
+    /// floor lock, held from that last check through `zfs`, so a floor raised during the
+    /// drain makes the cut `Stale` and a floor read never sees the flip half done. A
+    /// `Stale` cut leaves the root a writer; it stops no holder it reached after the
+    /// raise, since that holder may be the Container the raiser started.
     ///
     /// Detached from the RPC with the installation held, so a caller that hangs up
     /// does not abandon a half-stopped Container.
@@ -306,6 +308,9 @@ impl LocalMachine {
             let containers = local.containers.as_ref().ok_or(Error::DockerUnavailable)?;
             let stop = StopOptions::default();
             for holder in containers.volume_holder_ids(&name).await? {
+                if let Err(floor) = containers.floor_turn().await.admit(&name, r#gen).await? {
+                    return Ok(Err(CutRefusal::Stale(floor)));
+                }
                 let observed = local
                     .stop_behind_ingress(&installation, &holder, drain, &stop)
                     .await?;
