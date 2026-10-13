@@ -2214,6 +2214,20 @@ describe("volume runs", () => {
       expect(await lanes()).toMatchObject([{ id: pruning.id, kind: "delete_mirror", state: "requested" }]);
     });
 
+    it("with a sync lane: the sync yields, since its demote cuts the writer, and the Deploy floors A with nothing to request again", async () => {
+      const syncing = await requested({ kind: "sync", args: { full: false } });
+      send.mockClear();
+
+      const placed = await place();
+
+      expect(placed).toMatchObject([{ kind: "took", run: { kind: "deploy" }, resume: null }]);
+      expect(await lanes()).toMatchObject([{ id: syncing.id, state: "yielded", message: "a Deploy took this run over" }, { kind: "deploy", state: "running" }]);
+      expect(await fence(placed[0])).toEqual({ on: "fsn-1" });
+      expect(verbs).toEqual(["floor@fsn-1"]);
+      expect(await finish()).toEqual({ ended: 1, requeued: [], refused: [] });
+      expect(await lanes()).toMatchObject([{ id: syncing.id, state: "yielded" }, { kind: "deploy", state: "done" }]);
+    });
+
     it("the Deploy function floors, promotes, then runs the deployment, and ends its lane after", async () => {
       afterCut();
       const taken = await moving();

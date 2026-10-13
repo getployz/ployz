@@ -31,7 +31,8 @@ export type DeployLane =
 
 const CLOUD = (organizationId: string) => ({ userId: null, organizationId });
 
-const BESIDE_WRITER: ReadonlySet<VolumeRunKind> = new Set<VolumeRunKind>(["mirror", "sync", "seed", "delete_mirror"]);
+// A sync may demote the writer with a cut, so it is not beside the writer.
+const BESIDE_WRITER: ReadonlySet<VolumeRunKind> = new Set<VolumeRunKind>(["mirror", "seed", "delete_mirror"]);
 
 const FENCE_ROUNDS = 3;
 
