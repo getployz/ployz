@@ -19,6 +19,8 @@ export type ObservedPlacement = {
   readonly primary: MachineRef | null;
   readonly copies: readonly ObservedCopy[];
   readonly unanswered: readonly MachineRef[];
+  /** Every Server in the cluster, answering or not. */
+  readonly members: readonly MachineId[];
 };
 
 /** One snapshot a mirror holds, which a new Volume can be restored from. */
@@ -106,12 +108,13 @@ export function observePlacement(members: readonly Member[]): ObservedPlacement 
     primary: primary?.machine ?? null,
     copies,
     unanswered: members.filter((member) => !member.answered).map((member) => member.machine),
+    members: members.map((member) => member.machine.id),
   };
 }
 
-/** The copies that refresh, by Server. */
+/** The copies that refresh, by Server. A removed Server's reset deleted its mirror, so a recorded one drops out. */
 export function appliedMirrors(observed: ObservedPlacement, row: PlacementRow | null): readonly MachineId[] {
-  if (row?.mirrors != null) return row.mirrors;
+  if (row?.mirrors != null) return row.mirrors.filter((id) => observed.members.includes(id));
   return observed.copies.filter((copy) => copy.kind === "slot").map((copy) => copy.server.id);
 }
 
