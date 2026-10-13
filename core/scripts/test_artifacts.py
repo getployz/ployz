@@ -80,6 +80,14 @@ class Keys(unittest.TestCase):
 
     def test_build_options_are_part_of_the_key(self):
         self.assertNotEqual(artifacts.key("sdk", "features=eval"), artifacts.key("sdk", "features="))
+        self.assertNotEqual(artifacts.key("sdk", "features= profile=dev"), artifacts.key("sdk", "features= profile=release"))
+
+    def test_ci_looks_up_the_sdk_under_the_options_its_build_stores(self):
+        script = (artifacts.CORE / "scripts" / "build-cloud-sdk.sh").read_text()
+        stored = re.search(r'^release="(.*)"$', script, re.M)[1].replace("$features", "")
+        workflow = (artifacts.CORE.parent / ".github" / "workflows" / "cloud.yml").read_text()
+        looked_up = re.search(r'artifacts\.py lookup sdk --extra ("[^"]*"|\S+)', workflow)[1].strip('"')
+        self.assertEqual(looked_up, stored)
 
     def test_a_clean_tree_has_its_commit_key(self):
         if artifacts.git("status", "--porcelain", "--", "crates", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "scripts"):

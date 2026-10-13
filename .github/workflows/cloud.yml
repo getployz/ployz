@@ -81,7 +81,7 @@ jobs:
         id: lookup
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 ../core/scripts/artifacts.py lookup sdk --extra features= >> "$GITHUB_OUTPUT"
+        run: python3 ../core/scripts/artifacts.py lookup sdk --extra "features= profile=release" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-node@v6
         if: steps.lookup.outputs.run-id == ''
         with:
