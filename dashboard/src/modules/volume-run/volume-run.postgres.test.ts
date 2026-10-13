@@ -653,6 +653,20 @@ describe("volume runs", () => {
       expect(named("fsn-1").copy).toMatchObject({ kind: "root", readonly: false, newest: G });
       expect(containers).toEqual([{ machine: "fsn-1", id: "web-fsn-1", running: true }]);
     });
+
+    it("a release that took a warm Move before B got a copy floors B too, so the Move's late Mirror cannot land there", async () => {
+      await move();
+      const released = await release();
+      if (!released.ok) throw new Error(released.refusal.message);
+
+      const output = await execute(released.run.id, "run-2");
+
+      expect(output.error).toBeUndefined();
+      expect(verbs.slice(0, 2)).toEqual(["floor@fsn-1", "floor@fsn-2"]);
+      const gen = Number((await lanes()).find((lane) => lane.id === released.run.id)?.gen);
+      expect(sent[1]).toMatchObject({ expect: { kind: "none" }, want: { kind: "floor" }, gen });
+      expect(named("fsn-2").copy).toBeNull();
+    });
   });
 
   describe("a Server leaving", () => {
@@ -1431,7 +1445,7 @@ describe("volume runs", () => {
       const output = await execute(run.id);
 
       expect(output.result).toEqual({ runId: run.id, released: "fsn-1" });
-      expect(verbs).toEqual(["floor@fsn-1", "writer@fsn-1(kept)"]);
+      expect(verbs).toEqual(["floor@fsn-1", "floor@fsn-2", "writer@fsn-1(kept)"]);
       expect(named("fsn-1").copy).toMatchObject({ kind: "root", readonly: false });
       expect(containers).toEqual([{ machine: "fsn-1", id: "web-fsn-1", running: true }]);
     });
@@ -1456,7 +1470,7 @@ describe("volume runs", () => {
       const output = await execute(run.id);
 
       expect(output.error).toBeDefined();
-      expect(verbs).toEqual(["floor@fsn-1"]);
+      expect(verbs).toEqual(["floor@fsn-1", "floor@fsn-2"]);
       expect(named("fsn-1").copy).toMatchObject({ kind: "root", readonly: true });
       expect(await rows()).toMatchObject([{ state: "failed", message: "data on fsn-1 stopped before its first snapshot; volume move data --to <another server> again" }]);
     });
