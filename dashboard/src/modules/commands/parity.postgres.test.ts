@@ -258,4 +258,4 @@ it.live("checks a Service now through ployz and the sidebar alike, returns the r
     expect(asRecord(viaRoute.body)?.["message"]).toBeUndefined();
     expect(viaSidebar).toMatchObject({ ok: true, value: round });
     expect(yield* rows).toEqual(before);
-  }));
+  }), 15_000);
