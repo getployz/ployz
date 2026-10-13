@@ -130,7 +130,7 @@ describe("volume runs", () => {
   let slotIds: number;
   let verbs: string[];
   let failNext: Map<string, Fault>;
-  let beforeSet: Map<string, () => unknown>;
+  let beforeSet: Map<string, () => void | Promise<void>>;
   let sent: SetVolumeCopyRequest[];
   let held: Map<string, () => CopyRefusal | null>;
   let storeVolumes: Array<{ id: string; name: string; storage: { kind: "provisioned"; maximumBytes: number } | { kind: "docker" }; change?: "delete" }>;
@@ -763,8 +763,13 @@ describe("volume runs", () => {
 
     it("a run that loses the commit stops like a Stale run, and never tells B to start", async () => {
       const run = await requested({ kind: "move", args: { to: "fsn-2" } });
-      beforeSet.set("pull@fsn-2", () => beforeSet.set("pull@fsn-2", () => beforeSet.set("pull@fsn-2", () => beforeSet.set("pull@fsn-2", () =>
-        harness.pool.query("update volume_run set inngest_run_id = 'run-taker' where id = $1", [run.id])))));
+      const takeOverOnPull = (pulls: number): void => {
+        beforeSet.set("pull@fsn-2", async () => {
+          if (pulls > 1) return takeOverOnPull(pulls - 1);
+          await harness.pool.query("update volume_run set inngest_run_id = 'run-taker' where id = $1", [run.id]);
+        });
+      };
+      takeOverOnPull(4);
 
       const output = await execute(run.id);
 
@@ -1421,7 +1426,7 @@ describe("volume runs", () => {
     });
 
     it("a warm Move cancelled mid final pull releases back to A, and the late pull leaves one writable root", async () => {
-      beforeSet.set("cut@fsn-1", () => failNext.set("pull@fsn-2", "held"));
+      beforeSet.set("cut@fsn-1", () => { failNext.set("pull@fsn-2", "held"); });
       const move = await requested({ kind: "move", args: { to: "fsn-2" } });
       await execute(move.id, "run-1");
       expect(sent.at(-1)).toMatchObject({ want: { kind: "mirror", target: "f-1" } });

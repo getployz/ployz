@@ -117,21 +117,19 @@ const fail = ({ step, runEffect, run, runId }: RunSteps, id: string, message: st
     throw new NonRetriableError(message);
   });
 
-const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error));
-
 /** A newer run fenced this one: it already ended its row if it still owned it, so it touches nothing more. */
 class Stale extends NonRetriableError {}
 
 /** A failure past the rounds ends the run and releases what it left in flight; a Stale run has nothing left to release. */
-const release = ({ step, runEffect, run, runId }: RunSteps, id: string, error: unknown): Promise<never> => {
+const release = ({ step, runEffect, run, runId }: RunSteps, id: string, error: Error): Promise<never> => {
   if (error instanceof Stale) return Promise.reject(error);
-  return step.run(id, () => runEffect(failAndRelease(run, runId, messageOf(error)))).then(() => {
-    throw new NonRetriableError(messageOf(error));
+  return step.run(id, () => runEffect(failAndRelease(run, runId, error.message))).then(() => {
+    throw new NonRetriableError(error.message);
   });
 };
 
-const stopped = (steps: RunSteps, id: string, error: unknown): Promise<never> =>
-  error instanceof Stale ? Promise.reject(error) : fail(steps, id, messageOf(error));
+const stopped = (steps: RunSteps, id: string, error: Error): Promise<never> =>
+  error instanceof Stale ? Promise.reject(error) : fail(steps, id, error.message);
 
 const finish = ({ step, runEffect, run, runId }: RunSteps, id: string, message: string | null = null) =>
   step.run(id, () => runEffect(endRun(run, runId, "done", message)));
@@ -232,7 +230,7 @@ async function mirrorVolume(steps: RunSteps, phase: PhaseOf<"mirror"> | PhaseOf<
     await finish(steps, "05-finish");
     return { runId: run.id, rounds };
   } catch (error) {
-    return stopped(steps, "05-failed", error);
+    return stopped(steps, "05-failed", error instanceof Error ? error : new Error(String(error)));
   }
 }
 
@@ -247,7 +245,7 @@ async function deleteMirror(steps: RunSteps, phase: PhaseOf<"delete_mirror">) {
       await mustSet(steps, "04-forget", writer.machine, { kind: "writer", epoch: epochOf(writer) }, { kind: "forget" }, `${writer.machine.name} is still busy with ${run.volumeName}`);
     }
   } catch (error) {
-    return stopped(steps, "05-failed", error);
+    return stopped(steps, "05-failed", error instanceof Error ? error : new Error(String(error)));
   }
   await finish(steps, "05-finish");
   return { runId: run.id, destroyed: phase.destroy.map((slot) => slot.machine.name) };
@@ -265,7 +263,7 @@ async function restoreVolume(steps: RunSteps, phase: PhaseOf<"restore">, epoch: 
   try {
     await mustSet(steps, "03-restore", from, expectOf(copy), { kind: "writer", at: at.guid, epoch: keep, start: null }, `${from.name} is still busy with ${run.volumeName}`);
   } catch (error) {
-    return stopped(steps, "03-failed", error);
+    return stopped(steps, "03-failed", error instanceof Error ? error : new Error(String(error)));
   }
   const lostAfter = phase.lostAfter;
   const message = lostAfter === null
@@ -287,7 +285,7 @@ async function demoteVolume(steps: RunSteps, phase: PhaseOf<"demote">, epoch: nu
       drain: DRAIN_MS,
     }, `${old.name} is still stopping ${run.volumeName}'s Service`);
   } catch (error) {
-    return stopped(steps, "03-failed", error);
+    return stopped(steps, "03-failed", error instanceof Error ? error : new Error(String(error)));
   }
   const message = `${copyName(run.volumeName, old.name)} was older than ${copyName(run.volumeName, phase.writer.machine.name)} and is now read-only; `
     + `writes to it since ${phase.writer.machine.name} took over are lost. Run this again`;
@@ -362,7 +360,7 @@ async function releaseVolume(steps: RunSteps, phase: PhaseOf<"release">, epoch: 
     await finish(steps, "06-finish");
     return { runId: run.id, released: A.name };
   } catch (error) {
-    return stopped(steps, "06-failed", error);
+    return stopped(steps, "06-failed", error instanceof Error ? error : new Error(String(error)));
   }
 }
 
@@ -385,7 +383,7 @@ async function finishRelease(steps: RunSteps, members: readonly Member[], curren
     const others = members.filter((member) => member !== B).map((member) => member.machine);
     await step.run("04-remove", () => runEffect(removeKept(run, runId, others)));
   } catch (error) {
-    return stopped(steps, "05-failed", error);
+    return stopped(steps, "05-failed", error instanceof Error ? error : new Error(String(error)));
   }
   await finish(steps, "05-finish");
   return { runId: run.id, moved: B.machine.name };
@@ -425,7 +423,7 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, epoch: number
     try {
       ({ copy } = await runRounds(steps, { A: phase.writer, B, copy, epoch }));
     } catch (error) {
-      return stopped(steps, "03-failed", error);
+      return stopped(steps, "03-failed", error instanceof Error ? error : new Error(String(error)));
     }
   }
 
@@ -454,7 +452,7 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, epoch: number
     if (!started.ok) throw new NonRetriableError(started.message);
     await step.run("08-remove", () => runEffect(removeKept(run, runId, [A])));
   } catch (error) {
-    return release(steps, "09-failed", error);
+    return release(steps, "09-failed", error instanceof Error ? error : new Error(String(error)));
   }
   await finish(steps, "09-finish");
   return { runId: run.id, moved: B.name };

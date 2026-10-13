@@ -215,6 +215,9 @@ When a server's release can't serve a feature, the feature names that server:
   ```text
   Volume move is not in Ployz 0.2.4 on web-2 yet.
   ```
+  A move, mirror, sync or release also needs every server that holds or receives the volume to
+  run a Ployz new enough to refuse a request from an older run, and names the one to upgrade:
+  "Volume move needs a newer Ployz on web-1".
 - **Drain** in Ployz Cloud names the servers to upgrade before it changes anything:
   "Drains need a newer Ployz on web-1".
 - **Upgrade** off Ployz 0.2.4 that stops partway while the old Ployz keeps running looks like it's
