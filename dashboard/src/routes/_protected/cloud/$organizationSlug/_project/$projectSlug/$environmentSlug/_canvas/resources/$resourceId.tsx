@@ -10,7 +10,6 @@ import {
 } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/CanvasInspectorRouteStates";
 import { ENVIRONMENT_ROUTE_FROM } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/environment-route-paths";
 import { StoreConfigDrawer } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/resources/$resourceId/-components/StoreConfigDrawer";
-import { StoreMirrorDrawer } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/resources/$resourceId/-components/StoreMirrorDrawer";
 import { StoreVolumeDrawer } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/resources/$resourceId/-components/StoreVolumeDrawer";
 import { volumeSearchSchema } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/resources/$resourceId/-components/volume-pages";
 
@@ -35,5 +34,5 @@ function RouteComponent() {
   const config = requireView(configs).configs.find((candidate) => candidate.id === params.resourceId);
   if (config) return <StoreConfigDrawer params={params} config={config} />;
   const mirror = parseMirrorResourceId(params.resourceId);
-  return mirror ? <StoreMirrorDrawer params={params} volumeId={mirror.volumeId} server={mirror.server} /> : <StoreVolumeDrawer params={params} />;
+  return mirror ? <StoreVolumeDrawer params={params} volumeId={mirror.volumeId} copy={mirror.server} /> : <StoreVolumeDrawer params={params} />;
 }

@@ -9,7 +9,8 @@ import { CloudStore } from "#/modules/config-store/store-sdk.server";
 import { GithubApi } from "#/modules/github/github-observation.api";
 import { InngestClient } from "#/modules/inngest/client";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
-import { discardPlacement, listPlacements, stagePlacement, stampPlacements } from "#/modules/volume-placement/volume-placement.server";
+import { deleteOldCopy, discardPlacement, listPlacements, requestUnclaimedRun, stagePlacement, stampPlacements } from "#/modules/volume-placement/volume-placement.server";
+import { member } from "#/modules/volume-run/volume-run.test-fixture";
 import { AppConfig } from "#/server/config.server";
 import type { Database } from "#/server/database.server";
 import type { SecretEncryption } from "#/utils/encrypted-secret.server";
@@ -126,5 +127,60 @@ describe("volume placement", () => {
     expect(await stage("web-3")).toMatchObject(unchecked);
     expect(await run(discardPlacement(organizationId, null, volumeId, environment))).toMatchObject(unchecked);
     expect(await run(listPlacements(organizationId))).toMatchObject([{ staged: { primary: web("web-2") }, deploymentId: "dep-1" }]);
+  });
+
+  it("deletes only an old copy at once, never the writer or a mirror", async () => {
+    await stage("web-1", ["web-2", "web-4"]);
+    const members = [member("web-1", "writer"), member("web-2", "mirror"), member("web-3", "mirror"), member("web-4", "mirror")];
+    const deleting = (server: string) => run(deleteOldCopy(organizationId, null, { volumeId, environment, server }, () => Effect.succeed(members)));
+    for (const server of ["web-1", "web-2", "web-4"]) {
+      expect(await deleting(server)).toEqual({ ok: false, refusal: { message: "Not an old copy" } });
+    }
+    await expect(deleting("web-3")).rejects.toThrow("no Cluster");
+    expect((await harness.pool.query("select count(*)::int as runs from volume_run")).rows).toEqual([{ runs: 0 }]);
+  });
+
+  it("refuses deleting an old copy staged back onto the Volume between the check and the run", async () => {
+    await stage("web-1", ["web-2"]);
+    between = { query: "volumes", run: async () => { await stage("web-1", ["web-2", "web-3"]); } };
+    const deleting = { volumeId, environment, kind: "delete_mirror", args: { slot: "web-3", confirmed_name: null } } as const;
+    expect(await run(requestUnclaimedRun({ userId: null, organizationId }, deleting, web("web-3"))))
+      .toEqual({ ok: false, refusal: { message: "Not an old copy" } });
+    expect(between).toBeNull();
+    expect((await harness.pool.query("select count(*)::int as runs from volume_run")).rows).toEqual([{ runs: 0 }]);
+  });
+
+  it("refuses deleting an old copy while a Deploy holds the Volume", async () => {
+    await stage("web-1", ["web-2"]);
+    await run(stampPlacements(organizationId, "env-1", "dep-1"));
+    const members = [member("web-1", "writer"), member("web-2", "mirror"), member("web-3", "mirror")];
+    expect(await run(deleteOldCopy(organizationId, null, { volumeId, environment, server: "web-3" }, () => Effect.succeed(members))))
+      .toEqual({ ok: false, refusal: { message: "A Deploy is moving this Volume. Wait for it to finish." } });
+  });
+
+  it("says a Deploy is moving the Volume before it says a copy the Deploy takes is not old", async () => {
+    await stage("web-3", ["web-2"]);
+    await run(stampPlacements(organizationId, "env-1", "dep-1"));
+    const members = [member("web-1", "writer"), member("web-2", "mirror"), member("web-3", "mirror")];
+    expect(await run(deleteOldCopy(organizationId, null, { volumeId, environment, server: "web-3" }, () => Effect.succeed(members))))
+      .toEqual({ ok: false, refusal: { message: "A Deploy is moving this Volume. Wait for it to finish." } });
+  });
+
+  it("requests a run once the Deploy that stamped the Volume has ended, as staging does, and not while it runs", async () => {
+    await stage("web-1", ["web-2"]);
+    await run(stampPlacements(organizationId, "env-1", "dep-1"));
+    const sync = () => run(requestUnclaimedRun({ userId: null, organizationId }, { volumeId, environment, kind: "sync", args: { full: false } }));
+    expect(await sync()).toMatchObject({ ok: false, refusal: { message: "A Deploy is moving this Volume. Wait for it to finish." } });
+    inFlight = false;
+    expect(await sync()).toMatchObject({ ok: true });
+    expect((await harness.pool.query("select count(*)::int as runs from volume_run")).rows).toEqual([{ runs: 1 }]);
+  });
+
+  it("refuses a run when a Deploy stamps the Volume between the caller's check and the insert", async () => {
+    await stage("web-1", ["web-2"]);
+    between = { query: "volumes", run: () => run(stampPlacements(organizationId, "env-1", "dep-1")) };
+    const requested = await run(requestUnclaimedRun({ userId: null, organizationId }, { volumeId, environment, kind: "sync", args: { full: false } }));
+    expect(requested).toMatchObject({ ok: false, refusal: { message: "A Deploy is moving this Volume. Wait for it to finish." } });
+    expect((await harness.pool.query("select count(*)::int as runs from volume_run")).rows).toEqual([{ runs: 0 }]);
   });
 });

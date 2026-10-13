@@ -1,7 +1,7 @@
 import { useSyncExternalStore, type ReactNode } from "react";
 import { Link, useParams } from "@tanstack/react-router";
 import { CloudIcon, HardDriveIcon, TriangleAlertIcon } from "lucide-react";
-import type { ChangeKind, ReviewLifecycleKind } from "@ployz/sdk";
+import type { ReviewLifecycleKind } from "@ployz/sdk";
 import { Badge } from "#/components/ui/badge";
 import { Spinner } from "#/components/ui/spinner";
 import { cn } from "#/lib/utils";
@@ -12,19 +12,10 @@ import { mirrorResourceId } from "#/modules/volume-placement/volume-placement";
 import { useNodeLighting } from "../deployment-page";
 import { ENVIRONMENT_RESOURCE_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
-import { stagedChip, stagedSurface } from "./node-status";
+import { stagedSurface } from "./node-status";
 import { STAGED_CLASSES } from "./node-status-view";
 
-const LIFECYCLE = { add: "create", update: "update", remove: "delete" } as const satisfies Record<ChangeKind, ReviewLifecycleKind>;
 const STAGED_LIFECYCLE = { new: "create", primary: "update", removing: "delete" } as const satisfies Record<StagedCopy, ReviewLifecycleKind>;
-
-/** What the next Deploy does to a mirror, as its chip: New, Primary when it takes over, Removing. */
-export function mirrorChip(change: ChangeKind | null) {
-  if (change === null) return null;
-  const chip = stagedChip(LIFECYCLE[change], 0);
-  if (chip.kind !== "staged") return null;
-  return { variant: chip.variant, label: change === "update" ? "Primary" : chip.label };
-}
 
 const everyMinute = (tick: () => void) => {
   const timer = setInterval(tick, 60_000);
