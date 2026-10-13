@@ -277,7 +277,7 @@ impl Client {
         // Machine costs the budget once instead of once per attempt.
         let deadline = timeout.map(|timeout| tokio::time::Instant::now() + timeout);
         // A reply on an earlier attempt means the target was not silent throughout.
-        let mut earlier: Option<ConnectError> = None;
+        let mut reply: Option<ConnectError> = None;
         loop {
             let outcome = match deadline {
                 Some(deadline) => {
@@ -293,10 +293,7 @@ impl Client {
                 Ok(response) => return Ok(response),
                 Err(error) => error,
             };
-            let error = match earlier.take() {
-                Some(earlier) if error.target_unanswered() => earlier,
-                _ => error,
-            };
+            let error = crate::connect::keep_target_reply(&mut reply, error);
             if !error.is_retryable() {
                 return Err(error);
             }
@@ -308,7 +305,9 @@ impl Client {
             }
             tokio::time::sleep(delay).await;
             redial = true;
-            earlier = Some(error);
+            if error.target_replied() {
+                reply = Some(error);
+            }
         }
     }
 

@@ -587,3 +587,27 @@ fn other_statuses_and_unknown_routes_stay_unnamed() {
         .name_refusal("/other.Service/Inspect", &target);
     assert_eq!(unknown_route.to_rpc_error().details, Value::Null);
 }
+
+#[test]
+fn only_a_target_reply_outlasts_a_later_silence() {
+    let silent = || {
+        ConnectError::Rpc(TransportError::budget_expired(
+            "target Machine RPC timed out",
+        ))
+    };
+    let dropped = || ConnectError::Io(io::Error::new(io::ErrorKind::BrokenPipe, "closed"));
+
+    // The entry dropped, then the target stayed silent: that is silence.
+    let mut reply = None;
+    let error = keep_target_reply(&mut reply, dropped());
+    assert!(!error.target_replied());
+    assert!(keep_target_reply(&mut reply, silent()).target_unanswered());
+
+    // The target replied, the entry dropped, then silence: the reply stands.
+    let mut reply = Some(ConnectError::from(tonic::Status::unavailable(
+        "Machine is not participating",
+    )));
+    assert!(!keep_target_reply(&mut reply, dropped()).target_unanswered());
+    let error = keep_target_reply(&mut reply, silent());
+    assert!(error.target_replied(), "{error}");
+}

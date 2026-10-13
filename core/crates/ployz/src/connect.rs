@@ -818,6 +818,27 @@ impl ConnectError {
     pub(crate) fn target_unanswered(&self) -> bool {
         matches!(self, Self::Rpc(error) if error.budget_expired || error.routed_unanswered)
     }
+
+    /// A daemon sent this status itself, so the target was not silent.
+    pub(crate) fn target_replied(&self) -> bool {
+        matches!(self, Self::Rpc(error)
+            if !error.unanswered && !error.budget_expired && !error.routed_unanswered)
+    }
+}
+
+/// A target that replied on an earlier attempt was not silent: its reply stands in for a
+/// later silence. The caller stores only failures where `target_replied` holds.
+pub(crate) fn keep_target_reply(
+    reply: &mut Option<ConnectError>,
+    error: ConnectError,
+) -> ConnectError {
+    match reply.take() {
+        Some(earlier) if error.target_unanswered() => earlier,
+        kept => {
+            *reply = kept;
+            error
+        }
+    }
 }
 
 /// A gRPC transport failure. Display is the status message, not Status Debug.
