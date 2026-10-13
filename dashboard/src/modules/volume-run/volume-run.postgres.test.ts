@@ -553,7 +553,7 @@ describe("volume runs", () => {
   });
 
   describe("C1", () => {
-    it("volume_run_second_request_refused: VolumeBusy names the run in the way, until it ends", async () => {
+    it("volume_run_second_request_refused: VolumeBusy names the Volume and how to stop its run, until it ends", async () => {
       const first = await requested({ kind: "mirror", args: { to: "fsn-2" } });
 
       const second = await request({ kind: "sync", args: { full: false } });
@@ -562,12 +562,11 @@ describe("volume runs", () => {
         ok: false,
         refusal: {
           code: "conflict",
-          message: `VolumeBusy: run ${first.id} (mirror) is requested; volume runs ${first.id} shows it`,
+          message: "VolumeBusy: data is busy with a mirror; ployz volume release data stops it",
           details: { run: expect.objectContaining({ id: first.id }) },
         },
       });
-      expect(volumeBusyMessage({ id: first.id, kind: "mirror", state: "running" }))
-        .toBe(`VolumeBusy: run ${first.id} (mirror) is running; volume runs ${first.id} shows it`);
+      expect(volumeBusyMessage({ kind: "sync", volumeName: "data" })).toBe("VolumeBusy: data is busy with a mirror refresh; ployz volume release data stops it");
       expect(await rows()).toHaveLength(1);
 
       await execute(first.id);
@@ -1583,7 +1582,7 @@ describe("volume runs", () => {
         .then(() => null, (error: Error) => error);
 
       expect(failure).toBeInstanceOf(NonRetriableError);
-      expect(await rows()).toMatchObject([{ state: "failed", message: "data is mid-run; wait or volume release data" }]);
+      expect(await rows()).toMatchObject([{ state: "failed", message: "data is mid-run; ployz volume release data stops it" }]);
     });
   });
 
