@@ -13,13 +13,14 @@ Pick the mode from what the change shows. UI that reads a running Server (runtim
 
 ```bash
 scripts/verify/up.sh          # free port; BILLING=1 scripts/verify/up.sh turns billing on
+scripts/verify/up.sh --fresh  # restart vite and Postgres instead of reseeding in place
 SERVERS=2 scripts/verify/up.sh   # also real Servers paired through Cloud; DAEMON=stable (default), beta, checkout or a version
 FAKE_SERVERS=1 scripts/verify/up.sh   # no real Servers; the Servers list shows fra-1, fra-2, syd-1 and ams-1 from a fixture
 ```
 
 With `SERVERS`, `up.sh` also starts an Inngest dev server and the worker for this checkout, then runs `../core/scripts/verify-cluster` (see [verify-server](../verify-server/SKILL.md)). That command enrolls the Machines through this dashboard with an Organization Token. Deploys and enrollment follow-ups then really run. `.verify/run/info` adds the Inngest UI URL for function runs and the `verify-cluster cli` line for the cluster. `DAEMON` is a space-separated list of `[machine-N=]SOURCE` choices passed to `verify-cluster up --daemon`, so `DAEMON="checkout machine-2=0.2.3"` runs machine-1 on this checkout and machine-2 on the 0.2.3 release. Every choice enrolls. A release Machine that cannot enroll with this checkout's CLI enrolls on the checkout daemon first and then gets its release, so `stable` off a release commit compiles the daemon. The first run builds the shared VM image, which takes a few minutes.
 
-A fresh worktree is fine: `up.sh` installs `node_modules` and builds the native SDK when either is missing or stale. The SDK build is shared across worktrees through `~/.cache/ployz/sdk`, keyed by the committed Rust sources, so only the first checkout of a given commit compiles it (about 2 minutes). A warm run takes about 40 seconds on a busy host. Rerunning it restarts from a fresh seed, and the cookie stays valid. It prints the URLs and the two `agent-browser` lines to run, and saves them to `.verify/run/info`.
+A fresh worktree is fine: `up.sh` installs `node_modules` and builds the native SDK when either is missing or stale. The SDK build is shared across worktrees through `~/.cache/ployz/sdk`, keyed by the committed Rust sources, so only the first checkout of a given commit compiles it (about 2 minutes). A warm run takes about 40 seconds on a busy host. Rerunning it in the same mode reseeds in place: it empties the tables and seeds again while vite keeps running, and the cookie stays valid. `--fresh`, a different mode (`BILLING`, `FAKE_SERVERS`, `SERVERS`), a different port or new dependencies restart vite and Postgres. It prints the URLs and the two `agent-browser` lines to run, and saves them to `.verify/run/info`.
 
 The seed (`scripts/verify/seed.ts`) writes through the app's own Config Store commands:
 
