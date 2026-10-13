@@ -1,13 +1,20 @@
 //! Retire a Drain's chosen Globals on the drained Server, one Global slot at a time.
 
+use std::time::Duration;
+
 use ployz_core::{
-    EnvironmentValues, LiveServices, Machine, MachineId, MachineName, ObservedGlobalSlotSpec,
-    QualifiedService, RpcError, RpcErrorCode, ServicePlacementEligibility,
+    ContainerId, ContainerKind, EnvironmentValues, ListContainersRequest, LiveServices, Machine,
+    MachineId, MachineName, MachineTarget, ObservedGlobalSlotSpec, QualifiedService, RpcError,
+    RpcErrorCode, ServicePlacementEligibility, op,
 };
 use tokio_util::sync::CancellationToken;
 
 use crate::connect::{Client, ConnectError};
 use crate::global_slot::{remove_slot, slot_eligibility, unknown_eligibility};
+use crate::serving_publish::{Amendment, PointerClient, amend_pointer, rotated};
+
+const POINTED_RETIRE_WAIT: Duration = Duration::from_secs(330);
+const POINTED_RETIRE_POLL: Duration = Duration::from_secs(1);
 
 /// What retiring one Global on the drained Server came to.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -56,7 +63,11 @@ impl RetireClient for Client {
         let identity = slot.identity();
         match slot_eligibility(self, machine_id, &identity.namespace, slot.resolved_spec()).await? {
             ServicePlacementEligibility::Ineligible(_) => {
-                remove_slot(self, machine_id, &identity.namespace, &identity.name).await
+                if retire_pointed(self, machine_id, identity, POINTED_RETIRE_WAIT).await? {
+                    Ok(())
+                } else {
+                    remove_slot(self, machine_id, &identity.namespace, &identity.name).await
+                }
             }
             ServicePlacementEligibility::Eligible => Err(RpcError {
                 code: RpcErrorCode::Conflict,
@@ -66,6 +77,79 @@ impl RetireClient for Client {
             }),
             ServicePlacementEligibility::Unknown(reason) => Err(unknown_eligibility(reason)),
         }
+    }
+}
+
+/// The Containers a Server runs for one Service.
+pub(crate) trait CopyLister: PointerClient {
+    async fn copies_on(
+        &mut self,
+        machine_id: &MachineId,
+        service: &QualifiedService,
+    ) -> Result<Vec<ContainerId>, RpcError>;
+}
+
+impl CopyLister for Client {
+    async fn copies_on(
+        &mut self,
+        machine_id: &MachineId,
+        service: &QualifiedService,
+    ) -> Result<Vec<ContainerId>, RpcError> {
+        let list = self
+            .read::<op::ListContainers>(
+                ListContainersRequest {
+                    environment: EnvironmentValues::Redacted,
+                },
+                &MachineTarget::from(machine_id),
+            )
+            .await?;
+        Ok(list
+            .containers
+            .into_iter()
+            .filter(|container| {
+                container.machine_id == *machine_id
+                    && container.kind == ContainerKind::ServiceContainer
+                    && container.namespace == service.namespace
+                    && container.resolved_spec.name == service.name
+            })
+            .map(|container| container.container_id)
+            .collect())
+    }
+}
+
+/// Move the Service's Containers on `machine_id` into its Serving Pointer's `retiring` and
+/// wait up to `wait` for the Server's retire loop to stop them, which it does once every
+/// up Machine stopped routing to them. Answers `false`, having written nothing, when the
+/// Service has no pointer.
+pub(crate) async fn retire_pointed<C: CopyLister>(
+    client: &mut C,
+    machine_id: &MachineId,
+    service: &QualifiedService,
+    wait: Duration,
+) -> Result<bool, RpcError> {
+    let copies = client.copies_on(machine_id, service).await?;
+    if amend_pointer(client, service, |current| rotated(current, &[], &copies)).await?
+        == Amendment::NoPointer
+    {
+        return Ok(false);
+    }
+    let deadline = tokio::time::Instant::now() + wait;
+    loop {
+        if client.copies_on(machine_id, service).await?.is_empty() {
+            return Ok(true);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(RpcError {
+                code: RpcErrorCode::Unavailable,
+                message: format!(
+                    "still retiring after {} s; a Machine has not stopped routing to it",
+                    wait.as_secs()
+                ),
+                details: serde_json::Value::Null,
+                cause: Vec::new(),
+            });
+        }
+        tokio::time::sleep(POINTED_RETIRE_POLL).await;
     }
 }
 

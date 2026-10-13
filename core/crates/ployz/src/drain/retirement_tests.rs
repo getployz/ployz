@@ -9,6 +9,7 @@ use super::*;
 use crate::global_fixtures::{
     global_service, grouped, machine, qualified, requested, running_on, service_id,
 };
+use crate::serving_publish::tests::{FakeRow, container, pointer};
 
 struct FakeRetireClient {
     machine_id: MachineId,
@@ -204,4 +205,101 @@ async fn a_global_whose_newest_container_is_not_global_is_reported_not_retired()
         )]
     );
     assert!(client.retire_calls.is_empty());
+}
+
+struct PointedServer {
+    row: FakeRow,
+    copies: Vec<ployz_core::ContainerId>,
+    polls_left: Option<u32>,
+}
+
+impl PointerClient for PointedServer {
+    async fn read_pointer(
+        &mut self,
+        service: &QualifiedService,
+    ) -> Result<Option<ployz_core::ServingPointer>, RpcError> {
+        self.row.read_pointer(service).await
+    }
+
+    async fn publish_pointer(
+        &mut self,
+        request: ployz_core::PublishServingPointerRequest,
+    ) -> Result<ployz_core::ServingPointerPublication, RpcError> {
+        self.row.publish_pointer(request).await
+    }
+}
+
+impl CopyLister for PointedServer {
+    async fn copies_on(
+        &mut self,
+        _machine_id: &MachineId,
+        _service: &QualifiedService,
+    ) -> Result<Vec<ployz_core::ContainerId>, RpcError> {
+        let copies = self.copies.clone();
+        match &mut self.polls_left {
+            Some(0) => self.copies.clear(),
+            Some(left) => *left -= 1,
+            None => {}
+        }
+        Ok(copies)
+    }
+}
+
+fn pointed_server(row: &FakeRow, polls_left: Option<u32>) -> PointedServer {
+    PointedServer {
+        row: row.clone(),
+        copies: vec![container('2')],
+        polls_left,
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_pointed_global_retires_through_the_pointer_and_waits_for_its_copies_to_leave() {
+    let row = FakeRow::default();
+    *row.row.lock().unwrap() = Some(pointer('a', &['1', '2'], &[]));
+    let mut server = pointed_server(&row, Some(2));
+    let service = QualifiedService::parse("app/api").unwrap();
+    let pointed = retire_pointed(
+        &mut server,
+        &MachineId::parse("b".repeat(32)).unwrap(),
+        &service,
+        Duration::from_secs(30),
+    )
+    .await
+    .unwrap();
+    assert!(pointed);
+    assert_eq!(*row.row.lock().unwrap(), Some(pointer('a', &['1'], &['2'])));
+    assert!(server.copies.is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_pointed_global_still_there_after_the_wait_is_not_retired() {
+    let row = FakeRow::default();
+    *row.row.lock().unwrap() = Some(pointer('a', &['1', '2'], &[]));
+    let mut server = pointed_server(&row, None);
+    let error = retire_pointed(
+        &mut server,
+        &MachineId::parse("b".repeat(32)).unwrap(),
+        &QualifiedService::parse("app/api").unwrap(),
+        Duration::from_secs(30),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.message.contains("still retiring"), "{error:?}");
+}
+
+#[tokio::test]
+async fn a_global_with_no_pointer_is_left_to_today_s_removal() {
+    let row = FakeRow::default();
+    let mut server = pointed_server(&row, None);
+    let pointed = retire_pointed(
+        &mut server,
+        &MachineId::parse("b".repeat(32)).unwrap(),
+        &QualifiedService::parse("app/api").unwrap(),
+        Duration::from_secs(30),
+    )
+    .await
+    .unwrap();
+    assert!(!pointed);
+    assert_eq!(*row.row.lock().unwrap(), None);
 }

@@ -725,8 +725,6 @@ impl ReplicatedStore {
         if current.as_ref() != read {
             return Ok(ServingPointerPublication::Superseded { current });
         }
-        // The guard compares the exact text just read, so a semantically equal row in
-        // another JSON spelling still matches.
         let statement = match raw {
             None => Statement::new(
                 "INSERT INTO cluster (key, value) VALUES (?, ?) ON CONFLICT (key) DO NOTHING",

@@ -8,6 +8,7 @@ use ployz_core::{
 };
 
 use crate::global_slot::{remove_slot, slot_eligibility, unknown_eligibility};
+use crate::serving_publish::{Amendment, PointerClient, amend_pointer, complete_members, rotated};
 use crate::{connect::Client, deploy::endpoint_capacity_error, failure::Failure};
 
 /// Catch-up failed after membership committed.
@@ -30,7 +31,7 @@ impl std::fmt::Display for CatchUpError {
     }
 }
 
-pub(crate) trait CatchUpClient {
+pub(crate) trait CatchUpClient: PointerClient {
     async fn live_services(&mut self) -> Result<LiveServices<RpcError>, Failure>;
     async fn bridge_capacity(
         &mut self,
@@ -354,7 +355,7 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
         };
         observe(CatchUpFact::Creating(identity.clone()));
         match client.run_slot(&this_machine.id, new).await {
-            Ok(Some(_)) => expected.push(slot),
+            Ok(Some(id)) => expected.push((slot, id)),
             Ok(None) => {
                 unresolved.retain(|service| service != &identity);
                 observe(CatchUpFact::Excluded(identity));
@@ -379,18 +380,21 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
             )
         })?;
     let target_services = service_containers(target_containers);
-    for slot in &expected {
-        if slot.is_running_on(&target_services, this_machine) {
-            if !failures
-                .iter()
-                .any(|(identity, _)| identity == slot.identity())
-            {
-                unresolved.retain(|identity| identity != slot.identity());
-            }
-            observe(CatchUpFact::Running(slot.identity().clone()));
-        } else {
-            observe(CatchUpFact::Failed(slot.identity().clone()));
+    for (slot, id) in &expected {
+        let identity = slot.identity();
+        if !slot.is_running_on(&target_services, this_machine) {
+            observe(CatchUpFact::Failed(identity.clone()));
+            continue;
         }
+        if let Err(error) = point_at(client, this_machine, identity, id).await {
+            observe(CatchUpFact::Failed(identity.clone()));
+            failures.push((identity.clone(), crate::ui::row(&error)));
+            continue;
+        }
+        if !failures.iter().any(|(failed, _)| failed == identity) {
+            unresolved.retain(|unresolved| unresolved != identity);
+        }
+        observe(CatchUpFact::Running(identity.clone()));
     }
     if cancel.is_cancelled() {
         return Err(CatchUpError::new(Failure::cancelled(), unresolved));
@@ -409,6 +413,49 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
         return Err(CatchUpError::new(cause, unresolved));
     }
     Ok(())
+}
+
+async fn point_at<C: CatchUpClient>(
+    client: &mut C,
+    this_machine: &Machine,
+    service: &QualifiedService,
+    running: &ContainerId,
+) -> Result<Amendment, Failure> {
+    let Some(read) = client.read_pointer(service).await.map_err(Failure::from)? else {
+        return Ok(Amendment::NoPointer);
+    };
+    let live = client.live_services().await?;
+    let Some(members) = complete_members(&live, service) else {
+        return Err(Failure::unavailable(format!(
+            "cannot update the Serving Pointer of {service} from partial Service observations"
+        )));
+    };
+    let replaced = members
+        .iter()
+        .filter(|member| member.machine_id == this_machine.id && member.container_id != *running)
+        .map(|member| member.container_id)
+        .collect::<Vec<_>>();
+    let mut leaving = replaced.clone();
+    leaving.extend(
+        read.containers
+            .iter()
+            .filter(|id| {
+                **id != *running && !members.iter().any(|member| member.container_id == **id)
+            })
+            .copied(),
+    );
+    amend_pointer(client, service, |current| {
+        if current
+            .containers
+            .iter()
+            .any(|id| replaced.contains(id) && !read.containers.contains(id))
+        {
+            return None;
+        }
+        rotated(current, std::slice::from_ref(running), &leaving)
+    })
+    .await
+    .map_err(Failure::from)
 }
 
 #[cfg(test)]

@@ -469,6 +469,9 @@ async fn top_level_catch_up_uses_fresh_target_eligibility_and_reuses_hidden_full
                             }
                             other => panic!("unexpected want: {other:?}"),
                         },
+                        RpcRequestBody::ReadServingPointer(_) => {
+                            RpcResponse::from(ployz_core::ServingPointerRead { pointer: None })
+                        }
                         other => {
                             panic!("unexpected RPC (existing slot needs no endpoint): {other:?}")
                         }

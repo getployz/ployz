@@ -10,8 +10,9 @@
 //! [`crate::sdk::Session::drain_machine`] (Cloud stores the final report).
 
 use ployz_core::{
-    EnvironmentValues, LiveServices, Machine, MachineId, MachineName, MachineTarget, MachineUpdate,
-    Namespace, QualifiedService, RpcError, RpcErrorCode, ServiceMode, UpdateMachineRequest, op,
+    ContainerId, ContainerObservation, DEPLOYMENT_ID_LABEL, EnvironmentValues, LiveServices,
+    Machine, MachineId, MachineName, MachineTarget, MachineUpdate, Namespace, QualifiedService,
+    RpcError, RpcErrorCode, ServiceMode, ServingPointer, UpdateMachineRequest, op,
 };
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
@@ -20,6 +21,7 @@ use ts_rs::TS;
 use crate::cluster::{RoleSetting, RoleWaitError, visible_machine, wait_for_role};
 use crate::connect::{Client, ConnectError, TARGET_RPC_TIMEOUT};
 use crate::deploy::{Converged, converge};
+use crate::serving_publish::{Amendment, PointerClient, amend_pointer, complete_members, rotated};
 
 mod retirement;
 
@@ -387,6 +389,11 @@ trait DrainClient {
         service: &QualifiedService,
         cancellation: &CancellationToken,
     ) -> Converged;
+    async fn repoint(
+        &mut self,
+        server: &MachineId,
+        service: &QualifiedService,
+    ) -> Result<Amendment, RpcError>;
 }
 
 impl DrainClient for Client {
@@ -419,6 +426,63 @@ impl DrainClient for Client {
     ) -> Converged {
         converge(self, service, cancellation).await
     }
+
+    async fn repoint(
+        &mut self,
+        server: &MachineId,
+        service: &QualifiedService,
+    ) -> Result<Amendment, RpcError> {
+        let Some(read) = self.read_pointer(service).await? else {
+            return Ok(Amendment::NoPointer);
+        };
+        let live = self
+            .live_services(EnvironmentValues::Redacted)
+            .await
+            .map_err(RpcError::from)?;
+        let Some(members) = complete_members(&live, service) else {
+            return Err(RpcError {
+                code: RpcErrorCode::Unavailable,
+                message: format!(
+                    "cannot update the Serving Pointer of {service} from partial Service observations"
+                ),
+                details: serde_json::Value::Null,
+                cause: Vec::new(),
+            });
+        };
+        amend_pointer(self, service, |current| {
+            drained_pointer(current, &read, server, &members)
+        })
+        .await
+    }
+}
+
+fn drained_pointer(
+    current: &ServingPointer,
+    read: &ServingPointer,
+    server: &MachineId,
+    members: &[ContainerObservation],
+) -> Option<ServingPointer> {
+    let joining = members
+        .iter()
+        .filter(|member| {
+            member.machine_id != *server
+                && member.labels.get(DEPLOYMENT_ID_LABEL).map(String::as_str)
+                    == Some(current.deploy.as_str())
+        })
+        .map(|member| member.container_id)
+        .collect::<Vec<ContainerId>>();
+    let leaving = read
+        .containers
+        .iter()
+        .filter(|id| {
+            members
+                .iter()
+                .find(|member| member.container_id == **id)
+                .is_none_or(|member| member.machine_id == *server)
+        })
+        .copied()
+        .collect::<Vec<_>>();
+    rotated(current, &joining, &leaving)
 }
 
 /// Globals, then each replicated Service, then what remains. Infallible: every problem
@@ -484,9 +548,20 @@ async fn execute<C: DrainClient>(
                 break 'work;
             }
             let outcome = match client.converge(service, cancellation).await {
-                Converged::Moved { moves } => DrainOutcome::Moved { moves },
+                Converged::Moved { moves } => {
+                    match repoint(client, &server.id, service, &moves).await {
+                        Ok(()) => DrainOutcome::Moved { moves },
+                        Err(failure) => DrainOutcome::Failed { moves, failure },
+                    }
+                }
                 Converged::NothingToMove => DrainOutcome::NothingToMove,
-                Converged::Failed { moves, failure } => DrainOutcome::Failed { moves, failure },
+                Converged::Failed { moves, failure } => {
+                    let failure = repoint(client, &server.id, service, &moves)
+                        .await
+                        .err()
+                        .unwrap_or(failure);
+                    DrainOutcome::Failed { moves, failure }
+                }
                 Converged::Stays { reason } => DrainOutcome::Stays { reason },
                 Converged::Stopped { moves, stop } => {
                     record.push(service.clone(), DrainOutcome::Interrupted { moves });
@@ -519,6 +594,27 @@ async fn execute<C: DrainClient>(
         stopped,
         remaining,
     }
+}
+
+async fn repoint<C: DrainClient>(
+    client: &mut C,
+    server: &MachineId,
+    service: &QualifiedService,
+    moves: &[Move],
+) -> Result<(), MoveFailure> {
+    let Some(last) = moves.last() else {
+        return Ok(());
+    };
+    client
+        .repoint(server, service)
+        .await
+        .map(drop)
+        .map_err(|error| MoveFailure::NotServing {
+            from: last.from.clone(),
+            to: last.to.clone(),
+            detail: format!("publishing its Serving Pointer: {}", crate::ui::row(&error)),
+            replacement_removed: false,
+        })
 }
 
 /// The report's Services as they land, each handed to `progress`.

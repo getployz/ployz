@@ -15,6 +15,7 @@ use crate::global_fixtures::{
     container_id, created_on, global_service, global_service_with_image, grouped, machine,
     qualified, requested, running_on, service_id,
 };
+use crate::serving_publish::tests::FakeRow;
 
 #[tokio::test]
 async fn partial_observations_reject_catch_up_before_any_placement() {
@@ -27,6 +28,7 @@ async fn partial_observations_reject_catch_up_before_any_placement() {
             target_services: None,
             run_result: Ok(Some(container_id('a'))),
             run_calls: Vec::new(),
+            row: FakeRow::default(),
             failures: if failed {
                 vec![ployz_core::MachineFailure {
                     machine_id: peer.id,
@@ -77,6 +79,7 @@ async fn successful_ensure_is_reobserved_before_success() {
         target_services: None,
         run_result: Ok(Some(container_id('a'))),
         run_calls: Vec::new(),
+        row: FakeRow::default(),
         failures: Vec::new(),
         omissions: Vec::new(),
     };
@@ -108,6 +111,7 @@ async fn initially_eligible_global_absent_from_target_inspection_remains_missing
         target_services: Some(Vec::new()),
         run_result: Ok(Some(container_id('a'))),
         run_calls: Vec::new(),
+        row: FakeRow::default(),
         failures: Vec::new(),
         omissions: Vec::new(),
     };
@@ -153,6 +157,7 @@ async fn initially_eligible_global_with_only_hook_visible_remains_missing() {
         target_services: Some(vec![hook_only]),
         run_result: Ok(Some(container_id('a'))),
         run_calls: Vec::new(),
+        row: FakeRow::default(),
         failures: Vec::new(),
         omissions: Vec::new(),
     };
@@ -191,6 +196,7 @@ async fn initially_eligible_generation_absent_from_target_inspection_remains_mis
         target_services: Some(vec![stale]),
         run_result: Ok(Some(container_id('a'))),
         run_calls: Vec::new(),
+        row: FakeRow::default(),
         failures: Vec::new(),
         omissions: Vec::new(),
     };
@@ -228,6 +234,7 @@ async fn another_namespaces_matching_shape_does_not_satisfy_catch_up() {
         target_services: Some(vec![shop]),
         run_result: Ok(Some(container_id('a'))),
         run_calls: Vec::new(),
+        row: FakeRow::default(),
         failures: Vec::new(),
         omissions: Vec::new(),
     };
@@ -273,6 +280,7 @@ async fn interruption_settles_started_work_and_only_reports_unresolved_globals()
                 running_on(&joiner, 'a'),
             )]),
             run_calls: Vec::new(),
+            row: FakeRow::default(),
             run_result: Ok((!excluded).then(|| container_id('a'))),
             failures: Vec::new(),
             omissions: Vec::new(),
@@ -310,9 +318,26 @@ struct FakeCatchUpClient {
     services: Vec<ServiceObservation>,
     target_services: Option<Vec<ServiceObservation>>,
     run_calls: Vec<NewContainer>,
+    row: FakeRow,
     run_result: Result<Option<ContainerId>, RpcError>,
     failures: Vec<ployz_core::MachineFailure<RpcError>>,
     omissions: Vec<MachineId>,
+}
+
+impl PointerClient for FakeCatchUpClient {
+    async fn read_pointer(
+        &mut self,
+        service: &QualifiedService,
+    ) -> Result<Option<ployz_core::ServingPointer>, RpcError> {
+        self.row.read_pointer(service).await
+    }
+
+    async fn publish_pointer(
+        &mut self,
+        request: ployz_core::PublishServingPointerRequest,
+    ) -> Result<ployz_core::ServingPointerPublication, RpcError> {
+        self.row.publish_pointer(request).await
+    }
 }
 
 impl CatchUpClient for FakeCatchUpClient {
@@ -419,6 +444,8 @@ async fn failed_placement_is_reported_even_if_final_observation_is_running() {
         )]),
 
         run_calls: Vec::new(),
+
+        row: FakeRow::default(),
         run_result: Err(RpcError {
             code: ployz_core::RpcErrorCode::Conflict,
             message: "creation key conflict".into(),
@@ -442,6 +469,120 @@ async fn failed_placement_is_reported_even_if_final_observation_is_running() {
         }))
         .contains("creation key conflict")
     );
+}
+
+fn pointed(deploy: &str, containers: &[char], retiring: &[char]) -> ployz_core::ServingPointer {
+    ployz_core::ServingPointer {
+        deploy: ployz_core::DeploymentLogId::parse(deploy).unwrap(),
+        containers: containers.iter().map(|id| container_id(*id)).collect(),
+        previous: None,
+        retiring: retiring.iter().map(|id| container_id(*id)).collect(),
+    }
+}
+
+fn replacing_client(row: FakeRow) -> (Machine, FakeCatchUpClient) {
+    let joiner = machine('1', "joiner");
+    let client = FakeCatchUpClient {
+        machine_id: joiner.id,
+        services: vec![global_service(
+            qualified("app", "api"),
+            'a',
+            Placement::default(),
+            running_on(&joiner, 'd'),
+        )],
+        target_services: Some(vec![global_service(
+            qualified("app", "api"),
+            'a',
+            Placement::default(),
+            running_on(&joiner, 'b'),
+        )]),
+        run_calls: Vec::new(),
+        row,
+        run_result: Ok(Some(container_id('b'))),
+        failures: Vec::new(),
+        omissions: Vec::new(),
+    };
+    (joiner, client)
+}
+
+#[tokio::test]
+async fn a_healthy_copy_joins_the_pointer_and_what_it_replaced_retires() {
+    let row = FakeRow::default();
+    *row.row.lock().unwrap() = Some(pointed("dep-a", &['d', 'c'], &[]));
+    let (joiner, mut client) = replacing_client(row.clone());
+    catch_up_globals(
+        &mut client,
+        &joiner,
+        &tokio_util::sync::CancellationToken::new(),
+        |_| {},
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        *row.row.lock().unwrap(),
+        Some(pointed("dep-a", &['b'], &['d', 'c'])),
+        "the replaced copy here and the pointed copy no Machine lists both retire"
+    );
+}
+
+#[tokio::test]
+async fn a_lost_publish_retries_over_the_winner() {
+    let row = FakeRow::default();
+    *row.row.lock().unwrap() = Some(pointed("dep-a", &['d'], &[]));
+    row.interlopers
+        .lock()
+        .unwrap()
+        .push(pointed("dep-a", &['d', 'e'], &[]));
+    let (joiner, mut client) = replacing_client(row.clone());
+    catch_up_globals(
+        &mut client,
+        &joiner,
+        &tokio_util::sync::CancellationToken::new(),
+        |_| {},
+    )
+    .await
+    .unwrap();
+    assert_eq!(*row.publishes.lock().unwrap(), 2);
+    assert_eq!(
+        *row.row.lock().unwrap(),
+        Some(pointed("dep-a", &['e', 'b'], &['d']))
+    );
+}
+
+#[tokio::test]
+async fn a_service_with_no_pointer_gets_no_row() {
+    let row = FakeRow::default();
+    let (joiner, mut client) = replacing_client(row.clone());
+    catch_up_globals(
+        &mut client,
+        &joiner,
+        &tokio_util::sync::CancellationToken::new(),
+        |_| {},
+    )
+    .await
+    .unwrap();
+    assert_eq!(*row.row.lock().unwrap(), None);
+    assert_eq!(*row.publishes.lock().unwrap(), 0);
+}
+
+#[tokio::test]
+async fn a_publish_that_keeps_losing_fails_the_slot() {
+    let row = FakeRow::default();
+    *row.row.lock().unwrap() = Some(pointed("dep-a", &['d'], &[]));
+    *row.interlopers.lock().unwrap() = ['5', '6', '7', '8']
+        .iter()
+        .map(|id| pointed("dep-a", &['d', *id], &[]))
+        .collect();
+    let (joiner, mut client) = replacing_client(row);
+    let error = catch_up_globals(
+        &mut client,
+        &joiner,
+        &tokio_util::sync::CancellationToken::new(),
+        |_| {},
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.unresolved, [qualified("app", "api")]);
 }
 
 #[path = "global_catch_up_rpc_tests.rs"]
