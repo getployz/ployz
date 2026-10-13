@@ -27,6 +27,7 @@ struct ClusterKv {
     containers: BTreeMap<String, (String, String)>,
     volumes: BTreeMap<(String, String), String>,
     serving_pointers: BTreeMap<String, String>,
+    ingress_routes: BTreeMap<(String, String), (String, String)>,
     container_changes: broadcast::Sender<()>,
     machine_changes: broadcast::Sender<()>,
     pointer_changes: broadcast::Sender<()>,
@@ -46,6 +47,7 @@ impl ClusterKv {
             containers: BTreeMap::new(),
             volumes: BTreeMap::new(),
             serving_pointers: BTreeMap::new(),
+            ingress_routes: BTreeMap::new(),
             container_changes,
             machine_changes,
             pointer_changes,
@@ -356,6 +358,24 @@ fn execute(kv: &Mutex<ClusterKv>, statements: Vec<Statement>) -> Bytes {
                     ),
                 );
                 let _ = kv.container_changes.send(());
+            }
+            query if query.starts_with("INSERT INTO ingress_routes (machine_id, service_id,") => {
+                kv.ingress_routes.insert(
+                    (
+                        text_param(&statement.params, 0).to_owned(),
+                        text_param(&statement.params, 1).to_owned(),
+                    ),
+                    (
+                        text_param(&statement.params, 2).to_owned(),
+                        text_param(&statement.params, 3).to_owned(),
+                    ),
+                );
+            }
+            query if query.starts_with("DELETE FROM ingress_routes") => {
+                kv.ingress_routes.remove(&(
+                    text_param(&statement.params, 0).to_owned(),
+                    text_param(&statement.params, 1).to_owned(),
+                ));
             }
             query => panic!("unexpected statement {query}"),
         }

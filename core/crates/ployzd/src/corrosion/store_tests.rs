@@ -12,8 +12,8 @@ use ployz_core::{
 };
 use serde_json::json;
 
-use super::ReplicatedStore;
-use crate::corrosion::ApiClient;
+use super::{IngressRouteAck, ReplicatedStore};
+use crate::corrosion::{ApiClient, Statement};
 use crate::machine::{
     LocalMachine, LocalMachineBody, LocalMachinePrior, LocalMachineRecord, LocalMachineStore,
     ParticipationOrigin, RecordOwner,
@@ -581,6 +581,67 @@ async fn serving_pointers_round_trip_and_set_aside_malformed_rows() {
         next_pass.newly_malformed(&mut warned),
         broken_row,
         "a repaired then re-broken row warns again"
+    );
+    task.abort();
+}
+
+#[tokio::test]
+async fn ingress_route_acks_upsert_and_delete_against_the_schema() {
+    let db = rusqlite::Connection::open_in_memory().unwrap();
+    db.execute_batch(include_str!("schema.sql")).unwrap();
+    let (store, task) = identity_store(db).await;
+    let machine = MachineId::parse("a".repeat(32)).unwrap();
+    let api = QualifiedService::parse("app/api").unwrap();
+    let web = QualifiedService::parse("app/web").unwrap();
+    let ack = |deploy: &str, containers: &[&str]| IngressRouteAck {
+        deploy: DeploymentLogId::parse(deploy).unwrap(),
+        containers: containers
+            .iter()
+            .map(|id| ContainerId::parse(id.repeat(64)).unwrap())
+            .collect(),
+    };
+    let rows = || async {
+        store
+            .api()
+            .query(Statement::new(
+                "SELECT machine_id, service_id, deploy, containers FROM ingress_routes ORDER BY service_id",
+                [],
+            ))
+            .await
+            .unwrap()
+            .rows(["machine_id", "service_id", "deploy", "containers"])
+            .unwrap()
+            .into_iter()
+            .map(|row| row.map(|value| value.as_str().unwrap().to_owned()))
+            .collect::<Vec<_>>()
+    };
+
+    store
+        .publish_ingress_routes(
+            &machine,
+            &BTreeMap::from([
+                (api.clone(), Some(ack("d1", &["b", "a"]))),
+                (web.clone(), Some(ack("d1", &[]))),
+            ]),
+        )
+        .await
+        .unwrap();
+    store
+        .publish_ingress_routes(
+            &machine,
+            &BTreeMap::from([(api, Some(ack("d2", &["c"]))), (web, None)]),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        rows().await,
+        vec![[
+            machine.to_string(),
+            "app/api".to_owned(),
+            "d2".to_owned(),
+            format!("[\"{}\"]", "c".repeat(64)),
+        ]]
     );
     task.abort();
 }
