@@ -1901,3 +1901,78 @@ async fn serving_pointer_publish_answers_published_then_superseded_with_the_curr
     task.abort();
     std::fs::remove_dir_all(data_dir).ok();
 }
+
+#[tokio::test]
+async fn serving_pointer_read_returns_only_the_requested_services_acks() {
+    use crate::corrosion::{
+        AdminClient, IngressRouteAck, IngressRouteChange,
+        store_tests::{corrosion_db, identity_store},
+    };
+    use ployz_core::{DeploymentLogId, QualifiedService, ReadServingPointerRequest};
+    use std::collections::BTreeMap;
+
+    let data_dir =
+        std::env::temp_dir().join(format!("ployzd-serving-acks-{}", MachineId::random()));
+    let mut local = LocalMachineStore::open(&data_dir).unwrap();
+    local
+        .enroll(ployz_core::EnrollRequest {
+            role: ployz_core::EnrollAs::Founder {
+                initial_policy: Default::default(),
+                name: ployz_core::MachineName::parse("local").unwrap(),
+                cluster_network: "10.210.0.0/16".parse().unwrap(),
+                public_ip: None,
+                advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(
+                    "192.0.2.1:51820".parse().unwrap(),
+                )],
+            },
+            wireguard_mtu: None,
+        })
+        .unwrap();
+    let (replicated, task) = identity_store(corrosion_db()).await;
+    let api = QualifiedService::parse("app/api").unwrap();
+    let web = QualifiedService::parse("app/web").unwrap();
+    let first = MachineId::random();
+    let second = MachineId::random();
+    let ack = |deploy: &str| {
+        IngressRouteChange::Upsert(IngressRouteAck {
+            deploy: DeploymentLogId::parse(deploy).unwrap(),
+            containers: Default::default(),
+        })
+    };
+    replicated
+        .publish_ingress_routes(
+            &first,
+            &BTreeMap::from([(api.clone(), ack("d1")), (web.clone(), ack("w1"))]),
+        )
+        .await
+        .unwrap();
+    replicated
+        .publish_ingress_routes(&second, &BTreeMap::from([(web, ack("w2"))]))
+        .await
+        .unwrap();
+    let service = MachineService::with_cluster(
+        RecordOwner::spawn(local).unwrap(),
+        Some((replicated, AdminClient::new("/no/such/admin.sock"))),
+    );
+
+    let read = service
+        .read_serving_pointer(Request::new(
+            op::ReadServingPointer::into_request(ReadServingPointerRequest { service: api })
+                .encode()
+                .unwrap(),
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+        .decode_response()
+        .unwrap()
+        .decode::<op::ReadServingPointer>()
+        .unwrap();
+    assert_eq!(read.pointer, None);
+    assert_eq!(
+        read.acks,
+        BTreeMap::from([(first, DeploymentLogId::parse("d1").unwrap())])
+    );
+    task.abort();
+    std::fs::remove_dir_all(data_dir).ok();
+}

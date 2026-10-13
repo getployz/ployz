@@ -9,7 +9,7 @@ use ployz_core::rpc::op;
 use ployz_core::{
     ContainerObservation, LiveServices, MachineTarget, PublishServingPointerRequest,
     QualifiedService, ReadServingPointerRequest, RpcError, ServingPointer,
-    ServingPointerPublication,
+    ServingPointerPublication, ServingPointerRead,
 };
 
 use crate::connect::{Client, ConnectError};
@@ -57,6 +57,17 @@ impl Client {
         &mut self,
         service: &QualifiedService,
     ) -> Result<Option<ServingPointer>, RpcError> {
+        self.serving_pointer_read(service)
+            .await
+            .map(|read| read.pointer)
+    }
+
+    /// The Service's Serving Pointer and the Machines that acked a deploy of it,
+    /// as the publishing Machine holds them.
+    pub(crate) async fn serving_pointer_read(
+        &mut self,
+        service: &QualifiedService,
+    ) -> Result<ServingPointerRead, RpcError> {
         let target = self.publisher().await?;
         self.read::<op::ReadServingPointer>(
             ReadServingPointerRequest {
@@ -65,7 +76,6 @@ impl Client {
             &target,
         )
         .await
-        .map(|read| read.pointer)
     }
 
     /// Write `request.pointer` only if the row still holds `request.read`. Never retried.

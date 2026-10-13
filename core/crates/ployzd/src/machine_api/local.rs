@@ -657,10 +657,19 @@ impl MachineRpc for MachineService {
             Ok(replicated) => replicated,
             Err(error) => return respond(error),
         };
-        match replicated.serving_pointer(&request.service).await {
-            Ok(pointer) => respond(ServingPointerRead { pointer }),
-            Err(error) => respond(cluster_store_error(error)),
-        }
+        let pointer = match replicated.serving_pointer(&request.service).await {
+            Ok(pointer) => pointer,
+            Err(error) => return respond(cluster_store_error(error)),
+        };
+        let acks = match replicated.ingress_routes().await {
+            Ok(routes) => routes
+                .into_iter()
+                .filter(|((_, service), _)| *service == request.service)
+                .map(|((machine_id, _), ack)| (machine_id, ack.deploy))
+                .collect(),
+            Err(error) => return respond(cluster_store_error(error)),
+        };
+        respond(ServingPointerRead { pointer, acks })
     }
 }
 

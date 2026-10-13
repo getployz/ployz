@@ -1185,9 +1185,12 @@ pub struct ReadServingPointerRequest {
     pub service: QualifiedService,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ServingPointerRead {
     pub pointer: Option<ServingPointer>,
+    /// Machines whose ingress_routes row names a deploy for this Service, and which deploy.
+    #[serde(default)]
+    pub acks: BTreeMap<MachineId, crate::DeploymentLogId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
