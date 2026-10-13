@@ -23,8 +23,8 @@ const SyncRequestedData = Schema.Struct({ organizationId: Schema.String.check(Sc
 
 /**
  * Keeps the Organization's Cluster Domain correct: skip when none is reserved → probe ingress Servers →
- * record what the probe found → full-set records PUT when something answered (which renews the lease)
- * → otherwise renew the lease → replace the wildcard certificate when missing or near expiry →
+ * full-set records PUT when something answered (which renews the lease), then record what the probe found →
+ * otherwise record it, then renew the lease → replace the wildcard certificate when missing or near expiry →
  * republish it to the Cluster. With no Cluster only the lease and certificate steps do anything.
  */
 export async function executeSyncClusterDomain(
@@ -42,12 +42,18 @@ export async function executeSyncClusterDomain(
     runEffect(loadClusterDomain(organizationId).pipe(Effect.map((row) => row?.name ?? null))));
   if (name === null) return { organizationId, skipped: true };
   const probe = await step.run("probe-ingress-servers", () => runEffect(probeIngressServers(organizationId)));
-  await step.run("record-check", () => runEffect(recordClusterDomainCheck(organizationId, probe)));
   const reachable = probe.kind === "probed" ? probe.reachable : [];
   // Hosted DNS refuses an empty set, and the last good set is better than none.
   const recordsPut = reachable.length > 0;
-  if (recordsPut) await step.run("publish-records", () => runEffect(publishClusterDomainRecords(organizationId, reachable)));
-  else await step.run("renew-lease", () => runEffect(renewClusterDomainLease(organizationId)));
+  const recordCheck = () => step.run("record-check", () => runEffect(recordClusterDomainCheck(organizationId, probe)));
+  // A check that says traffic flows is recorded once DNS serves it; one that says nothing answers is true without DNS.
+  if (recordsPut) {
+    await step.run("publish-records", () => runEffect(publishClusterDomainRecords(organizationId, reachable)));
+    await recordCheck();
+  } else {
+    await recordCheck();
+    await step.run("renew-lease", () => runEffect(renewClusterDomainLease(organizationId)));
+  }
   // Issuance can take minutes; the connect worker has no serve-style HTTP timeout, so the step waits it out.
   const certificateIssued = await step.run("ensure-certificate", () => runEffect(ensureClusterDomainCertificate(organizationId)));
   const certificatePublished = await step.run("publish-certificate", () => runEffect(publishClusterDomainCertificate(organizationId)));
