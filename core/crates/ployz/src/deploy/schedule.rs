@@ -1,8 +1,5 @@
-//! Pure ordering of one Deploy's Service graph.
-//!
-//! The executor feeds completion, publish and ack events and asks for the next
-//! actions; nothing here touches a Machine, so the tests run without Docker or
-//! Corrosion.
+//! Pure ordering of one Deploy's Service graph: events in, next actions out,
+//! and nothing here touches a Machine.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -12,7 +9,6 @@ use ployz_core::{DeployOperation, DeploymentLogId, MachineId, ServiceName, Updat
 /// draining from an earlier Deploy are not tasks here, so they never count.
 pub(crate) const MACHINE_WINDOW: usize = 5;
 
-/// One planned operation's place in the schedule.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Task {
     pub(crate) machine: MachineId,
@@ -41,14 +37,12 @@ pub struct ServiceGroup {
     pub previous: Option<DeploymentLogId>,
 }
 
-/// What the executor does next.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Action {
     Start(usize),
     Publish(usize),
 }
 
-/// What the executor saw.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Event {
     Completed(usize),
@@ -153,7 +147,6 @@ impl Schedule {
         self.failed
     }
 
-    /// Groups whose own task or publish failed.
     pub(crate) fn failed_groups(&self) -> Vec<usize> {
         self.slots
             .iter()
@@ -163,7 +156,6 @@ impl Schedule {
             .collect()
     }
 
-    /// The operation index a group's publish reports under.
     pub(crate) fn last_task(&self, group: usize) -> usize {
         self.group(group)
             .steps
@@ -173,7 +165,6 @@ impl Schedule {
             .expect("a publishing group has at least one task")
     }
 
-    /// Nothing runs and nothing more can start.
     pub(crate) fn finished(&self) -> bool {
         self.slots.iter().all(|slot| match slot.phase {
             Phase::Done | Phase::Failed => true,
@@ -182,7 +173,6 @@ impl Schedule {
         })
     }
 
-    /// Tasks whose only block is a missing ack, with the Service each waits on.
     pub(crate) fn blocked_on_acks(&self) -> Vec<(usize, ServiceName)> {
         let mut blocked = Vec::new();
         for Slot { group, phase } in &self.slots {
@@ -233,7 +223,6 @@ impl Schedule {
         }
     }
 
-    /// Starts and publishes that may begin now, in operation order.
     pub(crate) fn next(&mut self) -> Vec<Action> {
         let mut actions = Vec::new();
         let mut windows = self.windows();

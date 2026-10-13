@@ -69,7 +69,6 @@ fn container_labels(
         .collect()
 }
 
-/// Rows sit behind a lock so operations running together can each report.
 pub(super) struct Progress {
     rows: Mutex<Vec<OperationRow>>,
     tx: Option<UnboundedSender<DeployEvent>>,
@@ -132,7 +131,6 @@ impl Progress {
         self.emit();
     }
 
-    /// Rows nothing ran become unexecuted once the Deploy stops starting work.
     pub(super) fn settle_unexecuted(&self) {
         for row in self.rows().iter_mut() {
             if matches!(row.status, OperationStatus::Pending) {

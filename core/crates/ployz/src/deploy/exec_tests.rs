@@ -98,13 +98,9 @@ struct Scripted {
     answers: Mutex<Vec<AnswerWhen>>,
     cancel_on_prepare: Option<CancellationToken>,
     runs_global: bool,
-    /// Every pull fails with this.
     pull_error: Option<RpcError>,
-    /// Machines images were pulled on; each acks every pointer at once.
     pulled: Mutex<BTreeSet<MachineId>>,
-    /// Routing never catches up for this Service's pointer.
     unrouted: Option<ServiceName>,
-    /// Another Deploy wins this Service's compare-and-set.
     superseded: Option<ServiceName>,
     pointers: Mutex<BTreeMap<QualifiedService, ServingPointer>>,
     publications: Mutex<Vec<PublishServingPointerRequest>>,

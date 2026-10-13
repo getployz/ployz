@@ -168,8 +168,6 @@ impl Client {
     ) -> DeployOutcome<ExecutionError> {
         let mut client = self.clone();
         client.registry_auth.clone_from(preview.registry_auth());
-        // A CLI Deploy has no deployment id, so each run names its own slots and
-        // its Containers carry the run, which its Serving Pointers point at.
         let run = client.deployment_id.clone().unwrap_or_else(|| {
             DeploymentLogId::parse(uuid::Uuid::new_v4().simple().to_string())
                 .expect("a simple uuid is a deployment log id")

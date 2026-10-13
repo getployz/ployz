@@ -43,7 +43,6 @@ const ACK_POLL: Duration = Duration::from_secs(1);
 /// How long a dependent waits for one Machine to route its dependency's Deploy.
 const ACK_WAIT: Duration = Duration::from_secs(300);
 
-/// Why the Deploy stopped starting work, in the order it happened.
 #[allow(clippy::large_enum_variant)]
 enum Stop {
     Failed {
@@ -601,9 +600,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
         })
         .collect();
     let mut schedule = Schedule::new(plan.groups().to_vec(), tasks);
-    // New Containers each group started, removed if the group never switches.
     let mut started: BTreeMap<usize, Vec<(MachineId, ContainerId)>> = BTreeMap::new();
-    // Old Containers each group replaced start-first; they retire after the flip.
     let mut replaced: BTreeMap<usize, Vec<ContainerId>> = BTreeMap::new();
     let mut cleaned = BTreeSet::new();
     let mut stop = None;
@@ -790,7 +787,6 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                 }
             }
         }
-        // A group that never switched leaves no new Containers behind.
         for group in schedule.failed_groups() {
             if !cleaned.insert(group) {
                 continue;
@@ -819,8 +815,6 @@ enum Done {
     Publish(usize, Result<ServingPointerPublication, ExecutionError>),
 }
 
-/// Pull every Service image on every Machine it will run on, together. The
-/// first failure names the first operation needing that image there.
 async fn pull_images<C: MachineOperations>(
     client: &C,
     operations: &[DeployOperation],
@@ -852,8 +846,6 @@ async fn pull_images<C: MachineOperations>(
         .map_or(Ok(()), Err)
 }
 
-/// Flip one Service's pointer to the Containers this Deploy started, by
-/// compare-and-set against the pointer it read.
 async fn publish_group<C: MachineOperations>(
     client: &C,
     run: &DeploymentLogId,
@@ -992,7 +984,32 @@ async fn execute_operation<C: MachineOperations>(
                 index,
                 Some(replacement.old_container_id),
             );
-            replace_container(client, index, progress, replacement, slot, cancellation).await
+            if replacement.spec.update.order == UpdateOrder::StopFirst {
+                return replace_stop_first(
+                    client,
+                    index,
+                    progress,
+                    replacement,
+                    slot,
+                    cancellation,
+                )
+                .await;
+            }
+            // The old Container keeps serving until the Service's pointer flips;
+            // it retires with the pointer, not here.
+            start(
+                client,
+                index,
+                progress,
+                &replacement.machine_id,
+                slot,
+                &replacement.spec,
+                answer_when(replacement.skip_health_monitor),
+                cancellation,
+            )
+            .await
+            .map(Some)
+            .map_err(Into::into)
         }
         DeployOperation::StopHook {
             machine_id,
@@ -1383,7 +1400,7 @@ fn answer_when(skip_health_monitor: bool) -> AnswerWhen {
     }
 }
 
-async fn replace_container<C: MachineOperations>(
+async fn replace_stop_first<C: MachineOperations>(
     client: &C,
     index: usize,
     progress: &Progress,
@@ -1391,25 +1408,8 @@ async fn replace_container<C: MachineOperations>(
     slot: SlotKey,
     cancellation: &CancellationToken,
 ) -> Result<Option<ContainerId>, OperationFailure> {
-    if operation.spec.update.order != UpdateOrder::StopFirst {
-        // The old Container keeps serving until the Service's pointer flips;
-        // it retires with the pointer, not here.
-        return start(
-            client,
-            index,
-            progress,
-            &operation.machine_id,
-            slot,
-            &operation.spec,
-            answer_when(operation.skip_health_monitor),
-            cancellation,
-        )
-        .await
-        .map(Some)
-        .map_err(Into::into);
-    }
-    // StopFirst stops, not removes, the old Container first, so a failed new one can
-    // hand the slot back to it.
+    // Stops, not removes, the old Container first, so a failed new one can hand
+    // the slot back to it.
     let old_stopped = {
         let old = match client
             .inspect_container(&operation.machine_id, &operation.old_container_id)

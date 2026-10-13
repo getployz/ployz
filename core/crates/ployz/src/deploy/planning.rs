@@ -71,7 +71,6 @@ struct Planned {
 #[derive(Clone, Debug)]
 pub struct DeployPlan {
     operations: Vec<DeployOperation>,
-    /// Service graph over `operations`, in execution order.
     groups: Vec<ServiceGroup>,
     preview: DeployPreview,
     /// The intent's pull credentials, for execution only; never in the preview.
