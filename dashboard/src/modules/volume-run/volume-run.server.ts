@@ -734,7 +734,7 @@ export const closeStaleVolumeRuns = <R>(lookup: InngestRunLookup<R>) => Effect.g
   const { drizzle } = yield* Database;
   const now = Date.now();
   const unclaimed = yield* drizzle.update(volumeRun)
-    .set(ended("lost", "no run picked up this request"))
+    .set(ended("not_started", "event never delivered"))
     .where(and(eq(volumeRun.state, "requested"), lt(volumeRun.createdAt, new Date(now - VOLUME_RUN_UNCLAIMED_LIMIT_MS))))
     .returning({ id: volumeRun.id });
   const running = yield* drizzle.select({ id: volumeRun.id, inngestRunId: volumeRun.inngestRunId }).from(volumeRun)
@@ -750,7 +750,7 @@ export const closeStaleVolumeRuns = <R>(lookup: InngestRunLookup<R>) => Effect.g
       .returning({ id: volumeRun.id });
     closed += done.length;
   }
-  return { lost: unclaimed.length, closed };
+  return { not_started: unclaimed.length, closed };
 }).pipe(Effect.withSpan("VolumeRun.closeStale"));
 
 /** A staged removal not yet applied still holds its name, so its slot is not an orphan. */

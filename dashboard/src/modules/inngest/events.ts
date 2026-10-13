@@ -81,7 +81,6 @@ export type VolumeRunRequestedEventData = {
   volumeId: string;
   runId: string;
 };
-/** Another lane took the Volume from the run on row `runId`; that run stops where it is. */
 export const volumeRunTakenEvent = "volume/run.taken";
 
 export type VolumeRunTakenEventData = { runId: string };

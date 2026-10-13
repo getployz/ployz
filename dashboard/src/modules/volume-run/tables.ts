@@ -33,11 +33,6 @@ export const volumeRun = pgTable(
     state: text("state").default("requested").notNull().$type<VolumeRunState>(),
     /** The epoch this run gives a new writer, so a later run on the Volume numbers above it. */
     epoch: bigint("epoch", { mode: "number" }),
-    /**
-     * The lane number a Machine fences on. One Postgres sequence numbers every row, so concurrent inserts never
-     * share one; the active index lets only one lane row per Volume in at a time, so each later row on a Volume
-     * draws a larger number. Gaps are fine: a Machine only compares.
-     */
     gen: bigint("gen", { mode: "number" }).generatedAlwaysAsIdentity().notNull(),
     phase: text("phase").default("warm").notNull().$type<VolumeRunPhase>(),
     /** The Service spec seen when the run started; Restore reads it once that Service's Server is gone. */

@@ -9,7 +9,6 @@ type EffectRunner = typeof runInngestEffect;
 type Activity<A> = Effect.Effect<A, Error, AppServices>;
 type RunTrigger = Parameters<PloyzInngest["createFunction"]>[0]["triggers"];
 type RunConcurrency = Parameters<PloyzInngest["createFunction"]>[0]["concurrency"];
-type RunSingleton = Parameters<PloyzInngest["createFunction"]>[0]["singleton"];
 type RunCancelOn = Parameters<PloyzInngest["createFunction"]>[0]["cancelOn"];
 
 export type RunEnd = "failure" | "cancellation";
@@ -21,7 +20,6 @@ export function attemptLifecycle<Result, More extends object, Triggering = never
     readonly id: string;
     readonly triggers: RunTrigger;
     readonly concurrency?: RunConcurrency;
-    readonly singleton?: RunSingleton;
     readonly cancelOn?: RunCancelOn;
     readonly handler: (
       ctx: { event: { data: unknown }; step: PloyzStepTools; runId: string },
@@ -46,7 +44,6 @@ export function attemptLifecycle<Result, More extends object, Triggering = never
         retries: 3,
         triggers: run.triggers,
         concurrency: run.concurrency,
-        singleton: run.singleton,
         cancelOn: run.cancelOn,
         onFailure: async ({ event }) => {
           // `inngest/function.failed` names the failed run.
