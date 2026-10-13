@@ -214,7 +214,10 @@ class Skipped(RuntimeError):
 
 def busy(reply):
     error = reply.get("error") if isinstance(reply, dict) else None
-    if not error or not str(error.get("message", "")).startswith("VolumeBusy"):
+    message = str(error.get("message", "")) if error else ""
+    if message.startswith("A run on this Volume just ended"):
+        return dict(id="ended")
+    if not message.startswith("VolumeBusy"):
         return None
     return (error.get("details") or {}).get("run") or dict(id="unknown")
 

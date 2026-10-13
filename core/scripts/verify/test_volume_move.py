@@ -387,8 +387,10 @@ class VolumeMoveTests(unittest.TestCase):
         refusal = dict(error=dict(code="conflict", message="VolumeBusy: run run-9 (sync) is running; volume runs "
                                   "run-9 shows it", details=dict(run=run)))
         self.assertEqual(volume_move.busy(refusal), run)
-        for name, reply in [("other error", dict(error=dict(code="conflict", message="A run on this Volume just "
-                                                             "ended. Try again.", details=None))),
+        ended = dict(error=dict(code="conflict", message="A run on this Volume just ended. Try again.", details=None))
+        self.assertEqual(volume_move.busy(ended), dict(id="ended"))
+        for name, reply in [("other conflict", dict(error=dict(code="conflict", message="Volume data is not "
+                                                                "attached.", details=None))),
                             ("approval", dict(error=dict(code="approval_required", details=dict(approval="x")))),
                             ("success", dict(id="run-1", kind="move", state="requested")),
                             ("raw", dict(raw="VolumeBusy")), ("none", None)]:
