@@ -205,6 +205,26 @@ describe("deploying a Volume placement", () => {
       .toEqual(expect.arrayContaining([{ id: volumeId, deploymentId: "dep-1" }, { id: "vol2", deploymentId: "dep-1" }]));
   });
 
+  it("leaves a restore staged, and records no failure, when its seed was taken over rather than failed", async () => {
+    const source = [member("web-1", "writer"), member("web-2", "mirror")];
+    const byVolume: MemberInspector = (_, _environment, id) => Effect.succeed(id === "vol2" ? [] : source);
+    await stageMove("web-2", ["web-2"]);
+    await run(stagePlacement(organizationId, { environment, volumeId: "vol2", mirrors: [], staged: {
+      primary: web("web-1"), mirrors: [], deletes: [],
+      seed: { sourceVolumeId: volumeId, sourceName: "data", dockerVolume: "shop-production_vol-vol2", point: { guid: "11", name: "ployz-1", at: 1_790_000_000 } },
+    } }));
+    await run(stampPlacements(organizationId, [volumeId, "vol2"], "dep-1"));
+    const seeding = await run(advancePlacement(organizationId, "dep-1", null, byVolume, answered));
+    if (seeding.kind !== "wait") throw new Error("expected a run");
+
+    await endRun(seeding.wait.runId, "yielded", "a Deploy took this run over");
+    expect(await run(advancePlacement(organizationId, "dep-1", seeding.wait, byVolume, answered)))
+      .toEqual({ kind: "failed", message: "data: a Deploy took this run over" });
+    expect(await failedRestores()).toBe(0);
+    expect((await run(listPlacements(organizationId))).find((row) => row.volumeId === "vol2"))
+      .toMatchObject({ staged: { seed: { sourceVolumeId: volumeId } }, deploymentId: null });
+  });
+
   it("takes over a restore a superseded Deploy stamped, and runs it", async () => {
     const source = [member("web-1", "writer"), member("web-2", "mirror")];
     const byVolume: MemberInspector = (_, _environment, id) => Effect.succeed(id === "vol2" ? [] : source);

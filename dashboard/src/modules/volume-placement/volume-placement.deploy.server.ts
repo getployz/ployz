@@ -187,7 +187,12 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
     if (isActive(run.state)) return { kind: "wait", wait: waited } satisfies PlacementAdvance;
     if (run.state !== "done") {
       const message = `${run.volume_name}: ${run.message ?? run.state}`;
-      if (waited.step.change.kind === "seed") return restoreFailed(waited.volumeId, environment, message);
+      if (waited.step.change.kind === "seed") {
+        // Only a seed whose own copy failed loses the restore; one another run ended stays staged for the next Deploy.
+        if (run.state === "failed") return restoreFailed(waited.volumeId, environment, message);
+        yield* release(organizationId, deploymentId, true);
+        return { kind: "failed", message } satisfies PlacementAdvance;
+      }
       const { remaining, mirrors } = yield* remainingAfterFailure(organizationId, deploymentId, environment, volumes, waited.volumeId, waited.step, inspect);
       return yield* fail(organizationId, deploymentId, waited.volumeId, remaining, message, mirrors);
     }
