@@ -7,6 +7,7 @@ import io
 import json
 import re
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -19,6 +20,11 @@ volume_move = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(volume_move)
 
 PHYSICAL = "verify-production_vol-1"
+CALL_LIMIT = 3000
+
+
+class Runaway(Exception):
+    """Not one of the errors run_all catches, so a loop that never sleeps fails the test instead of hanging it."""
 
 
 def entry(name, wire):
@@ -60,11 +66,28 @@ class ClusterModel:
         self.acks = []
         self.asks = set()
         self.started = []
+        self.clock = None
+        self.holds = []
+        self.tripped = None
+        self.disarm_fails = False
+        self.just_ended = 0
+        self.calls = 0
 
     def other(self, machine):
         return "machine-2" if machine == "machine-1" else "machine-1"
 
+    def hold(self, seconds, run_id="sync-1", listed=True):
+        """Another run holds the Volume for seconds after the previous hold ends, as a cron sync would."""
+        start = self.holds[-1]["until"] if self.holds else self.clock()
+        self.holds.append(dict(id=run_id, start=start, until=start + seconds, listed=listed))
+
+    def holder(self):
+        return next((hold for hold in self.holds if self.clock() < hold["until"]), None)
+
     def __call__(self, args, **kwargs):
+        self.calls += 1
+        if self.calls > CALL_LIMIT:
+            raise Runaway(f"More than {CALL_LIMIT} helper commands; a wait loop is not sleeping")
         if args[1] == "cli":
             code, output = self.cli(args[args.index("--") + 2:])
         elif args[1] == "exec":
@@ -79,11 +102,24 @@ class ClusterModel:
         if args[0] == "volume" and args[1] in self.asks and "--approval" not in args:
             details = dict(approval=f"{args[1]}:digest", approval_id="approval-1")
             return 1, json.dumps(dict(error=dict(code="approval_required", details=details)))
-        self.started.append(args)
+        if args[:2] != ["volume", "runs"]:
+            self.started.append(args)
         if args[:2] == ["volume", "inspect"]:
             return 0, json.dumps(dict(id="1", environment=dict(project="verify", name="production")))
+        held = self.holder() if self.clock else None
         if args[:2] == ["volume", "runs"]:
-            return 0, json.dumps(dict(runs=list(reversed(self.runs))))
+            # Cloud lists ended runs too, newest first.
+            holds = [dict(id=hold["id"], kind="sync", state="running" if hold is held else "done")
+                     for hold in reversed(self.holds) if hold["listed"] and hold["start"] <= self.clock()]
+            return 0, json.dumps(dict(runs=holds + list(reversed(self.runs))))
+        if held and args[:2] in (["volume", "move"], ["volume", "mirror"], ["volume", "release"]):
+            run = dict(id=held["id"], kind="sync", state="running")
+            message = f"VolumeBusy: run {held['id']} (sync) is running"
+            return 1, json.dumps(dict(error=dict(code="conflict", message=message, details=dict(run=run))))
+        if self.just_ended and args[:2] in (["volume", "move"], ["volume", "mirror"], ["volume", "release"]):
+            self.just_ended -= 1
+            message = "A run on this Volume just ended. Try again."
+            return 1, json.dumps(dict(error=dict(code="conflict", message=message, details=None)))
         if args[:2] == ["volume", "move"]:
             destination = args[-1]
             row = dict(id=f"run-{len(self.runs)}", kind="move", state="running")
@@ -112,6 +148,13 @@ class ClusterModel:
     def guest(self, machine, script):
         if "PLOYZD_FAULT" in script:
             value = script.split("PLOYZD_FAULT=", 2)[-1].split("'", 1)[0] if "echo" in script else None
+            if value is None and self.disarm_fails:
+                return 255, ""
+            held = self.holder() if self.clock else None
+            if value and held:
+                # The holder crosses the armed point, so the fault fires inside it and not in the case's run.
+                self.tripped = held["id"]
+                self.fired = True
             self.fault[machine] = value
             return 0, ""
         if "fault:" in script:
@@ -125,8 +168,10 @@ class ClusterModel:
             lines += [f"ro ployz/ployz/{PHYSICAL} {root}", f"ro ployz/ployz-mirror/{PHYSICAL}/fs {fs}"]
             snapshots = 12 if self.mutation == "snapshots" else 2
             lines += [f"snap ployz/ployz/{PHYSICAL}@s{i}" for i in range(snapshots)]
-            if machine == self.writer:
+            if machine == self.writer and self.mutation != "elsewhere":
                 lines.append("ct abc running db-1")
+            elif machine != self.writer and self.mutation in ("elsewhere", "two-running"):
+                lines.append("ct xyz running db-2")
             elif self.mutation == "stopped" and machine == self.mirror:
                 lines.append("ct def exited db-old")
             return 0, "\n".join(lines) + "\n"
@@ -191,6 +236,7 @@ class VolumeMoveTests(unittest.TestCase):
     def checks(self, mutation=None):
         model = ClusterModel(mutation)
         clock = Clock()
+        model.clock = clock
 
         def spawn(command, stdout, stderr):
             logs = len(list((self.root / "evidence").iterdir()))
@@ -354,6 +400,42 @@ class VolumeMoveTests(unittest.TestCase):
         self.assertIsNone(volume_move.nth_after(lines, 200.5, 2))
         self.assertIsNone(volume_move.nth_after(lines, 300.0, 1))
 
+    def test_case_selection_keeps_named_cases_in_table_order_and_refuses_unknown_names(self):
+        names = [row["name"] for row in volume_move.CASES]
+        self.assertEqual(volume_move.select_cases(volume_move.CASES, []), volume_move.CASES)
+        picked = volume_move.select_cases(volume_move.CASES, ["kill-cut", "clean"])
+        self.assertEqual([row["name"] for row in picked], [name for name in names if name in {"clean", "kill-cut"}])
+        with self.assertRaises(RuntimeError):
+            volume_move.select_cases(volume_move.CASES, ["clean", "kill-nothing"])
+
+    def test_busy_names_the_run_a_volume_busy_refusal_holds_and_nothing_else(self):
+        run = dict(id="run-9", kind="sync", state="running")
+        refusal = dict(error=dict(code="conflict", message="VolumeBusy: run run-9 (sync) is running; volume runs "
+                                  "run-9 shows it", details=dict(run=run)))
+        self.assertEqual(volume_move.busy(refusal), run)
+        ended = dict(error=dict(code="conflict", message="A run on this Volume just ended. Try again.", details=None))
+        self.assertEqual(volume_move.busy(ended), dict(id="ended"))
+        for name, reply in [("other conflict", dict(error=dict(code="conflict", message="Volume data is not "
+                                                                "attached.", details=None))),
+                            ("approval", dict(error=dict(code="approval_required", details=dict(approval="x")))),
+                            ("success", dict(id="run-1", kind="move", state="requested")),
+                            ("raw", dict(raw="VolumeBusy")), ("none", None)]:
+            with self.subTest(name):
+                self.assertIsNone(volume_move.busy(reply))
+
+    def test_kill_passes_on_rc_0_or_an_auxiliary_refusal_after_the_main_process_died(self):
+        moved = dict(before="41", after="77", invocation="a", invocation_after="b")
+        stayed = dict(before="41", after="41", invocation="a", invocation_after="a")
+        auxiliary = f"{volume_move.AUXILIARY}: Input/output error"
+        self.assertTrue(volume_move.check_kill(dict(moved, rc="0", out=""))["landed"])
+        self.assertTrue(volume_move.check_kill(dict(moved, rc="1", out=auxiliary))["landed"])
+        self.assertTrue(volume_move.check_kill(dict(stayed, invocation_after="b", rc="1", out=auxiliary))["landed"])
+        for name, fields in [("no change", dict(stayed, rc="1", out=auxiliary)),
+                             ("other text", dict(moved, rc="1", out="Failed to kill unit: Access denied")),
+                             ("rc 5", dict(moved, rc="5", out=auxiliary))]:
+            with self.subTest(name), self.assertRaises(RuntimeError):
+                volume_move.check_kill(fields)
+
     def test_clean_move_passes_and_records_the_new_writer(self):
         summary, _ = self.run_cases([volume_move.CASES[0]])
         self.assertTrue(summary["passed"], summary)
@@ -387,6 +469,282 @@ class VolumeMoveTests(unittest.TestCase):
                                   {"approve": {"digest": "release:digest"}}, "token")])
         self.assertEqual(model.started, [["volume", "release", volume_move.VOLUME, "--approval", "approval-1"]])
         self.assertEqual(moved["state"], "refused")
+
+    def test_a_volume_held_past_the_limit_skips_the_case_disarms_its_fault_and_the_next_case_runs(self):
+        # An unlisted holder looks idle, so the fault is armed and the first refusal skips the case at once.
+        for listed, seconds, reason in ((True, volume_move.BUSY_LIMIT + 20, "before the fault was armed"),
+                                        (False, 20, "while the fault was armed")):
+            with self.subTest(holder_listed=listed):
+                checks, model = self.checks()
+                model.hold(seconds, listed=listed)
+                with redirect_stdout(io.StringIO()):
+                    summary = checks.run_all([volume_move.KILLS[0], volume_move.CASES[0]])
+                skipped, clean = summary["cases"]
+                self.assertIn(reason, skipped["skipped"] or "", skipped)
+                self.assertFalse(skipped["passed"])
+                self.assertEqual(model.fault, {"machine-1": None, "machine-2": None})
+                self.assertTrue(clean["passed"], clean)
+                self.assertEqual(clean["final_writer"], "machine-2")
+                self.assertEqual([(wait["case"], wait["holder"]) for wait in summary["volume_busy_waits"]],
+                                 [(skipped["name"], "sync-1"), (clean["name"], "sync-1")])
+
+    def test_a_kill_case_arms_its_fault_only_after_the_holder_ends(self):
+        checks, model = self.checks()
+        model.hold(30)
+        with redirect_stdout(io.StringIO()):
+            summary = checks.run_all([volume_move.KILLS[0]])
+        self.assertIsNone(model.tripped)
+        self.assertTrue(summary["passed"], summary)
+        self.assertEqual([wait["holder"] for wait in summary["volume_busy_waits"]], ["sync-1"])
+
+    def test_a_holder_that_outlasts_the_heal_skips_its_ops_and_stops_the_run(self):
+        checks, model = self.checks("two-writers")
+        model.mirror = "machine-2"
+        model.hold(volume_move.BUSY_LIMIT * 3 + 60)
+        with redirect_stdout(io.StringIO()):
+            summary = checks.run_all([volume_move.KILLS[0], volume_move.CASES[0]])
+        skipped = json.loads((self.root / "out" / f"{volume_move.KILLS[0]['name']}.json").read_text())
+        self.assertTrue(skipped["skipped"], skipped)
+        self.assertEqual([attempt["op"] for attempt in skipped["heal"]["attempts"]], ["move", "release"])
+        self.assertTrue(all(attempt.get("skipped") for attempt in skipped["heal"]["attempts"]), skipped["heal"])
+        self.assertEqual([case["name"] for case in summary["cases"]], [volume_move.KILLS[0]["name"]])
+        self.assertIn("the run stopped after this case: after the heal, ", skipped["failures"][-1])
+        self.assertTrue((self.root / "out" / "summary.json").exists())
+
+    def test_a_failed_case_the_heal_cannot_fix_stops_the_run_and_keeps_its_own_failures(self):
+        checks, model = self.checks("two-writers")
+        cli = model.cli
+        def held_after_the_move(args):
+            reply = cli(args)
+            if args[:2] == ["volume", "move"] and not model.holds:
+                model.hold(volume_move.BUSY_LIMIT * 3 + 60)
+            return reply
+        model.cli = held_after_the_move
+        with redirect_stdout(io.StringIO()):
+            summary = checks.run_all([volume_move.CASES[0], volume_move.KILLS[0]])
+        self.assertEqual([case["name"] for case in summary["cases"]], [volume_move.CASES[0]["name"]])
+        failures = summary["cases"][0]["failures"]
+        self.assertGreater(len(failures), 1, failures)
+        self.assertIn("the run stopped after this case: after the heal, ", failures[-1])
+        case = json.loads((self.root / "out" / f"{volume_move.CASES[0]['name']}.json").read_text())
+        self.assertIn("states", case)
+
+    def test_a_heal_that_leaves_any_assessed_failure_stops_the_run(self):
+        for mutation, left in (("elsewhere", "but the writable copy is"), ("two-running", "2 running db Containers"),
+                               ("stopped", "stopped db Containers"), ("snapshots", "snapshots, over"),
+                               ("lost", "acknowledged ids lost")):
+            with self.subTest(mutation):
+                checks, model = self.checks()
+                setup = checks.setup
+                def placed_wrong():
+                    setup()
+                    model.mutation = mutation
+                checks.setup = placed_wrong
+                with redirect_stdout(io.StringIO()):
+                    summary = checks.run_all([volume_move.CASES[0], volume_move.KILLS[0]])
+                self.assertEqual([case["name"] for case in summary["cases"]], [volume_move.CASES[0]["name"]])
+                failures = summary["cases"][0]["failures"]
+                self.assertIn("the run stopped after this case: after the heal, ", failures[-1])
+                self.assertIn(left, failures[-1])
+                self.assertTrue((self.root / "out" / "summary.json").exists())
+
+    def test_a_runs_list_that_fails_while_arming_skips_the_case(self):
+        for armed in (False, True):
+            with self.subTest(armed=armed):
+                checks, model = self.checks()
+                cli, guest = model.cli, model.guest
+                def failing(args):
+                    if (args[:2] == ["volume", "runs"] and checks.case_name == volume_move.KILLS[0]["name"]
+                            and (any(model.fault.values()) or not armed)):
+                        return 1, "Cloud did not answer"
+                    return cli(args)
+                def arming(machine, script):
+                    if "echo" in script and "PLOYZD_FAULT" in script and not model.holds:
+                        model.hold(5, "cron-sync")
+                        reply = guest(machine, script)
+                        model.clock.now += 10
+                        return reply
+                    return guest(machine, script)
+                model.cli, model.guest = failing, arming
+                with redirect_stdout(io.StringIO()):
+                    summary = checks.run_all([volume_move.KILLS[0], volume_move.CASES[0]])
+                skipped, clean = summary["cases"]
+                self.assertIn("could not list the Volume's runs", skipped.get("skipped") or "", skipped)
+                self.assertFalse(skipped["passed"])
+                self.assertEqual(model.tripped, "cron-sync" if armed else None)
+                self.assertEqual(model.fault, {"machine-1": None, "machine-2": None})
+                self.assertTrue(clean["passed"], clean)
+
+    def test_a_skip_names_the_run_that_refused_last(self):
+        checks, model = self.checks()
+        model.hold(10, "sync-a")
+        model.hold(volume_move.BUSY_LIMIT + 20, "sync-b", listed=False)
+        checks.case_name = "clean"
+        with redirect_stdout(io.StringIO()), self.assertRaisesRegex(volume_move.Skipped, "sync-b"):
+            checks.start_op("move", "machine-2")
+        self.assertEqual([wait["holder"] for wait in checks.busy_waits], ["sync-b"])
+
+    def test_a_sync_that_takes_the_volume_while_the_fault_is_armed_skips_the_case(self):
+        checks, model = self.checks()
+        guest = model.guest
+
+        def arming(machine, script):
+            if "echo" in script and "PLOYZD_FAULT" in script and not model.holds:
+                model.hold(30, "cron-sync")
+            return guest(machine, script)
+        model.guest = arming
+        with redirect_stdout(io.StringIO()):
+            summary = checks.run_all([volume_move.KILLS[0]])
+        case = summary["cases"][0]
+        self.assertEqual(model.tripped, "cron-sync")
+        self.assertIn("while the fault was armed", case["skipped"] or "", case)
+        self.assertFalse(case["passed"])
+        self.assertEqual(model.fault, {"machine-1": None, "machine-2": None})
+        self.assertEqual([wait["holder"] for wait in summary["volume_busy_waits"]], ["cron-sync"])
+
+    def test_a_sync_that_fires_the_armed_fault_and_ends_before_the_op_skips_the_case(self):
+        checks, model = self.checks()
+        cli, guest, armed_ops = model.cli, model.guest, []
+
+        def arming(machine, script):
+            if "echo" in script and "PLOYZD_FAULT" in script and not model.holds:
+                model.hold(5, "cron-sync")
+                reply = guest(machine, script)
+                model.clock.now += 10
+                return reply
+            return guest(machine, script)
+        def submitted(args):
+            if args[0] == "volume" and args[1] in ("move", "mirror", "release") and any(model.fault.values()):
+                armed_ops.append(args)
+            return cli(args)
+        model.cli, model.guest = submitted, arming
+        with redirect_stdout(io.StringIO()):
+            summary = checks.run_all([volume_move.KILLS[0], volume_move.CASES[0]])
+        skipped, clean = summary["cases"]
+        self.assertEqual(model.tripped, "cron-sync")
+        self.assertIn("while the fault was armed", skipped.get("skipped") or "", skipped)
+        self.assertFalse(skipped["passed"])
+        self.assertEqual(armed_ops, [])
+        self.assertEqual(model.fault, {"machine-1": None, "machine-2": None})
+        self.assertTrue(clean["passed"], clean)
+        self.assertEqual([wait["holder"] for wait in summary["volume_busy_waits"]], ["cron-sync"])
+
+    def test_a_sync_running_when_the_fault_would_be_armed_is_waited_out_before_arming(self):
+        checks, model = self.checks()
+        arming_runs = checks.arming_runs
+
+        def a_sync_starts(op):
+            if not model.holds:
+                model.hold(5, "cron-sync")
+            return arming_runs(op)
+        checks.arming_runs = a_sync_starts
+        with redirect_stdout(io.StringIO()):
+            summary = checks.run_all([volume_move.KILLS[0]])
+        self.assertIsNone(model.tripped)
+        self.assertTrue(summary["passed"], summary)
+        self.assertEqual([wait["holder"] for wait in summary["volume_busy_waits"]], ["cron-sync"])
+
+    def test_a_holder_that_ends_just_before_the_limit_skips_a_fault_case_without_starting_its_op(self):
+        checks, model = self.checks()
+        model.hold(volume_move.BUSY_LIMIT - 2)
+        checks.case_name = volume_move.KILLS[0]["name"]
+        armed = []
+        with redirect_stdout(io.StringIO()), self.assertRaisesRegex(volume_move.Skipped, "before the fault"):
+            checks.start_op("move", "machine-2", arm=lambda: armed.append(True))
+        self.assertEqual((armed, model.started), ([], []))
+        self.assertEqual([wait["holder"] for wait in checks.busy_waits], ["sync-1"])
+
+        checks, model = self.checks()
+        model.hold(volume_move.BUSY_LIMIT - 2)
+        with redirect_stdout(io.StringIO()):
+            summary = checks.run_all([volume_move.KILLS[0]])
+        self.assertIn("before the fault was armed", summary["cases"][0]["skipped"] or "", summary["cases"][0])
+
+    def test_a_runs_reply_that_stalls_past_the_limit_skips_the_case_and_still_writes_the_summary(self):
+        checks, model = self.checks()
+        cli, stalled = model.cli, []
+        def stall(args):
+            if args[:2] == ["volume", "runs"] and checks.case_name == volume_move.KILLS[0]["name"] and not stalled:
+                stalled.append(True)
+                model.clock.now += volume_move.BUSY_LIMIT + 1
+            return cli(args)
+        model.cli = stall
+        with redirect_stdout(io.StringIO()):
+            summary = checks.run_all([volume_move.KILLS[0], volume_move.CASES[0]])
+        self.assertIn("before the fault was armed", summary["cases"][0]["skipped"] or "", summary["cases"][0])
+        self.assertTrue(summary["cases"][1]["passed"], summary["cases"][1])
+        self.assertTrue((self.root / "out" / "summary.json").exists())
+
+    def test_a_run_that_just_ended_does_not_replace_the_holder_already_seen(self):
+        checks, model = self.checks()
+        model.hold(100, "sync-a")
+        model.just_ended = 1
+        checks.case_name = "clean"
+        with redirect_stdout(io.StringIO()):
+            row = checks.start_op("move", "machine-2")
+        self.assertEqual(row["state"], "done")
+        self.assertEqual([wait["holder"] for wait in checks.busy_waits], ["sync-a"])
+
+    def test_a_failed_disarm_stops_the_run_and_still_writes_the_summary(self):
+        checks, model = self.checks()
+        model.disarm_fails = True
+        with redirect_stdout(io.StringIO()):
+            summary = checks.run_all([volume_move.KILLS[0], volume_move.CASES[0]])
+        self.assertEqual([case["name"] for case in summary["cases"]], [volume_move.KILLS[0]["name"]])
+        self.assertIn("disarming the fault failed on machine-1, machine-2", summary["cases"][0]["failures"][-1])
+        self.assertFalse(summary["passed"])
+        self.assertEqual(json.loads((self.root / "out" / "summary.json").read_text())["passed"], False)
+
+    def test_a_disarm_whose_daemon_never_comes_back_reports_the_machine(self):
+        stubs = self.root / "stubs"
+        stubs.mkdir()
+        for name, body in (("touch", "exit 0"), ("sed", "exit 0"), ("sleep", "exit 0"), ("seq", "echo 1 2 3"),
+                           ("systemctl", '[ "$1" = is-active ] && exec /bin/sh is-active; exit 0')):
+            (stubs / name).write_text(f"#!/bin/sh\n{body}\n")
+            (stubs / name).chmod(0o755)
+        bash = shutil.which("bash")
+        def guest(args, **kwargs):
+            return subprocess.run([bash, *args[-2:]], cwd=self.root, env=dict(PATH=str(stubs)),
+                                  capture_output=True, text=True)
+        checks = volume_move.VolumeMove(self.manifest, runner=guest, out=self.root / "out")
+        for active, failed in (("exit 0", []), ("exit 3", ["machine-1"])):
+            with self.subTest(active):
+                (self.root / "is-active").write_text(active)
+                with redirect_stdout(io.StringIO()):
+                    self.assertEqual(checks.fault(None, "machine-1", check=False), failed)
+
+    def test_a_runs_list_that_times_out_in_the_heal_stops_the_run_and_still_writes_the_summary(self):
+        checks, model = self.checks("two-writers")
+        cli, heal, healing = model.cli, checks.heal, []
+        def stalled(args):
+            if healing and args[:2] == ["volume", "runs"]:
+                raise subprocess.TimeoutExpired(args, 660)
+            return cli(args)
+        def heal_stalled(destination):
+            healing.append(destination)
+            return heal(destination)
+        model.cli, checks.heal = stalled, heal_stalled
+        with redirect_stdout(io.StringIO()):
+            summary = checks.run_all([volume_move.CASES[0], volume_move.KILLS[0]])
+        self.assertEqual([case["name"] for case in summary["cases"]], [volume_move.CASES[0]["name"]])
+        self.assertIn("the run stopped after this case: TimeoutExpired", summary["cases"][0]["failures"][-1])
+        self.assertTrue((self.root / "out" / "summary.json").exists())
+
+    def test_a_cleanup_that_cannot_read_the_machines_stops_the_run_and_still_writes_the_summary(self):
+        checks, model = self.checks()
+        guest, disarmed = model.guest, []
+        def unreadable(machine, script):
+            if "PLOYZD_FAULT" in script and "echo" not in script:
+                disarmed.append(machine)
+            if disarmed and script.startswith("for d in"):
+                return 255, ""
+            return guest(machine, script)
+        model.guest = unreadable
+        with redirect_stdout(io.StringIO()):
+            summary = checks.run_all([volume_move.KILLS[0], volume_move.CASES[0]])
+        self.assertEqual([case["name"] for case in summary["cases"]], [volume_move.KILLS[0]["name"]])
+        self.assertIn("the run stopped after this case", summary["cases"][0]["failures"][-1])
+        self.assertTrue((self.root / "out" / "summary.json").exists())
 
     def test_each_planted_defect_fails_the_run(self):
         for mutation in ("two-writers", "stopped", "snapshots", "lost"):

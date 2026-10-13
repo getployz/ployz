@@ -179,6 +179,29 @@ async fn the_cut_parks_the_root_in_the_slot_at_the_target() {
     server.abort();
 }
 
+/// Docker drops a Volume's labels and options when Get says it does not exist.
+#[tokio::test]
+async fn docker_still_gets_a_root_cut_into_its_slot() {
+    let test = TestDir::new();
+    let (socket, server) = writer(&test, &[("w-1-1", 11)]);
+    let cut = post(
+        &socket,
+        "/Volume.Copy.Cut",
+        json!({"name": "data", "target": "f-1"}),
+    )
+    .await;
+    assert_eq!(cut.pointer("/Ok/kind"), Some(&json!("slot")), "{cut}");
+
+    let got = post(&socket, "/VolumeDriver.Get", json!({"Name": "data"})).await;
+    assert_eq!(got.get("Err"), Some(&json!("")), "{got}");
+    assert_eq!(got.pointer("/Volume/Name"), Some(&json!("data")), "{got}");
+    assert_eq!(got.pointer("/Volume/Mountpoint"), Some(&json!("")), "{got}");
+
+    let listed = post(&socket, "/VolumeDriver.List", json!({})).await;
+    assert_eq!(listed, json!({"Volumes": [], "Err": ""}));
+    server.abort();
+}
+
 #[tokio::test]
 async fn the_cut_converges_after_a_failure_at_every_step() {
     converges_after_each_failure(

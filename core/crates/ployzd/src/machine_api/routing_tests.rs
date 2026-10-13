@@ -156,6 +156,43 @@ async fn one_to_one_forwards_unknown_bytes_unchanged() {
 }
 
 #[tokio::test]
+async fn a_target_that_does_not_answer_is_marked_as_the_router_s_own_failure() {
+    let listener = TcpListener::bind("[::1]:0").await.unwrap();
+    let silent_port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let local = machine('1', "local", 1);
+    let remote = machine('2', "remote", 2);
+    let proxy = MachineProxy::new(
+        Routes::new(EchoService::default()),
+        local.id,
+        silent_port,
+        None,
+    );
+    proxy.remote_backends.lock().unwrap().insert(
+        remote.management_address(),
+        tonic::transport::Endpoint::from_shared(format!("http://[::1]:{silent_port}"))
+            .unwrap()
+            .connect_lazy(),
+    );
+    let request = http::Request::builder()
+        .uri("/ployz.rpc.v1.MachineRpc/Inspect")
+        .header("content-type", "application/grpc")
+        .header("machine", remote.name.as_str())
+        .body(Body::empty())
+        .unwrap();
+
+    let response = proxy.dispatch_with_snapshot(request, &[remote]).await;
+    let status = tonic::Status::from_header_map(response.headers()).unwrap();
+    assert_eq!(status.code(), tonic::Code::Unavailable, "{status:?}");
+    assert!(
+        status
+            .metadata()
+            .contains_key(ployz_core::rpc::TARGET_UNANSWERED_KEY),
+        "{status:?}"
+    );
+}
+
+#[tokio::test]
 async fn fanout_keeps_successes_and_target_failures_as_valid_frames() {
     let listener = TcpListener::bind("[::1]:0").await.unwrap();
     let remote_port = listener.local_addr().unwrap().port();
