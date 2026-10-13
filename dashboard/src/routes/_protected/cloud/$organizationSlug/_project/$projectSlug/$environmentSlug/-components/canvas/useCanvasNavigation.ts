@@ -11,6 +11,7 @@ import {
   SERVICE_NODE_WIDTH,
   SERVICE_NODE_HEIGHT,
 } from "./constants";
+import { hangOverhang } from "./nodes";
 import type { CanvasResourceNode, FlowPosition } from "./types";
 
 import { prefersReducedMotion } from "#/lib/motion";
@@ -122,6 +123,23 @@ export function viewportShowing(viewport: Viewport, box: Box, width: number, hei
   };
 }
 
+/** The flow box `nodes` cover, with each node's row of copies, which reaches past the sides of its card when it is wider. */
+export function nodesBox(nodes: readonly CanvasResourceNode[]): Box {
+  const overhang = (node: CanvasResourceNode) => "hang" in node.data ? hangOverhang(node.data.hang) : 0;
+  const x = Math.min(...nodes.map((node) => node.position.x - overhang(node)));
+  const y = Math.min(...nodes.map((node) => node.position.y));
+  return {
+    x, y,
+    width: Math.max(...nodes.map((node) => node.position.x + (node.measured?.width ?? SERVICE_NODE_WIDTH) + overhang(node))) - x,
+    height: Math.max(...nodes.map((node) => node.position.y + (node.measured?.height ?? SERVICE_NODE_HEIGHT))) - y,
+  };
+}
+
+/** The viewport that fits every node and the copies hung under it into a `width` × `height` canvas. */
+export function fitViewport(nodes: readonly CanvasResourceNode[], width: number, height: number): Viewport {
+  return getViewportForBounds(nodesBox(nodes), width, height, CANVAS_MIN_ZOOM, CANVAS_MAX_ZOOM, CANVAS_FIT_VIEW.padding);
+}
+
 /**
  * The viewport, from `from`, that brings nodes into the canvas area the inspector pane leaves visible; `from` itself when
  * there are none. Null while no pane leaves room for them.
@@ -136,14 +154,7 @@ function revealNodes(nodes: readonly CanvasResourceNode[], from: Viewport): View
   }
   const controls = wrapper.closest(".environment-canvas-scene")
     ?.querySelector<HTMLElement>(".bottom-bar");
-  const x = Math.min(...nodes.map((node) => node.position.x));
-  const y = Math.min(...nodes.map((node) => node.position.y));
-  const box = {
-    x, y,
-    width: Math.max(...nodes.map((node) => node.position.x + (node.measured?.width ?? SERVICE_NODE_WIDTH))) - x,
-    height: Math.max(...nodes.map((node) => node.position.y + (node.measured?.height ?? SERVICE_NODE_HEIGHT))) - y,
-  };
-  return viewportShowing(from, box, wrapper.clientWidth - pane.offsetWidth,
+  return viewportShowing(from, nodesBox(nodes), wrapper.clientWidth - pane.offsetWidth,
     wrapper.clientHeight - (controls?.offsetHeight ?? 0), CANVAS_MIN_ZOOM);
 }
 
@@ -176,6 +187,7 @@ export function useCanvasNavigation(
   const focusKey = focusNodeId ?? (deployment ? `deployment:${deployment.key}` : null);
   const geometryVersion = useCanvasInspectorGeometryVersion(flowReady && focusKey !== null);
   const previousFocusNodeId = useRef<string | null | symbol>(UNSET);
+  const fitted = useRef(false);
   const shown = useRef<{ focusKey: string | null; positionKey: string | null; geometryVersion: number } | null>(null);
   const savedViewport = useRef<Viewport | null>(null);
   // The ids live in a ref so the effect below reruns on the focus changing, not on each render's new array.
@@ -189,19 +201,24 @@ export function useCanvasNavigation(
       return;
     }
 
+    // Not `fitView`: over controlled nodes it waits for a node change that may never come, and it misses hung copies.
+    const fit = (duration: number) => {
+      const wrapper = document.querySelector<HTMLElement>(".react-flow");
+      const nodes = flow.getNodes();
+      if (wrapper && nodes.length) void flow.setViewport(fitViewport(nodes, wrapper.clientWidth, wrapper.clientHeight), { duration });
+    };
+    if (!fitted.current && nodesInitialized) {
+      fitted.current = true;
+      // A link to a node that isn't here (stale, deleted) shows the whole canvas too.
+      if (focusNodeId === null || !flow.getNode(focusNodeId)) fit(0);
+    }
     // A closed drawer gives the canvas back whole: undo the pan that opening it caused, and show every node again.
     // A Deployment Page or the New branch panel opening instead keeps its own focus.
     if (focusNodeId === null && !pageOpen && previousFocusNodeId.current !== UNSET && previousFocusNodeId.current !== null) {
-      // Not `fitView`: over controlled nodes it waits for a node change that may never come.
-      const wrapper = document.querySelector<HTMLElement>(".react-flow");
-      const nodes = flow.getNodes();
-      if (wrapper && nodes.length) {
-        void flow.setViewport(getViewportForBounds(flow.getNodesBounds(nodes), wrapper.clientWidth, wrapper.clientHeight,
-          CANVAS_MIN_ZOOM, CANVAS_MAX_ZOOM, CANVAS_FIT_VIEW.padding), { duration: prefersReducedMotion() ? 0 : 360 });
-      }
+      fit(prefersReducedMotion() ? 0 : 360);
     }
     previousFocusNodeId.current = focusNodeId;
-  }, [flow, flowReady, focusNodeId, pageOpen]);
+  }, [flow, flowReady, nodesInitialized, focusNodeId, pageOpen]);
 
   useEffect(() => {
     if (!flowReady) {

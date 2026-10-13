@@ -2,13 +2,14 @@
 
 use super::{
     IngressEndpoint, IngressProjection, IngressPublication, IngressSite, ProjectedCertificate,
+    PublicationTrace,
 };
 use crate::corrosion::{CertificateChallenge, CertificateMaterial};
 use ployz_core::{
-    ContainerAddress, IngressHost, Machine, MachineId, MachineName, QualifiedService,
-    WireGuardPublicKey,
+    ContainerAddress, DeploymentLogId, IngressHost, Machine, MachineId, MachineName,
+    QualifiedService, WireGuardPublicKey,
 };
-use std::num::NonZeroU16;
+use std::num::{NonZeroU16, NonZeroUsize};
 
 /// Projection that exercises HTTP, HTTPS, challenge, ordered, and empty routes.
 pub(crate) fn renderer_projection() -> IngressProjection {
@@ -18,11 +19,20 @@ pub(crate) fn renderer_projection() -> IngressProjection {
         address: ContainerAddress(address.parse().unwrap()),
         port: NonZeroU16::new(port).unwrap(),
     };
+    let trace = PublicationTrace {
+        deploy: Some(DeploymentLogId::parse("dep_7").unwrap()),
+        placement: [
+            (machine_id, NonZeroUsize::new(2).unwrap()),
+            (MachineId::parse("b".repeat(32)).unwrap(), NonZeroUsize::MIN),
+        ]
+        .into(),
+    };
     let publication = |http, https| {
         Some(IngressPublication {
             owner: owner.clone(),
             http,
             https,
+            trace: trace.clone(),
         })
     };
     IngressProjection {

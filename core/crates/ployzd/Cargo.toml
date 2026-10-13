@@ -61,6 +61,7 @@ base64 = "0.22.1"
 iroh = { version = "1.2", default-features = false, features = ["tls-ring", "test-utils"] }
 ployz = { path = "../ployz" }
 ployz-testkit.workspace = true
+regex = "1.13.1"
 tokio = { version = "1.53.1", features = ["test-util"] }
 
 [lints]

@@ -62,11 +62,10 @@ or a command's exit code and output.
 - **Give it time to boot.** If you lowered **Healthcheck timeout** under **Settings → Deploy**,
   raise it. Otherwise make your app start faster.
 
-## My service shows Healthcheck failing
+## My running service fails its healthcheck
 
 A replica passed its **Healthcheck** once and fails it now. It keeps getting traffic, so the
-service stays **Online**, with an amber **⚠** on its card and **Healthcheck failing** in its panel
-over the check that runs.
+service stays **Online**, with an amber **⚠** on its card.
 
 - Read the service's **Logs** for what changed: a dependency down, a full disk, a slow request.
 - If the check is wrong, fix it under **Settings → Deploy** and click **Deploy**.
@@ -167,10 +166,11 @@ deployment's page.
 
 ## Deploy asks me to confirm it deletes data
 
-**Deploy deletes data**
+**Deletes data** or **Data loss**
 
-This deploy would delete a volume's data: a volume you deleted, or a database service, which
-takes its volume with it.
+This deploy would delete a volume's data: a volume you deleted, a database service, which takes
+its volume with it, or a mirror or detached copy you removed. **Data loss** means it also uses a
+mirror while the primary isn't answering, so changes after the mirror's last refresh are lost.
 
 - If you meant it, type your `project/environment` and click **Deploy**.
 - If you didn't, cancel, then open **Details** in the bottom bar and click **Discard** beside the
@@ -181,5 +181,5 @@ takes its volume with it.
 **Can't reach servers**
 
 Ployz can't reach your servers, so it can't deploy to them or read their logs. See
-[Troubleshooting servers](servers.md). Once a server answers again, click **Retry** on the
+[Troubleshooting servers](servers.md). Once a server answers again, click **Redeploy** on the
 deployment that failed.

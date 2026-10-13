@@ -1,23 +1,16 @@
 import { useState } from "react";
 import type { SetupCommand } from "@ployz/sdk";
-import { Link, useNavigate } from "@tanstack/react-router";
-import { ChevronRightIcon, GitBranchPlusIcon, PlusIcon } from "lucide-react";
-import { BranchIndent } from "#/components/environment-tree";
-import { Badge } from "#/components/ui/badge";
+import { useNavigate } from "@tanstack/react-router";
 import { Button } from "#/components/ui/button";
 import { Field, FieldContent, FieldDescription, FieldError, FieldLabel } from "#/components/ui/field";
 import { SettingsSection } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
-import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "#/components/ui/item";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
 import { environmentsQuery, servicesQuery, useStoreView } from "#/modules/config-store/store-view.queries";
 import { SetupCommandsField, useSavedSetupCommands } from "./new-branch/SetupCommandsField";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { dnsLabelError } from "#/modules/config-store/store-services";
 import { Input } from "#/components/ui/input";
-import { storeEnvironmentNotes, storeEnvironmentTree } from "#/modules/config-store/store-workspace";
 import { StoreTeardownSection } from "#/routes/_protected/cloud/$organizationSlug/-components/store-teardown-section";
-import { CreateEnvironmentDialog } from "./create-environment-dialog";
-import { ENVIRONMENT_NEW_BRANCH_ROUTE_TO } from "./environment-route-paths";
 import { StorePrEnvironmentsSection } from "./store-pr-environments-section";
 
 type Place = { organizationSlug: string; projectSlug: string; environmentSlug: string };
@@ -80,7 +73,6 @@ function StoreBranchSetup({ organizationSlug, projectSlug, environmentSlug, save
   );
 }
 
-/** A Project's settings over the Config Store: its Default Environment, its Environments, and deleting it. */
 /** A Project's name: one DNS label, as the Store checks it; renaming it changes its URLs. */
 function ProjectNameField({ project, onRename }: { project: string; onRename: (name: string) => void }) {
   const [draft, setDraft] = useState(project);
@@ -102,10 +94,10 @@ function ProjectNameField({ project, onRename }: { project: string; onRename: (n
   );
 }
 
+/** A Project's settings over the Config Store: its name, its Default Environment, and deleting it. */
 export function StoreProjectSettings({ organizationSlug, projectSlug, environmentSlug }: Place) {
   const navigate = useNavigate();
   const writer = useStoreWriter(organizationSlug);
-  const [creating, setCreating] = useState(false);
   const listing = useStoreView(organizationSlug, environmentsQuery(projectSlug));
   // Deleted while open: nothing to show while the page moves on.
   if (!listing.ok) return null;
@@ -143,37 +135,6 @@ export function StoreProjectSettings({ organizationSlug, projectSlug, environmen
           </Select>
         </Field>
       </SettingsSection>
-      <SettingsSection id="project-environments" title="Environments" action={<>
-        <Button variant="outline" nativeButton={false} render={<Link to={ENVIRONMENT_NEW_BRANCH_ROUTE_TO}
-          params={{ organizationSlug, projectSlug, environmentSlug }} />}>
-          <GitBranchPlusIcon data-icon="inline-start" />New branch
-        </Button>
-        <Button variant="outline" onClick={() => setCreating(true)}><PlusIcon data-icon="inline-start" />New environment</Button>
-      </>}>
-        <ItemGroup className="gap-2">
-          {storeEnvironmentTree(environments).map(({ environment, depth }) => {
-            // The Default chip says "default" already.
-            const notes = storeEnvironmentNotes(environment).filter((note) => note !== "default");
-            return (
-              <Item key={environment.id} variant="outline" size="sm" render={
-                <Link to="/cloud/$organizationSlug/$projectSlug/$environmentSlug"
-                  params={{ organizationSlug, projectSlug, environmentSlug: environment.name }} />
-              }>
-                <ItemContent className="min-w-0">
-                  <ItemTitle className="min-w-0">
-                    <BranchIndent depth={depth} />
-                    <span className="truncate">{environment.name}</span>
-                    {environment.parent && <span className="sr-only">, branch of {environment.parent}</span>}
-                    {environment.default && <Badge variant="secondary">Default</Badge>}
-                  </ItemTitle>
-                  {notes.length > 0 && <ItemDescription className="truncate">{notes.join(" · ")}</ItemDescription>}
-                </ItemContent>
-                <ItemActions><ChevronRightIcon className="size-4 text-muted-foreground" /></ItemActions>
-              </Item>
-            );
-          })}
-        </ItemGroup>
-      </SettingsSection>
       <StorePrEnvironmentsSection organizationSlug={organizationSlug} projectSlug={projectSlug} environmentSlug={environmentSlug} />
       <StoreTeardownSection
         organizationSlug={organizationSlug}
@@ -187,7 +148,6 @@ export function StoreProjectSettings({ organizationSlug, projectSlug, environmen
         headingId="project-teardown-heading"
         onCompleted={() => void navigate({ to: "/cloud/$organizationSlug/~", params: { organizationSlug }, replace: true })}
       />
-      {creating && <CreateEnvironmentDialog onOpenChange={setCreating} organizationSlug={organizationSlug} projectSlug={projectSlug} />}
     </>
   );
 }

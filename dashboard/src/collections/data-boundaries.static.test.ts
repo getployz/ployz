@@ -26,8 +26,10 @@ const CREATES_SOURCE = /\b(createApiCollection|createChangeCollection|queryColle
 const SPINNER = /<Spinner\b|Loader2Icon|animate-spin/;
 /** Spinners mean a write is in flight or a runtime process is running, never a read. */
 const SPINNER_FILES = {
-  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/resources/$resourceId/-components/StoreVolumePlacement.tsx": "a Volume run under way",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/resources/$resourceId/-components/StoreVolumeCopies.tsx": "a Volume run under way or a requested Refresh now",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/new-branch/StoreNewBranchPanel.tsx": "creating a Branch in the Config Store",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/MirrorNode.tsx": "a copy being made or refreshed",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/VolumeTray.tsx": "a Volume run under way",
   "components/ui/spinner.tsx": "the primitive",
   "components/agent-sidebar/agent-panel.tsx": "the agent starting its reply",
   "components/ui/sonner.tsx": "promise toasts for writes",
@@ -76,8 +78,13 @@ const ON_DEMAND_READS = {
   githubBuildRepositoriesQueryOptions: "calls GitHub per repository; Organization Settings › Builds fills it in after hydration",
   volumeMembersQueryOptions: "asks every Server for its copy live, so a slow Server would hold the drawer open; the Placement section waits on it instead",
   strayNamespacesQueryOptions: "asks about the Namespaces the Servers report live, known only once the Runtime Watch answers",
+  serviceMarkersQueryOptions: "one per canvas card, asking every Server live; the card shows nothing extra until it answers, so the canvas never waits on a slow Server",
   pendingApprovalsOptions: "polled by the agent sidebar, which every Organization page mounts; no page owns it",
+  agentThreadsOptions: "read when the agent opens, which every Organization page can do; no page owns it",
   approvalOptions: "named by an agent conversation's interrupt, known only once the chat hydrates",
+  serviceMetricsQueryOptions: "asks every Server live, so a slow Server would hold the drawer open; the Monitoring tab waits on it instead",
+  serverMetricsQueryOptions: "asks a Server live, so a slow Server would hold the page; each Servers list row reads its own Server after the list shows, and the Resources section waits on it",
+  runtimeServiceMetricsQueryOptions: "asks every Server live, so a slow Server would hold the page; each Running here row waits on its own",
 };
 
 /** Hook files outside data files that await the server without making UI wait on it. */

@@ -163,6 +163,7 @@ describe("chartWindow", () => {
     expect(chartWindow({ from: to - DAY, to }, to, 60_000).stepMs).toBe(5 * 60_000);
     expect(chartWindow({ from: to - 7 * DAY, to }, to, 60_000).stepMs).toBe(HOUR);
     expect(chartWindow({ from: to - 30 * DAY, to }, to, 60_000).stepMs).toBe(6 * HOUR);
+    expect(chartWindow({ from: to - 7 * DAY, to }, to, 6 * HOUR).stepMs).toBe(6 * HOUR);
     expect(steps(chartWindow({ from: 0, to }, to, 60_000)).length).toBeLessThanOrEqual(288);
   });
 });

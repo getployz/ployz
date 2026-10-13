@@ -12,6 +12,7 @@ import { prefetchRemote } from "#/collections/route-data";
 import { ServerLinkItem } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/server-link-item";
 import { AddServerDialog } from "./-components/add-server-dialog";
 import { runsHere } from "./-components/runs-here";
+import { ServerMeters } from "./-components/server-meters";
 import { ServersSkeleton } from "./-components/servers-skeleton";
 import { ServersStaleAlert, ServersUnreachable } from "./-components/servers-unreachable";
 import { ServersUpgradeBar, ServerUpgradeTag, useServersUpgrade } from "./-components/servers-upgrade";
@@ -67,6 +68,7 @@ function RouteComponent() {
           <ItemGroup>
             {servers.map((server) => (
               <ServerLinkItem key={server.machine.id} organizationSlug={organizationSlug} server={server} description={runsHere(server)}>
+                <ServerMeters organizationSlug={organizationSlug} server={server} />
                 <ServerUpgradeTag line={upgrade?.rows.get(server.machine.id) ?? null} />
                 <ServerStatusLabel status={server.status} stale={state === "stale"} />
               </ServerLinkItem>

@@ -3,7 +3,7 @@ title: The Ployz agent
 description: Ask the agent in the dashboard about your app, have it deploy for you, and approve what it would remove.
 ---
 
-The Ployz agent lives on the right edge of every organization page. Ask it about your projects
+The Ployz agent opens from the **Agent** button at the right end of the top bar, on every organization page. Ask it about your projects
 and deployments, or ask it to change something and deploy. Before a deploy removes
 anything, it stops and asks you.
 
@@ -36,15 +36,24 @@ replied. It can:
 
 ## Talk to the agent
 
-1. Click the tab on the right edge of the page.
+1. Click **Agent** at the right end of the top bar.
 2. Type in **Ask about your servers…** and press Enter. Shift+Enter starts a new line.
 3. To start over, click **New chat** at the top of the panel.
+4. To go back to an earlier chat, click **Chat history** next to it and pick the chat.
 
-<!-- screenshot: the agent panel open over the canvas of my-app production, with a short conversation -->
+<!-- screenshot: the agent open beside the canvas of my-app production, with a short conversation -->
 
-The panel's header names your organization and, on an environment's pages, the environment
-(like `production`). Your conversation is kept for this organization, so it's still there
-after you reload or come back later. Closing the panel keeps the conversation.
+The agent opens beside the page, so it never covers your canvas. The canvas narrows to make room
+and refits to show every service. On a phone the agent fills the screen above the tab bar.
+Click **Agent** again to close it.
+
+The panel's header shows the chat's title, taken from your first message. Your chats are kept
+for this organization, so they're still there after you reload or come back later. Closing the
+agent keeps the chat.
+
+While the agent is open on an environment's canvas, the bar with your staged changes, like
+**2 changes · Details · Deploy**, moves into the agent above the message box. Close the agent and
+it goes back to the bottom of the canvas.
 
 Each thing the agent runs shows as a short line under its reply, named for what it does, like
 **environment show**. When it deploys or publishes, that line becomes a card with the
@@ -77,7 +86,7 @@ click it to see them.
 
 The agent picks up your answer and carries on. If you denied it, the agent gets your reason.
 
-While approvals are waiting, the tab on the right edge shows how many. An approval you didn't
+While approvals are waiting, the **Agent** button shows how many, like **1 waiting**. An approval you didn't
 start from this chat, like one a coding agent opened from the CLI, appears at the top of the
 panel under **Waiting on you**, and you answer it the same way. That includes
 `ployz server rm`, `ployz server drain` and `ployz server clean`, whose cards are named for the

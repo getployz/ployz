@@ -2,7 +2,8 @@
 # Seeded, signed-in Ployz Cloud for this checkout: its own Postgres container and `vite dev`, side by side with
 # other checkouts. Re-running restarts from a fresh seed; the cookie stays valid.
 # Usage: scripts/verify/up.sh [port]      BILLING=1 turns billing on. State: dashboard/.verify/run (down.sh removes it).
-# SERVERS=N [DAEMON=stable|beta|checkout|<version>] also enrolls N real Machines through it (core/scripts/verify-cluster);
+# SERVERS=N [DAEMON=...] also enrolls N real Machines through it (core/scripts/verify-cluster);
+# DAEMON is space-separated [machine-N=]stable|beta|checkout|<version>, e.g. DAEMON="checkout machine-2=0.2.3";
 # down.sh tears that cluster down too. Real Servers also get a per-checkout Inngest dev server and worker.
 # Stops itself after 15 idle minutes with no connection to vite (idle.sh; VERIFY_IDLE_TIMEOUT=<seconds>, 0 keeps it up).
 set -euo pipefail
@@ -73,6 +74,9 @@ else
 INNGEST_BASE_URL=http://127.0.0.1:9
 INNGEST_EVENT_API_BASE_URL=http://127.0.0.1:9"
 fi
+# Without real Servers, metric reads answer from src/modules/metrics/metrics.verify-fixture.ts.
+if [ -n "${SERVERS:-}" ]; then verify_metrics=0; else verify_metrics=1; fi
+if [ -z "${SERVERS:-}" ] && [ "${FAKE_SERVERS:-}" = 1 ]; then verify_runtime=1; else verify_runtime=0; fi
 cat > "$run/env" <<EOF
 NODE_ENV=development
 PORT=$port
@@ -94,6 +98,8 @@ $inngest
 PLOYZ_HOSTED_DNS_URL=$hosted_dns
 APP_ENCRYPTION_SECRET=$secret-encryption
 UPTIME_ENABLED=true
+PLOYZ_VERIFY_METRICS=$verify_metrics
+PLOYZ_VERIFY_RUNTIME=$verify_runtime
 VERIFY_SESSION_TOKEN=$(printf 'session:%s' "$wt" | sha256sum | cut -c1-32)
 EOF
 set -a; . "$run/env"; set +a
@@ -123,12 +129,12 @@ fi
 
 setsid nohup node node_modules/vite/bin/vite.js dev --port "$port" --strictPort --host 127.0.0.1 > "$run/vite.log" 2>&1 < /dev/null &
 echo $! > "$run/vite.pid"
-for _ in $(seq 240); do
-  code=$(curl -s -o /dev/null -w '%{http_code}' -H "Cookie: better-auth.session_token=$cookie" "http://127.0.0.1:$port/cloud" || true)
-  [ "$code" != 000 ] && break; sleep 0.5
-done
 # Signed in: /cloud redirects into the organization, not to /auth. Also warms the SSR bundle.
-where=$(curl -s -o /dev/null -w '%{redirect_url}' -H "Cookie: better-auth.session_token=$cookie" "http://127.0.0.1:$port/cloud")
+# A cold start answers without a redirect while vite still optimizes dependencies, so wait for one.
+for _ in $(seq 240); do
+  where=$(curl -s -o /dev/null -w '%{redirect_url}' -H "Cookie: better-auth.session_token=$cookie" "http://127.0.0.1:$port/cloud" || true)
+  [ -n "$where" ] && break; sleep 0.5
+done
 case "$where" in */cloud/$org*) ;; *) echo "up.sh: session check failed: /cloud -> '$where' (see $run/vite.log)" >&2; exit 1 ;; esac
 if [ "${VERIFY_IDLE_TIMEOUT:-900}" != 0 ]; then
   setsid nohup "$dash/scripts/verify/idle.sh" "$port" > "$run/idle.log" 2>&1 < /dev/null &
@@ -154,7 +160,9 @@ fi
 
 if [ -n "${SERVERS:-}" ]; then
   echo "up.sh: enrolling $SERVERS Machines through Cloud (DAEMON=${DAEMON:-stable})"
-  cluster=$("$wt/core/scripts/verify-cluster" up --machines "$SERVERS" --daemon "${DAEMON:-stable}" --cloud-attach)
+  daemons=()
+  for daemon in ${DAEMON:-stable}; do daemons+=(--daemon "$daemon"); done
+  cluster=$("$wt/core/scripts/verify-cluster" up --machines "$SERVERS" "${daemons[@]}" --cloud-attach)
   echo "$cluster" > "$run/cluster"
   cat <<EOF | tee -a "$run/info"
 cluster: $cluster

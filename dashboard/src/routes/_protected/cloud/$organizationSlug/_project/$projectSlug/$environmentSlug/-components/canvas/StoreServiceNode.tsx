@@ -13,16 +13,17 @@ import { PickedNode } from "./PickableNode";
 import { useNodePick } from "../new-branch/branch-picking";
 import { getServiceIcon } from "./service-node-helpers";
 import { DeployChip, STAGED_CLASSES, StatusLine } from "./node-status-view";
-import { deployChip, nodeIssues, publicDomain, runtimeLine, stagedSurface } from "./node-status";
+import { deployChip, nodeIssues, restartedServices, publicDomain, runtimeLine, stagedSurface } from "./node-status";
 import { RuntimeLensContext } from "./RuntimeLensProvider";
 import { ServiceTrays } from "./VolumeTray";
-import { MirrorNodes } from "./MirrorNode";
-import type { CanvasMirror } from "#/modules/volume-placement/volume-placement";
+import { CopyHang } from "./MirrorNode";
+import type { VolumeCopies } from "#/modules/volume-copies/volume-copies";
 import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
 import type { StoreCanvasService } from "./types";
-import { useInFlightDeployments } from "#/modules/config-store/store-view.queries";
+import { deploymentQuery, useCachedStoreView, useInFlightDeployments } from "#/modules/config-store/store-view.queries";
 import { useRuntimeService } from "#/providers/runtime-provider";
 import { useUnreachableHost } from "#/modules/uptime/uptime.queries";
+import { useContainerTrouble } from "./use-container-trouble";
 
 /**
  * A Config Store Service on the canvas and in its phone list: what runs now on its status line, anything about Deploys
@@ -38,10 +39,14 @@ export function StoreServiceCard({ service, domains, changeCount, runtimeIdentit
   const inFlight = useInFlightDeployments(params.organizationSlug, store);
   // Under an open Deployment Page: its Node Outcome, or dimmed when it didn't target this Service.
   const light = useNodeLighting(service.id);
-  const chip = deployChip(service, changeCount, inFlight);
+  const running = inFlight.find((deployment) => deployment.status !== "queued") ?? null;
+  const plan = useCachedStoreView(params.organizationSlug, running === null ? null : deploymentQuery(running.id));
+  const chip = deployChip(service, changeCount, inFlight, plan?.ok ? restartedServices(plan.value) : null);
   const status = runtimeLine(service, runtime, { lens: runtimeLens, desiredReplicas, deploying: chip?.kind === "deploying" });
-  const unreachable = useUnreachableHost({ organizationSlug: params.organizationSlug, environmentId }, service.id);
-  const issues = nodeIssues(status, domains, unreachable);
+  const scope = { organizationSlug: params.organizationSlug, environmentId };
+  const unreachable = useUnreachableHost(scope, service.id);
+  const trouble = useContainerTrouble(scope, service.name);
+  const issues = nodeIssues(status, domains, { unreachable, trouble });
   const domain = publicDomain(domains);
   const surface = stagedSurface(light, service.change);
   const icon = <Avatar><AvatarFallback>{getServiceIcon({ source: { type: service.source } })}</AvatarFallback></Avatar>;
@@ -62,8 +67,8 @@ export function StoreServiceCard({ service, domains, changeCount, runtimeIdentit
     </span>
   );
 
-  // An open uptime incident: the ⚠ opens Monitoring, where the evidence and the fix are.
-  const openMonitoring = issues?.uptime ? (event: MouseEvent) => {
+  // An open uptime incident, or an OOM kill or restart: the ⚠ opens Monitoring, where the evidence and the fix are.
+  const openMonitoring = issues?.monitoring ? (event: MouseEvent) => {
     event.preventDefault();
     event.stopPropagation();
     void navigate({ to: ENVIRONMENT_SERVICE_ROUTE_TO, params: { ...params, serviceId: service.id }, search: { tab: "monitoring" } });
@@ -106,12 +111,12 @@ export function StoreServiceCard({ service, domains, changeCount, runtimeIdentit
   );
 }
 
-export function StoreServiceNode({ data }: { data: StoreCanvasService & { mirrors: readonly CanvasMirror[] } }) {
+export function StoreServiceNode({ data }: { data: StoreCanvasService & { hang: readonly VolumeCopies[] } }) {
   const pick = useNodePick(data.service.name);
   const { selectedNodeId } = useCanvasInspectorSelection();
   const trays = <>
     <ServiceTrays trays={data.trays} configTrays={data.configTrays} selectedNodeId={selectedNodeId} />
-    <MirrorNodes mirrors={data.mirrors} />
+    <CopyHang hang={data.hang} />
   </>;
   if (pick) {
     return <>

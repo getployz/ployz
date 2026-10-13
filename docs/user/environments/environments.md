@@ -152,8 +152,8 @@ To change it after you create the branch, click the shared service on the branch
 
 ### Start with an empty environment
 
-1. Open **Settings → Project**.
-2. Under **Environments**, click **New environment**.
+1. Click the environment name at the top of the page.
+2. Click **New environment**.
 3. Enter a **Name** and click **Add environment**.
 
 It starts with no services or variables, so you add them yourself.

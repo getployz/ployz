@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import type { DiffView, DomainRow, ProjectListing, RowId, ServiceListing } from "@ployz/sdk";
+import type { DiffView, DomainRow, EnvironmentView, ProjectListing, RowId, ServiceListing } from "@ployz/sdk";
 import { asTestDouble } from "#/lib/test-double";
 import { scalarSetting, serviceSetting, settingChange, settingError } from "./catalog";
-import { domainChanged, newProjectName, newServiceName, serviceChangeCount, serviceChanges } from "./store-services";
+import { deployedVcpuLimit, domainChanged, newProjectName, newServiceName, serviceChangeCount, serviceChanges, serviceSettingRows } from "./store-services";
 
 const listed = (name: string, privateDns = name): ServiceListing =>
   ({ id: `${name}-id`, row: `${name}:node` as RowId, name, private_dns: privateDns, source: "image", change: null, template: null });
@@ -74,6 +74,23 @@ it("reads one Service's pink trail from the Environment's diff, a rename under `
   expect([...changes.keys()]).toEqual(["name", "replicas"]);
   expect(changes.get("name")?.before).toBe("web");
   expect(serviceChanges(diff, "b").size).toBe(0);
+});
+
+it("limits a Service's CPU by its deployed limit and replicas, not what the next Deploy stages", () => {
+  const settings = asTestDouble<EnvironmentView>()({ settings: [
+    { path: "web.cpuLimit", value: 2, default: null },
+    { path: "web.replicas", value: 3, default: 1 },
+  ] });
+  const staged = (settings: readonly { path: string; kind: "update"; before: number | null; after: number; canRestore: boolean }[]) =>
+    serviceChanges(asTestDouble<DiffView>()({ changes: [{ type: "service", id: "a", name: "web", lifecycle: "update", restarts: [], comparison: "head", settings }] }), "a");
+  const rows = serviceSettingRows(settings, "web");
+  expect(deployedVcpuLimit(rows, staged([]))).toBe(6);
+  expect(deployedVcpuLimit(rows, staged([
+    { path: "web.cpuLimit", kind: "update", before: 0.5, after: 2, canRestore: true },
+    { path: "web.replicas", kind: "update", before: 1, after: 3, canRestore: true },
+  ]))).toBe(0.5);
+  expect(deployedVcpuLimit(rows, staged([{ path: "web.cpuLimit", kind: "update", before: null, after: 2, canRestore: true }]))).toBeNull();
+  expect(deployedVcpuLimit(rows, staged([{ path: "web.replicas", kind: "update", before: 0, after: 3, canRestore: true }]))).toBeNull();
 });
 
 it("reads a source change as a change to each field of it that differs", () => {

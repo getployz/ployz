@@ -10,7 +10,6 @@ import { branchQuery, requireView, servicesQuery, useStoreViews } from "#/module
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { CanvasInspectorHeader } from "./CanvasInspectorHeader";
 import { CanvasInspectorError } from "./CanvasInspectorRouteStates";
-import { storeLiveLabel } from "./canvas/StoreLiveNode";
 import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_SERVICE_ROUTE_TO } from "./environment-route-paths";
 
 /**
@@ -37,7 +36,6 @@ export function StoreLiveNodePanel({ name }: { name: string }) {
     <div className="flex h-full min-h-0 flex-col">
       <CanvasInspectorHeader params={params}>
         <span className="font-medium">{name}</span>
-        <p className="truncate text-sm text-muted-foreground">{storeLiveLabel(live)}</p>
       </CanvasInspectorHeader>
       <div className="min-h-0 flex-1 overflow-y-auto p-4"><FieldGroup>
         <FieldSet>

@@ -14,7 +14,7 @@ tab, then **Build**, and find the line that starts with `ERROR`. A build on GitH
 fails with `Build failed. web: a build step failed`; the run on GitHub, linked at the top of
 the log, has the full output. Your current version keeps running.
 
-Fix the cause and deploy again. **Retry** rebuilds the same commit and settings, so it only
+Fix the cause and deploy again. **Redeploy** rebuilds the same commit and settings, so it only
 helps when the fix was on a server.
 
 ## Railpack can't tell how to build my app

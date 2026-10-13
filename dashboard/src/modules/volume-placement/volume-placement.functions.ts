@@ -3,7 +3,7 @@ import { Effect, Schema } from "effect";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import { requireAccess } from "#/modules/organization/access.server";
 import { placementRefusal, stageOffServer, unlessPlacementRefused } from "#/modules/volume-placement/volume-placement.deploy.server";
-import { discardPlacement, listPlacements, stagePlacement, stageRestore } from "#/modules/volume-placement/volume-placement.server";
+import { deleteOldCopy, discardPlacement, listPlacements, stagePlacement, stageRestore } from "#/modules/volume-placement/volume-placement.server";
 import { Conflict } from "#/server/public-error";
 import { actorMiddleware, publicErrorMiddleware, runActor, strictValidator } from "#/server/tanstack";
 
@@ -57,4 +57,11 @@ export const stageOffServerServerFn = createServerFn({ method: "POST" })
     Effect.flatMap(({ organization }) => placementRefusal(organization.id).pipe(Effect.flatMap((refusal) => refusal === null
       ? stageOffServer(organization.id, data.server, data.accepting)
       : Effect.fail(new Conflict({ userFacing: true, message: refusal.message }))))),
+  )));
+
+export const deleteCopyServerFn = createServerFn({ method: "POST" })
+  .middleware([publicErrorMiddleware, actorMiddleware])
+  .validator(strictValidator(Schema.Struct({ ...VolumeInput.fields, server: Schema.NonEmptyString })))
+  .handler(({ context, data }) => runActor(context, requireAccess(context.actor, data.organizationSlug, "operate").pipe(
+    Effect.flatMap(({ organization }) => unlessPlacementRefused(organization.id, deleteOldCopy(organization.id, context.actor.userId, data))),
   )));

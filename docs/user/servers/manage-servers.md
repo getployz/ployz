@@ -20,6 +20,11 @@ list, a summary reads **All 3 online**, or puts problems first, like **1 offline
 | **Offline** | Your other servers can't reach it. See [A server shows Offline](../troubleshooting/servers.md#a-server-shows-offline). |
 | **Unknown** | Ployz can't tell whether it's up. Check it as you would an offline one. |
 
+On a wide window, each row also shows how much of the server's CPU, memory and disk is in use
+right now. A server that didn't reply in time reads **Didn't answer**. A server on a release
+without metrics reads **Upgrade to see metrics**. A dash means the server sent no recent reading
+for that meter, and **No readings** means it sent none for any of them.
+
 **Managed volumes available** means the server can hold [managed volumes](../services/volumes.md).
 **Docker only** means it was added with **Start without it** and holds plain Docker volumes only.
 
@@ -30,14 +35,29 @@ If the page shows **Can't reach your servers right now**, see
 
 Click a server. Its page shows its status and public IP address, then:
 
-- **Running here**: click it to list the server's services. While the server is offline, each one
-  says whether it's **Still on** another server or **Down**.
+- **Resources**: meters for CPU, memory and disk now, then charts of CPU, memory and network over
+  the range you pick, from **1h** to **30d**. The meters and the values above each chart always
+  show the last few minutes, whatever the range; a dash means the server sent no recent reading.
+  Network shows each interface in its own color, out as a solid line and in as a dashed one. The
+  disk bar splits used space into **Volumes**, **Mirrors**, **Logs and metrics** and **Other**,
+  then **Free**. Space the server couldn't attribute to one of those shows as **Used**. A stretch
+  the server didn't measure is hatched **Not measured**. A server on an older Ployz version reads
+  **Upgrade web-1 to see its metrics**. If it doesn't reply, the section reads **web-1 didn't answer**.
+  While the server is offline, the page leaves Resources out.
+
+  ![A server's Resources: CPU, memory and disk meters over CPU, memory and network charts](../images/server-resources.png)
+
+- **Running here**: the server's services, with the CPU and memory each uses on this server now,
+  refreshed when you open or return to the page. A service with no recent readings on this server
+  shows **–**. Past five, **All 12 services** opens the
+  full list, with a filter. While the server is offline, each one says whether it's **Still on**
+  another server or **Down**.
 - **Services**: **Run services here** and **Drain**. See
   [Change what a server does](#change-what-a-server-does).
 - **Builds**: **Run builds here** and **Builds at once**. See
   [Where builds run](../builds/where-builds-run.md#build-on-your-servers).
 
-![A server's page: Running here, Builds and Remove server](../images/server-page.png)
+![A server's page: Running here with each service's CPU and memory, then Services](../images/server-running-here.png)
 
 An entry marked **Not in any Project** is left over from a deleted project or environment.
 **Remove** deletes its containers and its volumes, data included, from every server.
@@ -187,7 +207,7 @@ When a server's release can't serve a feature, the feature names that server:
   web-2 to see its logs** with **Open web-2**, or **Upgrade 2 servers to see their logs** with
   **Open Servers**. Upgrade the server from its page, then refresh the logs page. See
   [Logs](../observe/logs.md).
-- **Placement** on a volume names the servers to upgrade before any volume moves or mirrors. See
+- **Copies** on a volume names the servers to upgrade before any volume moves or mirrors. See
   [Move a volume](../services/move-a-volume.md).
 - **`ployz volume move`** onto such a server fails. If the server already runs the newest release
   on your channel, a later release brings the feature, and the message reads:

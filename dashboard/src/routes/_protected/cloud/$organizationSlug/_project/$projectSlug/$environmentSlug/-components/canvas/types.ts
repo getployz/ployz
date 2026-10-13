@@ -1,6 +1,6 @@
 import type { ConfigListing, DiffView, DomainRow, ServiceListing, VolumeListing } from "@ployz/sdk";
 import type { MountedConfig } from "#/modules/config-store/store-configs";
-import type { CanvasMirror } from "#/modules/volume-placement/volume-placement";
+import type { VolumeCopies } from "#/modules/volume-copies/volume-copies";
 import type { Node } from "@xyflow/react";
 
 export type CanvasResourceType = "service" | "volume" | "config";
@@ -27,13 +27,13 @@ export type StoreCanvasService = {
 /**
  * A Volume under a Service that mounts it; `sharedWith`: the other Services here that mount it; `mountChanged`: the next
  * Deploy adds or changes this Service's mount of it; `writers`: the containers that write it, every replica of every
- * Service that mounts it.
+ * Service that mounts it; `copies`: where else its data lives, null until the Servers answer.
  */
-export type MountedVolume = { volume: VolumeListing; sharedWith: string[]; mountChanged: boolean; writers: number };
+export type MountedVolume = { volume: VolumeListing; sharedWith: string[]; mountChanged: boolean; writers: number; copies: VolumeCopies | null };
 
 export type CanvasStoreServiceNode = Node<StoreCanvasService & {
-  /** The mirrors of its trays' Volumes it shows, under its trays. */
-  mirrors: readonly CanvasMirror[];
+  /** The copies it hangs under its trays: those of each Volume it is the first to show. */
+  hang: readonly VolumeCopies[];
   resourceType: "service";
   resourceId: string;
   environmentId: string;
@@ -42,7 +42,7 @@ export type CanvasStoreServiceNode = Node<StoreCanvasService & {
 /** A Config Store Volume on the canvas, as the Store lists it. */
 export type CanvasStoreVolumeNode = Node<{
   volume: VolumeListing;
-  mirrors: readonly CanvasMirror[];
+  hang: readonly VolumeCopies[];
   resourceType: "volume";
   resourceId: string;
   environmentId: string;
@@ -82,8 +82,8 @@ export type StoreCanvas = {
   live: StoreLiveNode[];
   /** What the next Deploy changes: the bottom bar's count and its Details. */
   diff: DiffView;
-  /** Each Volume's mirrors by Volume id, as the Servers and the staged placement have them; empty until they answer. */
-  mirrors: ReadonlyMap<string, readonly CanvasMirror[]>;
+  /** Each Volume's copies by Volume id, as the Servers and the staged placement have them; empty until they answer. */
+  copies: ReadonlyMap<string, VolumeCopies>;
 };
 
 export type CanvasResourceNode =

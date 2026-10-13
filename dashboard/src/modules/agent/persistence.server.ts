@@ -5,6 +5,7 @@ import { and, asc, desc, eq, exists, gt, inArray, isNull, notInArray, or, type S
 import type { PgColumn, PgUpdateSetSource } from "drizzle-orm/pg-core";
 import { Effect } from "effect";
 import { agentInterrupts, agentRuns, agentThreads } from "#/modules/agent/tables";
+import { threadTitle } from "#/modules/agent/thread-title";
 import { Database } from "#/server/database.server";
 
 /** Whose sidebar a store reads and writes: one member in one Organization. Nothing outside it is visible. */
@@ -193,6 +194,26 @@ export const agentPersistence = Effect.fn("Agent.persistence")(function* (scope:
   };
 
   return { stores: { messages, runs, interrupts } } satisfies ChatWithInterruptsPersistence;
+});
+
+const HISTORY_LIMIT = 30;
+
+export type ThreadSummary = { readonly threadId: string; readonly title: string; readonly updatedAt: Date };
+
+/** `scope`'s latest chats, newest first, each titled by its first message. A chat with no words of the member's is left out. */
+export const recentThreads = Effect.fn("Agent.recentThreads")(function* (scope: AgentScope) {
+  const { drizzle } = yield* Database;
+  const rows = yield* drizzle.select({
+    threadId: agentThreads.threadId,
+    first: sql<ModelMessage | null>`${agentThreads.messages}->0`,
+    updatedAt: agentThreads.updatedAt,
+  }).from(agentThreads)
+    .where(and(eq(agentThreads.organizationId, scope.organizationId), eq(agentThreads.userId, scope.userId)))
+    .orderBy(desc(agentThreads.updatedAt), desc(agentThreads.threadId)).limit(HISTORY_LIMIT);
+  return rows.flatMap(({ threadId, first, updatedAt }): ThreadSummary[] => {
+    const title = threadTitle(first);
+    return title === undefined ? [] : [{ threadId, title, updatedAt }];
+  });
 });
 
 /** Whether `threadId` is free or already `scope`'s: another member's thread is never readable or writable. */

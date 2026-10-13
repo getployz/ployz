@@ -101,7 +101,7 @@ page shows how to point it at your project and environment.
   `postgres`.
 - **A name finds only ready replicas.** A replica is ready once it runs, or once it passes its
   [health check](settings.md#healthcheck) if it has one. One that passed stays even if its check
-  fails later, and its service shows **Healthcheck failing**. While no replica is ready, the name
+  fails later, and its service card shows an amber **⚠**. While no replica is ready, the name
   doesn't resolve. Check that service's **Logs**.
 - **Names are scoped to an environment; addresses aren't.** Projects and environments on
   your servers share one private network. A container that knows another environment's

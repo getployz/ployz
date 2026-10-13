@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
+import type { MachineId } from "@ployz/sdk";
+import { asTestDouble } from "#/lib/test-double";
+import type { VolumeCopies } from "#/modules/volume-copies/volume-copies";
+import type { CanvasResourceNode } from "./types";
 import {
+  fitViewport,
   getNodePanDelta,
+  nodesBox,
   viewportAcrossPages,
   viewportShowing,
 } from "./useCanvasNavigation";
@@ -32,4 +38,29 @@ it("zooms out only as far as a box needs to fit beside the pane, then pans the l
   expect(viewportShowing(start, { x: 100, y: 100, width: 200, height: 100 }, 548, 600, 0.4)).toEqual(start);
   // Too big even at the minimum zoom: centred.
   expect(viewportShowing(start, { x: 0, y: 0, width: 5000, height: 100 }, 548, 600, 0.4)).toMatchObject({ zoom: 0.4, x: -726 });
+});
+
+it("widens a node's box by the copies hung under it, so revealing it keeps every card in view", () => {
+  const server = { id: "web-2" as MachineId, name: "web-2" };
+  const copies: VolumeCopies = {
+    volume: { id: "v", name: "v" }, live: { server, restore: null, moveTo: null, busy: null, snapshots: null },
+    elsewhere: [1, 2, 3].map((n) => ({ kind: "mirror", id: `m${n}`, server, name: `m${n}`, refreshedAt: null, skipped: null, staged: null, busy: null })),
+  };
+  const node = (hang: readonly VolumeCopies[]) =>
+    asTestDouble<CanvasResourceNode>()({ position: { x: 100, y: 50 }, measured: { width: 288, height: 300 }, data: { hang } });
+  expect(nodesBox([node([])])).toEqual({ x: 100, y: 50, width: 288, height: 300 });
+  expect(nodesBox([node([copies])])).toEqual({ x: 100 - 132, y: 50, width: 288 + 2 * 132, height: 300 });
+});
+
+it("fits the whole canvas with the copies hung under a node in view, not just its card", () => {
+  const server = { id: "web-2" as MachineId, name: "web-2" };
+  const copies: VolumeCopies = {
+    volume: { id: "v", name: "v" }, live: { server, restore: null, moveTo: null, busy: null, snapshots: null },
+    elsewhere: [1, 2, 3].map((n) => ({ kind: "mirror", id: `m${n}`, server, name: `m${n}`, refreshedAt: null, skipped: null, staged: null, busy: null })),
+  };
+  const hung = asTestDouble<CanvasResourceNode>()({ position: { x: 0, y: 0 }, measured: { width: 288, height: 300 }, data: { hang: [copies] } });
+  const viewport = fitViewport([hung], 400, 600);
+  // The canvas's 48px side padding stays clear on both sides of the widest thing shown, the hung row.
+  expect(-132 * viewport.zoom + viewport.x).toBeCloseTo(48);
+  expect((288 + 132) * viewport.zoom + viewport.x).toBeCloseTo(400 - 48);
 });

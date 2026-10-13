@@ -58,12 +58,26 @@ describe("Details", () => {
     const volume = { id: "v1", name: "pg-data" };
     const id = (server: string) => member(server, "empty").machine.id;
     const changes = placementChanges(volume, [member("web-1", "writer"), member("web-3", "empty", { pool: true })], {
-      volumeId: "v1", environmentId: "e1", mirrors: [], staged: { primary: id("web-3"), mirrors: [], deletes: [] }, deploymentId: null,
+      volumeId: "v1", environmentId: "e1", mirrors: [], staged: { primary: id("web-3"), mirrors: [], deletes: [] }, unreached: false, deploymentId: null,
     });
-    const handlers = review({ groups: [placementGroup(volume, changes)] });
+    const handlers = review({ groups: [placementGroup(volume, changes, new Date())] });
     expect(lineOf("Primary").getByTitle("web-3").textContent).toBe("web-1web-3");
     fireEvent.click((await menuOf("pg-data Primary")).getByRole("menuitem", { name: "Discard" }));
     expect(handlers.onDiscardRow).toHaveBeenCalledWith(expect.objectContaining({ owner: "placement", nodeId: "v1" }), "0");
+  });
+
+  it("lists a copy change's steps, and marks changes a failed Deploy never reached", () => {
+    const volume = { id: "v1", name: "pg-data" };
+    const id = (server: string) => member(server, "empty").machine.id;
+    const changes = placementChanges(volume, [member("web-1", "writer"), member("web-3", "empty", { pool: true })], {
+      volumeId: "v1", environmentId: "e1", mirrors: [], staged: { primary: id("web-3"), mirrors: [], deletes: [] }, unreached: false, deploymentId: null,
+    });
+    review({ groups: [placementGroup(volume, changes, new Date())] });
+    expect(lineOf("Primary").getByText("Seed · Stop · Final sync · Start")).toBeTruthy();
+    expect(lineOf("Primary").queryByText("Not reached")).toBeNull();
+    cleanup();
+    review({ groups: [placementGroup(volume, changes, new Date(), true)] });
+    expect(lineOf("Primary").getByText("Not reached")).toBeTruthy();
   });
 
   it("shows complete file text and metadata, distinguishing an empty file from a missing one", () => {

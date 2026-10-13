@@ -1,7 +1,8 @@
 import { Fragment, useState, type ReactNode } from "react";
 import { ENVIRONMENT_NEW_BRANCH_ROUTE_TO } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/environment-route-paths";
+import { CreateEnvironmentDialog } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/create-environment-dialog";
 import { Link, useLocation, useNavigate } from "@tanstack/react-router";
-import { ChevronsUpDownIcon, GitBranchIcon, GitBranchPlusIcon, LayoutGridIcon, MoreHorizontalIcon, Settings2Icon } from "lucide-react";
+import { ChevronsUpDownIcon, GitBranchIcon, GitBranchPlusIcon, LayoutGridIcon, MoreHorizontalIcon, PlusIcon } from "lucide-react";
 import {
   getDashboardDestination,
   getDashboardSectionLabel,
@@ -29,8 +30,9 @@ type EnvironmentScope = Extract<DashboardScope, { kind: "environment" }>;
 /**
  * On phones the path keeps its last two crumbs; the rest move into a "…" menu so the bar never wraps.
  * `branchAt` marks the crumb a Branch starts at: ⑂ separates it from its Parent instead of "/".
+ * `flush` pulls a first crumb that is a ghost button out by its padding, so its text lines up with the bar's edge.
  */
-export function Crumbs({ items, branchAt }: { items: ReactNode[]; branchAt?: number }) {
+export function Crumbs({ items, branchAt, flush }: { items: ReactNode[]; branchAt?: number; flush?: boolean }) {
   const collapsed = items.slice(0, -2);
   // The bar outlives the page, and the crumbs in "…" navigate: each page starts it closed.
   const pathname = useLocation({ select: (location) => location.pathname });
@@ -56,7 +58,7 @@ export function Crumbs({ items, branchAt }: { items: ReactNode[]; branchAt?: num
           {index > 0 ? <BreadcrumbSeparator className={index <= collapsed.length ? phonesHidden : undefined}>
             {index === branchAt ? <GitBranchIcon /> : "/"}
           </BreadcrumbSeparator> : null}
-          <BreadcrumbItem className={cn("min-w-0 *:max-w-full *:truncate", index < collapsed.length && phonesHidden)}>{item}</BreadcrumbItem>
+          <BreadcrumbItem className={cn("min-w-0 *:max-w-full *:truncate", index < collapsed.length && phonesHidden, flush && index === 0 && "min-wf-nav:-ml-2.5")}>{item}</BreadcrumbItem>
         </Fragment>)}
       </BreadcrumbList>
     </Breadcrumb>
@@ -93,7 +95,7 @@ export function EnvironmentCrumbs({ scope }: { scope: EnvironmentScope }) {
   const section = useDashboardSection();
   const environments = useStoreEnvironments(scope);
   const parent = environments.data.find((row) => row.name === scope.environmentSlug)?.parent;
-  return <Crumbs branchAt={parent ? 2 : undefined} items={[
+  return <Crumbs flush branchAt={parent ? 2 : undefined} items={[
     <ProjectCrumb key="project" scope={scope} />,
     ...parent ? [
       <Link key="parent" {...getDashboardDestination({ ...scope, environmentSlug: parent }, section)}
@@ -121,7 +123,7 @@ function ProjectCrumb({ scope }: { scope: EnvironmentScope }) {
   const go = (destination: DashboardDestination) => { setOpen(false); void navigate(destination); };
   return (
     <Popover open={open} onOpenChange={setOpen}>
-      <CrumbTrigger label="Project" name={scope.projectSlug} className="min-wf-nav:-ml-2.5" />
+      <CrumbTrigger label="Project" name={scope.projectSlug} />
       <PopoverContent padding="none" align="start" className="w-[min(20rem,calc(100vw-2rem))]">
         <PopoverTitle className="sr-only">Switch project</PopoverTitle>
         <SwitcherLoading isPending={result === undefined}>
@@ -156,6 +158,7 @@ function EnvironmentCrumb({ scope }: { scope: EnvironmentScope }) {
   const navigate = useNavigate();
   const section = useDashboardSection();
   const [open, setOpen] = useState(false);
+  const [creating, setCreating] = useState(false);
   const current = environments.find((row) => row.name === scope.environmentSlug);
   const { organizationSlug, projectSlug, environmentSlug } = scope;
   const go = (to: () => Promise<void>) => { setOpen(false); void to(); };
@@ -187,15 +190,15 @@ function EnvironmentCrumb({ scope }: { scope: EnvironmentScope }) {
                   params: { organizationSlug, projectSlug, environmentSlug } }))}>
                   <GitBranchPlusIcon />New branch of {current.name}
                 </CommandItem>}
-                <CommandItem value="manage-environments" onSelect={() => go(() => navigate({ to: "/cloud/$organizationSlug/$projectSlug/$environmentSlug/settings",
-                  params: { organizationSlug, projectSlug, environmentSlug }, search: { scope: "project" } }))}>
-                  <Settings2Icon />Manage environments
+                <CommandItem value="new-environment" onSelect={() => { setOpen(false); setCreating(true); }}>
+                  <PlusIcon />New environment
                 </CommandItem>
               </CommandGroup>
             </CommandList>
           </Command>
         </SwitcherLoading>
       </PopoverContent>
+      {creating && <CreateEnvironmentDialog onOpenChange={setCreating} organizationSlug={organizationSlug} projectSlug={projectSlug} />}
     </Popover>
   );
 }

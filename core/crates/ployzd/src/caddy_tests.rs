@@ -19,6 +19,8 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::Mutex;
 
+#[path = "caddy_tests/trace.rs"]
+mod trace;
 #[path = "caddy_tests/watcher.rs"]
 mod watcher;
 
@@ -105,7 +107,7 @@ fn automatic_sites_render_routes_and_health_endpoint() {
         &BTreeMap::new(),
     );
     assert!(caddyfile.contains("auto_https off"));
-    assert!(caddyfile.contains("error DOMAIN_NOT_FOUND 404"));
+    assert!(caddyfile.contains("error NOT_DEPLOYED 404"));
     assert!(caddyfile.contains("lb_retries 3"));
     assert!(caddyfile.contains("fail_duration 30s"));
     assert!(caddyfile.contains("max_fails 2"));
@@ -113,7 +115,10 @@ fn automatic_sites_render_routes_and_health_endpoint() {
     // An unknown hostname a pinned wildcard covers gets 404 over HTTPS too, not an empty 200.
     assert_eq!(
         automatic_site_block(&caddyfile, "https://"),
-        "error DOMAIN_NOT_FOUND 404 import error_page log"
+        format!(
+            "import ployz_headers {local} import ployz_trace {local} \"\" \"\" NOT_DEPLOYED \
+             error NOT_DEPLOYED 404 import error_page {local} log"
+        )
     );
     let health = automatic_site_block(&caddyfile, "http://");
     let handler = automatic_site_block(&health, INGRESS_VERIFY_PATH);
@@ -133,7 +138,7 @@ fn every_site_answers_failures_with_the_error_page() {
     let snippet = automatic_site_block(&caddyfile, "(error_page)");
     for code in [
         "NOT_RUNNING",
-        "DOMAIN_NOT_FOUND",
+        "NOT_DEPLOYED",
         "NO_RESPONSE",
         "INTERNAL_ERROR",
     ] {
@@ -158,7 +163,10 @@ fn every_site_answers_failures_with_the_error_page() {
         "https://secure.example.com",
     ] {
         let site = automatic_site_block(&caddyfile, address);
-        assert!(site.ends_with("import error_page log"), "{address}: {site}");
+        assert!(
+            site.ends_with(&format!("import error_page {} log", "a".repeat(32))),
+            "{address}: {site}"
+        );
     }
 }
 
@@ -600,7 +608,7 @@ fn pending_challenge_is_answered_on_the_http_site() {
         "/.well-known/acme-challenge/LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0",
     );
     assert!(challenge.contains("respond \"LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\" 200"));
-    assert!(site.contains("error DOMAIN_NOT_FOUND 404"), "{site}");
+    assert!(site.contains("error NOT_DEPLOYED 404"), "{site}");
     assert!(!site.contains("NOT_RUNNING"), "{site}");
     assert!(!caddyfile.contains("https://secure.example.com"));
 }

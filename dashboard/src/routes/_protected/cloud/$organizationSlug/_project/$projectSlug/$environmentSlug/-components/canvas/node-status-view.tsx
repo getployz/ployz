@@ -51,7 +51,10 @@ function StatusMark({ tone }: { tone: Tone }) {
   return <span className={cn("size-2 shrink-0 rounded-full", DOTS[tone])} />;
 }
 
-/** What runs now, in one word (grey with its age when it isn't current), ending in the node's ⚠ N. */
+/** "OOM" alone, "OOM +1" beside other issues, else the count. */
+export const issuesText = ({ count, trouble }: NodeIssues) => trouble === null ? String(count) : count > 1 ? `${trouble} +${count - 1}` : trouble;
+
+/** What runs now, in one word (grey with its age when it isn't current), ending in the node's ⚠. */
 export function StatusLine({ status, issues, onIssues, className }: {
   status: Pick<RuntimeLine, "word" | "tone" | "since">;
   issues: NodeIssues | null;
@@ -69,8 +72,9 @@ export function StatusLine({ status, issues, onIssues, className }: {
           </span>}
       {issues ? (
         <Badge variant={issues.tone === "bad" ? "destructive" : "warning"} className={cn("ml-auto", onIssues && "cursor-pointer hover:underline")}
-          aria-label={plural(issues.count, "issue")} role={onIssues ? "link" : undefined} onClick={onIssues}>
-          <TriangleAlertIcon data-icon="inline-start" />{issues.count}
+          aria-label={issues.trouble ? `${issues.trouble}, ${plural(issues.count, "issue")}` : plural(issues.count, "issue")}
+          role={onIssues ? "link" : undefined} onClick={onIssues}>
+          <TriangleAlertIcon data-icon="inline-start" />{issuesText(issues)}
         </Badge>
       ) : null}
     </div>

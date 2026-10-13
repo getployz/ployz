@@ -81,4 +81,5 @@ New to Ployz? Follow these steps from a first deploy to real users.
 - [Builds](troubleshooting/builds.md): detection failures, out of memory, stuck builds
 - [Deployments](troubleshooting/deployments.md): failed health checks, crashing services, queued deployments
 - [My app isn't reachable](troubleshooting/app-not-reachable.md): error pages, wrong ports, domains and certificates
+- [Trace a request](troubleshooting/trace.md): which server answered, its deploy and replicas, Cloudflare
 - [Servers](troubleshooting/servers.md): install failures, servers that don't join or go offline, full disks

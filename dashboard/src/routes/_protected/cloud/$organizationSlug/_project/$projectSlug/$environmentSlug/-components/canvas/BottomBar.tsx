@@ -1,9 +1,10 @@
 "use client";
 
-import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Link, useParams } from "@tanstack/react-router";
-import { MoreVerticalIcon } from "lucide-react";
+import { MoreVerticalIcon, XIcon } from "lucide-react";
+import { AgentDock } from "#/components/agent-sidebar/agent-dock";
 import { Button } from "#/components/ui/button";
 import { ConfirmDialog } from "#/components/confirm-dialog";
 import { buttonVariants } from "#/components/ui/button-variants";
@@ -21,10 +22,20 @@ import { EnvironmentChangesReview } from "./EnvironmentChangesReview";
 import { AddServerDialog } from "#/routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/add-server-dialog";
 
 /**
- * Where the bottom bar renders: the scene, outside the canvas that turns inert under a panel. The canvas owns the change
- * state, so it portals the bar here.
+ * Where the bottom bar renders while the agent is closed: the scene, outside the canvas that turns inert under a panel.
+ * The canvas owns the change state, so it portals the bar here, or into the open agent's dock.
  */
 export const BottomBarSlot = createContext<HTMLElement | null>(null);
+
+const DEPLOYED_SHOWS_MS = 6_000;
+/** Far more Deployments than one bar shows, so the oldest ids it forgets are long ended. */
+const WATCHED_LIMIT = 100;
+
+/** A Failed dismissed in another tab hides here too. */
+const subscribeStorage = (onChange: () => void) => {
+  window.addEventListener("storage", onChange);
+  return () => window.removeEventListener("storage", onChange);
+};
 
 type BottomBarProps = {
   groups: ChangeGroup[];
@@ -41,6 +52,11 @@ type BottomBarProps = {
   onDiscardRow: (group: ChangeGroup, path: string) => void;
   /** The Environment's in-flight Deployments, newest first, whoever admitted them. */
   active: DeploymentSummary[];
+  /**
+   * Its latest ended Deployments, newest first, or undefined until they load. The newest shows Failed until dismissed;
+   * one seen in flight here shows how it ended.
+   */
+  ended?: DeploymentSummary[];
   /** A running Deploy's storage step, in words, while it moves or copies a Volume before its Services. */
   storage?: (deploymentId: string) => string | null;
   /** Details' notes: where changes came from, and the Parent's deployed values. */
@@ -70,6 +86,7 @@ export function BottomBar({
   onDiscardNode,
   onDiscardRow,
   active: newestFirst,
+  ended,
   storage = () => null,
   notes,
   proposals,
@@ -77,6 +94,7 @@ export function BottomBar({
   admitting = false,
 }: BottomBarProps) {
   const slot = useContext(BottomBarSlot);
+  const dock = useContext(AgentDock);
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const viewedId = useCanvasInspectorSelection().deploymentId;
   const [open, setOpen] = useState(false);
@@ -90,6 +108,32 @@ export function BottomBar({
   const hasChanges = totalChanges > 0 || canPublish;
   const deployable = runtimeChanges > 0 && !noServers;
   const shown = hasChanges ? undefined : active.find((deployment) => deployment.id !== viewedId);
+  // Seen in flight here, or its page opened before it was listed (as Deploy does): how a Deployment ends shows only
+  // when this bar watched it run. A failure shows from any tab, so a reload keeps it.
+  const watched = useRef(new Set<string>());
+  const [dismissed, setDismissed] = useState<ReadonlySet<string>>(new Set());
+  const dismissedKey = `bottom-bar-dismissed:${params.organizationSlug}/${params.projectSlug}/${params.environmentSlug}`;
+  const dismissedFailure = useSyncExternalStore(subscribeStorage, () => localStorage.getItem(dismissedKey), () => null);
+  useEffect(() => {
+    const seen = watched.current;
+    for (const deployment of active) seen.add(deployment.id);
+    if (viewedId !== null && ended !== undefined && !ended.some((deployment) => deployment.id === viewedId)) seen.add(viewedId);
+    for (const id of seen) if (seen.size > WATCHED_LIMIT) seen.delete(id);
+  }, [active, ended, viewedId]);
+  const latest = active.length > 0 ? undefined : ended?.[0];
+  const showsLatest = latest !== undefined && (latest.status === "failed" ? latest.id !== dismissedFailure : watched.current.has(latest.id));
+  const outcome = shown || !showsLatest || dismissed.has(latest.id) || latest.id === viewedId ? undefined : latest;
+  const dismiss = (deployment: DeploymentSummary) => {
+    setDismissed((ids) => new Set([...ids, deployment.id]));
+    if (deployment.status !== "failed") return;
+    localStorage.setItem(dismissedKey, deployment.id);
+  };
+  const deployed = outcome?.status === "applied" ? outcome.id : null;
+  useEffect(() => {
+    if (deployed === null) return;
+    const timer = setTimeout(() => setDismissed((ids) => new Set([...ids, deployed])), DEPLOYED_SHOWS_MS);
+    return () => clearTimeout(timer);
+  }, [deployed]);
 
   function deploy() {
     if (admitting) return;
@@ -135,7 +179,7 @@ export function BottomBar({
     return () => document.removeEventListener("keydown", deployOnShiftEnter);
   });
 
-  const row = hasChanges ? (
+  const staged = hasChanges ? (
     <Row staged title={totalChanges > 0 ? plural(totalChanges, "change") : "Changes to save"}
       shortTitle={totalChanges > 0 ? plural(totalChanges, "change") : "To save"} detail={null}>
       <Button ref={triggerRef} variant="outline" aria-expanded={open} onClick={openReview}>Details</Button>
@@ -160,7 +204,14 @@ export function BottomBar({
       </DropdownMenu>
     </Row>
   ) : shown ? <AttemptState deployment={shown} storage={storage(shown.id)} /> : null;
-  const bar = row ? <div role="group" aria-label="Bottom bar" className="bottom-bar">{row}</div> : null;
+  // A failed Deploy hands its unreached changes back: how it ended stays above them until dismissed.
+  const bar = staged || outcome ? (
+    <div role="group" aria-label="Bottom bar" className="bottom-bar" data-docked={dock ? true : undefined}>
+      {outcome ? <AttemptState deployment={outcome} storage={null} onDismiss={() => dismiss(outcome)} /> : null}
+      {staged}
+    </div>
+  ) : null;
+  const host = dock ?? slot;
 
   const includeNewer = proposals?.onIncludeNewer;
   const reviewProps = {
@@ -178,7 +229,7 @@ export function BottomBar({
   };
   return (
     <>
-      {bar && slot ? createPortal(bar, slot) : null}
+      {bar && host ? createPortal(bar, host) : null}
       {open ? <EnvironmentChangesReview {...reviewProps} /> : null}
       <ConfirmDialog open={confirmingDiscard} onOpenChange={setConfirmingDiscard} title="Discard all changes?"
         description={`${listNames(created)} ${created.length === 1 ? "is" : "are"} new and will be deleted. Other changes return to their reviewed baseline.`}
@@ -187,8 +238,7 @@ export function BottomBar({
   );
 }
 
-/** An in-flight Deployment, the CLI's or this dashboard's: its status, what it ships, and Logs to open its page. */
-function AttemptState({ deployment, storage }: { deployment: DeploymentSummary; storage: string | null }) {
+function AttemptState({ deployment, storage, onDismiss }: { deployment: DeploymentSummary; storage: string | null; onDismiss?: () => void }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const deploys = deploysLabel(deployment);
   const detail = storage ?? (deploys && deployment.upload ? `${deploys} · ${uploadLabel(deployment.upload)}` : deploys);
@@ -198,6 +248,9 @@ function AttemptState({ deployment, storage }: { deployment: DeploymentSummary; 
       <Link to={DEPLOYMENT_PAGE_ROUTE_TO} params={{ ...params, deploymentId: deployment.id }} className={buttonVariants({ variant: "outline" })}>
         Logs
       </Link>
+      {onDismiss ? (
+        <Button size="icon" variant="ghost" aria-label="Dismiss" title="Dismiss" onClick={onDismiss}><XIcon /></Button>
+      ) : null}
     </Row>
   );
 }

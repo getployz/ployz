@@ -90,13 +90,12 @@ const roundStep = (ms: number) => STEPS_MS.find((step) => step >= ms) ?? Math.ce
 const SOURCE_STEP_MS = { raw: 0, hourly: HOUR_MS, sixHourly: 6 * HOUR_MS } satisfies Record<PointSource, number>;
 
 /**
- * `window` cut into at most 288 round steps, never finer than the points the server reads for it fill, or the line would
- * break between them.
+ * `window` cut into at most 288 round steps, never finer than `intervalMs` or the points the server reads for it fill, or
+ * the line would break between them.
  */
 export function chartWindow(window: RangeWindow, now: number, intervalMs: number): TimeWindow {
   const source = pointSource(window, now);
-  const floor = source === "raw" ? intervalMs : SOURCE_STEP_MS[source];
-  return { ...window, stepMs: roundStep(Math.max(floor, (window.to - window.from) / 288)) };
+  return { ...window, stepMs: roundStep(Math.max(intervalMs, SOURCE_STEP_MS[source], (window.to - window.from) / 288)) };
 }
 
 /** An incident's span; an open one runs to `to`. */
@@ -115,7 +114,7 @@ export function incidentRange(incident: UptimeIncidentEntry, now: number): Range
  * The step a time falls in. The first step starts at `from`, so a range's partial first step is not lost, and a time at
  * `to` falls in the last step, since reads include it.
  */
-const stepAt = (window: TimeWindow, at: number) =>
+export const stepAt = (window: TimeWindow, at: number) =>
   Math.max(window.from, Math.floor(Math.min(at, window.to - 1) / window.stepMs) * window.stepMs);
 
 /** The start of each step in a window: `from`, then each round step after it. */

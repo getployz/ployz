@@ -1,22 +1,25 @@
-import { Suspense, use, useState } from "react";
+import { Suspense, use, useEffect, useRef, useState } from "react";
 import {
   Background,
   BackgroundVariant,
   type Edge,
   MarkerType,
   ReactFlow,
+  useReactFlow,
+  useStore,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { Link, useLoaderData, useNavigate, useParams } from "@tanstack/react-router";
 import { HistoryIcon, PlusIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
+import { prefersReducedMotion } from "#/lib/motion";
 import { BottomBar } from "./BottomBar";
 import { storeHintNotes } from "./store-hints";
-import { CANVAS_FIT_VIEW, CANVAS_MAX_ZOOM, CANVAS_MIN_ZOOM, SNAP_GRID } from "./constants";
+import { CANVAS_MAX_ZOOM, CANVAS_MIN_ZOOM, SNAP_GRID } from "./constants";
 import { canvasNodeTypes } from "./canvas-node-types";
 import { CanvasNodeList } from "./CanvasServiceList";
 import { useCanvasPositionMutation } from "./useCanvasPositionMutation";
-import { useCanvasNavigation } from "./useCanvasNavigation";
+import { fitViewport, useCanvasNavigation } from "./useCanvasNavigation";
 import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
 import { useDeploymentFocus } from "../deployment-page";
 import { useServiceCreator } from "./useServiceCreator";
@@ -27,7 +30,7 @@ import { useVolumeCreator } from "./useVolumeCreator";
 import { useConfigCreator } from "./useConfigCreator";
 import { ConfigCreatorDialog } from "./ConfigCreatorDialog";
 import { useStoreChangeActions } from "./useStoreChangeActions";
-import { useInFlightDeployments } from "#/modules/config-store/store-view.queries";
+import { useStoreDeployments } from "#/modules/config-store/store-view.queries";
 import { type ChangeGroup, reviewGroups } from "#/modules/config-store/store-deployments";
 import { mergeRestoreGroups } from "#/modules/volume-placement/volume-placement";
 import { useStagedPlacements, useStorageSteps } from "#/modules/volume-placement/volume-placement.hooks";
@@ -95,6 +98,7 @@ export function CanvasFlow({
       : picking ? { key: "new-branch", nodeIds: canvasNodes.map((node) => node.id) } : null,
   );
   useKeyboardFocusModality();
+  useRefitOnWidthChange(flowReady && !focusNode);
   const creator = useServiceCreator(params, environmentId, getViewportCenter);
   const volumeCreator = useVolumeCreator(
     params,
@@ -132,8 +136,6 @@ export function CanvasFlow({
             nodeTypes={canvasNodeTypes}
             elementsSelectable={false}
             nodesFocusable={false}
-            fitView={!focusNode}
-            fitViewOptions={CANVAS_FIT_VIEW}
             proOptions={{ hideAttribution: true }}
             snapToGrid
             snapGrid={SNAP_GRID}
@@ -208,6 +210,29 @@ export function CanvasFlow({
 }
 
 /**
+ * Opening or closing the agent narrows or widens the canvas, and React Flow keeps its viewport. Each time it measures a
+ * new width, fit the canvas again, unless a node holds the view. Keyed on the width alone: a quick open and close can
+ * land before React Flow measures, so the agent's state says nothing about which width the view was fitted to. Not
+ * `fitView`: over controlled nodes it waits for a node change that never comes.
+ */
+function useRefitOnWidthChange(enabled: boolean) {
+  const width = useStore((state) => state.width);
+  const height = useStore((state) => state.height);
+  const flow = useReactFlow<CanvasResourceNode>();
+  const fittedWidth = useRef(width);
+  useEffect(() => {
+    // Below the desktop breakpoint the canvas is hidden and measures 0; keep the last real width so the way back refits.
+    if (!width) return;
+    const previous = fittedWidth.current;
+    fittedWidth.current = width;
+    if (!previous || previous === width || !enabled) return;
+    const nodes = flow.getNodes();
+    if (!nodes.length) return;
+    void flow.setViewport(fitViewport(nodes, width, height), { duration: prefersReducedMotion() ? 0 : 360 });
+  }, [width, height, enabled, flow]);
+}
+
+/**
  * The bottom bar over the Config Store: the Store's review in Details, Deploy, Save without deploying and Discard
  * through its write queue, and the Environment's in-flight Deployment, whether the CLI or this tab admitted it.
  */
@@ -216,11 +241,11 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
   const navigate = useNavigate();
   const ref = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM }).store;
   const { diff } = store;
-  const actions = useStoreChangeActions(params.organizationSlug, ref, diff.version,
-    (deploymentId) => void navigate({ to: DEPLOYMENT_PAGE_ROUTE_TO, params: { ...params, deploymentId } }));
-  const inFlight = useInFlightDeployments(params.organizationSlug, ref);
-  const { noServers } = use(RuntimeLensContext);
   const placements = useStagedPlacements(params.organizationSlug, ref, diff.environment.id, store.volumes);
+  const actions = useStoreChangeActions(params.organizationSlug, ref, diff.version,
+    (deploymentId) => void navigate({ to: DEPLOYMENT_PAGE_ROUTE_TO, params: { ...params, deploymentId } }), placements.loss);
+  const latest = useStoreDeployments(params.organizationSlug, ref).data.pages[0]?.deployments ?? [];
+  const { noServers } = use(RuntimeLensContext);
   const storage = useStorageSteps(params.organizationSlug);
   const storeGroups = reviewGroups(diff, store.services.map(({ service }) => service));
   const groups = mergeRestoreGroups(storeGroups, placements.groups);
@@ -244,7 +269,8 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
         onDiscardNode={discardNode}
         onDiscardRow={(group, path) => group.owner === "placement" ? placements.undo(group.nodeId, path)
           : actions.discard(path, group.rows.find((row) => row.path === path)?.discardTarget)}
-        active={inFlight}
+        active={latest.filter((deployment) => deployment.in_flight)}
+        ended={latest.filter((deployment) => !deployment.in_flight)}
         storage={storage}
         notes={storeHintNotes(diff, storeGroups, actions.neverSync)}
         proposals={{

@@ -24,6 +24,8 @@ use crate::{
     ingress::{IngressEndpoint, IngressProjection, IngressSite, prepare_directory},
 };
 
+mod trace;
+
 pub const CONFIG_FILE: &str = "Caddyfile";
 const CONTAINER_CERTS_DIR: &str = "/config/caddy/certs";
 const ADMIN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -189,24 +191,28 @@ fn render_caddyfile(projection: &IngressProjection, timestamp: &str) -> String {
         ""
     };
     let _ = write!(output, "{{\n{debug}\tauto_https off\n}}\n\n");
+    trace::write_snippets(&mut output);
     write_error_page(&mut output);
     let ingress_verify = verify_handle(INGRESS_VERIFY_PATH, local_machine);
     let hostname_verify = verify_handle(HOSTNAME_VERIFY_PATH, local_machine);
+    let headers = trace::headers_import(local_machine);
+    let unpublished = trace::unpublished_import(local_machine);
     let _ = write!(
         output,
         "# Health check endpoint to verify Caddy reachability on this Machine.\n\
 http:// {{\n\
-{ingress_verify}{hostname_verify}\
-\terror DOMAIN_NOT_FOUND 404\n\
-\timport error_page\n\
+{headers}{unpublished}{ingress_verify}{hostname_verify}\
+\terror NOT_DEPLOYED 404\n\
+\timport error_page {local_machine}\n\
 \tlog\n\
 }}\n\
 \n\
 # Unknown hostnames over HTTPS: a wildcard certificate another site pins may cover them,\n\
 # and Caddy would answer an unmatched request 200 with an empty body.\n\
 https:// {{\n\
-\terror DOMAIN_NOT_FOUND 404\n\
-\timport error_page\n\
+{headers}{unpublished}\
+\terror NOT_DEPLOYED 404\n\
+\timport error_page {local_machine}\n\
 \tlog\n\
 }}\n\
 \n\
@@ -228,24 +234,35 @@ https:// {{\n\
     }
     for site in &projection.sites {
         let https = site.material().zip(site.route(HttpProtocol::Https));
+        let published = |endpoints| {
+            let publication = site
+                .publication
+                .as_ref()
+                .expect("a routed site has a publication");
+            trace::published_import(local_machine, &publication.trace, endpoints)
+        };
         // An https-only hostname redirects http to https; the challenge and verify probe stay on http.
         // A challenge-only http site publishes nothing else, so it answers like the catch-all.
-        let http = match site.route(HttpProtocol::Http) {
-            Some(endpoints) => Some(proxy(endpoints)),
-            None if https.is_some() => Some(REDIRECT_TO_HTTPS.to_owned()),
-            None => site
+        let http = match (site.route(HttpProtocol::Http), https) {
+            (Some(endpoints), _) => Some((published(endpoints), proxy(endpoints))),
+            // The redirect's trace reports the https route it sends visitors to.
+            (None, Some((_, endpoints))) => {
+                Some((published(endpoints), REDIRECT_TO_HTTPS.to_owned()))
+            }
+            (None, None) => site
                 .challenge()
-                .map(|_| "\terror DOMAIN_NOT_FOUND 404\n".to_owned()),
+                .map(|_| (unpublished.clone(), "\terror NOT_DEPLOYED 404\n".to_owned())),
         };
-        if let Some(answer) = http {
+        if let Some((trace, answer)) = http {
             // The hostname's own site shadows the catch-all, so it answers the verify probe too.
             write_site(
                 &mut output,
+                local_machine,
                 "http",
                 &site.hostname,
-                &answer,
-                &hostname_verify,
+                &format!("{headers}{trace}{hostname_verify}"),
                 site.challenge(),
+                &answer,
             );
         }
         let Some((material, route)) = https else {
@@ -256,11 +273,12 @@ https:// {{\n\
             format!("\ttls {CONTAINER_CERTS_DIR}/{stem}.crt {CONTAINER_CERTS_DIR}/{stem}.key\n");
         write_site(
             &mut output,
+            local_machine,
             "https",
             &site.hostname,
-            &proxy(route),
-            &tls,
+            &format!("{tls}{headers}{}", published(route)),
             None,
+            &proxy(route),
         );
     }
     write_certificate_errors(&mut output, &projection.sites);
@@ -296,7 +314,7 @@ fn write_error_page(output: &mut String) {
 	handle_errors {
 		map "{err.status_code} {err.message}" {ployz_error} {ployz_message} {ployz_docs} {
 			"503 NOT_RUNNING" NOT_RUNNING "The app isn't running." "#this-app-isnt-running"
-			"404 DOMAIN_NOT_FOUND" DOMAIN_NOT_FOUND "Nothing is deployed at this domain." "#nothing-is-deployed-here"
+			"404 NOT_DEPLOYED" NOT_DEPLOYED "Nothing is deployed at this domain." "#nothing-is-deployed-here"
 			~^50[234] NO_RESPONSE "The app didn't respond." "#this-app-didnt-respond"
 			default INTERNAL_ERROR "Something went wrong." ""
 		}
@@ -304,9 +322,10 @@ fn write_error_page(output: &mut String) {
 			~^([a-zA-Z0-9.:-]+)$ "${1}"
 			default "this domain"
 		}
+		# Headers set on the failed route do not reach this response.
+		import ployz_headers {args[0]}
 		header {
 			ployz-error {ployz_error}
-			ployz-request-id {http.request.uuid}
 			cache-control no-store
 		}
 		@not_running vars {ployz_error} NOT_RUNNING
@@ -314,7 +333,6 @@ fn write_error_page(output: &mut String) {
 			retry-after 10
 			refresh 10
 		}
-		log_append request_id {http.request.uuid}
 		@json header Accept *json*
 		handle @json {
 			header content-type application/json
@@ -397,11 +415,12 @@ fn proxy(endpoints: &[IngressEndpoint]) -> String {
 
 fn write_site(
     output: &mut String,
+    machine: &MachineId,
     protocol: &str,
     hostname: &IngressHost,
-    answer: &str,
     directives: &str,
     challenge: Option<&CertificateChallenge>,
+    answer: &str,
 ) {
     let handle = challenge
         .map(|challenge| {
@@ -415,7 +434,7 @@ fn write_site(
         .unwrap_or_default();
     let _ = write!(
         output,
-        "\n{protocol}://{hostname} {{\n{directives}{handle}{answer}\timport error_page\n\tlog\n}}\n"
+        "\n{protocol}://{hostname} {{\n{directives}{handle}{answer}\timport error_page {machine}\n\tlog\n}}\n"
     );
 }
 

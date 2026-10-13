@@ -1,18 +1,21 @@
-import { Fragment, useEffect, useMemo, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { Fragment, useEffect, useMemo, useState, type FormEvent, type KeyboardEvent, type ReactNode, type Ref } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { EventType, type StreamChunk } from "@tanstack/ai/client";
 import { fetchServerSentEvents, useChat, type UIMessage } from "@tanstack/ai-react";
 import { Option, Schema } from "effect";
 import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remend from "remend";
-import { ArrowUpIcon, ChevronRightIcon, SquareIcon, SquarePenIcon, XIcon } from "lucide-react";
+import { ArrowUpIcon, ChevronRightIcon, HistoryIcon, SquareIcon, SquarePenIcon } from "lucide-react";
 import type { CollectionScope } from "#/collections/scope";
 import { Bubble, BubbleContent } from "#/components/ui/bubble";
 import { Button } from "#/components/ui/button";
+import { RelativeTime } from "#/components/relative-time";
+import { Command, CommandEmpty, CommandGroup, CommandItem, CommandList } from "#/components/ui/command";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "#/components/ui/collapsible";
 import { Empty, EmptyDescription, EmptyHeader } from "#/components/ui/empty";
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupTextarea } from "#/components/ui/input-group";
+import { Popover, PopoverContent, PopoverTitle, PopoverTrigger } from "#/components/ui/popover";
 import { Marker, MarkerContent, MarkerIcon } from "#/components/ui/marker";
 import { Message, MessageContent } from "#/components/ui/message";
 import {
@@ -22,9 +25,11 @@ import {
 import { Spinner } from "#/components/ui/spinner";
 import { approvalInterrupt } from "#/modules/agent/agent";
 import { isPageContext, type PageContext } from "#/modules/agent/page-context";
+import { chatTitle } from "#/modules/agent/thread-title";
 import type { Failure } from "#/modules/agent/provider-error";
 import { ApprovalCard } from "./approval-card";
 import { pendingApprovalsOptions } from "./approvals.queries";
+import { agentThreadsOptions, refetchAgentThreads, type ThreadSummary } from "./threads.queries";
 import { toolOutcome, ToolRow } from "./tool-row";
 
 const askedKey = (threadId: string) => `ployz.agent.asked.${threadId}`;
@@ -33,45 +38,92 @@ type Asked = typeof Asked.Type;
 
 type PanelProps = {
   organizationSlug: string;
-  environment: string | null;
   scope: CollectionScope;
   /** Where the member is; each message carries it, so the agent reads "this service" as the one on screen. */
   page: PageContext;
   threadId: string;
-  onNewChat: () => void;
-  onClose: () => void;
+  /** Opens a chat: one from history, or a fresh id for a new one. */
+  onChat: (threadId: string) => void;
+  /** Receives the element above the composer where the page's bottom bar docks. */
+  dock?: Ref<HTMLDivElement>;
 };
 
 /** One agent conversation; the sidebar picks the thread, and switching Organization or thread swaps in a fresh connection. */
-export default function AgentPanel({ organizationSlug, environment, scope, page, threadId, onNewChat, onClose }: PanelProps) {
+export default function AgentPanel({ organizationSlug, scope, page, threadId, onChat, dock }: PanelProps) {
   return (
     <section aria-label="Ployz agent" className="flex h-full min-h-0 flex-col bg-background">
-      <header className="flex h-12 shrink-0 items-center gap-2 border-b px-3">
-        <h2 className="text-sm font-semibold">Ployz agent</h2>
-        <span className="truncate text-xs text-muted-foreground">{environment ? `${organizationSlug} / ${environment}` : organizationSlug}</span>
-        <Button className="ml-auto" size="icon-sm" variant="ghost" aria-label="New chat" title="New chat" onClick={onNewChat}><SquarePenIcon /></Button>
-        <Button size="icon-sm" variant="ghost" aria-label="Close agent" title="Close" onClick={onClose}><XIcon /></Button>
-      </header>
-      <Conversation key={`${organizationSlug}/${threadId}`} organizationSlug={organizationSlug} scope={scope} page={page} threadId={threadId} onNewChat={onNewChat} />
+      <Conversation key={`${organizationSlug}/${threadId}`} organizationSlug={organizationSlug} scope={scope} page={page} threadId={threadId}
+        onChat={onChat} dock={dock} />
     </section>
+  );
+}
+
+/** The chat's title from history; a chat history hasn't listed yet takes it from the member's first message, as history will. */
+function titleOf(threads: readonly ThreadSummary[] | undefined, threadId: string, messages: readonly UIMessage[]) {
+  const first = messages.find(({ role }) => role === "user");
+  return threads?.find((thread) => thread.threadId === threadId)?.title
+    ?? chatTitle(first?.parts.flatMap((part) => part.type === "text" && !isPageContext(part.content) ? [part.content] : []).join(" ") ?? "")
+    ?? "New chat";
+}
+
+/** The member's past chats in this Organization, newest first; picking one opens it. */
+function ChatHistory({ organizationSlug, threadId, onChat }: {
+  organizationSlug: string;
+  threadId: string;
+  onChat: (threadId: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const { data: threads, isError, refetch } = useQuery(agentThreadsOptions(organizationSlug));
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger render={<Button size="icon-sm" variant="ghost" aria-label="Chat history" title="Chat history" />}>
+        <HistoryIcon />
+      </PopoverTrigger>
+      <PopoverContent padding="none" align="end" className="w-[min(20rem,calc(100vw-2rem))]">
+        <PopoverTitle className="sr-only">Chat history</PopoverTitle>
+        <Command tabIndex={0} label="Chat history" defaultValue={threadId}>
+          <CommandList className="max-h-[min(24rem,60dvh)]">
+            {threads !== undefined && <CommandEmpty>No chats yet</CommandEmpty>}
+            {isError && threads === undefined && (
+              <div role="alert" className="flex items-center justify-between gap-2 p-2 text-sm text-muted-foreground">
+                Chats couldn't load.
+                <Button size="sm" variant="outline" onClick={() => void refetch()}>Retry</Button>
+              </div>
+            )}
+            <CommandGroup heading="Chats">
+              {threads?.map((thread) => (
+                <CommandItem key={thread.threadId} value={thread.threadId} data-checked={thread.threadId === threadId}
+                  onSelect={() => { setOpen(false); onChat(thread.threadId); }}>
+                  <span className="flex-1 truncate">{thread.title}</span>
+                  <span className="shrink-0 text-muted-foreground"><RelativeTime date={thread.updatedAt} /></span>
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
   );
 }
 
 /** The client reports any refused request only as text; a 403 means the thread in the link is another member's. */
 const refused = (error: Error | undefined) => error?.message.includes("status: 403") ?? false;
 
-function Conversation({ organizationSlug, scope, page, threadId, onNewChat }: {
+function Conversation({ organizationSlug, scope, page, threadId, onChat, dock }: {
   organizationSlug: string;
   scope: CollectionScope;
   page: PageContext;
   threadId: string;
-  onNewChat: () => void;
+  onChat: (threadId: string) => void;
+  dock?: Ref<HTMLDivElement>;
 }) {
+  const onNewChat = () => onChat(crypto.randomUUID());
   const [connection] = useState(() => fetchServerSentEvents(`/api/agent/${encodeURIComponent(organizationSlug)}/chat`));
   // useChat hands new forwardedProps to its client on every change of identity.
   const forwardedProps = useMemo(() => ({ page }), [page]);
   const [retryAt, setRetryAt] = useState<number | null>(null);
   const [tooLong, setTooLong] = useState(false);
+  const queryClient = useQueryClient();
   const onChunk = (chunk: StreamChunk) => {
     if (chunk.type !== EventType.RUN_ERROR) return;
     const wait = chunk.metadata?.tanstack?.retryAfterMs;
@@ -79,6 +131,13 @@ function Conversation({ organizationSlug, scope, page, threadId, onNewChat }: {
     setTooLong(chunk.code === ("chat_too_long" satisfies Failure));
   };
   const chat = useChat({ connection, threadId, persistence: true, interrupts: [approvalInterrupt], live: true, forwardedProps, onChunk });
+  // Every turn saves the thread, so its place in history changes once the turn ends: finished, failed, stopped, or left mid-reply.
+  useEffect(() => {
+    if (!chat.isLoading) return;
+    return () => void refetchAgentThreads(queryClient, organizationSlug);
+  }, [chat.isLoading, queryClient, organizationSlug]);
+  const { data: threads } = useQuery(agentThreadsOptions(organizationSlug));
+  const title = titleOf(threads, threadId, chat.messages);
   const bound = chat.interrupts.flatMap((interrupt) =>
     interrupt.kind === "generic" && "definitionId" in interrupt && interrupt.definitionId === approvalInterrupt.id && interrupt.payload
       ? [{ key: interrupt.key, approvalId: interrupt.payload.approvalId, interrupt }]
@@ -98,6 +157,11 @@ function Conversation({ organizationSlug, scope, page, threadId, onNewChat }: {
     // Follows the reply as it streams. Anchoring each question to the top made the scroller jump back to an older one
     // whenever the Thinking marker gave way to the reply, because the message count stayed the same.
     <MessageScrollerProvider autoScroll>
+      <header className="flex h-12 shrink-0 items-center gap-1 border-b px-3">
+        <h2 className="min-w-0 flex-1 truncate text-sm font-semibold" title={title}>{title}</h2>
+        <ChatHistory organizationSlug={organizationSlug} threadId={threadId} onChat={onChat} />
+        <Button size="icon-sm" variant="ghost" aria-label="New chat" title="New chat" onClick={onNewChat}><SquarePenIcon /></Button>
+      </header>
       <MessageScroller className="flex-1">
         <MessageScrollerViewport>
           <MessageScrollerContent aria-busy={chat.isLoading} className="gap-3 p-3">
@@ -156,7 +220,10 @@ function Conversation({ organizationSlug, scope, page, threadId, onNewChat }: {
         </MessageScrollerViewport>
         <MessageScrollerButton />
       </MessageScroller>
-      <Composer busy={chat.isLoading} onSend={(text) => void chat.sendMessage(text)} onStop={chat.stop} />
+      <div className="flex shrink-0 flex-col gap-2 border-t p-2">
+        <div ref={dock} className="empty:hidden" />
+        <Composer busy={chat.isLoading} onSend={(text) => void chat.sendMessage(text)} onStop={chat.stop} />
+      </div>
     </MessageScrollerProvider>
   );
 }
@@ -293,7 +360,7 @@ function Composer({ busy, onSend, onStop }: { busy: boolean; onSend: (text: stri
     if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) send(event);
   };
   return (
-    <form onSubmit={send} className="shrink-0 border-t p-2">
+    <form onSubmit={send}>
       <InputGroup>
         <InputGroupTextarea aria-label="Message the agent" placeholder="Ask about your servers…" rows={1} value={draft}
           onChange={(event) => setDraft(event.target.value)} onKeyDown={onKeyDown} className="max-h-40 min-h-9" />

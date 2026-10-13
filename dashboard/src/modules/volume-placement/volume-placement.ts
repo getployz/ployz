@@ -1,5 +1,7 @@
 import type { ChangeKind, MachineId, MachineName } from "@ployz/sdk";
+import type { DeletionItem } from "#/components/deletion-dialog";
 import type { ChangeGroup } from "#/modules/config-store/store-deployments";
+import { STALE_AFTER_MS } from "#/modules/volume-copies/volume-copies";
 import { epochOf, planFromCopies } from "#/modules/volume-run/plan";
 import { runWords } from "#/modules/volume-run/volume-copies";
 import type { RuntimeVolumeCopy } from "#/modules/runtime/runtime.collection";
@@ -40,6 +42,9 @@ export type Placement = {
   readonly seed?: Seed;
 };
 
+/** The row's `staged` as stored: a failed Deploy marks it unreached in place, and the next one clears the mark. */
+export type StoredPlacement = Placement & { readonly unreached?: true };
+
 /**
  * The dashboard's record of a Volume's placement. `mirrors` are the copies that refresh; a copy on any other Server is
  * a detached volume. Null `mirrors` means no record yet, so every copy counts as a mirror, as the CLI made them.
@@ -49,6 +54,8 @@ export type PlacementRow = {
   readonly environmentId: string;
   readonly mirrors: readonly MachineId[] | null;
   readonly staged: Placement | null;
+  /** A failed Deploy gave `staged` back before it got to it. */
+  readonly unreached: boolean;
   /** The Deploy that owns `staged`; Discard waits for it. */
   readonly deploymentId: string | null;
 };
@@ -65,6 +72,8 @@ export type PlacementChange =
     readonly how: MoveHow;
     /** Restore only: writes after this time are lost. */
     readonly lostAfter: Date | null;
+    /** When the copy it moves to last refreshed. */
+    readonly refreshedAt: Date | null;
     /** Detached copies the move deletes first, since a Volume holds one copy besides its primary for now. */
     readonly clears: readonly MachineRef[];
   }
@@ -112,6 +121,11 @@ export const detachedName = (volume: PlacementVolume) => `${volume.name}-old`;
 export function detachedCopies(observed: ObservedPlacement, row: PlacementRow | null): readonly ObservedCopy[] {
   const mirrors = appliedMirrors(observed, row);
   return observed.copies.filter((copy) => copy.kind === "slot" && !mirrors.includes(copy.server.id));
+}
+
+export function oldCopies(observed: ObservedPlacement, row: PlacementRow | null): readonly ObservedCopy[] {
+  const target = targetPlacement(observed, row);
+  return detachedCopies(observed, row).filter((copy) => copy.server.id !== target?.primary && !target?.mirrors.includes(copy.server.id));
 }
 
 /**
@@ -172,11 +186,14 @@ export function placementChanges(volume: PlacementVolume, members: readonly Memb
   // A move to a mirror is unfinished while that mirror is still listed: once the target writes it holds the root,
   // yet the next Deploy must finish the same move, not take the mirror away.
   const handing = observed.primary?.id === staged.primary && applied.includes(staged.primary);
-  const moving = observed.primary?.id !== staged.primary || handing;
+  // With no primary answering, a silent Server presumed to hold the Volume is no move: the staged one when it is silent,
+  // since a failed move returns there, else the first, as targetPlacement presumes.
+  const holder = observed.primary ?? observed.unanswered.find((server) => server.id === staged.primary) ?? observed.unanswered[0] ?? null;
+  const moving = holder?.id !== staged.primary || handing;
   // A mirror its answering Server no longer holds is already removed: a cancelled Deploy's late run took it.
   const gone = (id: MachineId) => copyOn(id) === undefined && members.some((member) => member.machine.id === id && member.answered);
   for (const id of applied) {
-    if (!staged.mirrors.includes(id) && !(moving && id === staged.primary) && !gone(id)) changes.push({ kind: "remove_mirror", volume, server: machine(id) });
+    if (!staged.mirrors.includes(id) && id !== staged.primary && !gone(id)) changes.push({ kind: "remove_mirror", volume, server: machine(id) });
   }
   if (moving) {
     const target = copyOn(staged.primary);
@@ -191,6 +208,7 @@ export function placementChanges(volume: PlacementVolume, members: readonly Memb
       to: machine(staged.primary),
       how,
       lostAfter: how === "restore" ? target?.newest ?? null : null,
+      refreshedAt: target?.newest ?? null,
       clears: how === "copy" ? clearing(staged.primary) : [],
     });
   }
@@ -246,15 +264,28 @@ export function placementSteps(changes: readonly PlacementChange[]): VolumeRunIn
   return [...changes].sort((a, b) => STEPS[a.kind].order - STEPS[b.kind].order).flatMap(runsOf);
 }
 
+/**
+ * Names a change across a Deploy's wait, so a failure finds the same change among the ones read afresh. A move keeps the
+ * Server it left: once that Server stops answering, it is still the one holding the Volume.
+ */
+export type ChangeKey = { readonly kind: PlacementChange["kind"]; readonly server: MachineId; readonly from?: MachineId };
+
+export const changeKey = (change: PlacementChange): ChangeKey => {
+  if (change.kind === "move") return change.from === null ? { kind: "move", server: change.to.id } : { kind: "move", server: change.to.id, from: change.from.id };
+  return { kind: change.kind, server: change.kind === "seed" ? change.to.id : change.server.id };
+};
+
+export const sameChange = (a: ChangeKey, b: ChangeKey) => a.kind === b.kind && a.server === b.server;
+
 /** The next run a Deploy makes, and the mirrors once it ends: a change's mirrors move only with its last run. */
-export type PlacementStep = { readonly run: VolumeRunInput; readonly mirrors: readonly MachineId[] };
+export type PlacementStep = { readonly run: VolumeRunInput; readonly mirrors: readonly MachineId[]; readonly change: ChangeKey };
 
 export function nextPlacementStep(changes: readonly PlacementChange[], mirrors: readonly MachineId[]): PlacementStep | null {
   const [change] = [...changes].sort((a, b) => STEPS[a.kind].order - STEPS[b.kind].order);
   if (change === undefined) return null;
   const [run, ...rest] = runsOf(change);
   if (run === undefined) return null;
-  return { run, mirrors: rest.length === 0 ? mirrorsAfter(mirrors, change) : [...mirrors] };
+  return { run, mirrors: rest.length === 0 ? mirrorsAfter(mirrors, change) : [...mirrors], change: changeKey(change) };
 }
 
 /** The mirrors once `change` has run. A move consumes the mirror it promotes. */
@@ -366,24 +397,9 @@ export function placementForm(volume: PlacementVolume, members: readonly Member[
   const mirrors = [...new Set([...appliedMirrors(observed, row), ...target.mirrors])].filter((id) => id !== target.primary)
     .map((id) => item(machine(id), kindOf(changeOn(["add_mirror", "remove_mirror"], id))));
   const left = onPrimary?.kind === "move" && onPrimary.how !== "restore" && onPrimary.from !== null ? [item(onPrimary.from, "add")] : [];
-  const detached = detachedCopies(observed, row)
-    .filter((copy) => copy.server.id !== target.primary && !target.mirrors.includes(copy.server.id))
+  const detached = oldCopies(observed, row)
     .map((copy) => item(copy.server, changeOn(["delete_copy"], copy.server.id) || cleared.has(copy.server.id) ? "remove" : null));
   return { primary: item(machine(target.primary), kindOf(onPrimary)), mirrors, detached: [...left, ...detached] };
-}
-
-/** A Volume's mirror as the canvas draws it: a node under the Volume, in the colour of what the next Deploy does to it. */
-export type CanvasMirror = PlacementItem & { readonly volume: PlacementVolume };
-
-/**
- * The Placement form's Mirrors, as canvas nodes, and a mirror staged to become the Primary, as one the Deploy changes.
- * Detached copies stay in the drawer: they serve nothing and refresh never.
- */
-export function canvasMirrors(volume: PlacementVolume, members: readonly Member[], row: PlacementRow | null): CanvasMirror[] {
-  const form = placementForm(volume, members, row);
-  if (form === null) return [];
-  const promoted = form.primary.change !== null && appliedMirrors(observePlacement(members), row).includes(form.primary.server.id);
-  return [...form.mirrors, ...promoted ? [form.primary] : []].map((item) => ({ ...item, volume }));
 }
 
 /** A mirror's address among the Environment's resources: its Volume and its Server. */
@@ -394,34 +410,6 @@ export function parseMirrorResourceId(resourceId: string): { readonly volumeId: 
   if (!volumeId || !server || rest.length > 0) return null;
   // SAFETY: the address carries a Server id the canvas wrote; a stale one finds no mirror.
   return { volumeId, server: server as MachineId };
-}
-
-/**
- * A mirror's drawer: the mirror, and the Placement each action stages with the mirrors already applied. An action is
- * null where it is not offered: on a staged mirror, which Details discards, and while a Deploy runs the placement.
- */
-export type MirrorPanel = CanvasMirror & {
-  readonly applied: readonly MachineId[];
-  readonly promote: Placement | null;
-  readonly remove: Placement | null;
-};
-
-export function mirrorPanel(
-  volume: PlacementVolume, members: readonly Member[], row: PlacementRow | null, server: MachineId, accepting: readonly MachineId[],
-): MirrorPanel | null {
-  const mirror = canvasMirrors(volume, members, row).find((item) => item.server.id === server);
-  const observed = observePlacement(members);
-  const target = targetPlacement(observed, row);
-  if (mirror === undefined || target === null) return null;
-  const applied = appliedMirrors(observed, row);
-  if (mirror.change !== null || row?.deploymentId != null) return { ...mirror, applied, promote: null, remove: null };
-  const movable = placementTargets(volume, members, row, accepting).move.some((machine) => machine.id === server);
-  return {
-    ...mirror,
-    applied,
-    promote: movable ? editPlacement(target, { kind: "move", to: server }) : null,
-    remove: editPlacement(target, { kind: "remove_mirror", server }),
-  };
 }
 
 /**
@@ -462,6 +450,152 @@ export function undoPlacement(volume: PlacementVolume, members: readonly Member[
   return next === null || placementChanges(volume, members, { ...row, staged: next }).length === 0 ? null : next;
 }
 
+/**
+ * What stays staged once a Deploy's run for the change `key` names failed: the change goes, and the rest waits for the
+ * next Deploy. A change the Servers no longer show landed despite the failure: deletes whose copy is gone go, the rest
+ * stays, and the row drops once nothing is left to change. A move the Servers handed over stays whole, since only
+ * finishing it brings the Volume back. One whose primary isn't answering goes
+ * back to the Server the move left, else the silent Server presumed to hold the Volume, or drops the row when there is none.
+ */
+export function dropChange(volume: PlacementVolume, members: readonly Member[], row: PlacementRow, key: ChangeKey): Placement | null {
+  const change = placementChanges(volume, members, row).find((one) => sameChange(changeKey(one), key));
+  if (change === undefined) {
+    if (row.staged === null) return null;
+    const observed = observePlacement(members);
+    const held = (id: MachineId) => observed.copies.some((copy) => copy.server.id === id) || observed.unanswered.some((server) => server.id === id);
+    const landed = { ...row.staged, deletes: row.staged.deletes.filter(held) };
+    return placementChanges(volume, members, { ...row, staged: landed }).length === 0 ? null : landed;
+  }
+  if (change.kind === "move") {
+    const observed = observePlacement(members);
+    if (observed.primary?.id === row.staged?.primary) return row.staged;
+    const left = observed.unanswered.find((server) => server.id === key.from);
+    const from = observed.primary ?? left ?? observed.unanswered[0] ?? null;
+    if (from === null || from.id === change.to.id) return null;
+    return undoPlacement(volume, members, row, { ...change, from });
+  }
+  return undoPlacement(volume, members, row, change);
+}
+
+export function changeSteps(change: PlacementChange, now: Date): readonly string[] {
+  const clears = "clears" in change && change.clears.length > 0 ? ["Delete"] : [];
+  switch (change.kind) {
+    case "move": {
+      if (change.how === "restore") return ["Stop", "Start"];
+      const behind = change.how === "promote" && change.refreshedAt !== null && now.getTime() - change.refreshedAt.getTime() > STALE_AFTER_MS;
+      return [...clears, ...change.how === "copy" ? ["Seed"] : [], ...behind ? ["Catch up"] : [], "Stop", "Final sync", "Start"];
+    }
+    case "add_mirror":
+      return [...clears, "Seed"];
+    case "remove_mirror":
+    case "delete_copy":
+      return ["Delete"];
+    case "seed":
+      return ["Save current", "Stop", "Swap", "Start"];
+  }
+}
+
+/**
+ * One thing a Deploy of staged changes takes: the copy of `volume` on `server`, or a restore's dropped writes, the
+ * source's after `after` when a restore point bounds them. A restore drops both the unanswered primary's copy and its
+ * writes.
+ */
+export type PlacementLost = { readonly volume: PlacementVolume; readonly server: MachineRef | null; readonly writes: boolean; readonly after: Date | null };
+
+export function placementLosses(changes: readonly PlacementChange[]): PlacementLost[] {
+  const copy = (volume: PlacementVolume, server: MachineRef): PlacementLost => ({ volume, server, writes: false, after: null });
+  return changes.flatMap((change) => {
+    const cleared = "clears" in change ? change.clears.map((server) => copy(change.volume, server)) : [];
+    switch (change.kind) {
+      case "move":
+        return change.how === "restore" ? [...cleared, { volume: change.volume, server: change.from, writes: true, after: change.lostAfter }] : cleared;
+      case "add_mirror":
+        return cleared;
+      case "remove_mirror":
+      case "delete_copy":
+        return [copy(change.volume, change.server)];
+      case "seed":
+        return [{ volume: change.source, server: null, writes: true, after: new Date(change.point.at * 1000) }];
+    }
+  });
+}
+
+type VolumeLost = { name: string; deletes: { machine_id: MachineId }[]; loss: "data" | "writes"; after?: number };
+
+/**
+ * Each Volume that loses something, as a `confirmation_required` refusal names it: the Servers losing a copy, and for a
+ * restore dropping writes, `writes` and any restore point in seconds, so a refused Deploy words its confirm as the local
+ * check does.
+ */
+export function lossByVolume(lost: readonly PlacementLost[]): VolumeLost[] {
+  return [...new Set(lost.map(({ volume }) => volume.name))].map((name) => {
+    const of = lost.filter(({ volume }) => volume.name === name);
+    const deletes = of.flatMap(({ server }) => server === null ? [] : [{ machine_id: server.id }]);
+    const writes = of.filter((entry) => entry.writes);
+    if (writes.length === 0) return { name, deletes, loss: "data" };
+    // The earliest cutoff loses the most; an unknown one may be earlier still.
+    const after = writes.reduce<Date | null>((earliest, { after: cutoff }) => cutoff === null || earliest === null ? null : cutoff < earliest ? cutoff : earliest,
+      writes[0]?.after ?? null);
+    return after === null ? { name, deletes, loss: "writes" } : { name, deletes, loss: "writes", after: after.getTime() / 1000 };
+  });
+}
+
+/** Each Volume a Deploy loses, as its confirm lists it, whether Cloud refused it or the canvas checked first. */
+export function volumeLossItems(
+  volumes: readonly { name: string; deletes: readonly { machine_id: string }[]; loss?: "data" | "writes"; after?: number }[],
+  machineName: (id: string) => string | undefined,
+): DeletionItem[] {
+  return volumes.map((volume) => {
+    const servers = volume.deletes.flatMap((held) => machineName(held.machine_id) ?? []).join(", ");
+    const writes = volume.after !== undefined ? `changes after ${lossTime(new Date(volume.after * 1000))}` : volume.loss === "writes" ? "recent changes" : "";
+    return { kind: "volume", name: volume.name, detail: [servers, writes].filter(Boolean).join(" · ") || undefined };
+  });
+}
+
+const LOSS_MARK = "#loss-";
+
+/**
+ * The Store diff version a Deploy carries, bound to the loss its confirm showed. Names alone would let consent to one
+ * loss pass for another staged on the same Volume meanwhile, and staging a copy change doesn't move the Store's version.
+ * The version is the one field every client carries back verbatim.
+ */
+export function lossVersion(version: string, lost: readonly PlacementLost[]) {
+  if (lost.length === 0) return version;
+  const shown = JSON.stringify(lossByVolume(lost)
+    .map((volume) => ({ ...volume, deletes: volume.deletes.map(({ machine_id }) => machine_id).sort() }))
+    .sort((a, b) => a.name.localeCompare(b.name)));
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < shown.length; index++) hash = Math.imul(hash ^ shown.charCodeAt(index), 0x01000193);
+  return `${version}${LOSS_MARK}${(hash >>> 0).toString(36)}`;
+}
+
+/** The Store's own version inside one `lossVersion` bound. */
+export const storeVersion = (version: string) => version.split(LOSS_MARK)[0] ?? version;
+
+/**
+ * What a Deploy of staged changes takes, for its typed confirm: what goes, whether a restore drops writes, the name of
+ * each Volume that loses something, which the Deploy accepts as it accepts a Volume the Store deletes, and the version
+ * binding that acceptance to this loss.
+ */
+export type PlacementLoss = {
+  readonly items: readonly DeletionItem[];
+  readonly losesWrites: boolean;
+  readonly accept: readonly string[];
+  readonly version: (version: string) => string;
+};
+
+export function placementLoss(changes: readonly PlacementChange[]): PlacementLoss {
+  const lost = placementLosses(changes);
+  const volumes = lossByVolume(lost);
+  const servers = lost.flatMap(({ server }) => server ?? []);
+  return {
+    items: volumeLossItems(volumes, (id) => servers.find((server) => server.id === id)?.name),
+    losesWrites: volumes.some(({ loss }) => loss === "writes"),
+    accept: [...new Set(lost.map(({ volume }) => volume.name))],
+    version: (version) => lossVersion(version, lost),
+  };
+}
+
 function detailsRow(volume: PlacementVolume, change: PlacementChange) {
   const clears = "clears" in change && change.clears.length > 0 ? `Deletes ${detachedName(volume)} first` : undefined;
   switch (change.kind) {
@@ -488,7 +622,7 @@ function detailsRow(volume: PlacementVolume, change: PlacementChange) {
   }
 }
 
-export function placementGroup(volume: PlacementVolume, changes: readonly PlacementChange[]): ChangeGroup {
+export function placementGroup(volume: PlacementVolume, changes: readonly PlacementChange[], now: Date, unreached = false): ChangeGroup {
   return {
     owner: "placement",
     nodeType: "volume",
@@ -500,12 +634,14 @@ export function placementGroup(volume: PlacementVolume, changes: readonly Placem
     changeCount: changes.length,
     restarts: [],
     canDiscard: true,
+    unreached,
     rows: changes.map((change, index) => {
       const words = detailsRow(volume, change);
       return {
         changeKey: `${volume.id}:placement:${index}`,
         label: words.name,
         ...words,
+        steps: changeSteps(change, now),
         variable: false,
         kind: CHANGE_KINDS[change.kind],
         path: String(index),
@@ -531,7 +667,8 @@ export function restorePoints(members: readonly Member[]): RestorePoint[] {
 
 /** What Deploy `deploymentId` is doing to storage, from the run under way on a Volume it took: "pg-data · Moving to web-2". */
 export function storageStep(deploymentId: string, rows: readonly PlacementRow[], runs: readonly VolumeRunView[]): string | null {
-  const taken = new Set(rows.filter((row) => row.deploymentId === deploymentId).map((row) => row.volumeId));
+  // A restore runs on the Volume it copies from, not the one the Deploy took.
+  const taken = new Set(rows.filter((row) => row.deploymentId === deploymentId).flatMap((row) => [row.volumeId, row.staged?.seed?.sourceVolumeId ?? row.volumeId]));
   const run = runs.find((candidate) => taken.has(candidate.volume_id));
   return run === undefined ? null : [run.volume_name, runWords(run), run.message].filter((part) => part !== null).join(" · ");
 }

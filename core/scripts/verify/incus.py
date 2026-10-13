@@ -1,15 +1,59 @@
 """Incus VM backend for verify-cluster's disposable-Machine contract."""
 
+from datetime import datetime
 import fcntl
 import hashlib
+import host
+import json
 import os
 from pathlib import Path
 import re
 import releases
+import subprocess
 import sys
 import time
 
 DEFAULT_SIZES = dict(memory="2GiB", disk="24GiB")
+PREFIX = ([] if os.geteuid() == 0 else ["sudo", "-n"]) + ["incus", "--force-local", "--quiet"]
+# Owner fields live on the run's Incus project, so any checkout can list and reap the run.
+OWNER_KEY = "user.ployz.verify.owner."
+
+
+def query(path):
+    return json.loads(subprocess.run([*PREFIX, "query", path], capture_output=True, check=True).stdout)
+
+
+def rss(pid):
+    try:
+        return int(re.search(r"VmRSS:\s+(\d+)", Path(f"/proc/{pid}/status").read_text()).group(1)) * 1024
+    except (OSError, AttributeError):
+        return 0
+
+
+def runs():
+    """Every verify run on this Incus host, from any checkout."""
+    found = {project["name"]: dict(id=project["config"]["user.ployz.verify.run"], project=project["name"], machines=[],
+                                   owner={key[len(OWNER_KEY):]: value for key, value in project["config"].items()
+                                          if key.startswith(OWNER_KEY)})
+             for project in query("/1.0/projects?recursion=1") if project["config"].get("user.ployz.verify.run")}
+    for instance in query("/1.0/instances?recursion=2&all-projects=true"):
+        if instance["project"] in found:
+            pid = (instance.get("state") or {}).get("pid")
+            found[instance["project"]]["machines"].append(dict(
+                name=instance["name"], status=instance["status"], rss=rss(pid) if pid else 0,
+                memory=host.size(instance["config"].get("limits.memory", "1GiB")),
+                created=datetime.fromisoformat(instance["created_at"][:19] + "+00:00").timestamp()))
+    for run in found.values():
+        recorded = run["owner"].get("created")
+        run["created"] = int(recorded) if recorded else min((int(machine["created"]) for machine in run["machines"]), default=None)
+        run["machines"].sort(key=lambda machine: machine["name"])
+    return sorted(found.values(), key=lambda run: (run["created"] is None, run["created"] or 0))
+
+
+def capacity(pool):
+    """Free and total bytes in the storage pool that new VM roots land in."""
+    space = query(f"/1.0/storage-pools/{pool}/resources")["space"]
+    return space["total"] - space["used"], space["total"]
 
 
 class Provider:
@@ -21,14 +65,16 @@ class Provider:
                      if "provider_state" in run else "ployz-verify")
         state = run.get("provider_state", {})
         self.sizes = {resource: state.setdefault(resource, default) for resource, default in DEFAULT_SIZES.items()}
-        self.prefix = ([] if os.geteuid() == 0 else ["sudo", "-n"]) + ["incus", "--force-local", "--quiet"]
+        self.prefix = PREFIX
 
     def incus(self, *args, project=None, **kwargs):
         return self.commands([*self.prefix, "--project", project or self.project, *args], **kwargs)
 
     def create(self):
         self.incus("project", "create", self.project, "-c", "features.images=false", "-c", "features.networks=false",
-                   "-c", "user.ployz.verify.run=" + self.run["id"], project="default")
+                   "-c", "user.ployz.verify.run=" + self.run["id"],
+                   *(item for key, value in self.run.get("owner", {}).items() for item in ["-c", f"{OWNER_KEY}{key}={value}"]),
+                   project="default")
         self.incus("network", "create", self.bridge, "ipv4.address=auto", "ipv4.nat=true", "ipv6.address=none",
                    "user.ployz.verify.run=" + self.run["id"], project="default")
         self.firewall(add=True)
@@ -63,6 +109,11 @@ class Provider:
 
     def state(self, node):
         return self.incus("list", node["name"], "-c", "s", "-f", "csv").stdout.decode().strip()
+
+    def stop_cause(self, node):
+        """Who QEMU logged as terminating this VM, if anyone."""
+        log = self.commands(["sudo", "-n", "cat", f"/var/log/incus/{self.project}_{node['name']}/qemu.log"], check=False)
+        return host.killer(log.stdout.decode(errors="replace"))
 
     def wait_agent(self, node):
         deadline = time.monotonic() + 120

@@ -1,8 +1,7 @@
 import { Suspense, useState, type ReactNode } from "react";
-import { Link, useNavigate, useParams } from "@tanstack/react-router";
+import { Link, useLoaderData, useNavigate, useParams } from "@tanstack/react-router";
 import type { BuildView, DeploymentSummary, DeploymentView, NodeOutcome } from "@ployz/sdk";
 import { DatabaseIcon, GitBranchPlusIcon, LockIcon, MoreVerticalIcon } from "lucide-react";
-import { toast } from "sonner";
 import { ContainerLogs } from "#/components/container-logs";
 import { DeploymentStatusIcon } from "#/components/deployment-status-icon";
 import { Badge } from "#/components/ui/badge";
@@ -23,7 +22,7 @@ import {
 } from "#/modules/config-store/store-deployments";
 import { buildLogQuery, deploymentQuery, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
-import { useStorageSteps } from "#/modules/volume-placement/volume-placement.hooks";
+import { useCopiesWait, useStorageSteps } from "#/modules/volume-placement/volume-placement.hooks";
 import { formatDuration } from "#/utils/relative-time";
 import { CanvasInspectorHeader } from "./CanvasInspectorHeader";
 import { CanvasInspectorNotFound } from "./CanvasInspectorRouteStates";
@@ -236,6 +235,16 @@ function StoreBuildLog({ deploymentId, service }: { deploymentId: string; servic
   );
 }
 
+/** Redeploy ships what the Deployment froze, so copy changes staged since then wait for the next Deploy. */
+export function RedeployAction({ copiesWait, disabled, onRedeploy }: { copiesWait: boolean; disabled: boolean; onRedeploy: () => void }) {
+  return (
+    <>
+      {copiesWait ? <span className="text-xs text-muted-foreground">Copies wait for Deploy</span> : null}
+      <Button size="sm" variant="outline" disabled={disabled} onClick={onRedeploy}>Redeploy</Button>
+    </>
+  );
+}
+
 /**
  * The action a Deployment's status allows, one at a time so the header fits a phone: a queued one's Cancel waits in ⋮.
  * Whoever admitted it, CLI or dashboard: they share one queue per Environment.
@@ -247,6 +256,7 @@ function StoreDeploymentActions({ deployment, storage, noServers }: { deployment
   const [cancelOpen, setCancelOpen] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const { primary, cancelInMenu } = deploymentActions(deployment.status, noServers);
+  const copiesWait = useCopiesWait(params.organizationSlug, useLoaderData({ from: ENVIRONMENT_ROUTE_FROM }).environmentId);
 
   async function retry() {
     const id = crypto.randomUUID();
@@ -262,15 +272,12 @@ function StoreDeploymentActions({ deployment, storage, noServers }: { deployment
     }
   }
 
-  // Retry ships what the Deployment froze; Deploy now starts a queued one nothing is running yet.
+  // Deploy now starts a queued one while nothing else runs.
   const buttons = {
     add_server: <Button size="sm" nativeButton={false} render={<Link to="/cloud/$organizationSlug/~/servers" params={params} />}>Add a server</Button>,
-    retry: <Button size="sm" variant="outline" disabled={retrying} onClick={() => void retry()}>Retry</Button>,
+    retry: <RedeployAction copiesWait={copiesWait} disabled={retrying} onRedeploy={() => void retry()} />,
     start: (
-      <Button size="sm" variant="outline" onClick={() => {
-        writer.commit({ command: "start", deployment: deployment.id });
-        toast.success(`Deployment #${deployment.number} starts now`);
-      }}>Deploy now</Button>
+      <Button size="sm" variant="outline" onClick={() => writer.commit({ command: "start", deployment: deployment.id })}>Deploy now</Button>
     ),
     cancel: <Button size="sm" variant="outline" onClick={() => setCancelOpen(true)}>Cancel</Button>,
   } satisfies Record<DeploymentAction, ReactNode>;

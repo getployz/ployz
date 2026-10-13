@@ -9,48 +9,65 @@ Without Cloud, volumes stay on the server that has them.
 
 ## In Ployz Cloud
 
-Open a managed volume after its first deploy. **Placement** shows its **Primary**, the server your
-service writes it on, its **Mirrors**, and any **Detached** copy, each with when it last
-refreshed. A change here waits for your next deploy, which runs it before your services. Until
-then it shows in its colour: pink for a new primary, green for a new copy, red and struck through
-for one going away. It counts in the bottom bar and Details. Nothing runs on click.
+Open a managed volume after its first deploy. **Copies** lists the places its data lives. **Live**
+is the server your service writes it on. **Elsewhere** holds its mirror and any old copy a move
+left, each with when it last refreshed. Under **Elsewhere**, **Add copy** adds a mirror while the
+volume has none.
 
 Every server with storage needs a newer Ployz before any volume moves or mirrors. Until then
-Placement only shows, and names the servers to upgrade, for example "Upgrade db-1 to a newer
-Ployz". **Use mirror**, **Drain**'s moves and the 15-minute refresh wait too.
+Copies only shows, and names the servers to upgrade, for example "Upgrade db-1 to a newer Ployz".
+**Drain**'s moves and the 15-minute refresh wait too.
 
-- **+ Add**, under Mirrors, offers only servers that run services. A volume has one mirror for now.
-  The × on a mirror removes it.
-- Pick another server in **Primary** to move the volume there. The mirror stays. A move to the
-  mirror's server promotes it. A move anywhere else copies the volume first, then stops your
-  service briefly.
-- A move leaves the old copy detached, shown as New under Detached. The × on a detached copy
-  deletes it with the next deploy.
-- A move or mirror onto a server that holds a detached copy deletes that copy first. Details says so.
-- To drop one change, discard it in Details.
-- When the primary's server stops answering, Placement says "web-1 is not answering" and when
-  changes are lost from, for example "Changes after 10:36 lost". **Use mirror** makes the mirror
-  the primary at the next deploy.
+What moves data waits for your next deploy, which runs it before your services. That covers
+**Add copy**, **Make primary** and **Remove mirror**. Until then the change shows in its colour.
+Pink is a new primary, green a new copy, and red a copy going away. It counts in the bottom bar and
+Details, and you drop it in Details. A deploy that removes a mirror asks you to type your
+`project/environment` first, because its data goes with it. See
+[Confirm a deploy that deletes data](../deploy/deployments.md#confirm-a-deploy-that-deletes-data).
+
+- **Add copy** offers only servers that run services. A volume has one mirror for now.
+- **Make primary**, on a mirror, moves the volume and its service to the mirror's server. The
+  deploy sends what changed since the last refresh, then pauses writes for the final sync.
+- A move leaves the old server holding an old copy. It serves nothing and never refreshes. Its ×
+  deletes it right away, after you confirm **Delete copy**. Its **Restore** stages a restore from its
+  last point. While a staged restore reads the copy, × says "A restore reads this copy."
+- A move or mirror onto a server that holds an old copy deletes that copy first. Details says so.
+- When the primary's server stops answering, Copies says "web-1 is not answering" and when
+  changes are lost from, for example "Changes after 10:36 lost". **Use mirror**, or **Make
+  primary** on the mirror, moves the volume there at the next deploy, which asks you to confirm
+  **Data loss**.
 - **Drain** on a server page also moves each primary there off at the next deploy, to its mirror
   or else to the first other server that runs services. The page says "Next deploy moves 2
   volumes". Each environment's next deploy moves them.
 
-Mirrors refresh on every deploy and every 15 minutes. While a deploy moves a volume, Placement, the
-bottom bar and the deployment page say what it is doing, for example "data · Moving to web-2".
-Cancel lets the step under way finish, and the rest waits for your next deploy.
+Details lists the steps each change takes at the next deploy. Making a mirror the primary reads
+"Stop · Final sync · Start", with "Catch up" first when the mirror last refreshed over an hour
+ago. Writes pause from Stop until Start, so the final sync carries every last change. A new mirror reads "Seed", and removing a copy reads "Delete".
 
-On the canvas each mirror hangs under its volume's tray as its own small card, for example
-`data-web-2` with "Mirror · 4 minutes ago". A staged mirror shows **New** in green and a staged
-removal shows **Removing** in red. A mirror about to become the primary shows **Primary**.
+Mirrors refresh on every deploy and every 15 minutes. While a deploy moves a volume, its tray, the
+bottom bar and the deployment page say what it is doing, for example "Moving to web-2". Cancel
+lets the step under way finish, and the rest waits for your next deploy. If the deploy fails, the
+change that failed is dropped and the changes it never reached wait for your next deploy again.
+A move that already handed the volume to its new server is not dropped, since only finishing it
+brings the volume back; see [When a move stops](#when-a-move-stops).
 
-Click a mirror to open it. It shows its server, when it last refreshed, and a link to its volume for
-restore points. **Make primary** stages the same move as picking its server in **Primary**, and
-**Remove mirror** stages its removal; its copy is deleted on the next deploy. A staged mirror has
-neither: discard it in Details.
+On the canvas the mirror hangs under its volume's tray as its own small card, for example
+`data-web-2` with "Mirror · 4 minutes ago". A mirror more than an hour behind shows its age in
+amber with a warning sign. A staged mirror shows **New** in green, a staged removal shows
+**Removing** in red, and a mirror about to become the primary shows **Primary** in pink. Old copies
+stay in the volume's Copies. A staged move shows on the tray, for example "Moving to web-2".
 
-A mirror also gives the volume restore points. See [Restore a volume](restore-a-volume.md).
+Click a mirror, on the canvas or under **Elsewhere**, to open it. It shows its server, when it last
+refreshed, **Refresh now**, **Make primary** and **Remove mirror**. Refresh now runs a refresh at
+once. The mirror reads "Refreshing", then "Mirror refreshed" pops up and its age resets. If
+anything else is running on the volume, Refresh now says so instead of queueing. A mirror more than
+an hour behind says **Refresh skipped** and why. Either its server is not answering or its last
+refresh failed. It also says how much of its writes a failover would lose. A staged mirror has none
+of these actions, so discard it in Details.
 
-The commands below do the same from the CLI, one run at a time. Deleting a mirror is CLI-only.
+A mirror or an old copy also gives the volume restore points. See [Restore a volume](restore-a-volume.md).
+
+The commands below do the same from the CLI, one run at a time, without waiting for a deploy.
 
 ## Mirror a volume
 

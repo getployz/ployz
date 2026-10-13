@@ -4,8 +4,8 @@ import { asTestDouble } from "#/lib/test-double";
 import { configTrays } from "#/modules/config-store/store-configs";
 import type { CanvasPosition } from "#/modules/canvas/canvas-positions";
 import type { MachineId } from "@ployz/sdk";
-import type { CanvasMirror } from "#/modules/volume-placement/volume-placement";
-import { buildStoreEdges, buildStoreNodes, canvasNodeOf, shownNodeIds, volumeTrays } from "./nodes";
+import type { MirrorCopy, OffsiteCopy, OldCopy, VolumeCopies } from "#/modules/volume-copies/volume-copies";
+import { buildStoreEdges, buildStoreNodes, canvasNodeOf, hangOverhang, shownNodeIds, volumeTrays } from "./nodes";
 
 function createCanvasPosition(overrides?: Partial<CanvasPosition>): CanvasPosition {
   return {
@@ -104,38 +104,63 @@ describe("Config Store nodes", () => {
     expect(shownNodeIds(buildStoreNodes(store, [], "e"), ["shared", "own", "s2", "loose", "gone"])).toEqual(["s1", "s2", "loose"]);
   });
 
-  describe("mirrors", () => {
-    const mirror = (volumeId: string, server: string): CanvasMirror =>
-      ({ volume: { id: volumeId, name: volumeId }, server: { id: server as MachineId, name: server }, change: null, newest: null });
-    const mirrors = new Map([["shared", [mirror("shared", "web-2")]], ["loose", [mirror("loose", "web-3")]]]);
-    const withMirrors = { ...store, mirrors };
+  describe("copies", () => {
+    const server = (name: string) => ({ id: name as MachineId, name });
+    const mirror = (name: string): MirrorCopy =>
+      ({ kind: "mirror", id: name, server: server(name), name, refreshedAt: null, skipped: null, staged: null, busy: null });
+    const offsite: OffsiteCopy = { kind: "offsite", id: "b", bucket: "b", region: "r", keep: 7, uploadedAt: null, staged: null, busy: null };
+    const old: OldCopy = { kind: "old", id: "web-9", server: server("web-9"), name: "old", since: null, bytes: null, staged: null, busy: null };
+    const copiesOf = (id: string, elsewhere: VolumeCopies["elsewhere"]): VolumeCopies => ({
+      volume: { id, name: id }, live: { server: server("web-1"), restore: null, moveTo: null, busy: null, snapshots: null }, elsewhere,
+    });
+    const copies = new Map([
+      ["shared", copiesOf("shared", [mirror("web-2")])], ["loose", copiesOf("loose", [mirror("web-3")])], ["own", copiesOf("own", [old])],
+    ]);
+    const withCopies = { ...store, copies };
 
-    it("hangs a mounted Volume's mirror under the first Service that shows it, once, and grows that Service", () => {
-      const nodes = buildStoreNodes(withMirrors, [], "e");
+    it("hangs a mounted Volume's copies under the first Service that shows it, once, and grows that Service", () => {
+      const nodes = buildStoreNodes(withCopies, [], "e");
       const s1 = nodes.find((node) => node.id === "s1");
       const s2 = nodes.find((node) => node.id === "s2");
-      expect(s1?.data).toMatchObject({ mirrors: [{ server: { name: "web-2" } }] });
+      expect(s1?.data).toMatchObject({ hang: [{ volume: { id: "shared" } }] });
       expect(s1?.height).toBe(144 + 2 * 40 + 80);
-      expect(s2?.data).toMatchObject({ mirrors: [] });
+      expect(s2?.data).toMatchObject({ hang: [] });
       expect(s2?.height).toBe(144 + 2 * 40);
     });
 
-    it("hangs an unmounted Volume's mirror under its own node", () => {
-      const loose = buildStoreNodes(withMirrors, [], "e").find((node) => node.id === "loose");
-      expect(loose?.data).toMatchObject({ mirrors: [{ server: { name: "web-3" } }] });
+    it("hangs an unmounted Volume's copies under its own node", () => {
+      const loose = buildStoreNodes(withCopies, [], "e").find((node) => node.id === "loose");
+      expect(loose?.data).toMatchObject({ hang: [{ volume: { id: "loose" } }] });
       expect(loose?.height).toBe(144 + 80);
     });
 
-    it("places a new node clear of a Service's mirrors", () => {
-      const nodes = buildStoreNodes(withMirrors, [createCanvasPosition({ resourceId: "s1", x: 0, y: 0 })], "e");
+    it("hangs nothing and adds no height for a Volume whose only other copy is old", () => {
+      const nodes = buildStoreNodes({ ...store, copies: new Map([["own", copiesOf("own", [old])]]) }, [], "e");
+      expect(nodes.find((node) => node.id === "s1")).toMatchObject({ height: 144 + 2 * 40, data: { hang: [] } });
+    });
+
+    it("places a new node clear of a Service's copies", () => {
+      const nodes = buildStoreNodes(withCopies, [createCanvasPosition({ resourceId: "s1", x: 0, y: 0 })], "e");
       const { x, y } = nodes.find((node) => node.id === "s2")?.position ?? { x: 0, y: 0 };
       const clear = y >= 144 + 2 * 40 + 80 || y + 144 + 2 * 40 <= 0 || x >= 288 || x + 288 <= 0;
       expect(clear).toBe(true);
     });
 
-    it("keeps a stored position as it is when a mirror appears", () => {
-      const nodes = buildStoreNodes(withMirrors, [createCanvasPosition({ resourceId: "s1", x: 480, y: 96 })], "e");
+    it("keeps a stored position as it is when a copy appears", () => {
+      const nodes = buildStoreNodes(withCopies, [createCanvasPosition({ resourceId: "s1", x: 480, y: 96 })], "e");
       expect(nodes[0]?.position).toEqual({ x: 480, y: 96 });
+    });
+
+    it("gives each tray its Volume's copies, and none to a Volume without", () => {
+      const { trays: withTrays } = volumeTrays(listings, volumes, diff, () => 1, copies);
+      expect(withTrays.get("s1")?.map((tray) => [tray.volume.id, tray.copies?.elsewhere.length ?? null])).toEqual([["shared", 1], ["own", 1]]);
+      expect(volumeTrays(listings, volumes, diff).trays.get("s1")?.map((tray) => tray.copies)).toEqual([null, null]);
+    });
+
+    it("measures how far a row of cards reaches past its node on each side", () => {
+      expect(hangOverhang([copiesOf("a", [mirror("web-2")])])).toBe(0);
+      expect(hangOverhang([copiesOf("a", [mirror("web-2"), offsite, old])])).toBe((2 * 176 + 12 - 288) / 2);
+      expect(hangOverhang([copiesOf("a", [mirror("web-2"), offsite]), copiesOf("b", [mirror("web-3")])])).toBe((3 * 176 + 2 * 12 - 288) / 2);
     });
   });
 });

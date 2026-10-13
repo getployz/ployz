@@ -8,6 +8,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import * as scopes from "#/collections/use-collection-scope";
 import * as functions from "#/modules/config-store/store.functions";
 import * as lens from "#/modules/runtime/use-runtime-lens";
+import type { PlacementLoss } from "#/modules/volume-placement/volume-placement";
 import { useStoreChangeActions } from "./useStoreChangeActions";
 
 afterEach(() => {
@@ -24,9 +25,11 @@ const loss = { volumes: [{ id: "v", name: "pg-data", docker_volume: "ns_vol-v", 
 const admitted = { ok: true, value: { written: "deployment", id: "d" } } as never;
 
 const admittedIds: string[] = [];
+const NO_LOSS: PlacementLoss = { items: [], losesWrites: false, accept: [], version: (version) => version };
+const shown = (version: string) => `${version}#loss-shown`;
 
-function Deploy() {
-  const { deploy, publish, discard, neverSync, dialog } = useStoreChangeActions("acme", ref, "2:1:0", (id) => admittedIds.push(id));
+function Deploy({ placementLoss }: { placementLoss: PlacementLoss }) {
+  const { deploy, publish, discard, neverSync, dialog } = useStoreChangeActions("acme", ref, "2:1:0", (id) => admittedIds.push(id), placementLoss);
   return <>
     <button type="button" onClick={() => deploy("  Ship the api  ")}>Deploy now</button>
     <button type="button" onClick={() => publish("  Save this draft  ")}>Save now</button>
@@ -36,7 +39,7 @@ function Deploy() {
   </>;
 }
 
-function setup() {
+function setup(placementLoss = NO_LOSS) {
   const queryClient = new QueryClient();
   vi.spyOn(scopes, "useCollectionScope").mockReturnValue({ queryClient, sessionId: "session", userId: "user" });
   vi.spyOn(toast, "error").mockImplementation(() => "toast");
@@ -46,7 +49,7 @@ function setup() {
   vi.spyOn(functions, "readStoreViewServerFn").mockResolvedValue({ ok: true, value: {} } as never);
   const write = vi.spyOn(functions, "writeStoreServerFn");
   const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
-  render(<Deploy />, { wrapper });
+  render(<Deploy placementLoss={placementLoss} />, { wrapper });
   const admits = () => write.mock.calls.map(([call]) => call?.data.command);
   return { write, admits };
 }
@@ -59,6 +62,7 @@ it("asks before a Deploy deletes Volume data, then admits accepting exactly what
   // Every Volume that goes, on the Servers holding it; the user types where.
   await screen.findByText("pg-data");
   expect(screen.getByText("hetzner-1")).toBeTruthy();
+  expect(screen.getByText("Deletes data")).toBeTruthy();
   fireEvent.change(screen.getByPlaceholderText("shop/production"), { target: { value: "shop/production" } });
   fireEvent.click(screen.getByRole("button", { name: "Deploy" }));
 
@@ -72,6 +76,39 @@ it("asks before a Deploy deletes Volume data, then admits accepting exactly what
   // The admitted Deploy, the second admission's own id, opens.
   expect(admittedIds).toHaveLength(1);
   expect(test.admits()[1]).toMatchObject({ id: admittedIds[0] });
+});
+
+it("asks before a Deploy deletes a copy, before anything reaches the Store, then admits accepting the Volume", async () => {
+  const test = setup({ items: [{ kind: "volume", name: "pg-data", detail: "web-2" }], losesWrites: false, accept: ["pg-data"], version: shown });
+  test.write.mockResolvedValueOnce(admitted);
+
+  act(() => { fireEvent.click(screen.getByText("Deploy now")); });
+  await screen.findByText("web-2");
+  expect(screen.getByText("Deletes data")).toBeTruthy();
+  expect(test.write).not.toHaveBeenCalled();
+  fireEvent.change(screen.getByPlaceholderText("shop/production"), { target: { value: "shop/production" } });
+  fireEvent.click(screen.getByRole("button", { name: "Deploy" }));
+
+  await waitFor(() => expect(admittedIds).toHaveLength(1));
+  expect(test.admits()).toMatchObject([{ admit: "deploy", accept_volume_loss: ["pg-data"], version: "2:1:0#loss-shown", message: "Ship the api" }]);
+});
+
+it("titles the ask Data loss when a restore drops writes", async () => {
+  setup({ items: [{ kind: "volume", name: "pg-data", detail: "web-1" }], losesWrites: true, accept: ["pg-data"], version: shown });
+  act(() => { fireEvent.click(screen.getByText("Deploy now")); });
+  await screen.findByText("Data loss");
+  expect(screen.queryByText("Deletes data")).toBeNull();
+});
+
+it("titles the ask Data loss when Cloud refuses a Deploy whose staged restore drops writes", async () => {
+  const test = setup();
+  const restore = { volumes: [{ name: "pg-data", deletes: [{ machine_id: "m1" }], loss: "writes" }], accept: ["pg-data"], version: "9:1:0.1" };
+  test.write.mockResolvedValueOnce(refusal("confirmation_required", restore));
+
+  act(() => { fireEvent.click(screen.getByText("Deploy now")); });
+  await screen.findByText("pg-data");
+  expect(screen.getByText("Data loss")).toBeTruthy();
+  expect(screen.queryByText("Deletes data")).toBeNull();
 });
 
 it("discards a Setting by its Store path, through the Environment's queue", async () => {

@@ -7,27 +7,23 @@ from pathlib import Path
 import re
 import shutil
 import tarfile
-import time
 
 
-def prepare(run, commands, core):
-    started = time.monotonic()
-    source = run["daemon"]["source"]
+def resolve(source, commands, core):
+    """The exact release a daemon source names: stable, beta or a version."""
     if source in ["stable", "beta"]:
         major = re.search(r'^version = "(\d+)\.', (core / "Cargo.toml").read_text(), re.M).group(1)
-        source = commands(["curl", "-fsSL", "--max-time", "30",
-                           f"https://ployz.sh/v{major}/{source}"]).stdout.decode().strip()
-    version = source.removeprefix("v")
+        version = commands(["curl", "-fsSL", "--max-time", "30",
+                            f"https://ployz.sh/v{major}/{source}"]).stdout.decode().strip().removeprefix("v")
+        if version.split(".", 1)[0] != major:
+            raise RuntimeError("The release channel returned a version on another major line")
+        if source == "stable" and "-" in version:
+            raise RuntimeError("The stable channel returned a prerelease")
+    else:
+        version = source.removeprefix("v")
     if not re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?", version):
-        raise RuntimeError("Choose --daemon checkout, stable, beta or an exact release version")
-    if run["daemon"]["source"] in ["stable", "beta"] and version.split(".", 1)[0] != major:
-        raise RuntimeError("The release channel returned a version on another major line")
-    if run["daemon"]["source"] == "stable" and "-" in version:
-        raise RuntimeError("The stable channel returned a prerelease")
-    artifacts = Path(run["manifest"]).parent / "artifacts" / "runtime"
-    run["binaries"] = acquire(version, commands, artifacts)
-    run["daemon"]["version"] = version
-    run["timings"]["release_artifacts"] = round(time.monotonic() - started, 3)
+        raise RuntimeError(f"Unknown daemon source {source!r}: choose checkout, stable, beta or an exact release version")
+    return version
 
 
 def acquire(version, commands, artifacts):

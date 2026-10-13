@@ -9,12 +9,15 @@ One command gives this checkout its own Postgres, seed and `vite dev`, signed in
 
 ## Launch
 
+Pick the mode from what the change shows. UI that reads a running Server (runtime status, Logs, metrics, Monitoring, deploy progress, upgrades, Volume copies) needs `SERVERS=1`; one Server is enough unless the screen compares Servers. Without it those screens stay empty, so sample data on a page is not proof. Plain `up.sh` covers everything that reads only the Config Store.
+
 ```bash
 scripts/verify/up.sh          # free port; BILLING=1 scripts/verify/up.sh turns billing on
 SERVERS=2 scripts/verify/up.sh   # also real Servers paired through Cloud; DAEMON=stable (default), beta, checkout or a version
+FAKE_SERVERS=1 scripts/verify/up.sh   # no real Servers; the Servers list shows fra-1, fra-2, syd-1 and ams-1 from a fixture
 ```
 
-With `SERVERS`, `up.sh` also starts an Inngest dev server and the worker for this checkout, then runs `../core/scripts/verify-cluster` (see [verify-server](../verify-server/SKILL.md)). That command enrolls the Machines through this dashboard with an Organization Token. Deploys and enrollment follow-ups then really run. `.verify/run/info` adds the Inngest UI URL for function runs and the `verify-cluster cli` line for the cluster. Enrolling through Cloud needs the daemon version to equal this checkout's CLI version, so use `stable` on a release commit and `checkout` otherwise. The first run builds the shared VM image, which takes a few minutes.
+With `SERVERS`, `up.sh` also starts an Inngest dev server and the worker for this checkout, then runs `../core/scripts/verify-cluster` (see [verify-server](../verify-server/SKILL.md)). That command enrolls the Machines through this dashboard with an Organization Token. Deploys and enrollment follow-ups then really run. `.verify/run/info` adds the Inngest UI URL for function runs and the `verify-cluster cli` line for the cluster. `DAEMON` is a space-separated list of `[machine-N=]SOURCE` choices passed to `verify-cluster up --daemon`, so `DAEMON="checkout machine-2=0.2.3"` runs machine-1 on this checkout and machine-2 on the 0.2.3 release. Every choice enrolls. A release Machine that cannot enroll with this checkout's CLI enrolls on the checkout daemon first and then gets its release, so `stable` off a release commit compiles the daemon. The first run builds the shared VM image, which takes a few minutes.
 
 A fresh worktree is fine: `up.sh` installs `node_modules` and builds the native SDK when either is missing or stale. The SDK build is shared across worktrees through `~/.cache/ployz/sdk`, keyed by the committed Rust sources, so only the first checkout of a given commit compiles it (about 2 minutes). A warm run takes about 20 seconds. Rerunning it restarts from a fresh seed, and the cookie stays valid. It prints the URLs and the two `agent-browser` lines to run, and saves them to `.verify/run/info`.
 
@@ -23,11 +26,12 @@ The seed (`scripts/verify/seed.ts`) writes through the app's own Config Store co
 | Where | What |
 | --- | --- |
 | organization `ada`, project `shop` | |
-| `production` | services web, api, postgres (with volume pg-data), worker, redis; config sentry (`config.yml` referencing redis and the secret `api.SECRET_KEY`, and `sentry.conf.py`) mounted on web and worker at `/etc/sentry`; domain acme.com on web; one queued Deploy "Ship everything"; unpublished api edits (image whoami v1.11.0, `FEATURE_SEARCH`) |
+| `production` | services web, api, postgres (with volume pg-data), worker, redis; config sentry (`config.yml` referencing redis and the secret `api.SECRET_KEY`, and `sentry.conf.py`) mounted on web and worker at `/etc/sentry`; domain acme.com on web; one queued Deploy "Ship everything", whose nodes (its Services, pg-data and sentry) the seed writes into Applied State as if it had finished (without `SERVERS`), so they read as deployed; unpublished api edits (image whoami v1.11.0, `FEATURE_SEARCH`) |
 | `fix-api` | a Branch of production holding api and web, with 2 changes to save |
 | uptime (`scripts/verify/seed-uptime.ts`) | Monitoring tab states in `production`: web Up with 90 days and a closed incident, api Unreachable, worker Checking, redis Unreachable with a 404 at its healthcheck path `/health`, postgres Not checked |
+| metrics (`src/modules/metrics/metrics.verify-fixture.ts`, without `SERVERS`) | Services: web normal on Servers `0123…` and `1111…`; api mixed (`0123…` answers, `2222…` needs upgrade, `3333…` not up); worker normal on `0123…`, with `1111…` answering as a Server without it does (no points, one gap over the range); redis needs upgrade on `1111…` and `2222…`; postgres normal on `0123…` (`1111…` answers without it) with a gap in the middle third, an OOM then a restart, and disk reads and writes; any other Service no readings (both Servers answer without it). Servers: `0123456789abcdef0123456789abcdef` normal with CPU, memory, eth0 (lo and docker0 hidden) and every disk field, with a short not-sampled gap mid-range; `2222…` needs upgrade; `4444…` answers with no readings; `1111…` and any other id not up |
 
-With `SERVERS`, the seed skips the fake Server and the queued Deploy, and `seed.json` lists them under `skipped`. To seed different state, add Config Store writes to `seed.ts`. It is typechecked with the app, so a domain refactor that breaks it fails `pnpm typecheck`.
+With `SERVERS`, the seed skips the fake Server and the queued Deploy, so it writes no Applied State, and `seed.json` lists them under `skipped`. To seed different state, add Config Store writes to `seed.ts`. It is typechecked with the app, so a domain refactor that breaks it fails `pnpm typecheck`.
 
 ## Doctor
 
@@ -74,6 +78,8 @@ The instance runs `down.sh` by itself after 15 minutes with nothing connected to
 ## Known gaps
 
 - Without `SERVERS`, no Server answers. Service nodes read **Queued · Can't reach servers**, Logs and runtime status stay empty, and Inngest points at a dead port, so anything that sends an Inngest event fails at that call.
+- Without `SERVERS`, metrics are fixture replies (`PLOYZ_VERIFY_METRICS=1`), not readings; they prove the charts and states render, not that a daemon samples.
+- `FAKE_SERVERS=1` (`PLOYZ_VERIFY_RUNTIME=1`) fakes the Runtime Watch with four Servers: fra-1 (`0123…`) answers metrics, fra-2 (`1111…`) is offline and doesn't answer, syd-1 (`2222…`) runs 0.2.4 and needs an upgrade, ams-1 (`4444…`) answers with no readings yet. Only the Servers list and what reads the watch see them; deploys still go nowhere.
 - Hosted DNS is fake (`scripts/verify/hosted-dns.ts`, requests in `.verify/run/hosted-dns.log`). It grants `<org slug>.ployz.test` and signs certificates with a throwaway CA, so generated addresses deploy but resolve nowhere and fail TLS verification.
 - GitHub and Polar are fake. Connecting a repository or completing checkout cannot be verified here; `BILLING=1` only renders the billing UI.
 
