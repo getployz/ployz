@@ -96,6 +96,9 @@ VolumeBusy: data is busy with a mirror; ployz volume release data stops it
 now; `ployz volume show data` shows the download. `volume sync data --full` copies everything
 again as a run, and takes `--wait`.
 
+A copy of a big volume can take hours. Ployz checks on it every few seconds at first, then every
+five minutes. If the copy has not finished after six hours, the run fails and says so.
+
 ## Move a volume to another server
 
 ```

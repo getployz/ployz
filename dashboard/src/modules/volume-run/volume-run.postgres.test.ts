@@ -45,6 +45,7 @@ import {
   startOrphanDeletes,
   volumeBusyMessage,
 } from "#/modules/volume-run/volume-run.server";
+import { PATIENCE_WAITS } from "#/modules/volume-run/patience";
 import type { VolumeRunInput } from "#/modules/volume-run/volume-run";
 import { member } from "#/modules/volume-run/volume-run.test-fixture";
 import { type DeployLane, fenceDeployVolume, finishDeployVolumes, placeDeployVolumes } from "#/modules/volume-run/volume-run.deploy.server";
@@ -63,8 +64,7 @@ const environment = { project: "shop", environment: "production" };
 const inngest = new Inngest({ id: "volume-run-test" });
 const send = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
 
-/** A pull to `target` that fails with a message, or whose Machine restarts mid-receive and keeps `pull` set. */
-type PullFault = { target: string; kind: "fail" | "restart" };
+type PullFault = { target: string; kind: "fail" | "restart" | "stall" };
 
 type FakeMachine = {
   name: string;
@@ -272,6 +272,7 @@ describe("volume runs", () => {
     const pull = copy?.kind === "slot" ? copy.pull : null;
     if (copy?.kind !== "slot" || pull === null || pull.failure !== null || fake.stopped === true) return;
     const fault = fake.pullFault;
+    if (fault?.target === pull.target && fault.kind === "stall") return;
     if (fault?.target === pull.target && fault.kind === "fail") fake.copy = { ...copy, pull: { ...pull, failure: "disk full" } };
     else if (fault?.target === pull.target) {
       fake.pullFault = undefined;
@@ -1363,6 +1364,17 @@ describe("volume runs", () => {
       await execute(run.id);
 
       expect(await rows()).toMatchObject([{ state: "failed", message: "data-fsn-2 could not receive ployz-10: disk full" }]);
+    });
+
+    it("mirror: a pull that never lands gives up after six hours of checks backing off to five minutes", async () => {
+      machines[1] = { name: "fsn-2", pool: true, copy: null, pullFault: { target: "ployz-10", kind: "stall" } };
+      const run = await requested({ kind: "mirror", args: { to: "fsn-2" } });
+      const waits = PATIENCE_WAITS.map((_, check) => ({ id: `03-r0-wait-${check}`, handler: () => undefined }));
+
+      await execute(run.id, "run-1", waits);
+
+      expect(verbs.filter((verb) => verb === "pull@fsn-2(ployz-10)")).toHaveLength(PATIENCE_WAITS.length + 1);
+      expect(await rows()).toMatchObject([{ state: "failed", message: "data-fsn-2 has not finished ployz-10 after 6h" }]);
     });
 
     it("mirror: a Server without a Pool gets the mirror", async () => {
