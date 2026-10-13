@@ -13,6 +13,11 @@ const nanos = (ms: number) => (BigInt(ms) * 1_000_000n).toString();
 
 const readHistory = Effect.fn("Metrics.readHistory")(function* (organizationId: string, subject: MetricSubject, window: MetricWindow) {
   const input: MetricHistoryInput = { subject, since_nanos: nanos(window.from), until_nanos: nanos(window.to) };
+  // The verify dashboard has no Servers to ask; production builds drop this branch and the fixture with it.
+  if (import.meta.env.DEV && process.env["PLOYZ_VERIFY_METRICS"] === "1") {
+    const { verifyMetricHistory } = yield* Effect.promise(() => import("./metrics.verify-fixture"));
+    return { type: "history", window, history: verifyMetricHistory(input) } satisfies MetricRead;
+  }
   return yield* Effect.scoped(Effect.gen(function* () {
     const session = yield* (yield* OrganizationRuntime).open(organizationId);
     if (session.status !== "connected") return { type: "offline", window } satisfies MetricRead;

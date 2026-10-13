@@ -26,6 +26,7 @@ The seed (`scripts/verify/seed.ts`) writes through the app's own Config Store co
 | `production` | services web, api, postgres (with volume pg-data), worker, redis; config sentry (`config.yml` referencing redis and the secret `api.SECRET_KEY`, and `sentry.conf.py`) mounted on web and worker at `/etc/sentry`; domain acme.com on web; one queued Deploy "Ship everything"; unpublished api edits (image whoami v1.11.0, `FEATURE_SEARCH`) |
 | `fix-api` | a Branch of production holding api and web, with 2 changes to save |
 | uptime (`scripts/verify/seed-uptime.ts`) | Monitoring tab states in `production`: web Up with 90 days and a closed incident, api Unreachable, worker Checking, redis Unreachable with a 404 at its healthcheck path `/health`, postgres Not checked |
+| metrics (`src/modules/metrics/metrics.verify-fixture.ts`, without `SERVERS`) | Services: web normal on Servers `0123…` and `1111…`; api mixed (`0123…` answers, `2222…` needs upgrade, `3333…` not up); worker normal, with `1111…` answering empty; redis needs upgrade on `1111…` and `2222…`; postgres normal on `0123…` with a gap in the middle third, an OOM then a restart, and disk reads and writes; any other Service no readings. Servers: `0123456789abcdef0123456789abcdef` normal with CPU, memory, eth0 (lo and docker0 hidden) and every disk field; `2222…` needs upgrade; `1111…` and any other id not up |
 
 With `SERVERS`, the seed skips the fake Server and the queued Deploy, and `seed.json` lists them under `skipped`. To seed different state, add Config Store writes to `seed.ts`. It is typechecked with the app, so a domain refactor that breaks it fails `pnpm typecheck`.
 
@@ -74,6 +75,7 @@ The instance runs `down.sh` by itself after 15 minutes with nothing connected to
 ## Known gaps
 
 - Without `SERVERS`, no Server answers. Service nodes read **Queued · Can't reach servers**, Logs and runtime status stay empty, and Inngest points at a dead port, so anything that sends an Inngest event fails at that call.
+- Without `SERVERS`, metrics are fixture replies (`PLOYZ_VERIFY_METRICS=1`), not readings; they prove the charts and states render, not that a daemon samples.
 - Hosted DNS is fake (`scripts/verify/hosted-dns.ts`, requests in `.verify/run/hosted-dns.log`). It grants `<org slug>.ployz.test` and signs certificates with a throwaway CA, so generated addresses deploy but resolve nowhere and fail TLS verification.
 - GitHub and Polar are fake. Connecting a repository or completing checkout cannot be verified here; `BILLING=1` only renders the billing UI.
 

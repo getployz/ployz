@@ -73,6 +73,8 @@ else
 INNGEST_BASE_URL=http://127.0.0.1:9
 INNGEST_EVENT_API_BASE_URL=http://127.0.0.1:9"
 fi
+# Without real Servers, metric reads answer from src/modules/metrics/metrics.verify-fixture.ts.
+if [ -n "${SERVERS:-}" ]; then verify_metrics=0; else verify_metrics=1; fi
 cat > "$run/env" <<EOF
 NODE_ENV=development
 PORT=$port
@@ -94,6 +96,7 @@ $inngest
 PLOYZ_HOSTED_DNS_URL=$hosted_dns
 APP_ENCRYPTION_SECRET=$secret-encryption
 UPTIME_ENABLED=true
+PLOYZ_VERIFY_METRICS=$verify_metrics
 VERIFY_SESSION_TOKEN=$(printf 'session:%s' "$wt" | sha256sum | cut -c1-32)
 EOF
 set -a; . "$run/env"; set +a
