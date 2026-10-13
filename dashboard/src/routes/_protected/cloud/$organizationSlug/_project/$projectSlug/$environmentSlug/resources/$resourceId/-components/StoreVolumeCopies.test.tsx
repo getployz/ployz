@@ -6,7 +6,7 @@ import { copiesFromPlacement } from "#/modules/volume-copies/volume-copies.place
 import type { PlacementRow } from "#/modules/volume-placement/volume-placement";
 import type { Member, VolumeRunView } from "#/modules/volume-run/volume-run";
 import { COPIES, member, run } from "#/modules/volume-run/volume-run.test-fixture";
-import { type CopyServer, SafetyLine, VolumeCopiesPanel } from "./StoreVolumeCopies";
+import { type CopyServer, VolumeCopiesPanel } from "./StoreVolumeCopies";
 
 const NOW = new Date("2026-10-12T12:00:00Z");
 const id = (server: string) => server.padEnd(32, "0") as MachineId;
@@ -194,17 +194,3 @@ describe("mirror detail", () => {
   });
 });
 
-describe("SafetyLine", () => {
-  afterEach(cleanup);
-
-  it("warns with no copies and counts them otherwise", () => {
-    const lone = copiesFromPlacement({ volume, members: [member("web-1", "writer")], row: row([]), active: null, lastSync: null, lastDone: null });
-    const mirrored = copiesFromPlacement({ volume, members: [member("web-1", "writer"), mirrorAsOf("web-2", NOW)], row: row(["web-2"]), active: null, lastSync: null, lastDone: null });
-    if (lone === null || mirrored === null) throw new Error("fixture");
-    render(<SafetyLine copies={lone} now={NOW} />);
-    expect(screen.getByText("No copies").parentElement?.getAttribute("data-tone")).toBe("warn");
-    cleanup();
-    render(<SafetyLine copies={mirrored} now={NOW} />);
-    expect(screen.getByText("1 copy").parentElement?.getAttribute("data-tone")).toBe("ok");
-  });
-});

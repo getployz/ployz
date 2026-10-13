@@ -10,7 +10,7 @@ export type MirrorLast = { readonly spin: boolean; readonly words: string; reado
 export function mirrorLast(copy: MirrorCopy, now: Date): MirrorLast {
   if (copy.busy !== null) return { spin: true, words: copy.busy, stale: false };
   const at = copy.staged === "new" ? null : copy.refreshedAt;
-  if (at === null) return { spin: false, words: "Not yet", stale: false };
+  if (at === null) return { spin: false, words: "Not yet", stale: isStale(copy, now) };
   const words = now.getTime() - at.getTime() < 60_000 ? "just now" : formatRelativeTime(at, now);
   return { spin: false, words, stale: isStale(copy, now) };
 }

@@ -25,9 +25,9 @@ describe("mirrorLast", () => {
     expect(mirrorLast(mirror(minutesAgo(135)), now)).toMatchObject({ spin: false, stale: true });
   });
 
-  it("says Not yet for a mirror with no point, or one the next Deploy adds", () => {
-    expect(mirrorLast(mirror(null), now).words).toBe("Not yet");
-    expect(mirrorLast(mirror(minutesAgo(4), { staged: "new" }), now).words).toBe("Not yet");
+  it("says Not yet for a mirror with no point, warning only once it is live", () => {
+    expect(mirrorLast(mirror(null), now)).toMatchObject({ words: "Not yet", stale: true });
+    expect(mirrorLast(mirror(minutesAgo(4), { staged: "new" }), now)).toMatchObject({ words: "Not yet", stale: false });
   });
 });
 

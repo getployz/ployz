@@ -14,7 +14,7 @@ import { cn } from "#/lib/utils";
 import { useInFlightDeployments } from "#/modules/config-store/store-view.queries";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import {
-  addableCopies, cardLine, COPY_WORDS, isStale, type MirrorCopy, type OldCopy, safetyLine, STAGED_WORDS, type StagedCopy,
+  addableCopies, cardLine, COPY_WORDS, isStale, type MirrorCopy, type OldCopy, STAGED_WORDS, type StagedCopy,
   type VolumeCopies, type VolumeCopy,
 } from "#/modules/volume-copies/volume-copies";
 import { useRefreshMirror } from "#/modules/volume-copies/volume-copies.hooks";
@@ -99,15 +99,6 @@ export type CopiesPanelProps = {
   onOpen: (copy: MachineId | null) => void;
   now?: Date;
 };
-
-export function SafetyLine({ copies, now = new Date() }: { copies: VolumeCopies; now?: Date }) {
-  const line = safetyLine(copies, now);
-  return <p className="flex items-center gap-1.5 text-sm" data-tone={line.tone}>
-    <span aria-hidden="true" className={cn("size-2 shrink-0 rounded-full", line.tone === "ok" ? "bg-success" : "bg-warning")} />
-    <span>{line.words}</span>
-    {line.detail ? <span className="text-muted-foreground">· {line.detail}</span> : null}
-  </p>;
-}
 
 /** A Volume's copies: the live one, and every place it survives if that Server dies. A mirror opens in detail. */
 export function VolumeCopiesPanel(props: CopiesPanelProps) {

@@ -76,11 +76,6 @@ export function StoreConfigDrawer({ params, config }: { params: ConfigRouteParam
             {...changedProps(renamed)}
             onRename={(name) => writer.commit({ command: "rename_config", environment: store, config: config.name, name })} />
         )}
-        <p className="truncate text-sm text-muted-foreground">
-          {[`${config.files.length} file${config.files.length === 1 ? "" : "s"}`, config.deployed ? null : "not deployed",
-            config.mounts.length ? `mounted on ${config.mounts.map((mount) => mount.service).join(", ")}` : "not mounted"]
-            .filter(Boolean).join(" · ")}
-        </p>
       </CanvasInspectorHeader>
       <ConfigBody key={config.id} state={state} item={item} services={services} targets={targets} serviceNames={serviceNames}
         values={values} removing={removing} params={params} version={diff.version} configs={configs} diff={diff} />

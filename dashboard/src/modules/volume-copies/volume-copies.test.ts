@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { MachineId } from "@ployz/sdk";
 import {
-  addableCopies, cardLine, hangingCopies, type MirrorCopy, type OffsiteCopy, type OldCopy, safetyLine, type Snapshot, traySpeech,
+  addableCopies, cardLine, hangingCopies, type MirrorCopy, type OffsiteCopy, type OldCopy, type Snapshot, traySpeech,
   type VolumeCopies,
 } from "./volume-copies";
 
@@ -33,10 +33,6 @@ describe("protected", () => {
   const now = today("14:04");
   const copies = pgData([mirror(today("14:00")), offsite, old]);
 
-  it("counts the mirror and offsite copy as places, not the old copy", () => {
-    expect(safetyLine(copies, now)).toEqual({ tone: "ok", words: "2 copies · 13 snapshots", detail: null });
-  });
-
   it("hangs the mirror and offsite copy under the tray and keeps the old copy in the drawer", () => {
     expect(hangingCopies(copies).map((copy) => copy.kind)).toEqual(["mirror", "offsite"]);
     expect(hangingCopies(copies).map((copy) => cardLine(copy, now))).toEqual([
@@ -54,20 +50,17 @@ describe("protected", () => {
     expect(addableCopies(pgData([mirror(today("14:00"))]), ["mirror", "offsite"])).toEqual(["offsite"]);
   });
 
-  it("warns a volume with no copies, naming its snapshots on the live Server", () => {
-    expect(safetyLine(redisData, now)).toEqual({ tone: "warn", words: "No copies", detail: "4 snapshots on web-2" });
+  it("offers every copy kind to a volume with none", () => {
     expect(addableCopies(redisData, ["mirror", "offsite"])).toEqual(["mirror", "offsite"]);
   });
 
-  it("names neither snapshots nor a count where the Server serves no snapshots", () => {
-    expect(safetyLine({ ...redisData, live: { ...redisData.live, snapshots: null } }, now)).toEqual({ tone: "warn", words: "No copies", detail: null });
-    expect(safetyLine(pgData([mirror(today("14:00"))], { snapshots: null }), now).words).toBe("1 copy");
+  it("shows a mirror Deploy has yet to add without an age", () => {
+    const added = mirror(today("14:00"), { staged: "new", refreshedAt: null });
+    expect(cardLine(added, now)).toEqual({ spin: false, words: "Mirror", age: null, stale: false });
   });
 
-  it("does not count a mirror Deploy has yet to add", () => {
-    const added = mirror(today("14:00"), { staged: "new", refreshedAt: null });
-    expect(safetyLine(pgData([added]), now).words).toBe("No copies");
-    expect(cardLine(added, now)).toEqual({ spin: false, words: "Mirror", age: null, stale: false });
+  it("warns on a live mirror that has never refreshed", () => {
+    expect(cardLine(mirror(today("14:00"), { refreshedAt: null }), now)).toEqual({ spin: false, words: "Mirror", age: "Not yet", stale: true });
   });
 
   it("drops the kind from a card staged for removal, leaving the badge", () => {
@@ -83,18 +76,13 @@ describe("protected", () => {
 describe("stale mirror", () => {
   const now = today("14:04");
   const behind = mirror(today("11:02"), { skipped: "failed" });
-  const copies = pgData([behind, offsite, old]);
-
-  it("reads Mirror behind with the mirror's age", () => {
-    expect(safetyLine(copies, now)).toEqual({ tone: "warn", words: "Mirror behind", detail: "3 hours ago" });
-  });
 
   it("marks the mirror card stale", () => {
     expect(cardLine(behind, now)).toEqual({ spin: false, words: "Mirror", age: "3 hours ago", stale: true });
   });
 
   it("is not behind at exactly an hour", () => {
-    expect(safetyLine(pgData([mirror(today("13:04"))]), now).tone).toBe("ok");
+    expect(cardLine(mirror(today("13:04")), now).stale).toBe(false);
   });
 });
 

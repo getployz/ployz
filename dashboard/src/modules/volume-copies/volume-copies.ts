@@ -97,23 +97,6 @@ export function addableCopies(copies: VolumeCopies, served: readonly AddableCopy
   return served.filter((kind) => !copies.elsewhere.some((copy) => copy.kind === kind));
 }
 
-export type SafetyLine = { readonly tone: "ok" | "warn"; readonly words: string; readonly detail: string | null };
-
-export function safetyLine(copies: VolumeCopies, now: Date): SafetyLine {
-  const places = hangingCopies(copies).filter((copy) => copy.staged !== "new");
-  const snapshots = copies.live.snapshots;
-  if (places.length === 0) {
-    const on = copies.live.server === null ? "" : ` on ${copies.live.server.name}`;
-    return { tone: "warn", words: "No copies", detail: snapshots === null ? null : `${count(snapshots.length, "snapshot")}${on}` };
-  }
-  const mirror = places.find((copy) => copy.kind === "mirror");
-  if (mirror !== undefined && isStale(mirror, now)) {
-    return { tone: "warn", words: "Mirror behind", detail: mirror.refreshedAt === null ? null : age(mirror.refreshedAt, now) };
-  }
-  const words = [count(places.length, "copy", "copies"), snapshots === null ? null : count(snapshots.length, "snapshot")];
-  return { tone: "ok", words: words.filter(Boolean).join(" · "), detail: null };
-}
-
 export type CardLine = { readonly spin: boolean; readonly words: string; readonly age: string | null; readonly stale: boolean };
 
 /** A staged removal drops the kind word so the Removing badge reads alone. */
@@ -121,7 +104,8 @@ export function cardLine(copy: VolumeCopy, now: Date): CardLine {
   if (copy.busy !== null) return { spin: true, words: copy.busy, age: null, stale: false };
   if (copy.staged !== null) return { spin: false, words: copy.staged === "removing" ? "" : COPY_WORDS[copy.kind], age: null, stale: false };
   const at = lastAt(copy);
-  return { spin: false, words: COPY_WORDS[copy.kind], age: at === null ? null : age(at, now), stale: isStale(copy, now) };
+  const stale = isStale(copy, now);
+  return { spin: false, words: COPY_WORDS[copy.kind], age: at === null ? (stale ? "Not yet" : null) : age(at, now), stale };
 }
 
 export type TraySpeech = { readonly tone: "busy" | "staged"; readonly words: string };
@@ -132,8 +116,4 @@ export function traySpeech(copies: VolumeCopies): TraySpeech | null {
   if (live.restore !== null) return { tone: "staged", words: `Restore ${live.restore.label}` };
   if (live.moveTo !== null) return { tone: "staged", words: `Moving to ${live.moveTo.name}` };
   return null;
-}
-
-function count(n: number, one: string, many = `${one}s`) {
-  return `${n} ${n === 1 ? one : many}`;
 }

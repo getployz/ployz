@@ -62,11 +62,10 @@ or a command's exit code and output.
 - **Give it time to boot.** If you lowered **Healthcheck timeout** under **Settings → Deploy**,
   raise it. Otherwise make your app start faster.
 
-## My service shows Healthcheck failing
+## My running service fails its healthcheck
 
 A replica passed its **Healthcheck** once and fails it now. It keeps getting traffic, so the
-service stays **Online**, with an amber **⚠** on its card and **Healthcheck failing** in its panel
-over the check that runs.
+service stays **Online**, with an amber **⚠** on its card.
 
 - Read the service's **Logs** for what changed: a dependency down, a full disk, a slow request.
 - If the check is wrong, fix it under **Settings → Deploy** and click **Deploy**.
