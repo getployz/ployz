@@ -34,18 +34,18 @@ if [ ! -f "$sdk" ] || [ -n "$(find "$wt/core/crates" -newer "$sdk" -type f \( -n
   bash "$wt/core/scripts/build-cloud-sdk.sh" > "$run/sdk.log" 2>&1 || { tail -20 "$run/sdk.log" >&2; exit 1; }
 fi
 
+# A fake Hosted DNS grants Cluster Domains, so generated https addresses deploy (log: $run/hosted-dns.log).
+cd "$dash"
+setsid nohup node scripts/verify/runner.mjs /scripts/verify/hosted-dns.ts > "$run/hosted-dns.log" 2>&1 < /dev/null &
+echo $! > "$run/hosted-dns.pid"
+
 # Postgres: named for the checkout, host port from Docker, data on tmpfs (down.sh deletes it).
 docker run --detach --rm --name "$name" --label "ployz.verify.checkout=$wt" \
   --tmpfs /var/lib/postgresql/data:rw --publish 127.0.0.1::5432 \
   -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=ployz_cloud postgres:16-alpine \
   -c fsync=off -c synchronous_commit=off -c full_page_writes=off >/dev/null
 pg_port=$(docker port "$name" 5432/tcp | head -1 | sed 's/.*://')
-for _ in $(seq 120); do docker exec "$name" pg_isready -q -h 127.0.0.1 -U postgres -d ployz_cloud && break; sleep 0.5; done
 
-# A fake Hosted DNS grants Cluster Domains, so generated https addresses deploy (log: $run/hosted-dns.log).
-cd "$dash"
-setsid nohup node scripts/verify/runner.mjs /scripts/verify/hosted-dns.ts > "$run/hosted-dns.log" 2>&1 < /dev/null &
-echo $! > "$run/hosted-dns.pid"
 hosted_dns=
 for _ in $(seq 120); do
   hosted_dns=$(sed -n 's/^VERIFY_HOSTED_DNS //p' "$run/hosted-dns.log") && [ -n "$hosted_dns" ] && break; sleep 0.25
@@ -106,7 +106,25 @@ VERIFY_SESSION_TOKEN=$(printf 'session:%s' "$wt" | sha256sum | cut -c1-32)
 EOF
 set -a; . "$run/env"; set +a
 
-cd "$dash"
+# vite needs only the env file, so it starts now. A signed-out request starts its SSR transform, the slowest step,
+# while Postgres is migrated and seeded; the signed-in check below then finds most of it compiled.
+setsid nohup node node_modules/vite/bin/vite.js dev --port "$port" --strictPort --host 127.0.0.1 > "$run/vite.log" 2>&1 < /dev/null &
+echo $! > "$run/vite.pid"
+(for _ in $(seq 120); do curl -s -o /dev/null "http://127.0.0.1:$port/cloud" && break; sleep 0.5; done) > /dev/null 2>&1 &
+
+if [ "${VERIFY_REAL_SERVERS:-0}" = 1 ]; then
+  # Connect handshakes fail when the dev server inherits an HTTP(S) proxy; it needs no egress.
+  env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy setsid nohup node_modules/inngest-cli/bin/inngest dev --no-discovery --no-poll --port "$inngest_port" \
+    --connect-gateway-port "$gateway_port" --connect-gateway-grpc-port "$gateway_grpc_port" \
+    --connect-executor-grpc-port "$executor_grpc_port" > "$run/inngest.log" 2>&1 < /dev/null &
+  echo $! > "$run/inngest.pid"
+  # Built from this checkout every run, so the worker never runs stale functions.
+  node node_modules/vite/bin/vite.js build --config vite.worker.config.ts --outDir "$run/worker" --emptyOutDir \
+    > "$run/worker-build.log" 2>&1 &
+  worker_build=$!
+fi
+
+for _ in $(seq 120); do docker exec "$name" pg_isready -q -h 127.0.0.1 -U postgres -d ployz_cloud && break; sleep 0.5; done
 node node_modules/drizzle-kit/bin.cjs migrate > "$run/migrate.log" 2>&1 || { cat "$run/migrate.log" >&2; exit 1; }
 seed_out=$(node scripts/verify/runner.mjs /scripts/verify/seed.ts 2>&1) || { echo "$seed_out" >&2; exit 1; }
 seed=$(printf '%s\n' "$seed_out" | sed -n 's/^VERIFY_SEED //p')
@@ -119,24 +137,17 @@ json() { node -e 'console.log(JSON.parse(process.argv[1])[process.argv[2]])' "$s
 org=$(json organizationSlug); cookie=$(json cookie)
 
 if [ "${VERIFY_REAL_SERVERS:-0}" = 1 ]; then
-  # Connect handshakes fail when the dev server inherits an HTTP(S) proxy; it needs no egress.
-  env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy setsid nohup node_modules/inngest-cli/bin/inngest dev --no-discovery --no-poll --port "$inngest_port" \
-    --connect-gateway-port "$gateway_port" --connect-gateway-grpc-port "$gateway_grpc_port" \
-    --connect-executor-grpc-port "$executor_grpc_port" > "$run/inngest.log" 2>&1 < /dev/null &
-  echo $! > "$run/inngest.pid"
-  # Built from this checkout every run (about a second), so the worker never runs stale functions.
-  node node_modules/vite/bin/vite.js build --config vite.worker.config.ts --outDir "$run/worker" --emptyOutDir \
-    > "$run/worker-build.log" 2>&1 || { cat "$run/worker-build.log" >&2; exit 1; }
+  wait "$worker_build" || { cat "$run/worker-build.log" >&2; exit 1; }
   for _ in $(seq 60); do curl -fs -o /dev/null "http://127.0.0.1:$inngest_port" && break; sleep 0.5; done
   echo "$worker_port" > "$run/worker.port"
   "$dash/scripts/verify/worker.sh"
 fi
 
-setsid nohup node node_modules/vite/bin/vite.js dev --port "$port" --strictPort --host 127.0.0.1 > "$run/vite.log" 2>&1 < /dev/null &
-echo $! > "$run/vite.pid"
-# Signed in: /cloud redirects into the organization, not to /auth. Also warms the SSR bundle.
-# A cold start answers without a redirect while vite still optimizes dependencies, so wait for one.
-for _ in $(seq 240); do
+# Signed in: /cloud redirects into the organization, not to /auth. A cold start answers without a redirect while
+# vite still optimizes dependencies, so wait for one. A deadline, since one request can block for a minute.
+where=
+deadline=$((SECONDS + 180))
+while [ "$SECONDS" -lt "$deadline" ]; do
   where=$(curl -s -o /dev/null -w '%{redirect_url}' -H "Cookie: better-auth.session_token=$cookie" "http://127.0.0.1:$port/cloud" || true)
   [ -n "$where" ] && break; sleep 0.5
 done
