@@ -155,7 +155,11 @@ fn incomplete_secret_set_withholds_the_text() {
     machine_unread.add_machine_env(None);
     let mut no_store = SecretSet::unknown();
     no_store.add_machine_env(Some(&BTreeMap::new()));
-    for set in [machine_unread, no_store, SecretSet::unknown()] {
+    let mut one_unread = SecretSet::from_store([], []);
+    one_unread.add_machine_env(Some(&BTreeMap::new()));
+    one_unread.add_machine_env(None);
+    one_unread.add_machine_env(Some(&BTreeMap::new()));
+    for set in [machine_unread, no_store, one_unread, SecretSet::unknown()] {
         let text = LogExcerpt::scrub([raw.to_owned()], &set, LineCap::default());
         assert_eq!(
             text,
@@ -304,4 +308,25 @@ fn line_cap_bounds() {
     assert_eq!(LineCap::new(0), None);
     assert_eq!(LineCap::new(201), None);
     assert_eq!(LineCap::new(200).map(LineCap::get), Some(200));
+}
+
+// Catches a set covering several Containers that keeps only one value per name.
+#[test]
+fn every_containers_value_under_a_shared_name_is_scrubbed() {
+    let mut set = SecretSet::from_store([], []);
+    for value in ["first-container-key", "second-container-key"] {
+        set.add_machine_env(Some(&BTreeMap::from([(
+            "KEY".to_owned(),
+            value.to_owned(),
+        )])));
+    }
+    let text = LogExcerpt::scrub(
+        ["a first-container-key\nb second-container-key\n".to_owned()],
+        &set,
+        LineCap::default(),
+    );
+    let LogText::Shown(excerpt) = text else {
+        panic!("withheld: {text:?}");
+    };
+    assert_eq!(excerpt.lines(), ["a [secret KEY]", "b [secret KEY]"]);
 }

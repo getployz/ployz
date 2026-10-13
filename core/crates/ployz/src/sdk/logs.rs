@@ -1,4 +1,5 @@
 //! On-demand Container log transport for SDK readers.
+use futures_util::future::join_all;
 use ployz_core::{
     ContainerId, HistoryContainer, HistoryGapReason, HistoryRow, HistoryStream, LiveLogTarget,
     LogBody, LogDirection, LogEntry, LogHistoryRequest, LogLevel, LogMetadata, LogsOptions,
@@ -6,6 +7,7 @@ use ployz_core::{
     op,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
@@ -361,64 +363,170 @@ pub(crate) async fn failed_tail(
 ) -> LogText {
     let target = MachineTarget::from(&machine);
     let read = async {
-        let env = client
-            .invoke::<op::InspectContainer>(
-                InspectContainerRequest {
-                    container_id: container,
-                },
-                &target,
-                Some(TAIL_READ),
-            )
-            .await
-            .ok()
-            .and_then(|details| details.environment);
-        secrets.add_machine_env(env.as_ref());
-        let mut newest = Vec::new();
-        let mut cursor = None;
-        loop {
-            let request = op::LogHistory::into_request(LogHistoryRequest {
-                container_id: Some(container),
-                direction: LogDirection::Backward,
-                limit: TAIL_FETCH,
-                cursor: cursor.take(),
-                ..LogHistoryRequest::default()
-            })
-            .encode()
-            .ok()?;
-            let mut stream = client.log_history_stream(&target, request).await.ok()?;
-            while let Some(payload) = stream.message().await.ok()? {
-                match HistoryRow::decode(&payload).ok()? {
-                    HistoryRow::Line { text, .. } => newest.push(text),
-                    HistoryRow::End { next } => cursor = next,
-                    HistoryRow::Error(_) => return None,
-                    HistoryRow::Container(_)
-                    | HistoryRow::Gap { .. }
-                    | HistoryRow::Exit { .. }
-                    | HistoryRow::Heartbeat => {}
-                }
-            }
-            if cursor.is_none() || newest.len() >= usize::from(TAIL_FETCH) {
-                break;
-            }
-        }
-        newest.truncate(usize::from(TAIL_FETCH));
-        let frames: Vec<String> = newest
-            .iter()
-            .rev()
-            .map(|text| format!("{}\n", String::from_utf8_lossy(text)))
-            .collect();
-        Some(frames)
+        secrets.add_machine_env(container_env(client, &target, container).await.as_ref());
+        let selector = LogHistoryRequest {
+            container_id: Some(container),
+            ..LogHistoryRequest::default()
+        };
+        let newest = newest_lines(client, &target, selector, TAIL_FETCH).await?;
+        Ok::<_, RpcError>(frames(newest.into_iter().map(|(_, text)| text)))
     };
     match tokio::time::timeout(TAIL_READ, read).await {
-        Ok(Some(frames)) => LogExcerpt::scrub(
+        Ok(Ok(frames)) => LogExcerpt::scrub(
             frames,
             &secrets,
             LineCap::new(TAIL_KEEP).unwrap_or_default(),
         ),
-        Ok(None) | Err(_) => LogText::Withheld {
+        Ok(Err(_)) | Err(_) => LogText::Withheld {
             why: Withheld::Unanswered,
         },
     }
+}
+
+/// How long reading one Machine's lines for an agent may take, env included.
+const SERVICE_TAIL_READ: Duration = Duration::from_secs(10);
+
+/// The newest `cap` lines `selector` picks from `machine`'s Log Store, across every
+/// Container that wrote them, scrubbed of each one's env as the Machine reports it. Env
+/// values stay readable only where `plain` holds the same value under the same name. A
+/// Container whose env cannot be read, as after a redeploy removed it, has its lines left
+/// out; they are withheld only when no Container's env can be read. None when `selector`
+/// picks no lines there. The error says why the Machine did not answer in time.
+pub(crate) async fn service_tail(
+    client: &Client,
+    machine: MachineId,
+    selector: LogHistoryRequest,
+    cap: LineCap,
+    plain: &BTreeMap<String, String>,
+) -> Result<Option<LogText>, RpcError> {
+    let target = MachineTarget::from(&machine);
+    let read = async {
+        let newest = newest_lines(client, &target, selector, LineCap::MAX).await?;
+        if newest.is_empty() {
+            return Ok(None);
+        }
+        let mut containers: Vec<ContainerId> = Vec::new();
+        for (container, _) in &newest {
+            if !containers.contains(container) {
+                containers.push(*container);
+            }
+        }
+        let envs = join_all(
+            containers
+                .iter()
+                .map(|container| container_env(client, &target, *container)),
+        )
+        .await;
+        let mut secrets = SecretSet::from_store([], plain.clone());
+        let mut readable = Vec::new();
+        for (container, env) in containers.iter().zip(&envs) {
+            if env.is_some() {
+                secrets.add_machine_env(env.as_ref());
+                readable.push(*container);
+            }
+        }
+        let frames = frames(
+            newest
+                .into_iter()
+                .filter(|(container, _)| readable.contains(container))
+                .map(|(_, text)| text),
+        );
+        Ok(Some(LogExcerpt::scrub(frames, &secrets, cap)))
+    };
+    tokio::time::timeout(SERVICE_TAIL_READ, read)
+        .await
+        .map_err(|_| RpcError {
+            code: RpcErrorCode::Unavailable,
+            message: format!(
+                "its Log Store did not answer within {}s",
+                SERVICE_TAIL_READ.as_secs()
+            ),
+            details: serde_json::Value::Null,
+            cause: Vec::new(),
+        })?
+}
+
+async fn container_env(
+    client: &Client,
+    target: &MachineTarget,
+    container: ContainerId,
+) -> Option<BTreeMap<String, String>> {
+    client
+        .invoke::<op::InspectContainer>(
+            InspectContainerRequest {
+                container_id: container,
+            },
+            target,
+            Some(TAIL_READ),
+        )
+        .await
+        .ok()
+        .and_then(|details| details.environment)
+}
+
+/// The newest `fetch` lines `selector` picks, newest first. The error says why the Log
+/// Store could not be read.
+async fn newest_lines(
+    client: &Client,
+    target: &MachineTarget,
+    selector: LogHistoryRequest,
+    fetch: u16,
+) -> Result<Vec<(ContainerId, Vec<u8>)>, RpcError> {
+    let mut newest = Vec::new();
+    let mut cursor = None;
+    loop {
+        let request = op::LogHistory::into_request(LogHistoryRequest {
+            direction: LogDirection::Backward,
+            limit: fetch,
+            cursor: cursor.take(),
+            ..selector.clone()
+        })
+        .encode()
+        .map_err(|error| crate::ui::rpc_error(RpcErrorCode::InvalidArgument, &error))?;
+        let mut stream = client
+            .log_history_stream(target, request)
+            .await
+            .map_err(|error| RpcError::from(ConnectError::Rpc(error)))?;
+        while let Some(payload) = stream
+            .message()
+            .await
+            .map_err(|error| RpcError::from(ConnectError::from(error)))?
+        {
+            let row = HistoryRow::decode(&payload)
+                .map_err(|error| crate::ui::rpc_error(RpcErrorCode::InvalidArgument, &error))?;
+            match row {
+                HistoryRow::Line {
+                    container_id, text, ..
+                } => newest.push((container_id, text)),
+                HistoryRow::End { next } => cursor = next,
+                HistoryRow::Error(message) => {
+                    return Err(RpcError {
+                        code: RpcErrorCode::Unavailable,
+                        message,
+                        details: serde_json::Value::Null,
+                        cause: Vec::new(),
+                    });
+                }
+                HistoryRow::Container(_)
+                | HistoryRow::Gap { .. }
+                | HistoryRow::Exit { .. }
+                | HistoryRow::Heartbeat => {}
+            }
+        }
+        if cursor.is_none() || newest.len() >= usize::from(fetch) {
+            break;
+        }
+    }
+    newest.truncate(usize::from(fetch));
+    Ok(newest)
+}
+
+/// Newest-first lines as frames in the order they were written.
+fn frames(newest: impl DoubleEndedIterator<Item = Vec<u8>>) -> Vec<String> {
+    newest
+        .rev()
+        .map(|text| format!("{}\n", String::from_utf8_lossy(&text)))
+        .collect()
 }
 
 #[cfg(test)]
@@ -547,6 +655,34 @@ mod tests {
         assert!(reader.next().await.unwrap().is_none());
         assert_eq!(started.elapsed(), Duration::from_secs(11));
         writer.await.unwrap();
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_server_with_no_lines_has_no_tail() {
+        let (session, sender, server) = streaming_session().await;
+        sender
+            .send(Ok(HistoryRow::End { next: None }.encode().unwrap()))
+            .await
+            .unwrap();
+        drop(sender);
+        let selector = LogHistoryRequest {
+            namespace: Some("app".into()),
+            service: Some("web".into()),
+            ..LogHistoryRequest::default()
+        };
+        let cap = LineCap::new(50).unwrap();
+        let client = session.client().unwrap();
+        let tail = service_tail(
+            &client,
+            MachineId::random(),
+            selector,
+            cap,
+            &BTreeMap::new(),
+        )
+        .await
+        .unwrap();
+        assert!(tail.is_none(), "{tail:?}");
         server.abort();
     }
 

@@ -10,7 +10,7 @@ anything, it stops and asks you.
 The agent works in the project and environment you're looking at, unless you name another. It
 can create a project, add and change services, [configs](../services/configs.md), volumes and
 domains, review what's staged, publish and deploy. It can also read your GitHub repositories and
-work on your servers. It doesn't create environments, and it can't read a service's logs yet.
+work on your servers. It doesn't create environments.
 
 ## What it can do on your servers
 
@@ -19,6 +19,9 @@ replied. It can:
 
 - Show a server, a service's containers, and where each volume's copies live
   (**server show**, **service status**, **volume show**).
+- Read a service's recent logs from each server that ran it, with secrets from the container's
+  environment replaced (**service logs**). Ployz support sees them only if your organization
+  shows its logs to support. It reads the latest lines and doesn't follow new ones.
 - Restart, start or stop a service (**service restart**, **service start**, **service stop**).
 - Drain, upgrade, clean up after or remove a server (**server drain**, **server upgrade**,
   **server clean**, **server remove**).

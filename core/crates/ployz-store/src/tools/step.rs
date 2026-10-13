@@ -1,6 +1,7 @@
 //! The step machine's vocabulary: what a tool asks for, what it writes, and the
 //! keys that make a retried write land once.
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use base64::Engine as _;
@@ -126,6 +127,9 @@ pub struct LogsQuery {
     pub lines: LineCap,
     #[ts(type = "{ secs: number, nanos: number } | null")]
     pub since: Option<Duration>,
+    /// The Service's plain variables as the Store shows them. A Container's env value stays
+    /// readable only when it is here under the same name; every other value is scrubbed.
+    pub plain: BTreeMap<String, String>,
 }
 
 /// Recent operations on one subject.

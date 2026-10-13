@@ -104,6 +104,8 @@ pub enum Health {
 pub struct LogsAnswer {
     pub servers: Vec<ServerLog>,
     pub seen: Freshness,
+    /// Why each unanswered Server did not answer.
+    pub notes: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]

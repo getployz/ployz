@@ -1018,3 +1018,64 @@ fn renaming_a_referenced_variable_asks_to_update_its_references() {
         json!({ "UPSTREAM": "${{ web.PUBLIC_API_URL }}/jobs" })
     );
 }
+
+// Catches service_logs telling Cloud a secret or a resolved template is plain,
+// or dropping why a Server did not answer.
+#[test]
+fn service_logs_names_only_plain_variables_and_says_why_a_server_did_not_answer() {
+    let (store, _) = deploying();
+    call(
+        &store,
+        "service_update",
+        json!({ "service": "web", "set": { "env": {
+            "PLAIN": "hello-plain",
+            "SHARED": { "value": "exported-plain", "exported": true },
+            "KEY": { "secret": "s3cr3t-value" },
+            "URL": "http://${{ web.PLAIN }}",
+        } } }),
+        "env-1",
+    )
+    .ok();
+    let mut asked = Vec::new();
+    let mut cloud = |cloud: Cloud| match cloud {
+        Cloud::Ask(CloudQuery::Logs(query)) => {
+            asked.push(query.plain);
+            Ok(json!({
+                "servers": [],
+                "seen": servers(&[])["seen"],
+                "notes": ["web-2 did not answer: log store is rebuilding"],
+            }))
+        }
+        Cloud::Ask(query) => panic!("unexpected read: {query:?}"),
+        Cloud::Act(act) => panic!("logs act on nothing: {act:?}"),
+    };
+
+    let logs = drive(
+        &store,
+        in_org(),
+        "service_logs",
+        json!({ "service": "web", "deployment": 1 }),
+        "logs-1",
+        &mut cloud,
+    )
+    .ok();
+
+    let [plain] = asked.as_slice() else {
+        panic!("one logs ask: {asked:?}");
+    };
+    assert_eq!(plain.get("PLAIN").map(String::as_str), Some("hello-plain"));
+    assert_eq!(
+        plain.get("SHARED").map(String::as_str),
+        Some("exported-plain")
+    );
+    assert!(!plain.contains_key("KEY"), "{plain:?}");
+    assert_ne!(
+        plain.get("URL").map(String::as_str),
+        Some("http://hello-plain"),
+        "a template's resolved value is never plain"
+    );
+    assert_eq!(
+        logs["notes"],
+        json!(["web-2 did not answer: log store is rebuilding"])
+    );
+}

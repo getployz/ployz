@@ -58,10 +58,9 @@ claude mcp add -s user ployz -- ployz mcp
 ```
 
 For Codex, run `codex mcp add ployz -- ployz mcp`. The tools act signed in as you. They create
-Projects, read and stage changes in them, review, publish and deploy them, and show Services, Servers
-and Volumes. Ployz Cloud does not support `service_logs` yet; read logs on the
-[Logs page](../observe/logs.md). The agent can resend a call after a lost reply without running
-it twice. Each call acts where the agent's directory is linked when the call starts, so after
+Projects, read and stage changes in them, review, publish and deploy them, show Services, Servers
+and Volumes, and read a Service's recent logs. The agent can resend a call after a lost reply
+without running it twice. Each call acts where the agent's directory is linked when the call starts, so after
 `ployz link` or `ployz org use` the next call follows it.
 
 Some things are not tools. Run these yourself in a terminal:

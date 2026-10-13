@@ -64,6 +64,11 @@ pub(super) struct DeployService {
     healthy_at: Option<tokio::time::Instant>,
     effective_healthcheck: Option<HealthcheckSpec>,
     removed: Arc<Mutex<BTreeSet<ContainerId>>>,
+    pub(super) history_requests: Arc<Mutex<Vec<ployz_core::LogHistoryRequest>>>,
+    /// Machines whose Log Store answers with an error row, and its message.
+    pub(super) history_failures: BTreeMap<MachineId, String>,
+    /// Containers the Machine can no longer inspect, as when one has been removed.
+    pub(super) uninspectable: BTreeSet<ContainerId>,
     start_error: Option<RpcError>,
     listing_failures: Vec<MachineId>,
     pub(super) listing_blocked: Option<Arc<tokio::sync::Notify>>,
@@ -99,6 +104,9 @@ impl DeployService {
             healthy_at: None,
             effective_healthcheck: None,
             removed: Arc::new(Mutex::new(BTreeSet::new())),
+            history_requests: Arc::new(Mutex::new(Vec::new())),
+            history_failures: BTreeMap::new(),
+            uninspectable: BTreeSet::new(),
             start_error: None,
             listing_failures: Vec::new(),
             listing_blocked: None,
@@ -132,6 +140,9 @@ impl DeployService {
             healthy_at: None,
             effective_healthcheck: None,
             removed: Arc::new(Mutex::new(BTreeSet::new())),
+            history_requests: Arc::new(Mutex::new(Vec::new())),
+            history_failures: BTreeMap::new(),
+            uninspectable: BTreeSet::new(),
             start_error: None,
             listing_failures: Vec::new(),
             listing_blocked: None,
@@ -618,6 +629,9 @@ impl MachineRpc for DeployService {
         else {
             return Err(Status::invalid_argument("expected inspect_container"));
         };
+        if self.uninspectable.contains(&inspect.container_id) {
+            return Err(Status::not_found("no such container"));
+        }
         let spec = spec("web")
             .to_resolved(
                 ServiceId::random(),
@@ -966,24 +980,46 @@ impl MachineRpc for DeployService {
         unused()
     }
     /// Every Container's Log Store holds `line 1`..`line 12` and then its exit,
-    /// paged newest first.
+    /// paged newest first. A Service-wide read interleaves Containers `d..d` (odd
+    /// lines) and `c..c` (even lines); line 11 prints its env's PLAIN and line 12
+    /// leaks its TOKEN.
     async fn log_history(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<Self::LogHistoryStream>, Status> {
+        let machine = machine_from_metadata(&request)?;
         let RpcRequestBody::LogHistory(history) =
             request.into_inner().decode_request().unwrap().body
         else {
             return Err(Status::invalid_argument("expected log_history"));
         };
         assert_eq!(history.direction, ployz_core::LogDirection::Backward);
-        let container_id = history.container_id.unwrap();
+        self.history_requests.lock().unwrap().push(history.clone());
+        if let Some(message) = self.history_failures.get(&machine) {
+            let row = ployz_core::HistoryRow::Error(message.clone());
+            return Ok(Response::new(tokio_stream::iter(vec![Ok(row
+                .encode()
+                .unwrap())])));
+        }
+        let service_wide = history.container_id.is_none();
+        let container_id = history
+            .container_id
+            .unwrap_or_else(|| ContainerId::parse("c".repeat(64)).unwrap());
+        let other = ContainerId::parse("d".repeat(64)).unwrap();
         let mut stored = (1..=12)
             .map(|n| ployz_core::HistoryRow::Line {
-                container_id,
+                container_id: if service_wide && n % 2 == 1 {
+                    other
+                } else {
+                    container_id
+                },
                 ts: n,
                 stream: ployz_core::HistoryStream::Stdout,
-                text: format!("line {n}").into_bytes(),
+                text: match (service_wide, n) {
+                    (true, 11) => b"plain from-docker".to_vec(),
+                    (true, 12) => b"token live-only-sentinel".to_vec(),
+                    _ => format!("line {n}").into_bytes(),
+                },
             })
             .collect::<Vec<_>>();
         stored.push(ployz_core::HistoryRow::Exit {

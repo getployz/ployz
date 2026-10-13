@@ -1,18 +1,21 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use futures_util::future::join_all;
 use ployz_core::{
     ContainerId, ContainerKind, ContainerObservation, ContainerRuntimeObservation,
-    EnvironmentValues, HealthObservation, MachineId, MachineObservation, MachineStorageObservation,
-    MachineTarget, Namespace, RpcError, RpcErrorCode, ServiceName, StartContainerRequest,
-    StopContainerRequest, op,
+    EnvironmentValues, HealthObservation, LogHistoryRequest, MachineId, MachineObservation,
+    MachineStorageObservation, MachineTarget, Namespace, RpcError, RpcErrorCode, ServiceName,
+    StartContainerRequest, StopContainerRequest, op,
 };
 use ployz_store::DeploymentId;
 use ployz_store::tools::cloud::{
-    ContainerReport, ContainerState, ContainersAnswer, Disk, Health, ServerReport, ServerState,
-    ServersAnswer,
+    ContainerReport, ContainerState, ContainersAnswer, Disk, Health, LogsAnswer, ServerLog,
+    ServerReport, ServerState, ServersAnswer,
 };
-use ployz_store::tools::{CloudQuery, Freshness, ServerName, ServerRef, Source, Timestamp};
+use ployz_store::tools::{
+    CloudQuery, Freshness, LogsQuery, ServerName, ServerRef, Source, Timestamp,
+};
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
@@ -33,8 +36,9 @@ pub async fn ask(session: &Session, query: CloudQuery) -> Result<Value, RpcError
         CloudQuery::Containers { namespace, service } => {
             encode(&containers(session, &namespace, service.as_ref()).await?)
         }
-        CloudQuery::Copies { .. } | CloudQuery::Logs(_) => Err(unsupported(
-            "Copies and logs join the Config Store; Ployz Cloud answers them",
+        CloudQuery::Logs(query) => encode(&logs(session, query).await?),
+        CloudQuery::Copies { .. } => Err(unsupported(
+            "Copies join the Config Store; Ployz Cloud answers them",
         )),
         CloudQuery::Operations(_)
         | CloudQuery::GithubTree(_)
@@ -174,6 +178,71 @@ async fn containers(
                     .map(|machine| machine.machine.name.clone())
                     .collect(),
                 seen: seen(&machines, &unanswered),
+            })
+        })
+        .await
+}
+
+/// The newest lines of `query`'s Service on each Server, or on the one it names, as
+/// [`super::service_tail`] scrubs them. A Server with no lines in range has no entry.
+async fn logs(session: &Session, query: LogsQuery) -> Result<LogsAnswer, RpcError> {
+    let mut client = session.client()?;
+    session
+        .until_closed(async {
+            let mut machines = client.machines().await.map_err(RpcError::from)?;
+            if let Some(only) = &query.server {
+                machines.retain(|machine| machine.machine.id == only.machine);
+            }
+            let since_nanos = query.since.map(|since| {
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default();
+                i64::try_from(now.saturating_sub(since).as_nanos()).unwrap_or(i64::MAX)
+            });
+            let selector = LogHistoryRequest {
+                namespace: Some(query.namespace.to_string()),
+                service: Some(query.service.to_string()),
+                deployment: query.deployment.map(|id| id.as_str().to_owned()),
+                since_nanos,
+                ..LogHistoryRequest::default()
+            };
+            let mut unanswered = uninvited(&machines);
+            let invited: Vec<&MachineObservation> = machines
+                .iter()
+                .filter(|machine| !unanswered.contains(&machine.machine.id))
+                .collect();
+            let reads = join_all(invited.iter().map(|machine| {
+                super::service_tail(
+                    &client,
+                    machine.machine.id,
+                    selector.clone(),
+                    query.lines,
+                    &query.plain,
+                )
+            }))
+            .await;
+            let mut servers = Vec::new();
+            let mut notes = Vec::new();
+            for (machine, read) in invited.iter().zip(reads) {
+                match read {
+                    Ok(Some(text)) => servers.push(ServerLog {
+                        server: machine.machine.name.clone(),
+                        text,
+                    }),
+                    Ok(None) => {}
+                    Err(error) => {
+                        unanswered.insert(machine.machine.id);
+                        notes.push(format!(
+                            "{} did not answer: {}",
+                            machine.machine.name, error.message
+                        ));
+                    }
+                }
+            }
+            Ok(LogsAnswer {
+                servers,
+                seen: seen(&machines, &unanswered),
+                notes,
             })
         })
         .await
