@@ -475,12 +475,12 @@ describe("changeSteps", () => {
   it("catches up first only when the mirror is more than 60 minutes behind", () => {
     const members = [member("web-1", "writer"), mirrorAsOf("web-2", at)];
     const promote = row(["web-2"], { primary: "web-2" });
-    expect(stepsOf(members, promote, minutesAfter(60))).toEqual([["Final sync", "Stop", "Start"]]);
-    expect(stepsOf(members, promote, minutesAfter(61))).toEqual([["Catch up", "Final sync", "Stop", "Start"]]);
+    expect(stepsOf(members, promote, minutesAfter(60))).toEqual([["Stop", "Final sync", "Start"]]);
+    expect(stepsOf(members, promote, minutesAfter(61))).toEqual([["Catch up", "Stop", "Final sync", "Start"]]);
   });
 
   it("seeds a Server that holds nothing before the hand-over", () => {
-    expect(stepsOf([member("web-1", "writer"), pooled("web-3")], row([], { primary: "web-3" }))).toEqual([["Seed", "Final sync", "Stop", "Start"]]);
+    expect(stepsOf([member("web-1", "writer"), pooled("web-3")], row([], { primary: "web-3" }))).toEqual([["Seed", "Stop", "Final sync", "Start"]]);
   });
 
   it("restarts on the mirror when the primary does not answer", () => {

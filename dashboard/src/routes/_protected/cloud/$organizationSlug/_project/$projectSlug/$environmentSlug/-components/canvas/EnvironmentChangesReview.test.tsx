@@ -73,7 +73,7 @@ describe("Details", () => {
       volumeId: "v1", environmentId: "e1", mirrors: [], staged: { primary: id("web-3"), mirrors: [], deletes: [] }, unreached: false, deploymentId: null,
     });
     review({ groups: [placementGroup(volume, changes, new Date())] });
-    expect(lineOf("Primary").getByText("Seed · Final sync · Stop · Start")).toBeTruthy();
+    expect(lineOf("Primary").getByText("Seed · Stop · Final sync · Start")).toBeTruthy();
     expect(lineOf("Primary").queryByText("Not reached")).toBeNull();
     cleanup();
     review({ groups: [placementGroup(volume, changes, new Date(), true)] });

@@ -41,8 +41,8 @@ Details, and you drop it in Details. A deploy that removes a mirror asks you to 
   volumes". Each environment's next deploy moves them.
 
 Details lists the steps each change takes at the next deploy. Making a mirror the primary reads
-"Final sync · Stop · Start", with "Catch up" first when the mirror last refreshed over an hour
-ago. A new mirror reads "Seed", and removing a copy reads "Delete".
+"Stop · Final sync · Start", with "Catch up" first when the mirror last refreshed over an hour
+ago. Writes pause from Stop until Start, so the final sync carries every last change. A new mirror reads "Seed", and removing a copy reads "Delete".
 
 Mirrors refresh on every deploy and every 15 minutes. While a deploy moves a volume, its tray, the
 bottom bar and the deployment page say what it is doing, for example "Moving to web-2". Cancel

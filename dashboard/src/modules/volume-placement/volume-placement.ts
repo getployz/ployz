@@ -483,7 +483,7 @@ export function changeSteps(change: PlacementChange, now: Date): readonly string
     case "move": {
       if (change.how === "restore") return ["Stop", "Start"];
       const behind = change.how === "promote" && change.refreshedAt !== null && now.getTime() - change.refreshedAt.getTime() > STALE_AFTER_MS;
-      return [...clears, ...change.how === "copy" ? ["Seed"] : [], ...behind ? ["Catch up"] : [], "Final sync", "Stop", "Start"];
+      return [...clears, ...change.how === "copy" ? ["Seed"] : [], ...behind ? ["Catch up"] : [], "Stop", "Final sync", "Start"];
     }
     case "add_mirror":
       return [...clears, "Seed"];
