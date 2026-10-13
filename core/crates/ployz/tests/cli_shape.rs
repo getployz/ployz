@@ -798,10 +798,10 @@ fn a_daemon_that_hangs_up_is_one_json_error_on_piped_stdout() {
     let [value] = values.as_slice() else {
         panic!("stdout is not one JSON value: {values:?}");
     };
-    assert!(
-        value
-            .pointer("/error/code")
-            .is_some_and(serde_json::Value::is_string)
+    assert_eq!(
+        value.pointer("/error/code"),
+        Some(&serde_json::json!("internal")),
+        "{value}"
     );
 }
 
