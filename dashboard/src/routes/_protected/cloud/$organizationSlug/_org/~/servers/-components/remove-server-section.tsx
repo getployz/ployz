@@ -17,6 +17,7 @@ import {
   AlertDialogTitle,
 } from "#/components/ui/alert-dialog";
 import { Button } from "#/components/ui/button";
+import { ForgetServersDialog } from "../../../-components/forget-servers-dialog";
 import { Spinner } from "#/components/ui/spinner";
 import { toErrorMessage } from "#/lib/error-message";
 import {
@@ -74,7 +75,7 @@ const volumes = (rust: DataLossList["rust"]) =>
  * Removing a Server resets it and takes it out of the cluster; its volumes stay on its disk, unused. The `last` one takes
  * everything running with it, and Cloud lets go of the cluster: Deploy asks for a server until one is added. It waits on
  * the runtime, and once the Server is gone the page returns to Servers. An `offline` Server can't be reset, so it is
- * forgotten instead.
+ * forgotten instead: by another Server, or with Forget Servers when it is the last.
  */
 export function RemoveServerSection({ machine, organizationSlug, last, offline, hint }: {
   machine: RuntimeMachineRecord; organizationSlug: string; last: boolean; offline: boolean;
@@ -94,7 +95,9 @@ export function RemoveServerSection({ machine, organizationSlug, last, offline, 
   return (
     <>
     <SettingsSection id="remove-server" title="Danger">
-      {offline ? <ForgetServerRow machine={machine} organizationSlug={organizationSlug} /> : <DangerRow
+      {offline ? last
+        ? <ForgetLastServerRow machine={machine} organizationSlug={organizationSlug} />
+        : <ForgetServerRow machine={machine} organizationSlug={organizationSlug} /> : <DangerRow
         title={`Remove ${machine.name}`}
         description={last
           ? "Resets it. It's your only server, so everything running here stops until you add another."
@@ -153,6 +156,26 @@ export function RemoveServerSection({ machine, organizationSlug, last, offline, 
         }}
       />
   </>
+  );
+}
+
+/** No other Server is left to forget the last one, so Forget Servers forgets the Cluster with it. */
+function ForgetLastServerRow({ machine, organizationSlug }: { machine: RuntimeMachineRecord; organizationSlug: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <DangerRow
+        title={`Forget ${machine.name}`}
+        description="It's gone, and it's your only server. Your projects and settings stay; its volumes can't be recovered."
+        action={
+          <Button variant="destructive" onClick={() => setOpen(true)}>
+            <UnplugIcon data-icon="inline-start" />
+            Forget server
+          </Button>
+        }
+      />
+      <ForgetServersDialog organizationSlug={organizationSlug} open={open} onOpenChange={setOpen} />
+    </>
   );
 }
 
