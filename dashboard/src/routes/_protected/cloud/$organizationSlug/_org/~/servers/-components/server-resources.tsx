@@ -1,12 +1,12 @@
 import { useState, type ReactNode } from "react";
 import { Meter } from "@base-ui/react/meter";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { meterIndicatorClass, meterValue } from "#/components/metric-meter";
 import { MetricChart, useMetricCursor, type MetricSeries } from "#/components/metrics/metric-chart";
 import { Card } from "#/components/ui/card";
 import { Skeleton } from "#/components/ui/skeleton";
 import { ToggleGroup, ToggleGroupItem } from "#/components/ui/toggle-group";
 import { bytesText, onGrid, rateText } from "#/modules/metrics/metric-chart-data";
-import { meterIndicatorClass, meterValue } from "#/components/metric-meter";
 import { serverMetrics, type DiskSample, type ServerMetrics } from "#/modules/metrics/metrics-model";
 import { serverMetricsQueryOptions } from "#/modules/metrics/metrics.queries";
 import { chartWindow, steps, type TimeWindow } from "#/modules/uptime/uptime";
@@ -25,7 +25,7 @@ const SEGMENT_COLORS = {
   mirrors: "var(--chart-2)",
   logsAndMetrics: "var(--chart-3)",
   other: "var(--chart-4)",
-  used: "var(--chart-1)",
+  used: "var(--muted-foreground)",
   free: "var(--muted)",
 } satisfies Record<DiskSegment["key"], string>;
 
