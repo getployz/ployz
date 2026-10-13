@@ -9,7 +9,9 @@ CI uploads each build as the GitHub Actions artifact <name>-<key>. A miss in the
 """
 
 import argparse
+from contextlib import contextmanager
 from dataclasses import dataclass
+import fcntl
 import hashlib
 import json
 import os
@@ -164,6 +166,39 @@ def run(args, **kwargs):
     return subprocess.run(args, check=True, stdout=subprocess.PIPE, **kwargs)
 
 
+# Harness builds strip their binaries, so DWARF is wasted work: a third of an edit rebuild. kache
+# strips incremental flags unless told to keep them, which makes a one-line edit recompile whole crates.
+HARNESS_ENV = {"CARGO_PROFILE_DEV_DEBUG": "0", "KACHE_PRESERVE_INCREMENTAL": "1"}
+BUILD_SLOTS = 2  # concurrent harness builds per machine; worktrees beyond that wait rather than thrash the cores
+
+
+@contextmanager
+def build_slot():
+    """Hold one of the machine's BUILD_SLOTS until the block ends, waiting for one to free up."""
+    slots = CACHE.parent / "build-slots"
+    slots.mkdir(parents=True, exist_ok=True)
+    waiting = False
+    while True:
+        for index in range(BUILD_SLOTS):
+            with (slots / str(index)).open("w") as slot:
+                try:
+                    fcntl.flock(slot, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    continue
+                yield
+                return
+        if not waiting:
+            print(f"waiting for one of {BUILD_SLOTS} build slots", file=sys.stderr)
+            waiting = True
+        time.sleep(1)
+
+
+def harness_build(args, commands=run, **kwargs):
+    """Run a harness build in a build slot, at low priority."""
+    with build_slot():
+        return commands(["nice", "-n", "10", *args], env={**os.environ, **HARNESS_ENV}, **kwargs)
+
+
 def binaries(destination, names, cargo_args=(), commands=run):
     """Put the named stripped dev binaries into destination: from the cache, or from one cargo build of the misses."""
     extra = shlex.join(cargo_args)
@@ -172,9 +207,8 @@ def binaries(destination, names, cargo_args=(), commands=run):
     missing = [name for name, found in wanted.items() if not fetch(found, destination)]
     if not missing:
         return
-    # The binaries are stripped, so DWARF is wasted work: a third of an edit rebuild.
-    commands(["cargo", "build", "--locked", *(arg for name in missing for arg in ["-p", name]), *cargo_args],
-             cwd=CORE, timeout=1800, env={**os.environ, "CARGO_PROFILE_DEV_DEBUG": "0"})
+    harness_build(["cargo", "build", "--locked", *(arg for name in missing for arg in ["-p", name]), *cargo_args],
+                  commands, cwd=CORE, timeout=1800)
     metadata = commands(["cargo", "metadata", "--no-deps", "--format-version", "1"], cwd=CORE)
     target = Path(json.loads(metadata.stdout)["target_directory"]) / "debug"
     for name in missing:
@@ -347,11 +381,15 @@ def main():
     command = actions.add_parser("binaries", help="Fetch or build stripped dev binaries, as the verify harness runs")
     command.add_argument("directory", type=Path)
     command.add_argument("kinds", nargs="+", choices=["ployz", "ployzd"])
+    command = actions.add_parser("build", help="Run a harness build: in one of the machine's build slots, at low priority")
+    command.add_argument("command", nargs=argparse.REMAINDER)
     actions.add_parser("prune")
     args = parser.parse_args()
     if args.action == "prune":
         prune()
         return 0
+    if args.action == "build":
+        return harness_build(args.command, subprocess.run).returncode
     if args.action == "binaries":
         binaries(args.directory, args.kinds)
         return 0

@@ -32,7 +32,7 @@ if [ -z "$key" ] || ! { fetch --extra "$release" || { [ "$extra" != "$release" ]
   # CI and images ship this SDK, so they build release. A local build only serves the dev loop, so it
   # skips release's optimizations.
   if [ -n "$key" ] && [ -z "${CI:-}" ]; then
-    CARGO_PROFILE_DEV_DEBUG=0 cargo build -p ployz-sdk --locked ${features:+--features "$features"}
+    python3 scripts/artifacts.py build cargo build -p ployz-sdk --locked ${features:+--features "$features"}
     profile_dir=debug
   else
     cargo build -p ployz-sdk --release --locked ${features:+--features "$features"}
@@ -50,11 +50,11 @@ if [ -z "$key" ] || ! { fetch --extra "$release" || { [ "$extra" != "$release" ]
   if [ -n "$key" ]; then
     wasm_key=$(python3 scripts/artifacts.py key config-wasm)
   fi
-  if [ -z "$wasm_key" ] || ! python3 scripts/artifacts.py fetch config-wasm crates/ployz-sdk; then
+  if [ -z "$wasm_key" ]; then
     bash scripts/build-config-wasm.sh
-    if [ -n "$wasm_key" ]; then
-      python3 scripts/artifacts.py store config-wasm --expect "$wasm_key" crates/ployz-sdk
-    fi
+  elif ! python3 scripts/artifacts.py fetch config-wasm crates/ployz-sdk; then
+    python3 scripts/artifacts.py build bash scripts/build-config-wasm.sh
+    python3 scripts/artifacts.py store config-wasm --expect "$wasm_key" crates/ployz-sdk
   fi
   if [ -n "$key" ]; then
     python3 scripts/artifacts.py store sdk --extra "$extra" --expect "$key" crates/ployz-sdk

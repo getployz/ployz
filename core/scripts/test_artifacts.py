@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Which edits change which artifact keys, how the local cache keeps, returns and drops builds, and which CI uploads it takes."""
 
+import contextlib
 import hashlib
 import io
 import json
@@ -11,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import tomllib
 import time
 from types import SimpleNamespace
@@ -319,6 +321,25 @@ class Main(Scratch):
         meta, said = self.stale()
         self.assertIsNone(meta)
         self.assertEqual(said, "sdk: main has no build in its last 20 commits")
+
+
+class Slots(Scratch):
+    def test_a_third_build_waits_for_one_of_two_to_finish(self):
+        third = threading.Event()
+
+        def build():
+            with artifacts.build_slot():
+                third.set()
+
+        with contextlib.redirect_stderr(io.StringIO()) as said:
+            with artifacts.build_slot():
+                with artifacts.build_slot():
+                    waiter = threading.Thread(target=build)
+                    waiter.start()
+                    self.assertFalse(third.wait(1.5), "both slots are taken")
+                self.assertTrue(third.wait(5), "a slot freed up")
+            waiter.join()
+        self.assertEqual(said.getvalue(), "waiting for one of 2 build slots\n")
 
 
 if __name__ == "__main__":
