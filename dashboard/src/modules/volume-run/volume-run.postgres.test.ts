@@ -369,6 +369,8 @@ describe("volume runs", () => {
       Effect.provideService(InngestClient, inngest),
       Effect.provideService(CloudStore, {
         open: Effect.succeed(asTestDouble<ConfigStore>()({
+          githubCancel: async () => [],
+          abandonDeployment: async (id: string) => ({ id, status: "failed" }),
           read: async (_: string, query: { query: string }) => query.query === "namespaces"
             ? { namespaces: [{ namespace: "shop-production", project: "shop", environment: "production" }] }
             : { environment: { id: "env-1", project: "shop", name: "production", revision: 1 }, volumes: storeVolumes },
@@ -2093,7 +2095,7 @@ describe("volume runs", () => {
       if (lane === undefined) throw new Error("the Deploy placed no lane");
       return runEffect(fenceDeployVolume(lane, DEPLOY));
     };
-    const finish = (placed: readonly DeployLane[]) => runEffect(finishDeployVolumes(placed, "env-1", DEPLOY));
+    const finish = () => runEffect(finishDeployVolumes(DEPLOY, "done"));
     const afterCut = () => {
       const cut = newSnap("f-1");
       machines = [{ name: "fsn-1", pool: true, copy: slotCopy(cut) }, { name: "fsn-2", pool: true, copy: slotCopy(cut) }];
@@ -2119,7 +2121,7 @@ describe("volume runs", () => {
       expect(containers).toEqual([{ machine: "fsn-1", id: "web-fsn-1", running: true }]);
 
       send.mockClear();
-      expect(await finish(placed)).toEqual({ ended: 1, requeued: [expect.any(String)], refused: [] });
+      expect(await finish()).toEqual({ ended: 1, requeued: [expect.any(String)], refused: [] });
       expect(await lanes()).toMatchObject([
         { id: taken.id, state: "yielded" },
         { kind: "deploy", state: "done" },
@@ -2127,7 +2129,7 @@ describe("volume runs", () => {
       ]);
       expect(send).toHaveBeenCalledTimes(1);
       expect(send).toHaveBeenCalledWith(expect.objectContaining({ name: "volume/run.requested" }));
-      expect(await finish(placed)).toEqual({ ended: 0, requeued: [], refused: [] });
+      expect(await finish()).toEqual({ ended: 0, requeued: [], refused: [] });
       expect((await lanes()).filter((lane) => lane.kind === "move")).toHaveLength(2);
     });
 
@@ -2176,7 +2178,7 @@ describe("volume runs", () => {
       expect(containers.filter((container) => container.running)).toEqual([{ machine: "fsn-2", id: `created-${volumeId}-${cut.guid}`, running: true }]);
       expect(machines[0]?.copy).toMatchObject({ kind: "slot" });
       expect(await lanes()).toMatchObject([{ id: taken.id, kind: "move", state: "running" }]);
-      expect(await finish(placed)).toEqual({ ended: 0, requeued: [], refused: [] });
+      expect(await finish()).toEqual({ ended: 0, requeued: [], refused: [] });
       expect(await fence(placed[0])).toEqual({ on: "fsn-2" });
       expect(verbs).toEqual(["writer@fsn-2(create)"]);
     });
@@ -2224,6 +2226,33 @@ describe("volume runs", () => {
       ]);
     });
 
+    it("a Deploy that fails after taking a move over ends its row failed and requests the move again, once", async () => {
+      const taken = await moving();
+      const [placed] = await place();
+      await fence(placed);
+      const worker = createRunStoreDeployment(new Inngest({ id: "test" }), runEffect);
+      const onFailure = worker.opts.onFailure;
+      if (onFailure === undefined) throw new Error("the worker ends its lanes when it fails");
+      // SAFETY: the failure handler reads only the failed run's ID and its triggering event.
+      const failed = () => onFailure({ event: { data: { run_id: DEPLOY, event: { data: { organizationId, environmentId: "env-1", deploymentId: "d-1" } } } } } as never);
+      send.mockClear();
+
+      await failed();
+
+      expect(await lanes()).toMatchObject([
+        { id: taken.id, state: "yielded" },
+        { kind: "deploy", state: "failed", message: "the Deploy failed", inngest_run_id: DEPLOY },
+        { kind: "move", state: "requested", args: { to: "fsn-2" } },
+      ]);
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(send).toHaveBeenCalledWith(expect.objectContaining({ name: "volume/run.requested" }));
+
+      await failed();
+
+      expect((await lanes()).filter((lane) => lane.kind === "move")).toHaveLength(2);
+      expect(send).toHaveBeenCalledTimes(1);
+    });
+
     describe("a lane landing while the Deploy places", () => {
       const landings = {
         sync: '{"full":false}',
@@ -2246,7 +2275,7 @@ describe("volume runs", () => {
             await landing.query("commit");
 
             expect(placed).toEqual([]);
-            expect(await finish(placed)).toEqual({ ended: 0, requeued: [], refused: [] });
+            expect(await finish()).toEqual({ ended: 0, requeued: [], refused: [] });
             expect(await lanes()).toMatchObject([{ id: landed?.id, kind, state: "requested" }]);
             expect(verbs).toEqual([]);
           } finally {

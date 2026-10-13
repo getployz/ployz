@@ -8,7 +8,7 @@ import { volumeRun } from "#/modules/volume-run/tables";
 import { ACTIVE_VOLUME_RUN_STATES, type AnsweredMember, type Member, type VolumeRunArgs, type VolumeRunKind } from "#/modules/volume-run/volume-run";
 import {
   contextOf,
-  endRun,
+  ended,
   insertRun,
   keptOn,
   laneTarget,
@@ -142,25 +142,32 @@ const fenceFollowed = Effect.fn("VolumeRun.fenceFollowed")(function* (lane: Extr
 export const fenceDeployVolume = (lane: DeployLane, inngestRunId: string) =>
   lane.kind === "took" ? fenceTaken(lane.run, inngestRunId) : fenceFollowed(lane);
 
-/** The Deploy's own rows end done; a move it took over is requested again, once, by the attempt that ended the row. */
-export const finishDeployVolumes = Effect.fn("VolumeRun.finishDeploy")(function* (lanes: readonly DeployLane[], environmentId: string, inngestRunId: string) {
-  let ended = 0;
-  const requeued: string[] = [];
-  const refused: string[] = [];
-  for (const lane of lanes) {
-    if (lane.kind !== "took") continue;
-    const { run, resume } = lane;
-    const rows = yield* endRun(run, inngestRunId, "done", null);
-    ended += rows;
-    if (rows !== 1 || resume === null) continue;
-    const again = yield* insertRun(
-      CLOUD(run.organizationId),
-      { volumeId: run.volumeId, kind: "move", args: resume },
-      { environmentId, volumeName: run.volumeName, dockerVolume: run.dockerVolume, refquotaBytes: run.refquotaBytes },
-      crypto.randomUUID(),
-    );
-    if (again.ok) requeued.push(again.run.id);
-    else refused.push(again.refusal.message);
-  }
-  return { ended, requeued, refused };
+/**
+ * The Deploy's own rows end, whichever way the Deploy did. A move it took over is requested again in the same
+ * transaction, once: a retry finds no running row and requests nothing.
+ */
+export const finishDeployVolumes = Effect.fn("VolumeRun.finishDeploy")(function* (inngestRunId: string, state: "done" | "failed") {
+  const database = yield* Database;
+  return yield* database.transaction(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    const rows = yield* drizzle.update(volumeRun).set(ended(state, state === "done" ? null : "the Deploy failed"))
+      .where(and(eq(volumeRun.inngestRunId, inngestRunId), eq(volumeRun.kind, "deploy"), eq(volumeRun.state, "running")))
+      .returning();
+    const requeued: string[] = [];
+    const refused: string[] = [];
+    for (const row of rows) {
+      // SAFETY: a deploy row's args were written from a VolumeRunArgs["deploy"].
+      const { resume } = row.args as VolumeRunArgs["deploy"];
+      if (resume === null) continue;
+      const again = yield* insertRun(
+        CLOUD(row.organizationId),
+        { volumeId: row.volumeId, kind: "move", args: resume },
+        { environmentId: row.environmentId, volumeName: row.volumeName, dockerVolume: row.dockerVolume, refquotaBytes: row.refquotaBytes },
+        crypto.randomUUID(),
+      );
+      if (again.ok) requeued.push(again.run.id);
+      else refused.push(again.refusal.message);
+    }
+    return { ended: rows.length, requeued, refused };
+  }));
 });

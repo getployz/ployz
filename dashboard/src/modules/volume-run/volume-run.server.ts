@@ -118,7 +118,7 @@ export const contextOf = (row: VolumeRunRow): RunContext => ({
   current: row.current,
 });
 
-const ended = (state: Exclude<VolumeRunState, "requested" | "running">, message: string | null) =>
+export const ended = (state: Exclude<VolumeRunState, "requested" | "running">, message: string | null) =>
   ({ state, message: message === null ? null : clip(message), finishedAt: new Date(), updatedAt: new Date() }) as const;
 
 const KIND_WORDS = {
