@@ -6,7 +6,7 @@ import { serversLackingEnsure } from "#/modules/runtime/daemon-compat.server";
 import type { PloyzInngest } from "#/modules/inngest/client";
 import { decodeInngestEnvelope } from "#/modules/inngest/envelope";
 import {
-  configDeploymentAdmittedEventType, configFirstServerJoinedEventType, createConfigDeploymentStartedEvent, githubBuildRunCompletedEvent, inngestFunctionCancelledEnvelopeSchema,
+  configDeploymentAdmittedEventType, configFirstServerJoinedEventType, createClusterDomainSyncRequestedEvent, createConfigDeploymentStartedEvent, githubBuildRunCompletedEvent, inngestFunctionCancelledEnvelopeSchema,
   inngestFunctionCancelledEventType, inngestFunctionFinishedEventType, type ConfigDeploymentAdmittedEventData,
 } from "#/modules/inngest/events";
 import {
@@ -65,6 +65,10 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Store
       await step.run("sync-uptime", () =>
         runEffect(syncUptimeChecks(event.data.organizationId, event.data.environmentId, applied ? event.data.deploymentId : undefined)));
       await step.run("forget-run", () => runEffect(forgetStoreDeploymentRun(runId)));
+      // A Server whose Ingress Proxy this run created or started may have joined or left the Cluster Domain.
+      if ("ran" in ran && ran.ran.ingress?.length) {
+        await step.sendEvent("sync-cluster-domain", createClusterDomainSyncRequestedEvent({ organizationId: event.data.organizationId }));
+      }
       // A closed Branch whose removal applied goes now, without its closer coming back for it.
       if (applied && ran.ran.remove) {
         await followUp(step, await step.run("sweep", () => runEffect(sweepStore(event.data.organizationId, new Date()))), runEffect);

@@ -35,6 +35,8 @@ function clusterDomain(row: OrganizationClusterDomain | null): ConfigDomainEvide
     ? { kind: state.kind }
     : state.reason === "port_80" || state.reason === "port_80_taken"
     ? { kind: state.reason, addresses: [...state.addresses] }
+    : state.reason === "ingress_down"
+    ? { kind: state.reason, servers: [...state.servers] }
     : { kind: state.reason };
   return { name: row.name, status: seen };
 }

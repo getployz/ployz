@@ -78,6 +78,8 @@ export const createSyncClusterDomain = (inngest: PloyzInngest, runEffect: Effect
       retries: 3,
       triggers: [{ event: clusterDomainSyncRequestedEventType }],
       concurrency: [{ key: "event.data.organizationId", limit: 1 }],
+      // A Deploy and the runtime watch can each ask within seconds of each other; one sync answers both.
+      debounce: { key: "event.data.organizationId", period: "5s" },
     },
     async ({ event, step }) => executeSyncClusterDomain({ event, step }, runEffect),
   );
