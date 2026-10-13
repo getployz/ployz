@@ -18,6 +18,40 @@ use crate::{
 
 pub(crate) const UNIT_DIR: &str = "/run/systemd/system";
 const SYSTEMCTL_BOUND: Duration = Duration::from_secs(5);
+const HOST_UNIT_NAME: &str = "ployz.service";
+
+/// Whether the daemon writes its runtime units and drives them with `systemctl`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnitSupervision {
+    /// The daemon runs as `ployz.service` and owns `ployz-dns.service` and
+    /// `ployz-observe.service`.
+    Systemd,
+    /// Something else runs `ployzd dns` and `ployzd observe`; the daemon only
+    /// publishes the DNS spec.
+    External,
+}
+
+impl UnitSupervision {
+    /// Systemd only when this process runs as `ployz.service`. `NOTIFY_SOCKET`
+    /// and `INVOCATION_ID` are inherited by anything a unit starts, tests
+    /// included, so the cgroup decides.
+    #[must_use]
+    pub fn detect() -> Self {
+        let cgroup = fs::read_to_string("/proc/self/cgroup").unwrap_or_default();
+        if runs_as_host_unit(&cgroup) {
+            Self::Systemd
+        } else {
+            Self::External
+        }
+    }
+}
+
+fn runs_as_host_unit(cgroup: &str) -> bool {
+    cgroup
+        .lines()
+        .filter_map(|line| line.rsplit('/').next())
+        .any(|unit| unit.trim_end() == HOST_UNIT_NAME)
+}
 
 /// Write `text` to `file` and reload systemd, only when the file differs.
 ///
@@ -91,5 +125,15 @@ mod tests {
         assert!(!restart_needed(Some((1, 2)), Some((1, 2))));
         assert!(!restart_needed(None, Some((1, 2))));
         assert!(!restart_needed(Some((1, 2)), None));
+    }
+
+    #[test]
+    fn systemd_supervision_means_running_as_the_host_unit() {
+        assert!(runs_as_host_unit("0::/system.slice/ployz.service\n"));
+        assert!(!runs_as_host_unit(
+            "0::/user.slice/user-1000.slice/user@1000.service/app.slice/t3code.service\n"
+        ));
+        assert!(!runs_as_host_unit("0::/system.slice/ployz-dns.service\n"));
+        assert!(!runs_as_host_unit(""));
     }
 }

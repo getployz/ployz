@@ -29,7 +29,7 @@ use crate::{
         CorrosionConfig, CorrosionPaths, DEFAULT_CONTAINER_NAME, Error as CorrosionError,
         MachineView, RunningCorrosion, remove_retained, run_machine_publisher,
     },
-    dns::{DnsService, DnsSupervision},
+    dns::DnsService,
     docker::{ContainerRuntime, ImageIngest, LocalDocker, MachineSpecStore, SpecStoreError},
     ingress,
     machine::{
@@ -40,6 +40,7 @@ use crate::{
     machine_api_socket::MachineApiSocket,
     management::{self, ManagementConfig},
     network::{CORROSION_GOSSIP_PORT, NetworkError, NetworkPlane},
+    runtime_unit::UnitSupervision,
 };
 
 /// How the daemon attaches a Container Runtime.
@@ -56,7 +57,7 @@ pub struct DaemonConfig {
     pub data_dir: PathBuf,
     pub socket: PathBuf,
     pub dns_upstreams: Vec<SocketAddr>,
-    pub dns: DnsSupervision,
+    pub units: UnitSupervision,
     pub machine_api_address: Option<SocketAddr>,
     pub containerd_socket: Option<PathBuf>,
     /// Volume plugin socket; None uses the Docker plugin socket.
@@ -197,7 +198,7 @@ impl Daemon {
         let local_phase = local_record.phase();
         let local_machine = local_record.machine().cloned();
         let dns = DnsService::start(
-            config.dns,
+            config.units,
             &config.data_dir,
             &run_dir,
             &config.socket,
@@ -205,7 +206,7 @@ impl Daemon {
             &local_record,
         )
         .await?;
-        if config.dns == DnsSupervision::Systemd
+        if config.units == UnitSupervision::Systemd
             && let Err(error) =
                 crate::observe::unit::converge(&config.data_dir, &config.socket).await
         {
@@ -802,7 +803,7 @@ mod tests {
 
     use tokio::net::UnixListener;
 
-    use crate::dns::DnsSupervision;
+    use crate::runtime_unit::UnitSupervision;
     use ployz_core::{
         CERTIFICATE_POLICY_CAPABILITY, DESCRIBE_CONTRACT_CAPABILITY, DescribeContractRequest,
         LIST_CONTAINERS_CAPABILITY, LeaveRequest, MachineRpcClient, op,
@@ -826,7 +827,7 @@ mod tests {
                 data_dir: root.join("data"),
                 socket: socket.clone(),
                 dns_upstreams: Vec::new(),
-                dns: DnsSupervision::External,
+                units: UnitSupervision::External,
                 machine_api_address: None,
                 containerd_socket: None,
                 volume_plugin_socket: None,
@@ -1016,7 +1017,7 @@ mod tests {
             data_dir: root.0.join("data-a"),
             socket: socket.clone(),
             dns_upstreams: Vec::new(),
-            dns: DnsSupervision::External,
+            units: UnitSupervision::External,
             machine_api_address: None,
             containerd_socket: None,
             volume_plugin_socket: None,
@@ -1029,7 +1030,7 @@ mod tests {
             data_dir: root.0.join("data-b"),
             socket,
             dns_upstreams: Vec::new(),
-            dns: DnsSupervision::External,
+            units: UnitSupervision::External,
             machine_api_address: None,
             containerd_socket: None,
             volume_plugin_socket: None,

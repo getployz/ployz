@@ -16,44 +16,12 @@ use super::{
 };
 use crate::{
     machine::LocalMachineRecord,
-    runtime_unit::{self, UNIT_DIR, restart_needed, systemctl},
+    runtime_unit::{self, UNIT_DIR, UnitSupervision, restart_needed, systemctl},
 };
 
 const UNIT_NAME: &str = "ployz-dns.service";
-const HOST_UNIT_NAME: &str = "ployz.service";
 const PROBE_BOUND: Duration = Duration::from_secs(2);
 const STOP_BOUND: Duration = Duration::from_secs(5);
-
-/// Who starts and restarts `ployzd dns`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DnsSupervision {
-    /// The daemon writes `ployz-dns.service` and drives it with `systemctl`.
-    Systemd,
-    /// Something else runs `ployzd dns`; the daemon only publishes the spec.
-    External,
-}
-
-impl DnsSupervision {
-    /// Systemd only when this process runs as `ployz.service`. `NOTIFY_SOCKET`
-    /// and `INVOCATION_ID` are inherited by anything a unit starts, tests
-    /// included, so the cgroup decides.
-    #[must_use]
-    pub fn detect() -> Self {
-        let cgroup = fs::read_to_string("/proc/self/cgroup").unwrap_or_default();
-        if runs_as_host_unit(&cgroup) {
-            Self::Systemd
-        } else {
-            Self::External
-        }
-    }
-}
-
-fn runs_as_host_unit(cgroup: &str) -> bool {
-    cgroup
-        .lines()
-        .filter_map(|line| line.rsplit('/').next())
-        .any(|unit| unit.trim_end() == HOST_UNIT_NAME)
-}
 
 #[derive(Clone)]
 pub struct DnsService {
@@ -61,7 +29,7 @@ pub struct DnsService {
 }
 
 struct Inner {
-    supervision: DnsSupervision,
+    supervision: UnitSupervision,
     data_dir: PathBuf,
     run_dir: PathBuf,
     upstreams: Vec<SocketAddr>,
@@ -79,7 +47,7 @@ impl DnsService {
     /// Returns an error when the daemon's own binary cannot be identified or the
     /// spec or unit cannot be written.
     pub async fn start(
-        supervision: DnsSupervision,
+        supervision: UnitSupervision,
         data_dir: &Path,
         run_dir: &Path,
         socket: &Path,
@@ -114,7 +82,7 @@ impl DnsService {
         mut records: watch::Receiver<Arc<LocalMachineRecord>>,
         shutdown: CancellationToken,
     ) -> io::Result<()> {
-        if self.inner.supervision == DnsSupervision::Systemd {
+        if self.inner.supervision == UnitSupervision::Systemd {
             self.move_onto_own_binary().await;
         }
         loop {
@@ -169,13 +137,13 @@ impl DnsService {
         match spec {
             Some(spec) => {
                 self.inner.spec_file.publish(Some(spec))?;
-                if self.inner.supervision == DnsSupervision::Systemd {
+                if self.inner.supervision == UnitSupervision::Systemd {
                     runtime_unit::install(&self.inner.unit_file, &self.inner.unit_text).await?;
                     systemctl(&["start", "--no-block", UNIT_NAME]).await;
                 }
             }
             None => {
-                if self.inner.supervision == DnsSupervision::Systemd {
+                if self.inner.supervision == UnitSupervision::Systemd {
                     systemctl(&["stop", "--no-block", UNIT_NAME]).await;
                     match fs::remove_file(&self.inner.unit_file) {
                         Ok(()) => {
@@ -292,16 +260,6 @@ mod tests {
         assert!(text.contains("SuccessExitStatus=78\n"));
         assert!(text.contains("Type=notify\n"));
         assert!(!text.contains("[Install]"));
-    }
-
-    #[test]
-    fn systemd_supervision_means_running_as_the_host_unit() {
-        assert!(runs_as_host_unit("0::/system.slice/ployz.service\n"));
-        assert!(!runs_as_host_unit(
-            "0::/user.slice/user-1000.slice/user@1000.service/app.slice/t3code.service\n"
-        ));
-        assert!(!runs_as_host_unit("0::/system.slice/ployz-dns.service\n"));
-        assert!(!runs_as_host_unit(""));
     }
 
     #[tokio::test]
