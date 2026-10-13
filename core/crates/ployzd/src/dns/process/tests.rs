@@ -194,6 +194,10 @@ async fn a_pointer_row_narrows_answers_to_the_pointed_containers() {
         &serde_json::to_string(&pointer).unwrap(),
     );
     harness.wait_for_replicas(1).await;
+    assert_eq!(
+        harness.answers().await,
+        Some(vec![Ipv4Addr::new(10, 210, 1, 1)])
+    );
 
     shutdown.cancel();
     assert_eq!(process.await.unwrap().unwrap(), DnsExit::Stopped);
