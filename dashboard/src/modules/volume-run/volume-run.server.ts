@@ -822,12 +822,17 @@ export const commitAndStart = Effect.fn("VolumeRun.commitAndStart")(function* (
     const lost: CopyAnswer = { ok: false, reason: "stale", copy: null, message: `a newer run took ${ctx.volumeName} before ${to.name} started it` };
     return lost;
   }
-  return yield* startWriter(ctx, start);
+  return yield* startWriter(ctx, inngestRunId, start);
 });
 
-/** B becomes the writer at G and creates the Service from the newest stopped Container elsewhere; a B already running it is left alone. */
+/**
+ * B becomes the writer at G and creates the Service from the newest stopped Container elsewhere; a B already running it
+ * is left alone. `ownedBy` is the Inngest run that must still own the row when B is told, or null for a Deploy
+ * following another run's committed lane, which owns no row.
+ */
 export const startWriter = Effect.fn("VolumeRun.startWriter")(function* (
   ctx: RunContext,
+  ownedBy: string | null,
   start: { readonly to: MachineRef; readonly expect: ExpectedCopy; readonly at: SnapshotGuid; readonly epoch: number },
 ) {
   const { to } = start;
@@ -845,6 +850,7 @@ export const startWriter = Effect.fn("VolumeRun.startWriter")(function* (
     Effect.mapError((error) => new Error(`reading ${holder.resolved_spec.name}'s spec: ${sdkFailureMessage(error)}`)),
   );
   const spec = container.resolved_spec;
+  if (ownedBy !== null) yield* requireOwner(ctx.id, ownedBy);
   return yield* askCopy(ctx, to, start.expect, {
     kind: "writer",
     at: start.at,

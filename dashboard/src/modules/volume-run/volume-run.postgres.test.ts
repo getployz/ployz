@@ -68,6 +68,8 @@ type PullFault = { target: string; kind: "fail" | "restart" };
 
 type FakeMachine = {
   name: string;
+  /** A renamed Server keeps its id; the default derives it from the name. */
+  id?: MachineId;
   pool: boolean;
   stateless?: boolean;
   silent?: boolean;
@@ -137,12 +139,14 @@ describe("volume runs", () => {
   let verbs: string[];
   let failNext: Map<string, Fault>;
   let beforeSet: Map<string, () => void | Promise<void>>;
+  /** Runs while a writer start reads the kept Container's spec, between the commit and the send. */
+  let beforeStart: (() => Promise<void>) | null;
   let sent: SetVolumeCopyRequest[];
   let held: Map<string, () => CopyRefusal | null>;
   let storeVolumes: Array<{ id: string; name: string; storage: { kind: "provisioned"; maximumBytes: number } | { kind: "docker" }; change?: "delete" }>;
 
   const machine = (target: string) => {
-    const found = machines.find((entry) => idOf(entry.name) === target);
+    const found = machines.find((entry) => (entry.id ?? idOf(entry.name)) === target);
     if (found === undefined) throw new Error(`no fake Machine ${target}`);
     return found;
   };
@@ -283,7 +287,7 @@ describe("volume runs", () => {
   const session = asTestDouble<PloyzSession>()({
     watchFirstFrame: () => Effect.succeed({
       machines: machines.map((fake) => ({
-        machine: { id: idOf(fake.name), name: fake.name, public_key: Array.from({ length: 32 }, (_, index) => index), runtime: { daemon_version: fake.lacks ?? "", capabilities: fake.capabilities } },
+        machine: { id: fake.id ?? idOf(fake.name), name: fake.name, public_key: Array.from({ length: 32 }, (_, index) => index), runtime: { daemon_version: fake.lacks ?? "", capabilities: fake.capabilities } },
         storage: fake.stateless === true ? { state: "stateless" } : fake.pool ? { state: "pool", size_bytes: 1, used_bytes: 0, free_bytes: 1 } : { state: "ready" },
       })),
       containers: containers.map((container) => ({
@@ -296,12 +300,15 @@ describe("volume runs", () => {
         created_at_unix_nanos: container.created ?? 0,
       })),
     }),
-    inspectContainer: (target: string, container: string) => Effect.sync(() => ({
-      container: {
-        container_id: container,
-        resolved_spec: { name: "web", container: { pull_policy: "always", environment: { POSTGRES_PASSWORD: `secret-${machine(target).name}` } }, volumes: [{ source: { kind: "provisioned", name: dockerVolume } }] },
-      },
-    })),
+    inspectContainer: (target: string, container: string) => Effect.promise(async () => {
+      await beforeStart?.();
+      return {
+        container: {
+          container_id: container,
+          resolved_spec: { name: "web", container: { pull_policy: "always", environment: { POSTGRES_PASSWORD: `secret-${machine(target).name}` } }, volumes: [{ source: { kind: "provisioned", name: dockerVolume } }] },
+        },
+      };
+    }),
     copyContainerImage: (from: string, container: string, to: string) => Effect.sync(() => {
       verbs.push(`copy_image@${machine(from).name}->${machine(to).name}(${container})`);
     }),
@@ -428,6 +435,7 @@ describe("volume runs", () => {
     verbs = [];
     failNext = new Map();
     beforeSet = new Map();
+    beforeStart = null;
     sent = [];
     held = new Map();
     guids = 0;
@@ -1152,6 +1160,17 @@ describe("volume runs", () => {
       expect(answer).toMatchObject({ ok: false, reason: "stale" });
       expect(verbs).toEqual([]);
       expect(await rows()).toMatchObject([{ phase: "warm", current: null, inngest_run_id: "run-taker" }]);
+    });
+
+    it("refuses a run whose row was taken over after the commit, and sends B nothing", async () => {
+      const ctx = await owned();
+      containers = [{ machine: "fsn-1", id: "web-fsn-1", running: false }];
+      beforeStart = async () => { await harness.pool.query("update volume_run set inngest_run_id = 'run-taker' where id = $1", [ctx.id]); };
+
+      await expect(runEffect(commitAndStart(ctx, "run-1", { to: { id: B, name: "fsn-2" }, expect: { kind: "none" }, at: base.guid, epoch: 1 })))
+        .rejects.toThrow(/no longer owns/);
+      expect(verbs).toEqual([]);
+      expect(await rows()).toMatchObject([{ phase: "committed", current: B, inngest_run_id: "run-taker" }]);
     });
   });
 
@@ -2331,6 +2350,19 @@ describe("volume runs", () => {
       expect(await finish()).toEqual({ ended: 0, requeued: [], refused: [] });
       expect(await fence(placed[0])).toEqual({ on: "fsn-2" });
       expect(verbs).toEqual(["writer@fsn-2(create)"]);
+    });
+
+    it("on a committed lane whose B was renamed since the commit: it follows B by id and starts the app there", async () => {
+      const cut = afterCut();
+      await moving("committed");
+      machines[1] = { id: idOf("fsn-2"), name: "fsn-two", pool: true, copy: slotCopy(cut) };
+
+      const placed = await place();
+
+      expect(placed).toMatchObject([{ kind: "follow", to: "fsn-2", machine: idOf("fsn-2"), epoch: 1 }]);
+      expect(await fence(placed[0])).toEqual({ on: "fsn-two" });
+      expect(verbs).toEqual(["writer@fsn-two(create)"]);
+      expect(containers.filter((container) => container.running)).toEqual([{ machine: "fsn-two", id: `created-${volumeId}-${cut.guid}`, running: true }]);
     });
 
     it("with no lane, and with a delete_mirror lane: plain, no Floor call", async () => {
