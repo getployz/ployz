@@ -507,14 +507,25 @@ class VolumeMove:
                     mirror=["volume", "mirror", VOLUME, "--to", destination],
                     release=["volume", "release", VOLUME])
         args["mirror-rm"] = ["volume", "mirror", "rm", f"{VOLUME}-{destination}"]
-        deadline = self.clock() + BUSY_LIMIT
-        self.wait_idle(op, deadline)
-        code, data = self.cli(*args[op], check=False)
-        while (holder := busy(data)) and self.clock() < deadline:
-            self.wait_idle(op, deadline, holder)
+        began = self.clock()
+        deadline = began + BUSY_LIMIT
+        holder = None
+        while True:
+            holder = self.wait_idle(deadline) or holder
             code, data = self.cli(*args[op], check=False)
+            refused = busy(data)
+            holder = holder or refused
+            if not refused or self.clock() >= deadline:
+                break
+            self.sleep(4)
         if holder:
-            raise Skipped(f"VolumeBusy past {BUSY_LIMIT}s on {op}: run {holder.get('id')} ({holder.get('kind')})")
+            record = dict(case=self.case_name, op=op, holder=holder.get("id"), kind=holder.get("kind"),
+                          waited_seconds=round(self.clock() - began, 1),
+                          started_by_harness=holder.get("id") in self.started_runs)
+            self.busy_waits.append(record)
+            print(json.dumps(dict(volume_busy_wait=record)), flush=True)
+        if refused:
+            raise Skipped(f"VolumeBusy past {BUSY_LIMIT}s on {op}: run {refused.get('id')} ({refused.get('kind')})")
         approval = self.approve(data) if op == "release" else None
         if approval:
             code, data = self.cli(*args[op], "--approval", approval, check=False)
@@ -524,20 +535,13 @@ class VolumeMove:
             self.started_runs.add(row["id"])
         return dict(row, approved=approval) if approval else row
 
-    def wait_idle(self, op, deadline, holder=None):
+    def wait_idle(self, deadline):
         """A cron sync or a run left from an earlier case holds the Volume; wait it out until the deadline."""
-        began = self.clock()
-        while active := [row for row in self.runs() if row.get("state") not in TERMINAL]:
+        holder = None
+        while self.clock() < deadline and (active := [row for row in self.runs() if row.get("state") not in TERMINAL]):
             holder = holder or active[0]
-            if self.clock() >= deadline:
-                break
             self.sleep(4)
-        if holder:
-            record = dict(case=self.case_name, op=op, holder=holder.get("id"), kind=holder.get("kind"),
-                          waited_seconds=round(self.clock() - began, 1),
-                          started_by_harness=holder.get("id") in self.started_runs)
-            self.busy_waits.append(record)
-            print(json.dumps(dict(volume_busy_wait=record)), flush=True)
+        return holder
 
     def approve(self, reply):
         """Approve as the operator would in Cloud. A Release after the cut forgets the new copy, so Cloud asks."""
@@ -697,7 +701,10 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
         for op in ("move", "release"):
             if self.healthy(limit=5) and len(writable_copies(self.states())) == 1:
                 break
-            attempts.append(dict(op=op, run=self.wait_run(self.start_op(op, destination))))
+            try:
+                attempts.append(dict(op=op, run=self.wait_run(self.start_op(op, destination))))
+            except Skipped as skip:
+                attempts.append(dict(op=op, skipped=str(skip)))
         machine = self.healthy()
         return dict(attempts=attempts, healthy_on=machine)
 
@@ -710,13 +717,12 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
             for case in cases:
                 try:
                     results.append(self.run_case(case))
-                except Skipped as skip:
-                    result = dict(case, passed=False, skipped=str(skip), failures=[f"skipped: {skip}"])
-                    (self.out / f"{case['name']}.json").write_text(json.dumps(result, indent=2) + "\n")
-                    print(json.dumps(dict(case=case["name"], skipped=str(skip))), flush=True)
-                    results.append(result)
                 except (AssertionError, RuntimeError, subprocess.TimeoutExpired) as error:
                     result = dict(case, passed=False, failures=[f"{type(error).__name__}: {error}"[:2000]])
+                    if isinstance(error, Skipped):
+                        result["skipped"] = str(error)
+                    if case["fault"]:
+                        self.fault(None)
                     result["heal"] = self.heal(self.other(self.writer()))
                     (self.out / f"{case['name']}.json").write_text(json.dumps(result, indent=2) + "\n")
                     results.append(result)

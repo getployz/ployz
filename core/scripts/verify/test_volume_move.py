@@ -60,6 +60,9 @@ class ClusterModel:
         self.acks = []
         self.asks = set()
         self.started = []
+        self.clock = None
+        self.held_until = 0
+        self.holder_listed = True
 
     def other(self, machine):
         return "machine-2" if machine == "machine-1" else "machine-1"
@@ -83,8 +86,14 @@ class ClusterModel:
             self.started.append(args)
         if args[:2] == ["volume", "inspect"]:
             return 0, json.dumps(dict(id="1", environment=dict(project="verify", name="production")))
+        held = self.clock is not None and self.clock() < self.held_until
         if args[:2] == ["volume", "runs"]:
-            return 0, json.dumps(dict(runs=list(reversed(self.runs))))
+            holder = [dict(id="sync-1", kind="sync", state="running")] if held and self.holder_listed else []
+            return 0, json.dumps(dict(runs=holder + list(reversed(self.runs))))
+        if held and args[:2] in (["volume", "move"], ["volume", "mirror"], ["volume", "release"]):
+            run = dict(id="sync-1", kind="sync", state="running")
+            return 1, json.dumps(dict(error=dict(code="conflict", message="VolumeBusy: run sync-1 (sync) is running",
+                                                 details=dict(run=run))))
         if args[:2] == ["volume", "move"]:
             destination = args[-1]
             row = dict(id=f"run-{len(self.runs)}", kind="move", state="running")
@@ -192,6 +201,7 @@ class VolumeMoveTests(unittest.TestCase):
     def checks(self, mutation=None):
         model = ClusterModel(mutation)
         clock = Clock()
+        model.clock = clock
 
         def spawn(command, stdout, stderr):
             logs = len(list((self.root / "evidence").iterdir()))
@@ -422,6 +432,23 @@ class VolumeMoveTests(unittest.TestCase):
                                   {"approve": {"digest": "release:digest"}}, "token")])
         self.assertEqual(model.started, [["volume", "release", volume_move.VOLUME, "--approval", "approval-1"]])
         self.assertEqual(moved["state"], "refused")
+
+    def test_a_volume_held_past_the_limit_skips_the_case_disarms_its_fault_and_the_next_case_runs(self):
+        for listed in (True, False):
+            with self.subTest(holder_listed=listed):
+                checks, model = self.checks()
+                model.held_until = checks.clock() + volume_move.BUSY_LIMIT + 20
+                model.holder_listed = listed
+                with redirect_stdout(io.StringIO()):
+                    summary = checks.run_all([volume_move.KILLS[0], volume_move.CASES[0]])
+                skipped, clean = summary["cases"]
+                self.assertTrue(skipped["skipped"], skipped)
+                self.assertFalse(skipped["passed"])
+                self.assertEqual(model.fault, {"machine-1": None, "machine-2": None})
+                self.assertTrue(clean["passed"], clean)
+                self.assertEqual(clean["final_writer"], "machine-2")
+                self.assertEqual([(wait["case"], wait["holder"]) for wait in summary["volume_busy_waits"]],
+                                 [(skipped["name"], "sync-1"), (clean["name"], "sync-1")])
 
     def test_each_planted_defect_fails_the_run(self):
         for mutation in ("two-writers", "stopped", "snapshots", "lost"):
