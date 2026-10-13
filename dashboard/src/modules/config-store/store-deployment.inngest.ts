@@ -17,7 +17,8 @@ import { followUp } from "#/modules/config-store/store-github.inngest";
 import { sweepStore } from "#/modules/config-store/store-pull-request.server";
 import { advancePlacement, type PlacementAdvance, type PlacementWait, refreshMirrors } from "#/modules/volume-placement/volume-placement.deploy.server";
 import { syncUptimeChecks } from "#/modules/uptime/uptime-sync.server";
-import { cleanOrphans } from "#/modules/volume-run/volume-run.server";
+import { fenceDeployVolume, finishDeployVolumes, placeDeployVolumes } from "#/modules/volume-run/volume-run.deploy.server";
+import { cleanOrphans, closeVolumeRun } from "#/modules/volume-run/volume-run.server";
 import { runInngestEffect } from "#/server/run.server";
 
 export const RUN_STORE_DEPLOYMENT_FUNCTION_ID = "run-store-deployment";
@@ -39,6 +40,7 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Store
       concurrency: [{ key: "event.data.environmentId", limit: 1 }],
       onFailure: async ({ event }) => {
         const { organizationId, deploymentId } = event.data.event.data;
+        await runEffect(closeVolumeRun(event.data.run_id, "failure"));
         return runEffect(stopStoreDeploymentRun(organizationId, deploymentId, event.data.run_id));
       },
     },
@@ -58,7 +60,11 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Store
       if (storage.kind === "done") {
         await step.run("refresh-mirrors", () => runEffect(refreshMirrors(event.data.organizationId, event.data.environmentId)));
       }
+      const { organizationId, environmentId, deploymentId } = event.data;
+      const lanes = await step.run("place-volumes", () => runEffect(placeDeployVolumes(organizationId, environmentId, deploymentId, runId)));
+      for (const lane of lanes) await step.run(`fence-${lane.run.volumeId}`, () => runEffect(fenceDeployVolume(lane, runId)));
       const ran = await step.run("run-deployment", () => runEffect(runStoreDeployment(event.data, storeDeploymentRunner(runId))));
+      await step.run("finish-volumes", () => runEffect(finishDeployVolumes(lanes, environmentId, runId)));
       const applied = "ran" in ran && ran.ran.status === "applied";
       // A failed Deployment can still have advanced Applied State, so the checks follow it either way. Only an applied
       // one is probed: a failed one may have stopped partway, and the schedule still checks what it reached.

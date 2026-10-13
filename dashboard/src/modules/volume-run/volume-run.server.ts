@@ -103,7 +103,7 @@ export function volumeRunView(row: VolumeRunRow): VolumeRunView {
   };
 }
 
-const contextOf = (row: VolumeRunRow): RunContext => ({
+export const contextOf = (row: VolumeRunRow): RunContext => ({
   id: row.id,
   organizationId: row.organizationId,
   volumeId: row.volumeId,
@@ -138,7 +138,7 @@ export const volumeBusyMessage = (lane: Pick<VolumeRunRow, "kind" | "volumeName"
 export const finishesThere = (volumeName: string, server: string) => `${volumeName} is starting on ${server}; it finishes there`;
 
 /** A lane past its point of no return: a Move that committed, or a restore, which commits from its first step. */
-const pastReturn = (lane: VolumeRunRow) => lane.phase === "committed" || lane.kind === "restore";
+export const pastReturn = (lane: Pick<VolumeRunRow, "phase" | "kind">) => lane.phase === "committed" || lane.kind === "restore";
 type LaneEnd = "cancelled" | "yielded";
 /** The lane stays: past its return, or a Deploy's own lane that only another Deploy may yield. */
 const keepsLane = (lane: VolumeRunRow, end: LaneEnd) => pastReturn(lane) || (lane.kind === "deploy" && end === "cancelled");
@@ -463,6 +463,16 @@ export const insertRun = Effect.fn("VolumeRun.insert")(function* (
   return "ok" in taken ? taken : { ok: true, run: taken.run } as const;
 });
 
+/** A Deploy's own lane, running under `inngestRunId` from the start; a warm lane found there yields to it. */
+export const takeDeployLane = Effect.fn("VolumeRun.takeDeployLane")(function* (caller: Caller, taker: LaneTaker, inngestRunId: string) {
+  const { ended } = yield* takeLane(caller, taker, "yielded", inngestRunId).pipe(
+    Effect.catchTag("LaneRefused", ({ refusal }) => Effect.fail(new Error(refusal.message))),
+  );
+  const row = yield* readRow(taker.id);
+  if (row === undefined) return yield* Effect.fail(new Error(`volume run ${taker.id} vanished after its insert`));
+  return { run: contextOf(row), ended };
+});
+
 export const machineNamed = Effect.fn("VolumeRun.machineNamed")(function* (organizationId: string, machine: MachineId) {
   const frame = yield* openSession(organizationId).pipe(
     Effect.flatMap((session) => session.watchFirstFrame(5_000)),
@@ -688,6 +698,11 @@ export const setVolumeCopy = Effect.fn("VolumeRun.setVolumeCopy")(function* (
   want: WantedCopy,
 ) {
   yield* requireOwner(ctx.id, inngestRunId);
+  return yield* sendSetCopy(ctx, machine, expect, want);
+});
+
+/** SetVolumeCopy with the run's gen, for a run that follows another run's lane and so does not own its row. */
+export const sendSetCopy = Effect.fn("VolumeRun.sendSetCopy")(function* (ctx: RunContext, machine: MachineRef, expect: ExpectedCopy, want: WantedCopy) {
   const session = yield* openSession(ctx.organizationId);
   return yield* session.volumeSwitch(machine.id, { command: "set_volume_copy", payload: { name: ctx.dockerVolume, expect, want, gen: ctx.gen } }).pipe(
     Effect.map((reply): CopyAnswer => ({ ok: true, copy: reply.copy })),
@@ -800,6 +815,15 @@ export const commitAndStart = Effect.fn("VolumeRun.commitAndStart")(function* (
     const lost: CopyAnswer = { ok: false, reason: "stale", copy: null, message: `a newer run took ${ctx.volumeName} before ${to.name} started it` };
     return lost;
   }
+  return yield* startWriter(ctx, start);
+});
+
+/** B becomes the writer at G and creates the Service from the newest stopped Container elsewhere; a B already running it is left alone. */
+export const startWriter = Effect.fn("VolumeRun.startWriter")(function* (
+  ctx: RunContext,
+  start: { readonly to: MachineRef; readonly expect: ExpectedCopy; readonly at: SnapshotGuid; readonly epoch: number },
+) {
+  const { to } = start;
   const containers = yield* serviceContainers(ctx.organizationId, ctx.dockerVolume);
   if (containers.some((container) => container.machine_id === to.id && container.runtime.state === "running")) {
     const running: CopyAnswer = { ok: true, copy: null };
@@ -814,7 +838,7 @@ export const commitAndStart = Effect.fn("VolumeRun.commitAndStart")(function* (
     Effect.mapError((error) => new Error(`reading ${holder.resolved_spec.name}'s spec: ${sdkFailureMessage(error)}`)),
   );
   const spec = container.resolved_spec;
-  return yield* setVolumeCopy(ctx, inngestRunId, to, start.expect, {
+  return yield* sendSetCopy(ctx, to, start.expect, {
     kind: "writer",
     at: start.at,
     epoch: start.epoch,
@@ -846,14 +870,14 @@ export const removeContainer = Effect.fn("VolumeRun.removeContainer")(function* 
   );
 }, Effect.scoped);
 
-const isDestination = (run: VolumeRunInput, machine: MachineRef) =>
+const isDestination = (run: VolumeLaneInput, machine: MachineRef) =>
   (run.kind === "move" || run.kind === "mirror") && (run.args.machine === undefined ? run.args.to === machine.name : run.args.machine === machine.id);
 
 /**
  * Each managed Server's copy of `dockerVolume`; a Server that doesn't answer in time is a member that didn't answer.
  * For a run, a Server that holds a copy or receives one and lacks the generation floor is a member that lacks it.
  */
-export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(function* (organizationId: string, dockerVolume: string, run?: VolumeRunInput) {
+export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(function* (organizationId: string, dockerVolume: string, run?: VolumeLaneInput) {
   const session = yield* openSession(organizationId);
   const frame = yield* session.watchFirstFrame(5_000);
   // A Docker-only Machine holds no copy and may not serve the verb, so it must not block the run.
