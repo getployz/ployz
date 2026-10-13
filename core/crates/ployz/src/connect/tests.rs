@@ -242,18 +242,23 @@ fn deadline_exceeded_is_retryable_not_unreachable() {
 }
 
 #[test]
-fn only_a_reached_entry_reports_the_target_unanswered() {
+fn only_the_spent_budget_reports_the_target_unanswered() {
     let dropped = io::Error::new(io::ErrorKind::BrokenPipe, "connection closed");
     for (error, unanswered) in [
         (
-            ConnectError::from(tonic::Status::deadline_exceeded(
+            ConnectError::Rpc(TransportError::budget_expired(
                 "target Machine RPC timed out",
             )),
             true,
         ),
+        // A daemon sent these: something answered.
         (
-            ConnectError::from(tonic::Status::unavailable("route failed")),
-            true,
+            ConnectError::from(tonic::Status::deadline_exceeded("timed out")),
+            false,
+        ),
+        (
+            ConnectError::from(tonic::Status::unavailable("Machine is not participating")),
+            false,
         ),
         // The client made this status: the entry dropped, not the target.
         (
@@ -265,10 +270,6 @@ fn only_a_reached_entry_reports_the_target_unanswered() {
             false,
         ),
         (ConnectError::EntryNotReady, false),
-        (
-            ConnectError::from(tonic::Status::unimplemented("older daemon")),
-            false,
-        ),
     ] {
         assert_eq!(error.target_unanswered(), unanswered, "{error}");
     }

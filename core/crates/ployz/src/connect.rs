@@ -812,10 +812,10 @@ impl ConnectError {
         ) || matches!(self, Self::Rpc(error) if error.is_unavailable())
     }
 
-    /// The entry was reached, but the target Machine sent no reply in time.
-    /// Failures reaching the entry itself say nothing about the target.
+    /// The read's whole budget ran out without a reply. A status a daemon sent,
+    /// or a failure reaching the entry, says nothing about whether the target lives.
     pub(crate) fn target_unanswered(&self) -> bool {
-        matches!(self, Self::Rpc(error) if error.is_retryable() && !error.unanswered)
+        matches!(self, Self::Rpc(error) if error.budget_expired)
     }
 }
 
@@ -828,12 +828,21 @@ pub struct TransportError {
     details: Value,
     /// The client produced this status: the daemon never answered.
     unanswered: bool,
+    /// The client's own deadline for the whole call elapsed.
+    budget_expired: bool,
     /// Why the client's connection or stream failed, below tonic's own words.
     #[source]
     cause: Option<crate::failure::JoinedChain>,
 }
 
 impl TransportError {
+    pub(crate) fn budget_expired(message: &str) -> Self {
+        Self {
+            budget_expired: true,
+            ..Self::from(tonic::Status::deadline_exceeded(message))
+        }
+    }
+
     pub(crate) fn from_stream_status(status: tonic::Status) -> Self {
         let mut error = Self::from(status);
         if error.unanswered {
@@ -917,6 +926,7 @@ impl From<tonic::Status> for TransportError {
         };
         Self {
             unanswered,
+            budget_expired: false,
             cause,
             code: status.code(),
             message: status.message().to_owned(),

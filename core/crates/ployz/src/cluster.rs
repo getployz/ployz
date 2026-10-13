@@ -281,9 +281,9 @@ impl Client {
             let outcome = match deadline {
                 Some(deadline) => match tokio::time::timeout_at(deadline, attempt).await {
                     Ok(outcome) => outcome,
-                    Err(_) => {
-                        Err(tonic::Status::deadline_exceeded("target Machine RPC timed out").into())
-                    }
+                    Err(_) => Err(ConnectError::Rpc(TransportError::budget_expired(
+                        "target Machine RPC timed out",
+                    ))),
                 },
                 None => attempt.await,
             };
