@@ -101,11 +101,7 @@ To deploy a Dockerfile service, switch it to Railpack, or run it on one kind of 
 
 1. Turn off services on the servers of the other kind: on each one's page, under **Services**,
    turn off **Run services here**. This applies to every service on that server. What already
-   runs there stays until you [drain it](../servers/manage-servers.md#change-what-a-server-does). From the CLI:
-
-   ```sh
-   ployz server set arm-1 --accepts-services=false
-   ```
+   runs there stays until you [drain it](../servers/manage-servers.md#change-what-a-server-does).
 
 2. Build on the kind that's left: make a server of that kind the service's
    [Preferred Builder](where-builds-run.md#prefer-a-builder-for-one-service), or build on
