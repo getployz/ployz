@@ -121,7 +121,7 @@ it("says what a Sync into the Parent carries, and opens the dialog into the Pare
   expect(sync.getByText("These become production's changes to deploy.")).toBeTruthy();
   const changes = within(sync.getByRole("region", { name: "api" })).getAllByRole("listitem").map((item) => item.textContent);
   expect(changes).toEqual([
-    "Sourceshop/api:1.8shop/api:1.9",
+    "Sourceshop/api:1.81.9",
     "LOG_LEVELChanged in productionwarndebug",
     "APP_ENVproductionstaging",
     "STRIPE_WEBHOOK_SECRETSecret",

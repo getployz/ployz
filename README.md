@@ -5,7 +5,7 @@
 <h1 align="center">Ployz</h1>
 
 <p align="center">
-  Git push deploys and preview environments, on servers you own.
+  Rent a server. Get a cloud.
   <br>
   <a href="https://ployz.dev">Website</a> · <a href="#quick-start">Quick start</a> · <a href="#self-hosting-the-dashboard">Self-host</a>
 </p>
@@ -17,7 +17,10 @@ every pull request. Start with one server and add more when you need them.
 ## Features
 
 - **Git push to deploy.** Every push to your main branch builds and ships.
-- **Preview environments.** Every pull request gets its own copy of your app at its own https address.
+- **Preview environments.** Every pull request gets its own copy of your app at its own https address,
+  Copy the database and the preview gets its own, empty, with a setup command to seed it. Send the
+  link to your client.
+  When the pull request merges, production gets the code and the preview's setting changes.
 - **Your whole app on one canvas.** Web, workers, databases, variables and logs in one dashboard.
 - **Review before you deploy.** Dashboard edits are staged until you press Deploy.
 - **No Dockerfile needed.** Ployz detects and builds Node, Python, Ruby, PHP, Go, Rust, Java, Elixir
@@ -26,6 +29,7 @@ every pull request. Start with one server and add more when you need them.
 - **More servers when you need them.** Add a server with one command. Servers share a private
   network, and a service can run up to 50 replicas across them. No Kubernetes.
 - **Built for coding agents.** Anything the dashboard does, the `ployz` CLI does too, with JSON output.
+  Anything that would delete a service, a volume or a domain waits for your approval.
 - **No lock-in.** Your apps keep running on your servers if Ployz Cloud goes away. The engine
   and the dashboard are both open source.
 

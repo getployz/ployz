@@ -1,6 +1,6 @@
 import type { BranchView, DeploymentSummary, RowId, SyncRow } from "@ployz/sdk";
 import { plural } from "#/lib/plural";
-import { rowText, settingName } from "./store-branches";
+import { rowText, settingName, sourceChange } from "./store-branches";
 
 /** One change of the Sync dialog in words: its name (a variable's is its key, in monospace) and at most one badge. */
 export type SyncLine = {
@@ -14,13 +14,15 @@ export type SyncLine = {
 
 export function syncLine(row: SyncRow, into: string): SyncLine {
   const whole = row.name === null;
+  const [before, after] = whole || row.secret ? ["", ""]
+    : row.name === "source" ? sourceChange(row.into, row.from) : [rowText(row.into, row.name), rowText(row.from, row.name)];
   return {
     // A whole node is named by its kind; its section names it.
     ...row.name === null ? { name: row.kind === "volume" ? "Volume" : "Service", variable: false } : settingName(row.name),
     // A secret's value never syncs, whatever else holds.
     badge: row.held_by !== null ? `Included with ${row.held_by}` : row.secret ? "Secret" : row.change === "conflict" ? `Changed in ${into}` : row.change === "new" ? "New" : null,
-    before: whole || row.secret ? "" : rowText(row.into, row.name),
-    after: whole || row.secret ? "" : rowText(row.from, row.name),
+    before,
+    after,
   };
 }
 

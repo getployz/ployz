@@ -130,9 +130,10 @@ export function ChangeGroups({ groups, onDiscardNode, onDiscardRow, noteFor, nev
               const kind = nodeKinds[group.lifecycle];
               return (
                 <ChangeLine key={group.discardPath} kind={kind} label={group.nodeName}
+                  value={group.comesBack ? <span className="text-xs text-muted-foreground">Comes back</span> : undefined}
                   onDiscard={firstConfig ? undefined : discardNode}
                   discardNode={firstConfig && discardNode ? { name: group.nodeName, run: discardNode } : undefined}>
-                  <p className={cn("truncate", kindText[kind])}>{group.nodeName} · {nodeWords[group.lifecycle]}</p>
+                  <p className={cn("truncate", kindText[kind])}>{group.comesBack ? group.nodeName : `${group.nodeName} · ${nodeWords[group.lifecycle]}`}</p>
                   {restarts}
                 </ChangeLine>
               );
