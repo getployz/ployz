@@ -1,4 +1,4 @@
-import { Schema } from "effect";
+import { Schema, SchemaGetter } from "effect";
 import { slugifySegment } from "#/utils/slug";
 
 export const OrganizationSlug = Schema.Trim.check(Schema.isNonEmpty());
@@ -21,6 +21,15 @@ export const SyncOrganizationSlug = Schema.Struct({
   organizationSlug: OrganizationSlug,
 });
 export type SyncOrganizationSlug = typeof SyncOrganizationSlug.Type;
+
+export const CreateOrganization = Schema.Struct({
+  name: Schema.Trim.check(Schema.isNonEmpty(), Schema.isMaxLength(64)),
+  slug: Schema.String.pipe(Schema.decodeTo(Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(64)), {
+    decode: SchemaGetter.transform(slugifySegment),
+    encode: SchemaGetter.transform((slug) => slug),
+  })),
+});
+export type CreateOrganization = typeof CreateOrganization.Type;
 
 export interface PersonalOrganizationUser {
   readonly id: string;

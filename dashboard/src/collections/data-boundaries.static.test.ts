@@ -37,6 +37,7 @@ const SPINNER_FILES = {
   "components/deletion-dialog.tsx": "deletion in flight",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/sync/SyncDialog.tsx": "sync in flight",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/create-environment-dialog.tsx": "create in flight",
+  "routes/_protected/cloud/$organizationSlug/_org/-components/new-organization-dialog.tsx": "create in flight",
   "components/service-create-command.tsx": "create in flight",
   "components/service-source-selector.tsx": "sync and submit in flight",
   "form/index.tsx": "submit in flight",
