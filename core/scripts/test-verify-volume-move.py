@@ -334,7 +334,10 @@ class VolumeMove:
 
     def command(self, *args, check=True, timeout=600):
         command = [str(HELPER), *map(str, args)]
-        result = self.runner(command, capture_output=True, text=True, timeout=timeout + 60)
+        try:
+            result = self.runner(command, capture_output=True, text=True, timeout=timeout + 60)
+        except OSError as error:
+            raise RuntimeError(f"Could not run {' '.join(command[1:8])}: {type(error).__name__}: {error}") from error
         print(json.dumps(dict(command=command[1:8], exit_code=result.returncode,
                               stdout=result.stdout[-600:], stderr=result.stderr[-600:])), flush=True)
         if check and result.returncode:
@@ -598,8 +601,14 @@ class VolumeMove:
         error = reply.get("error") if isinstance(reply, dict) else None
         if not error or error.get("code") != "approval_required":
             return None
-        details = error["details"]
-        token = (self.manifest.parent / "private" / "cloud-token").read_text().strip()
+        details = error.get("details") or {}
+        missing = ["details"] if not details else [field for field in ("approval_id", "approval") if not details.get(field)]
+        if missing:
+            raise RuntimeError(f"Cloud asked to approve the release without {' or '.join(missing)}: {reply}")
+        token_file = self.manifest.parent / "private" / "cloud-token"
+        if not token_file.exists():
+            raise RuntimeError(f"Cloud asked to approve the release, but there is no Cloud token at {token_file}")
+        token = token_file.read_text().strip()
         status, text = http("POST", f"{self.run['cloud']['url']}/api/cli/approvals/{details['approval_id']}",
                             dict(approve=dict(digest=details["approval"])), token=token)
         print(json.dumps(dict(approve=details["approval_id"], status=status, reply=text[:200])), flush=True)
@@ -763,10 +772,10 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
 
     def run_all(self, cases):
         self.out.mkdir(parents=True, exist_ok=True)
-        self.setup()
-        self.start_probe()
-        results = []
+        results, escaped = [], None
         try:
+            self.setup()
+            self.start_probe()
             for case in cases:
                 try:
                     result = self.run_case(case)
@@ -790,8 +799,15 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
                 results.append(result)
                 if not heal["healed"]:
                     break
+        except BaseException as error:
+            escaped = f"{type(error).__name__}: {error}"[:2000]
+            raise
         finally:
             report = self.stop_probe()
+            summary = self.summarize(results, report, escaped)
+        return summary
+
+    def summarize(self, results, report, escaped):
         acks = read_acks(self.probe_log)
         for result in results:
             if "settled" in result:
@@ -802,7 +818,9 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
             manifest=str(self.manifest), head=subprocess.run(["git", "-C", str(REPO), "rev-parse", "HEAD"],
                                                               capture_output=True, text=True).stdout.strip(),
             physical=self.physical, size_gb=self.size_gb, probe=report, downtime=downtime(results),
-            passed=all(result["passed"] for result in results) and bool(report) and not report.get("lost"),
+            passed=not escaped and all(result["passed"] for result in results) and bool(report)
+            and not report.get("lost"),
+            error=escaped,
             cases=[dict(name=result["name"], cell=result.get("cell"), step=result.get("step"),
                         passed=result["passed"], skipped=result.get("skipped"),
                         final_writer=result.get("final_writer"),
