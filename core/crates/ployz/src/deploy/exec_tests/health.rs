@@ -1,6 +1,51 @@
 use super::*;
 
 #[tokio::test(start_paused = true)]
+async fn a_settled_start_on_a_machine_that_never_answers_fails_within_its_budget() {
+    let machine = machine('1');
+    let started_spec = spec(Some(0), Some(healthcheck()), None);
+    let budget = Duration::from_secs(300)
+        + ployz_core::settle_deadline(&started_spec)
+        + crate::connect::TARGET_RPC_TIMEOUT;
+    let plan = vec![run(&machine, started_spec, false)];
+    let client = Scripted::new(vec![
+        Step(
+            Call::Run(machine, ContainerKind::ServiceContainer),
+            Reply::Pending,
+        ),
+        Step(
+            Call::DiscardSlot(machine, ContainerKind::ServiceContainer),
+            Reply::Pending,
+        ),
+    ]);
+    let started = tokio::time::Instant::now();
+
+    let DeployOutcome::Failed {
+        failed: FailedOperation::Operation { error, .. },
+        ..
+    } = execute_with(&plan, &client, &CancellationToken::new()).await
+    else {
+        panic!("the deploy should fail");
+    };
+
+    assert_eq!(
+        started.elapsed(),
+        budget + crate::connect::TARGET_RPC_TIMEOUT,
+        "the silent Machine gets its budget, then one bounded cleanup attempt"
+    );
+    let ExecutionError::Machine { error, .. } = error else {
+        panic!("a silent Machine fails the start as a Machine error, got {error:?}");
+    };
+    assert_eq!(error.code, RpcErrorCode::Unavailable);
+    assert!(
+        error.message.contains(&machine.to_string()),
+        "{}",
+        error.message
+    );
+    client.assert_done();
+}
+
+#[tokio::test(start_paused = true)]
 async fn dependency_gate_waits_for_all_service_containers_before_the_dependent() {
     let dependency = QualifiedService::parse("app/api").unwrap();
     let dependent = QualifiedService::parse("app/web").unwrap();

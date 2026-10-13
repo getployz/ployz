@@ -7,7 +7,7 @@ use ployz_core::{
     HealthFailure, HealthVerdict, HookFailure, InspectContainerRequest, ListContainersRequest,
     MachineAction, MachineId, MachineTarget, MembershipObservation, Namespace, NewContainer,
     OperationPhase, QualifiedService, RemoveVolumeRequest, ResolvedServiceSpec, RpcError,
-    RpcErrorCode, RunTarget, SlotKey, StopOptions, UpdateOrder, op,
+    RpcErrorCode, RunTarget, SlotKey, StopOptions, UpdateOrder, op, settle_deadline,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc::UnboundedSender;
@@ -721,16 +721,7 @@ pub(in crate::deploy) async fn move_container<C: MachineOperations>(
     let new = match started_container(started, cancellation) {
         Ok(new) => new,
         Err(error) => {
-            let replacement_removed = !global
-                && gone(
-                    &client,
-                    to,
-                    ContainerLocator::Key(slot),
-                    Drain::NONE,
-                    AnonymousVolumes::Remove,
-                )
-                .await
-                .is_ok();
+            let replacement_removed = !global && discard_attempt(&client, to, slot).await;
             return Err(MoveContainerError::NotServing {
                 error,
                 replacement_removed,
@@ -785,17 +776,32 @@ async fn start<C: MachineOperations>(
         Err(error) => error.code != RpcErrorCode::Conflict,
     };
     if cleanup && !keyed_by_spec {
-        let _ = gone(
-            client,
-            machine_id,
-            ContainerLocator::Key(slot),
-            Drain::NONE,
-            AnonymousVolumes::Remove,
-        )
-        .await;
+        discard_attempt(client, machine_id, slot).await;
     }
     started_container(started, cancellation)
 }
+
+/// Remove what a failed creation left in `slot`, giving up if the Machine stays silent.
+async fn discard_attempt<C: MachineOperations>(
+    client: &C,
+    machine_id: &MachineId,
+    slot: SlotKey,
+) -> bool {
+    let discarded = gone(
+        client,
+        machine_id,
+        ContainerLocator::Key(slot),
+        Drain::NONE,
+        AnonymousVolumes::Remove,
+    );
+    matches!(
+        tokio::time::timeout(TARGET_RPC_TIMEOUT, discarded).await,
+        Ok(Ok(_))
+    )
+}
+
+/// How long a Settled creation may spend pulling its image before the health wait.
+const IMAGE_PULL_BUDGET: Duration = Duration::from_secs(300);
 
 async fn run_new<C: MachineOperations>(
     client: &C,
@@ -816,7 +822,25 @@ async fn run_new<C: MachineOperations>(
             answer,
         }),
     };
-    match client.ensure_container(machine_id, want).await? {
+    let ensured = client.ensure_container(machine_id, want);
+    let ensured = match answer {
+        AnswerWhen::Started => ensured.await?,
+        AnswerWhen::Settled => {
+            let budget = IMAGE_PULL_BUDGET + settle_deadline(spec) + TARGET_RPC_TIMEOUT;
+            tokio::time::timeout(budget, ensured)
+                .await
+                .map_err(|_| RpcError {
+                    code: RpcErrorCode::Unavailable,
+                    message: format!(
+                        "Machine {machine_id} did not answer within {}s",
+                        budget.as_secs()
+                    ),
+                    details: serde_json::Value::Null,
+                    cause: Vec::new(),
+                })??
+        }
+    };
+    match ensured {
         (ContainerNow::Present(observed), health) => {
             progress.set_display_name(index, observed.display_name.clone());
             Ok((observed.container_id, health))

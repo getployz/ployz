@@ -31,6 +31,17 @@ pub fn health_monitor(spec: &ResolvedServiceSpec) -> Duration {
         .map_or(DEFAULT_HEALTH_MONITOR, Duration::from_millis)
 }
 
+/// The longest the Machine waits on a Container started from `spec` before it
+/// answers a Settled creation.
+#[must_use]
+pub fn settle_deadline(spec: &ResolvedServiceSpec) -> Duration {
+    let deadline = match &spec.container.healthcheck {
+        Some(healthcheck) => healthcheck.deadline().unwrap_or_default(),
+        None => healthcheck_deadline(None),
+    };
+    deadline.max(health_monitor(spec))
+}
+
 /// One look at a Container waited on to be ready: the verdict so far, and the
 /// offset the wait gives up at.
 ///
