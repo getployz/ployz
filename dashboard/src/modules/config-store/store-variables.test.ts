@@ -67,6 +67,9 @@ it("names the secrets a deploy skips, until a change to them is staged", () => {
   expect(notSetVariables(serviceSettingRows(valueless, "web"), new Map([["env.TOKEN", {}]]))).toEqual([]);
   // Exporting it sets no value: the deploy still skips it.
   expect(notSetVariables(serviceSettingRows(valueless, "web"), new Map([["env.TOKEN.exported", true]]))).toEqual(["TOKEN"]);
+  // History staged it back without its value: that change sets nothing either.
+  expect(notSetVariables(serviceSettingRows(valueless, "web"),
+    new Map([["env.TOKEN", { before: null, after: { secret: false } }]]))).toEqual(["TOKEN"]);
 });
 
 it("marks the variables their Environment never syncs, by their rows", () => {
