@@ -163,10 +163,14 @@ const activeLane = Effect.fn("VolumeRun.activeLane")(function* (volumeId: string
 });
 
 const laneRefusal = Effect.fn("VolumeRun.laneRefusal")(function* (lane: VolumeRunRow, kind: VolumeRunKind) {
-  const details = { run: volumeRunView(lane) };
-  if (!pastReturn(lane)) return { code: "conflict", message: volumeBusyMessage(lane), details } satisfies StoreRefusal;
-  const finishes = finishesThere(lane.volumeName, (yield* laneTarget(lane)) ?? "its new Server");
-  return { code: "conflict", message: kind === "release" ? finishes : `VolumeBusy: ${finishes}`, details } satisfies StoreRefusal;
+  const run = volumeRunView(lane);
+  if (!pastReturn(lane)) return { code: "conflict", message: volumeBusyMessage(lane), details: { run } } satisfies StoreRefusal;
+  const target = yield* laneTarget(lane);
+  const finishes = finishesThere(lane.volumeName, target ?? "its new Server");
+  if (kind === "release") {
+    return { code: "conflict", message: finishes, details: target === null ? { run } : { run, move_to: target } } satisfies StoreRefusal;
+  }
+  return { code: "conflict", message: `VolumeBusy: ${finishes}`, details: { run } } satisfies StoreRefusal;
 });
 
 const enqueueRun = (row: VolumeRunRow) =>

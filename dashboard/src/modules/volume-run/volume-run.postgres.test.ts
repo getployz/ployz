@@ -619,11 +619,14 @@ describe("volume runs", () => {
 
       expect(await release()).toEqual({
         ok: false,
-        refusal: { code: "conflict", message: "data is starting on fsn-2; it finishes there", details: { run: expect.objectContaining({ id: committed.id }) } },
+        refusal: {
+          code: "conflict", message: "data is starting on fsn-2; it finishes there",
+          details: { run: expect.objectContaining({ id: committed.id }), move_to: "fsn-2" },
+        },
       });
-      expect(await request({ kind: "sync", args: { full: false } })).toMatchObject({
+      expect(await request({ kind: "sync", args: { full: false } })).toEqual({
         ok: false,
-        refusal: { code: "conflict", message: "VolumeBusy: data is starting on fsn-2; it finishes there" },
+        refusal: { code: "conflict", message: "VolumeBusy: data is starting on fsn-2; it finishes there", details: { run: expect.objectContaining({ id: committed.id }) } },
       });
       expect(await lanes()).toEqual(before);
       expect(send).not.toHaveBeenCalled();
