@@ -786,6 +786,7 @@ impl Fleet {
                         environment: Some(container.spec.env.clone()),
                         image_id: None,
                         last_check: None,
+                        run: None,
                     }
                     .into(),
                 )

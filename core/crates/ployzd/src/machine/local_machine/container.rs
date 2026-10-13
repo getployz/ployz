@@ -12,7 +12,7 @@ use ployz_core::{
 };
 use ployz_core::{
     AnswerWhen, HEALTH_POLL_INTERVAL, HealthFailure, HealthPoll, HealthVerdict, HealthcheckSpec,
-    health_monitor, ready_poll,
+    ReadyWait, health_monitor,
 };
 
 use super::super::ingress::admit_ingress_service;
@@ -475,13 +475,14 @@ impl LocalMachine {
             Some(HealthcheckSpec::Configured(_) | HealthcheckSpec::Http(_))
         );
         let monitor = health_monitor(spec);
+        let mut wait = ReadyWait::new(healthcheck, monitor);
         let started = tokio::time::Instant::now();
         loop {
             let details = containers
                 .inspect_managed_details(container_id, &machine_id)
                 .await?;
             let elapsed = started.elapsed();
-            let wake = match ready_poll(healthcheck, monitor, &details, elapsed).0 {
+            let wake = match wait.poll(&details, elapsed).0 {
                 HealthPoll::Complete if checked || elapsed >= monitor => {
                     return Ok(HealthVerdict::Healthy);
                 }
