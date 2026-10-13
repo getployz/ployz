@@ -245,8 +245,11 @@ export const discardPlacement = Effect.fn("VolumePlacement.discard")(function* (
         const written = yield* callStore(organizationId, userId, { operation: "write", command: { command: "batch", environment, commands } });
         if (!written.ok) return { ok: false, refusal: written.refusal } satisfies PlacementDiscard;
       }
-      const [deleted] = yield* (yield* Database).drizzle.delete(volumePlacement).where(unchanged).returning();
+      const { drizzle } = yield* Database;
+      const [deleted] = yield* drizzle.delete(volumePlacement).where(unchanged).returning();
       if (deleted === undefined) return { ok: false, refusal: DEPLOYING } satisfies PlacementDiscard;
+      // The Volume was never seeded, so a Redeploy of a revision that froze it would mount it empty.
+      yield* drizzle.insert(failedRestore).values({ volumeId, organizationId }).onConflictDoNothing();
       return { ok: true, placement: null } satisfies PlacementDiscard;
     })).pipe(Effect.catchTag("DatabasePostCommitFailure", Effect.die));
   }
@@ -262,7 +265,7 @@ export const discardPlacement = Effect.fn("VolumePlacement.discard")(function* (
 export const RESTORE_FAILED: StoreRefusal = { code: "conflict", message: "Restore failed. Restore again.", details: null };
 
 /**
- * Whether Deployment `deploymentId`'s revision holds a restored Volume whose copy failed: shipping it again mounts it empty.
+ * Whether Deployment `deploymentId`'s revision holds a restored Volume whose copy failed or was discarded: shipping it again mounts it empty.
  * Marks are kept for good: that revision can be retried however long after its restore was discarded.
  */
 export const holdsFailedRestore = Effect.fn("VolumePlacement.holdsFailedRestore")(function* (organizationId: string, deploymentId: string) {
