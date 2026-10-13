@@ -11,14 +11,14 @@ use crate::{
 
 const UNIT_NAME: &str = "ployz-observe.service";
 
-/// Write the runtime unit and start the Observe Store, restarting it when it
-/// runs other software. A legacy unit in `/etc` shadows the runtime one until
+/// Write the runtime unit and start the Observe Store, restarting it when the
+/// unit changed or it runs other software. A legacy unit in `/etc` shadows the runtime one until
 /// the next install removes it; both run the same binary path.
 ///
 /// # Errors
 ///
-/// Returns an error when the daemon's own binary cannot be identified or the
-/// unit cannot be written.
+/// Returns an error when the daemon's own binary cannot be identified, the
+/// unit cannot be installed, or systemd refuses to start it.
 pub(crate) async fn converge(data_dir: &Path, socket: &Path) -> io::Result<()> {
     converge_in(
         Path::new(UNIT_DIR),
@@ -35,18 +35,22 @@ async fn converge_in(
     data_dir: &Path,
     socket: &Path,
 ) -> io::Result<()> {
-    runtime_unit::install(
+    let rewritten = runtime_unit::install(
         &unit_dir.join(UNIT_NAME),
         &unit_text(exe.path(), data_dir, socket),
     )
     .await?;
-    let verb = if runtime_unit::runs_other_software(UNIT_NAME, exe).await {
+    let verb = if rewritten || runtime_unit::runs_other_software(UNIT_NAME, exe).await {
         "restart"
     } else {
         "start"
     };
-    systemctl(&[verb, "--no-block", UNIT_NAME]).await;
-    Ok(())
+    match systemctl(&[verb, "--no-block", UNIT_NAME]).await {
+        Some(_) => Ok(()),
+        None => Err(io::Error::other(format!(
+            "systemctl {verb} {UNIT_NAME} failed"
+        ))),
+    }
 }
 
 /// The harvester runs as root to link Docker's root-only log files, so its
@@ -93,7 +97,9 @@ mod tests {
     const ROOT: &str = "PLOYZ_OBSERVE_UNIT_ROOT";
 
     /// Logs every call; `show` answers the main PID in `main-pid`, or 0 when nothing runs.
+    /// `start` and `restart` fail when `fail-start` exists.
     const SYSTEMCTL: &str = r#"echo "$*" >> "$PLOYZ_OBSERVE_UNIT_ROOT/systemctl.log"
+if [ -f "$PLOYZ_OBSERVE_UNIT_ROOT/fail-start" ] && { [ "$1" = start ] || [ "$1" = restart ]; }; then exit 1; fi
 if [ "$1" = show ]; then
   pid=0
   if [ -f "$PLOYZ_OBSERVE_UNIT_ROOT/main-pid" ]; then read -r pid < "$PLOYZ_OBSERVE_UNIT_ROOT/main-pid"; fi
@@ -132,25 +138,42 @@ fi"#;
                         Path::new("/var/lib/ployz"),
                         Path::new("/run/ployz/ployz.sock"),
                     ))
-                    .unwrap();
             };
-            converge();
+            if case == "start-fails" {
+                assert!(converge().is_err(), "a refused start is reported");
+            } else {
+                converge().unwrap();
+            }
             if case == "current" {
                 // A daemon restart on the same software finds its observer already running it.
                 fs::remove_file(root.join("systemctl.log")).unwrap();
                 fs::write(root.join("main-pid"), std::process::id().to_string()).unwrap();
-                converge();
+                converge().unwrap();
             }
             fs::write(root.join("child-completed"), case).unwrap();
             return;
         }
 
-        for case in ["absent", "other-software", "current"] {
+        for case in [
+            "absent",
+            "stale-definition",
+            "other-software",
+            "current",
+            "start-fails",
+        ] {
             let root = tempfile::tempdir().unwrap();
             let root = root.path();
             fs::create_dir_all(root.join("commands")).unwrap();
             fs::create_dir_all(root.join("units")).unwrap();
             write_script(&root.join("commands/systemctl"), SYSTEMCTL);
+            if case == "stale-definition" {
+                // An observer on this binary still running a unit written with other settings.
+                fs::write(root.join("units/ployz-observe.service"), "[Service]\n").unwrap();
+                fs::write(root.join("main-pid"), std::process::id().to_string()).unwrap();
+            }
+            if case == "start-fails" {
+                fs::write(root.join("fail-start"), "").unwrap();
+            }
             let mut stale = None;
             if case == "other-software" {
                 // An observer started from another file, as one is after a binary swap.
@@ -198,9 +221,8 @@ fi"#;
                 "{case}: runtime unit is enabled"
             );
             let expected: &[&str] = match case {
-                "absent" => &["daemon-reload", "start --no-block ployz-observe.service"],
-                "other-software" => &["daemon-reload", "restart --no-block ployz-observe.service"],
-                _ => &["start --no-block ployz-observe.service"],
+                "current" => &["start --no-block ployz-observe.service"],
+                _ => &["daemon-reload", "restart --no-block ployz-observe.service"],
             };
             assert_eq!(log(root), expected, "{case}");
         }

@@ -54,23 +54,26 @@ fn runs_as_host_unit(cgroup: &str) -> bool {
 }
 
 /// Write `text` to `file` and reload systemd, only when the file differs.
+/// Answers whether it did, so the caller can restart a unit still running the
+/// old definition.
 ///
 /// # Errors
 ///
 /// Returns an error when the unit cannot be written or systemd does not
 /// reload. A failed reload removes the file so the next start retries it.
-pub(crate) async fn install(file: &Path, text: &str) -> io::Result<()> {
-    if fs::read_to_string(file).ok().as_deref() != Some(text) {
-        atomic_write(file, text.as_bytes(), 0o644)?;
-        if systemctl(&["daemon-reload"]).await.is_none() {
-            let _ = fs::remove_file(file);
-            return Err(io::Error::other(format!(
-                "systemd did not reload after writing {}",
-                file.display()
-            )));
-        }
+pub(crate) async fn install(file: &Path, text: &str) -> io::Result<bool> {
+    if fs::read_to_string(file).ok().as_deref() == Some(text) {
+        return Ok(false);
     }
-    Ok(())
+    atomic_write(file, text.as_bytes(), 0o644)?;
+    if systemctl(&["daemon-reload"]).await.is_none() {
+        let _ = fs::remove_file(file);
+        return Err(io::Error::other(format!(
+            "systemd did not reload after writing {}",
+            file.display()
+        )));
+    }
+    Ok(true)
 }
 
 /// Whether `unit`'s main process runs a binary other than `own`, as it does
