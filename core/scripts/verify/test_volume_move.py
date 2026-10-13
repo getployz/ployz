@@ -746,6 +746,71 @@ class VolumeMoveTests(unittest.TestCase):
         self.assertIn("the run stopped after this case", summary["cases"][0]["failures"][-1])
         self.assertTrue((self.root / "out" / "summary.json").exists())
 
+    def test_a_release_approval_missing_a_field_or_the_token_fails_its_case_and_still_writes_the_summary(self):
+        undo = next(case for case in volume_move.CASES if case["name"] == "undo-after-cut")
+        complete = dict(approval="release:digest", approval_id="approval-1")
+        for name, error, token, missing in (
+                ("no details", dict(code="approval_required"), True, "details"),
+                ("no approval id", dict(code="approval_required", details=dict(approval="release:digest")), True,
+                 "approval_id"),
+                ("no approval", dict(code="approval_required", details=dict(approval_id="approval-1")), True,
+                 "approval"),
+                ("no token file", dict(code="approval_required", details=complete), False, "cloud-token")):
+            with self.subTest(name):
+                shutil.rmtree(self.root / "out", ignore_errors=True)
+                shutil.rmtree(self.root / "private", ignore_errors=True)
+                if token:
+                    (self.root / "private").mkdir()
+                    (self.root / "private" / "cloud-token").write_text("token\n")
+                checks, model = self.checks()
+                cli = model.cli
+
+                def asking(args, cli=cli, error=error):
+                    if args[:2] == ["volume", "release"] and "--approval" not in args:
+                        return 1, json.dumps(dict(error=error))
+                    return cli(args)
+                model.cli = asking
+                with mock.patch.object(volume_move, "http", lambda *args, **kwargs: (200, "{}")), \
+                        redirect_stdout(io.StringIO()):
+                    summary = checks.run_all([volume_move.CASES[0], undo])
+                written = json.loads((self.root / "out" / "summary.json").read_text())
+                self.assertEqual([case["name"] for case in written["cases"]], ["clean", "undo-after-cut"])
+                clean, failed = written["cases"]
+                self.assertTrue(clean["passed"], clean)
+                self.assertFalse(failed["passed"])
+                self.assertRegex(failed["failures"][0], f"^RuntimeError: .*{missing}", failed)
+                self.assertTrue((self.root / "out" / "undo-after-cut.json").exists())
+                self.assertFalse(summary["passed"])
+
+    def test_a_helper_that_fails_to_start_fails_its_case_names_the_command_and_still_writes_the_summary(self):
+        kill = volume_move.KILLS[0]
+        self.assertEqual(kill["name"], "kill-snapshot")
+        for failing_call in (5, 20, 40):
+            with self.subTest(failing_call):
+                shutil.rmtree(self.root / "out", ignore_errors=True)
+                checks, model = self.checks()
+                runner, calls = checks.runner, []
+
+                def failing(args, runner=runner, calls=calls, failing_call=failing_call, **kwargs):
+                    calls.append(args)
+                    if len(calls) == failing_call:
+                        raise PermissionError(13, "Permission denied", args[0])
+                    return runner(args, **kwargs)
+                checks.runner = failing
+                escaped = None
+                with redirect_stdout(io.StringIO()):
+                    try:
+                        checks.run_all([volume_move.CASES[0], kill])
+                    except RuntimeError as error:
+                        escaped = str(error)
+                written = json.loads((self.root / "out" / "summary.json").read_text())
+                self.assertFalse(written["passed"])
+                command = " ".join(map(str, calls[failing_call - 1][1:8]))
+                reasons = [escaped or ""] + [written.get("error") or ""] + \
+                          [failure for case in written["cases"] for failure in case["failures"]]
+                named = [reason for reason in reasons if "PermissionError" in reason and command in reason]
+                self.assertTrue(named, (command, reasons))
+
     def test_each_planted_defect_fails_the_run(self):
         for mutation in ("two-writers", "stopped", "snapshots", "lost"):
             with self.subTest(mutation):
