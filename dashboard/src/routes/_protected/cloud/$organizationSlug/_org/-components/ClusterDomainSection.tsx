@@ -28,7 +28,7 @@ function statusCopy(status: ClusterDomainState) {
   if (status.kind === "setting_up") return { message: "This usually takes a few minutes.", action: null } as const;
   switch (status.reason) {
     case "no_servers":
-      return { message: "Add a server to start receiving traffic.", action: "servers" } as const;
+      return { message: "No server is online.", action: "servers" } as const;
     case "no_public_ip":
       return { message: "None of your servers has a public IP address.", action: "servers" } as const;
     case "port_80":

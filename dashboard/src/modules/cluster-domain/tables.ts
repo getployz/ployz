@@ -10,7 +10,7 @@ export type IngressServerAddress = { machineId: MachineId; address: string };
 
 /**
  * What the last sync found about the Servers that carry the Cluster Domain's traffic:
- * - `no_servers`: no Cluster is paired, or its runtime frame has no Machines.
+ * - `no_servers`: no Cluster is paired, its runtime frame has no Machines, or every ingress Server is down.
  * - `no_public_ip`: no ingress Server has a public IP.
  * - `probed`: ingress Servers that are not down were probed; `reachable` lists those where Ployz answered on port 80,
  *   `unreachable` those that did not answer, `taken` those where something else answered. Rows written before `taken`
