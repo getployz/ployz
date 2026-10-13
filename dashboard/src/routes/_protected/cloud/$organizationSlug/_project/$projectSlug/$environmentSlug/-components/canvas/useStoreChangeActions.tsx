@@ -64,6 +64,8 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
   async function publish(message: Message): Promise<boolean> {
     const outcome = ask(await run("publish", { accept: [], version }, message));
     if (outcome.status !== "asks") return outcome.status === "done";
+    // A later Save replaces the dialog's question: the earlier one did not save.
+    settleSave(false);
     return new Promise((resolve) => { savePending.current = resolve; });
   }
 

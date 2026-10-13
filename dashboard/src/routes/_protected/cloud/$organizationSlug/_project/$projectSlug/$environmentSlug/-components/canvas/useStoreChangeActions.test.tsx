@@ -193,3 +193,11 @@ it("reports a Save as saved once the user accepts the data it deletes, and not s
   fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
   await waitFor(() => expect(saves).toEqual([true, false]));
 });
+
+it("reports an earlier Save as not saved when a later one asks again", async () => {
+  setup().write.mockResolvedValue(refusal("confirmation_required", loss));
+  fireEvent.click(screen.getByText("Save now"));
+  await screen.findByText("pg-data");
+  fireEvent.click(screen.getByText("Save now"));
+  await waitFor(() => expect(saves).toEqual([false]));
+});
