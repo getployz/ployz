@@ -54,7 +54,7 @@ async fn caddy_projects_and_loads_cluster_services_on_three_machines() {
         "mode": { "mode": "replicated", "replicas": 3 },
         "container": {
             "image": "alpine:3.23.3",
-            "command": ["sh", "-c", "nc -lk -p 8080 -e sh -c 'while read -r l && [ ${#l} -gt 1 ]; do :; done; printf \"HTTP/1.1 200 OK\\r\\nContent-Length: 3\\r\\n\\r\\nok\\n\"'"],
+            "command": ["sh", "-c", "nc -lk -p 8080 -e sh -c 'while read -r l && [ ${#l} -gt 1 ]; do :; done; printf \"HTTP/1.1 200 OK\\r\\nPloyz-Server: spoofed\\r\\nPloyz-Request-Id: spoofed\\r\\nContent-Length: 3\\r\\n\\r\\nok\\n\"'"],
             "pull_policy": "missing"
         },
         "ports": [{
@@ -79,12 +79,44 @@ async fn caddy_projects_and_loads_cluster_services_on_three_machines() {
                 })
         })
         .await;
+        let (headers, body) = response(
+            &cluster,
+            index,
+            "curl -fsS -D - -H 'Host: example.test' http://127.0.0.1",
+        );
+        assert_eq!(body, "ok\n");
         assert_eq!(
-            cluster
-                .machine_shell(index, "curl -fsS -H 'Host: example.test' http://127.0.0.1",)
-                .unwrap()
-                .trim(),
-            "ok"
+            header_values(&headers, "ployz-server"),
+            [machine.id.as_str()]
+        );
+        let [request_id] = header_values(&headers, "ployz-request-id")[..] else {
+            panic!("one ployz-request-id header: {headers}");
+        };
+        assert_ne!(request_id, "spoofed");
+        assert!(!request_id.is_empty());
+
+        let mut replicas = machines
+            .iter()
+            .map(|machine| format!("{}:1", machine.id))
+            .collect::<Vec<_>>();
+        replicas.sort();
+        assert_trace_page(
+            &cluster,
+            index,
+            machine,
+            "example.test",
+            "",
+            &replicas.join(","),
+            "ok",
+        );
+        assert_trace_page(
+            &cluster,
+            index,
+            machine,
+            "missing.test",
+            "",
+            "",
+            "NOT_DEPLOYED",
         );
         assert_eq!(
             cluster
@@ -119,14 +151,8 @@ async fn caddy_projects_and_loads_cluster_services_on_three_machines() {
             .unwrap()
             .to_ascii_lowercase();
         assert!(missing.starts_with("http/1.1 404"), "{missing}");
-        assert!(
-            missing.contains("ployz-error: domain_not_found"),
-            "{missing}"
-        );
-        assert!(
-            missing.contains(r#""code":"domain_not_found""#),
-            "{missing}"
-        );
+        assert!(missing.contains("ployz-error: not_deployed"), "{missing}");
+        assert!(missing.contains(r#""code":"not_deployed""#), "{missing}");
     }
 
     let logs = run_cli(&direct, &["logs", "ployz-system/ingress", "--tail", "1"]);
@@ -316,6 +342,81 @@ async fn turning_ingress_off_keeps_the_proxy_serving() {
             .trim(),
         "ok"
     );
+}
+
+/// Run a `curl -D -` script on Machine `index` and split its output into headers and body.
+fn response(cluster: &Cluster, index: usize, script: &str) -> (String, String) {
+    let output = cluster.machine_shell(index, script).unwrap();
+    let (headers, body) = output
+        .split_once("\r\n\r\n")
+        .unwrap_or_else(|| panic!("no header block: {output}"));
+    (headers.to_owned(), body.to_owned())
+}
+
+fn header_values<'a>(headers: &'a str, name: &str) -> Vec<&'a str> {
+    headers
+        .lines()
+        .filter_map(|line| line.split_once(':'))
+        .filter(|(key, _)| key.trim().eq_ignore_ascii_case(name))
+        .map(|(_, value)| value.trim())
+        .collect()
+}
+
+/// The trace page Machine `index` answers for `host` over plain HTTP from loopback.
+fn assert_trace_page(
+    cluster: &Cluster,
+    index: usize,
+    machine: &Machine,
+    host: &str,
+    deploy: &str,
+    replicas: &str,
+    status: &str,
+) {
+    let (headers, body) = response(
+        cluster,
+        index,
+        &format!("curl -fsS -D - -H 'Host: {host}' http://127.0.0.1/.well-known/ployz/trace"),
+    );
+    let [request_id] = header_values(&headers, "ployz-request-id")[..] else {
+        panic!("one ployz-request-id header: {headers}");
+    };
+    let lines = body
+        .strip_suffix('\n')
+        .unwrap_or_else(|| panic!("trace page ends with a newline: {body:?}"))
+        .split('\n')
+        .map(|line| {
+            line.split_once('=')
+                .unwrap_or_else(|| panic!("{line:?} in {body}"))
+        })
+        .collect::<Vec<_>>();
+    let keys = lines.iter().map(|(key, _)| *key).collect::<Vec<_>>();
+    assert_eq!(
+        keys,
+        [
+            "server",
+            "deploy",
+            "replicas",
+            "status",
+            "ip",
+            "http",
+            "tls",
+            "sni",
+            "request_id",
+            "ts"
+        ],
+        "{body}"
+    );
+    let value = |key: &str| lines.iter().find(|(line, _)| *line == key).unwrap().1;
+    assert_eq!(value("server"), machine.id.as_str(), "{body}");
+    assert_eq!(value("deploy"), deploy, "{body}");
+    assert_eq!(value("replicas"), replicas, "{body}");
+    assert_eq!(value("status"), status, "{body}");
+    assert!(!value("ip").is_empty(), "{body}");
+    assert_eq!(value("http"), "HTTP/1.1", "{body}");
+    assert_eq!(value("tls"), "", "{body}");
+    assert_eq!(value("sni"), "", "{body}");
+    assert_eq!(value("request_id"), request_id, "{body}");
+    assert!(value("ts").parse::<u64>().is_ok(), "{body}");
 }
 
 async fn assert_health_transition(
