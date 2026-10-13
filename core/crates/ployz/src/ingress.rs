@@ -82,6 +82,34 @@ pub(crate) async fn fill_slots(
     client: &mut Client,
     cancel: &CancellationToken,
 ) -> Result<Vec<IngressRepair>, Failure> {
+    let repairs = slot_repairs(client).await?;
+    let client = &*client;
+    Ok(
+        join_all(repairs.into_iter().map(|(shown, repair)| async move {
+            let outcome = client.confirm(&repair.plan, cancel, None).await;
+            IngressRepair {
+                failure: failure(&outcome),
+                ..shown
+            }
+        }))
+        .await,
+    )
+}
+
+/// The repairs [`fill_slots`] would run, by Server; runs nothing.
+///
+/// # Errors
+///
+/// Fails when observation, image discovery or planning fails.
+pub(crate) async fn planned_slots(client: &mut Client) -> Result<Vec<IngressRepair>, Failure> {
+    Ok(slot_repairs(client)
+        .await?
+        .into_iter()
+        .map(|(shown, _)| shown)
+        .collect())
+}
+
+async fn slot_repairs(client: &mut Client) -> Result<Vec<(IngressRepair, SlotRepair)>, Failure> {
     let (machines, Some(requested)) = wanted(client, IngressImage::Keep).await? else {
         return Ok(Vec::new());
     };
@@ -91,36 +119,28 @@ pub(crate) async fn fill_slots(
         crate::deploy::plan_options(false, false),
     );
     let repairs = client.plan_slot_repairs(intent).await?;
-    let client = &*client;
-    Ok(join_all(repairs.into_iter().map(|repair| {
-        let server = machines
-            .iter()
-            .find(|entry| entry.machine.id == repair.machine_id)
-            .map_or_else(
-                || repair.machine_id.to_string(),
-                |entry| entry.machine.name.to_string(),
-            );
-        fill_slot(client, cancel, server, repair)
-    }))
-    .await)
-}
-
-async fn fill_slot(
-    client: &Client,
-    cancel: &CancellationToken,
-    server: String,
-    repair: SlotRepair,
-) -> IngressRepair {
-    let outcome = client.confirm(&repair.plan, cancel, None).await;
-    IngressRepair {
-        machine: repair.machine_id,
-        server,
-        action: match repair.action {
-            SlotAction::Create => IngressAction::Create,
-            SlotAction::Start => IngressAction::Start,
-        },
-        failure: failure(&outcome),
-    }
+    Ok(repairs
+        .into_iter()
+        .map(|repair| {
+            let server = machines
+                .iter()
+                .find(|entry| entry.machine.id == repair.machine_id)
+                .map_or_else(
+                    || repair.machine_id.to_string(),
+                    |entry| entry.machine.name.to_string(),
+                );
+            let shown = IngressRepair {
+                machine: repair.machine_id,
+                server,
+                action: match repair.action {
+                    SlotAction::Create => IngressAction::Create,
+                    SlotAction::Start => IngressAction::Start,
+                },
+                failure: None,
+            };
+            (shown, repair)
+        })
+        .collect())
 }
 
 fn failure(outcome: &Outcome) -> Option<IngressFailure> {

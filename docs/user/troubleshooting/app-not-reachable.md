@@ -157,7 +157,8 @@ no web traffic. Deploy any project to bring it back:
 ployz deploy
 ```
 
-A deploy creates or starts the missing ingress on every server that takes web traffic. If it
+A deploy creates or starts the missing ingress on every server that takes web traffic.
+`ployz deploy --plan` lists it first, as `ingress on web-1: would create`. If it
 still isn't running, the deploy says why. When something else holds port 80 or 443, see
 [above](#something-else-answers-on-port-80).
 

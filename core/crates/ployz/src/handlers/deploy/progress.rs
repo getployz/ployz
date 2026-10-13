@@ -90,27 +90,19 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
             });
         }
     }
-    rows.extend(view.deployment.ingress.iter().map(|repair| {
-        Row {
-            subject: Subject::ServiceOnServer {
-                service: QualifiedService::system_ingress(),
-                machine: repair.machine,
-                server: repair.server.clone(),
-            },
-            state: if repair.failure.is_some() {
-                State::Failed
-            } else {
-                State::Completed
-            },
-            detail: Some(
-                match repair.action {
-                    IngressAction::Create => "create",
-                    IngressAction::Start => "start",
-                }
-                .to_owned(),
-            ),
-            timing: Timing::Unavailable,
-        }
+    rows.extend(view.deployment.ingress.iter().map(|repair| Row {
+        subject: Subject::ServiceOnServer {
+            service: QualifiedService::system_ingress(),
+            machine: repair.machine,
+            server: repair.server.clone(),
+        },
+        state: if repair.failure.is_some() {
+            State::Failed
+        } else {
+            State::Completed
+        },
+        detail: Some(ingress_verb(repair.action).to_owned()),
+        timing: Timing::Unavailable,
     }));
     Frame {
         run: Run::Stored(view.deployment.id.clone()),
@@ -157,6 +149,13 @@ pub(super) fn noop(view: &DeploymentView) -> bool {
 }
 
 /// What to say about each Server whose Ingress Proxy the Deploy left down.
+pub(super) fn ingress_verb(action: IngressAction) -> &'static str {
+    match action {
+        IngressAction::Create => "create",
+        IngressAction::Start => "start",
+    }
+}
+
 pub(super) fn ingress_warnings(view: &DeploymentView) -> Vec<String> {
     view.deployment
         .ingress

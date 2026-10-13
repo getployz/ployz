@@ -42,7 +42,7 @@ pub(crate) fn deploy_command() -> Command {
         )
         .arg(
             switch("plan", None)
-                .help("Show what would deploy, from authored state alone; run nothing"),
+                .help("Show what would deploy, and any ingress it brings back; run nothing"),
         )
         .arg(crate::cli::reviewed_version())
         .arg(crate::cli::approval())
@@ -674,6 +674,10 @@ struct Planned<'p> {
     plan: &'p ployz_store::PlanView,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     domain_changes: Vec<super::store::DomainLine>,
+    /// Missing or stopped Ingress Proxies any Deploy brings back. Empty when none
+    /// is down or the Cluster can't be reached.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    ingress: Vec<ployz_store::IngressRepair>,
 }
 
 fn plan(matches: &ArgMatches, store: &Store, services: Vec<ServiceName>) -> Result<(), Error> {
@@ -687,6 +691,7 @@ fn plan(matches: &ArgMatches, store: &Store, services: Vec<ServiceName>) -> Resu
             plan.changes.iter().flat_map(|change| &change.settings),
         ),
         plan: &plan,
+        ingress: ingress_repairs(matches),
     };
     crate::ui::finish(&Next::new(&shown, Some(hint.clone())), || {
         let where_ = format!("{}/{}", plan.environment.project, plan.environment.name);
@@ -706,6 +711,13 @@ fn plan(matches: &ArgMatches, store: &Store, services: Vec<ServiceName>) -> Resu
             }
             super::review::restarts(change);
         }
+        for repair in &shown.ingress {
+            crate::ui::stream(format_args!(
+                "ingress on {}: would {}",
+                repair.server,
+                progress::ingress_verb(repair.action)
+            ));
+        }
         if !plan.unresolved.is_empty() {
             ui::stream(format_args!(
                 "Decided by the Servers when it runs: {}.",
@@ -713,6 +725,27 @@ fn plan(matches: &ArgMatches, store: &Store, services: Vec<ServiceName>) -> Resu
             ));
         }
         ui::hint(&Hint::Next(hint.clone()));
+    })
+}
+
+/// The Ingress Proxies a Deploy would bring back, read from the Cluster. Best effort:
+/// a Cluster this can't reach shows none, as the plan itself needs no Cluster.
+fn ingress_repairs(matches: &ArgMatches) -> Vec<ployz_store::IngressRepair> {
+    let context = matches
+        .try_get_one::<String>("context")
+        .ok()
+        .flatten()
+        .map(String::as_str);
+    let Ok(runtime) = runtime() else {
+        return Vec::new();
+    };
+    runtime.block_on(async {
+        let Ok(mut client) = super::server::connect(matches, context).await else {
+            return Vec::new();
+        };
+        crate::ingress::planned_slots(&mut client)
+            .await
+            .unwrap_or_default()
     })
 }
 
