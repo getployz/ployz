@@ -10,7 +10,6 @@ without installing anything.
 ## See a service's metrics
 
 ```sh
-# Metrics are CLI-only for now
 ployz metrics web
 ```
 
@@ -38,6 +37,14 @@ ployz metrics --server web-1
 A server shows its CPU, memory, network per interface, and how its disk space splits between
 volumes, mirrors, logs and metrics, and everything else. Managed volumes report their usage every
 minute.
+
+## Ask an agent
+
+The [Ployz agent](../account/agent-sidebar.md) and `ployz mcp` read the same numbers through the
+`service_metrics` and `server_metrics` tools, with each OOM kill, exit and restart in the range
+and the server it happened on. Give `service_metrics` a deployment number and the range starts
+when that deployment did, so the agent can tell an OOM kill from an app that exited with an
+error. Both tools need Ployz Cloud.
 
 ## See older metrics
 

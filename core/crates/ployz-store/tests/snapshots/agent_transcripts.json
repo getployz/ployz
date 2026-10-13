@@ -4371,6 +4371,123 @@
     ]
   },
   {
+    "tool": "server_metrics",
+    "input": {
+      "server": "web-1",
+      "since_minutes": 180
+    },
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
+    },
+    "call_key": "call-server_metrics",
+    "turns": [
+      {
+        "step": {
+          "step": "read",
+          "asks": [
+            {
+              "at": "store",
+              "ask": {
+                "query": "namespaces"
+              }
+            },
+            {
+              "at": "cloud",
+              "ask": {
+                "query": "servers",
+                "only": null
+              }
+            }
+          ]
+        },
+        "answers": [
+          {
+            "value": {
+              "namespaces": [],
+              "view": "namespaces"
+            }
+          },
+          {
+            "error": {
+              "code": "unavailable",
+              "message": "no Ployz Cloud in this transcript",
+              "details": null
+            }
+          }
+        ]
+      },
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": false,
+            "refusal": {
+              "code": "unavailable",
+              "message": "no Ployz Cloud in this transcript",
+              "retry": {
+                "tool": "server_metrics",
+                "input": {
+                  "server": "web-1",
+                  "since_minutes": 180
+                }
+              },
+              "writes": "none",
+              "next": []
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "tool": "server_metrics",
+    "input": {
+      "server": "web-1",
+      "since_minutes": 180
+    },
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": {
+        "at": "local"
+      }
+    },
+    "call_key": "call-server_metrics",
+    "turns": [
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": false,
+            "refusal": {
+              "code": "not_here",
+              "message": "This needs Ployz Cloud; a local Config Store cannot answer it",
+              "retry": {
+                "tool": "server_metrics",
+                "input": {
+                  "server": "web-1",
+                  "since_minutes": 180
+                }
+              },
+              "writes": "none",
+              "next": [],
+              "details": {
+                "fix": {
+                  "fix": "use_cloud"
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
     "tool": "service_status",
     "input": {
       "service": "web"
@@ -4687,6 +4804,175 @@
                 "input": {
                   "deployment": 12,
                   "lines": 50,
+                  "service": "web"
+                }
+              },
+              "writes": "none",
+              "next": [
+                {
+                  "tool": "deployment_show",
+                  "input": {}
+                }
+              ],
+              "details": {
+                "fix": {
+                  "fix": "use_cloud"
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "tool": "service_metrics",
+    "input": {
+      "deployment": 12,
+      "service": "web"
+    },
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
+    },
+    "call_key": "call-service_metrics",
+    "turns": [
+      {
+        "step": {
+          "step": "read",
+          "asks": [
+            {
+              "at": "store",
+              "ask": {
+                "query": "namespace",
+                "environment": {
+                  "project": "shop",
+                  "environment": null
+                }
+              }
+            },
+            {
+              "at": "store",
+              "ask": {
+                "query": "deployments",
+                "environment": {
+                  "project": "shop",
+                  "environment": null
+                },
+                "limit": 20,
+                "cursor": null
+              }
+            },
+            {
+              "at": "store",
+              "ask": {
+                "query": "numbered_deployment",
+                "environment": {
+                  "project": "shop",
+                  "environment": null
+                },
+                "number": 12
+              }
+            }
+          ]
+        },
+        "answers": [
+          {
+            "value": {
+              "environment": {
+                "id": "00000000-0000-4000-8000-000000000002",
+                "name": "production",
+                "project": "shop",
+                "revision": 1
+              },
+              "namespace": "shop-production",
+              "services": {},
+              "view": "namespace"
+            }
+          },
+          {
+            "value": {
+              "deployments": [],
+              "environment": {
+                "id": "00000000-0000-4000-8000-000000000002",
+                "name": "production",
+                "project": "shop",
+                "revision": 1
+              },
+              "next_cursor": null,
+              "view": "deployments"
+            }
+          },
+          {
+            "error": {
+              "code": "not_found",
+              "message": "shop/production has no Deployment #12",
+              "details": {
+                "next": "ployz deployment ls"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": false,
+            "refusal": {
+              "code": "not_found",
+              "message": "shop/production has no Deployment #12",
+              "retry": {
+                "tool": "service_metrics",
+                "input": {
+                  "deployment": 12,
+                  "service": "web"
+                }
+              },
+              "writes": "none",
+              "next": [
+                {
+                  "tool": "deployment_show",
+                  "input": {}
+                }
+              ]
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "tool": "service_metrics",
+    "input": {
+      "deployment": 12,
+      "service": "web"
+    },
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": {
+        "at": "local"
+      }
+    },
+    "call_key": "call-service_metrics",
+    "turns": [
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": false,
+            "refusal": {
+              "code": "not_here",
+              "message": "This needs Ployz Cloud; a local Config Store cannot answer it",
+              "retry": {
+                "tool": "service_metrics",
+                "input": {
+                  "deployment": 12,
                   "service": "web"
                 }
               },

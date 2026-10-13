@@ -22,6 +22,9 @@ replied. It can:
 - Read a service's recent logs from each server that ran it, with secrets from the container's
   environment replaced (**service logs**). Ployz support sees them only if your organization
   shows its logs to support. It reads the latest lines and doesn't follow new ones.
+- Read a service's or a server's [metrics](../observe/metrics.md), with the OOM kills, exits and
+  restarts in the range (**service metrics**, **server metrics**). Name a deployment and it reads
+  from that deployment's start and keeps only its events.
 - Restart, start or stop a service (**service restart**, **service start**, **service stop**).
 - Drain, upgrade, clean up after or remove a server (**server drain**, **server upgrade**,
   **server clean**, **server remove**).

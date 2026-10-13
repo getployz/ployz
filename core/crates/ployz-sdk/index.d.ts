@@ -357,7 +357,7 @@ export declare class Client {
     update: Partial<MachineUpdate>,
   ): Promise<MachineUpdated>;
   /** Answer a CloudQuery from this session's Servers; ones that did not answer are named in `seen.unanswered`. */
-  agentAsk(query: import("./generated/payloads").CloudQuery): Promise<import("./generated/payloads").ServersAnswer | import("./generated/payloads").ContainersAnswer | import("./generated/payloads").LogsAnswer>;
+  agentAsk(query: import("./generated/payloads").CloudQuery): Promise<import("./generated/payloads").ServersAnswer | import("./generated/payloads").ContainersAnswer | import("./generated/payloads").LogsAnswer | import("./generated/payloads").MetricsAnswer>;
   /** Every Container of `service` in `namespace`, hooks included, and the Servers that did not answer. */
   observeService(namespace: string, service: string): Promise<{
     copies: { server: string; machine: string; container: string; state: import("./generated/payloads").ContainerState; hook: boolean }[];

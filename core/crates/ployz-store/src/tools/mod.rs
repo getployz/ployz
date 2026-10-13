@@ -11,6 +11,7 @@ mod environment;
 mod github;
 pub mod logs;
 mod machine;
+mod metrics;
 mod project;
 mod refusal;
 mod release;
@@ -30,8 +31,9 @@ pub use schema::{lint, portable};
 pub use status::{ServiceStatus, service_status};
 pub use step::{
     AcceptedLoss, Act, Action, Answer, Ask, AttemptId, BodyDigest, CloudQuery, DashboardPage, Fix,
-    Freshness, Gate, LogsQuery, OperationsQuery, RequestKey, ServerName, ServerRef, ServiceVerb,
-    Source, Step, Subject, Timestamp, VolumeRun, Write, WriteSlot,
+    Freshness, Gate, LogsQuery, MetricsQuery, MetricsSince, MetricsSubject, OperationsQuery,
+    RequestKey, ServerName, ServerRef, ServiceVerb, Source, Step, Subject, Timestamp, VolumeRun,
+    Write, WriteSlot,
 };
 
 use machine::{Entry, entry};
@@ -64,8 +66,10 @@ pub(crate) const TOOLS: &[Entry] = &[
     entry::<github::GithubLs>(),
     entry::<github::GithubConnect>(),
     entry::<server::ServerShow>(),
+    entry::<metrics::ServerMetrics>(),
     entry::<runtime::ServiceState>(),
     entry::<runtime::ServiceLogs>(),
+    entry::<metrics::ServiceMetrics>(),
     entry::<copies::VolumeShow>(),
     entry::<runtime::ServiceRestart>(),
     entry::<runtime::ServiceStart>(),
@@ -98,4 +102,4 @@ pub fn example(tool: &str) -> Option<serde_json::Value> {
 }
 
 /// What a model reads once, before any tool.
-pub const INSTRUCTIONS: &str = "Ployz runs Projects with Environments of Services on your servers. Names, not ids. Every result says where it ran as at. A refusal has code, message, field, expected, example, retry (a complete call), writes (none, committed or unknown) and next (the calls to make now). When writes is unknown, make the next call before anything else. Most writes are Staged: review shows them, discard undoes them, deploy ships them. Not here: branches, tokens, servers added, exec, live logs, up; the member does those in the terminal. project and environment default to the place you are in. request_key: any 8 to 64 letters, digits, - or _; send the same key again after a lost reply and you get the same run, never a second one. wait_seconds: wait up to that long (max 300) for the outcome; 0 returns once accepted. accept_volume_loss, every_copy and version come only from a refusal, for exactly the loss the member accepted. Reads say when they were seen; a server that did not answer is listed, never guessed. Logs never show a secret; do not ask a tool for one. Servers and their logs need Ployz Cloud.";
+pub const INSTRUCTIONS: &str = "Ployz runs Projects with Environments of Services on your servers. Names, not ids. Every result says where it ran as at. A refusal has code, message, field, expected, example, retry (a complete call), writes (none, committed or unknown) and next (the calls to make now). When writes is unknown, make the next call before anything else. Most writes are Staged: review shows them, discard undoes them, deploy ships them. Not here: branches, tokens, servers added, exec, live logs, up; the member does those in the terminal. project and environment default to the place you are in. request_key: any 8 to 64 letters, digits, - or _; send the same key again after a lost reply and you get the same run, never a second one. wait_seconds: wait up to that long (max 300) for the outcome; 0 returns once accepted. accept_volume_loss, every_copy and version come only from a refusal, for exactly the loss the member accepted. Reads say when they were seen; a server that did not answer is listed, never guessed. Logs never show a secret; do not ask a tool for one. Servers, their logs and metrics need Ployz Cloud.";

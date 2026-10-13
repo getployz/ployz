@@ -126,6 +126,7 @@ const ask = Effect.fn("CallCloud.ask")(function* (caller: Caller, query: CloudQu
     }
     case "servers":
     case "containers":
+    case "metrics":
       return yield* runtimeAsk(organizationId, query);
     case "copies":
       return yield* copies(organizationId, query.namespace, query.volume);

@@ -108,6 +108,7 @@ pub enum CloudQuery {
         service: Option<ServiceName>,
     },
     Logs(LogsQuery),
+    Metrics(MetricsQuery),
     Copies {
         namespace: Namespace,
         volume: Option<VolumeName>,
@@ -130,6 +131,37 @@ pub struct LogsQuery {
     /// The Service's plain variables as the Store shows them. A Container's env value stays
     /// readable only when it is here under the same name; every other value is scrubbed.
     pub plain: BTreeMap<String, String>,
+}
+
+/// CPU, memory, network and disk of one Service or Server, and what Docker did
+/// to the Service's containers, from `since` until the Servers are read.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct MetricsQuery {
+    pub subject: MetricsSubject,
+    pub since: MetricsSince,
+    /// Keep only this Deployment's OOM kills, exits and restarts.
+    pub deployment: Option<DeploymentId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MetricsSubject {
+    /// `service` is the runtime name its containers carry.
+    Service {
+        namespace: Namespace,
+        service: ServiceName,
+    },
+    Server {
+        server: ServerRef,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MetricsSince {
+    MinutesAgo { minutes: u32 },
+    At { at: Timestamp },
 }
 
 /// Recent operations on one subject.
