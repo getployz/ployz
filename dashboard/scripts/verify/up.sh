@@ -110,7 +110,10 @@ cd "$dash"
 node node_modules/drizzle-kit/bin.cjs migrate > "$run/migrate.log" 2>&1 || { cat "$run/migrate.log" >&2; exit 1; }
 seed_out=$(node scripts/verify/runner.mjs /scripts/verify/seed.ts 2>&1) || { echo "$seed_out" >&2; exit 1; }
 seed=$(printf '%s\n' "$seed_out" | sed -n 's/^VERIFY_SEED //p')
-node scripts/verify/runner.mjs /scripts/verify/seed-uptime.ts > "$run/seed-uptime.log" 2>&1 || { cat "$run/seed-uptime.log" >&2; exit 1; }
+# Only the Monitoring tab reads uptime, so it seeds in the background; $run/uptime says ok or failed when it ends.
+setsid nohup bash -c 'node scripts/verify/runner.mjs /scripts/verify/seed-uptime.ts > "$1/seed-uptime.log" 2>&1 \
+  && echo ok > "$1/uptime" || echo failed > "$1/uptime"' seed-uptime "$run" < /dev/null > /dev/null 2>&1 &
+echo $! > "$run/seed-uptime.pid"
 printf '%s\n' "$seed" > "$run/seed.json"; echo "$name" > "$run/session"
 json() { node -e 'console.log(JSON.parse(process.argv[1])[process.argv[2]])' "$seed" "$1"; }
 org=$(json organizationSlug); cookie=$(json cookie)
@@ -153,6 +156,7 @@ Ployz Cloud verify: $base  (billing $([ "${BILLING:-0}" = 1 ] && echo on || echo
   production  $base/cloud/$org/shop/production
   branch      $base/cloud/$org/shop/fix-api
   servers     $base/cloud/$org/~/servers
+uptime: seeding in the background for the Monitoring tab; wait with: until [ -s $run/uptime ]; do sleep 1; done; cat $run/uptime
 browser:
   agent-browser --session $name cookies set better-auth.session_token '$cookie' --url $base --httpOnly --sameSite Lax
   agent-browser --session $name open $base/cloud/$org/shop/production
