@@ -759,6 +759,11 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
         expected = destination if case["op"] == "move" and case["recover"] == "rerun" else writer
         if result["final_writer"] != expected:
             result["failures"].append(f"the Volume ended on {result['final_writer']}, not {expected}")
+        if case["op"] in ("mirror", "mirror-rm"):
+            want = "present" if case["op"] == "mirror" else "absent"
+            got = "absent" if states[destination]["readonly"].get(self.fs()) in (None, "absent") else "present"
+            if got != want:
+                result["failures"].append(f"the mirror on {destination} ended {got}, not {want}")
         result["passed"] = not result["failures"]
         if not result["passed"]:
             result["heal"] = self.heal(destination)
