@@ -168,6 +168,16 @@ impl Daemon {
         run_dir: PathBuf,
     ) -> Result<Self, Error> {
         let observe_socket = run_dir.join(crate::observe::SOCKET_FILE);
+        // The Observe Store outlives the daemon, so it starts before anything
+        // that can fail on Machine state.
+        if config.units == UnitSupervision::Systemd {
+            let (data_dir, socket) = (config.data_dir.clone(), config.socket.clone());
+            tokio::spawn(async move {
+                if let Err(error) = crate::observe::unit::converge(&data_dir, &socket).await {
+                    eprintln!("WARNING: the Observe Store did not start: {error}");
+                }
+            });
+        }
         let store = match LocalMachineStore::open_with_admission(&config.data_dir, &run_dir)? {
             Opened::Ready(store) => store,
             Opened::Resetting(interrupted) => {
@@ -206,14 +216,6 @@ impl Daemon {
             &local_record,
         )
         .await?;
-        if config.units == UnitSupervision::Systemd {
-            let (data_dir, socket) = (config.data_dir.clone(), config.socket.clone());
-            tokio::spawn(async move {
-                if let Err(error) = crate::observe::unit::converge(&data_dir, &socket).await {
-                    eprintln!("WARNING: the Observe Store did not start: {error}");
-                }
-            });
-        }
         let mut network = NetworkPlane::start(&local_record).await?;
         let machine_api_listener = match config
             .machine_api_address
