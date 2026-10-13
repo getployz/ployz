@@ -11,7 +11,8 @@ import { failedRestore, volumePlacement } from "#/modules/volume-placement/table
 import {
   lossByVolume, lossTime, lossVersion, oldCopies, storeVersion, observePlacement, placementChanges, placementLosses, type Placement, type PlacementRow, type Seed,
 } from "#/modules/volume-placement/volume-placement";
-import { dockerVolumeName, parseDockerVolumeName, type VolumeRunInput } from "#/modules/volume-run/volume-run";
+import { ACTIVE_VOLUME_RUN_STATES, dockerVolumeName, parseDockerVolumeName, type VolumeRunInput } from "#/modules/volume-run/volume-run";
+import { volumeRun } from "#/modules/volume-run/tables";
 import { insertRun, inspectVolumeCopies, planVolumeRun, resolveVolume } from "#/modules/volume-run/volume-run.server";
 import { Database } from "#/server/database.server";
 
@@ -31,6 +32,8 @@ export const DEPLOYING: StoreRefusal = { code: "conflict", message: "A Deploy is
 const UNCHECKED: StoreRefusal = { code: "unavailable", message: "Couldn't check the Deploy that took this Volume. Try again.", details: null };
 const RESTORING: StoreRefusal = { code: "conflict", message: "This Volume is a staged restore. Deploy or discard it first.", details: null };
 const ELSEWHERE: StoreRefusal = { code: "conflict", message: "This restore belongs to another Environment.", details: null };
+const READ: StoreRefusal = { code: "conflict", message: "A restore reads this copy.", details: null };
+const DELETING: StoreRefusal = { code: "conflict", message: "This copy is being deleted.", details: null };
 const STARTING: StoreRefusal = { code: "conflict", message: "A Deploy or restore is starting. Try again.", details: null };
 const UNANSWERED: StoreRefusal = { code: "unavailable", message: "Your servers aren't answering. Try again once they are.", details: null };
 
@@ -154,7 +157,8 @@ export const stageRestore = Effect.fn("VolumePlacement.stageRestore")(function* 
   inspect: typeof inspectVolumeCopies = inspectVolumeCopies,
 ) {
   const source = yield* resolveVolume(organizationId, input.environment, input.volumeId);
-  const primary = observePlacement(yield* inspect(organizationId, input.environment, input.volumeId)).primary;
+  const members = yield* inspect(organizationId, input.environment, input.volumeId);
+  const primary = observePlacement(members).primary;
   if (primary === null) {
     return { ok: false, refusal: { code: "conflict", message: `${source.volumeName} has no primary answering to restore from.`, details: null } } satisfies PlacementWrite;
   }
@@ -179,8 +183,13 @@ export const stageRestore = Effect.fn("VolumePlacement.stageRestore")(function* 
     point: { guid: input.guid, name: input.name, at: input.at },
   };
   const outcome = yield* whileStaging(environment.id, Effect.gen(function* () {
-    // The row lands first: a Deploy admitted right after the batch commits must find it to stamp.
     const { drizzle } = yield* Database;
+    const holders = members.flatMap((member) => member.answered && member.view.copy?.newest?.guid === input.guid ? [member.machine.name] : []);
+    const [deleting] = holders.length === 0 ? [] : yield* drizzle.select({ id: volumeRun.id }).from(volumeRun).where(and(
+      eq(volumeRun.volumeId, input.volumeId), eq(volumeRun.kind, "delete_mirror"), inArray(volumeRun.state, ACTIVE_VOLUME_RUN_STATES),
+      inArray(sql`${volumeRun.args} ->> 'slot'`, holders)));
+    if (deleting !== undefined) return { ok: false, refusal: DELETING } satisfies PlacementWrite;
+    // The row lands first: a Deploy admitted right after the batch commits must find it to stamp.
     const [row] = yield* drizzle.insert(volumePlacement).values({
       volumeId: id,
       organizationId,
@@ -369,30 +378,39 @@ export const deleteOldCopy = Effect.fn("VolumePlacement.deleteOldCopy")(function
   const run = { volumeId: input.volumeId, environment: input.environment, kind: "delete_mirror", args: { slot: input.server, confirmed_name: null } } as const;
   const planned = yield* planVolumeRun(organizationId, run);
   if (!planned.ok) return { ok: false, refusal: { message: planned.refusal.message } } as const;
-  const requested = yield* requestUnclaimedRun({ userId, organizationId }, run, old.server.id);
+  const held = members.find((member) => member.machine.id === old.server.id);
+  const point = held?.answered === true ? held.view.copy?.newest?.guid ?? null : null;
+  const requested = yield* requestUnclaimedRun({ userId, organizationId }, run, { server: old.server.id, point });
   return requested.ok ? { ok: true, run: requested.run } as const : { ok: false, refusal: { message: requested.refusal.message } } as const;
 });
 
 /**
  * Requests `run` unless a Deploy still runs the Volume's placement, or, for an old copy's delete, the placement now keeps
- * the copy on `deletes`. The row lock makes the check and the insert one step against writeAdmitted's stamp and staging: a
- * Deploy stamped after it finds the run going and waits for it.
+ * the copy or a restore reads its `point`. The row lock makes the check and the insert one step against writeAdmitted's
+ * stamp and staging: a Deploy stamped after it finds the run going and waits for it. The Environment's lock, shared, does
+ * the same against stageRestore.
  */
 export const requestUnclaimedRun = Effect.fn("VolumePlacement.requestUnclaimedRun")(function* (
   caller: { readonly userId: string | null; readonly organizationId: string },
   input: { readonly volumeId: string; readonly environment: EnvironmentRef } & Extract<VolumeRunInput, { kind: "sync" | "delete_mirror" }>,
-  deletes: MachineId | null = null,
+  deletes: { readonly server: MachineId; readonly point: string | null } | null = null,
 ) {
   const database = yield* Database;
   const volume = yield* resolveVolume(caller.organizationId, input.environment, input.volumeId);
   return yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
+    if (deletes !== null) yield* drizzle.execute(sql`select pg_advisory_xact_lock_shared(${environmentLock(volume.environmentId)})`);
     const [row] = yield* drizzle.select().from(volumePlacement)
       .where(and(eq(volumePlacement.organizationId, caller.organizationId), eq(volumePlacement.volumeId, input.volumeId))).for("update");
     const busy = yield* claimed(caller.organizationId, row);
     if (busy !== null) return { ok: false, refusal: busy } as const;
     const kept = row === undefined ? [] : [...row.mirrors ?? [], ...row.staged === null ? [] : [row.staged.primary, ...row.staged.mirrors]];
-    if (deletes !== null && kept.includes(deletes)) return { ok: false, refusal: NOT_OLD } as const;
+    if (deletes !== null && kept.includes(deletes.server)) return { ok: false, refusal: NOT_OLD } as const;
+    const [reading] = deletes?.point == null ? [] : yield* drizzle.select({ volumeId: volumePlacement.volumeId }).from(volumePlacement).where(and(
+      eq(volumePlacement.organizationId, caller.organizationId),
+      sql`${volumePlacement.staged} -> 'seed' ->> 'sourceVolumeId' = ${input.volumeId}`,
+      sql`${volumePlacement.staged} -> 'seed' -> 'point' ->> 'guid' = ${deletes.point}`));
+    if (reading !== undefined) return { ok: false, refusal: READ } as const;
     return yield* insertRun(caller, input, volume, randomUUID());
   }));
 });

@@ -172,10 +172,53 @@ describe("volume placement", () => {
     await stage("web-1", ["web-2"]);
     between = { query: "volumes", run: async () => { await stage("web-1", ["web-2", "web-3"]); } };
     const deleting = { volumeId, environment, kind: "delete_mirror", args: { slot: "web-3", confirmed_name: null } } as const;
-    expect(await run(requestUnclaimedRun({ userId: null, organizationId }, deleting, web("web-3"))))
+    expect(await run(requestUnclaimedRun({ userId: null, organizationId }, deleting, { server: web("web-3"), point: null })))
       .toEqual({ ok: false, refusal: { message: "Not an old copy" } });
     expect(between).toBeNull();
     expect((await harness.pool.query("select count(*)::int as runs from volume_run")).rows).toEqual([{ runs: 0 }]);
+  });
+
+  describe("an old copy a staged restore reads", () => {
+    const deleting = () => run(requestUnclaimedRun({ userId: null, organizationId },
+      { volumeId, environment, kind: "delete_mirror", args: { slot: "web-3", confirmed_name: null } }, { server: web("web-3"), point: "10" }));
+    const restoring = (guid: string, deploymentId: string | null = null) => harness.pool.query(
+      "insert into volume_placement (volume_id, organization_id, environment_id, mirrors, staged, deployment_id) values ('vol3', $1, 'env-1', '[]', $2, $3)",
+      [organizationId, JSON.stringify({ primary: web("web-1"), mirrors: [], deletes: [], seed: {
+        sourceVolumeId: volumeId, sourceName: "data", dockerVolume: "shop-production_vol-vol3", point: { guid, name: "ployz-1", at: 1 },
+      } }), deploymentId],
+    );
+    const runs = async () => (await harness.pool.query("select count(*)::int as runs from volume_run")).rows;
+    beforeEach(async () => { await stage("web-1", ["web-2"]); });
+
+    it.each([["staged", null], ["taken by a Deploy", "dep-1"]])("refuses deleting it while the restore is %s", async (_, deploymentId) => {
+      await restoring("10", deploymentId);
+      expect(await deleting()).toMatchObject({ ok: false, refusal: { message: "A restore reads this copy." } });
+      expect(await runs()).toEqual([{ runs: 0 }]);
+    });
+
+    it("deletes it when the restore reads another point", async () => {
+      await restoring("11");
+      expect(await deleting()).toMatchObject({ ok: true });
+      expect(await runs()).toEqual([{ runs: 1 }]);
+    });
+
+    it("refuses deleting it when the restore is staged while the delete waits for the Environment", async () => {
+      const staging = await harness.pool.connect();
+      let deleted: Promise<unknown> | undefined;
+      try {
+        await staging.query("select pg_advisory_lock(hashtext('volume-environment:env-1'))");
+        deleted = deleting();
+        await waitFor(async () => (await harness.pool.query(
+          "select count(*)::int as waiting from pg_locks where locktype = 'advisory' and not granted",
+        )).rows[0].waiting > 0, deleted);
+        await restoring("10");
+      } finally {
+        await staging.query("select pg_advisory_unlock_all()");
+        staging.release();
+      }
+      expect(await deleted).toMatchObject({ ok: false, refusal: { message: "A restore reads this copy." } });
+      expect(await runs()).toEqual([{ runs: 0 }]);
+    });
   });
 
   it("refuses deleting an old copy while a Deploy holds the Volume", async () => {
