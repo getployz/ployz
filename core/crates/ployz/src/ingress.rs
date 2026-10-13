@@ -7,7 +7,7 @@ use ployz_core::{
     ContainerId, ContainerLocator, ContainerNow, ContainerObservation, ContainerWant,
     DeployOutcome, EnvironmentValues, FailedOperation, HealthFailure, MachineObservation,
     PlacementConstraint, QualifiedService, RequestedServiceSpec, RpcError, RunTarget,
-    caddy_service_spec,
+    caddy_service_spec, error_chain,
 };
 use ployz_store::{IngressAction, IngressFailure, IngressRepair};
 use tokio_util::sync::CancellationToken;
@@ -226,7 +226,7 @@ async fn started(
         () = cancel.cancelled() => return Some(cancelled()),
     };
     if let Err(error) = ensured {
-        return Some(classify(error.to_string()));
+        return Some(classify(error_chain::inline(&error)));
     }
     match ready.await {
         Ok(()) => None,
@@ -234,9 +234,10 @@ async fn started(
         Err(HealthWaitError::Health(failure)) => Some(IngressFailure::Failed {
             cause: format!("it stopped right after starting: {failure}"),
         }),
-        Err(HealthWaitError::Inspect(error)) => Some(IngressFailure::Failed {
-            cause: format!("it started, but checking that it stayed up failed: {error}"),
-        }),
+        Err(HealthWaitError::Inspect(error)) => Some(classify(format!(
+            "it started, but checking that it stayed up failed: {}",
+            error_chain::inline(&error)
+        ))),
     }
 }
 
@@ -327,7 +328,7 @@ pub fn is_system_ingress(observation: &ContainerObservation) -> bool {
 mod tests {
     use std::future::ready;
 
-    use ployz_core::{ContainerRuntimeObservation, PlacementConstraint, ServiceMode};
+    use ployz_core::{ContainerRuntimeObservation, PlacementConstraint, RpcErrorCode, ServiceMode};
 
     use super::*;
 
@@ -357,6 +358,34 @@ mod tests {
         assert_eq!(
             started(std::future::pending(), ready(Ok(())), &cancel).await,
             Some(cancelled())
+        );
+    }
+
+    #[tokio::test]
+    async fn a_start_refused_for_a_held_port_says_the_port_is_taken() {
+        let refused = RpcError {
+            code: RpcErrorCode::Internal,
+            message: "Docker operation failed".into(),
+            details: serde_json::Value::Null,
+            cause: vec![
+                "Docker responded with status code 500: driver failed programming external \
+                 connectivity on endpoint ployz-system-caddy: Error starting userland proxy: \
+                 listen tcp4 0.0.0.0:80: bind: address already in use"
+                    .into(),
+            ],
+        };
+        let Some(IngressFailure::PortTaken { cause }) = started(
+            ready(Err(refused)),
+            ready(Ok(())),
+            &CancellationToken::new(),
+        )
+        .await
+        else {
+            panic!("a held port is a taken port");
+        };
+        assert!(
+            cause.contains("0.0.0.0:80: bind: address already in use"),
+            "{cause}"
         );
     }
 
