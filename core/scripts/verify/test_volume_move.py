@@ -2,6 +2,7 @@
 """Exercise the volume move checks with a command model, without Incus, Cloud or ZFS."""
 
 from contextlib import redirect_stdout
+from datetime import datetime, timezone
 import importlib.util
 import io
 import json
@@ -25,6 +26,11 @@ CALL_LIMIT = 3000
 
 class Runaway(Exception):
     """Not one of the errors run_all catches, so a loop that never sleeps fails the test instead of hanging it."""
+
+
+def iso(at):
+    """Cloud's finished_at, as JavaScript's toISOString writes it."""
+    return datetime.fromtimestamp(at, timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def entry(name, wire):
@@ -76,6 +82,18 @@ class ClusterModel:
         self.kill_lands = True
         self.pid_file = None
         self.workers = set()
+        self.receiving = False
+        self.events = []
+
+    def at(self, moment, event):
+        """Something happens in Cloud or on a Machine once the clock reaches moment."""
+        self.events.append((moment, event))
+
+    def tick(self):
+        due = [event for moment, event in self.events if self.clock and self.clock() >= moment]
+        self.events = [(moment, event) for moment, event in self.events if not (self.clock and self.clock() >= moment)]
+        for event in due:
+            event()
 
     def other(self, machine):
         return "machine-2" if machine == "machine-1" else "machine-1"
@@ -85,6 +103,9 @@ class ClusterModel:
         start = self.holds[-1]["until"] if self.holds else self.clock()
         self.holds.append(dict(id=run_id, start=start, until=start + seconds, listed=listed))
 
+    def now(self):
+        return iso(self.clock() if self.clock else 1000.0)
+
     def holder(self):
         return next((hold for hold in self.holds if self.clock() < hold["until"]), None)
 
@@ -92,6 +113,7 @@ class ClusterModel:
         self.calls += 1
         if self.calls > CALL_LIMIT:
             raise Runaway(f"More than {CALL_LIMIT} helper commands; a wait loop is not sleeping")
+        self.tick()
         if args[0] == "docker":
             code, output = self.postgres(args[-1])
         elif args[1] == "cli":
@@ -143,7 +165,7 @@ class ClusterModel:
             return 1, json.dumps(dict(error=dict(code="conflict", message=message, details=None)))
         if args[:2] == ["volume", "move"]:
             destination = args[-1]
-            row = dict(id=f"run-{len(self.runs)}", kind="move", state="running")
+            row = dict(id=f"run-{len(self.runs)}", kind="move", state="running", finished_at=self.now())
             self.runs.append(row)
             if any(self.fault.values()):
                 self.fired = True
@@ -153,7 +175,7 @@ class ClusterModel:
                 row["state"] = "done"
             return 0, json.dumps(row)
         if args[:2] == ["volume", "mirror"]:
-            row = dict(id=f"run-{len(self.runs)}", kind="mirror", state="done")
+            row = dict(id=f"run-{len(self.runs)}", kind="mirror", state="done", finished_at=self.now())
             self.runs.append(row)
             # The armed kill lands inside the effect and the resumed run finishes it.
             self.fired = self.fired or any(self.fault.values())
@@ -163,7 +185,7 @@ class ClusterModel:
                 self.mirror = args[-1]
             return 0, json.dumps(row)
         if args[:2] == ["volume", "release"]:
-            row = dict(id=f"run-{len(self.runs)}", kind="release", state="done")
+            row = dict(id=f"run-{len(self.runs)}", kind="release", state="done", finished_at=self.now())
             self.runs.append(row)
             return 0, json.dumps(row)
         return 0, "{}"
@@ -198,6 +220,8 @@ class ClusterModel:
             elif self.mutation == "stopped" and machine == self.mirror:
                 lines.append("ct def exited db-old")
             return 0, "\n".join(lines) + "\n"
+        if "pgrep" in script:
+            return 0, "yes\n" if self.receiving else "no\n"
         if "pg_isready" in script:
             return 0, ""
         if "systemctl kill" in script:
@@ -971,7 +995,7 @@ class VolumeMoveTests(unittest.TestCase):
                         # Only the case's own op runs with the fault armed; prepare's mirror still works.
                         if args[:2] == ["volume", "mirror"] and any(model.fault.values()):
                             model.fired = True
-                            row = dict(id=f"run-{len(model.runs)}", kind="mirror", state="done")
+                            row = dict(id=f"run-{len(model.runs)}", kind="mirror", state="done", finished_at=model.now())
                             model.runs.append(row)
                             return 0, json.dumps(row)
                         return cli(args)
@@ -1021,7 +1045,7 @@ class VolumeMoveTests(unittest.TestCase):
 
                 def cancel(row, ended=ended):
                     found = next(run for run in model.runs if run["id"] == row["id"])
-                    found["state"] = ended
+                    found["state"], found["finished_at"] = ended, model.now()
                     if ended == "done":
                         model.mirror, model.writer = model.writer, model.other(model.writer)
                     return [dict(kill="cancel", attempts=[f"DELETE {row['id']} 200 "], landed=True)]
@@ -1037,39 +1061,93 @@ class VolumeMoveTests(unittest.TestCase):
                     self.assertTrue(result["passed"], result)
                     self.assertEqual(result["final_writer"], "machine-1")
 
-    def test_a_fault_case_passes_only_when_its_first_run_was_picked_up(self):
-        kill = volume_move.KILLS[0]
-        self.assertEqual(kill["name"], "kill-snapshot")
-        for claimed in (True, False):
-            with self.subTest(first_run_claimed=claimed):
+    def test_a_triggered_case_passes_only_when_its_first_run_had_not_ended_before_the_trigger_was_seen(self):
+        cases = {case["name"]: case for case in volume_move.CASES + volume_move.soak_cases()}
+        # (case, how the first run ends, when it ends, when the trigger appears, whether the case may pass)
+        for name, ended, ends, trips, passes in (
+                # Opus's repro: the claimed move fails before its snapshot, and a later sync trips the armed kill.
+                ("kill-snapshot", "failed", 0.5, 1.0, False),
+                # Codex's repro: the claimed move fails before any SetVolumeCopy, and a later sync's pull trips it.
+                ("kill-pull", "failed", 0.5, 1.0, False),
+                # A request no run picked up closes lost, and a sync after it trips the armed kill.
+                ("kill-snapshot", "lost", 0.5, 1.0, False),
+                # pgrep also matches a later sync's receive.
+                ("soak-1-rounds-kill-ployz-writer", "failed", 0.25, 0.5, False),
+                # The kill lands inside the first run's effect, and the run ends after it.
+                ("kill-snapshot", "failed", 1.5, 1.0, True),
+                ("kill-pull", "failed", 1.5, 1.0, True),
+                # A late kill, and the first run still ends done.
+                ("kill-snapshot", "done", 1.5, 1.0, True),
+                ("soak-1-rounds-kill-ployz-writer", "failed", 0.75, 0.5, True)):
+            with self.subTest(case=name, first_run=ended, ends=ends, trips=trips):
                 shutil.rmtree(self.root / "out", ignore_errors=True)
                 checks, model = self.checks()
-                cli = model.cli
+                case, cli, first = cases[name], model.cli, []
 
-                def never_picked_up(args, cli=cli):
-                    # Cloud closes the request lost; a sync after it trips the armed fault, and the rerun ends done.
-                    if args[:2] == ["volume", "move"] and any(model.fault.values()):
-                        row = dict(id=f"run-{len(model.runs)}", kind="move", state="lost",
-                                   message="no run picked up this request")
-                        model.runs.append(row)
+                def scripted(args, cli=cli, case=case, first=first, ended=ended, ends=ends, trips=trips):
+                    if args[:2] != ["volume", "move"] or first:
+                        return cli(args)
+                    row = dict(id=f"run-{len(model.runs)}", kind="move", state="running", finished_at=None)
+                    model.runs.append(row)
+                    first.append(row)
+                    begun, destination = model.clock(), args[-1]
+
+                    def end(row=row, ended=ended):
+                        row["state"], row["finished_at"] = ended, iso(begun + ends)
+                        if ended == "done":
+                            model.mirror, model.writer = model.writer, destination
+                    if ended == "lost":
                         model.unclaimed.add(row["id"])
-                        model.fired = True
-                        return 0, json.dumps(row)
-                    return cli(args)
-                if not claimed:
-                    model.cli = never_picked_up
+
+                    def trip(case=case):
+                        if case["trigger"] == "receiving":
+                            model.receiving = True
+                        else:
+                            model.fired = True
+                    model.at(begun + ends, end)
+                    model.at(begun + trips, trip)
+                    return 0, json.dumps(row)
+                model.cli = scripted
                 with redirect_stdout(io.StringIO()):
-                    result = checks.run_all([kill])["cases"][0]
+                    result = checks.run_all([case])["cases"][0]
                 self.assertEqual(result["final_writer"], "machine-2", result)
-                if claimed:
+                self.assertEqual(result["run"], ended)
+                self.assertEqual(result["recovery"], [] if ended == "done" else ["done"])
+                if passes:
                     self.assertTrue(result["passed"], result)
                 else:
-                    self.assertEqual(result["run"], "lost")
-                    self.assertEqual(result["recovery"], ["done"])
+                    run = first[0]
                     self.assertFalse(result["passed"], result)
                     self.assertEqual(len(result["failures"]), 1, result["failures"])
-                    self.assertIn("run-0", result["failures"][0])
-                    self.assertIn("no Inngest run claimed it", result["failures"][0])
+                    self.assertIn(f"the first run {run['id']} ended {ended} at {run['finished_at']}",
+                                  result["failures"][0])
+                    self.assertIn("before the trigger was seen at", result["failures"][0])
+
+    def test_a_triggered_case_fails_when_its_first_run_ended_with_no_end_time(self):
+        kill = volume_move.KILLS[0]
+        checks, model = self.checks()
+        cli = model.cli
+
+        def unstamped(args, cli=cli):
+            if args[:2] == ["volume", "move"] and any(model.fault.values()):
+                model.fired = True
+                row = dict(id=f"run-{len(model.runs)}", kind="move", state="failed")
+                model.runs.append(row)
+                return 0, json.dumps(row)
+            return cli(args)
+        model.cli = unstamped
+        with redirect_stdout(io.StringIO()):
+            result = checks.run_all([kill])["cases"][0]
+        self.assertFalse(result["passed"], result)
+        self.assertEqual(result["failures"], ["the first run run-0 ended failed with no finished_at, so the trigger "
+                                              "cannot be tied to it"])
+
+    def test_an_inngest_run_lookup_that_fails_raises_and_names_the_query(self):
+        checks, model = self.checks()
+        model.postgres = lambda sql: (1, "")
+        with self.assertRaises(RuntimeError) as raised:
+            checks.inngest_run(dict(id="run-7"))
+        self.assertIn("select inngest_run_id from volume_run where id = 'run-7'", str(raised.exception))
 
     def test_an_undo_passes_only_when_cloud_accepted_its_cancel(self):
         undo = next(case for case in volume_move.CASES if case["name"] == "undo-before-cut")
@@ -1097,6 +1175,7 @@ class VolumeMoveTests(unittest.TestCase):
                     if len(asked) == len(replies):
                         # Cancelled when Cloud accepted it; otherwise reconciliation closes the run lost on its own.
                         model.runs[0]["state"] = "cancelled" if accepted else "lost"
+                        model.runs[0]["finished_at"] = model.now()
                     return replies[len(asked) - 1]
                 model.cli = running
                 with mock.patch.object(volume_move, "http", inngest), redirect_stdout(io.StringIO()):
