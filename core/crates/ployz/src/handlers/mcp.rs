@@ -110,7 +110,8 @@ pub(super) fn serve(root: &ArgMatches) -> Result<(), Error> {
             Ok::<_, Error>(())
         };
         tokio::select! {
-            quit = serving => quit?,
+            // A write to a closed stdout fails the serve itself before `closed` is polled.
+            quit = serving => if !closed.is_cancelled() { quit? },
             _ = terminate.recv() => {}
             _ = interrupt.recv() => {}
             _ = hangup.recv() => {}
