@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ServerMetrics } from "#/modules/metrics/metrics-model";
-import { serverNow } from "./server-meters";
+import { serverNow } from "./server-now";
 
 const empty: ServerMetrics = {
   availability: { type: "normal" },
