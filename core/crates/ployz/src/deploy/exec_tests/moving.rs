@@ -195,3 +195,39 @@ async fn a_cancelled_global_move_removes_its_replacement() {
     assert!(replacement_removed);
     client.assert_done();
 }
+
+#[tokio::test]
+async fn a_cancelled_global_move_keeps_an_adopted_replica() {
+    let mut global = spec(Some(0), None, None);
+    global.mode = ployz_core::ServiceMode::Global;
+    let mut client = Scripted::new(vec![Step(
+        Call::Run(machine(TO), ContainerKind::ServiceContainer),
+        Reply::Pending,
+    )]);
+    client.runs_global = true;
+    let cancellation = CancellationToken::new();
+    let (namespace, to, from, old) = (test_namespace(), machine(TO), machine(FROM), container('a'));
+    let moving = move_container(
+        &client,
+        &namespace,
+        &global,
+        &to,
+        (&from, &old),
+        &cancellation,
+    );
+    tokio::pin!(moving);
+    tokio::select! {
+        moved = &mut moving => panic!("the move returned before cancel: {moved:?}"),
+        () = tokio::task::yield_now() => {}
+    }
+    cancellation.cancel();
+    let Err(MoveContainerError::NotServing {
+        error: ExecutionError::Cancelled,
+        replacement_removed,
+    }) = moving.await
+    else {
+        panic!("a cancelled move serves nothing");
+    };
+    assert!(!replacement_removed);
+    client.assert_done();
+}

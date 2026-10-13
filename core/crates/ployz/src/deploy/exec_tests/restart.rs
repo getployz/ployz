@@ -188,3 +188,21 @@ async fn cancelled_global_health_wait_removes_the_new_container() {
     assert!(cancelled(&outcome), "{outcome:?}");
     client.assert_done();
 }
+
+#[tokio::test(start_paused = true)]
+async fn cancelled_global_health_wait_keeps_an_adopted_container() {
+    let machine = machine('1');
+    let mut global = spec(None, Some(healthcheck()), None);
+    global.mode = ployz_core::ServiceMode::Global;
+    let plan = vec![run(&machine, global, false)];
+    let mut client = Scripted::new(vec![Step(
+        Call::Run(machine, ContainerKind::ServiceContainer),
+        Reply::Pending,
+    )]);
+    client.runs_global = true;
+
+    let outcome = cancel_while_creating(plan, &client).await;
+
+    assert!(cancelled(&outcome), "{outcome:?}");
+    client.assert_done();
+}

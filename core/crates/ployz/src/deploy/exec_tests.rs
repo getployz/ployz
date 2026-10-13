@@ -90,6 +90,7 @@ struct Scripted {
     slots: Mutex<Vec<SlotKey>>,
     answers: Mutex<Vec<AnswerWhen>>,
     cancel_on_prepare: Option<CancellationToken>,
+    runs_global: bool,
 }
 
 impl Scripted {
@@ -100,6 +101,7 @@ impl Scripted {
             slots: Mutex::new(Vec::new()),
             answers: Mutex::new(Vec::new()),
             cancel_on_prepare: None,
+            runs_global: false,
         }
     }
 
@@ -281,6 +283,15 @@ impl MachineOperations for Scripted {
 
     async fn remove_volume(&self, id: &DockerVolumeId) -> Result<(), RpcError> {
         unit(self.next(Call::RemoveVolume(id.clone())))
+    }
+
+    async fn runs_global(
+        &self,
+        _machine_id: &MachineId,
+        _slot: &SlotKey,
+        _spec: &ResolvedServiceSpec,
+    ) -> Result<bool, RpcError> {
+        Ok(self.runs_global)
     }
 }
 

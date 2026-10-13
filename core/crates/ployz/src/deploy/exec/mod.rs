@@ -91,6 +91,14 @@ pub(super) trait MachineOperations {
         container_id: &ContainerId,
     ) -> Result<ContainerDetails, RpcError>;
     async fn remove_volume(&self, id: &DockerVolumeId) -> Result<(), RpcError>;
+    /// Whether `machine_id` already runs a Container of this Global spec, which a
+    /// start into `slot` adopts instead of creating.
+    async fn runs_global(
+        &self,
+        machine_id: &MachineId,
+        slot: &SlotKey,
+        spec: &ResolvedServiceSpec,
+    ) -> Result<bool, RpcError>;
 }
 
 impl MachineOperations for Client {
@@ -159,7 +167,10 @@ impl MachineOperations for Client {
             ContainerWant::Running {
                 container: RunTarget::New(new),
             } => {
-                if let Some(key) = self.retained_global_key(machine_id, new).await? {
+                if let Some(key) = self
+                    .retained_global_key(machine_id, &new.slot, &new.resolved_spec)
+                    .await?
+                {
                     new.slot.creation_key = key;
                 }
                 new.deployment_id.clone_from(&self.deployment_id);
@@ -207,6 +218,18 @@ impl MachineOperations for Client {
         .await
         .map(|_| ())
     }
+
+    async fn runs_global(
+        &self,
+        machine_id: &MachineId,
+        slot: &SlotKey,
+        spec: &ResolvedServiceSpec,
+    ) -> Result<bool, RpcError> {
+        Ok(self
+            .retained_global_key(machine_id, slot, spec)
+            .await?
+            .is_some())
+    }
 }
 
 fn omission_requires_observation(membership: Option<&MembershipObservation>) -> bool {
@@ -247,12 +270,12 @@ impl Client {
     async fn retained_global_key(
         &self,
         machine_id: &MachineId,
-        new: &NewContainer,
+        slot: &SlotKey,
+        spec: &ResolvedServiceSpec,
     ) -> Result<Option<CreationKey>, RpcError> {
-        let spec = &new.resolved_spec;
-        if new.slot.kind != ContainerKind::ServiceContainer
+        if slot.kind != ContainerKind::ServiceContainer
             || spec.mode != ployz_core::ServiceMode::Global
-            || new.slot.creation_key.as_str() != crate::cluster::global_creation_key(spec)
+            || slot.creation_key.as_str() != crate::cluster::global_creation_key(spec)
         {
             return Ok(None);
         }
@@ -269,8 +292,8 @@ impl Client {
             .into_iter()
             .find_map(|container| {
                 (container.machine_id == *machine_id
-                    && container.kind == new.slot.kind
-                    && container.namespace == new.slot.namespace
+                    && container.kind == slot.kind
+                    && container.namespace == slot.namespace
                     && container.resolved_spec == *spec)
                     .then(|| container.labels.get("ployz.creation.key").cloned())
                     .flatten()
@@ -319,6 +342,18 @@ impl<C: MachineOperations> MachineOperations for RestartTolerant<'_, C> {
 
     async fn remove_volume(&self, id: &DockerVolumeId) -> Result<(), RpcError> {
         wait_out_restart(self.cancellation, || self.inner.remove_volume(id)).await
+    }
+
+    async fn runs_global(
+        &self,
+        machine_id: &MachineId,
+        slot: &SlotKey,
+        spec: &ResolvedServiceSpec,
+    ) -> Result<bool, RpcError> {
+        wait_out_restart(self.cancellation, || {
+            self.inner.runs_global(machine_id, slot, spec)
+        })
+        .await
     }
 }
 
@@ -707,6 +742,7 @@ pub(in crate::deploy) async fn move_container<C: MachineOperations>(
         format!("move:{old}")
     };
     let slot = slot_key(namespace, ContainerKind::ServiceContainer, key);
+    let adopts = global && adopts_running(&client, to, &slot, spec).await;
     let mut progress = Progress::new(Vec::new(), None);
     let started = run_new(
         &client,
@@ -722,8 +758,8 @@ pub(in crate::deploy) async fn move_container<C: MachineOperations>(
     let new = match started_container(started, cancellation) {
         Ok(new) => new,
         Err(error) => {
-            let retry_adopts = global && !cancellation.is_cancelled();
-            let replacement_removed = !retry_adopts && discard_attempt(&client, to, slot).await;
+            let keep = adopts || (global && !cancellation.is_cancelled());
+            let replacement_removed = !keep && discard_attempt(&client, to, slot).await;
             return Err(MoveContainerError::NotServing {
                 error,
                 replacement_removed,
@@ -762,6 +798,7 @@ async fn start<C: MachineOperations>(
 ) -> Result<ContainerId, ExecutionError> {
     let keyed_by_spec = slot.kind == ContainerKind::ServiceContainer
         && spec.mode == ployz_core::ServiceMode::Global;
+    let adopts = keyed_by_spec && adopts_running(client, machine_id, &slot, spec).await;
     let started = run_new(
         client,
         index,
@@ -778,11 +815,25 @@ async fn start<C: MachineOperations>(
         // A slot held by another spec never held this attempt's Container.
         Err(error) => error.code != RpcErrorCode::Conflict,
     };
-    let retry_adopts = keyed_by_spec && !cancellation.is_cancelled();
-    if cleanup && !retry_adopts {
+    let keep = adopts || (keyed_by_spec && !cancellation.is_cancelled());
+    if cleanup && !keep {
         discard_attempt(client, machine_id, slot).await;
     }
     started_container(started, cancellation)
+}
+
+/// A Global start adopts a running Container of its spec, which a cancel must keep.
+/// An unanswered check keeps it too.
+async fn adopts_running<C: MachineOperations>(
+    client: &C,
+    machine_id: &MachineId,
+    slot: &SlotKey,
+    spec: &ResolvedServiceSpec,
+) -> bool {
+    client
+        .runs_global(machine_id, slot, spec)
+        .await
+        .unwrap_or(true)
 }
 
 /// Remove what a failed creation left in `slot`, giving up if the Machine stays silent.
