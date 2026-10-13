@@ -15,7 +15,12 @@ export function notSetToast(action: HistoryAction, notSet: readonly NotSetVariab
 
 const isSealed = Schema.is(Schema.Struct({ secret: Schema.Boolean }));
 
-/** Variables a save left sealed. History keeps a sealed value as it is now, so undoing these changes nothing. */
-export function sealedOnlyPaths(changes: readonly { settings: readonly { path: string; before: JsonValue; after: JsonValue }[] }[]) {
-  return new Set(changes.flatMap((change) => change.settings.filter((row) => isSealed(row.after)).map((row) => row.path)));
+/**
+ * Variables a save left sealed. History keeps a sealed value as it is now, so undoing these changes nothing.
+ * A change linked to others, such as the new name of a renamed secret, is left out: its Undo reverses them too.
+ */
+export function sealedOnlyPaths(changes: readonly { settings: readonly { path: string; before: JsonValue; after: JsonValue }[] }[],
+  linked: { readonly [path: string]: number }) {
+  return new Set(changes.flatMap((change) => change.settings
+    .filter((row) => isSealed(row.after) && (linked[row.path] ?? 1) === 1).map((row) => row.path)));
 }

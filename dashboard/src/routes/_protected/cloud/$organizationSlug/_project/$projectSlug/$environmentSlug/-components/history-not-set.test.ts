@@ -33,6 +33,14 @@ describe("sealedOnlyPaths", () => {
       { path: "billing.env.TOKEN", before: { secret: true }, after: null },
       { path: "billing.env.PLAIN", before: "a", after: "b" },
       { path: "billing.replicas", before: 1, after: 2 },
-    ] }])).toEqual(new Set(["billing.env.STRIPE_KEY"]));
+    ] }], {})).toEqual(new Set(["billing.env.STRIPE_KEY"]));
+  });
+
+  it("leaves out a renamed secret, whose Undo puts the old name back", () => {
+    const rename = [{ settings: [
+      { path: "billing.env.STRIPE_KEY", before: { secret: true }, after: null },
+      { path: "billing.env.STRIPE_SECRET", before: null, after: { secret: true } },
+    ] }];
+    expect(sealedOnlyPaths(rename, { "billing.env.STRIPE_KEY": 2, "billing.env.STRIPE_SECRET": 2 })).toEqual(new Set());
   });
 });

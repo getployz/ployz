@@ -153,7 +153,7 @@ export function EnvironmentHistory() {
             const open = unfolded.has(revision.revision);
             const shown = open ? changes : changes.slice(0, SHOWN_CHANGES);
             const undoable = revision.predecessor !== null;
-            const sealed = sealedOnlyPaths(revision.changes);
+            const sealed = sealedOnlyPaths(revision.changes, revision.linked);
             const nothingToUndo = changes.length > 0 && changes.every((line) => sealed.has(line.path));
             return (
               <li key={revision.revision} className="rounded-lg border p-3">
