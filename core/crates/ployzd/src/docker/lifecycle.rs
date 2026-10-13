@@ -184,7 +184,7 @@ impl ContainerRuntime {
         if let Some(id) = deployment_id {
             body.labels
                 .get_or_insert_default()
-                .insert("ployz.deployment.id".into(), id.to_string());
+                .insert(super::LABEL_DEPLOYMENT.into(), id.to_string());
         }
         if let Some(key) = creation_key {
             body.labels

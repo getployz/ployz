@@ -1,15 +1,15 @@
 //! Observer-local ingress derivation, watching, and shared filesystem state.
 
 use ployz_core::{
-    CertificateHost, ContainerAddress, ContainerId, ContainerObservation, HttpProtocol,
-    IngressHost, Machine, MachineId, PortPublication, QualifiedService, ServiceContainer,
-    hostname_owners, service_containers, serving_containers,
+    CertificateHost, ContainerAddress, ContainerId, ContainerObservation, DeploymentLogId,
+    HttpProtocol, IngressHost, Machine, MachineId, PortPublication, QualifiedService,
+    ServiceContainer, hostname_owners, service_containers, serving_containers,
 };
 use serde::Serialize;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs, io,
-    num::NonZeroU16,
+    num::{NonZeroU16, NonZeroUsize},
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     time::Duration,
@@ -21,6 +21,7 @@ use crate::{
         CertificateChallenge, CertificateMaterial, CertificateRow, Error as CorrosionError,
         ReplicatedStore, Subscription, published_cover,
     },
+    docker::LABEL_DEPLOYMENT,
     filesystem::{atomic_write, set_ployz_group},
 };
 
@@ -86,6 +87,54 @@ pub(crate) struct IngressPublication {
     pub(super) http: Option<Vec<IngressEndpoint>>,
     /// Ordered Serving Container endpoints published over HTTPS.
     pub(super) https: Option<Vec<IngressEndpoint>>,
+    /// What the public trace page reports about the owner.
+    pub(super) trace: PublicationTrace,
+}
+
+/// The owner facts the trace page shows, independent of health and endpoint eligibility.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+pub(crate) struct PublicationTrace {
+    /// Deployment attempt of the owner's newest Service Container, when it carries a valid one.
+    pub(super) deploy: Option<DeploymentLogId>,
+    /// Count of the owner's observed Service Containers per Machine, in any runtime state.
+    pub(super) placement: BTreeMap<MachineId, NonZeroUsize>,
+}
+
+impl PublicationTrace {
+    /// Trace facts for every Service, from one pass over its observed Service Containers.
+    fn by_service<'a>(
+        containers: impl IntoIterator<Item = &'a ServiceContainer>,
+    ) -> BTreeMap<QualifiedService, Self> {
+        let mut grouped = BTreeMap::<
+            QualifiedService,
+            (BTreeMap<MachineId, NonZeroUsize>, &'a ServiceContainer),
+        >::new();
+        for container in containers {
+            let observation = container.as_observation();
+            let (placement, newest) = grouped
+                .entry(observation.identity())
+                .or_insert_with(|| (BTreeMap::new(), container));
+            placement
+                .entry(observation.machine_id)
+                .and_modify(|count| *count = count.saturating_add(1))
+                .or_insert(NonZeroUsize::MIN);
+            if creation_key(container) > creation_key(newest) {
+                *newest = container;
+            }
+        }
+        grouped
+            .into_iter()
+            .map(|(service, (placement, newest))| {
+                // Only the newest Container names the attempt; an older sibling's label would be stale.
+                let deploy = newest
+                    .as_observation()
+                    .labels
+                    .get(LABEL_DEPLOYMENT)
+                    .and_then(|label| DeploymentLogId::parse(label).ok());
+                (service, Self { deploy, placement })
+            })
+            .collect()
+    }
 }
 
 /// One Serving Container address and container port.
@@ -219,9 +268,18 @@ impl IngressProjection {
                 site.certificate.get_or_insert_default().material = Some(material.clone());
             }
         }
+        let traces = PublicationTrace::by_service(&containers);
         let sites = sites
             .into_iter()
-            .map(|(hostname, site)| site.into_site(hostname))
+            .map(|(hostname, site)| {
+                let trace = site
+                    .owner
+                    .as_ref()
+                    .and_then(|owner| traces.get(owner))
+                    .cloned()
+                    .unwrap_or_default();
+                site.into_site(hostname, trace)
+            })
             .collect();
         Self {
             machine: machine.clone(),
@@ -252,11 +310,12 @@ impl SiteBuilder {
         }
     }
 
-    fn into_site(self, hostname: IngressHost) -> IngressSite {
+    fn into_site(self, hostname: IngressHost, trace: PublicationTrace) -> IngressSite {
         let publication = self.owner.map(|owner| IngressPublication {
             owner,
             http: self.http,
             https: self.https,
+            trace,
         });
         IngressSite {
             hostname,

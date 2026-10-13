@@ -38,11 +38,11 @@ use super::{
     },
 };
 use crate::docker::{
-    LABEL_HOOK, LABEL_MANAGED, LABEL_NAMESPACE, LABEL_SERVICE_ID, LABEL_SERVICE_NAME,
+    LABEL_DEPLOYMENT, LABEL_HOOK, LABEL_MANAGED, LABEL_NAMESPACE, LABEL_SERVICE_ID,
+    LABEL_SERVICE_NAME,
 };
 
 const LABEL_SYSTEM_MANAGED: &str = "ployzd.managed";
-const LABEL_DEPLOYMENT: &str = "ployz.deployment.id";
 const LOCAL_LOGS_DIR: &str = "local-logs";
 /// Docker's default `max-file` for the `local` driver.
 const DEFAULT_MAX_FILES: usize = 5;
