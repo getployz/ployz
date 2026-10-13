@@ -4,7 +4,7 @@ description: Give a service an https address, use your own domain, and choose th
 ---
 
 A service is [private](private-networking.md) until it has a domain. Ployz gives each service a
-free https address under your organization's domain, and on Pro you can add domains you own.
+free https address under your organization's domain, and you can add domains you own, also free.
 
 ## Generate a domain
 

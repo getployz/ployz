@@ -147,8 +147,8 @@ Deploy it next.
 - **A server must answer for its volume to move.** If the volume's server is down, neither a
   move nor a release can run, and the run says which server did not answer. See
   [When its server goes down](volumes.md#when-its-server-goes-down).
-- **A mirror is not a backup.** It holds the data as of its last sync, on one of your servers.
-  Keep your own copies off your servers; see [Back up a database](databases.md#back-up-a-database).
+- **A mirror is a backup, not an offsite one.** It holds the data as of its last sync, on another
+  of your servers. For a copy off your servers, see [Back up a database](databases.md#back-up-a-database).
 - **A mirror that fell behind for good** is refused with `data-web-2 diverged`. Run
   `ployz volume sync data --full` to copy everything again.
 - **Deleting a volume deletes its mirror.** So does deleting its environment. A mirror that is
