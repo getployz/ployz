@@ -212,6 +212,14 @@ impl Retirer {
             .collect()
     }
 
+    fn forget_unpointed(&mut self, pointers: &ServingPointers) {
+        let retiring: BTreeSet<&ContainerId> = pointers
+            .iter()
+            .flat_map(|(_, pointer)| &pointer.retiring)
+            .collect();
+        self.absent.retain(|id| retiring.contains(id));
+    }
+
     fn track(&mut self, candidates: &[Candidate], now: Instant) {
         self.first_seen.retain(|container, _| {
             candidates
@@ -334,11 +342,13 @@ async fn round<H: RetireHost>(
             return;
         }
     };
+    retirer.forget_unpointed(&pointers);
     if !retirer.unknown(&pointers).is_empty() {
         match host.local_containers().await {
             Ok(local) => retirer.note_local(&pointers, &local),
             Err(error) => {
                 tracing::warn!(error = %ployz_core::error_chain::inline(&error), "retire could not list local Containers");
+                retirer.track(&retirer.candidates(&pointers), Instant::now());
                 return;
             }
         }
@@ -898,11 +908,15 @@ mod tests {
         ackers: Ackers,
         retired: Arc<Mutex<Vec<ContainerId>>>,
         listings: Arc<Mutex<usize>>,
+        listing_fails: Arc<Mutex<bool>>,
     }
 
     impl RetireHost for FakeHost {
         async fn local_containers(&self) -> io::Result<BTreeSet<ContainerId>> {
             *self.listings.lock().unwrap() += 1;
+            if *self.listing_fails.lock().unwrap() {
+                return Err(io::Error::other("Docker is down"));
+            }
             Ok(self.local.lock().unwrap().clone())
         }
 
@@ -939,6 +953,7 @@ mod tests {
             ackers: ackers(&[&local, &peer]),
             retired: Arc::default(),
             listings: Arc::default(),
+            listing_fails: Arc::default(),
         };
         let shutdown = CancellationToken::new();
         let task = tokio::spawn(run(host.clone(), store.clone(), shutdown.clone()));
@@ -1010,12 +1025,85 @@ mod tests {
             ackers: ackers(&[&local]),
             retired: Arc::default(),
             listings: Arc::default(),
+            listing_fails: Arc::default(),
         };
         let mut stopping = JoinSet::new();
         round(&host, &store, &mut Retirer::default(), &mut stopping).await;
         while stopping.join_next().await.is_some() {}
 
         assert_eq!(*host.retired.lock().unwrap(), vec![id("a")]);
+        server.abort();
+    }
+
+    fn insert_pointer(db: &rusqlite::Connection, pointer: &ServingPointer) {
+        db.execute(
+            "INSERT OR REPLACE INTO cluster (key, value) VALUES (?, ?)",
+            rusqlite::params![
+                ServingPointer::key(&service()),
+                serde_json::to_string(pointer).unwrap()
+            ],
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_cap_clock_starts_while_docker_cannot_list() {
+        let db = corrosion_db();
+        insert_pointer(&db, pointers().get(&service()).unwrap());
+        let (one, two) = (machine("one", 1), machine("two", 2));
+        let (store, server) = identity_store(db).await;
+        let host = FakeHost {
+            local: Arc::new(Mutex::new(BTreeSet::from([id("a"), id("b")]))),
+            ackers: ackers(&[&one, &two]),
+            retired: Arc::default(),
+            listings: Arc::default(),
+            listing_fails: Arc::new(Mutex::new(true)),
+        };
+        let mut retirer = Retirer::default();
+        let mut stopping = JoinSet::new();
+        round(&host, &store, &mut retirer, &mut stopping).await;
+        assert!(stopping.is_empty());
+
+        let first_seen = retirer.first_seen.get(&id("a")).copied();
+        assert!(first_seen.is_some());
+        *host.listing_fails.lock().unwrap() = false;
+        round(&host, &store, &mut retirer, &mut stopping).await;
+        assert_eq!(retirer.first_seen.get(&id("a")).copied(), first_seen);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn absent_ids_are_forgotten_once_no_pointer_retires_them() {
+        let db = corrosion_db();
+        insert_pointer(&db, pointers().get(&service()).unwrap());
+        let one = machine("one", 1);
+        let (store, server) = identity_store(db).await;
+        let host = FakeHost {
+            local: Arc::new(Mutex::new(BTreeSet::from([id("b")]))),
+            ackers: ackers(&[&one]),
+            retired: Arc::default(),
+            listings: Arc::default(),
+            listing_fails: Arc::default(),
+        };
+        let mut retirer = Retirer::default();
+        let mut stopping = JoinSet::new();
+        round(&host, &store, &mut retirer, &mut stopping).await;
+        assert!(retirer.absent.contains(&id("a")));
+        server.abort();
+
+        let db = corrosion_db();
+        insert_pointer(
+            &db,
+            &ServingPointer {
+                deploy: deploy("d3"),
+                containers: vec![id("b")],
+                previous: Some(deploy("d2")),
+                retiring: Vec::new(),
+            },
+        );
+        let (store, server) = identity_store(db).await;
+        round(&host, &store, &mut retirer, &mut stopping).await;
+        assert!(retirer.absent.is_empty());
         server.abort();
     }
 }
