@@ -299,7 +299,6 @@ const OPTION_HELP = new Map([
   ["no", "Never restart."],
 ]);
 
-/** The Monitoring tab, told how many Servers run the Service now. */
 function ServiceMonitoring({ state, namespace, ...props }: Omit<ComponentProps<typeof MonitoringTab>, "placedOn"> & { state: StoreService; namespace: string | null }) {
   const { runtime } = useServiceStatus(state, namespace);
   return <MonitoringTab {...props} placedOn={new Set(runtime?.containers.map((container) => container.machineId)).size} />;
