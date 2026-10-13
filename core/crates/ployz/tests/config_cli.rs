@@ -1181,7 +1181,10 @@ fn an_environment_cloud_forgets_and_sweeps_first_still_says_it_was_left_on_old_s
     );
     ok(&cloud, &["deploy", "--env", "staging"]);
 
-    let asked = error(&cloud, &["env", "rm", "staging", "--confirm", "shop/staging"]);
+    let asked = error(
+        &cloud,
+        &["env", "rm", "staging", "--confirm", "shop/staging"],
+    );
     assert_eq!(asked["code"], "confirmation_required", "{asked}");
     let version = asked["details"]["version"].as_str().unwrap();
     let removed = ok(

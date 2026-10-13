@@ -225,6 +225,10 @@ queries! {
     Projects(crate::ProjectsQuery) -> crate::ProjectsView => crate::teardown::projects(tx, who);
     /// The Environments whose removal Deployment may be admitted now.
     Due(crate::DueQuery) -> Vec<crate::Due> => crate::removal::due(tx, who);
+    /// What a finished removal left on old servers.
+    Removed(crate::RemovedQuery) -> crate::RemovedView
+        => crate::removal::mark::residuals(tx, who, &q.id)
+            .map(|residuals| crate::RemovedView { residuals });
     /// A Project's PR plans.
     PrPlans(crate::PrPlansQuery) -> crate::PrPlansView
         => crate::pull_request::plans(tx, who, q);
