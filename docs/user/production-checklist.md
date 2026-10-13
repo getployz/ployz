@@ -7,13 +7,16 @@ Ployz is young and changing quickly. Before you move real users to your app, wor
 list. Each item links to the page that does it.
 
 > [!WARNING]
-> Ployz doesn't back up databases or volumes yet. A volume lives on one server and isn't copied
-> anywhere: if that server's disk is lost, so is the data.
+> A volume lives on one server. Without a [mirror](services/move-a-volume.md#mirror-a-volume), if
+> that server's disk is lost, so is the data.
 
 ## Before you move real users
 
-- **Back up your data.** Dump your databases on a schedule and keep the dumps off your servers;
-  this is CLI-only for now. See [Back up a database](services/databases.md#back-up-a-database).
+- **Back up your data.** Add a [mirror](services/move-a-volume.md#mirror-a-volume) to each volume
+  you can't lose, so it has a backup on another of your servers that you can
+  [restore](services/restore-a-volume.md). A mirror isn't offsite, so also dump your databases on
+  a schedule and keep the dumps off your servers. See
+  [Back up a database](services/databases.md#back-up-a-database).
   Or keep your hosted database and [point your app at it](services/databases.md#use-a-managed-database-instead).
 - **Add a health check.** Without one, a new replica gets traffic a few seconds after it starts,
   ready or not. See [Deploy without downtime](deploy/deployments.md#deploy-without-downtime).
@@ -31,9 +34,9 @@ list. Each item links to the page that does it.
   with SSH keys, not passwords, and turn on automatic security updates (`unattended-upgrades` on
   Ubuntu). If you add a firewall, keep [these ports](servers/add-a-server.md#open-the-firewall)
   open. A reboot stops the services on that server until it's back.
-- **Watch your app yourself.** Ployz doesn't send alerts when a service crashes or a server goes
-  offline. Point an uptime monitor at your app's address, ideally at its
-  [health check](deploy/deployments.md#deploy-without-downtime) path.
+- **Watch your app.** Ployz Cloud checks every service with a public address and shows its
+  [uptime](observe/uptime.md) next to its [metrics](observe/metrics.md) and
+  [logs](observe/logs.md). It doesn't send alerts yet, so check the dashboard after you ship.
 
 ## What Ployz doesn't do yet
 
@@ -46,5 +49,4 @@ list. Each item links to the page that does it.
 - **No autoscaling.** You choose the number of replicas.
 - **No teams.** Ployz is built for one person today.
 
-Backups, snapshots, rollbacks and moving a database to a bigger server without downtime are
-planned.
+Rollbacks are planned.
