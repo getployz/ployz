@@ -20,7 +20,8 @@ OWNER_KEY = "user.ployz.verify.owner."
 
 
 def query(path):
-    return json.loads(subprocess.run([*PREFIX, "query", path], capture_output=True, check=True).stdout)
+    return json.loads(subprocess.run([*PREFIX, "query", path], stdin=subprocess.DEVNULL, capture_output=True,
+                                     check=True).stdout)
 
 
 def rss(pid):
