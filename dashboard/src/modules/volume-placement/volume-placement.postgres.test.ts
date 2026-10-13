@@ -137,7 +137,11 @@ describe("volume placement", () => {
     await stage("web-2");
     await run(stampPlacements(organizationId, [volumeId], "dep-0"));
     inFlight = false;
-    between = { query: "deployment", run: () => run(stampPlacements(organizationId, [volumeId], "dep-1")) };
+    // dep-0 ended: its release gives the row back, and dep-1 takes it.
+    between = { query: "deployment", run: async () => {
+      await harness.pool.query("update volume_placement set deployment_id = null");
+      await run(stampPlacements(organizationId, [volumeId], "dep-1"));
+    } };
     expect(await run(discardPlacement(organizationId, null, volumeId, environment)))
       .toMatchObject({ ok: false, refusal: { code: "conflict", message: "A Deploy is moving this Volume. Wait for it to finish." } });
     expect(await run(listPlacements(organizationId))).toMatchObject([{ staged: { primary: web("web-2") }, deploymentId: "dep-1" }]);
@@ -350,6 +354,13 @@ describe("volume placement", () => {
         }));
       }));
       expect(held).toBe(0);
+    });
+
+    it("leaves a Volume another Deploy took to that Deploy, neither confirming its loss nor taking it", async () => {
+      await stage("web-1");
+      await run(stampPlacements(organizationId, [volumeId], "dep-0"));
+      expect(await admission(admit([]))).toEqual({ ok: true, command: admit([]) });
+      expect(await holder()).toBe("dep-0");
     });
 
     it("refuses an edit staged between the check and the stamp, and stamps what it checked", async () => {
