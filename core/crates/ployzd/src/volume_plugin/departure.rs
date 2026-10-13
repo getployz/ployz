@@ -10,7 +10,7 @@ use ployz_core::RpcError;
 use ployzd::machine_pool::MachinePool;
 
 use super::{
-    Dataset, DockerVolumeName, Place, VolumeStorage,
+    Dataset, DockerVolumeName, MIRROR_ROOT, Place, VolumeStorage,
     inspect::internal,
     seed::SEED_PROPERTY,
     storage::{CUT_PROPERTY, EPOCH_PROPERTY, PROMOTE_PROPERTY, slot_fs, slot_parent},
@@ -55,7 +55,28 @@ impl VolumeStorage {
                 demoted.push(name.to_string());
             }
         }
+        self.drop_empty_mirror_root(&pool).await?;
         Ok(demoted)
+    }
+
+    /// Destroys `<pool>/ployz-mirror` once no slot is left in it, so a departed Machine
+    /// holds no mirror dataset at all. [`Self::ensure_mirror_root`] makes it again for the
+    /// next slot, and a slot made meanwhile keeps it.
+    async fn drop_empty_mirror_root(&self, pool: &MachinePool) -> super::Result<()> {
+        let mirror_root = format!("{}/{MIRROR_ROOT}", pool.name());
+        let children = format!("{mirror_root}/");
+        let datasets = self.datasets(pool).await?;
+        if !datasets.iter().any(|dataset| dataset.name == mirror_root)
+            || datasets
+                .iter()
+                .any(|dataset| dataset.name.starts_with(&children))
+        {
+            return Ok(());
+        }
+        match self.zfs(&["destroy", &mirror_root]).await {
+            Err(error) if error.to_string().contains("has children") => Ok(()),
+            result => result.map(drop),
+        }
     }
 
     /// Turns `name`'s root into a sealed slot, or destroys `name`'s received mirror. Answers
