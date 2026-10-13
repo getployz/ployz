@@ -10,6 +10,7 @@ import importlib
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import shutil
 import signal
@@ -24,6 +25,7 @@ DASHBOARD = CORE.parent / "dashboard"
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(CORE / "scripts" / "verify"))
 import host  # noqa: E402
+import releases  # noqa: E402
 
 
 class Infrastructure(RuntimeError):
@@ -112,17 +114,47 @@ def build(run, commands, *, daemon=True):
     save(run)
 
 
-def runtime_artifacts(run):
+def checkout_version():
+    return re.search(r'^version = "([^"]+)"', (CORE / "Cargo.toml").read_text(), re.M).group(1)
+
+
+def daemon_binaries(run, daemon):
+    return run["binaries"] if daemon["source"] == "checkout" else daemon["binaries"]
+
+
+def daemon_artifacts(run, daemon):
     directory = Path(run["manifest"]).parent / "artifacts"
-    return directory / "runtime" if run.get("daemon", {}).get("source", "checkout") != "checkout" else directory
+    return directory if daemon["source"] == "checkout" else directory / "runtime" / daemon["version"]
 
 
-def prepare_runtime(run, commands):
-    run.setdefault("daemon", {"source": "checkout"})
-    checkout = run["daemon"]["source"] == "checkout"
-    if not checkout:
-        importlib.import_module("releases").prepare(run, commands, CORE)
-    run["bootstrap_release"] = "0.2.2" if checkout else run["daemon"]["version"]
+def select_daemons(run, commands, specs, *, default):
+    """Apply --daemon [MACHINE=]SOURCE choices: a bare source sets every Machine, a named one overrides it."""
+    names = [node["name"] for node in run["machines"]]
+    chosen = {node["name"]: node.get("daemon", {}).get("source", default) for node in run["machines"]}
+    bare = [spec for spec in specs if "=" not in spec]
+    if len(bare) > 1:
+        raise RuntimeError("Give at most one --daemon without a Machine name")
+    if bare:
+        chosen = dict.fromkeys(names, bare[0])
+    for spec in specs:
+        if "=" in spec:
+            name, source = spec.split("=", 1)
+            if name not in names:
+                raise RuntimeError(f"--daemon {spec}: this run has no Machine named {name}")
+            chosen[name] = source
+    started = time.monotonic()
+    versions = {}
+    for node in run["machines"]:
+        source = chosen[node["name"]]
+        if source == "checkout":
+            node["daemon"] = {"source": source, "version": checkout_version()}
+            continue
+        if source not in versions:
+            versions[source] = releases.resolve(source, commands, CORE)
+        daemon = {"source": source, "version": versions[source]}
+        daemon["binaries"] = releases.acquire(daemon["version"], commands, daemon_artifacts(run, daemon))
+        node["daemon"] = daemon
+    run["timings"]["release_artifacts"] = round(time.monotonic() - started, 3)
     save(run)
 
 
@@ -228,20 +260,23 @@ def runner(run, commands, on):
             time.sleep(0.1)
 
 
-def install(run, backend, node):
-    artifacts = runtime_artifacts(run)
+def install(run, backend, node, daemon):
+    binaries, artifacts = daemon_binaries(run, daemon), daemon_artifacts(run, daemon)
     backend.exec(node, ["install", "-d", "/opt/ployz-verify"])
-    paths = ["/opt/ployz-verify/" + name for name in run["binaries"]]
+    paths = ["/opt/ployz-verify/" + name for name in binaries]
     result = backend.exec(node, ["sha256sum", *paths], check=False)
     staged = {line.split(maxsplit=1)[1]: line.split()[0] for line in result.stdout.decode().splitlines()}
-    for name in run["binaries"]:
+    for name in binaries:
         destination = "/opt/ployz-verify/" + name
-        if staged.get(destination) != run["binaries"][name]:
+        if staged.get(destination) != binaries[name]:
             backend.push(node, artifacts / name, destination)
     backend.exec(node, ["bash", "-ec", """
 observe=
 if systemctl cat ployz-observe.service >/dev/null 2>&1; then observe=ployz-observe.service; fi
 systemctl stop ployz.socket ployz.service ployz-volume-plugin.socket ployz-volume-plugin.service $observe
+# Releases before 0.2.4 have no observer; a newer daemon's unit would outlive its binary.
+if [ -n "$observe" ]; then systemctl disable ployz-observe.service; fi
+rm -f /etc/systemd/system/ployz-observe.service
 install -d -m 750 -o ployz -g ployz /run/ployz
 for binary in "$@"; do
     if cmp -s "/opt/ployz-verify/$binary" "/usr/local/bin/$binary"; then continue; fi
@@ -251,8 +286,10 @@ done
 # The exact installed version retains these binaries and writes their own units.
 ployzd install --version "$(ployzd version)" --install-only
 systemctl daemon-reload
-systemctl enable --now ployz.socket ployz-volume-plugin.socket ployz.service ployz-observe.service
-""", "install", *run["binaries"]])
+observe=
+if systemctl cat ployz-observe.service >/dev/null 2>&1; then observe=ployz-observe.service; fi
+systemctl enable --now ployz.socket ployz-volume-plugin.socket ployz.service $observe
+""", "install", *binaries])
 
 
 def require_running(run, backend, nodes):
@@ -284,33 +321,44 @@ def unintended(run):
 
 def doctor(run, commands, backend):
     require_running(run, backend, run["machines"])
-    expected = run["binaries"]["ployzd"]
     def inspect(node):
-        names = [name for name in run["binaries"] if name != "ployzd"]
+        daemon = node["daemon"]
+        binaries = daemon_binaries(run, daemon)
+        names = [name for name in binaries if name != "ployzd"]
         result = backend.exec(node, ["bash", "-ec", """
 observe=
 if systemctl cat ployz-observe.service >/dev/null 2>&1; then observe=ployz-observe.service; fi
 systemctl is-active --quiet docker ssh ployz ployz.socket ployz-volume-plugin.socket ployz-dns $observe
 pid=$(systemctl show ployz.service -p MainPID --value)
 sha256sum "/proc/$pid/exe" "$@"
+"/proc/$pid/exe" version
 test -d /sys/module/zfs
 zfs version
 """, "doctor", *("/usr/local/bin/" + name for name in names)])
-        hashes = [line.split()[0] for line in result.stdout.decode().splitlines()[:1 + len(names)]]
-        if hashes != [expected, *(run["binaries"][name] for name in names)]:
-            raise RuntimeError(f"{node['name']}: running binaries differ from this run's artifacts")
+        lines = result.stdout.decode().splitlines()
+        hashes = [line.split()[0] for line in lines[:1 + len(names)]]
+        label = f"{daemon['source']} daemon {daemon['version']}"
+        if hashes != [binaries["ployzd"], *(binaries[name] for name in names)]:
+            raise RuntimeError(f"{node['name']}: running binaries differ from its {label}")
+        if lines[1 + len(names)].strip() != daemon["version"]:
+            raise RuntimeError(f"{node['name']}: running daemon reports {lines[1 + len(names)].strip()}, not its {label}")
         result = cli(run, commands, ["--json", "--connect", "ssh://root@" + node["address"], "server", "ls"])
         servers = json.loads(result.stdout)["servers"]
         expected_ids = {item["machine_id"] for item in run["machines"]}
         if {item["machine"]["id"] for item in servers} != expected_ids or any(item["membership"] != "up" for item in servers):
             raise RuntimeError(f"{node['name']}: expected {len(run['machines'])} reachable Machines")
-        return {"machine": node["name"], "servers": servers, "running_daemon_sha256": expected}
+        return {"machine": node["name"], "daemon": {**daemon, "running_sha256": binaries["ployzd"]}, "servers": servers}
     observations = parallel(inspect, run["machines"])
     if "cloud" in run:
         # Through Cloud's own Server Access, so Cloud must reach every Machine.
         servers = json.loads(cli(run, commands, ["--json", "server", "ls"]).stdout)["servers"]
         if {item["machine"]["id"] for item in servers} != {item["machine_id"] for item in run["machines"]}:
             raise RuntimeError(f"Cloud {run['cloud']['url']} does not list exactly this run's Machines")
+        for item in servers:
+            node = next(node for node in run["machines"] if node["machine_id"] == item["machine"]["id"])
+            reported = (item["machine"].get("runtime") or {}).get("daemon_version")
+            if reported != node["daemon"]["version"]:
+                raise RuntimeError(f"Cloud reports daemon {reported} on {node['name']}, expected {node['daemon']['version']}")
         observations.append({"cloud": run["cloud"]["url"], "servers": servers})
     (commands.evidence / "doctor.json").write_text(json.dumps(observations, indent=2) + "\n")
     return observations
@@ -491,7 +539,7 @@ def up(args):
     run = dict(manifest=str(directory / "cluster.json"), root=str(CORE),
                owner=host.owner(CORE.parent, directory / "cluster.json"),
                id=directory.name.rsplit("-", 1)[1], provider=args.provider,
-               provider_state={resource: size for resource, size in [("memory", args.memory), ("disk", args.disk)] if size}, state="starting", daemon={"source": args.daemon},
+               provider_state={resource: size for resource, size in [("memory", args.memory), ("disk", args.disk)] if size}, state="starting",
                timings={}, machines=[dict(name=f"machine-{index}") for index in range(1, args.machines + 1)])
     save(run)
     commands = Commands(run)
@@ -499,10 +547,25 @@ def up(args):
     print(f"Preparing verification run: {run['manifest']}", file=sys.stderr)
     paired = args.cloud or args.cloud_attach
     try:
-        prepare_runtime(run, commands)
+        select_daemons(run, commands, args.daemon or [], default="checkout")
+        # Cloud enrollment needs a daemon that speaks this CLI's protocol and reports its version; a release with
+        # the same version string can predate the checkout's protocol. Other Machines enroll on the checkout
+        # daemon and get their release afterwards.
+        checkout = {"source": "checkout", "version": checkout_version()}
+        head = commands(["git", "rev-parse", "HEAD"], cwd=CORE).stdout
+        released = commands(["git", "rev-parse", "-q", "--verify", f"refs/tags/v{checkout['version']}^{{commit}}"],
+                            cwd=CORE, check=False).stdout == head
+        boot = {node["name"]: checkout if paired and node["daemon"]["source"] != "checkout"
+                and not (released and node["daemon"]["version"] == checkout["version"]) else node["daemon"]
+                for node in run["machines"]}
+        run["bridged"] = [name for name, daemon in boot.items() if daemon is checkout]
+        booted = {daemon["version"] if daemon["source"] != "checkout" else None for daemon in boot.values()}
+        run["bootstrap_release"] = next(iter(booted)) if len(booted) == 1 and None not in booted else "0.2.2"
+        save(run)
         # The context joins compilation and the dashboard before failure cleanup can remove resources.
         with ThreadPoolExecutor(max_workers=2) as builder:
-            binaries = builder.submit(build, run, commands, daemon=run["daemon"]["source"] == "checkout")
+            binaries = builder.submit(build, run, commands, daemon=any(
+                daemon["source"] == "checkout" for daemon in [*boot.values(), *(node["daemon"] for node in run["machines"])]))
             if paired:
                 cloud = builder.submit(pair_cloud, private, commands, owns=args.cloud)
             started = time.monotonic()
@@ -524,9 +587,10 @@ def up(args):
                 backend.start(node)
                 backend.push(node, private / "id_ed25519.pub", "/root/.ssh/authorized_keys")
                 backend.exec(node, ["bash", "-ec", "chmod 700 /root/.ssh; chmod 600 /root/.ssh/authorized_keys; systemctl stop ssh.service ssh.socket; rm -f /etc/ssh/ssh_host_*; ssh-keygen -A; systemctl start ssh.socket ssh.service"])
-                if run["daemon"]["source"] == "checkout":
+                daemon = boot[node["name"]]
+                if daemon["source"] == "checkout" or daemon["version"] != run["bootstrap_release"]:
                     binaries.result()
-                    install(run, backend, node)
+                    install(run, backend, node, daemon)
                 else:
                     # The release and its units are already installed in this image.
                     backend.exec(node, ["bash", "-ec", """
@@ -573,6 +637,11 @@ systemctl enable --now ployz.socket ployz-volume-plugin.socket ployz.service $ob
                 # Complete the same Ingress Proxy follow-up offered by the CLI.
                 cli(run, commands, ["--json", "server", "set", node["machine_id"], "--accepts-ingress=true"])
             save(run)
+        bridged = [node for node in run["machines"] if node["name"] in run["bridged"]]
+        if bridged:
+            print("Enrolled on the checkout daemon; installing " +
+                  ", ".join(f"{node['name']}={node['daemon']['version']}" for node in bridged), file=sys.stderr)
+            parallel(lambda node: install(run, backend, node, node["daemon"]), bridged)
         wait_ready(run, commands, backend)
         run["timings"]["join_and_ready"] = round(time.monotonic() - started, 3)
         run["state"] = "ready"
@@ -604,7 +673,9 @@ def main():
     launch = actions.add_parser("up", help="Boot a new disposable cluster")
     launch.add_argument("--provider", choices=["incus"], default="incus")
     launch.add_argument("--machines", type=int, choices=range(1, 9), default=1)
-    launch.add_argument("--daemon", default="checkout", help="checkout (default), stable, beta or an exact release version")
+    daemon_help = ("[MACHINE=]SOURCE, repeatable. SOURCE is checkout, stable, beta or an exact release version; "
+                   "a bare SOURCE sets every Machine and MACHINE=SOURCE overrides one")
+    launch.add_argument("--daemon", action="append", metavar="[MACHINE=]SOURCE", help=daemon_help + "; checkout by default")
     launch.add_argument("--memory", help="RAM per Machine VM as an Incus size; 2GiB by default")
     launch.add_argument("--disk", help="Root disk per Machine VM, which bounds its Machine Pool; 24GiB by default")
     pairing = launch.add_mutually_exclusive_group()
@@ -642,7 +713,8 @@ def main():
             command.add_argument("--stall", type=float, default=2,
                                  help="Seconds an insert may wait for its acknowledgement before the probe reconnects")
         if action == "update":
-            command.add_argument("--daemon", help="Change the daemon source; otherwise keep this run's selection")
+            command.add_argument("--daemon", action="append", metavar="[MACHINE=]SOURCE",
+                                 help=daemon_help + "; Machines not named keep their source")
         if action == "exec":
             command.add_argument("machine", help="machine-1, machine-2, …")
         if action in ["exec", "cli"]:
@@ -722,12 +794,10 @@ def main():
             teardown(run, commands, backend)
             print(f"Removed cluster. Evidence: {commands.evidence}")
         else:
-            if args.daemon:
-                run["daemon"] = {"source": args.daemon}
-            prepare_runtime(run, commands)
-            build(run, commands, daemon=run["daemon"]["source"] == "checkout")
+            select_daemons(run, commands, args.daemon or [], default="checkout")
+            build(run, commands, daemon=any(node["daemon"]["source"] == "checkout" for node in run["machines"]))
             started = time.monotonic()
-            parallel(lambda node: install(run, backend, node), run["machines"])
+            parallel(lambda node: install(run, backend, node, node["daemon"]), run["machines"])
             wait_ready(run, commands, backend)
             run["timings"]["update_and_ready"] = round(time.monotonic() - started, 3)
             save(run)

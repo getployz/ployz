@@ -2,7 +2,8 @@
 # Seeded, signed-in Ployz Cloud for this checkout: its own Postgres container and `vite dev`, side by side with
 # other checkouts. Re-running restarts from a fresh seed; the cookie stays valid.
 # Usage: scripts/verify/up.sh [port]      BILLING=1 turns billing on. State: dashboard/.verify/run (down.sh removes it).
-# SERVERS=N [DAEMON=stable|beta|checkout|<version>] also enrolls N real Machines through it (core/scripts/verify-cluster);
+# SERVERS=N [DAEMON=...] also enrolls N real Machines through it (core/scripts/verify-cluster);
+# DAEMON is space-separated [machine-N=]stable|beta|checkout|<version>, e.g. DAEMON="checkout machine-2=0.2.3";
 # down.sh tears that cluster down too. Real Servers also get a per-checkout Inngest dev server and worker.
 # Stops itself after 15 idle minutes with no connection to vite (idle.sh; VERIFY_IDLE_TIMEOUT=<seconds>, 0 keeps it up).
 set -euo pipefail
@@ -159,7 +160,9 @@ fi
 
 if [ -n "${SERVERS:-}" ]; then
   echo "up.sh: enrolling $SERVERS Machines through Cloud (DAEMON=${DAEMON:-stable})"
-  cluster=$("$wt/core/scripts/verify-cluster" up --machines "$SERVERS" --daemon "${DAEMON:-stable}" --cloud-attach)
+  daemons=()
+  for daemon in ${DAEMON:-stable}; do daemons+=(--daemon "$daemon"); done
+  cluster=$("$wt/core/scripts/verify-cluster" up --machines "$SERVERS" "${daemons[@]}" --cloud-attach)
   echo "$cluster" > "$run/cluster"
   cat <<EOF | tee -a "$run/info"
 cluster: $cluster
