@@ -2,10 +2,9 @@ import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { SparklesIcon } from "lucide-react";
 import type { CollectionScope } from "#/collections/scope";
-import type { DashboardScope } from "#/components/dashboard-navigation-model";
 import type { PageContext } from "#/modules/agent/page-context";
 import { Badge } from "#/components/ui/badge";
-import { cn } from "#/lib/utils";
+import { Button } from "#/components/ui/button";
 import { pendingApprovalsOptions } from "./approvals.queries";
 
 type Panel = typeof import("./agent-panel").default;
@@ -14,28 +13,50 @@ const loadPanel = () => import("./agent-panel").then((module) => module.default)
 const threadKey = (organizationSlug: string) => `ployz.agent.thread.${organizationSlug}`;
 
 /**
- * The agent, on every Organization page: a tab on the right edge that counts approvals waiting on a human, opening into
- * the conversation. Over the canvas it floats above the graph instead of squeezing it.
+ * The agent's only toggle, at the right end of the top bar. Closed, it counts the approvals waiting on a human.
  *
  * `chat` is the open thread, kept in the URL by the Organization route, so a reload or a shared link lands in the same conversation. Closing drops it;
  * opening again returns to the Organization's last thread, remembered in localStorage.
+ */
+export function AgentButton({ organizationSlug, chat, onChat }: {
+  organizationSlug: string;
+  chat: string | undefined;
+  onChat: (thread: string | undefined) => void;
+}) {
+  const { data: pending } = useQuery(pendingApprovalsOptions(organizationSlug));
+  const waiting = chat === undefined ? pending?.length ?? 0 : 0;
+  const toggle = () => onChat(chat === undefined ? localStorage.getItem(threadKey(organizationSlug)) ?? crypto.randomUUID() : undefined);
+  const waitingLabel = `${waiting} ${waiting === 1 ? "approval" : "approvals"} waiting`;
+  return (
+    <>
+      {/* Polling can add an approval while focus is elsewhere, and a changed button name isn't announced. */}
+      <span role="status" className="sr-only">{waiting > 0 ? waitingLabel : ""}</span>
+      {/* Pressed wears the outline variant's own open look, which it keys to aria-expanded alone. */}
+      <Button variant="outline" size="sm" className="aria-pressed:bg-muted aria-pressed:text-foreground" aria-pressed={chat !== undefined} onClick={toggle} onPointerEnter={() => void loadPanel()}
+        aria-label={waiting > 0 ? `Agent, ${waitingLabel}` : "Agent"}>
+        <SparklesIcon data-icon="inline-start" aria-hidden />
+        <span className="max-wf-nav:hidden">Agent</span>
+        {waiting > 0 && <Badge variant="warning">{waiting}{" "}<span className="max-wf-nav:hidden">waiting</span></Badge>}
+      </Button>
+    </>
+  );
+}
+
+/**
+ * The open agent: a column under the top bar beside the page, or the whole area above the tab bar on phones. It never
+ * covers the canvas, which narrows instead.
  *
  * The panel loads on first hover or open and renders as soon as it arrives. A lazy Suspense boundary would hold it back
  * for React's 300 ms reveal throttle.
  */
-export function AgentSidebar({ scope, collectionScope, page, canvas, chat, onChat }: {
-  scope: DashboardScope;
+export function AgentColumn({ organizationSlug, collectionScope, page, chat, onChat }: {
+  organizationSlug: string;
   collectionScope: CollectionScope;
   page: PageContext;
-  canvas: boolean;
   chat: string | undefined;
   onChat: (thread: string | undefined) => void;
 }) {
-  const { organizationSlug } = scope;
   const [AgentPanel, setAgentPanel] = useState<Panel | null>(null);
-  const { data: pending } = useQuery(pendingApprovalsOptions(organizationSlug));
-  const waiting = pending?.length ?? 0;
-  const openPanel = () => onChat(localStorage.getItem(threadKey(organizationSlug)) ?? crypto.randomUUID());
 
   useEffect(() => {
     if (chat === undefined) return;
@@ -43,22 +64,12 @@ export function AgentSidebar({ scope, collectionScope, page, canvas, chat, onCha
     void loadPanel().then((panel) => setAgentPanel(() => panel));
   }, [organizationSlug, chat]);
 
-  if (chat === undefined) {
-    return (
-      <button type="button" onClick={openPanel} onPointerEnter={() => void loadPanel()}
-        aria-label={waiting > 0 ? `Open agent, ${waiting} ${waiting === 1 ? "approval" : "approvals"} waiting` : "Open agent"}
-        className="absolute top-1/2 right-0 z-30 flex -translate-y-1/2 flex-col items-center gap-1.5 rounded-l-lg border border-r-0 bg-background px-1.5 py-2.5 text-muted-foreground shadow-sm outline-none hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50">
-        <SparklesIcon aria-hidden className="size-4" />
-        {waiting > 0 && <Badge variant="destructive" aria-hidden>{waiting}</Badge>}
-      </button>
-    );
-  }
+  if (chat === undefined) return null;
   return (
-    <aside className={cn("z-30 flex min-h-0 w-full flex-col border-l bg-background sm:w-96",
-      canvas ? "absolute inset-y-0 right-0 shadow-lg" : "max-sm:absolute max-sm:inset-y-0 max-sm:right-0 sm:shrink-0")}>
+    <aside className="z-30 flex min-h-0 flex-col bg-background max-wf-nav:absolute max-wf-nav:inset-0 min-wf-nav:w-96 min-wf-nav:shrink-0 min-wf-nav:border-l">
       {AgentPanel && (
-        <AgentPanel organizationSlug={organizationSlug} environment={scope.kind === "environment" ? scope.environmentSlug : null}
-          scope={collectionScope} page={page} threadId={chat} onNewChat={() => onChat(crypto.randomUUID())} onClose={() => onChat(undefined)} />
+        <AgentPanel organizationSlug={organizationSlug} scope={collectionScope} page={page} threadId={chat}
+          onNewChat={() => onChat(crypto.randomUUID())} />
       )}
     </aside>
   );

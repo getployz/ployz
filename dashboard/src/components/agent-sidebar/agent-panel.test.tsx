@@ -41,8 +41,8 @@ it("switching Organization with the panel open talks to the new Organization's t
   localStorage.setItem("ployz.agent.thread.other", "thread-other");
   const panel = (organizationSlug: string) => (
     <QueryClientProvider client={client}>
-      <AgentPanel organizationSlug={organizationSlug} environment={null} scope={scope} page={page} threadId={`thread-${organizationSlug}`}
-        onNewChat={() => {}} onClose={() => {}} />
+      <AgentPanel organizationSlug={organizationSlug} scope={scope} page={page} threadId={`thread-${organizationSlug}`}
+        onNewChat={() => {}} />
     </QueryClientProvider>
   );
   const shown = render(panel("acme"));
@@ -56,8 +56,8 @@ it("sends on Enter, keeps Shift+Enter and composing input as a draft", async () 
   const fetched = vi.fn((_url: string, _init?: RequestInit) => Promise.resolve(Response.json({ messages: [] })));
   vi.stubGlobal("fetch", fetched);
   const client = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false } } });
-  render(<QueryClientProvider client={client}><AgentPanel organizationSlug="acme" environment={null} scope={scope} page={page} threadId="thread-acme"
-    onNewChat={() => {}} onClose={() => {}} /></QueryClientProvider>);
+  render(<QueryClientProvider client={client}><AgentPanel organizationSlug="acme" scope={scope} page={page} threadId="thread-acme"
+    onNewChat={() => {}} /></QueryClientProvider>);
   const posted = () => fetched.mock.calls.filter(([, init]) => init?.method === "POST").map(([, init]) => String(init?.body));
   const box = screen.getByRole("textbox", { name: "Message the agent" });
   fireEvent.change(box, { target: { value: "list services" } });
@@ -96,8 +96,8 @@ it("stops a streaming reply from the composer, and the request it stops is cut",
   });
   vi.stubGlobal("fetch", fetched);
   const client = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false } } });
-  render(<QueryClientProvider client={client}><AgentPanel organizationSlug="acme" environment={null} scope={scope} page={page} threadId="thread-acme"
-    onNewChat={() => {}} onClose={() => {}} /></QueryClientProvider>);
+  render(<QueryClientProvider client={client}><AgentPanel organizationSlug="acme" scope={scope} page={page} threadId="thread-acme"
+    onNewChat={() => {}} /></QueryClientProvider>);
   const box = screen.getByRole("textbox", { name: "Message the agent" });
   fireEvent.change(box, { target: { value: "explain" } });
   fireEvent.keyDown(box, { key: "Enter" });
@@ -127,8 +127,8 @@ it("retries a failed reply once the wait the model's provider asked for has pass
     return Promise.resolve(replies[posts.length - 1]?.() ?? Response.json({}, { status: 500 }));
   }));
   const client = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false } } });
-  render(<QueryClientProvider client={client}><AgentPanel organizationSlug="acme" environment={null} scope={scope} page={page} threadId="thread-acme"
-    onNewChat={() => {}} onClose={() => {}} /></QueryClientProvider>);
+  render(<QueryClientProvider client={client}><AgentPanel organizationSlug="acme" scope={scope} page={page} threadId="thread-acme"
+    onNewChat={() => {}} /></QueryClientProvider>);
   const box = screen.getByRole("textbox", { name: "Message the agent" });
   fireEvent.change(box, { target: { value: "list services" } });
   fireEvent.keyDown(box, { key: "Enter" });
@@ -149,8 +149,8 @@ it("offers a new chat instead of a retry when the chat grew too long for the mod
     : Response.json({ messages: [] }))));
   const onNewChat = vi.fn();
   const client = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false } } });
-  render(<QueryClientProvider client={client}><AgentPanel organizationSlug="acme" environment={null} scope={scope} page={page} threadId="thread-acme"
-    onNewChat={onNewChat} onClose={() => {}} /></QueryClientProvider>);
+  render(<QueryClientProvider client={client}><AgentPanel organizationSlug="acme" scope={scope} page={page} threadId="thread-acme"
+    onNewChat={onNewChat} /></QueryClientProvider>);
   const box = screen.getByRole("textbox", { name: "Message the agent" });
   fireEvent.change(box, { target: { value: "one more thing" } });
   fireEvent.keyDown(box, { key: "Enter" });
@@ -189,8 +189,8 @@ const ask = async (text: string) => {
     return Promise.resolve(new Response(body, { headers: { "content-type": "text/event-stream" } }));
   }));
   const client = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false } } });
-  render(<QueryClientProvider client={client}><AgentPanel organizationSlug="acme" environment={null} scope={scope} page={page} threadId="thread-acme"
-    onNewChat={() => {}} onClose={() => {}} /></QueryClientProvider>);
+  render(<QueryClientProvider client={client}><AgentPanel organizationSlug="acme" scope={scope} page={page} threadId="thread-acme"
+    onNewChat={() => {}} /></QueryClientProvider>);
   const box = screen.getByRole("textbox", { name: "Message the agent" });
   fireEvent.change(box, { target: { value: text } });
   fireEvent.keyDown(box, { key: "Enter" });

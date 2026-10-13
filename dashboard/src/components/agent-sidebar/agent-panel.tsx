@@ -6,7 +6,7 @@ import { Option, Schema } from "effect";
 import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remend from "remend";
-import { ArrowUpIcon, ChevronRightIcon, SquareIcon, SquarePenIcon, XIcon } from "lucide-react";
+import { ArrowUpIcon, ChevronRightIcon, SquareIcon, SquarePenIcon } from "lucide-react";
 import type { CollectionScope } from "#/collections/scope";
 import { Bubble, BubbleContent } from "#/components/ui/bubble";
 import { Button } from "#/components/ui/button";
@@ -33,24 +33,20 @@ type Asked = typeof Asked.Type;
 
 type PanelProps = {
   organizationSlug: string;
-  environment: string | null;
   scope: CollectionScope;
   /** Where the member is; each message carries it, so the agent reads "this service" as the one on screen. */
   page: PageContext;
   threadId: string;
   onNewChat: () => void;
-  onClose: () => void;
 };
 
 /** One agent conversation; the sidebar picks the thread, and switching Organization or thread swaps in a fresh connection. */
-export default function AgentPanel({ organizationSlug, environment, scope, page, threadId, onNewChat, onClose }: PanelProps) {
+export default function AgentPanel({ organizationSlug, scope, page, threadId, onNewChat }: PanelProps) {
   return (
     <section aria-label="Ployz agent" className="flex h-full min-h-0 flex-col bg-background">
       <header className="flex h-12 shrink-0 items-center gap-2 border-b px-3">
-        <h2 className="text-sm font-semibold">Ployz agent</h2>
-        <span className="truncate text-xs text-muted-foreground">{environment ? `${organizationSlug} / ${environment}` : organizationSlug}</span>
+        <h2 className="truncate text-sm font-semibold">New chat</h2>
         <Button className="ml-auto" size="icon-sm" variant="ghost" aria-label="New chat" title="New chat" onClick={onNewChat}><SquarePenIcon /></Button>
-        <Button size="icon-sm" variant="ghost" aria-label="Close agent" title="Close" onClick={onClose}><XIcon /></Button>
       </header>
       <Conversation key={`${organizationSlug}/${threadId}`} organizationSlug={organizationSlug} scope={scope} page={page} threadId={threadId} onNewChat={onNewChat} />
     </section>
