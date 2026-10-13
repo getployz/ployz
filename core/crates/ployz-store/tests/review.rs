@@ -1889,6 +1889,31 @@ fn history_never_brings_back_plain_text_of_a_key_sealed_only_between_saves() {
 }
 
 #[test]
+fn history_checks_the_rules_like_a_fresh_edit() {
+    let (store, who) = shop();
+    publish(&store, &who, None).unwrap();
+    create_service(&store, &who, EnvironmentRef::default(), 31, "worker");
+    publish(&store, &who, None).unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::SetBranchSetup {
+                environment: EnvironmentRef::default(),
+                setup: vec![ployz_store::SetupCommand {
+                    service: ServiceName::parse("worker").unwrap(),
+                    command: "migrate".into(),
+                }],
+            },
+        )
+        .unwrap();
+    let error = history_preview(&store, &who, 1, ployz_store::HistoryAction::Restore).unwrap_err();
+    assert_eq!(
+        error.message,
+        "New Branches run a Setup Command in worker; set the Setup Commands without it first"
+    );
+}
+
+#[test]
 fn history_undo_validates_dependent_variables_after_the_complete_inverse() {
     let (store, who) = shop();
     set(&store, &who, "web.env.SOURCE", json!("old"));

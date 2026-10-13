@@ -74,6 +74,10 @@ If an action would overwrite draft changes, the confirmation lists exactly which
 Cancel changes nothing. If someone edits the environment after your review, reopen the action
 to review the new draft. Save or Deploy makes the staged result a saved version.
 
+Undo and Roll back pass the same checks as an edit made by hand. One that would leave a
+reference to a deleted Service, reuse a name or hostname another Service took since, or break a
+rule is refused with the reason, and nothing is staged.
+
 History restores configuration references. It never changes a sealed variable: a sealed value
 keeps its current value, a sealed variable you deleted stays deleted, one added since stays, and a
 variable that was ever sealed can't come back as plain text. It does not recover deleted Volume data or undo

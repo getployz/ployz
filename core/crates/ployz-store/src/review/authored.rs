@@ -2124,7 +2124,7 @@ impl Prepared {
         environment: &Environment,
         saved: Option<&SavedEnvironmentIntent>,
         target: SavedEnvironmentIntent,
-        from: &SavedEnvironmentIntent,
+        from: Option<&SavedEnvironmentIntent>,
     ) -> Result<Self, RpcError> {
         prevent_plaintext(&environment.working, &target)?;
         let working = scope::validated_working_from(
@@ -2134,7 +2134,7 @@ impl Prepared {
                 working: target,
                 live: environment.live.clone(),
             },
-            Some(from),
+            from,
         )?;
         crate::volume::check_storage(tx, &environment.summary.id, &working.environment().working)?;
         let actual = Plan::between(&environment.working, &working.environment().working)?;
@@ -2209,7 +2209,7 @@ pub(super) fn prepare_history(
     };
     keep_sealed(tx, environment, &mut target)?;
     crate::names::refuse_new_taken(tx, environment, &target)?;
-    Prepared::from_target(tx, environment, saved, target, selected)
+    Prepared::from_target(tx, environment, saved, target, None)
 }
 /// History never changes a sealed value: a key sealed now keeps its value, a
 /// sealed key deleted since stays deleted, and a key once sealed never comes
@@ -2423,7 +2423,7 @@ pub(super) fn prepare_discard(
     } else {
         working = baseline;
     }
-    Prepared::from_target(tx, environment, saved, working, &reviewed.head.intent).map_err(
+    Prepared::from_target(tx, environment, saved, working, Some(&reviewed.head.intent)).map_err(
         |failure| {
             if failure.code == ployz_core::RpcErrorCode::InvalidArgument {
                 error::conflict(
