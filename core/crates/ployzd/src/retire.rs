@@ -49,17 +49,12 @@ pub(crate) struct DaemonHost {
 
 impl RetireHost for DaemonHost {
     async fn local_containers(&self) -> io::Result<BTreeSet<ContainerId>> {
-        let listed =
-            tokio::time::timeout(LIST_TIMEOUT, self.containers.list_managed(&self.machine_id))
-                .await
-                .map_err(|_| {
-                    io::Error::new(io::ErrorKind::TimedOut, "listing Containers timed out")
-                })?
-                .map_err(io::Error::other)?;
-        Ok(listed
-            .into_iter()
-            .map(|observation| observation.container_id)
-            .collect())
+        let docker = self.containers.local_docker();
+        let listed = tokio::time::timeout(LIST_TIMEOUT, docker.managed_container_ids())
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "listing Containers timed out"))?
+            .map_err(io::Error::other)?;
+        Ok(listed.into_iter().collect())
     }
 
     async fn ackers(&self) -> BTreeMap<MachineId, MachineName> {

@@ -151,7 +151,7 @@ impl LocalDocker {
             == creates
     }
 
-    async fn managed_container_ids(&self) -> Result<Vec<ContainerId>, Error> {
+    pub(crate) async fn managed_container_ids(&self) -> Result<Vec<ContainerId>, Error> {
         let filters = HashMap::from([(
             "label",
             vec![LABEL_MANAGED, LABEL_NAMESPACE, LABEL_SERVICE_ID],
