@@ -10,6 +10,7 @@ const names = new Map<string, string>();
 const read = (subject: MetricSubject) => ({
   type: "history" as const,
   window,
+  at: window.to,
   history: verifyMetricHistory({ subject, since_nanos: nanos(window.from), until_nanos: nanos(window.to) }),
 });
 const service = (name: string) => serviceMetrics(read({ kind: "service", service: `shop-production/${name}` }), names);

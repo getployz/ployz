@@ -176,7 +176,7 @@ export const readServiceUptime = Effect.fn("Uptime.readService")(function* (acto
     // Both read to the millisecond, the precision the checker answers with.
     answered: probeAnsweredAt !== null && probeAnsweredAt >= probeRequestedAt,
   };
-  return { check, status, uptime, points, checks, latest, incidents, regions, probe } satisfies ServiceUptime;
+  return { at: now.getTime(), check, status, uptime, points, checks, latest, incidents, regions, probe } satisfies ServiceUptime;
 });
 
 /**

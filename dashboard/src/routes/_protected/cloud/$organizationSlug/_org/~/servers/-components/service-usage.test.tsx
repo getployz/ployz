@@ -21,6 +21,7 @@ function readAt(to: number): MetricRead {
   return {
     type: "history",
     window: { from: to - 300_000, to },
+    at: to,
     history: { step_nanos: nanos(10_000), points, machines: [{ machine_id: SYD_1, value: { points, step_nanos: nanos(10_000), gaps: [] } }], unanswered: [] },
   };
 }

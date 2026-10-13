@@ -153,12 +153,12 @@ function Monitoring(props: MonitoringProps & { scope: UptimeScope; toggle: React
 }
 
 function UptimeMonitoring(props: ViewProps) {
-  const { data, dataUpdatedAt } = useServiceUptime(props.scope, props.service.id, props.shown);
-  return <MonitoringView {...props} read={{ uptime: data, at: dataUpdatedAt }} />;
+  const { data } = useServiceUptime(props.scope, props.service.id, props.shown);
+  return <MonitoringView {...props} read={{ uptime: data, at: data?.at ?? null }} />;
 }
 
 function MonitoringView({ organizationSlug, service, range: chosen, shown: range, healthcheck, vcpuLimit, volume, placedOn, scope, toggle, read }: ViewProps & {
-  read: { uptime: ServiceUptime | null; at: number } | null;
+  read: { uptime: ServiceUptime | null; at: number | null } | null;
 }) {
   const uptime = read?.uptime ?? null;
   const [mountedAt] = useState(Date.now);
@@ -298,7 +298,7 @@ function Charts({ organizationSlug, scope, service, range, dimmed, uptime, uptim
   onPick: (picked: Picked) => void;
 }) {
   const shown = useDeferredValue(range);
-  const { data: read, dataUpdatedAt } = useSuspenseQuery(serviceMetricsQueryOptions({
+  const { data: read } = useSuspenseQuery(serviceMetricsQueryOptions({
     organizationSlug, environmentId: scope.environmentId, service: service.name, from: shown.from, to: shown.to,
   }));
   const serverList = useServerList(organizationSlug);
@@ -307,7 +307,7 @@ function Charts({ organizationSlug, scope, service, range, dimmed, uptime, uptim
   const metrics = serviceMetrics(read, names);
   const cursor = useMetricCursor();
   const [split, setSplit] = useState(false);
-  const answeredAt = uptimeAt ?? dataUpdatedAt;
+  const answeredAt = uptimeAt ?? read.at;
   const coarserStepMs = Math.max((uptime?.check.intervalSeconds ?? 60) * 1000, metrics.stepMs ?? 0);
   const window = chartWindow(resolveRange(range, answeredAt), answeredAt, coarserStepMs);
   const times = steps(window);

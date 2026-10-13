@@ -5,6 +5,7 @@ import type { ServiceUptime } from "./uptime-status";
 import { whileChecking } from "./uptime.commands.server";
 
 const uptime = (answered: boolean): ServiceUptime => ({
+  at: 0,
   check: { id: "check", url: "https://web.example", intervalSeconds: 60 },
   status: "up", uptime: 1, points: [], checks: [], latest: [], incidents: [], regions: {},
   probe: { requestedAt: "2026-10-12T00:00:00.000Z", answered },

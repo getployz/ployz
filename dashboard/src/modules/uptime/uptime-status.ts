@@ -118,6 +118,8 @@ export type UptimeIncidentEntry = {
  * it; `points` cover the range itself, the time axis every chart shares.
  */
 export type ServiceUptime = {
+  /** When the server read, in Unix milliseconds. Charts anchor on it so render and hydration agree. */
+  readonly at: number;
   readonly check: { readonly id: string; readonly url: string; readonly intervalSeconds: number };
   readonly status: UptimeStatus;
   /** Passing over pass plus fail routine and triggered probes, 0 to 1. Null when no probe counted. */

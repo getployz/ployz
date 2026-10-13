@@ -32,6 +32,7 @@ it("reads the Service's probe as pending before Cloud answers, and puts it back 
   vi.spyOn(functions, "requestUptimeProbeServerFn").mockReturnValue(new Promise((_, reject) => { refuse = reject; }));
   const queryClient = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity } } });
   const uptime: ServiceUptime = {
+    at: 0,
     check: { id: "check", url: "https://web.example", intervalSeconds: 60 },
     status: "up", uptime: 1, points: [], checks: [], latest: [], incidents: [], regions: {}, probe: null,
   };

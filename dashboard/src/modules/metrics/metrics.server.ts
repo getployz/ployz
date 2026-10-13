@@ -10,7 +10,7 @@ import type { MetricRead, MetricWindow, ReadRuntimeServiceMetricsInput, ReadServ
 
 const nanos = (ms: number) => (BigInt(ms) * 1_000_000n).toString();
 
-const readHistory = Effect.fn("Metrics.readHistory")(function* (organizationId: string, subject: MetricSubject, window: MetricWindow, wholeRange = false) {
+const readHistory = Effect.fn("Metrics.readHistory")(function* (organizationId: string, subject: MetricSubject, window: MetricWindow, at: number, wholeRange = false) {
   const input: MetricHistoryInput = {
     subject, since_nanos: nanos(window.from), until_nanos: nanos(window.to),
     ...(wholeRange && { step_nanos: nanos(Math.max(1, window.to - window.from)) }),
@@ -18,36 +18,39 @@ const readHistory = Effect.fn("Metrics.readHistory")(function* (organizationId: 
   // The verify dashboard has no Servers to ask; production builds drop this branch and the fixture with it.
   if (import.meta.env.DEV && process.env["PLOYZ_VERIFY_METRICS"] === "1") {
     const { verifyMetricHistory } = yield* Effect.promise(() => import("./metrics.verify-fixture"));
-    return { type: "history", window, history: verifyMetricHistory(input) } satisfies MetricRead;
+    return { type: "history", window, at, history: verifyMetricHistory(input) } satisfies MetricRead;
   }
   return yield* Effect.scoped(Effect.gen(function* () {
     const session = yield* (yield* OrganizationRuntime).open(organizationId);
-    if (session.status !== "connected") return { type: "offline", window } satisfies MetricRead;
+    if (session.status !== "connected") return { type: "offline", window, at } satisfies MetricRead;
     const history = yield* session.connected.metricHistory(input);
-    return { type: "history", window, history } satisfies MetricRead;
+    return { type: "history", window, at, history } satisfies MetricRead;
   }));
 });
 
 /** A Service's metrics summed over every Server it runs on, with each Server's own reply. */
 export const readServiceMetrics = Effect.fn("Metrics.readService")(function* (actor: Actor, input: ReadServiceMetricsInput) {
   const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
-  const window = resolveRange(input, yield* Clock.currentTimeMillis);
+  const at = yield* Clock.currentTimeMillis;
+  const window = resolveRange(input, at);
   const found = yield* findService(organization.id, input.environmentId, input.service);
   // An undeployed Service has nothing on any Server yet. Its own name is no stand-in, since after a rename it can be another Service's runtime name.
-  if (found === null) return { type: "history", window, history: { points: { service: [] }, machines: [], unanswered: [] } } satisfies MetricRead;
-  return yield* readHistory(organization.id, { kind: "service", service: `${found.namespace}/${found.runtime}` }, window, input.markersOnly === true);
+  if (found === null) return { type: "history", window, at, history: { points: { service: [] }, machines: [], unanswered: [] } } satisfies MetricRead;
+  return yield* readHistory(organization.id, { kind: "service", service: `${found.namespace}/${found.runtime}` }, window, at, input.markersOnly === true);
 });
 
 export const readRuntimeServiceMetrics = Effect.fn("Metrics.readRuntimeService")(function* (actor: Actor, input: ReadRuntimeServiceMetricsInput) {
   const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
-  const window = resolveRange(input, yield* Clock.currentTimeMillis);
-  return yield* readHistory(organization.id, { kind: "service", service: `${input.namespace}/${input.name}` }, window);
+  const at = yield* Clock.currentTimeMillis;
+  const window = resolveRange(input, at);
+  return yield* readHistory(organization.id, { kind: "service", service: `${input.namespace}/${input.name}` }, window, at);
 });
 
 export const readServerMetrics = Effect.fn("Metrics.readServer")(function* (actor: Actor, input: ReadServerMetricsInput) {
   const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
-  const window = resolveRange(input, yield* Clock.currentTimeMillis);
+  const at = yield* Clock.currentTimeMillis;
+  const window = resolveRange(input, at);
   // SAFETY: the input schema checks the 32 lowercase hex digits a MachineId is.
   const machineId = input.machineId as MachineId;
-  return yield* readHistory(organization.id, { kind: "machine", machine_id: machineId }, window);
+  return yield* readHistory(organization.id, { kind: "machine", machine_id: machineId }, window, at);
 });
