@@ -703,6 +703,32 @@ impl ReplicatedStore {
             .await
     }
 
+    /// Every Machine's ingress route ack by `(machine, service)`. Rows that do not
+    /// decode are left out, so they read as a missing ack. Only the retire loop reads
+    /// this table; the ingress never does.
+    pub(crate) async fn ingress_routes(
+        &self,
+    ) -> Result<BTreeMap<(MachineId, QualifiedService), IngressRouteAck>, Error> {
+        let query = self.api.query(Statement::new(INGRESS_ROUTES, [])).await?;
+        Ok(query
+            .rows(["machine_id", "service_id", "deploy", "containers"])?
+            .into_iter()
+            .filter_map(|[machine_id, service_id, deploy, containers]| {
+                let machine_id = MachineId::parse(machine_id.as_str()?).ok()?;
+                let service = QualifiedService::parse(service_id.as_str()?).ok()?;
+                let ack = IngressRouteAck {
+                    deploy: DeploymentLogId::parse(deploy.as_str()?).ok()?,
+                    containers: serde_json::from_str(containers.as_str()?).ok()?,
+                };
+                Some(((machine_id, service), ack))
+            })
+            .collect())
+    }
+
+    pub(crate) async fn subscribe_ingress_route_changes(&self) -> Result<Subscription, Error> {
+        self.api.subscribe(Statement::new(INGRESS_ROUTES, [])).await
+    }
+
     pub(crate) async fn publish_ingress_routes(
         &self,
         machine_id: &MachineId,
@@ -1005,6 +1031,8 @@ fn volume_incomplete(machine_id: &MachineId, name: &DockerVolumeName) -> Stateme
 
 const SERVING_POINTERS: &str =
     "SELECT key AS serving_key, value FROM cluster WHERE key LIKE 'serving/%'";
+const INGRESS_ROUTES: &str =
+    "SELECT machine_id, service_id, deploy, containers FROM ingress_routes";
 const INGRESS_ROUTE_UPSERT: &str = "INSERT INTO ingress_routes (machine_id, service_id, deploy, containers) VALUES (?, ?, ?, ?) ON CONFLICT (machine_id, service_id) DO UPDATE SET deploy = excluded.deploy, containers = excluded.containers";
 const INGRESS_ROUTE_DELETE: &str =
     "DELETE FROM ingress_routes WHERE machine_id = ? AND service_id = ?";

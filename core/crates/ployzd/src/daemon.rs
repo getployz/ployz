@@ -301,6 +301,8 @@ impl Daemon {
                 .await
                 .map_err(io::Error::other)?;
         let socket_path = config.socket.clone();
+        let retire_admin = corrosion.as_ref().map(RunningCorrosion::admin_client);
+        let retire_id = local_id.clone();
         let local_for_servers = local.clone();
         let shutdown_for_servers = shutdown.clone();
         let servers = tokio::spawn(async move {
@@ -391,6 +393,32 @@ impl Daemon {
                     }
                 }
             };
+            let retire = async {
+                if !wait_for_participation(records.clone(), shutdown.clone()).await? {
+                    return Ok(());
+                }
+                match (
+                    containers.clone(),
+                    replicated_store.clone(),
+                    machine_view.clone(),
+                    retire_admin,
+                ) {
+                    (Some(runtime), Some(replicated), Some(machines), Some(admin)) => {
+                        let host = crate::retire::DaemonHost {
+                            machine_id: retire_id,
+                            machine: crate::machine::LocalMachine::new(local.clone())
+                                .with_containers(Some(runtime.clone()))
+                                .with_plugin(plugin.clone()),
+                            containers: runtime,
+                            machines,
+                            admin,
+                        };
+                        crate::retire::run(host, replicated, shutdown.clone()).await;
+                    }
+                    _ => shutdown.cancelled().await,
+                }
+                Ok(())
+            };
             tokio::try_join!(
                 async { rpc.await.map_err(io::Error::other) },
                 publisher,
@@ -400,6 +428,7 @@ impl Daemon {
                 dns,
                 ingress,
                 certificates,
+                retire,
             )
             .map(|_| ())
         });
