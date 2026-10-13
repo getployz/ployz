@@ -2,7 +2,7 @@ import type { DomainRow, NodeOutcome, RowId, ServiceListing } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
 import type { RuntimeContainerRecord } from "#/modules/runtime/runtime.collection";
 import { asTestDouble } from "#/lib/test-double";
-import { deployChip, nodeIssues, publicDomain, restartedServices, runtimeLine, stagedSurface, type RuntimeLens } from "./node-status";
+import { containerTrouble, deployChip, nodeIssues, publicDomain, restartedServices, runtimeLine, stagedSurface, type RuntimeLens } from "./node-status";
 
 const service: ServiceListing = { source: "image", change: null, template: null, id: "web", row: "web:node" as RowId, name: "web", private_dns: "web" };
 const container = (state: string, health?: string): RuntimeContainerRecord =>
@@ -78,16 +78,16 @@ describe("nodeIssues", () => {
   const domain = (status: DomainRow["status"], hostname: string | null = "acme.com") => ({ status, hostname });
 
   it("counts what the user can fix, red when a Service is down", () => {
-    expect(nodeIssues(runtimeLine(service, runtime(container("exited")), seen), [domain("needs_attention")])).toEqual({ count: 2, tone: "bad", uptime: false });
-    expect(nodeIssues(runtimeLine(service, runtime(), seen), [])).toEqual({ count: 1, tone: "bad", uptime: false });
+    expect(nodeIssues(runtimeLine(service, runtime(container("exited")), seen), [domain("needs_attention")])).toEqual({ count: 2, tone: "bad", monitoring: false, trouble: null });
+    expect(nodeIssues(runtimeLine(service, runtime(), seen), [])).toEqual({ count: 1, tone: "bad", monitoring: false, trouble: null });
     expect(nodeIssues(runtimeLine(service, runtime(container("running", "healthy")), seen), [domain("needs_attention"), domain("setting_up")]))
-      .toEqual({ count: 1, tone: "warn", uptime: false });
+      .toEqual({ count: 1, tone: "warn", monitoring: false, trouble: null });
   });
 
   it("counts one amber warning for a failing healthcheck, however many replicas fail it", () => {
     const failing = runtime(container("running", "failing"), container("running", "failing"));
-    expect(nodeIssues(runtimeLine(service, failing, seen), [])).toEqual({ count: 1, tone: "warn", uptime: false });
-    expect(nodeIssues(runtimeLine(service, failing, seen), [domain("needs_attention")])).toEqual({ count: 2, tone: "warn", uptime: false });
+    expect(nodeIssues(runtimeLine(service, failing, seen), [])).toEqual({ count: 1, tone: "warn", monitoring: false, trouble: null });
+    expect(nodeIssues(runtimeLine(service, failing, seen), [domain("needs_attention")])).toEqual({ count: 2, tone: "warn", monitoring: false, trouble: null });
     expect(nodeIssues(runtimeLine(service, failing, watch({ status: "unavailable" })), [])).toBeNull();
   });
 
@@ -102,18 +102,40 @@ describe("nodeIssues", () => {
     const healthy = runtimeLine(service, runtime(container("running", "healthy")), seen);
 
     it("adds one red issue", () => {
-      expect(nodeIssues(healthy, [], "acme.com")).toEqual({ count: 1, tone: "bad", uptime: true });
-      expect(nodeIssues(runtimeLine(service, runtime(container("running", "failing")), seen), [], "acme.com")).toEqual({ count: 2, tone: "bad", uptime: true });
+      expect(nodeIssues(healthy, [], { unreachable: "acme.com" })).toEqual({ count: 1, tone: "bad", monitoring: true, trouble: null });
+      expect(nodeIssues(runtimeLine(service, runtime(container("running", "failing")), seen), [], { unreachable: "acme.com" })).toEqual({ count: 2, tone: "bad", monitoring: true, trouble: null });
     });
 
     it("adds nothing when the Service is already down", () => {
-      expect(nodeIssues(runtimeLine(service, runtime(), seen), [], "acme.com")).toEqual({ count: 1, tone: "bad", uptime: false });
+      expect(nodeIssues(runtimeLine(service, runtime(), seen), [], { unreachable: "acme.com" })).toEqual({ count: 1, tone: "bad", monitoring: false, trouble: null });
     });
 
     it("shares one issue with a domain needing attention on the same hostname", () => {
-      expect(nodeIssues(healthy, [domain("needs_attention")], "acme.com")).toEqual({ count: 1, tone: "bad", uptime: false });
-      expect(nodeIssues(healthy, [domain("needs_attention", "web.acme.ployz.app")], "acme.com")).toEqual({ count: 2, tone: "bad", uptime: true });
+      expect(nodeIssues(healthy, [domain("needs_attention")], { unreachable: "acme.com" })).toEqual({ count: 1, tone: "bad", monitoring: false, trouble: null });
+      expect(nodeIssues(healthy, [domain("needs_attention", "web.acme.ployz.app")], { unreachable: "acme.com" })).toEqual({ count: 2, tone: "bad", monitoring: true, trouble: null });
     });
+  });
+
+  describe("with an OOM kill or restart in the last hour", () => {
+    const healthy = runtimeLine(service, runtime(container("running", "healthy")), seen);
+
+    it("adds one amber issue named for it, which opens Monitoring", () => {
+      expect(nodeIssues(healthy, [], { trouble: "OOM" })).toEqual({ count: 1, tone: "warn", monitoring: true, trouble: "OOM" });
+    });
+
+    it("counts beside a Service that's down, which stays red", () => {
+      expect(nodeIssues(runtimeLine(service, runtime(container("exited")), seen), [], { trouble: "Restarting" }))
+        .toEqual({ count: 2, tone: "bad", monitoring: true, trouble: "Restarting" });
+    });
+  });
+});
+
+describe("containerTrouble", () => {
+  it("names an OOM kill over a restart, and nothing for exits alone", () => {
+    expect(containerTrouble([{ kind: "restart" }, { kind: "oom" }])).toBe("OOM");
+    expect(containerTrouble([{ kind: "exit" }, { kind: "restart" }])).toBe("Restarting");
+    expect(containerTrouble([{ kind: "exit" }])).toBeNull();
+    expect(containerTrouble([])).toBeNull();
   });
 });
 
