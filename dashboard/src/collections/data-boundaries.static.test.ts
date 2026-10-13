@@ -83,7 +83,8 @@ const ON_DEMAND_READS = {
   agentThreadsOptions: "read when the agent opens, which every Organization page can do; no page owns it",
   approvalOptions: "named by an agent conversation's interrupt, known only once the chat hydrates",
   serviceMetricsQueryOptions: "asks every Server live, so a slow Server would hold the drawer open; the Monitoring tab waits on it instead",
-  serverMetricsQueryOptions: "asks a Server live, so a slow Server would hold the page; each Servers list row reads its own Server after the list shows",
+  serverMetricsQueryOptions: "asks a Server live, so a slow Server would hold the page; each Servers list row reads its own Server after the list shows, and the Resources section waits on it",
+  runtimeServiceMetricsQueryOptions: "asks every Server live, so a slow Server would hold the page; each Running here row waits on its own",
 };
 
 /** Hook files outside data files that await the server without making UI wait on it. */

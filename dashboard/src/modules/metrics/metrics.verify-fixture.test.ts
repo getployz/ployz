@@ -55,6 +55,8 @@ describe("verifyMetricHistory", () => {
     const normal = server("0123456789abcdef0123456789abcdef");
     expect(normal.availability).toEqual({ type: "normal" });
     expect(normal.interfaces.map((iface) => iface.name)).toEqual(["eth0"]);
+    expect(normal.gaps).toHaveLength(1);
+    expect(server("4".repeat(32)).availability).toEqual({ type: "no_readings" });
     expect(normal.disk[0]).toMatchObject({ volumes: expect.any(Number), mirrors: expect.any(Number), logsAndMetrics: expect.any(Number), other: expect.any(Number) });
     expect(server("1".repeat(32)).availability.type).toBe("unanswered");
     expect(server("2".repeat(32)).availability.type).toBe("needs_upgrade");

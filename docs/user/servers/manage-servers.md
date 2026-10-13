@@ -35,14 +35,29 @@ If the page shows **Can't reach your servers right now**, see
 
 Click a server. Its page shows its status and public IP address, then:
 
-- **Running here**: click it to list the server's services. While the server is offline, each one
-  says whether it's **Still on** another server or **Down**.
+- **Resources**: meters for CPU, memory and disk now, then charts of CPU, memory and network over
+  the range you pick, from **1h** to **30d**. The meters and the values above each chart always
+  show the last few minutes, whatever the range; a dash means the server sent no recent reading.
+  Network shows each interface in its own color, out as a solid line and in as a dashed one. The
+  disk bar splits used space into **Volumes**, **Mirrors**, **Logs and metrics** and **Other**,
+  then **Free**. Space the server couldn't attribute to one of those shows as **Used**. A stretch
+  the server didn't measure is hatched **Not measured**. A server on an older Ployz version reads
+  **Upgrade web-1 to see its metrics**. If it doesn't reply, the section reads **web-1 didn't answer**.
+  While the server is offline, the page leaves Resources out.
+
+  ![A server's Resources: CPU, memory and disk meters over CPU, memory and network charts](../images/server-resources.png)
+
+- **Running here**: the server's services, with the CPU and memory each uses on this server now,
+  refreshed when you open or return to the page. A service with no recent readings on this server
+  shows **–**. Past five, **All 12 services** opens the
+  full list, with a filter. While the server is offline, each one says whether it's **Still on**
+  another server or **Down**.
 - **Services**: **Run services here** and **Drain**. See
   [Change what a server does](#change-what-a-server-does).
 - **Builds**: **Run builds here** and **Builds at once**. See
   [Where builds run](../builds/where-builds-run.md#build-on-your-servers).
 
-![A server's page: Running here, Builds and Remove server](../images/server-page.png)
+![A server's page: Running here with each service's CPU and memory, then Services](../images/server-running-here.png)
 
 An entry marked **Not in any Project** is left over from a deleted project or environment.
 **Remove** deletes its containers and its volumes, data included, from every server.

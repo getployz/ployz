@@ -28,7 +28,7 @@ export function ServerMeters({ organizationSlug, server }: { organizationSlug: s
   if (offline) return <p className={cells}>Didn’t answer</p>;
   if (!wide) return null;
   if (read.isPending) return <div className={cells}><Skeleton className="h-3 w-full" /></div>;
-  const now: ServerNow = read.isError ? { type: "unanswered" } : serverNow(serverMetrics(read.data, new Map([[server.machine.id, server.name]])));
+  const now: ServerNow = read.isError ? { type: "unanswered" } : serverNow(serverMetrics(read.data, new Map([[server.machine.id, server.name]])), Date.now() - read.dataUpdatedAt);
   switch (now.type) {
     case "needs_upgrade":
       return <p className={cells}>Upgrade to see metrics</p>;

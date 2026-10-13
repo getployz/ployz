@@ -19,16 +19,30 @@ export type ServerNow =
 
 export const usageFraction = (usage: Usage) => usage.used / usage.total;
 
-// The daemon samples CPU and memory every 10 seconds and disk every 60. A reading counts as now while it is within three
-// of its own samples (or three buckets, on a broader read) of the read's end, the freshness `ployz metrics` uses.
+// The daemon samples CPU and memory every 10 seconds and disk every 60; `ployz metrics` calls three samples fresh.
 const FRESH_SAMPLES = 3;
 const HOST_SAMPLE_MS = 10_000;
-const DISK_SAMPLE_MS = 60_000;
+export const DISK_SAMPLE_MS = 60_000;
+
+/**
+ * The last of `samples` while it still counts as now: within three of its own samples, or three buckets on a broader
+ * read, of now. `age` is how long ago the read landed; now is the read's end moved on by it, which keeps the browser's
+ * clock out of the comparison.
+ */
+export function freshLast<S extends { readonly at: number }>(
+  samples: readonly S[],
+  read: { readonly window: { readonly to: number }; readonly stepMs: number | null },
+  age: number,
+  sampleMs = HOST_SAMPLE_MS,
+): S | undefined {
+  const last = samples.at(-1);
+  return last !== undefined && last.at >= read.window.to + age - FRESH_SAMPLES * Math.max(read.stepMs ?? 0, sampleMs) ? last : undefined;
+}
 
 const usage = (used: number, total: number): Usage | null => total > 0 ? { used, total } : null;
 
-/** What a Server uses as of `metrics`' read, leaving out any reading too old to call current. */
-export function serverNow(metrics: ServerMetrics): ServerNow {
+/** What a Server uses now, from a read that landed `age` ms ago, leaving out any reading too old to call current. */
+export function serverNow(metrics: ServerMetrics, age: number): ServerNow {
   switch (metrics.availability.type) {
     case "needs_upgrade":
       return { type: "needs_upgrade" };
@@ -39,15 +53,10 @@ export function serverNow(metrics: ServerMetrics): ServerNow {
       return { type: "no_readings" };
     case "normal":
     case "mixed": {
-      const step = metrics.stepMs ?? 0;
-      const fresh = <S extends { readonly at: number }>(samples: readonly S[], sampleMs: number) => {
-        const last = samples.at(-1);
-        return last !== undefined && last.at >= metrics.window.to - FRESH_SAMPLES * Math.max(step, sampleMs) ? last : undefined;
-      };
-      const cpu = fresh(metrics.cpu, HOST_SAMPLE_MS);
-      const used = fresh(metrics.memoryUsed, HOST_SAMPLE_MS);
-      const total = fresh(metrics.memoryTotal, HOST_SAMPLE_MS);
-      const disk = fresh(metrics.disk, DISK_SAMPLE_MS);
+      const cpu = freshLast(metrics.cpu, metrics, age);
+      const used = freshLast(metrics.memoryUsed, metrics, age);
+      const total = freshLast(metrics.memoryTotal, metrics, age);
+      const disk = freshLast(metrics.disk, metrics, age, DISK_SAMPLE_MS);
       const now = {
         type: "meters",
         cpu: cpu?.value ?? null,
