@@ -10,7 +10,7 @@ use std::{
 use futures_util::future::join_all;
 use ployz_core::{
     HOSTNAME_VERIFY_PATH, HostnameVerdict, HttpProtocol, IngressHost, MachineId, PortPublication,
-    Refusal, RequestedServiceSpec, VerifyAnswer, hostname_verdict, refusal_reason,
+    RequestedServiceSpec, VerifyAnswer, hostname_verdict, refusal_reason,
 };
 use reqwest::{Client, redirect::Policy};
 
@@ -144,14 +144,17 @@ fn judge_answers(
     cluster_addresses: &[IpAddr],
     ingress_returning: &[Option<IpAddr>],
 ) -> Option<HostnameVerdict> {
-    let verdict = hostname_verdict(answers, machine_ids, cluster_addresses);
-    let awaiting_ingress = verdict == HostnameVerdict::Refused(Refusal::Unreachable)
-        && answers.iter().all(|(address, answer)| {
-            *answer == VerifyAnswer::NoAnswer
-                && (ingress_returning.contains(&Some(*address))
+    let judged: Vec<_> = answers
+        .iter()
+        .filter(|(address, answer)| {
+            *answer != VerifyAnswer::NoAnswer
+                || !(ingress_returning.contains(&Some(*address))
                     || (ingress_returning.contains(&None) && !cluster_addresses.contains(address)))
-        });
-    (!awaiting_ingress).then_some(verdict)
+        })
+        .cloned()
+        .collect();
+    (answers.is_empty() || !judged.is_empty())
+        .then(|| hostname_verdict(&judged, machine_ids, cluster_addresses))
 }
 
 /// Probe Ingress Hostnames from planned ports and warn when they do not reach this Cluster.
@@ -315,8 +318,12 @@ mod tests {
                 },
             ),
         ];
-        assert!(judge_answers(&answers, &machines, &[repairing], &[Some(repairing)]).is_some());
-        assert!(judge_answers(&answers, &machines, &[repairing], &[None]).is_some());
+        let elsewhere = Some(HostnameVerdict::Refused(Refusal::ReachesElsewhere));
+        assert_eq!(
+            judge_answers(&answers, &machines, &[repairing], &[Some(repairing)]),
+            elsewhere
+        );
+        assert_eq!(judge_answers(&answers, &machines, &[], &[None]), elsewhere);
     }
 
     #[test]
