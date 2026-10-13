@@ -56,12 +56,19 @@ ployz deploy
 
 ## Saved history
 
-Open **History** at the top of the canvas to see this environment's saved versions. Expand a
-version to review its changes, then use its **⋮** menu:
+Open **History** at the top of the canvas to see this environment's saved versions. Each version
+is titled from what it changed unless it was saved with a message, and lists its changes one per
+row, folding past three. The version's **⋮** menu:
 
-- **Undo this change** reverses that version's changed fields and preserves unrelated later edits.
-  The first recorded version has no earlier version to undo.
-- **Restore this version** stages its complete configuration in the current draft.
+- **Undo these N changes** reverses that version's changed fields and keeps the versions saved
+  after it. The first recorded version has no earlier version to undo.
+- **Roll back to #N** stages that version's complete configuration, undoing every later version.
+  The current version has nothing to roll back to.
+
+Each row's **⋮** undoes that one change. A change the same save tied to others undoes with them,
+and the menu says how many: adding a Service together with another Service's reference to it,
+a Volume together with its mounts, or a Source with its repository and branch. Every action stages
+on the canvas; nothing is saved or deployed until you do.
 
 If an action would overwrite draft changes, the confirmation lists exactly which fields.
 Cancel changes nothing. If someone edits the environment after your review, reopen the action
