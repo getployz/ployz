@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import { toast } from "sonner";
 import { afterEach, expect, it, vi } from "vitest";
 import * as runs from "#/modules/volume-run/volume-run.functions";
+import { member } from "#/modules/volume-run/volume-run.test-fixture";
 import * as functions from "./volume-placement.functions";
 import { useDeleteCopy, useStagedPlacements } from "./volume-placement.hooks";
 import type { PlacementRow } from "./volume-placement";
@@ -15,7 +16,7 @@ const environment = { project: "shop", environment: "production" };
 
 it("Discard all discards a staged restore the Servers haven't answered for yet, once the Store discard lands", async () => {
   const restore: PlacementRow = {
-    volumeId: "vol-restored", environmentId: "env-1", mirrors: [], deploymentId: null,
+    volumeId: "vol-restored", environmentId: "env-1", mirrors: [], unreached: false, deploymentId: null,
     staged: {
       primary: "web-1".padEnd(32, "0") as never, mirrors: [], deletes: [],
       seed: { sourceVolumeId: "vol-source", sourceName: "data", dockerVolume: "shop_vol-restored", point: { guid: "1", name: "p", at: 1 } },
@@ -36,6 +37,58 @@ it("Discard all discards a staged restore the Servers haven't answered for yet, 
   await waitFor(() => expect(discarded).toHaveBeenCalledWith({ data: { organizationSlug: "acme", volumeId: "vol-restored", environment } }));
   expect(storeDiscarded).toBe(true);
   expect(result.current.groups).toEqual([]);
+});
+
+it("Discard all discards one restore at a time, so no sibling finds the Environment held and stays staged", async () => {
+  const restore = (volumeId: string): PlacementRow => ({
+    volumeId, environmentId: "env-1", mirrors: [], unreached: false, deploymentId: null,
+    staged: {
+      primary: "web-1".padEnd(32, "0") as never, mirrors: [], deletes: [],
+      seed: { sourceVolumeId: "vol-source", sourceName: "data", dockerVolume: `shop_${volumeId}`, point: { guid: "1", name: "p", at: 1 } },
+    },
+  });
+  vi.spyOn(functions, "listPlacementsServerFn").mockResolvedValue([restore("vol-a"), restore("vol-b")] as never);
+  vi.spyOn(runs, "inspectVolumeCopiesServerFn").mockReturnValue(new Promise(() => undefined) as never);
+  const ends: (() => void)[] = [];
+  const discarded = vi.spyOn(functions, "discardPlacementServerFn")
+    .mockImplementation(() => new Promise((resolve) => ends.push(() => resolve({ ok: true, placement: null }))) as never);
+  const error = vi.spyOn(toast, "error").mockReturnValue("");
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
+  const { result } = renderHook(() => useStagedPlacements("acme", environment, "env-1", []), { wrapper });
+  await waitFor(() => expect(queryClient.getQueryData(["volume-placement", "acme"])).toHaveLength(2));
+
+  act(() => result.current.discardAll(async () => undefined));
+
+  await waitFor(() => expect(discarded).toHaveBeenCalledTimes(1));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(discarded).toHaveBeenCalledTimes(1);
+  act(() => ends[0]?.());
+  await waitFor(() => expect(discarded).toHaveBeenCalledTimes(2));
+  expect(discarded.mock.calls.map(([call]) => (call as { data: { volumeId: string } }).data.volumeId)).toEqual(["vol-a", "vol-b"]);
+  act(() => ends[1]?.());
+  await waitFor(() => expect(result.current.count).toBe(0));
+  expect(error).not.toHaveBeenCalled();
+});
+
+it("leaves a Volume the Deploy deletes out of the copy loss, so only the Store's own deletion confirm accepts it", async () => {
+  const id = (server: string) => server.padEnd(32, "0") as never;
+  const dropsMirror: PlacementRow = {
+    volumeId: "v1", environmentId: "env-1", mirrors: [id("web-2")], unreached: false, deploymentId: null,
+    staged: { primary: id("web-1"), mirrors: [], deletes: [] },
+  };
+  vi.spyOn(functions, "listPlacementsServerFn").mockResolvedValue([dropsMirror] as never);
+  vi.spyOn(runs, "inspectVolumeCopiesServerFn").mockResolvedValue([member("web-1", "writer"), member("web-2", "mirror")] as never);
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
+  const { result, rerender } = renderHook((change: "delete" | null) =>
+    useStagedPlacements("acme", environment, "env-1", [{ id: "v1", name: "pg-data", change }]), { wrapper, initialProps: null as "delete" | null });
+  await waitFor(() => expect(result.current.loss.accept).toEqual(["pg-data"]));
+
+  rerender("delete");
+  expect(result.current.loss.accept).toEqual([]);
+  expect(result.current.loss.items).toEqual([]);
+  expect(result.current.count).toBe(1);
 });
 
 const runView = (id: string, state: string, message: string | null = null) => ({ id, state, message }) as never;

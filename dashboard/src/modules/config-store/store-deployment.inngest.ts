@@ -53,7 +53,7 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Store
       await Promise.all(github.map((target) => walkGithub(event.data.organizationId, target, step, runEffect)));
       const storage = await walkPlacement(event.data, step, runEffect);
       if (storage.kind === "failed") {
-        return step.run("storage-failed", () => runEffect(failStoreDeploymentUnrun(event.data.organizationId, event.data.environmentId, event.data.deploymentId, runId, storage.message)));
+        return step.run("storage-failed", () => runEffect(failStoreDeploymentUnrun(event.data.organizationId, event.data.environmentId, event.data.deploymentId, runId, storage.message, storage.restore)));
       }
       if (storage.kind === "done") {
         await step.run("refresh-mirrors", () => runEffect(refreshMirrors(event.data.organizationId, event.data.environmentId)));

@@ -118,15 +118,22 @@ function reportIdlePoolError(cause: Error) {
 
 function acquirePool(options: PoolConfig) {
   return Effect.gen(function* () {
-    const pool = yield* Effect.acquireRelease(
+    const { pool } = yield* Effect.acquireRelease(
       Effect.sync(() => {
         const pool = new Pool(options);
+        const clients = { open: 0 };
         pool.on("error", reportIdlePoolError);
-        return pool;
+        pool.on("connect", () => { clients.open += 1; });
+        pool.on("remove", () => { clients.open -= 1; });
+        return { pool, clients };
       }),
-      (pool) =>
+      ({ pool, clients }) =>
         Effect.tryPromise({
-          try: () => pool.end(),
+          try: async () => {
+            await pool.end();
+            // pool.end() resolves before its clients' sockets close, and a closing client still reports errors.
+            while (clients.open > 0) await new Promise((resolve) => pool.once("remove", resolve));
+          },
           catch: (cause) => new DatabasePoolCloseFailure({ cause }),
         }).pipe(
           Effect.ensuring(

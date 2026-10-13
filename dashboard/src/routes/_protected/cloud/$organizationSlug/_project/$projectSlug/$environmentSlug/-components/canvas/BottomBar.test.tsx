@@ -24,11 +24,16 @@ const onDiscardAll = vi.fn();
 const onPublish = vi.fn();
 /** In flight, newest first, as the Store lists them. */
 let active: DeploymentSummary[] = [];
+let ended: DeploymentSummary[] | undefined = [];
 let storage: (deploymentId: string) => string | null = () => null;
+/** Moves Deployments between in flight and ended while the bar stays mounted. */
+let settle: (lists: { active: DeploymentSummary[]; ended: DeploymentSummary[] | undefined }) => void = () => {};
 
 beforeEach(() => {
   active = [];
+  ended = [];
   storage = () => null;
+  localStorage.clear();
   vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); onDeploy.mockClear(); onPublish.mockReset(); });
@@ -41,11 +46,13 @@ function open(url: string, groups: ChangeGroup[] = [], totalChanges = 0, canPubl
   const environment = createRoute({ getParentRoute: () => projectGroup, path: "$projectSlug/$environmentSlug", component: Outlet });
   const canvas = createRoute({ getParentRoute: () => environment, id: "_canvas", component: function Canvas() {
     const [slot, setSlot] = useState<HTMLElement | null>(null);
+    const [lists, setLists] = useState({ active, ended });
+    settle = setLists;
     return (
       <BottomBarSlot.Provider value={slot}>
         <div ref={setSlot} />
         <BottomBar groups={groups} totalChanges={totalChanges} canPublish={canPublish} onDeploy={onDeploy} onPublish={onPublish}
-          onDiscardAll={onDiscardAll} onDiscardNode={() => {}} onDiscardRow={() => {}} active={active} storage={storage} notes={{}}
+          onDiscardAll={onDiscardAll} onDiscardNode={() => {}} onDiscardRow={() => {}} active={lists.active} ended={lists.ended} storage={storage} notes={{}}
           proposals={{ included: [] }} />
         <Outlet />
       </BottomBarSlot.Provider>
@@ -126,6 +133,89 @@ it("words a Deploy's storage step while it moves a Volume before its Services", 
   const shown = await bar();
   expect(shown.getByText("Queued · Deployment #2")).toBeTruthy();
   expect(shown.getByText("pg-data · Moving to web-2")).toBeTruthy();
+});
+
+it("shows how a Deployment it watched ended, until dismissed, and a Deployed one only for a few seconds", async () => {
+  active = [deployment(running, "running", 1)];
+  open(canvasUrl);
+  expect((await bar()).getByText("Deploying · Deployment #1")).toBeTruthy();
+  act(() => settle({ active: [], ended: [deployment(running, "failed", 1), deployment(queued, "applied", 0)] }));
+  const failed = await bar();
+  expect(failed.getByText("Failed · Deployment #1")).toBeTruthy();
+  expect(failed.getByRole("link", { name: "Logs" })).toBeTruthy();
+  fireEvent.click(failed.getByRole("button", { name: "Dismiss" }));
+  expect(screen.queryByRole("group", { name: "Bottom bar" })).toBeNull();
+
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  act(() => settle({ active: [deployment(queued, "running", 2)], ended: [] }));
+  expect((await bar()).getByText("Deploying · Deployment #2")).toBeTruthy();
+  act(() => settle({ active: [], ended: [deployment(queued, "applied", 2), deployment(running, "failed", 1)] }));
+  expect((await bar()).getByText("Deployed · Deployment #2")).toBeTruthy();
+  act(() => { vi.advanceTimersByTime(6_000); });
+  expect(screen.queryByRole("group", { name: "Bottom bar" })).toBeNull();
+  vi.useRealTimers();
+});
+
+it("shows a failed Deployment above the changes it handed back, until dismissed", async () => {
+  active = [deployment(running, "running", 1)];
+  open(canvasUrl, [replicas], 1);
+  expect((await bar()).getByRole("button", { name: /^Deploy next/ })).toBeTruthy();
+  act(() => settle({ active: [], ended: [deployment(running, "failed", 1)] }));
+  const both = await bar();
+  const rows = both.getAllByText(/Failed · Deployment #1|^1 change$/).map((node) => node.textContent);
+  expect(rows).toEqual(["Failed · Deployment #1", "1 change", "1 change"]);
+  expect(both.getByRole("link", { name: "Logs" })).toBeTruthy();
+  expect(both.getByRole("button", { name: /^Deploy$/ })).toBeTruthy();
+  fireEvent.click(both.getByRole("button", { name: "Dismiss" }));
+  const staged = await bar();
+  expect(staged.queryByText("Failed · Deployment #1")).toBeNull();
+  expect(staged.getAllByText("1 change")).toHaveLength(2);
+});
+
+it("never shows a Deployed one that ended before it was watched", async () => {
+  open(canvasUrl);
+  act(() => settle({ active: [], ended: [deployment(running, "applied", 1)] }));
+  await act(async () => {});
+  expect(screen.queryByRole("group", { name: "Bottom bar" })).toBeNull();
+});
+
+it("shows the newest Deployment Failed on a fresh mount, until dismissed, and keeps it dismissed after a reload", async () => {
+  ended = [deployment(running, "failed", 1), deployment(queued, "failed", 0)];
+  open(canvasUrl);
+  const failed = await bar();
+  expect(failed.getByText("Failed · Deployment #1")).toBeTruthy();
+  expect(failed.getByRole("link", { name: "Logs" })).toBeTruthy();
+  fireEvent.click(failed.getByRole("button", { name: "Dismiss" }));
+  expect(screen.queryByRole("group", { name: "Bottom bar" })).toBeNull();
+  cleanup();
+  open(canvasUrl);
+  await act(async () => {});
+  expect(screen.queryByRole("group", { name: "Bottom bar" })).toBeNull();
+});
+
+it("shows how a Deployment ended when this tab opened its page before it was listed, as Deploy does", async () => {
+  const router = open(`${canvasUrl}/deployments/${running}`);
+  await screen.findByText("Deployment Page");
+  act(() => settle({ active: [], ended: [deployment(running, "failed", 1)] }));
+  await act(async () => router.history.push(canvasUrl));
+  expect((await bar()).getByText("Failed · Deployment #1")).toBeTruthy();
+});
+
+it("shows nothing after closing the page of a Deployment that had already ended", async () => {
+  ended = [deployment(running, "applied", 1)];
+  const router = open(`${canvasUrl}/deployments/${running}`);
+  await screen.findByText("Deployment Page");
+  await act(async () => router.history.push(canvasUrl));
+  expect(screen.queryByRole("group", { name: "Bottom bar" })).toBeNull();
+});
+
+it("watches no Deployment whose page opened before the ended ones loaded", async () => {
+  ended = undefined;
+  const router = open(`${canvasUrl}/deployments/${running}`);
+  await screen.findByText("Deployment Page");
+  act(() => settle({ active: [], ended: [deployment(running, "applied", 1)] }));
+  await act(async () => router.history.push(canvasUrl));
+  expect(screen.queryByRole("group", { name: "Bottom bar" })).toBeNull();
 });
 
 it("hides while nothing is staged or running, and while the only Deployment's page is open", async () => {

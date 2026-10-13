@@ -61,13 +61,14 @@ doesn't. Everything that mounts the volume still runs on its server.
 ## When its server goes down
 
 The services that mount the volume stop until the server is back. Nothing moves to another
-server on its own, and a volume can't be [moved](move-a-volume.md) while its server is down. To
-keep deploying your other services meanwhile, see
-[When a server goes down](scaling.md#when-a-server-goes-down).
+server on its own, and the CLI can't [move](move-a-volume.md) a volume while its server is down.
+With a mirror, **Use mirror** under the volume's **Copies** moves it there at your next deploy,
+losing the writes since the mirror's last refresh. To keep deploying your other services meanwhile,
+see [When a server goes down](scaling.md#when-a-server-goes-down).
 
 > [!WARNING]
 > Ployz doesn't back up volumes. A [mirror](move-a-volume.md#mirror-a-volume) holds the data as
-> of its last refresh, nothing newer, and Ployz doesn't switch to it when the server goes down.
+> of its last refresh, nothing newer, and Ployz doesn't switch to it on its own.
 > Keep your own copies off your servers. See
 > [Back up a database](databases.md#back-up-a-database).
 
@@ -76,8 +77,18 @@ keep deploying your other services meanwhile, see
 A volume's copies are the places its data lives besides the server that writes it. With Ployz
 Cloud a volume can have a mirror, a read-only copy on a second server that refreshes on every
 deploy and every 15 minutes. A move leaves an old copy on the server it left. Open the volume and
-look under **Copies**. Its top line says "No copies" in amber until the volume has a mirror, and
-"Mirror behind" when the mirror is more than an hour old.
+look under **Copies**. Its top line says "No copies" in amber until the volume has a mirror. An
+old copy doesn't count, since it never refreshes. The line says "Mirror behind" when the mirror is
+more than an hour old.
+
+Copy changes, like a new mirror or a restore, go out with your next deploy. **Redeploy** on a past
+deployment ships what that deployment froze, so it leaves them staged and says **Copies wait for
+Deploy**. A restore that failed is taken back, and that deployment can't be redeployed. Restore
+again instead.
+
+A restore, or discarding one, is refused with "A Deploy or restore is starting. Try again." while
+a deploy in the same environment is starting. Once a deploy has taken a restore, you can't discard
+the restore until that deploy ends.
 
 ## Move a volume
 
@@ -122,7 +133,7 @@ Deleting a deployed volume deletes its data from your servers for good.
 
 1. Open the volume and click **Delete volume** under **Danger**. **Keep volume** undoes it.
 2. Click **Delete data**, or **Deploy**.
-3. Ployz shows **Deploy deletes data** with what goes. Type your `project/environment`, like
+3. Ployz shows **Deletes data** with what goes. Type your `project/environment`, like
    `my-app/production`, and click **Deploy**.
 
 A volume that was never deployed holds no data, so it goes on your next deploy without asking.

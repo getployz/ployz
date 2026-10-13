@@ -31,6 +31,7 @@ const notOrganizationOwned = {
   config_create: "The Config Store's record of caller-minted IDs for replay; no view reads it, so it needs no change log.",
   config_migration: "The Config Store's applied migrations.",
   deployment_run: "Which worker run owns a Deployment, read only when Inngest cancels the run; no view reads it, so it needs no change log.",
+  failed_restore: "A restored Volume whose copy failed, read only when a Deploy is admitted or advanced; no view reads it, so it needs no change log.",
   upload_chunk: "Source a Deployment's runner reads while it's in flight; no view reads it, so it needs no change log.",
   config_build_receipt: "Private build evidence only a Deployment's runner reads at claim; no view reads it, so it needs no change log.",
   config_volume_storage: "Storage fixed when a Deployment first targets a Volume; no Cloud view reads it, so it needs no change log.",

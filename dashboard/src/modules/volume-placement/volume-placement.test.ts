@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { MachineId } from "@ployz/sdk";
 import type { ChangeGroup } from "#/modules/config-store/store-deployments";
+import { volumeLoss } from "#/modules/config-store/store-volumes";
 import type { Member, VolumeRunView } from "#/modules/volume-run/volume-run";
 import { COPIES, member } from "#/modules/volume-run/volume-run.test-fixture";
 import {
-  canvasMirrors,
   detachedCopies,
   drainPlacement,
   editPlacement,
@@ -16,15 +16,23 @@ import {
   placementTargets,
   placementForm,
   mirroredVolumes,
-  mirrorPanel,
   mirrorResourceId,
   parseMirrorResourceId,
   mergeRestoreGroups,
   placementGroup,
+  placementLoss,
+  placementLosses,
+  volumeLossItems,
+  lossTime,
+  lossByVolume,
+  lossVersion,
+  type PlacementLost,
   restorePoints,
   stagedOffServer,
   storageStep,
   targetPlacement,
+  changeKey,
+  dropChange,
   undoPlacement,
   type PlacementItem,
   type PlacementRow,
@@ -37,6 +45,7 @@ const row = (mirrors: string[] | null, staged: { primary: string; mirrors?: stri
   environmentId: "e1",
   mirrors: mirrors === null ? null : mirrors.map(id),
   staged: staged === null ? null : { primary: id(staged.primary), mirrors: (staged.mirrors ?? []).map((name) => id(name)), deletes: (staged.deletes ?? []).map((name) => id(name)) },
+  unreached: false,
   deploymentId: null,
 });
 const pooled = (server: string) => member(server, "empty", { pool: true });
@@ -47,7 +56,7 @@ const mirrorAsOf = (server: string, when: Date): Member => {
   return { ...base, view: { ...base.view, copy: { ...COPIES.mirror, newest: { name: "s", guid: "12", created_unix_seconds: when.getTime() / 1000 } } } };
 };
 const changes = (members: Member[], placement: PlacementRow | null) => placementChanges(volume, members, placement);
-const review = (members: Member[], placement: PlacementRow | null) => placementGroup(volume, changes(members, placement)).rows
+const review = (members: Member[], placement: PlacementRow | null) => placementGroup(volume, changes(members, placement), at).rows
   .map(({ kind, name, currentValue, newValue, detail, loss }) => ({ kind, name, currentValue, newValue, detail, loss }));
 const primaryMove = (from: string, to: string, loss?: string) =>
   ({ kind: "update", name: "Primary", currentValue: from, newValue: to, detail: undefined, loss });
@@ -222,12 +231,71 @@ describe("undoPlacement", () => {
   });
 });
 
+describe("dropChange", () => {
+  const drop = (members: Member[], placement: PlacementRow, kind: string) => {
+    const change = changes(members, placement).find((one) => one.kind === kind);
+    if (change === undefined) throw new Error(`no ${kind}`);
+    return dropChange(volume, members, placement, changeKey(change));
+  };
+
+  it("drops the change that failed and keeps its siblings", () => {
+    const members = [member("web-1", "writer"), member("web-2", "mirror"), member("web-3", "mirror")];
+    const placement = row(["web-2"], { primary: "web-2", deletes: ["web-3"] });
+    expect(drop(members, placement, "delete_copy")).toEqual({ primary: id("web-2"), mirrors: [], deletes: [] });
+    expect(drop(members, placement, "move")).toEqual({ primary: id("web-1"), mirrors: [id("web-2")], deletes: [id("web-3")] });
+  });
+
+  describe("a change the Servers no longer show, since it landed despite the failure", () => {
+    const landed = { kind: "delete_copy", server: id("web-3") } as const;
+    const members = [member("web-1", "writer"), member("web-2", "mirror"), pooled("web-3"), pooled("web-4")];
+
+    it("drops the row when the landed delete was all it had staged", () => {
+      expect(dropChange(volume, members, row(["web-2"], { primary: "web-1", mirrors: ["web-2"], deletes: ["web-3"] }), landed)).toBeNull();
+    });
+
+    it("drops the landed delete and keeps the rest staged", () => {
+      expect(dropChange(volume, members, row(["web-2"], { primary: "web-1", mirrors: ["web-2", "web-4"], deletes: ["web-3"] }), landed))
+        .toEqual({ primary: id("web-1"), mirrors: [id("web-2"), id("web-4")], deletes: [] });
+      expect(dropChange(volume, members, row(["web-2"], { primary: "web-2", deletes: ["web-3"] }), landed))
+        .toEqual({ primary: id("web-2"), mirrors: [], deletes: [] });
+    });
+  });
+
+  it("keeps a move that failed after the hand-over, since the next Deploy must finish it", () => {
+    const members = [member("web-1", "mirror"), member("web-2", "writer", { epoch: 2 })];
+    const placement = row(["web-2"], { primary: "web-2" });
+    expect(drop(members, placement, "move")).toEqual(placement.staged);
+  });
+
+  it("drops only the failed move when the primary isn't answering, returning its siblings to the silent primary", () => {
+    const members = [member("web-1", "unanswered"), member("web-2", "mirror"), pooled("web-3")];
+    const dropped = drop(members, row(["web-2"], { primary: "web-2", mirrors: ["web-3"] }), "move");
+    expect(dropped).toEqual({ primary: id("web-1"), mirrors: [id("web-3"), id("web-2")], deletes: [] });
+    expect(changes(members, { ...row(["web-2"]), staged: dropped }).map(changeKey)).toEqual([{ kind: "add_mirror", server: id("web-3") }]);
+  });
+
+  it("drops a failed move back to the silent Server it left when two Servers are silent, and plans no move from it", () => {
+    const placement = row(["web-2", "web-4"], { primary: "web-2", mirrors: ["web-4"] });
+    const planned = changes([member("web-1", "writer"), member("web-2", "mirror"), member("web-4", "mirror")], placement).find((one) => one.kind === "move");
+    if (planned === undefined) throw new Error("no move");
+    const silent = [member("web-4", "unanswered"), member("web-1", "unanswered"), member("web-2", "mirror")];
+    const corrected = { primary: id("web-1"), mirrors: [id("web-4"), id("web-2")], deletes: [] };
+    expect(changes(silent, { ...placement, staged: corrected })).toEqual([]);
+    expect(dropChange(volume, silent, placement, changeKey(planned))).toBeNull();
+  });
+
+  it("drops the row when the primary isn't answering, so nothing moves to a Server that may be gone", () => {
+    const members = [member("web-1", "unanswered"), member("web-2", "mirror")];
+    expect(drop(members, row(["web-2"], { primary: "web-2" }), "move")).toBeNull();
+  });
+});
+
 describe("nextPlacementStep", () => {
   const next = (members: Member[], placement: PlacementRow) => nextPlacementStep(changes(members, placement), placement.mirrors ?? []);
 
   it("drops the promoted mirror once the move ends, and leaves the old primary detached", () => {
     const members = [member("web-1", "writer"), member("web-2", "mirror")];
-    expect(next(members, row(["web-2"], { primary: "web-2" }))).toEqual({ run: { kind: "move", args: { to: "web-2" } }, mirrors: [] });
+    expect(next(members, row(["web-2"], { primary: "web-2" }))).toEqual({ run: { kind: "move", args: { to: "web-2" } }, mirrors: [], change: { kind: "move", server: id("web-2"), from: id("web-1") } });
   });
 
   it("keeps the mirrors while a change still has runs after this one", () => {
@@ -235,9 +303,10 @@ describe("nextPlacementStep", () => {
     expect(next(members, row([], { primary: "web-2", mirrors: ["web-3"] }))).toEqual({
       run: { kind: "delete_mirror", args: { slot: "web-1", confirmed_name: null } },
       mirrors: [],
+      change: { kind: "add_mirror", server: id("web-3") },
     });
     const deleted = [member("web-2", "writer"), pooled("web-1"), pooled("web-3")];
-    expect(next(deleted, row([], { primary: "web-2", mirrors: ["web-3"] }))).toEqual({ run: { kind: "mirror", args: { to: "web-3" } }, mirrors: [id("web-3")] });
+    expect(next(deleted, row([], { primary: "web-2", mirrors: ["web-3"] }))).toEqual({ run: { kind: "mirror", args: { to: "web-3" } }, mirrors: [id("web-3")], change: { kind: "add_mirror", server: id("web-3") } });
   });
 
   it("is null once the Servers hold what was staged", () => {
@@ -324,6 +393,15 @@ describe("storageStep", () => {
     expect(storageStep("dep-1", [taken], [run("v1", "web-2 did not answer")])).toBe("pg-data · Moving to web-2 · web-2 did not answer");
   });
 
+  it("words a restore's run, which runs on the Volume it copies from", () => {
+    const restoring = { ...row(null), volumeId: "v2", deploymentId: "dep-1", staged: {
+      primary: id("web-1"), mirrors: [], deletes: [],
+      seed: { sourceVolumeId: "v1", sourceName: "pg-data", dockerVolume: "pg-copy", point: { guid: "11", name: "ployz-1", at: 1 } },
+    } };
+    const seeding: VolumeRunView = { ...run("v1", null), kind: "seed", args: { into: { volumeId: "v2", dockerVolume: "pg-copy", name: "pg-copy" }, guid: "11", name: "ployz-1" } };
+    expect(storageStep("dep-1", [restoring], [seeding])).toBe("pg-data · Restoring into pg-copy");
+  });
+
   it("ignores runs on Volumes another Deploy, or no Deploy, took", () => {
     expect(storageStep("dep-2", [taken], [run("v1", null)])).toBeNull();
     expect(storageStep("dep-1", [taken], [run("v9", null)])).toBeNull();
@@ -365,79 +443,12 @@ describe("stagedOffServer", () => {
   });
 });
 
-describe("canvasMirrors", () => {
-  const nodes = (members: Member[], placement: PlacementRow | null) =>
-    canvasMirrors(volume, members, placement).map(({ volume: owner, server, change, newest }) => ({ owner: owner.id, server: server.name, change, newest }));
-
-  it("draws a live mirror with when it last refreshed", () => {
-    expect(nodes([member("web-1", "writer"), mirrorAsOf("web-2", at)], row(["web-2"])))
-      .toEqual([{ owner: "v1", server: "web-2", change: null, newest: at }]);
-  });
-
-  it("draws a staged mirror as one the Deploy adds", () => {
-    expect(nodes([member("web-1", "writer"), pooled("web-3")], row([], { primary: "web-1", mirrors: ["web-3"] })))
-      .toEqual([{ owner: "v1", server: "web-3", change: "add", newest: null }]);
-  });
-
-  it("keeps a mirror staged for removal, as one the Deploy removes", () => {
-    expect(nodes([member("web-1", "writer"), mirrorAsOf("web-2", at)], row(["web-2"], { primary: "web-1" })))
-      .toEqual([{ owner: "v1", server: "web-2", change: "remove", newest: at }]);
-  });
-
-  it("keeps a mirror staged to become the Primary, as one the Deploy changes", () => {
-    expect(nodes([member("web-1", "writer"), mirrorAsOf("web-2", at)], row(["web-2"], { primary: "web-2" })))
-      .toEqual([{ owner: "v1", server: "web-2", change: "update", newest: at }]);
-  });
-
-  it("draws none without mirrors, and leaves detached copies to the drawer", () => {
-    expect(nodes([member("web-1", "writer")], row([]))).toEqual([]);
-    expect(nodes([member("web-2", "writer"), member("web-1", "mirror")], row([]))).toEqual([]);
-    expect(nodes([], null)).toEqual([]);
-  });
-});
-
 describe("mirrorResourceId", () => {
   it("addresses a mirror by its Volume and Server, and reads back only a mirror's address", () => {
     expect(parseMirrorResourceId(mirrorResourceId("v1", id("web-2")))).toEqual({ volumeId: "v1", server: id("web-2") });
     expect(parseMirrorResourceId("79997413-396c-471e-a1ad-e89164cf4e9c")).toBeNull();
     expect(parseMirrorResourceId("v1~")).toBeNull();
     expect(parseMirrorResourceId("~web-2")).toBeNull();
-  });
-});
-
-describe("mirrorPanel", () => {
-  const servers = ["web-1", "web-2", "web-3"].map(id);
-  const live = [member("web-1", "writer"), mirrorAsOf("web-2", at), pooled("web-3")];
-
-  it("offers a live mirror both actions, each staging what the volume drawer stages", () => {
-    const panel = mirrorPanel(volume, live, row(["web-2"]), id("web-2"), servers);
-    expect(panel).toMatchObject({ server: { name: "web-2" }, change: null, newest: at, applied: [id("web-2")] });
-    expect(panel?.promote).toEqual(editPlacement({ primary: id("web-1"), mirrors: [id("web-2")], deletes: [] }, { kind: "move", to: id("web-2") }));
-    expect(panel?.promote).toEqual({ primary: id("web-2"), mirrors: [], deletes: [] });
-    expect(panel?.remove).toEqual({ primary: id("web-1"), mirrors: [], deletes: [] });
-  });
-
-  it("offers nothing on a staged mirror: Details discards it", () => {
-    const added = mirrorPanel(volume, [member("web-1", "writer"), pooled("web-3")], row([], { primary: "web-1", mirrors: ["web-3"] }), id("web-3"), servers);
-    expect(added).toMatchObject({ change: "add", newest: null, promote: null, remove: null });
-    expect(mirrorPanel(volume, live, row(["web-2"], { primary: "web-2" }), id("web-2"), servers))
-      .toMatchObject({ change: "update", promote: null, remove: null });
-  });
-
-  it("offers nothing while a Deploy runs the placement", () => {
-    const running: PlacementRow = { ...row(["web-2"]), deploymentId: "d1" };
-    expect(mirrorPanel(volume, live, running, id("web-2"), servers)).toMatchObject({ promote: null, remove: null });
-  });
-
-  it("does not make primary a mirror on a Server that does not accept Services", () => {
-    const panel = mirrorPanel(volume, live, row(["web-2"]), id("web-2"), [id("web-1")]);
-    expect(panel?.promote).toBeNull();
-    expect(panel?.remove).toEqual({ primary: id("web-1"), mirrors: [], deletes: [] });
-  });
-
-  it("finds no mirror on a Server without one", () => {
-    expect(mirrorPanel(volume, live, row(["web-2"]), id("web-3"), servers)).toBeNull();
-    expect(mirrorPanel(volume, live, row(["web-2"]), id("web-1"), servers)).toBeNull();
   });
 });
 
@@ -456,6 +467,136 @@ describe("mirroredVolumes", () => {
   });
 });
 
+describe("changeSteps", () => {
+  const minutesAfter = (minutes: number) => new Date(at.getTime() + minutes * 60_000);
+  const stepsOf = (members: Member[], placement: PlacementRow | null, now = at) =>
+    placementGroup(volume, changes(members, placement), now).rows.map((line) => line.steps);
+
+  it("catches up first only when the mirror is more than 60 minutes behind", () => {
+    const members = [member("web-1", "writer"), mirrorAsOf("web-2", at)];
+    const promote = row(["web-2"], { primary: "web-2" });
+    expect(stepsOf(members, promote, minutesAfter(60))).toEqual([["Stop", "Final sync", "Start"]]);
+    expect(stepsOf(members, promote, minutesAfter(61))).toEqual([["Catch up", "Stop", "Final sync", "Start"]]);
+  });
+
+  it("seeds a Server that holds nothing before the hand-over", () => {
+    expect(stepsOf([member("web-1", "writer"), pooled("web-3")], row([], { primary: "web-3" }))).toEqual([["Seed", "Stop", "Final sync", "Start"]]);
+  });
+
+  it("restarts on the mirror when the primary does not answer", () => {
+    expect(stepsOf([member("web-1", "unanswered"), mirrorAsOf("web-2", at)], row(["web-2"], { primary: "web-2" }))).toEqual([["Stop", "Start"]]);
+  });
+
+  it("seeds an added mirror, deleting the detached copy it replaces first", () => {
+    const members = [member("web-2", "writer"), member("web-1", "mirror"), pooled("web-3")];
+    expect(stepsOf(members, row([], { primary: "web-2", mirrors: ["web-3"] }))).toEqual([["Delete", "Seed"]]);
+  });
+
+  it("deletes a removed mirror and a deleted copy", () => {
+    const members = [member("web-1", "writer"), member("web-2", "mirror")];
+    expect(stepsOf(members, row(["web-2"], { primary: "web-1" }))).toEqual([["Delete"]]);
+    expect(stepsOf(members, row([], { primary: "web-1", deletes: ["web-2"] }))).toEqual([["Delete"]]);
+  });
+});
+
+describe("placementLoss", () => {
+  const lossOf = (members: Member[], placement: PlacementRow) => {
+    const { version: _, ...loss } = placementLoss(changes(members, placement));
+    return loss;
+  };
+
+  it("names each copy a Deploy deletes and the Volume to accept, and asks nothing of a move that keeps every copy", () => {
+    const members = [member("web-1", "writer"), member("web-2", "mirror")];
+    expect(lossOf(members, row(["web-2"], { primary: "web-1" })))
+      .toEqual({ items: [{ kind: "volume", name: "pg-data", detail: "web-2" }], losesWrites: false, accept: ["pg-data"] });
+    expect(lossOf(members, row(["web-2"], { primary: "web-2" }))).toEqual({ items: [], losesWrites: false, accept: [] });
+  });
+
+  it("says a restore drops the unanswered primary's writes", () => {
+    const members = [member("web-1", "unanswered"), mirrorAsOf("web-2", at)];
+    expect(lossOf(members, row(["web-2"], { primary: "web-2" }))).toEqual({ items: [{ kind: "volume", name: "pg-data", detail: `web-1 · changes after ${lossTime(at)}` }], losesWrites: true, accept: ["pg-data"] });
+  });
+
+  it("asks before a restore no Server is known to have held, since it still drops writes", () => {
+    expect(lossOf([mirrorAsOf("web-2", at)], row(["web-2"], { primary: "web-2" })))
+      .toEqual({ items: [{ kind: "volume", name: "pg-data", detail: "changes after 10:36" }], losesWrites: true, accept: ["pg-data"] });
+  });
+
+  it("says a restore from a restore point drops the source's writes after it", () => {
+    const seeded: PlacementRow = {
+      ...row([], { primary: "web-1" }),
+      staged: { primary: id("web-1"), mirrors: [], deletes: [], seed: {
+        sourceVolumeId: "src", sourceName: "data", dockerVolume: "ns_vol-v1", point: { guid: "11", name: "ployz-1", at: at.getTime() / 1000 },
+      } },
+    };
+    expect(lossOf([], seeded)).toEqual({ items: [{ kind: "volume", name: "data", detail: "changes after 10:36" }], losesWrites: true, accept: ["data"] });
+  });
+});
+
+describe("lossByVolume", () => {
+  it("tells a Deploy's refusal which Volume a restore drops writes of, and which only loses copies", () => {
+    const seeded: PlacementRow = {
+      ...row([], { primary: "web-1" }),
+      staged: { primary: id("web-1"), mirrors: [], deletes: [], seed: {
+        sourceVolumeId: "src", sourceName: "data", dockerVolume: "ns_vol-v1", point: { guid: "11", name: "ployz-1", at: at.getTime() / 1000 },
+      } },
+    };
+    const members = [member("web-1", "writer"), member("web-2", "mirror")];
+    const lost = [...placementLosses(changes([], seeded)), ...placementLosses(changes(members, row(["web-2"], { primary: "web-1" })))];
+    expect(lossByVolume(lost)).toEqual([
+      { name: "data", deletes: [], loss: "writes", after: at.getTime() / 1000 },
+      { name: "pg-data", deletes: [{ machine_id: id("web-2") }], loss: "data" },
+    ]);
+  });
+
+  it("tells a refused restore's Deploy it drops writes, naming the unanswered primary as the local check does", () => {
+    const members = [member("web-1", "unanswered"), mirrorAsOf("web-2", at)];
+    expect(lossByVolume(placementLosses(changes(members, row(["web-2"], { primary: "web-2" })))))
+      .toEqual([{ name: "pg-data", deletes: [{ machine_id: id("web-1") }], loss: "writes", after: at.getTime() / 1000 }]);
+  });
+
+  it("words a refused restore's confirm as the local check does, with the changes it drops rather than the Server", () => {
+    const seeded: PlacementRow = {
+      ...row([], { primary: "web-1" }),
+      staged: { primary: id("web-1"), mirrors: [], deletes: [], seed: {
+        sourceVolumeId: "src", sourceName: "data", dockerVolume: "ns_vol-v1", point: { guid: "11", name: "ployz-1", at: at.getTime() / 1000 },
+      } },
+    };
+    const members = [member("web-1", "writer"), member("web-2", "mirror")];
+    const staged = [...changes([], seeded), ...changes(members, row(["web-2"], { primary: "web-1" }))];
+    const details = JSON.parse(JSON.stringify({ volumes: lossByVolume(placementLosses(staged)), accept: ["data", "pg-data"], version: "9:1:0.1" }));
+    const refused = volumeLoss({ code: "confirmation_required", details });
+    expect(refused && volumeLossItems(refused.volumes, (machine) => machine.replace(/0+$/u, ""))).toEqual(placementLoss(staged).items);
+  });
+});
+
+describe("two write losses on one Volume", () => {
+  const data = { id: "src", name: "data" };
+  const restore = (when: Date): PlacementLost => ({ volume: data, server: null, writes: true, after: when });
+  const failover = (when: Date | null): PlacementLost => ({ volume: data, server: { id: id("web-1"), name: "web-1" }, writes: true, after: when });
+  const later = new Date(at.getTime() + 3_600_000);
+  const detail = (lost: PlacementLost[]) => volumeLossItems(lossByVolume(lost), () => undefined)[0]?.detail;
+
+  it.each([["restore first", (a: PlacementLost, b: PlacementLost) => [a, b]], ["failover first", (a: PlacementLost, b: PlacementLost) => [b, a]]])(
+    "words and binds the earlier cutoff, %s", (_, order) => {
+      expect(lossByVolume(order(restore(later), failover(at)))).toMatchObject([{ loss: "writes", after: at.getTime() / 1000 }]);
+      expect(detail(order(restore(later), failover(at)))).toBe(detail(order(failover(at), restore(later))));
+      const earlier = new Date(at.getTime() - 60_000);
+      expect(lossVersion("v1", order(restore(later), failover(earlier)))).not.toBe(lossVersion("v1", order(restore(later), failover(at))));
+    });
+
+  it("names the Server losing a copy beside the writes it loses", () => {
+    const named = (lost: PlacementLost[]) => volumeLossItems(lossByVolume(lost), (machine) => machine.replace(/0+$/u, ""))[0]?.detail;
+    expect(named([failover(at)])).toBe(`web-1 · changes after ${lossTime(at)}`);
+    expect(named([failover(null)])).toBe("web-1 · recent changes");
+  });
+
+  it.each([["restore first", false], ["failover first", true]])("takes an unknown cutoff over a known one, %s", (_, flipped) => {
+    const lost = [restore(at), failover(null)];
+    expect(lossByVolume(flipped ? lost.reverse() : lost)).toEqual([{ name: "data", deletes: [{ machine_id: id("web-1") }], loss: "writes" }]);
+  });
+});
+
 describe("restore into a new Volume", () => {
   const point = { guid: "11", name: "ployz-1", at: at.getTime() / 1000 };
   const seeded: PlacementRow = {
@@ -467,6 +608,7 @@ describe("restore into a new Volume", () => {
     expect(nextPlacementStep(changes([], seeded), [])).toEqual({
       run: { kind: "seed", args: { into: { volumeId: "v1", dockerVolume: "ns_vol-v1", name: "pg-data" }, guid: "11", name: "ployz-1" } },
       mirrors: [],
+      change: { kind: "seed", server: id("web-1") },
     });
     expect(changes([member("web-1", "writer")], seeded)).toEqual([]);
   });
@@ -474,9 +616,10 @@ describe("restore into a new Volume", () => {
   it("reviews as a created Volume that says what it leaves out, and has no inline undo", () => {
     const [change] = changes([], seeded);
     if (change === undefined) throw new Error("fixture");
-    const group = placementGroup(volume, [change]);
+    const group = placementGroup(volume, [change], at);
     expect(group.lifecycle).toBe("create");
     expect(group.rows).toMatchObject([{
+      steps: ["Save current", "Stop", "Swap", "Start"],
       kind: "add", name: "From", currentValue: "", newValue: "data · 10:36",
       loss: "Changes after 10:36 are not in pg-data", detail: "Volume data, not database point-in-time.",
     }]);

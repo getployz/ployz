@@ -1,10 +1,12 @@
 import { useRef, useState } from "react";
 import type { DiscardTarget, EnvironmentRef, RowId } from "@ployz/sdk";
-import { DeletionDialog, type DeletionCheck } from "#/components/deletion-dialog";
+import { DeletionDialog } from "#/components/deletion-dialog";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { StoreRefused } from "#/modules/config-store/store.contract";
-import { useVolumeLossCheck, type VolumeAcceptance as Acceptance } from "#/modules/config-store/use-volume-loss-check";
+import { useVolumeLossCheck, type VolumeLossCheck } from "#/modules/config-store/use-volume-loss-check";
+import type { PlacementLoss } from "#/modules/volume-placement/volume-placement";
 type Action = "deploy" | "publish";
+const NO_PLACEMENT_LOSS: PlacementLoss = { items: [], losesWrites: false, accept: [], version: (version) => version };
 /** A Deploy's own words: what it ships (optional; the Store trims it). */
 type Message = string | null;
 
@@ -13,17 +15,19 @@ type Message = string | null;
  * each in the Environment's write queue after its pending edits, so the CLI and this tab share one queue of Deployments.
  *
  * When a Deploy or Publish would delete Volume data the Servers hold, the Store refuses with `confirmation_required`;
- * the user reads every Volume that goes, types where, and it runs again accepting exactly those. Any other refusal
- * (Servers that can't be checked, a newer version) is the writer's toast. An admitted Deploy opens its page.
+ * the user reads every Volume that goes, types where, and it runs again accepting exactly those. A Deploy whose staged
+ * copy changes delete a copy or drop a restore's writes asks the same way before it goes, from `placementLoss` when this
+ * tab has it, else from Cloud's refusal, which checks the copies again at admission. Any other refusal (Servers that
+ * can't be checked, a newer version) is the writer's toast. An admitted Deploy opens its page.
  */
 export function useStoreChangeActions(organizationSlug: string, environment: EnvironmentRef,
   /** The version of the review the user sees: every action acts on exactly it, and a newer one is refused. */
-  version: string, onAdmitted: (deploymentId: string) => void) {
+  version: string, onAdmitted: (deploymentId: string) => void, placementLoss: PlacementLoss = NO_PLACEMENT_LOSS) {
   const writer = useStoreWriter(organizationSlug);
   const lossOf = useVolumeLossCheck(organizationSlug);
   // What the user types to confirm: where the data goes from.
   const place = `${environment.project ?? ""}/${environment.environment ?? ""}`;
-  const [loss, setLoss] = useState<{ action: Action; check: DeletionCheck<Acceptance>; message: Message } | null>(null);
+  const [loss, setLoss] = useState<{ action: Action; check: VolumeLossCheck; message: Message } | null>(null);
   // One admission at a time: a double click must not admit two Deployments.
   const [admitting, setAdmitting] = useState(false);
   const inFlight = useRef(false);
@@ -47,6 +51,10 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
 
   function deploy(message: Message) {
     if (inFlight.current) return;
+    if (placementLoss.items.length > 0) {
+      setLoss({ action: "deploy", check: { items: placementLoss.items, evidence: { accept: placementLoss.accept, version: placementLoss.version(version) }, losesWrites: placementLoss.losesWrites }, message });
+      return;
+    }
     inFlight.current = true;
     setAdmitting(true);
     void run("deploy", { accept: [], version }, message).then(setLoss).finally(() => {
@@ -77,12 +85,12 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
       <DeletionDialog
         open={loss !== null}
         onOpenChange={(open) => { if (!open) setLoss(null); }}
-        title={loss?.action === "publish" ? "Saving deletes data on the next deploy" : "Deploy deletes data"}
+        title={loss?.action === "publish" ? "Saving deletes data on the next deploy" : loss?.check.losesWrites ? "Data loss" : "Deletes data"}
         place={place}
         confirmLabel={loss?.action === "publish" ? "Save" : "Deploy"}
         items={loss?.check.items}
         callbacks={{
-          load: () => Promise.resolve(loss?.check ?? { items: [], evidence: { accept: [], version: "" } }),
+          load: () => Promise.resolve(loss?.check ?? { items: [], evidence: { accept: [], version: "" }, losesWrites: false }),
           // Servers holding more by now: the Store asks again, and so does the dialog.
           confirm: async (evidence) => loss ? (await run(loss.action, evidence, loss.message))?.check : undefined,
         }}

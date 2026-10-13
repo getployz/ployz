@@ -86,6 +86,10 @@ it leaves running keeps its staged changes on its card.
 
 ## Follow a deployment
 
+While a deployment runs, the bottom bar shows it. Once it ends, the bar shows **Deployed** for a
+few seconds, or **Failed** until you dismiss it, with **Logs** to open its page. **Failed** stays
+after a reload and in other tabs, as long as the failed deployment is the newest one.
+
 **Deployments** in the sidebar lists every deployment, newest first. A deployment's page shows
 its status, who started it and the commit it ships, and if it failed, the reason in red under the
 header. Each service it included has a tab with its **Build** and **Deploy**
@@ -100,7 +104,7 @@ header. Each service it included has a tab with its **Build** and **Deploy**
 | **Deployed** | Every change applied |
 | **Failed** | Something stopped it. A service marked **Not attempted** never started. |
 | **Cancelled** | Someone cancelled it |
-| **Unknown** | Ployz can't tell what applied. Retry it. |
+| **Unknown** | Ployz can't tell what applied. Redeploy it. |
 
 To inspect per-server progress from the CLI, run:
 
@@ -118,10 +122,13 @@ when you deploy again. Unchanged services have no rows because no server work ra
 If the runner stops reporting, unfinished rows read `unknown`. Completed and failed rows keep
 their recorded outcomes.
 
-## Retry or cancel a deployment
+## Redeploy or cancel a deployment
 
-- **Retry**, on a failed, cancelled or unknown deployment, ships the same commit and settings
-  again. To ship a fix, change it and deploy instead.
+- **Redeploy**, on a failed, cancelled or unknown deployment, ships the same commit and settings
+  again. Your staged changes, volume changes included, wait for your next deploy, and **Copies wait
+  for Deploy** beside the button says so when volume changes are staged. To ship a fix, change it
+  and deploy instead. A deployment whose restore failed can't be redeployed, because it would mount
+  the new volume empty. Redeploy refuses with "Restore failed. Restore again."
 - **Cancel**, on a running deployment, stops it at its next step. What it already changed stays
   until your next deploy.
 - On a queued deployment, **Deploy now** starts it if nothing is running ahead of it, and **⋮ →
@@ -157,15 +164,33 @@ was already replaced keeps the new version, and services later in the order stay
 > Ployz doesn't undo a pre-deploy command. If a migration ran and the deploy then failed, your
 > database keeps the change while the old version of your app runs against it.
 
+A failed deploy drops the volume change it failed on. Volume changes it never got to go back to
+your staged changes, and **Details** marks them **Not reached**. Deploy again to run them. What
+the dropped change leaves behind depends on how far it got:
+
+- A move that failed before the handover leaves the volume on its old server, with all its data.
+  Stage the move again when you're ready.
+- A move that failed after the handover is not undone: the volume belongs to the new server, and
+  your service stays down until the move finishes there. The move stays in your changes, so
+  deploy again to finish it. See [When a move stops](../services/move-a-volume.md#when-a-move-stops).
+- A restore that failed is taken back. Your services mount the old volume again, and the new
+  volume goes away. If Ployz can't take it back when the deploy fails, your next deploy fails with
+  "Restore failed. Restore again." and takes it back then. Restore again once you fix the cause.
+  Redeploying that deployment is refused.
+- A deploy that shipped a restore it couldn't claim fails before it copies anything, with "the
+  restore waits for the next Deploy." The restore stays staged, so deploy again.
+
 Fix the cause and deploy again; see [Troubleshooting deployments](../troubleshooting/deployments.md).
 Or click **Fix it on a branch** on the deployment's page to try the fix in a
 [branch](../environments/environments.md) first.
 
 ## Confirm a deploy that deletes data
 
-When a deploy would delete a volume's data, like a deleted volume or database, **Deploy deletes
-data** lists what goes. Type your `project/environment`, like `my-app/production`, and click
-**Deploy**. If you didn't mean it, cancel, then discard the deletion in **Details**.
+When a deploy would delete a volume's data, like a deleted volume or database, a removed mirror or
+an old copy a move replaces, **Deletes data** lists what goes. When it makes a mirror the primary
+because the primary's server isn't answering, the title reads **Data loss**, since the writes after
+the mirror's last refresh are lost. Type your `project/environment`, like `my-app/production`, and
+click **Deploy**. If you didn't mean it, cancel, then discard the change in **Details**.
 
 **Publish** asks the same way, under **Publishing deletes data on the next deploy**. Publishing
 deletes nothing and starts no deploy: it saves the deletion, and your next deploy takes it along.
@@ -173,4 +198,4 @@ deletes nothing and starts no deploy: it saves the deletion, and your next deplo
 From the CLI, `ployz deploy` and `ployz publish` stop and print the command to run instead. It
 names each volume that loses data, like `ployz publish --accept-volume-loss postgres-data
 --version …`. Run it only if you mean it. If another server starts holding that data first,
-Ployz asks again.
+or someone stages a different copy change on that volume meanwhile, Ployz asks again.

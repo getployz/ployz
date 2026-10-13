@@ -1,14 +1,14 @@
 import { useState } from "react";
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import type { ConfigWritten, EnvironmentRef, MachineId, MachineName } from "@ployz/sdk";
+import type { ConfigWritten, EnvironmentRef, MachineId, MachineName, VolumeListing } from "@ployz/sdk";
 import { toErrorMessage } from "#/lib/error-message";
 import { environmentKey, refetchAfterWrite } from "#/modules/config-store/store-view.queries";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import type { ChangeGroup } from "#/modules/config-store/store-deployments";
 import { useActiveVolumeRuns, useWatchVolumeRun, volumeMembersQueryOptions } from "#/modules/volume-run/volume-run.queries";
 import {
-  appliedMirrors, observePlacement, type Placement, placementChanges, placementGroup, type PlacementVolume, type RestorePoint,
+  appliedMirrors, observePlacement, type Placement, placementChanges, placementGroup, placementLoss, type PlacementLoss, type PlacementVolume, type RestorePoint,
   stagedOffServer, storageStep, undoPlacement,
 } from "./volume-placement";
 import { deleteCopyServerFn, discardPlacementServerFn, stagePlacementServerFn, stageRestoreServerFn } from "./volume-placement.functions";
@@ -68,6 +68,7 @@ export function useDeleteCopy(organizationSlug: string, environment: Environment
 
 export type StagedPlacements = {
   readonly groups: readonly ChangeGroup[];
+  readonly loss: PlacementLoss;
   readonly count: number;
   readonly discard: (volumeId: string) => void;
   readonly undo: (volumeId: string, path: string) => void;
@@ -80,7 +81,7 @@ export type StagedPlacements = {
  * A Volume whose staged placement already holds counts nothing, and one a running Deploy took counts as that Deploy's.
  */
 export function useStagedPlacements(
-  organizationSlug: string, environment: EnvironmentRef, environmentId: string, volumes: readonly PlacementVolume[],
+  organizationSlug: string, environment: EnvironmentRef, environmentId: string, volumes: readonly (PlacementVolume & Pick<VolumeListing, "change">)[],
 ): StagedPlacements {
   const rows = (useVolumePlacements(organizationSlug).data ?? [])
     .filter((row) => row.environmentId === environmentId && row.staged !== null && row.deploymentId === null);
@@ -94,10 +95,13 @@ export function useStagedPlacements(
     const changes = placementChanges(volume, answered, row);
     return changes.length === 0 ? [] : [{ volume, row, members: answered, changes }];
   });
-  const groups = staged.map(({ volume, changes }) => placementGroup(volume, changes));
+  const now = new Date();
+  const groups = staged.map(({ volume, row, changes }) => placementGroup(volume, changes, now, row.unreached));
   const discardOf = (volumeId: string) => discardPlacementServerFn({ data: { organizationSlug, volumeId, environment } });
   return {
     groups,
+    // A Volume the Deploy deletes loses every copy; the Store confirms that itself, with its own details.
+    loss: placementLoss(staged.filter(({ volume }) => volume.change !== "delete").flatMap(({ changes }) => changes)),
     count: groups.reduce((total, group) => total + group.changeCount, 0),
     discard: (volumeId) => settle([discardOf(volumeId)]),
     undo: (volumeId, path) => {
@@ -112,7 +116,11 @@ export function useStagedPlacements(
     },
     // Every staged row, not just the groups shown: a restore whose Volume the Store discard takes may not have answered yet.
     discardAll: (discardStore) => {
-      discardStore().then(() => settle(rows.map((row) => discardOf(row.volumeId))), () => undefined);
+      // One after another: a restore's discard takes the Environment alone, so a sibling sent alongside finds it held.
+      discardStore().then(() => settle(rows.reduce<Promise<PlacementResult>[]>((sent, row) => {
+        const next = () => discardOf(row.volumeId);
+        return [...sent, sent.at(-1)?.then(next, next) ?? next()];
+      }, [])), () => undefined);
     },
   };
 }
@@ -129,6 +137,12 @@ export function useStorageSteps(organizationSlug: string) {
   const rows = useVolumePlacements(organizationSlug).data ?? [];
   const runs = useActiveVolumeRuns(organizationSlug).data ?? [];
   return (deploymentId: string) => storageStep(deploymentId, rows, runs);
+}
+
+/** Whether the Environment holds copy changes no Deploy has taken yet. */
+export function useCopiesWait(organizationSlug: string, environmentId: string) {
+  return (useVolumePlacements(organizationSlug).data ?? [])
+    .some((row) => row.environmentId === environmentId && row.staged !== null && row.deploymentId === null);
 }
 
 /** How many Volume primaries on `server` are staged to move off it. */

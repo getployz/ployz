@@ -23,7 +23,7 @@ import { Database } from "#/server/database.server";
 import { PostHog } from "#/modules/analytics/posthog.server";
 import { cancelGithubRun } from "#/modules/github/github-build.server";
 import { countOrganizationMachines, loadOrganizationConnections } from "#/modules/machines/connections.server";
-import { stampPlacements } from "#/modules/volume-placement/volume-placement.server";
+import { writeAdmitted } from "#/modules/volume-placement/volume-placement.server";
 import type { CommittedViews, StoreAnswer, StoreWriteResult, StoreCall, StoreRead, StoreRefusal, StoreResult } from "./store.contract";
 
 /** One view Cloud reads for itself, with no evidence: its own lookups, such as a Deployment's Namespace for its logs. */
@@ -190,10 +190,6 @@ const afterWrite = Effect.fn("ConfigStore.afterWrite")(function* (
       Effect.catch((error) => Effect.logWarning("Could not stop a cancelled Deployment's GitHub builds.", error)),
     );
   }
-  // A Deploy takes the Volume placements staged in its Environment before its worker can look for them.
-  if (command.command === "admit" && written.written === "deployment" && written.status !== "applied") {
-    yield* stampPlacements(organizationId, written.environment_id, written.id);
-  }
   // An admitted (or retried) or started Deployment goes to Cloud's worker, whoever asked, as do a removal's first ones.
   if (command.command === "admit" || command.command === "start" || command.command === "remove") {
     yield* dispatchAdmitted(organizationId, written, command.command === "start");
@@ -214,7 +210,8 @@ export type StoreSource =
 
 /**
  * One Store read or write by user `userId` (null: Cloud itself) as `organizationId`: the answer, or the Store's refusal verbatim. It first
- * gathers the trusted evidence the call needs (`gatherTrusted`); `approval` is what a human approved, which only a CLI
+ * gathers the trusted evidence the call needs (`gatherTrusted`), and a Deploy meets the Volume copies it takes
+ * (`writeAdmitted`) before the Store sees it; `approval` is what a human approved, which only a CLI
  * write in an Organization that asks before destructive actions carries. Anything else (the Store failing to open, a broken
  * binding) is a defect.
  */
@@ -231,7 +228,8 @@ export const callStore = <C extends StoreCall>(
     const trusted = { ...yield* gatherTrusted(organizationId, call, read), approval };
     if (call.operation === "read") return { ok: true, value: yield* storeTry(() => store.read(organizationId, call.query, trusted)) };
     const principal = yield* principalFor(userId).pipe(Effect.orDie);
-    const written = yield* storeTry(() => store.write(organizationId, call.command, trusted, principal));
+    const written = yield* writeAdmitted(organizationId, call.command, (command) =>
+      storeTry(() => store.write(organizationId, command, trusted, principal)));
     // The write committed: nothing after it may answer as its refusal. What failed is logged; sweeps redo it.
     yield* afterWrite(organizationId, call.command, written).pipe(
       Effect.catchCause((cause) => Effect.logWarning("Cloud's follow-up to a committed Store write failed.", cause)),

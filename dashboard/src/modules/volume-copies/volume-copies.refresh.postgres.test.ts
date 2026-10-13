@@ -87,14 +87,14 @@ describe("Refresh now", () => {
 
   it("leaves a Volume a Deploy is moving to that Deploy", async () => {
     await run(stagePlacement(organizationId, { environment, volumeId, staged: { primary: web("web-2"), mirrors: [], deletes: [] }, mirrors: [web("web-2")] }));
-    await run(stampPlacements(organizationId, "env-1", "dep-1"));
+    await run(stampPlacements(organizationId, [volumeId], "dep-1"));
     expect(await refresh()).toMatchObject({ ok: false, refusal: { code: "conflict", message: "A Deploy is moving this Volume. Wait for it to finish." } });
     expect(await runs()).toEqual([]);
   });
 
   it("refuses when a Deploy stamps the Volume between the mirror check and the request", async () => {
     await run(stagePlacement(organizationId, { environment, volumeId, staged: { primary: web("web-2"), mirrors: [], deletes: [] }, mirrors: [web("web-2")] }));
-    between = async () => { await run(stampPlacements(organizationId, "env-1", "dep-1")); };
+    between = async () => { await run(stampPlacements(organizationId, [volumeId], "dep-1")); };
     expect(await refresh()).toMatchObject({ ok: false, refusal: { message: "A Deploy is moving this Volume. Wait for it to finish." } });
     expect(await runs()).toEqual([]);
   });
