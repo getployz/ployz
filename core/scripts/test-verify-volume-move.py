@@ -467,7 +467,8 @@ class VolumeMove:
         if value:
             script += f"echo {shlex.quote('PLOYZD_FAULT=' + value)} >> /etc/default/ployz; "
         script += ("systemctl restart ployz.service; systemctl stop ployz-volume-plugin.service || true; "
-                   "for i in $(seq 60); do systemctl is-active --quiet ployz.service && break; sleep 1; done")
+                   "for i in $(seq 60); do systemctl is-active --quiet ployz.service && break; sleep 1; done; "
+                   "systemctl is-active --quiet ployz.service")
         targets = [machine] if machine else self.machines
         return [target for target in targets if self.sh(target, script, check=check).returncode]
 
@@ -773,9 +774,9 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
                     if isinstance(error, Skipped):
                         result["skipped"] = str(error)
                     try:
-                        armed = self.fault(None, check=False) if case["fault"] else []
-                        if armed:
-                            raise RuntimeError(f"the fault stayed armed on {', '.join(armed)}")
+                        failed = self.fault(None, check=False) if case["fault"] else []
+                        if failed:
+                            raise RuntimeError(f"disarming the fault failed on {', '.join(failed)}")
                         result["heal"] = self.heal(self.other(self.writer()))
                     except (AssertionError, RuntimeError, subprocess.TimeoutExpired) as cleanup:
                         result["heal"] = dict(healed=False, error=f"{type(cleanup).__name__}: {cleanup}")

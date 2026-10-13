@@ -7,6 +7,7 @@ import io
 import json
 import re
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -688,9 +689,44 @@ class VolumeMoveTests(unittest.TestCase):
         with redirect_stdout(io.StringIO()):
             summary = checks.run_all([volume_move.KILLS[0], volume_move.CASES[0]])
         self.assertEqual([case["name"] for case in summary["cases"]], [volume_move.KILLS[0]["name"]])
-        self.assertIn("the fault stayed armed on machine-1, machine-2", summary["cases"][0]["failures"][-1])
+        self.assertIn("disarming the fault failed on machine-1, machine-2", summary["cases"][0]["failures"][-1])
         self.assertFalse(summary["passed"])
         self.assertEqual(json.loads((self.root / "out" / "summary.json").read_text())["passed"], False)
+
+    def test_a_disarm_whose_daemon_never_comes_back_reports_the_machine(self):
+        stubs = self.root / "stubs"
+        stubs.mkdir()
+        for name, body in (("touch", "exit 0"), ("sed", "exit 0"), ("sleep", "exit 0"), ("seq", "echo 1 2 3"),
+                           ("systemctl", '[ "$1" = is-active ] && exec /bin/sh is-active; exit 0')):
+            (stubs / name).write_text(f"#!/bin/sh\n{body}\n")
+            (stubs / name).chmod(0o755)
+        bash = shutil.which("bash")
+        def guest(args, **kwargs):
+            return subprocess.run([bash, *args[-2:]], cwd=self.root, env=dict(PATH=str(stubs)),
+                                  capture_output=True, text=True)
+        checks = volume_move.VolumeMove(self.manifest, runner=guest, out=self.root / "out")
+        for active, failed in (("exit 0", []), ("exit 3", ["machine-1"])):
+            with self.subTest(active):
+                (self.root / "is-active").write_text(active)
+                with redirect_stdout(io.StringIO()):
+                    self.assertEqual(checks.fault(None, "machine-1", check=False), failed)
+
+    def test_a_runs_list_that_times_out_in_the_heal_stops_the_run_and_still_writes_the_summary(self):
+        checks, model = self.checks("two-writers")
+        cli, heal, healing = model.cli, checks.heal, []
+        def stalled(args):
+            if healing and args[:2] == ["volume", "runs"]:
+                raise subprocess.TimeoutExpired(args, 660)
+            return cli(args)
+        def heal_stalled(destination):
+            healing.append(destination)
+            return heal(destination)
+        model.cli, checks.heal = stalled, heal_stalled
+        with redirect_stdout(io.StringIO()):
+            summary = checks.run_all([volume_move.CASES[0], volume_move.KILLS[0]])
+        self.assertEqual([case["name"] for case in summary["cases"]], [volume_move.CASES[0]["name"]])
+        self.assertIn("the run stopped after this case: TimeoutExpired", summary["cases"][0]["failures"][-1])
+        self.assertTrue((self.root / "out" / "summary.json").exists())
 
     def test_a_cleanup_that_cannot_read_the_machines_stops_the_run_and_still_writes_the_summary(self):
         checks, model = self.checks()
