@@ -4,7 +4,7 @@ use std::{
     collections::BTreeMap,
     fs, io,
     os::unix::fs::{MetadataExt, OpenOptionsExt},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 #[cfg(test)]
@@ -40,6 +40,7 @@ pub(super) struct PoolStorage {
     stat: PathBuf,
     df: PathBuf,
     backing: PathBuf,
+    volume_root: PathBuf,
     host_root: PathBuf,
     sys_dev_block: PathBuf,
 }
@@ -137,6 +138,7 @@ impl PoolStorage {
             stat: "stat".into(),
             df: "df".into(),
             backing: machine_pool::BACKING_FILE.into(),
+            volume_root: super::MOUNT_ROOT.into(),
             host_root: "/".into(),
             sys_dev_block: "/sys/dev/block".into(),
         }
@@ -158,6 +160,7 @@ impl PoolStorage {
             fallocate,
             stat,
             df,
+            volume_root: backing.with_file_name("ployz-volumes"),
             backing,
             host_root,
             sys_dev_block,
@@ -167,6 +170,7 @@ impl PoolStorage {
     #[cfg(test)]
     /// Replaces the production backing path for adapters at the test seam.
     pub(super) fn with_backing(mut self, backing: PathBuf) -> Self {
+        self.volume_root = backing.with_file_name("ployz-volumes");
         self.backing = backing;
         self
     }
@@ -227,19 +231,15 @@ impl PoolStorage {
             .map_err(|error| ployz_core::error_chain::inline(&error))?)
     }
 
-    /// Whether this Machine's Pool backing file exists, imported or not.
+    /// Whether this Machine has held a Pool, imported or not: the file-backed Pool's
+    /// backing file, or the Volume mount root that ZFS leaves behind when any Pool's
+    /// Volumes unmount or the Pool is exported.
     ///
     /// # Errors
-    /// Returns an error when the backing file cannot be inspected.
-    pub(super) fn backing_exists(&self) -> Result<bool> {
-        self.backing.try_exists().map_err(|error| {
-            format!(
-                "could not inspect Machine Pool backing file {}: {error}",
-                self.backing.display(),
-                error = ployz_core::error_chain::inline(&error),
-            )
-            .into()
-        })
+    /// Returns an error when either path cannot be inspected.
+    pub(super) fn has_held_a_pool(&self) -> Result<bool> {
+        Ok(path_exists(&self.backing, "Machine Pool backing file")?
+            || path_exists(&self.volume_root, "Volume mount root")?)
     }
 
     /// Imports this host's valid backing Pool and optionally reclaims an unlabeled stale file.
@@ -247,7 +247,7 @@ impl PoolStorage {
     /// # Errors
     /// Returns an error for ambiguous or destroyed labels, failed import, or failed cleanup.
     pub(super) async fn recover(&self, unlabeled: UnlabeledBacking) -> Result<Option<MachinePool>> {
-        if !self.backing_exists()? {
+        if !path_exists(&self.backing, "Machine Pool backing file")? {
             return Ok(None);
         }
         let backing = self.backing_text()?;
@@ -741,6 +741,17 @@ fn safe_ashift(physical_block_size: u64) -> Result<u32> {
         .into());
     }
     Ok(ashift)
+}
+
+fn path_exists(path: &Path, what: &str) -> Result<bool> {
+    path.try_exists().map_err(|error| {
+        format!(
+            "could not inspect {what} {}: {error}",
+            path.display(),
+            error = ployz_core::error_chain::inline(&error),
+        )
+        .into()
+    })
 }
 
 #[cfg(test)]

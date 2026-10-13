@@ -39,8 +39,8 @@ impl VolumeStorage {
 
     async fn inspect(&self, name: &DockerVolumeName) -> Result<Option<PluginVolume>> {
         let Some(pool) = self.pool.one_usable().await? else {
-            if self.pool.backing_exists()? {
-                return Err("Machine Pool backing exists but is not imported".into());
+            if self.pool.has_held_a_pool()? {
+                return Err("this Machine has held a Pool that is not imported".into());
             }
             return Ok(None);
         };
