@@ -723,6 +723,9 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
         # Arm only once the Volume is idle: a cron sync crosses the same SetVolumeCopy points and would trip it.
         arm = (lambda: self.fault(case["fault"], side.get(case.get("fault_on")))) if case["fault"] else None
         row = self.start_op(case["op"], destination, arm)
+        if row.get("state") == "refused":
+            # Busy refusals are skips and approvals are answered, so this is a defect; a rerun would pass it.
+            raise RuntimeError(f"{case['op']} was refused: {json.dumps(row.get('reply'))[:1500]}")
         result["run"] = row
         if case["trigger"]:
             result["triggered"] = self.wait_trigger(case, row, started, side)
