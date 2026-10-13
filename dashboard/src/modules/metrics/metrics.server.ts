@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 import type { MachineId, MetricHistoryInput, MetricSubject } from "@ployz/sdk";
 import { Clock, Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
-import { findNamespace } from "#/modules/config-store/store-lookup.server";
+import { findService } from "#/modules/config-store/store-lookup.server";
 import { requireAccess } from "#/modules/organization/access.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { resolveRange } from "#/modules/uptime/uptime-range";
@@ -29,12 +29,10 @@ const readHistory = Effect.fn("Metrics.readHistory")(function* (organizationId: 
 export const readServiceMetrics = Effect.fn("Metrics.readService")(function* (actor: Actor, input: ReadServiceMetricsInput) {
   const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
   const window = resolveRange(input, yield* Clock.currentTimeMillis);
-  const found = yield* findNamespace(organization.id, input.environmentId);
-  // Before the Environment's first Deployment no Server holds anything of it to ask.
+  const found = yield* findService(organization.id, input.environmentId, input.service);
+  // An undeployed Service has nothing on any Server yet. Its own name is no stand-in, since after a rename it can be another Service's runtime name.
   if (found === null) return { type: "history", window, history: { points: { service: [] }, machines: [], unanswered: [] } } satisfies MetricRead;
-  // A Service not deployed yet has no runtime name; its own name finds nothing, which reads as no readings.
-  const runtime = found.services[input.service] ?? input.service;
-  return yield* readHistory(organization.id, { kind: "service", service: `${found.namespace}/${runtime}` }, window);
+  return yield* readHistory(organization.id, { kind: "service", service: `${found.namespace}/${found.runtime}` }, window);
 });
 
 export const readServerMetrics = Effect.fn("Metrics.readServer")(function* (actor: Actor, input: ReadServerMetricsInput) {
