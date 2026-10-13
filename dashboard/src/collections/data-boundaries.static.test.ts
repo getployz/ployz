@@ -81,6 +81,8 @@ const ON_DEMAND_READS = {
   pendingApprovalsOptions: "polled by the agent sidebar, which every Organization page mounts; no page owns it",
   agentThreadsOptions: "read when the agent opens, which every Organization page can do; no page owns it",
   approvalOptions: "named by an agent conversation's interrupt, known only once the chat hydrates",
+  serviceMetricsQueryOptions: "asks every Server live, so a slow Server would hold the page; no page reads it yet",
+  serverMetricsQueryOptions: "asks a Server live, so a slow Server would hold the page; no page reads it yet",
 };
 
 /** Hook files outside data files that await the server without making UI wait on it. */
