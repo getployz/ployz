@@ -2231,18 +2231,22 @@ describe("volume runs", () => {
       expect(machines[0]?.copy).toMatchObject({ kind: "root", newest: { guid: base.guid } });
     });
 
-    it("after the cut finished but before the floor rose: the reply is a slot, the promote lands next, and the app runs on A", async () => {
+    it("after the cut finished but before the floor rose: the reply is a slot, and the promote starts the stopped app on A", async () => {
       const cut = afterCut();
       await moving();
       const [placed] = await place();
 
       expect(await fence(placed)).toEqual({ on: "fsn-1" });
 
-      expect(verbs).toEqual(["floor@fsn-1", "writer@fsn-1(none)"]);
-      expect(sent[1]).toMatchObject({ expect: { kind: "mirror", newest: cut.guid }, want: { kind: "writer", at: cut.guid, epoch: 2, start: null }, gen: sent[0]?.gen });
+      expect(verbs).toEqual(["floor@fsn-1", "writer@fsn-1(kept)"]);
+      expect(sent[1]).toMatchObject({
+        expect: { kind: "mirror", newest: cut.guid },
+        want: { kind: "writer", at: cut.guid, epoch: 2, start: { kind: "kept", container_id: "web-fsn-1" } },
+        gen: sent[0]?.gen,
+      });
       expect(machines[0]?.copy).toMatchObject({ kind: "root", readonly: false, epoch: 2, newest: { guid: cut.guid } });
       expect(machines[1]?.copy).toMatchObject({ kind: "slot" });
-      expect(containers).toEqual([{ machine: "fsn-1", id: "web-fsn-1", running: false }]);
+      expect(containers).toEqual([{ machine: "fsn-1", id: "web-fsn-1", running: true }]);
     });
 
     it("on a committed lane: it follows to B with the move's gen and the app runs only on B", async () => {
@@ -2311,7 +2315,7 @@ describe("volume runs", () => {
       }).execute();
 
       expect(deployed.error).toBeUndefined();
-      expect(verbs).toEqual(["floor@fsn-1", "writer@fsn-1(none)", "run-deployment"]);
+      expect(verbs).toEqual(["floor@fsn-1", "writer@fsn-1(kept)", "run-deployment"]);
       expect(deployed.ctx.step.run).toHaveBeenCalledWith(`fence-${volumeId}`, expect.any(Function));
       expect(await lanes()).toMatchObject([
         { id: taken.id, kind: "move", state: "yielded" },

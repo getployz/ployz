@@ -88,14 +88,15 @@ const answered = (members: readonly Member[]) => members.filter((member): member
 // SAFETY: a took lane is the Deploy's own row, written from a VolumeRunArgs["deploy"].
 const observeMembers = (run: RunContext) => observeVolumeMembers(run.organizationId, run.dockerVolume, { kind: "deploy", args: run.args as VolumeRunArgs["deploy"] });
 
+/** The writer, or the slot a cut left keeping the stopped Service, with that Service's Container. */
 const writerOf = Effect.fn("VolumeRun.writerOf")(function* (run: RunContext, members: readonly AnsweredMember[]) {
   const root = members.find((member) => member.view.copy?.kind === "root");
-  if (root !== undefined) return root;
+  if (root !== undefined) return { member: root, kept: null };
   const slots = members.filter((member) => member.view.copy?.kind === "slot");
   const kept = yield* keptOn(run.organizationId, run.dockerVolume, slots.map((member) => member.machine));
   const held = kept === null ? undefined : slots.find((member) => member.machine.id === kept.machine.id);
-  if (held === undefined) return yield* Effect.fail(new NonRetriableError(`${run.volumeName} has no writer and no stopped Service on its copies`));
-  return held;
+  if (held === undefined || kept === null) return yield* Effect.fail(new NonRetriableError(`${run.volumeName} has no writer and no stopped Service on its copies`));
+  return { member: held, kept };
 });
 
 const fenceTaken = Effect.fn("VolumeRun.fenceTaken")(function* (run: RunContext, inngestRunId: string) {
@@ -103,7 +104,7 @@ const fenceTaken = Effect.fn("VolumeRun.fenceTaken")(function* (run: RunContext,
     const members = yield* observeMembers(run);
     for (const member of members) if (!member.answered && member.lack !== undefined) return yield* Effect.fail(new NonRetriableError(member.lack));
     const replied = answered(members);
-    const writer = yield* writerOf(run, replied);
+    const { member: writer, kept } = yield* writerOf(run, replied);
     const floored = yield* setVolumeCopy(run, inngestRunId, writer.machine, expectOf(writer.view.copy), { kind: "floor" });
     if (!floored.ok) {
       if (floored.reason === "mismatch" && round < FENCE_ROUNDS) continue;
@@ -111,12 +112,15 @@ const fenceTaken = Effect.fn("VolumeRun.fenceTaken")(function* (run: RunContext,
     }
     const copy = floored.copy;
     if (copy?.kind === "root") return { on: writer.machine.name };
-    if (copy?.kind !== "slot" || copy.newest === null) {
+    if (copy?.kind !== "slot" || copy.newest === null || kept === null) {
       return yield* Effect.fail(new NonRetriableError(`${run.volumeName} has no copy to deploy on ${writer.machine.name}`));
     }
-    // Core refuses a plain mount of a slot, so the promote lands before any Service mounts the Volume.
+    // Core refuses a plain mount of a slot, so the promote lands before any Service mounts the Volume. It starts the
+    // cut's stopped Container too: the taken lane is not requested again, so if this run stops before its own start,
+    // nothing else would.
     const { epoch } = yield* takeEpoch(run, inngestRunId, observedEpoch(replied));
-    const promoted = yield* setVolumeCopy(run, inngestRunId, writer.machine, expectOf(copy), { kind: "writer", at: copy.newest.guid, epoch, start: null });
+    const start = { kind: "kept", container_id: kept.containerId } as const;
+    const promoted = yield* setVolumeCopy(run, inngestRunId, writer.machine, expectOf(copy), { kind: "writer", at: copy.newest.guid, epoch, start });
     if (!promoted.ok) return yield* Effect.fail(retriable(promoted.reason) ? new Error(promoted.message) : new NonRetriableError(promoted.message));
     return { on: writer.machine.name };
   }
