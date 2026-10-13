@@ -43,6 +43,8 @@ async fn partial_observations_reject_catch_up_before_any_placement() {
                 Vec::new()
             },
             omissions: if failed { Vec::new() } else { vec![peer.id] },
+            relisted: None,
+            listings: 0,
         };
         let error = catch_up_globals(
             &mut client,
@@ -82,6 +84,8 @@ async fn successful_ensure_is_reobserved_before_success() {
         row: FakeRow::default(),
         failures: Vec::new(),
         omissions: Vec::new(),
+        relisted: None,
+        listings: 0,
     };
 
     let error = catch_up_globals(
@@ -114,6 +118,8 @@ async fn initially_eligible_global_absent_from_target_inspection_remains_missing
         row: FakeRow::default(),
         failures: Vec::new(),
         omissions: Vec::new(),
+        relisted: None,
+        listings: 0,
     };
 
     let error = catch_up_globals(
@@ -160,6 +166,8 @@ async fn initially_eligible_global_with_only_hook_visible_remains_missing() {
         row: FakeRow::default(),
         failures: Vec::new(),
         omissions: Vec::new(),
+        relisted: None,
+        listings: 0,
     };
 
     let error = catch_up_globals(
@@ -199,6 +207,8 @@ async fn initially_eligible_generation_absent_from_target_inspection_remains_mis
         row: FakeRow::default(),
         failures: Vec::new(),
         omissions: Vec::new(),
+        relisted: None,
+        listings: 0,
     };
 
     let error = catch_up_globals(
@@ -237,6 +247,8 @@ async fn another_namespaces_matching_shape_does_not_satisfy_catch_up() {
         row: FakeRow::default(),
         failures: Vec::new(),
         omissions: Vec::new(),
+        relisted: None,
+        listings: 0,
     };
 
     let error = catch_up_globals(
@@ -284,12 +296,14 @@ async fn interruption_settles_started_work_and_only_reports_unresolved_globals()
             run_result: Ok((!excluded).then(|| container_id('a'))),
             failures: Vec::new(),
             omissions: Vec::new(),
+            relisted: None,
+            listings: 0,
         };
         let cancel = tokio_util::sync::CancellationToken::new();
         let mut running = Vec::new();
         let error = catch_up_globals(&mut client, &joiner, &cancel, |fact| match fact {
             CatchUpFact::Creating(_) => cancel.cancel(),
-            CatchUpFact::Running(identity) => running.push(identity),
+            CatchUpFact::Running { service, .. } => running.push(service),
             CatchUpFact::Identified(_) | CatchUpFact::Excluded(_) | CatchUpFact::Failed(_) => {}
         })
         .await
@@ -322,6 +336,9 @@ struct FakeCatchUpClient {
     run_result: Result<Option<ContainerId>, RpcError>,
     failures: Vec<ployz_core::MachineFailure<RpcError>>,
     omissions: Vec<MachineId>,
+    /// Every listing after the first, when a deploy lands between them.
+    relisted: Option<Vec<ServiceObservation>>,
+    listings: u32,
 }
 
 impl PointerClient for FakeCatchUpClient {
@@ -342,12 +359,16 @@ impl PointerClient for FakeCatchUpClient {
 
 impl CatchUpClient for FakeCatchUpClient {
     async fn live_services(&mut self) -> Result<LiveServices<RpcError>, Failure> {
+        self.listings += 1;
+        let services = match &self.relisted {
+            Some(relisted) if self.listings > 1 => relisted,
+            _ => &self.services,
+        };
         Ok(LiveServices {
             containers: ployz_core::PartialResult {
                 successes: vec![ployz_core::MachineSuccess {
                     machine_id: self.machine_id,
-                    value: self
-                        .services
+                    value: services
                         .iter()
                         .flat_map(ServiceObservation::members)
                         .map(|container| container.as_observation().clone())
@@ -454,6 +475,8 @@ async fn failed_placement_is_reported_even_if_final_observation_is_running() {
         }),
         failures: Vec::new(),
         omissions: Vec::new(),
+        relisted: None,
+        listings: 0,
     };
     let error = catch_up_globals(
         &mut client,
@@ -501,6 +524,8 @@ fn replacing_client(row: FakeRow) -> (Machine, FakeCatchUpClient) {
         run_result: Ok(Some(container_id('b'))),
         failures: Vec::new(),
         omissions: Vec::new(),
+        relisted: None,
+        listings: 0,
     };
     (joiner, client)
 }
@@ -582,6 +607,85 @@ async fn a_publish_that_keeps_losing_fails_the_slot() {
     )
     .await
     .unwrap_err();
+    assert_eq!(error.unresolved, [qualified("app", "api")]);
+}
+
+/// A deploy that lands between catch-up's listing and its publish.
+fn newer_deploy(joiner: &Machine, row: &FakeRow, before_read: bool) -> Vec<ServiceObservation> {
+    let newer = pointed("dep-q", &['e'], &['d']);
+    if before_read {
+        *row.row.lock().unwrap() = Some(newer);
+    } else {
+        row.interlopers.lock().unwrap().push(newer);
+    }
+    let mut relisted = vec![
+        global_service(
+            qualified("app", "api"),
+            'a',
+            Placement::default(),
+            running_on(joiner, 'd'),
+        ),
+        global_service(
+            qualified("app", "api"),
+            'a',
+            Placement::default(),
+            running_on(joiner, 'b'),
+        ),
+    ];
+    if before_read {
+        relisted.push(global_service_with_image(
+            qualified("app", "api"),
+            'a',
+            Placement::default(),
+            running_on(joiner, 'e'),
+            "ghcr.io/getployz/api:2",
+        ));
+    }
+    relisted
+}
+
+#[tokio::test]
+async fn a_newer_deploy_read_before_the_publish_keeps_its_copy_serving() {
+    let row = FakeRow::default();
+    *row.row.lock().unwrap() = Some(pointed("dep-a", &['d'], &[]));
+    let (joiner, mut client) = replacing_client(row.clone());
+    client.relisted = Some(newer_deploy(&joiner, &row, true));
+    let error = catch_up_globals(
+        &mut client,
+        &joiner,
+        &tokio_util::sync::CancellationToken::new(),
+        |_| {},
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        *row.row.lock().unwrap(),
+        Some(pointed("dep-q", &['e'], &['d'])),
+        "the newer deploy's copy stays serving and the old spec's copy never joins"
+    );
+    assert_eq!(*row.publishes.lock().unwrap(), 0);
+    assert_eq!(error.unresolved, [qualified("app", "api")]);
+}
+
+#[tokio::test]
+async fn a_newer_deploy_published_after_the_listing_keeps_its_copy_serving() {
+    let row = FakeRow::default();
+    *row.row.lock().unwrap() = Some(pointed("dep-a", &['d'], &[]));
+    let (joiner, mut client) = replacing_client(row.clone());
+    client.relisted = Some(newer_deploy(&joiner, &row, false));
+    let error = catch_up_globals(
+        &mut client,
+        &joiner,
+        &tokio_util::sync::CancellationToken::new(),
+        |_| {},
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        *row.row.lock().unwrap(),
+        Some(pointed("dep-q", &['e'], &['d'])),
+        "a lost publish re-reads the newer deploy and adds nothing beside its copy"
+    );
     assert_eq!(error.unresolved, [qualified("app", "api")]);
 }
 

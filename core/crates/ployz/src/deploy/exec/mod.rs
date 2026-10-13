@@ -716,8 +716,8 @@ pub(in crate::deploy) enum MoveContainerError {
 }
 
 /// Placement convergence's one move: start `spec` on `to`, wait until it is healthy,
-/// then remove `old` from `from`. A new Container that never gets healthy is removed
-/// again, so `old` keeps serving. No hooks run.
+/// then, when `remove_old`, remove `old` from `from`. A new Container that never gets
+/// healthy is removed again, so `old` keeps serving. No hooks run.
 ///
 /// # Errors
 ///
@@ -729,6 +729,7 @@ pub(in crate::deploy) async fn move_container<C: MachineOperations>(
     spec: &ResolvedServiceSpec,
     to: &MachineId,
     (from, old): (&MachineId, &ContainerId),
+    remove_old: bool,
     cancellation: &CancellationToken,
 ) -> Result<ContainerId, MoveContainerError> {
     let client = RestartTolerant {
@@ -766,6 +767,9 @@ pub(in crate::deploy) async fn move_container<C: MachineOperations>(
             });
         }
     };
+    if !remove_old {
+        return Ok(new);
+    }
     // Stopped first, so a failed removal can say whether the old Container still serves.
     stop(&client, from, old, Drain::DEFAULT, None)
         .await

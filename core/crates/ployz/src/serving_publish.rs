@@ -7,9 +7,9 @@ use std::time::Duration;
 
 use ployz_core::rpc::op;
 use ployz_core::{
-    ContainerObservation, LiveServices, MachineTarget, PublishServingPointerRequest,
-    QualifiedService, ReadServingPointerRequest, RpcError, ServingPointer,
-    ServingPointerPublication,
+    ContainerObservation, DeploymentLogId, LiveServices, MachineTarget,
+    PublishServingPointerRequest, QualifiedService, ReadServingPointerRequest, RpcError,
+    ServingPointer, ServingPointerPublication,
 };
 
 use crate::connect::{Client, ConnectError};
@@ -108,6 +108,9 @@ pub(crate) enum Amendment {
     Unchanged,
     /// Published after `retries` lost compare-and-sets.
     Published { retries: u32 },
+    /// The pointer names a deploy other than the one the change was made for; nothing
+    /// was written.
+    Outdated,
 }
 
 /// Apply `change` to the Service's pointer, re-reading and retrying up to
@@ -120,12 +123,16 @@ pub(crate) enum Amendment {
 pub(crate) async fn amend_pointer<C: PointerClient>(
     client: &mut C,
     service: &QualifiedService,
+    deploy: Option<&DeploymentLogId>,
     change: impl Fn(&ServingPointer) -> Option<ServingPointer>,
 ) -> Result<Amendment, RpcError> {
     let Some(mut current) = client.read_pointer(service).await? else {
         return Ok(Amendment::NoPointer);
     };
     for retries in 0..=AMEND_RETRIES {
+        if deploy.is_some_and(|deploy| *deploy != current.deploy) {
+            return Ok(Amendment::Outdated);
+        }
         let Some(pointer) = change(&current) else {
             return Ok(Amendment::Unchanged);
         };

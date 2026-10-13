@@ -332,7 +332,11 @@ async fn a_cancelled_drain_stops_waiting_for_a_pointed_global_at_once() {
     );
     let error = outcome.unwrap_err();
     assert!(error.message.contains("cancelled"), "{error:?}");
-    assert!(started.elapsed() < Duration::from_secs(6), "{:?}", started.elapsed());
+    assert!(
+        started.elapsed() < Duration::from_secs(6),
+        "{:?}",
+        started.elapsed()
+    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -353,7 +357,10 @@ async fn a_pointed_global_lists_no_copies_past_its_deadline() {
     .await
     .unwrap_err();
     assert!(error.message.contains("still retiring"), "{error:?}");
-    assert_eq!(server.listings, 2, "the first listing ran past the deadline");
+    assert_eq!(
+        server.listings, 2,
+        "the first listing ran past the deadline"
+    );
 }
 
 /// Each listing takes 20 s, so a 30 s wait has time for the first two only.

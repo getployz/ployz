@@ -101,7 +101,7 @@ async fn two_publishes_from_the_same_read_yield_exactly_one_published() {
 #[tokio::test]
 async fn amending_a_service_with_no_pointer_writes_nothing() {
     let mut fake = FakeRow::default();
-    let amended = amend_pointer(&mut fake, &service(), |current| {
+    let amended = amend_pointer(&mut fake, &service(), None, |current| {
         rotated(current, &[container('2')], &[])
     })
     .await
@@ -119,7 +119,7 @@ async fn a_lost_amendment_retries_over_the_winner_and_keeps_both_changes() {
         .lock()
         .unwrap()
         .push(pointer('a', &['1', '4'], &[]));
-    let amended = amend_pointer(&mut fake, &service(), |current| {
+    let amended = amend_pointer(&mut fake, &service(), None, |current| {
         rotated(current, &[container('2')], &[container('1')])
     })
     .await
@@ -139,7 +139,7 @@ async fn an_amendment_gives_up_after_three_lost_retries() {
         .iter()
         .map(|id| pointer('a', &[*id], &[]))
         .collect();
-    let error = amend_pointer(&mut fake, &service(), |current| {
+    let error = amend_pointer(&mut fake, &service(), None, |current| {
         rotated(current, &[container('2')], &[])
     })
     .await

@@ -12,6 +12,7 @@ async fn move_with(client: &Scripted) -> Result<ContainerId, MoveContainerError>
         &spec(Some(0), None, None),
         &machine(TO),
         (&machine(FROM), &container('a')),
+        true,
         &CancellationToken::new(),
     )
     .await
@@ -33,6 +34,23 @@ async fn a_move_is_done_once_the_old_container_is_removed() {
     ]);
     let client = Scripted::new(steps);
     assert_eq!(move_with(&client).await.unwrap(), container('b'));
+    client.assert_done();
+}
+
+#[tokio::test]
+async fn a_move_that_keeps_the_old_container_never_stops_or_removes_it() {
+    let client = Scripted::new(served());
+    let moved = move_container(
+        &client,
+        &test_namespace(),
+        &spec(Some(0), None, None),
+        &machine(TO),
+        (&machine(FROM), &container('a')),
+        false,
+        &CancellationToken::new(),
+    )
+    .await;
+    assert_eq!(moved.unwrap(), container('b'));
     client.assert_done();
 }
 
@@ -177,6 +195,7 @@ async fn a_cancelled_global_move_removes_its_replacement() {
         &global,
         &to,
         (&from, &old),
+        true,
         &cancellation,
     );
     tokio::pin!(moving);
@@ -213,6 +232,7 @@ async fn a_cancelled_global_move_keeps_an_adopted_replica() {
         &global,
         &to,
         (&from, &old),
+        true,
         &cancellation,
     );
     tokio::pin!(moving);

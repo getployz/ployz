@@ -52,22 +52,48 @@ pub struct Move {
     pub to: MachineRef,
 }
 
-/// How converging one replicated Service ended.
+/// A moved Container and the Container that now serves in its place.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct Replacement {
+    pub(crate) old: ContainerId,
+    pub(crate) new: ContainerId,
+}
+
+/// What a move does with the Container it replaces.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum OldCopy<'a> {
+    /// Stopped and removed once its replacement serves.
+    Remove,
+    /// Left running for its Serving Pointer to retire. Containers in `retiring` already
+    /// are, so they stay put.
+    Keep { retiring: &'a [ContainerId] },
+}
+
+/// How converging one replicated Service ended. `replaced` pairs each move with the
+/// Container it started.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Converged {
     /// Every Container that had to move did. Never empty.
-    Moved { moves: Vec<Move> },
+    Moved {
+        moves: Vec<Move>,
+        replaced: Vec<Replacement>,
+    },
     /// None of its active Containers had to move.
     NothingToMove,
     /// `moves` were made, then `failure` stopped the rest.
     Failed {
         moves: Vec<Move>,
+        replaced: Vec<Replacement>,
         failure: MoveFailure,
     },
     /// Nothing moved, and why.
     Stays { reason: StayReason },
     /// It stopped after `moves` without deciding the rest, and the Drain stops with it.
-    Stopped { moves: Vec<Move>, stop: DrainStop },
+    Stopped {
+        moves: Vec<Move>,
+        replaced: Vec<Replacement>,
+        stop: DrainStop,
+    },
 }
 
 /// Why a Drain ended early. Every other problem is one Service's evidence.
@@ -197,15 +223,17 @@ impl fmt::Display for MoveFailure {
     }
 }
 
-/// What convergence needs from a Cluster: a fresh snapshot and one move.
+/// What convergence needs from a Cluster: a fresh snapshot and one move, answering the
+/// Container that replaced `container`.
 pub(crate) trait ConvergenceClient {
     async fn observe(&mut self) -> Result<DeploySnapshot, ConnectError>;
     async fn move_one(
         &mut self,
         snapshot: &DeploySnapshot,
         container: &ContainerObservation,
+        old: OldCopy<'_>,
         cancellation: &CancellationToken,
-    ) -> Result<Move, MoveFailure>;
+    ) -> Result<(Move, ContainerId), MoveFailure>;
 }
 
 impl ConvergenceClient for Client {
@@ -218,32 +246,43 @@ impl ConvergenceClient for Client {
         &mut self,
         snapshot: &DeploySnapshot,
         container: &ContainerObservation,
+        old: OldCopy<'_>,
         cancellation: &CancellationToken,
-    ) -> Result<Move, MoveFailure> {
-        move_one(self, snapshot, container, cancellation).await
+    ) -> Result<(Move, ContainerId), MoveFailure> {
+        move_one(self, snapshot, container, old, cancellation).await
     }
 }
 
 /// Converge `service`: replace each active Container on a Machine its own spec now rules
-/// out with one on an eligible Machine, then remove the old one. Each move after the first
-/// starts from a fresh snapshot, rechecked as the first was.
+/// out with one on an eligible Machine, then treat the old one as `old` says. Each move
+/// after the first starts from a fresh snapshot, rechecked as the first was.
 pub(crate) async fn converge<C: ConvergenceClient>(
     client: &mut C,
     service: &QualifiedService,
+    old: OldCopy<'_>,
     cancellation: &CancellationToken,
 ) -> Converged {
-    let entry_lost = |moves, error: ConnectError| Converged::Stopped {
+    let entry_lost = |moves, replaced, error: ConnectError| Converged::Stopped {
         moves,
+        replaced,
         stop: DrainStop::EntryUnreachable {
             detail: crate::ui::row(&error),
         },
     };
-    let failed = |moves, failure| Converged::Failed { moves, failure };
+    let failed = |moves, replaced, failure| Converged::Failed {
+        moves,
+        replaced,
+        failure,
+    };
+    let retiring = match old {
+        OldCopy::Remove => &[][..],
+        OldCopy::Keep { retiring } => retiring,
+    };
     let snapshot = match client.observe().await {
         Ok(snapshot) => snapshot,
-        Err(error) => return entry_lost(Vec::new(), error),
+        Err(error) => return entry_lost(Vec::new(), Vec::new(), error),
     };
-    let initial = stranded(&snapshot, service);
+    let initial = movable(&snapshot, service, retiring);
     if let Some(reason) = refusal(&snapshot, service, &initial) {
         return Converged::Stays { reason };
     }
@@ -252,20 +291,21 @@ pub(crate) async fn converge<C: ConvergenceClient>(
         .map(|container| container.container_id)
         .collect::<Vec<_>>();
     let mut moves = Vec::new();
+    let mut replaced = Vec::new();
     let mut first = Some(snapshot);
     for id in ids {
         let snapshot = match first.take() {
             Some(snapshot) => snapshot,
             None => match client.observe().await {
                 Ok(snapshot) => snapshot,
-                Err(error) => return entry_lost(moves, error),
+                Err(error) => return entry_lost(moves, replaced, error),
             },
         };
         // A snapshot missing a Server's listing can't tell a gone Container from an unlisted one.
         if let Some(reason) = unobserved(&snapshot) {
-            return failed(moves, MoveFailure::Refused { reason });
+            return failed(moves, replaced, MoveFailure::Refused { reason });
         }
-        let fresh = stranded(&snapshot, service);
+        let fresh = movable(&snapshot, service, retiring);
         // Gone, exited, or admitted again since the first snapshot: it stays put, whatever
         // the rest would now refuse.
         let Some(container) = fresh
@@ -276,23 +316,30 @@ pub(crate) async fn converge<C: ConvergenceClient>(
             continue;
         };
         if let Some(reason) = refusal(&snapshot, service, &fresh) {
-            return failed(moves, MoveFailure::Refused { reason });
+            return failed(moves, replaced, MoveFailure::Refused { reason });
         }
         if cancellation.is_cancelled() {
             return Converged::Stopped {
                 moves,
+                replaced,
                 stop: DrainStop::Cancelled,
             };
         }
-        match client.move_one(&snapshot, container, cancellation).await {
-            Ok(step) => moves.push(step),
-            Err(failure) => return failed(moves, failure),
+        match client
+            .move_one(&snapshot, container, old, cancellation)
+            .await
+        {
+            Ok((step, new)) => {
+                moves.push(step);
+                replaced.push(Replacement { old: id, new });
+            }
+            Err(failure) => return failed(moves, replaced, failure),
         }
     }
     if moves.is_empty() {
         Converged::NothingToMove
     } else {
-        Converged::Moved { moves }
+        Converged::Moved { moves, replaced }
     }
 }
 
@@ -403,6 +450,17 @@ fn stranded<'a>(
         .collect()
 }
 
+/// The stranded Containers not already retiring.
+fn movable<'a>(
+    snapshot: &'a DeploySnapshot,
+    service: &QualifiedService,
+    retiring: &[ContainerId],
+) -> Vec<&'a ContainerObservation> {
+    let mut movable = stranded(snapshot, service);
+    movable.retain(|container| !retiring.contains(&container.container_id));
+    movable
+}
+
 /// The snapshot's Machine `id`. Container listings fan out to the snapshot's Machines, so
 /// every id a snapshot carries names one of them.
 fn machine<'a>(snapshot: &'a DeploySnapshot, id: &MachineId) -> &'a Machine {
@@ -418,13 +476,14 @@ fn machine_ref(snapshot: &DeploySnapshot, id: &MachineId) -> MachineRef {
     MachineRef::from(machine(snapshot, id))
 }
 
-/// Place, copy the exact image, start and serve, then remove the old Container.
+/// Place, copy the exact image, start and serve, then treat the old Container as `old` says.
 async fn move_one(
     client: &mut Client,
     snapshot: &DeploySnapshot,
     container: &ContainerObservation,
+    old: OldCopy<'_>,
     cancellation: &CancellationToken,
-) -> Result<Move, MoveFailure> {
+) -> Result<(Move, ContainerId), MoveFailure> {
     let source = machine(snapshot, &container.machine_id);
     let from = MachineRef::from(source);
     let spec = &container.resolved_spec;
@@ -452,11 +511,12 @@ async fn move_one(
         &spec,
         &dest.id,
         (&source.id, &container.container_id),
+        old == OldCopy::Remove,
         cancellation,
     )
     .await
     {
-        Ok(_) => Ok(Move { from, to }),
+        Ok(new) => Ok((Move { from, to }, new)),
         Err(MoveContainerError::NotServing {
             error: ExecutionError::Cancelled,
             replacement_removed,
@@ -524,7 +584,7 @@ mod tests {
 
     use super::{
         Converged, ConvergenceClient, DeploySnapshot, DrainStop, MachineRef, Move, MoveFailure,
-        converge, refusal, stays,
+        OldCopy, Replacement, converge, refusal, stays,
     };
     use crate::connect::ConnectError;
 
@@ -624,9 +684,19 @@ mod tests {
         );
     }
 
-    /// Serves queued snapshots; every move succeeds onto machine-b.
+    /// Serves queued snapshots; every move succeeds onto machine-b as Container `f`.
     struct Scripted {
         snapshots: std::collections::VecDeque<Result<DeploySnapshot, ConnectError>>,
+        kept: Vec<bool>,
+    }
+
+    impl Scripted {
+        fn new(snapshots: impl IntoIterator<Item = Result<DeploySnapshot, ConnectError>>) -> Self {
+            Self {
+                snapshots: snapshots.into_iter().collect(),
+                kept: Vec::new(),
+            }
+        }
     }
 
     impl ConvergenceClient for Scripted {
@@ -640,12 +710,17 @@ mod tests {
             &mut self,
             snapshot: &DeploySnapshot,
             container: &ContainerObservation,
+            old: OldCopy<'_>,
             _cancellation: &CancellationToken,
-        ) -> Result<Move, MoveFailure> {
-            Ok(Move {
-                from: super::machine_ref(snapshot, &container.machine_id),
-                to: MachineRef::from(&machine('b', true).machine),
-            })
+        ) -> Result<(Move, ContainerId), MoveFailure> {
+            self.kept.push(old != OldCopy::Remove);
+            Ok((
+                Move {
+                    from: super::machine_ref(snapshot, &container.machine_id),
+                    to: MachineRef::from(&machine('b', true).machine),
+                },
+                id('f'),
+            ))
         }
     }
 
@@ -664,6 +739,17 @@ mod tests {
         }
     }
 
+    fn id(hex: char) -> ContainerId {
+        ContainerId::parse(hex.to_string().repeat(64)).unwrap()
+    }
+
+    fn first_replaced() -> Vec<Replacement> {
+        vec![Replacement {
+            old: id('1'),
+            new: id('f'),
+        }]
+    }
+
     fn one_move() -> Vec<Move> {
         vec![Move {
             from: MachineRef::from(&machine('a', false).machine),
@@ -674,30 +760,39 @@ mod tests {
     #[tokio::test]
     async fn losing_the_entry_stops_and_keeps_the_moves_already_made() {
         let service = QualifiedService::parse("app/api").unwrap();
-        let mut client = Scripted {
-            snapshots: [
-                Ok(two_on_a()),
-                Err(ConnectError::Attempt("entry went away".into())),
-            ]
-            .into(),
-        };
+        let mut client = Scripted::new([
+            Ok(two_on_a()),
+            Err(ConnectError::Attempt("entry went away".into())),
+        ]);
         assert_eq!(
-            converge(&mut client, &service, &CancellationToken::new()).await,
+            converge(
+                &mut client,
+                &service,
+                OldCopy::Remove,
+                &CancellationToken::new()
+            )
+            .await,
             Converged::Stopped {
                 moves: one_move(),
+                replaced: first_replaced(),
                 stop: DrainStop::EntryUnreachable {
                     detail: "connection attempt failed: entry went away".into(),
                 },
             }
         );
 
-        let mut client = Scripted {
-            snapshots: [Err(ConnectError::Attempt("down".into()))].into(),
-        };
+        let mut client = Scripted::new([Err(ConnectError::Attempt("down".into()))]);
         assert_eq!(
-            converge(&mut client, &service, &CancellationToken::new()).await,
+            converge(
+                &mut client,
+                &service,
+                OldCopy::Remove,
+                &CancellationToken::new()
+            )
+            .await,
             Converged::Stopped {
                 moves: Vec::new(),
+                replaced: Vec::new(),
                 stop: DrainStop::EntryUnreachable {
                     detail: "connection attempt failed: down".into(),
                 },
@@ -713,14 +808,24 @@ mod tests {
         unobserved
             .container_omissions
             .push(machine('b', true).machine.id);
-        let mut client = Scripted {
-            snapshots: [Ok(two_on_a()), Ok(unobserved)].into(),
-        };
-        let converged = converge(&mut client, &service, &CancellationToken::new()).await;
-        let Converged::Failed { moves, failure } = &converged else {
+        let mut client = Scripted::new([Ok(two_on_a()), Ok(unobserved)]);
+        let converged = converge(
+            &mut client,
+            &service,
+            OldCopy::Remove,
+            &CancellationToken::new(),
+        )
+        .await;
+        let Converged::Failed {
+            moves,
+            replaced,
+            failure,
+        } = &converged
+        else {
             panic!("{converged:?}");
         };
         assert_eq!(moves, &one_move());
+        assert_eq!(replaced, &first_replaced());
         assert_eq!(failure.to_string(), "cannot observe machine-b");
     }
 
@@ -736,27 +841,60 @@ mod tests {
             containers: vec![container('3', 'b', stateless)],
             ..DeploySnapshot::default()
         };
-        let mut client = Scripted {
-            snapshots: [Ok(first), Ok(after)].into(),
-        };
+        let mut client = Scripted::new([Ok(first), Ok(after)]);
         assert_eq!(
-            converge(&mut client, &service, &CancellationToken::new()).await,
-            Converged::Moved { moves: one_move() }
+            converge(
+                &mut client,
+                &service,
+                OldCopy::Remove,
+                &CancellationToken::new()
+            )
+            .await,
+            Converged::Moved {
+                moves: one_move(),
+                replaced: first_replaced(),
+            }
         );
+    }
+
+    #[tokio::test]
+    async fn a_kept_old_copy_already_retiring_stays_put() {
+        let service = QualifiedService::parse("app/api").unwrap();
+        let mut client = Scripted::new([Ok(two_on_a()), Ok(two_on_a())]);
+        let retiring = [id('1')];
+        let converged = converge(
+            &mut client,
+            &service,
+            OldCopy::Keep {
+                retiring: &retiring,
+            },
+            &CancellationToken::new(),
+        )
+        .await;
+        assert_eq!(
+            converged,
+            Converged::Moved {
+                moves: one_move(),
+                replaced: vec![Replacement {
+                    old: id('2'),
+                    new: id('f'),
+                }],
+            }
+        );
+        assert_eq!(client.kept, [true], "each move keeps its old copy");
     }
 
     #[tokio::test]
     async fn a_cancelled_convergence_stops_before_moving() {
         let service = QualifiedService::parse("app/api").unwrap();
-        let mut client = Scripted {
-            snapshots: [Ok(two_on_a())].into(),
-        };
+        let mut client = Scripted::new([Ok(two_on_a())]);
         let cancelled = CancellationToken::new();
         cancelled.cancel();
         assert_eq!(
-            converge(&mut client, &service, &cancelled).await,
+            converge(&mut client, &service, OldCopy::Remove, &cancelled).await,
             Converged::Stopped {
                 moves: Vec::new(),
+                replaced: Vec::new(),
                 stop: DrainStop::Cancelled,
             }
         );

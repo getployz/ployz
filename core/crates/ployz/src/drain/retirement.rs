@@ -65,7 +65,15 @@ impl RetireClient for Client {
         let identity = slot.identity();
         match slot_eligibility(self, machine_id, &identity.namespace, slot.resolved_spec()).await? {
             ServicePlacementEligibility::Ineligible(_) => {
-                if retire_pointed(self, machine_id, identity, POINTED_RETIRE_WAIT, cancellation).await? {
+                if retire_pointed(
+                    self,
+                    machine_id,
+                    identity,
+                    POINTED_RETIRE_WAIT,
+                    cancellation,
+                )
+                .await?
+                {
                     Ok(())
                 } else {
                     remove_slot(self, machine_id, &identity.namespace, &identity.name).await
@@ -136,7 +144,10 @@ pub(crate) async fn retire_pointed<C: CopyLister>(
     if cancellation.is_cancelled() {
         return Err(cancelled());
     }
-    if amend_pointer(client, service, |current| rotated(current, &[], &copies)).await?
+    if amend_pointer(client, service, None, |current| {
+        rotated(current, &[], &copies)
+    })
+    .await?
         == Amendment::NoPointer
     {
         return Ok(false);
