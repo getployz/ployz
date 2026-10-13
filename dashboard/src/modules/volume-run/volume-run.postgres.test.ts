@@ -645,6 +645,23 @@ describe("volume runs", () => {
       expect(send).not.toHaveBeenCalled();
     });
 
+    it("a release on a restore lane, or on a committed release no move row explains, refuses with no move_to", async () => {
+      const restoring = await requested({ kind: "restore", args: { from: "fsn-2" } });
+
+      expect(await release()).toEqual({
+        ok: false,
+        refusal: { code: "conflict", message: "data is starting on fsn-2; it finishes there", details: { run: expect.objectContaining({ id: restoring.id }) } },
+        busy: expect.objectContaining({ id: restoring.id }),
+      });
+
+      await harness.pool.query("update volume_run set kind = 'release', args = '{}', phase = 'committed', current = $2 where id = $1", [restoring.id, idOf("fsn-2")]);
+      expect(await release()).toEqual({
+        ok: false,
+        refusal: { code: "conflict", message: "data is starting on its new Server; it finishes there", details: { run: expect.objectContaining({ id: restoring.id }) } },
+        busy: expect.objectContaining({ id: restoring.id }),
+      });
+    });
+
     it("a release on a Deploy's lane refuses, so the Deploy ends it, and a Deploy yields it", async () => {
       const [deployed] = (await harness.pool.query(
         `insert into volume_run (organization_id, environment_id, volume_id, volume_name, docker_volume, kind, args, state, inngest_run_id)

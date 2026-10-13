@@ -157,7 +157,7 @@ export const laneTarget = Effect.fn("VolumeRun.laneTarget")(function* (lane: Pic
     .orderBy(desc(volumeRun.createdAt))
     .limit(1);
   // SAFETY: a move row's args are a Destination.
-  return (move?.args as VolumeRunArgs["move"] | undefined)?.to ?? current;
+  return (move?.args as VolumeRunArgs["move"] | undefined)?.to ?? null;
 });
 
 const activeLane = Effect.fn("VolumeRun.activeLane")(function* (volumeId: string, lock = false) {
@@ -174,7 +174,8 @@ const laneRefusal = Effect.fn("VolumeRun.laneRefusal")(function* (lane: VolumeRu
   const target = yield* laneTarget(lane);
   const finishes = finishesThere(lane.volumeName, target ?? "its new Server");
   if (kind === "release") {
-    const details: JsonValue = target === null ? { run } : { run, move_to: target };
+    // A restore's target is the copy it restores from, not a move's destination.
+    const details: JsonValue = target === null || lane.kind === "restore" ? { run } : { run, move_to: target };
     return { code: "conflict", message: finishes, details } satisfies StoreRefusal;
   }
   return { code: "conflict", message: `VolumeBusy: ${finishes}`, details: { run } } satisfies StoreRefusal;
@@ -376,10 +377,6 @@ export type LaneTaker = {
 
 export type LaneTake = { readonly run: VolumeRunView; readonly ended: VolumeRunView | null };
 
-export type LaneTakes =
-  | { readonly ok: true; readonly takes: readonly LaneTake[] }
-  | { readonly ok: false; readonly refusal: StoreRefusal; readonly busy: VolumeRunView };
-
 const endOf = (kind: VolumeRunKind): LaneEnd | null => kind === "release" ? "cancelled" : null;
 
 const TAKEN_BY = {
@@ -437,17 +434,6 @@ const takeLane = Effect.fn("VolumeRun.takeLane")(function* (caller: Caller, { in
 });
 
 const refused = (error: LaneRefused) => Effect.succeed({ ok: false, refusal: error.refusal, busy: error.busy } as const);
-
-/** Volumes are taken in id order, so two takers never deadlock. */
-export const takeLanes = Effect.fn("VolumeRun.takeLanes")(function* (caller: Caller, takers: readonly LaneTaker[], end: LaneEnd) {
-  const database = yield* Database;
-  const ordered = [...takers].sort((a, b) => a.input.volumeId.localeCompare(b.input.volumeId));
-  return yield* database.transaction(Effect.gen(function* () {
-    const takes = new Map<string, LaneTake>();
-    for (const taker of ordered) takes.set(taker.id, yield* takeLane(caller, taker, end));
-    return { ok: true, takes: takers.flatMap((taker) => takes.get(taker.id) ?? []) } satisfies LaneTakes;
-  })).pipe(Effect.catchTag("LaneRefused", refused));
-});
 
 export const insertRun = Effect.fn("VolumeRun.insert")(function* (
   caller: Caller, input: { readonly volumeId: string } & VolumeRunInput, volume: ResolvedVolume, id: string, end: LaneEnd | null = endOf(input.kind),
