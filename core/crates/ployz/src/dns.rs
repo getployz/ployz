@@ -146,13 +146,11 @@ fn judge_answers(
 ) -> Option<HostnameVerdict> {
     let verdict = hostname_verdict(answers, machine_ids, cluster_addresses);
     let awaiting_ingress = verdict == HostnameVerdict::Refused(Refusal::Unreachable)
-        && answers
-            .iter()
-            .filter(|(_, answer)| *answer == VerifyAnswer::NoAnswer)
-            .all(|(address, _)| {
-                ingress_returning.contains(&Some(*address))
-                    || (ingress_returning.contains(&None) && !cluster_addresses.contains(address))
-            });
+        && answers.iter().all(|(address, answer)| {
+            *answer == VerifyAnswer::NoAnswer
+                && (ingress_returning.contains(&Some(*address))
+                    || (ingress_returning.contains(&None) && !cluster_addresses.contains(address)))
+        });
     (!awaiting_ingress).then_some(verdict)
 }
 
@@ -297,6 +295,28 @@ mod tests {
             ),
             Some(HostnameVerdict::Refused(Refusal::Unreachable))
         );
+    }
+
+    #[test]
+    fn an_address_answering_elsewhere_still_warns_while_ingress_comes_back() {
+        let (repairing, elsewhere) = (
+            "192.0.2.1".parse().unwrap(),
+            "198.51.100.7".parse().unwrap(),
+        );
+        let machines = [MachineId::parse("a".repeat(32)).unwrap()];
+        let answers = [
+            (repairing, VerifyAnswer::NoAnswer),
+            (
+                elsewhere,
+                VerifyAnswer::Answered {
+                    status: 200,
+                    location: String::new(),
+                    body: "someone else's site".into(),
+                },
+            ),
+        ];
+        assert!(judge_answers(&answers, &machines, &[repairing], &[Some(repairing)]).is_some());
+        assert!(judge_answers(&answers, &machines, &[repairing], &[None]).is_some());
     }
 
     #[test]
