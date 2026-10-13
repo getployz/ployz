@@ -14,7 +14,13 @@ if command -v python3 >/dev/null && git rev-parse --git-dir >/dev/null 2>&1; the
   key=$(python3 scripts/artifacts.py key sdk --extra "features=$features")
 fi
 
-if [ -z "$key" ] || ! python3 scripts/artifacts.py fetch sdk --extra "features=$features" crates/ployz-sdk; then
+# SDK=stale lets an edit that leaves the SDK's interface alone run on main's build, stale but quick.
+stale=
+if [ "${SDK:-}" = stale ]; then
+  stale="SDK=exact to build"
+fi
+
+if [ -z "$key" ] || ! python3 scripts/artifacts.py fetch sdk --extra "features=$features" ${stale:+--stale-ok "$stale"} crates/ployz-sdk; then
   cargo build -p ployz-sdk --release --locked ${features:+--features "$features"}
   case "$(uname -s)" in
     Darwin) binding=${CARGO_TARGET_DIR:-target}/release/libployz_sdk.dylib ;;
