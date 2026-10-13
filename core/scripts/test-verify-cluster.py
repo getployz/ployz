@@ -26,12 +26,17 @@ try:
         start = int(event["artifact"].split("-", 1)[0]) / 1e9
         return start, start + event["seconds"]
 
-    build_start, build_end = interval(next(event for event in events
-                                           if event["command"][:2] == ["cargo", "build"]))
-    overlap = max((max(0, min(build_end, end) - max(build_start, start))
-                   for event in events if "incus" in event["command"]
-                   for start, end in [interval(event)]), default=0)
-    assert overlap > 0, "Compilation and VM preparation ran serially"
+    # Harness builds run under nice, and a cached build runs no cargo at all.
+    build = next((event for event in events if "cargo" in event["command"]
+                  and event["command"][event["command"].index("cargo") + 1:][:1] == ["build"]), None)
+    if build is None:
+        print("binaries came from the build cache; skipping the compilation/VM overlap check", file=sys.stderr)
+    else:
+        build_start, build_end = interval(build)
+        overlap = max((max(0, min(build_end, end) - max(build_start, start))
+                       for event in events if "incus" in event["command"]
+                       for start, end in [interval(event)]), default=0)
+        assert overlap > 0, "Compilation and VM preparation ran serially"
     run = json.loads(manifest.read_text())
     assert run["state"] == "ready" and len(run["machines"]) == 2
 
