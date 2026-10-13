@@ -399,6 +399,37 @@ class Cluster:
         if not done(row) or not self.exists(to, fs(phys)):
             raise CheckError(f"mirror {volume} --to {to} did not land: {text_of(row, data)[:800]}")
 
+    def sync(self, volume):
+        """`ployz volume sync`: no run, just the lines saying what it handed each mirror."""
+        code, data = self.cli("volume", "sync", volume)
+        lines = data.get("lines") if code == 0 and isinstance(data, dict) else None
+        if not isinstance(lines, list):
+            raise CheckError(f"sync {volume} refused: exit {code} {say(data)[:600]}")
+        return lines
+
+    def synced(self, volume, mirror, limit=600):
+        """Sync until the mirror on `mirror` holds a snapshot taken by this sync, the data a restore from it gets."""
+        phys = self.physical(volume)
+        deadline = time.monotonic() + limit
+        answers = []
+        while time.monotonic() < deadline:
+            lines = self.sync(volume)
+            answers.append(lines)
+            handed = re.search(r" (?:is pulling|already holds) (\S+)$", "\n".join(lines), re.M)
+            if handed is None:
+                time.sleep(4)
+                continue
+            target = handed.group(1)
+            while time.monotonic() < deadline:
+                if f"{fs(phys)}@{target}" in self.snapshots(mirror, fs(phys)):
+                    return lines
+                copy = self.inspect(mirror, phys) or {}
+                failure = (copy.get("pull") or {}).get("failure")
+                if failure:
+                    raise CheckError(f"sync {volume}: {mirror} could not receive {target}: {failure}")
+                time.sleep(3)
+        raise CheckError(f"sync {volume}: {mirror} did not land a new snapshot within {limit}s: {say(answers)[-800:]}")
+
     def restore(self, volume, source, limit=1800):
         return self.accepted("volume", "restore", volume, "--from", source, "--wait", timeout=limit)
 
@@ -640,9 +671,7 @@ def restore_only_holder(vc):
     if not done(moved) or not vc.ready(B, phys):
         raise CheckError(f"move india to {B}: {text_of(moved, data)[:600]}")
     vc.psql(B, phys, "insert into kept values (2)")
-    _, synced, data = vc.run_volume("volume", "sync", "india", volume="india")
-    if not done(synced):
-        raise CheckError(f"sync india: {text_of(synced, data)[:600]}")
+    vc.synced("india", A)
     vc.psql(B, phys, "insert into kept values (3)")
     refusals = {}
     for source, phrase in ((A, f"also has copies on {B}"), (B, f"writer is already on {B}")):
@@ -729,9 +758,7 @@ def returning_old_copy_demoted(vc):
     if not done(moved) or not vc.ready(B, phys):
         raise CheckError(f"move kilo to {B}: {text_of(moved, data)[:600]}")
     vc.psql(B, phys, "insert into kept values (2)")
-    _, synced, data = vc.run_volume("volume", "sync", "kilo", volume="kilo")
-    if not done(synced):
-        raise CheckError(f"sync kilo: {text_of(synced, data)[:600]}")
+    vc.synced("kilo", A)
     container = vc.containers(B, phys)[0]
     loop = (f"i=1000; while :; do /usr/bin/docker exec {container} psql -U postgres -Atc \"insert into kept values ($i)\" "
             ">/dev/null 2>&1 && i=$((i+1)); sleep 1; done")
@@ -750,10 +777,12 @@ def returning_old_copy_demoted(vc):
         joined = vc.rejoin(B)
         lost = vc.psql(B, phys, "select count(*) from kept where n >= 1000", required=False) \
             if vc.containers(B, phys) else "no db"
-        code_s, demoted, data_s = vc.run_volume("volume", "sync", "kilo", volume="kilo")
+        synced = vc.sync("kilo")
+        named = re.search(r"has two primaries; run (\S+) makes", "\n".join(synced))
+        demoted = vc.wait_run("kilo", named.group(1)) if named else None
     finally:
         vc.sh(B, f"test -f {WRITER_PID} && kill \"$(cat {WRITER_PID})\"; rm -f {WRITER_PID}", required=False)
-    demote = text_of(demoted, data_s)
+    demote = text_of(demoted, synced)
     b_copies = {where: value for where, value in vc.copies(phys).items() if where.startswith(B + ":")}
     writable = vc.writable(phys)
     rows = vc.rows(A, phys)
@@ -761,8 +790,8 @@ def returning_old_copy_demoted(vc):
         f"restore on {A} succeeded": code_r == 0,
         f"{B} returned with a writable root": bool(returned),
         f"{B} added back": bool(joined),
-        "the next run fails asking for a rerun":
-            refused(code_s, demoted) and "is now read-only" in demote and "Run this again" in demote,
+        "the next sync opens a run that fails asking for a rerun":
+            bool(named) and refused(0, demoted) and "is now read-only" in demote and "Run this again" in demote,
         f"{B} copy kept and read-only": bool(b_copies) and all(value == "on" for value in b_copies.values()),
         f"exactly one writable copy, the root on {A}": writable == [f"{A}:{root(phys)}"],
         f"rows on {A} intact": rows == "1,2,3",
