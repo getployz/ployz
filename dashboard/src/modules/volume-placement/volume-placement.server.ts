@@ -9,7 +9,7 @@ import { MAX_NAME, uniqueName } from "#/modules/config-store/store-services";
 import { mountChange } from "#/modules/config-store/store-volumes";
 import { failedRestore, volumePlacement } from "#/modules/volume-placement/tables";
 import {
-  lossByVolume, lossTime, oldCopies, observePlacement, placementChanges, placementLosses, type Placement, type PlacementRow, type Seed,
+  lossByVolume, lossTime, lossVersion, oldCopies, storeVersion, observePlacement, placementChanges, placementLosses, type Placement, type PlacementRow, type Seed,
 } from "#/modules/volume-placement/volume-placement";
 import { dockerVolumeName, parseDockerVolumeName, type VolumeRunInput } from "#/modules/volume-run/volume-run";
 import { insertRun, inspectVolumeCopies, planVolumeRun, resolveVolume } from "#/modules/volume-run/volume-run.server";
@@ -310,8 +310,9 @@ export const writeAdmitted = <R>(
     const taken = listed.map(({ row }) => row.volumeId);
     const names = [...new Set(lost.map(({ volume }) => volume.name))];
     const accepted = command.accept_volume_loss ?? [];
-    if (!names.every((name) => accepted.includes(name))) {
-      const version = command.version ?? (yield* readStore(organizationId, { query: "diff", environment: command.environment })).version;
+    const store = command.version == null ? command.version : storeVersion(command.version);
+    if (!names.every((name) => accepted.includes(name)) || (lost.length > 0 && command.version !== lossVersion(store ?? "", lost))) {
+      const version = lossVersion(store ?? (yield* readStore(organizationId, { query: "diff", environment: command.environment })).version, lost);
       return yield* new StoreRefused({
         code: "confirmation_required",
         message: `Deploying loses data of ${names.join(", ")}. Accept each by name`,
@@ -323,7 +324,7 @@ export const writeAdmitted = <R>(
       });
     }
     const deleted = (name: string) => volumes.some((volume) => volume.name === name && volume.change === "delete");
-    written = yield* write({ ...command, accept_volume_loss: accepted.filter((name) => !names.includes(name) || deleted(name)) });
+    written = yield* write({ ...command, version: store, accept_volume_loss: accepted.filter((name) => !names.includes(name) || deleted(name)) });
     if (written.written === "deployment" && written.status !== "applied") yield* stampPlacements(organizationId, taken, written.id);
     return written;
   })).pipe(

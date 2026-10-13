@@ -228,25 +228,47 @@ describe("volume placement", () => {
         Effect.catchTag("StoreRefused", (error) => Effect.succeed({ ok: false as const, refusal: error.refusal })),
       ));
     const holder = async () => (await run(listPlacements(organizationId)))[0]?.deploymentId;
+    /** The version a refusal binds to the loss it showed. */
+    const shown = async () => {
+      const refused = await admission(admit([]));
+      if (refused.ok) throw new Error("expected a refusal");
+      return (refused.refusal.details as { version: string }).version;
+    };
 
     it("refuses a Deploy that deletes a copy until it accepts the Volume by name, as the Store refuses deleting one", async () => {
       await stage("web-1");
       expect(await admission(admit([]))).toEqual({ ok: false, refusal: {
         code: "confirmation_required",
         message: "Deploying loses data of data. Accept each by name",
-        details: { volumes: [{ name: "data", deletes: [{ machine_id: web("web-2") }], loss: "data" }], accept: ["data"], version: "v1" },
+        details: { volumes: [{ name: "data", deletes: [{ machine_id: web("web-2") }], loss: "data" }], accept: ["data"], version: expect.stringMatching(/^v1#loss-/) },
       } });
-      expect(await admission(admit(["other"], null))).toMatchObject({ ok: false, refusal: { details: { accept: ["other", "data"], version: "diff-7" } } });
+      expect(await admission(admit(["other"], null))).toMatchObject({ ok: false, refusal: { details: { accept: ["other", "data"], version: expect.stringMatching(/^diff-7#loss-/) } } });
       expect(writes).toEqual([]);
       expect(await holder()).toBeNull();
-      expect(await admission(admit(["data", "other"]))).toEqual({ ok: true, command: admit(["other"]) });
+      expect(await admission(admit(["data", "other"]))).toMatchObject({ ok: false, refusal: { code: "confirmation_required" } });
+      expect(await admission(admit(["data", "other"], await shown()))).toEqual({ ok: true, command: admit(["other"]) });
       expect(await holder()).toBe("dep-1");
+    });
+
+    it("refuses an acceptance of a loss the Volume no longer has, and stamps nothing", async () => {
+      const old = () => Effect.succeed([...members, member("web-3", "mirror")]);
+      await stage("web-1");
+      const shown = await admission(admit([]), old);
+      if (shown.ok) throw new Error("expected a refusal");
+      const { accept, version } = shown.refusal.details as { accept: string[]; version: string };
+      await run(stagePlacement(organizationId, { environment, volumeId, staged: { primary: web("web-1"), mirrors: [], deletes: [web("web-3")] }, mirrors: [web("web-2")] }));
+      expect(await admission(admit(accept, version), old)).toMatchObject({ ok: false, refusal: {
+        code: "confirmation_required",
+        details: { volumes: [{ name: "data", deletes: [{ machine_id: web("web-3") }, { machine_id: web("web-2") }], loss: "data" }] },
+      } });
+      expect(writes).toEqual([]);
+      expect(await holder()).toBeNull();
     });
 
     it("leaves the name with the Store when the Deploy deletes the Volume there too", async () => {
       await stage("web-1");
       deleting = true;
-      expect(await admission(admit(["data"]))).toEqual({ ok: true, command: admit(["data"]) });
+      expect(await admission(admit(["data"], await shown()))).toEqual({ ok: true, command: admit(["data"]) });
     });
 
     it("refuses while the Servers can't be asked about a copy", async () => {
@@ -309,7 +331,8 @@ describe("volume placement", () => {
         )).rows[0].waiting > 0, edit);
         meanwhile = await Promise.race([edit, Promise.resolve("blocked")]);
       };
-      expect(await admission(admit(["data"]))).toEqual({ ok: true, command: admit([]) });
+      const version = await shown();
+      expect(await admission(admit(["data"], version))).toEqual({ ok: true, command: admit([]) });
       await edit;
       expect(meanwhile).toMatchObject({ ok: true, placement: { environmentId: "env-2", staged: { primary: web("web-2") }, deploymentId: null } });
     });

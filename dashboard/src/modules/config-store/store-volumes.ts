@@ -1,7 +1,5 @@
 import type { Change, ConfigCommand, DiffView, EnvironmentRef, EnvironmentView, ServiceListing, VolumeListing, VolumeKind } from "@ployz/sdk";
 import { Option, Schema } from "effect";
-import type { DeletionItem } from "#/components/deletion-dialog";
-import { lossTime } from "#/modules/volume-placement/volume-placement";
 import { settingText } from "./store-services";
 
 /** Mounts `volume` on `service` at `path`, or detaches it (`null`), which keeps the Volume and its data. */
@@ -89,14 +87,3 @@ export function volumeLoss(refusal: { code: string; details: unknown }) {
 }
 
 export type VolumeLoss = NonNullable<ReturnType<typeof volumeLoss>>;
-
-/** Each Volume a refused Deploy loses, as its confirm lists it: the Servers losing a copy, or a restore's lost writes. */
-export function volumeLossItems(refused: VolumeLoss, machineName: (id: string) => string | undefined): DeletionItem[] {
-  return refused.volumes.map((volume) => ({
-    kind: "volume",
-    name: volume.name,
-    detail: volume.after === undefined
-      ? volume.deletes.flatMap((held) => machineName(held.machine_id) ?? []).join(", ") || undefined
-      : `changes after ${lossTime(new Date(volume.after * 1000))}`,
-  }));
-}

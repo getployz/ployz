@@ -198,4 +198,4 @@ deletes nothing and starts no deploy: it saves the deletion, and your next deplo
 From the CLI, `ployz deploy` and `ployz publish` stop and print the command to run instead. It
 names each volume that loses data, like `ployz publish --accept-volume-loss postgres-data
 --version …`. Run it only if you mean it. If another server starts holding that data first,
-Ployz asks again.
+or someone stages a different copy change on that volume meanwhile, Ployz asks again.
