@@ -49,7 +49,8 @@ type BottomBarProps = {
   onDeploy: (message: string) => void;
   /** A Deploy is being admitted: Deploy waits, so a double click admits one. */
   admitting?: boolean;
-  onPublish: (message: string) => void;
+  /** Saves without deploying; resolves true once saved. */
+  onPublish: (message: string) => Promise<boolean>;
   onDiscardAll: () => void;
   onDiscardNode: (group: ChangeGroup) => void;
   onDiscardRow: (group: ChangeGroup, path: string) => void;
@@ -223,7 +224,8 @@ export function BottomBar({
   const reviewProps = {
     environment: params.environmentSlug, groups, totalChanges, canDeploy: deployable, canPublish,
     onClose: () => setOpen(false), onDeploy: deploy, message, onMessageChange: setMessage, admitting,
-    onPublish: () => onPublish(message),
+    // A message edited while the Save is in flight is the next one: keep it.
+    onPublish: () => void onPublish(message).then((saved) => { if (saved) setTyped((now) => now.message === message && now.stages === stages ? { message: "", stages } : now); }),
     onDiscardAll: discardAll,
     onDiscardNode, onDiscardRow,
     ...notes,
