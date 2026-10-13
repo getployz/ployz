@@ -72,6 +72,10 @@ class ClusterModel:
         self.disarm_fails = False
         self.just_ended = 0
         self.calls = 0
+        self.unclaimed = set()
+        self.kill_lands = True
+        self.pid_file = None
+        self.workers = set()
 
     def other(self, machine):
         return "machine-2" if machine == "machine-1" else "machine-1"
@@ -88,15 +92,32 @@ class ClusterModel:
         self.calls += 1
         if self.calls > CALL_LIMIT:
             raise Runaway(f"More than {CALL_LIMIT} helper commands; a wait loop is not sleeping")
-        if args[1] == "cli":
+        if args[0] == "docker":
+            code, output = self.postgres(args[-1])
+        elif args[1] == "cli":
             code, output = self.cli(args[args.index("--") + 2:])
         elif args[1] == "exec":
             code, output = self.guest(args[args.index("--") - 1], args[-1])
         elif args[1] == "runner":
-            code, output = 0, ""
+            code, output = self.worker(args[2])
         else:
             raise AssertionError(f"Unexpected helper command: {args}")
         return subprocess.CompletedProcess(args, code, output, "")
+
+    def postgres(self, sql):
+        """Cloud records the Inngest run that claims a request; an unclaimed one has none."""
+        run_id = re.search(r"id = '([^']+)'", sql)[1]
+        return 0, "" if run_id in self.unclaimed else f"inngest-{run_id}\n"
+
+    def worker(self, state):
+        """verify-cluster runner kills the recorded worker if it is alive, and start replaces a dead one."""
+        pid = int(self.pid_file.read_text())
+        if state == "kill" and self.kill_lands:
+            self.workers.discard(pid)
+        if state == "start" and pid not in self.workers:
+            self.workers.add(pid + 1)
+            self.pid_file.write_text(f"{pid + 1}\n")
+        return 0, ""
 
     def cli(self, args):
         if args[0] == "volume" and args[1] in self.asks and "--approval" not in args:
@@ -179,6 +200,9 @@ class ClusterModel:
             return 0, "\n".join(lines) + "\n"
         if "pg_isready" in script:
             return 0, ""
+        if "systemctl kill" in script:
+            after, invocation = ("2", "b") if self.kill_lands else ("1", "a")
+            return 0, f"rc=0\nout=\nbefore=1\ninvocation=a\nafter={after}\ninvocation_after={invocation}\n"
         if "SELECT id FROM ackprobe" in script:
             present = self.acks[:-1] if self.mutation == "lost" else self.acks
             return 0, "\n".join(str(ack) for ack in present) + "\n"
@@ -231,6 +255,9 @@ class VolumeMoveTests(unittest.TestCase):
         self.manifest.write_text(json.dumps(dict(
             provider="incus", state="ready", cloud=dict(dashboard=str(self.root / "dashboard"), url="http://cloud"),
             machines=[dict(name="machine-1"), dict(name="machine-2")])))
+        run = self.root / "dashboard" / ".verify" / "run"
+        run.mkdir(parents=True)
+        (run / "env").write_text("INNGEST_BASE_URL=http://inngest\n")
 
     def tearDown(self):
         self.temp.cleanup()
@@ -239,6 +266,12 @@ class VolumeMoveTests(unittest.TestCase):
         model = ClusterModel(mutation)
         clock = Clock()
         model.clock = clock
+        model.pid_file = self.root / "dashboard" / ".verify" / "run" / "worker.pid"
+        model.pid_file.write_text("100\n")
+        model.workers = {100}
+        patcher = mock.patch.object(volume_move, "alive", lambda pid: pid in model.workers, create=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
         def spawn(command, stdout, stderr):
             logs = len(list((self.root / "evidence").iterdir()))
@@ -1003,6 +1036,115 @@ class VolumeMoveTests(unittest.TestCase):
                 else:
                     self.assertTrue(result["passed"], result)
                     self.assertEqual(result["final_writer"], "machine-1")
+
+    def test_a_fault_case_passes_only_when_its_first_run_was_picked_up(self):
+        kill = volume_move.KILLS[0]
+        self.assertEqual(kill["name"], "kill-snapshot")
+        for claimed in (True, False):
+            with self.subTest(first_run_claimed=claimed):
+                shutil.rmtree(self.root / "out", ignore_errors=True)
+                checks, model = self.checks()
+                cli = model.cli
+
+                def never_picked_up(args, cli=cli):
+                    # Cloud closes the request lost; a sync after it trips the armed fault, and the rerun ends done.
+                    if args[:2] == ["volume", "move"] and any(model.fault.values()):
+                        row = dict(id=f"run-{len(model.runs)}", kind="move", state="lost",
+                                   message="no run picked up this request")
+                        model.runs.append(row)
+                        model.unclaimed.add(row["id"])
+                        model.fired = True
+                        return 0, json.dumps(row)
+                    return cli(args)
+                if not claimed:
+                    model.cli = never_picked_up
+                with redirect_stdout(io.StringIO()):
+                    result = checks.run_all([kill])["cases"][0]
+                self.assertEqual(result["final_writer"], "machine-2", result)
+                if claimed:
+                    self.assertTrue(result["passed"], result)
+                else:
+                    self.assertEqual(result["run"], "lost")
+                    self.assertEqual(result["recovery"], ["done"])
+                    self.assertFalse(result["passed"], result)
+                    self.assertEqual(len(result["failures"]), 1, result["failures"])
+                    self.assertIn("run-0", result["failures"][0])
+                    self.assertIn("no Inngest run claimed it", result["failures"][0])
+
+    def test_an_undo_passes_only_when_cloud_accepted_its_cancel(self):
+        undo = next(case for case in volume_move.CASES if case["name"] == "undo-before-cut")
+        errors = '{"errors":[{"message":"run not found"}]}'
+        for name, replies, accepted in (
+                ("DELETE 200", [(200, "")], True),
+                ("DELETE 404 then GraphQL accepts", [(404, "not found"), (200, errors), (200, '{"data":{}}')], True),
+                ("DELETE 404 and both GraphQL attempts error", [(404, "not found"), (200, errors), (200, errors)],
+                 False)):
+            with self.subTest(name):
+                shutil.rmtree(self.root / "out", ignore_errors=True)
+                checks, model = self.checks()
+                cli, asked = model.cli, []
+
+                def running(args, cli=cli):
+                    if args[:2] == ["volume", "move"]:
+                        model.fired = True
+                        row = dict(id=f"run-{len(model.runs)}", kind="move", state="running")
+                        model.runs.append(row)
+                        return 0, json.dumps(row)
+                    return cli(args)
+
+                def inngest(method, url, body=None, token=None, replies=replies, asked=asked):
+                    asked.append((method, url))
+                    if len(asked) == len(replies):
+                        # Cancelled when Cloud accepted it; otherwise reconciliation closes the run lost on its own.
+                        model.runs[0]["state"] = "cancelled" if accepted else "lost"
+                    return replies[len(asked) - 1]
+                model.cli = running
+                with mock.patch.object(volume_move, "http", inngest), redirect_stdout(io.StringIO()):
+                    checks.run_all([undo])
+                result = json.loads((self.root / "out" / "undo-before-cut.json").read_text())
+                self.assertEqual(len(asked), len(replies))
+                self.assertEqual(asked[0], ("DELETE", "http://inngest/v1/runs/inngest-run-0"))
+                self.assertEqual(result["recovery"][-1]["state"], "done")
+                self.assertEqual(result["final_writer"], "machine-1")
+                if accepted:
+                    self.assertTrue(result["passed"], result)
+                else:
+                    self.assertFalse(result["passed"], result)
+                    self.assertEqual(len(result["failures"]), 1, result["failures"])
+                    self.assertTrue(result["failures"][0].startswith("no evidence the cancel landed"),
+                                    result["failures"])
+
+    def test_a_soak_kill_passes_only_when_it_lands(self):
+        cases = {case["name"]: case for case in volume_move.soak_cases()}
+        for name, plant, landed in (
+                ("soak-5-writer-runner-kill", None, True),
+                ("soak-5-writer-runner-kill", "no-op kill", False),
+                ("soak-5-writer-runner-kill", "stale worker pid", False),
+                ("soak-5-writer-kill-ployz-writer", None, True),
+                ("soak-5-writer-kill-ployz-writer", "no-op kill", False),
+                ("soak-5-writer-kill-docker-other", None, True),
+                ("soak-5-writer-kill-docker-other", "no-op kill", False)):
+            with self.subTest(case=name, plant=plant):
+                shutil.rmtree(self.root / "out", ignore_errors=True)
+                checks, model = self.checks()
+                if plant == "no-op kill":
+                    model.kill_lands = False
+                if plant == "stale worker pid":
+                    model.workers = {7}
+                # The model has no Container stop clock, so the trigger fires as the cut would.
+                checks.wait_trigger = lambda case, row, since, side: "machine-2: fault: delaying MirrorToWriter"
+                with redirect_stdout(io.StringIO()):
+                    result = checks.run_all([cases[name]])["cases"][0]
+                self.assertEqual(result["final_writer"], "machine-2", result)
+                self.assertEqual(result["recovery"], ["done"])
+                if landed:
+                    self.assertTrue(result["passed"], result)
+                else:
+                    action = cases[name]["action"]
+                    self.assertFalse(result["passed"], result)
+                    self.assertEqual(len(result["failures"]), 1, result["failures"])
+                    self.assertTrue(result["failures"][0].startswith(f"no evidence the {action} landed"),
+                                    result["failures"])
 
     def test_each_planted_defect_fails_the_run(self):
         for mutation in ("two-writers", "stopped", "snapshots", "lost"):
