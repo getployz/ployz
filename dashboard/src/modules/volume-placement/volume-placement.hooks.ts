@@ -58,10 +58,12 @@ export function useDeleteCopy(organizationSlug: string, environment: Environment
     else toast.error(run?.message ?? `Could not delete the copy of ${volume.name}`);
     void queryClient.invalidateQueries({ queryKey: volumePlacementKeys.all });
   });
-  return (server: MachineName) => deleteCopyServerFn({ data: { organizationSlug, volumeId: volume.id, environment, server } }).then((result) => {
-    if (result.ok) watch(result.run.id);
-    else toast.error(result.refusal.message);
-  }, (error: Error) => { toast.error(toErrorMessage(error, `Could not delete the copy of ${volume.name}`)); });
+  return (server: MachineName) => {
+    void deleteCopyServerFn({ data: { organizationSlug, volumeId: volume.id, environment, server } }).then((result) => {
+      if (result.ok) watch(result.run.id);
+      else toast.error(result.refusal.message);
+    }, (error: Error) => { toast.error(toErrorMessage(error, `Could not delete the copy of ${volume.name}`)); });
+  };
 }
 
 export type StagedPlacements = {

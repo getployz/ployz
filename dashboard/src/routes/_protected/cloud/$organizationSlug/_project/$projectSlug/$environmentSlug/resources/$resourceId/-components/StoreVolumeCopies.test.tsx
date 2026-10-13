@@ -94,6 +94,21 @@ describe("VolumeCopiesPanel", () => {
     expect(stage).not.toHaveBeenCalled();
   });
 
+  it("closes the delete confirm at once, without waiting for Cloud", async () => {
+    const { deleteCopy } = panel([member("web-1", "writer"), member("web-3", "mirror")], row([]));
+    deleteCopy.mockReturnValue(new Promise(() => undefined));
+    fireEvent.click(screen.getByRole("button", { name: "Delete copy on web-3" }));
+    fireEvent.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(deleteCopy).toHaveBeenCalledWith("web-3");
+  });
+
+  it("restores from an old copy's latest point, as from a mirror's", () => {
+    const { restore } = panel([member("web-1", "writer"), mirrorAsOf("web-3", new Date(NOW.getTime() - 3_600_000))], row([]));
+    fireEvent.click(screen.getByRole("button", { name: "Restore from web-3" }));
+    expect(restore).toHaveBeenCalledWith(expect.objectContaining({ guid: "web-3" }));
+  });
+
   it("shows a staged mirror green with New and no action, Was or Undo", () => {
     panel([member("web-1", "writer"), pooled("web-2")], row([], { primary: "web-1", mirrors: ["web-2"] }));
     const item = group("Elsewhere").getByRole("listitem");

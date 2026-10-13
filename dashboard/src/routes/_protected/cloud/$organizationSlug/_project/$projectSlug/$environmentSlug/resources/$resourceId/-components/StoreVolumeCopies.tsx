@@ -88,7 +88,7 @@ export type CopiesPanelProps = {
   deploying: boolean;
   stage: (staged: Placement | null, mirrors: readonly MachineId[]) => void;
   restore: (point: RestorePoint) => void;
-  deleteCopy: (server: MachineName) => Promise<void>;
+  deleteCopy: (server: MachineName) => void;
   open: MachineId | null;
   onOpen: (copy: MachineId | null) => void;
   now?: Date;
@@ -117,7 +117,7 @@ export function VolumeCopiesPanel(props: CopiesPanelProps) {
 
 type Resolved = CopiesPanelProps & { members: readonly Member[]; row: PlacementRow | null; copies: VolumeCopies };
 
-function CopiesView({ volume, members, row, copies, target, servers, accepting, upgrade, unknown, disabled, deploying, stage, deleteCopy, onOpen, now = new Date() }:
+function CopiesView({ volume, members, row, rows, copies, target, servers, accepting, upgrade, unknown, seeds, disabled, deploying, stage, restore, deleteCopy, onOpen, now = new Date() }:
   Resolved & { target: Placement }) {
   const [adding, setAdding] = useState(false);
   const [deleting, setDeleting] = useState<OldCopy | null>(null);
@@ -161,7 +161,8 @@ function CopiesView({ volume, members, row, copies, target, servers, accepting, 
       {copies.elsewhere.length === 0
         ? <p className="text-sm text-muted-foreground">Nothing outside {liveName}. If {liveName} dies, {volume.name} goes with it.</p>
         : copies.elsewhere.map((copy) => <CopyRow key={copy.id} copy={copy} now={now} locked={locked} blocked={blocked}
-          onOpen={() => { if (copy.kind === "mirror") onOpen(copy.server.id); }} onDelete={copy.kind === "old" ? () => setDeleting(copy) : null} />)}
+          onOpen={() => { if (copy.kind === "mirror") onOpen(copy.server.id); }} onDelete={copy.kind === "old" ? () => setDeleting(copy) : null}
+          restore={copy.kind === "old" && seeds ? restoreOffer(volume, members, rows, copy.server.id, disabled || deploying, restore) : null} />)}
     </Group>
     {canAdd ? <Button variant="outline" className="border-dashed" disabled={locked} onClick={() => setAdding(true)}>
       <PlusIcon data-icon="inline-start" />Add copy
@@ -176,7 +177,7 @@ function CopiesView({ volume, members, row, copies, target, servers, accepting, 
         </p>
         <p>This runs now, not on deploy. It can't be undone.</p>
       </div> : null}
-      onConfirm={async () => { if (deleting) await deleteCopy(deleting.server.name); setDeleting(null); }} />
+      onConfirm={() => { if (deleting) deleteCopy(deleting.server.name); setDeleting(null); }} />
   </div>;
 }
 
@@ -191,14 +192,31 @@ function Busy({ words }: { words: string }) {
   return <span className="inline-flex items-center gap-1.5"><Spinner role="presentation" aria-hidden="true" />{words}</span>;
 }
 
-/** One copy away from the live Server. A mirror opens; an old copy only goes, at once. */
-function CopyRow({ copy, now, locked, blocked, onOpen, onDelete }: {
+/** A Server's latest restore point, and whether Restore on it stages, as a mirror's detail and an old copy's row offer it. */
+function restoreOffer(volume: CopiesVolume, members: readonly Member[], rows: readonly PlacementRow[], server: MachineId, locked: boolean,
+  restore: (point: RestorePoint) => void) {
+  const point = restorePoints(members).find((candidate) => candidate.server.id === server) ?? null;
+  if (point === null) return null;
+  const restoring = rows.filter((entry) => entry.staged?.seed?.sourceVolumeId === volume.id);
+  return {
+    point,
+    staged: restoring.some((entry) => entry.staged?.seed?.point.guid === point.guid),
+    disabled: locked || restoring.length > 0,
+    stage: () => restore(point),
+  };
+}
+
+type RestoreOffer = ReturnType<typeof restoreOffer>;
+
+/** One copy away from the live Server. A mirror opens; an old copy restores its point on deploy, or goes at once. */
+function CopyRow({ copy, now, locked, blocked, onOpen, onDelete, restore = null }: {
   copy: VolumeCopy;
   now: Date;
   locked: boolean;
   blocked: boolean;
   onOpen: () => void;
   onDelete: (() => void) | null;
+  restore?: RestoreOffer;
 }) {
   const line = cardLine(copy, now);
   const title = copy.kind === "offsite" ? copy.bucket : copy.server.name;
@@ -217,6 +235,8 @@ function CopyRow({ copy, now, locked, blocked, onOpen, onDelete }: {
     <ItemActions>
       {badge}
       {copy.kind === "mirror" ? <ChevronRightIcon className="size-4 text-muted-foreground" /> : null}
+      {restore?.staged ? <span className="text-sm text-muted-foreground">Staged</span>
+        : restore ? <Button variant="outline" size="xs" aria-label={`Restore from ${title}`} disabled={restore.disabled} onClick={restore.stage}>Restore</Button> : null}
       {onDelete && copy.staged === null && copy.busy === null && !blocked
         ? <Button variant="ghost" size="icon-xs" aria-label={`Delete copy on ${title}`} disabled={locked} onClick={onDelete}><XIcon /></Button> : null}
     </ItemActions>
@@ -294,9 +314,7 @@ function CopyView({ volume, members, row, rows, copies, copy, accepting, upgrade
   const live = copies.live.server?.name ?? "the live server";
   const services = [...new Set(volume.mounts.map((mount) => mount.service))].join(", ") || volume.name;
   const stale = isStale(copy, now);
-  const point = restorePoints(members).find((candidate) => candidate.server.id === copy.server.id) ?? null;
-  const restoring = rows.filter((entry) => entry.staged?.seed?.sourceVolumeId === volume.id);
-  const pointStaged = point !== null && restoring.some((entry) => entry.staged?.seed?.point.guid === point.guid);
+  const offer = restoreOffer(volume, members, rows, copy.server.id, locked, restore);
 
   return <div className="flex flex-col gap-4">
     <Button variant="ghost" size="sm" className="self-start" onClick={onBack}><ChevronLeftIcon data-icon="inline-start" />Copies</Button>
@@ -314,11 +332,11 @@ function CopyView({ volume, members, row, rows, copies, copy, accepting, upgrade
         </span>
         : "Not yet"}
     </Row>
-    {point ? <Row title="Restore point">
+    {offer ? <Row title="Restore point">
       <span className="flex items-center gap-2">
-        {lossTime(point.at)}
-        {pointStaged ? <span className="text-muted-foreground">Staged</span>
-          : seeds ? <Button variant="outline" size="sm" disabled={locked || restoring.length > 0} onClick={() => restore(point)}>Restore</Button> : null}
+        {lossTime(offer.point.at)}
+        {offer.staged ? <span className="text-muted-foreground">Staged</span>
+          : seeds ? <Button variant="outline" size="sm" disabled={offer.disabled} onClick={offer.stage}>Restore</Button> : null}
       </span>
     </Row> : null}
     <div data-slot="copy-actions" className="flex flex-wrap gap-2">
