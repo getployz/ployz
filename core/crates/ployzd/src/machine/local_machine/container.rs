@@ -5,10 +5,10 @@ use std::sync::Arc;
 use ployz_core::{
     AnonymousVolumes, ContainerId, ContainerKind, ContainerLocator, ContainerNow,
     ContainerObservation, ContainerRefusal, ContainerRefusalReason, ContainerRuntimeObservation,
-    ContainerWant, CopyRefusal, DockerVolumeName, Drain, EnsuredContainer, ImageIngestOpened,
-    ImageIngestReason, ImagePulled, ImagesRemoved, LocalMachinePhase, MachineStorageObservation,
-    Namespace, NewContainer, PruneImagesRequest, PullImageFromMachineRequest, ResolvedServiceSpec,
-    RunTarget, StopOptions, VolumeRemoved,
+    ContainerWant, DockerVolumeName, Drain, EnsuredContainer, ImageIngestOpened, ImageIngestReason,
+    ImagePulled, ImagesRemoved, LocalMachinePhase, MachineStorageObservation, Namespace,
+    NewContainer, PruneImagesRequest, PullImageFromMachineRequest, ResolvedServiceSpec, RunTarget,
+    StopOptions, VolumeGen, VolumeRemoved,
 };
 use ployz_core::{
     AnswerWhen, HEALTH_POLL_INTERVAL, HealthFailure, HealthPoll, HealthVerdict, HealthcheckSpec,
@@ -19,6 +19,14 @@ use super::super::ingress::admit_ingress_service;
 use super::{Error, LocalMachine};
 use crate::docker::{ContainerCreated, ContainerRequest, ImageIngest, same_creation};
 use crate::machine::{STORAGE_OBSERVATION_TIMEOUT, local_storage};
+
+/// Why the cut's Container half left the root a writer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CutRefusal {
+    Busy,
+    /// A newer lane raised the floor above the cut's `gen`.
+    Stale(VolumeGen),
+}
 
 impl LocalMachine {
     /// Return fresh local storage evidence for container admission and Global reconciliation.
@@ -276,14 +284,19 @@ impl LocalMachine {
     /// under the turn, so one started during the drain is `Busy` too, as is one the
     /// stop left running. A `Busy` cut leaves the root a writer.
     ///
+    /// The floor lock is held from the last `gen` check through `zfs`, so a floor raised
+    /// during the drain makes the cut `Stale`, and a floor read never sees the flip
+    /// half done. A `Stale` cut leaves the root a writer and its holders stopped.
+    ///
     /// Detached from the RPC with the installation held, so a caller that hangs up
     /// does not abandon a half-stopped Container.
     pub(crate) async fn cut_volume_copy<Z, Fut>(
         &self,
         name: DockerVolumeName,
+        r#gen: VolumeGen,
         drain: Drain,
         zfs: Z,
-    ) -> Result<Result<(), CopyRefusal>, Error>
+    ) -> Result<Result<(), CutRefusal>, Error>
     where
         Z: FnOnce() -> Fut + Send + 'static,
         Fut: std::future::Future<Output = Result<(), Error>> + Send + 'static,
@@ -297,12 +310,16 @@ impl LocalMachine {
                     .stop_behind_ingress(&installation, &holder, drain, &stop)
                     .await?;
                 if is_running(&observed) {
-                    return Ok(Err(CopyRefusal::Busy));
+                    return Ok(Err(CutRefusal::Busy));
                 }
             }
             let _turn = local.owner.admission_lock().write_owned().await;
             if local.volume_holder_running(&name).await? {
-                return Ok(Err(CopyRefusal::Busy));
+                return Ok(Err(CutRefusal::Busy));
+            }
+            let mut floor = containers.floor_turn().await;
+            if let Err(floor) = floor.admit(&name, r#gen).await? {
+                return Ok(Err(CutRefusal::Stale(floor)));
             }
             zfs().await.map(Ok)
         })

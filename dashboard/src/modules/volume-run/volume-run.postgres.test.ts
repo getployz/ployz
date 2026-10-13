@@ -110,6 +110,8 @@ const label = (fake: FakeMachine, want: WantedCopy) => {
       return `snapshot@${fake.name}(${want.name})`;
     case "forget":
       return `forget@${fake.name}`;
+    case "floor":
+      return `floor@${fake.name}`;
   }
 };
 

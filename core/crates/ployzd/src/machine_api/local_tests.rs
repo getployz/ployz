@@ -1222,6 +1222,239 @@ mod set_volume_copy {
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 
+    fn at_gen(mut request: Value, r#gen: u64) -> Value {
+        request
+            .as_object_mut()
+            .unwrap()
+            .insert("gen".into(), json!(r#gen));
+        request
+    }
+
+    fn floor(r#gen: u64) -> Value {
+        at_gen(
+            json!({"name":VOLUME, "expect":{"kind":"none"}, "want":{"kind":"floor"}}),
+            r#gen,
+        )
+    }
+
+    fn forget(expect: Value) -> Value {
+        json!({"name":VOLUME, "expect":expect, "want":{"kind":"forget"}})
+    }
+
+    fn draining_cut(drain: u64) -> Value {
+        json!({"name":VOLUME, "expect":{"kind":"writer", "epoch":0},
+            "want":{"kind":"mirror", "from":null, "target":"f-1", "drain":drain}})
+    }
+
+    /// A Writer root whose cut parks it in a slot holding `f-1`.
+    fn cutting_plugin() -> FakePlugin {
+        let plugin = FakePlugin::default();
+        plugin.reply(INSPECT_ROUTE, writer_root(0, None));
+        plugin.reply(CUT_ROUTE, slot(Some(snapshot("f-1", 7))));
+        let replies = plugin.replies.clone();
+        plugin.on(CUT_ROUTE, move || {
+            replies
+                .lock()
+                .unwrap()
+                .insert(INSPECT_ROUTE.into(), slot(Some(snapshot("f-1", 7))));
+        });
+        plugin
+    }
+
+    #[tokio::test]
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    async fn a_request_below_the_floor_refuses_stale_before_any_effect() {
+        let (data_dir, _store, service, fake) = fake_docker_service("ployzd-copy-stale").await;
+        let plugin = cutting_plugin();
+        let (socket, server) = plugin.serve(&data_dir);
+        let service = service.with_volume_plugin(socket);
+        running_holder(&service, &fake).await;
+
+        let raised = reply(&set_copy(&service, floor(5)).await);
+        assert_eq!(
+            serde_json::to_value(&raised).unwrap(),
+            json!({"copy": writer_root(0, None)["Ok"]})
+        );
+        let error = refusal(
+            &set_copy(
+                &service,
+                at_gen(cut(json!({"kind":"writer", "epoch":0})), 4),
+            )
+            .await,
+        );
+        assert_eq!(error.code, RpcErrorCode::Conflict, "{error:?}");
+        assert_eq!(error.details["reason"], json!("stale"));
+        assert_eq!(error.details["floor"], json!(5));
+        assert_eq!(error.details["copy"], writer_root(0, None)["Ok"]);
+        assert_eq!(holder_status(&fake), vec![json!("running")]);
+        assert_eq!(plugin.routes_called(), vec![INSPECT_ROUTE, INSPECT_ROUTE]);
+        server.abort();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    async fn a_gen_at_or_above_the_floor_raises_it_and_a_lower_one_is_stale() {
+        let (data_dir, _store, service, _fake) = fake_docker_service("ployzd-copy-gen").await;
+        let plugin = FakePlugin::default();
+        plugin.reply(INSPECT_ROUTE, writer_root(0, None));
+        let (socket, server) = plugin.serve(&data_dir);
+        let service = service.with_volume_plugin(socket);
+        let request = forget(json!({"kind":"writer", "epoch":0}));
+
+        let first = reply(&set_copy(&service, at_gen(request.clone(), 3)).await);
+        assert_eq!(
+            serde_json::to_value(&first).unwrap(),
+            json!({"copy": writer_root(0, None)["Ok"]})
+        );
+        assert_eq!(
+            reply(&set_copy(&service, at_gen(request.clone(), 3)).await),
+            first
+        );
+        let error = refusal(&set_copy(&service, at_gen(request.clone(), 2)).await);
+        assert_eq!(error.details["reason"], json!("stale"), "{error:?}");
+        assert_eq!(error.details["floor"], json!(3));
+        let unnumbered = refusal(&set_copy(&service, request).await);
+        assert_eq!(
+            unnumbered.details["reason"],
+            json!("stale"),
+            "{unnumbered:?}"
+        );
+        server.abort();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    async fn a_floor_want_answers_the_root_while_a_cut_drains_then_the_slot() {
+        let (data_dir, _store, service, fake) = fake_docker_service("ployzd-copy-floor").await;
+        let plugin = cutting_plugin();
+        let (socket, server) = plugin.serve(&data_dir);
+        let service = service.with_volume_plugin(socket);
+        running_holder(&service, &fake).await;
+
+        let (cut, during) = tokio::join!(set_copy(&service, at_gen(draining_cut(400), 1)), async {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            tokio::time::timeout(
+                std::time::Duration::from_millis(200),
+                set_copy(&service, floor(1)),
+            )
+            .await
+            .expect("the floor want waited on the draining cut")
+        });
+        assert_eq!(
+            serde_json::to_value(reply(&during)).unwrap(),
+            json!({"copy": writer_root(0, None)["Ok"]})
+        );
+        assert_eq!(
+            serde_json::to_value(reply(&cut)).unwrap(),
+            json!({"copy": slot(Some(snapshot("f-1", 7)))["Ok"]})
+        );
+        assert_eq!(
+            serde_json::to_value(reply(&set_copy(&service, floor(1)).await)).unwrap(),
+            json!({"copy": slot(Some(snapshot("f-1", 7)))["Ok"]})
+        );
+        server.abort();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    async fn a_floor_raised_during_the_drain_refuses_the_cut_stale_with_its_holder_stopped() {
+        let (data_dir, _store, service, fake) = fake_docker_service("ployzd-copy-fenced").await;
+        let plugin = cutting_plugin();
+        let (socket, server) = plugin.serve(&data_dir);
+        let service = service.with_volume_plugin(socket);
+        running_holder(&service, &fake).await;
+
+        let (refused, _) = tokio::join!(set_copy(&service, at_gen(draining_cut(300), 1)), async {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            set_copy(&service, floor(2)).await
+        });
+        let error = refusal(&refused);
+        assert_eq!(error.details["reason"], json!("stale"), "{error:?}");
+        assert_eq!(error.details["floor"], json!(2));
+        assert_eq!(error.details["copy"], writer_root(0, None)["Ok"]);
+        assert_eq!(holder_status(&fake), vec![json!("exited")]);
+        assert!(
+            !plugin
+                .routes_called()
+                .iter()
+                .any(|route| route == CUT_ROUTE)
+        );
+        server.abort();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    async fn a_request_queued_behind_a_cut_refuses_stale_once_a_floor_fenced_it() {
+        let (data_dir, _store, service, fake) = fake_docker_service("ployzd-copy-queued").await;
+        let plugin = cutting_plugin();
+        let (socket, server) = plugin.serve(&data_dir);
+        let service = service.with_volume_plugin(socket);
+        running_holder(&service, &fake).await;
+        let queued = at_gen(forget(json!({"kind":"writer", "epoch":0})), 1);
+
+        let (_, queued, _) = tokio::join!(
+            set_copy(&service, at_gen(draining_cut(300), 1)),
+            async {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                set_copy(&service, queued).await
+            },
+            async {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                set_copy(&service, floor(2)).await
+            }
+        );
+        let error = refusal(&queued);
+        assert_eq!(error.details["reason"], json!("stale"), "{error:?}");
+        assert_eq!(error.details["floor"], json!(2));
+        server.abort();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    async fn a_floor_want_sent_during_the_flip_waits_for_it_and_answers_the_slot() {
+        let (data_dir, _store, service, fake) = fake_docker_service("ployzd-copy-flip").await;
+        let plugin = FakePlugin::default();
+        plugin.reply(INSPECT_ROUTE, writer_root(0, None));
+        plugin.reply(CUT_ROUTE, slot(Some(snapshot("f-1", 7))));
+        let replies = plugin.replies.clone();
+        let flipping = std::sync::Arc::new(tokio::sync::Notify::new());
+        let flip = flipping.clone();
+        plugin.on(CUT_ROUTE, move || {
+            replies
+                .lock()
+                .unwrap()
+                .insert(INSPECT_ROUTE.into(), json!({"Ok": null}));
+            flip.notify_one();
+            tokio::task::block_in_place(|| {
+                std::thread::sleep(std::time::Duration::from_millis(300));
+            });
+            replies
+                .lock()
+                .unwrap()
+                .insert(INSPECT_ROUTE.into(), slot(Some(snapshot("f-1", 7))));
+        });
+        let (socket, server) = plugin.serve(&data_dir);
+        let service = service.with_volume_plugin(socket);
+        running_holder(&service, &fake).await;
+
+        let (cut, during) = tokio::join!(set_copy(&service, at_gen(draining_cut(0), 1)), async {
+            flipping.notified().await;
+            set_copy(&service, floor(1)).await
+        });
+        assert_eq!(
+            serde_json::to_value(reply(&during)).unwrap(),
+            json!({"copy": slot(Some(snapshot("f-1", 7)))["Ok"]})
+        );
+        assert_eq!(reply(&cut), reply(&during));
+        server.abort();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
     #[tokio::test]
     #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
     async fn a_late_writer_create_after_the_service_moved_on_starts_nothing() {
