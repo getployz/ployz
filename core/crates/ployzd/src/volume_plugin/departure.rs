@@ -92,8 +92,10 @@ impl VolumeStorage {
             }
             Departure::Departed => false,
             Departure::Mirror => {
+                self.receives.stop(name).await;
                 self.zfs(&["destroy", "-r", &slot_parent(pool, name)])
                     .await?;
+                self.receives.forget(name);
                 true
             }
         };

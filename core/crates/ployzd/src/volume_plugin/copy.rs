@@ -14,6 +14,7 @@ use ployzd::{
         BOUND_PATH_PREFIX, CopyRequest, CutRequest, PullRequest, SnapshotRequest, WriterRequest,
     },
 };
+use tokio_util::sync::CancellationToken;
 
 use super::{
     Dataset, DockerVolumeName, VolumeError, VolumeStorage,
@@ -663,15 +664,14 @@ impl VolumeStorage {
             name: request.name.clone(),
             source,
         };
-        let outcome = self.receives.start(name);
         let storage = self.clone();
         let from = request.from;
-        tokio::spawn(async move {
-            let result = storage.pull_stream(from, stream, &fs, bound).await;
+        self.receives.spawn(name, |stop| async move {
+            let result = storage.pull_stream(from, stream, &fs, bound, &stop).await;
             if let Err(error) = &result {
                 tracing::warn!(%fs, %error, "Volume pull failed");
             }
-            *outcome.lock().expect("outcome lock") = Some(result);
+            result
         });
         self.copy_now(&scope).await
     }
@@ -686,9 +686,10 @@ impl VolumeStorage {
         stream: SendStream,
         fs: &str,
         bound: u64,
+        stop: &CancellationToken,
     ) -> Result<(), String> {
         let fault = "SetVolumeCopy.MirrorToMirror";
-        match self.receive(from, &stream, fs, bound, fault).await {
+        match self.receive(from, &stream, fs, bound, fault, stop).await {
             Ok(()) => return Ok(()),
             Err(ReceiveFailure::Failed(error)) => return Err(error),
             Err(ReceiveFailure::NoStream(_)) => {}
@@ -722,7 +723,7 @@ impl VolumeStorage {
                 .await
                 .map_err(|error| error.to_string())?;
         }
-        self.receive_opened(opened, fs, bound, fault)
+        self.receive_opened(opened, fs, bound, fault, stop)
             .await
             .map_err(|failure| failure.to_string())
     }

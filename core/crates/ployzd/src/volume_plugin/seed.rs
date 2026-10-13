@@ -8,12 +8,14 @@ use std::process::Stdio;
 use axum::{Json, extract::State};
 use ployz_core::{RpcError, SeedVolumeRequest, SwitchError, VolumeCopyView};
 use tokio::process::Command;
+use tokio_util::sync::CancellationToken;
 
 use super::{
     VolumeStorage,
     inspect::internal,
     mirror,
     storage::{PROMOTE_PROPERTY, PULL_PROPERTY, root_dataset, slot_fs, slot_parent},
+    transfer::{exited, reap},
 };
 
 /// On a seeded root: the guid of the restore point it holds.
@@ -107,12 +109,10 @@ impl VolumeStorage {
         self.zfs(&["set", &format!("{PULL_PROPERTY}={}", point.name), &parent])
             .await
             .map_err(internal)?;
-        let outcome = self.receives.start(&into);
         let storage = self.clone();
         let snapshot = format!("{source}@{}", point.name);
-        tokio::spawn(async move {
-            let result = storage.copy_snapshot(&snapshot, &fs, bound).await;
-            *outcome.lock().expect("outcome lock") = Some(result);
+        self.receives.spawn(&into, |stop| async move {
+            storage.copy_snapshot(&snapshot, &fs, bound, &stop).await
         });
         self.seeded(&pool, &into).await
     }
@@ -173,7 +173,14 @@ impl VolumeStorage {
     }
 
     /// `zfs send` of one local snapshot piped into a bounded, read-only receive of `fs`.
-    async fn copy_snapshot(&self, snapshot: &str, fs: &str, bound: u64) -> Result<(), String> {
+    /// Once `stop` fires, both are killed and reaped before this returns.
+    async fn copy_snapshot(
+        &self,
+        snapshot: &str,
+        fs: &str,
+        bound: u64,
+        stop: &CancellationToken,
+    ) -> Result<(), String> {
         let mut send = Command::new(&self.zfs)
             .args(["send", snapshot])
             .stdin(Stdio::null())
@@ -189,7 +196,7 @@ impl VolumeStorage {
             .into_owned_fd()
             .map_err(|error| format!("could not hand the send stream over: {error}"))?;
         let refquota = format!("refquota={bound}");
-        let receive = Command::new(&self.zfs)
+        let mut receive = Command::new(&self.zfs)
             .args([
                 "receive",
                 "-u",
@@ -206,20 +213,26 @@ impl VolumeStorage {
             .kill_on_drop(true)
             .spawn()
             .map_err(|error| format!("could not run zfs receive: {error}"))?;
-        let (sent, received) = tokio::join!(send.wait_with_output(), receive.wait_with_output());
-        let received = received.map_err(|error| format!("zfs receive did not finish: {error}"))?;
-        let sent = sent.map_err(|error| format!("zfs send did not finish: {error}"))?;
-        if !received.status.success() {
-            return Err(format!(
-                "zfs receive into {fs} failed: {}",
-                String::from_utf8_lossy(&received.stderr).trim()
-            ));
+        let exits = {
+            let both = async { tokio::join!(exited(&mut send), exited(&mut receive)) };
+            tokio::select! {
+                biased;
+                () = stop.cancelled() => None,
+                exits = both => Some(exits),
+            }
+        };
+        let Some((sent, received)) = exits else {
+            reap(&mut [&mut send, &mut receive]).await;
+            return Err(format!("the seed of {fs} was stopped"));
+        };
+        let (received, stderr) =
+            received.map_err(|error| format!("zfs receive did not finish: {error}"))?;
+        if !received.success() {
+            return Err(format!("zfs receive into {fs} failed: {}", stderr.trim()));
         }
-        if !sent.status.success() {
-            return Err(format!(
-                "zfs send of {snapshot} failed: {}",
-                String::from_utf8_lossy(&sent.stderr).trim()
-            ));
+        let (sent, stderr) = sent.map_err(|error| format!("zfs send did not finish: {error}"))?;
+        if !sent.success() {
+            return Err(format!("zfs send of {snapshot} failed: {}", stderr.trim()));
         }
         self.finish_copy(fs, bound).await
     }

@@ -3,6 +3,7 @@
 
 use std::{
     collections::BTreeMap,
+    future::Future,
     process::Stdio,
     sync::{Arc, Mutex},
     time::Duration,
@@ -10,7 +11,11 @@ use std::{
 
 use futures_util::StreamExt as _;
 use ployz_core::{ManagementAddress, SendStream};
-use tokio::{io::AsyncWriteExt as _, process::Command};
+use tokio::{
+    io::{AsyncReadExt as _, AsyncWriteExt as _},
+    process::{Child, Command},
+};
+use tokio_util::sync::CancellationToken;
 
 use super::{DockerVolumeName, VolumeStorage};
 
@@ -27,6 +32,8 @@ pub(super) struct Receives(Arc<Mutex<BTreeMap<String, ReceiveTask>>>);
 
 struct ReceiveTask {
     outcome: Arc<Mutex<Option<Result<(), String>>>>,
+    stop: CancellationToken,
+    finished: CancellationToken,
 }
 
 impl Receives {
@@ -54,18 +61,49 @@ impl Receives {
             .remove(&name.0);
     }
 
-    pub(super) fn start(&self, name: &DockerVolumeName) -> Arc<Mutex<Option<Result<(), String>>>> {
-        let outcome = Arc::new(Mutex::new(None));
+    /// Runs `work` as the receive task of `name`. `work` gets the token [`Self::stop`]
+    /// cancels; once it fires, `work` kills and reaps its `zfs` children before returning.
+    pub(super) fn spawn<F>(
+        &self,
+        name: &DockerVolumeName,
+        work: impl FnOnce(CancellationToken) -> F,
+    ) where
+        F: Future<Output = Result<(), String>> + Send + 'static,
+    {
+        let task = ReceiveTask {
+            outcome: Arc::default(),
+            stop: CancellationToken::new(),
+            finished: CancellationToken::new(),
+        };
+        let outcome = Arc::clone(&task.outcome);
+        let finished = task.finished.clone().drop_guard();
+        let work = work(task.stop.clone());
         self.0
             .lock()
             .expect("receive registry is not poisoned")
-            .insert(
-                name.0.clone(),
-                ReceiveTask {
-                    outcome: Arc::clone(&outcome),
-                },
-            );
-        outcome
+            .insert(name.0.clone(), task);
+        tokio::spawn(async move {
+            let _finished = finished;
+            let result = work.await;
+            *outcome.lock().expect("outcome lock") = Some(result);
+        });
+    }
+
+    /// Stops the receive task of `name` and returns once it ended, so ZFS no longer holds
+    /// its slot busy.
+    pub(super) async fn stop(&self, name: &DockerVolumeName) {
+        let finished = self
+            .0
+            .lock()
+            .expect("receive registry is not poisoned")
+            .get(&name.0)
+            .map(|task| {
+                task.stop.cancel();
+                task.finished.clone()
+            });
+        if let Some(finished) = finished {
+            finished.cancelled().await;
+        }
     }
 }
 
@@ -102,9 +140,10 @@ impl VolumeStorage {
         fs: &str,
         bound: u64,
         fault: &'static str,
+        stop: &CancellationToken,
     ) -> Result<(), ReceiveFailure> {
         let opened = self.open_stream(from, stream).await?;
-        self.receive_opened(opened, fs, bound, fault).await
+        self.receive_opened(opened, fs, bound, fault, stop).await
     }
 
     /// The writer's answer to `stream`, before anything touches the slot.
@@ -141,13 +180,15 @@ impl VolumeStorage {
         Ok(OpenedStream { url, response })
     }
 
-    /// Pulls an opened stream into `fs`.
+    /// Pulls an opened stream into `fs`. Once `stop` fires, the receive is killed and
+    /// reaped before this returns.
     pub(super) async fn receive_opened(
         &self,
         OpenedStream { url, response }: OpenedStream,
         fs: &str,
         bound: u64,
         fault: &'static str,
+        stop: &CancellationToken,
     ) -> Result<(), ReceiveFailure> {
         let refquota = format!("refquota={bound}");
         let mut child = Command::new(&self.zfs)
@@ -169,6 +210,35 @@ impl VolumeStorage {
             .map_err(|error| {
                 ReceiveFailure::Failed(format!("could not run zfs receive: {error}"))
             })?;
+        let pumped = {
+            let pump = self.pump(&mut child, &url, response, fs, fault);
+            tokio::select! {
+                biased;
+                () = stop.cancelled() => None,
+                pumped = pump => Some(pumped),
+            }
+        };
+        let Some(pumped) = pumped else {
+            reap(&mut [&mut child]).await;
+            return Err(ReceiveFailure::Failed(format!(
+                "the receive into {fs} was stopped"
+            )));
+        };
+        pumped?;
+        self.finish_copy(fs, bound)
+            .await
+            .map_err(ReceiveFailure::Failed)
+    }
+
+    /// Writes the stream into the receive `child` and waits for it to exit.
+    async fn pump(
+        &self,
+        child: &mut Child,
+        url: &str,
+        response: reqwest::Response,
+        fs: &str,
+        fault: &'static str,
+    ) -> Result<(), ReceiveFailure> {
         let mut stdin = child.stdin.take().expect("zfs receive stdin is piped");
         let mut body = response.bytes_stream();
         let mut received = 0u64;
@@ -201,7 +271,7 @@ impl VolumeStorage {
             }
         }
         drop(stdin);
-        let output = tokio::time::timeout(self.receive_stall, child.wait_with_output())
+        let (status, stderr) = tokio::time::timeout(self.receive_stall, exited(child))
             .await
             .map_err(|_| {
                 ReceiveFailure::Failed(format!(
@@ -211,8 +281,7 @@ impl VolumeStorage {
             .map_err(|error| {
                 ReceiveFailure::Failed(format!("zfs receive did not finish: {error}"))
             })?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
+        if !status.success() {
             return Err(ReceiveFailure::Failed(format!(
                 "zfs receive into {fs} failed after {received} bytes: {}{}",
                 stderr.trim(),
@@ -224,9 +293,7 @@ impl VolumeStorage {
                 "stream from {url} broke after {received} bytes: {error}"
             )));
         }
-        self.finish_copy(fs, bound)
-            .await
-            .map_err(ReceiveFailure::Failed)
+        Ok(())
     }
 
     pub(super) async fn finish_copy(&self, fs: &str, bound: u64) -> Result<(), String> {
@@ -255,5 +322,35 @@ impl VolumeStorage {
             }
         }
         Ok(())
+    }
+}
+
+/// The exit status and stderr of `child`, which keeps the child to kill if the wait is
+/// abandoned.
+pub(super) async fn exited(
+    child: &mut Child,
+) -> std::io::Result<(std::process::ExitStatus, String)> {
+    let mut stderr = Vec::new();
+    let mut pipe = child.stderr.take();
+    let read = async {
+        match pipe.as_mut() {
+            Some(pipe) => pipe.read_to_end(&mut stderr).await.map(drop),
+            None => Ok(()),
+        }
+    };
+    let (status, read) = tokio::join!(child.wait(), read);
+    read?;
+    Ok((status?, String::from_utf8_lossy(&stderr).into_owned()))
+}
+
+/// Kills each child and waits for it, so no `zfs` process holds a dataset afterwards.
+pub(super) async fn reap(children: &mut [&mut Child]) {
+    for child in children {
+        match child.kill().await {
+            Ok(()) => {}
+            // Already reaped.
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidInput => {}
+            Err(error) => tracing::warn!(%error, "could not kill a stopped zfs process"),
+        }
     }
 }
