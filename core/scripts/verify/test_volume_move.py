@@ -548,6 +548,21 @@ class VolumeMoveTests(unittest.TestCase):
             summary = checks.run_all([volume_move.KILLS[0]])
         self.assertIn("before the fault was armed", summary["cases"][0]["skipped"] or "", summary["cases"][0])
 
+    def test_a_runs_reply_that_stalls_past_the_limit_skips_the_case_and_still_writes_the_summary(self):
+        checks, model = self.checks()
+        cli, stalled = model.cli, []
+        def stall(args):
+            if args[:2] == ["volume", "runs"] and checks.case_name == volume_move.KILLS[0]["name"] and not stalled:
+                stalled.append(True)
+                model.clock.now += volume_move.BUSY_LIMIT + 1
+            return cli(args)
+        model.cli = stall
+        with redirect_stdout(io.StringIO()):
+            summary = checks.run_all([volume_move.KILLS[0], volume_move.CASES[0]])
+        self.assertIn("before the fault was armed", summary["cases"][0]["skipped"] or "", summary["cases"][0])
+        self.assertTrue(summary["cases"][1]["passed"], summary["cases"][1])
+        self.assertTrue((self.root / "out" / "summary.json").exists())
+
     def test_a_run_that_just_ended_does_not_replace_the_holder_already_seen(self):
         checks, model = self.checks()
         model.hold(100, "sync-a")

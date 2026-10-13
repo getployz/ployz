@@ -543,6 +543,7 @@ class VolumeMove:
             self.busy_waits.append(record)
             print(json.dumps(dict(volume_busy_wait=record)), flush=True)
         if skip:
+            holder = holder or {}
             raise Skipped(f"{skip}: run {holder.get('id')} ({holder.get('kind')})")
         approval = self.approve(data) if op == "release" else None
         if approval:
