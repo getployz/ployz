@@ -174,7 +174,11 @@ the dropped change leaves behind depends on how far it got:
   your service stays down until the move finishes there. The move stays in your changes, so
   deploy again to finish it. See [When a move stops](../services/move-a-volume.md#when-a-move-stops).
 - A restore that failed is taken back. Your services mount the old volume again, and the new
-  volume goes away. Restore again once you fix the cause. Redeploying that deployment is refused.
+  volume goes away. If Ployz can't take it back when the deploy fails, your next deploy fails with
+  "Restore failed. Restore again." and takes it back then. Restore again once you fix the cause.
+  Redeploying that deployment is refused.
+- A deploy that shipped a restore it couldn't claim fails before it copies anything, with "the
+  restore waits for the next Deploy." The restore stays staged, so deploy again.
 
 Fix the cause and deploy again; see [Troubleshooting deployments](../troubleshooting/deployments.md).
 Or click **Fix it on a branch** on the deployment's page to try the fix in a

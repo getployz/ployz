@@ -31,33 +31,44 @@ export const DEPLOYING: StoreRefusal = { code: "conflict", message: "A Deploy is
 const UNCHECKED: StoreRefusal = { code: "unavailable", message: "Couldn't check the Deploy that took this Volume. Try again.", details: null };
 const RESTORING: StoreRefusal = { code: "conflict", message: "This Volume is a staged restore. Deploy or discard it first.", details: null };
 const ELSEWHERE: StoreRefusal = { code: "conflict", message: "This restore belongs to another Environment.", details: null };
-const STAGING: StoreRefusal = { code: "conflict", message: "This restore is still being staged. Try again in a minute.", details: null };
+const STARTING: StoreRefusal = { code: "conflict", message: "A Deploy or restore is starting. Try again.", details: null };
 const UNANSWERED: StoreRefusal = { code: "unavailable", message: "Your servers aren't answering. Try again once they are.", details: null };
 
 /**
- * Held shared by each Deploy's admission and exclusive by a restore being staged in the Environment: neither sees the other
- * half done, and one admission stalled in its Store write never holds up another.
+ * Held shared by each Deploy's admission, and exclusive by a restore being staged or discarded in the Environment: neither
+ * sees the other half done, and one admission stalled in its Store write never holds up another. The exclusive side only
+ * tries, so a restore or Discard refuses at once rather than queue ahead of the next admission.
  */
 const environmentLock = (environmentId: string) => sql`hashtext(${`volume-environment:${environmentId}`})`;
+
+const tryExclusive = Effect.fn("VolumePlacement.tryExclusive")(function* (environmentId: string) {
+  const [row] = yield* (yield* Database).drizzle.execute<{ held: boolean }>(
+    sql`select pg_try_advisory_xact_lock(${environmentLock(environmentId)}) as held`, "objects");
+  return row?.held === true;
+});
 
 /** Each lock holder keeps a pooled connection while its `body` takes more: one at a time can't drain the pool. */
 const holders = Semaphore.makeUnsafe(1);
 
 /**
  * Runs `body` while Environment `environmentId`'s lock is held, on a connection of its own so `body`'s queries stay outside
- * its transaction. `body` can't be interrupted: a Store write it stopped awaiting could still commit after the lock goes.
+ * its transaction; none when the lock is taken. `body` can't be interrupted: a Store write it stopped awaiting could still
+ * commit after the lock goes.
  */
 const whileStaging = <A, E, R>(environmentId: string, body: Effect.Effect<A, E, R>) => holders.withPermits(1)(Effect.gen(function* () {
   const database = yield* Database;
-  const locked = yield* Deferred.make<void>();
+  const locked = yield* Deferred.make<boolean>();
   const staged = yield* Deferred.make<void>();
   const holder = yield* database.transaction(Effect.gen(function* () {
-    yield* (yield* Database).drizzle.execute(sql`select pg_advisory_xact_lock(${environmentLock(environmentId)})`);
-    yield* Deferred.succeed(locked, undefined);
-    yield* Deferred.await(staged);
+    const held = yield* tryExclusive(environmentId);
+    yield* Deferred.succeed(locked, held);
+    if (held) yield* Deferred.await(staged);
   })).pipe(Effect.orDie, Effect.onError((cause) => Deferred.failCause(locked, cause)), Effect.forkChild);
-  yield* Deferred.await(locked);
-  return yield* Effect.uninterruptible(body).pipe(Effect.ensuring(Deferred.succeed(staged, undefined).pipe(Effect.andThen(Fiber.await(holder)))));
+  if (!(yield* Deferred.await(locked))) {
+    yield* Fiber.await(holder);
+    return Option.none<A>();
+  }
+  return Option.some(yield* Effect.uninterruptible(body).pipe(Effect.ensuring(Deferred.succeed(staged, undefined).pipe(Effect.andThen(Fiber.await(holder))))));
 }));
 
 /**
@@ -167,7 +178,7 @@ export const stageRestore = Effect.fn("VolumePlacement.stageRestore")(function* 
     dockerVolume: dockerVolumeName(namespace, id),
     point: { guid: input.guid, name: input.name, at: input.at },
   };
-  return yield* whileStaging(environment.id, Effect.gen(function* () {
+  const outcome = yield* whileStaging(environment.id, Effect.gen(function* () {
     // The row lands first: a Deploy admitted right after the batch commits must find it to stamp.
     const { drizzle } = yield* Database;
     const [row] = yield* drizzle.insert(volumePlacement).values({
@@ -187,6 +198,7 @@ export const stageRestore = Effect.fn("VolumePlacement.stageRestore")(function* 
     }
     return { ok: true, placement: view(row) } satisfies PlacementWrite;
   }));
+  return Option.getOrElse(outcome, () => ({ ok: false, refusal: STARTING }) satisfies PlacementWrite);
 });
 
 /**
@@ -201,30 +213,34 @@ export const discardPlacement = Effect.fn("VolumePlacement.discard")(function* (
   const refusal = yield* claimed(organizationId, current);
   if (refusal !== null) return { ok: false, refusal } satisfies PlacementDiscard;
   const unchanged = and(eq(volumePlacement.volumeId, current.volumeId), unclaimedSince(current));
-  const { drizzle } = yield* Database;
+  const database = yield* Database;
   const seed = current.staged?.seed;
   if (seed !== undefined) {
-    const settled = yield* restoreSettled(current.environmentId);
-    const read = yield* readStore(organizationId, { query: "volumes", environment });
-    if (read.environment.id !== current.environmentId) return { ok: false, refusal: ELSEWHERE } satisfies PlacementDiscard;
-    const restored = read.volumes.find((volume) => volume.id === volumeId);
-    const source = read.volumes.find((volume) => volume.id === seed.sourceVolumeId);
-    // Its Store write may still commit, and needs the row when it does. Once settled, a missing Volume was discarded.
-    if (restored === undefined && !settled) return { ok: false, refusal: STAGING } satisfies PlacementDiscard;
-    const commands: BatchCommand[] = restored?.change !== "create" ? [] : [
-      { command: "discard", environment, path: `volumes.${restored.name}`, version: null },
-      ...restored.mounts
-        .filter((mount) => source !== undefined && !source.mounts.some((held) => held.service === mount.service))
-        .map((mount): BatchCommand => ({ command: "discard", environment, path: `${mount.service}.mounts.${seed.sourceName}`, version: null })),
-    ];
-    if (commands.length > 0) {
-      const written = yield* callStore(organizationId, userId, { operation: "write", command: { command: "batch", environment, commands } });
-      if (!written.ok) return { ok: false, refusal: written.refusal } satisfies PlacementDiscard;
-    }
-    const [deleted] = yield* drizzle.delete(volumePlacement).where(unchanged).returning();
-    if (deleted === undefined) return { ok: false, refusal: DEPLOYING } satisfies PlacementDiscard;
-    return { ok: true, placement: null } satisfies PlacementDiscard;
+    return yield* database.transaction(Effect.gen(function* () {
+      // Held, no restore's Store write and no Deploy's admission is half done: a missing Volume is gone.
+      if (!(yield* tryExclusive(current.environmentId))) return { ok: false, refusal: STARTING } satisfies PlacementDiscard;
+      const read = yield* readStore(organizationId, { query: "volumes", environment });
+      if (read.environment.id !== current.environmentId) return { ok: false, refusal: ELSEWHERE } satisfies PlacementDiscard;
+      const restored = read.volumes.find((volume) => volume.id === volumeId);
+      // A Deploy took the Volume even if its stamp failed. The row is what fails that Deploy before it mounts the Volume empty.
+      if (restored !== undefined && restored.change !== "create") return { ok: false, refusal: DEPLOYING } satisfies PlacementDiscard;
+      const source = read.volumes.find((volume) => volume.id === seed.sourceVolumeId);
+      const commands: BatchCommand[] = restored === undefined ? [] : [
+        { command: "discard", environment, path: `volumes.${restored.name}`, version: null },
+        ...restored.mounts
+          .filter((mount) => source !== undefined && !source.mounts.some((held) => held.service === mount.service))
+          .map((mount): BatchCommand => ({ command: "discard", environment, path: `${mount.service}.mounts.${seed.sourceName}`, version: null })),
+      ];
+      if (commands.length > 0) {
+        const written = yield* callStore(organizationId, userId, { operation: "write", command: { command: "batch", environment, commands } });
+        if (!written.ok) return { ok: false, refusal: written.refusal } satisfies PlacementDiscard;
+      }
+      const [deleted] = yield* (yield* Database).drizzle.delete(volumePlacement).where(unchanged).returning();
+      if (deleted === undefined) return { ok: false, refusal: DEPLOYING } satisfies PlacementDiscard;
+      return { ok: true, placement: null } satisfies PlacementDiscard;
+    })).pipe(Effect.catchTag("DatabasePostCommitFailure", Effect.die));
   }
+  const { drizzle } = database;
   const [row] = yield* drizzle.update(volumePlacement)
     .set({ staged: null, deploymentId: null, updatedAt: new Date() })
     .where(unchanged)
@@ -235,13 +251,18 @@ export const discardPlacement = Effect.fn("VolumePlacement.discard")(function* (
 
 export const RESTORE_FAILED: StoreRefusal = { code: "conflict", message: "Restore failed. Restore again.", details: null };
 
-/** Whether Deployment `deploymentId`'s revision holds a restored Volume whose copy failed: shipping it again mounts it empty. */
+/**
+ * Whether Deployment `deploymentId`'s revision holds a restored Volume whose copy failed: shipping it again mounts it empty.
+ * Marks are kept for good: that revision can be retried however long after its restore was discarded.
+ */
 export const holdsFailedRestore = Effect.fn("VolumePlacement.holdsFailedRestore")(function* (organizationId: string, deploymentId: string) {
-  const { drizzle } = yield* Database;
-  const failed = yield* drizzle.select({ volumeId: failedRestore.volumeId }).from(failedRestore).where(eq(failedRestore.organizationId, organizationId));
-  if (failed.length === 0) return false;
   const { nodes } = yield* readStore(organizationId, { query: "deployment", id: deploymentId });
-  return nodes.some((node) => node.type === "volume" && failed.some((row) => row.volumeId === node.id));
+  const held = nodes.flatMap((node) => node.type === "volume" ? [node.id] : []);
+  if (held.length === 0) return false;
+  const { drizzle } = yield* Database;
+  const failed = yield* drizzle.select({ volumeId: failedRestore.volumeId }).from(failedRestore)
+    .where(and(eq(failedRestore.organizationId, organizationId), inArray(failedRestore.volumeId, held))).limit(1);
+  return failed.length > 0;
 });
 
 /**

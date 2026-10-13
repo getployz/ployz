@@ -126,10 +126,10 @@ const settleClaimed = Effect.fn("VolumePlacement.settleClaimed")(function* (
 
 /**
  * Why Deploy `deploymentId` can't start, if its revision holds a restored Volume it would create empty: one whose restore
- * this Deploy didn't take, or whose copy already failed.
+ * this Deploy didn't take, or whose copy already failed. The failed one comes back to be taken back again.
  */
 const unseededVolume = Effect.fn("VolumePlacement.unseededVolume")(function* (
-  organizationId: string, deploymentId: string, nodes: readonly NodeOutcome[],
+  organizationId: string, deploymentId: string, nodes: readonly NodeOutcome[], environment: EnvironmentRef,
 ) {
   const held = nodes.flatMap((node) => node.type === "volume" ? [node] : []);
   if (held.length === 0) return null;
@@ -137,13 +137,14 @@ const unseededVolume = Effect.fn("VolumePlacement.unseededVolume")(function* (
   const { drizzle } = yield* Database;
   const failed = yield* drizzle.select({ volumeId: failedRestore.volumeId }).from(failedRestore)
     .where(and(eq(failedRestore.organizationId, organizationId), inArray(failedRestore.volumeId, ids)));
+  // Waits on an admission still holding the rows, so a stamp it is about to commit is seen.
   const unstamped = yield* drizzle.select({ volumeId: volumePlacement.volumeId }).from(volumePlacement).where(and(
     eq(volumePlacement.organizationId, organizationId), inArray(volumePlacement.volumeId, ids),
     sql`${volumePlacement.staged} ? 'seed' and ${volumePlacement.deploymentId} is distinct from ${deploymentId}`,
-  ));
+  )).for("share");
   const name = (volumeId: string) => held.find((node) => node.id === volumeId)?.name ?? volumeId;
-  if (failed[0] !== undefined) return `${name(failed[0].volumeId)}: ${RESTORE_FAILED.message}`;
-  if (unstamped[0] !== undefined) return `${name(unstamped[0].volumeId)}: the restore waits for the next Deploy.`;
+  if (failed[0] !== undefined) return restoreFailed(failed[0].volumeId, environment, `${name(failed[0].volumeId)}: ${RESTORE_FAILED.message}`);
+  if (unstamped[0] !== undefined) return { kind: "failed", message: `${name(unstamped[0].volumeId)}: the restore waits for the next Deploy.` } satisfies PlacementAdvance;
   return null;
 });
 
@@ -164,10 +165,10 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
   }
   const environment: EnvironmentRef = { project: deployment.environment.project, environment: deployment.environment.name };
   const { volumes } = yield* readStore(organizationId, { query: "volumes", environment });
-  const unseeded = yield* unseededVolume(organizationId, deploymentId, deployment.nodes);
+  const unseeded = yield* unseededVolume(organizationId, deploymentId, deployment.nodes, environment);
   if (unseeded !== null) {
     yield* release(organizationId, deploymentId, true);
-    return { kind: "failed", message: unseeded } satisfies PlacementAdvance;
+    return unseeded;
   }
   if (waited !== null) {
     const run = yield* getVolumeRun(organizationId, waited.runId);
