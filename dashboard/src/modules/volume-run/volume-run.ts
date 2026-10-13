@@ -36,6 +36,8 @@ export type AnyVolumeRunArgs = VolumeRunArgs[VolumeRunKind];
 export type VolumeRunInput = {
   [K in VolumeRunRequestKind]: { readonly kind: K; readonly args: VolumeRunArgs[K] }
 }[VolumeRunRequestKind];
+/** What a lane row holds: a requested run, or a Deploy's own lane. */
+export type VolumeLaneInput = VolumeRunInput | { readonly kind: "deploy"; readonly args: VolumeRunArgs["deploy"] };
 
 export const VOLUME_RUN_UNCLAIMED_LIMIT_MS = 10 * 60_000;
 export const VOLUME_RUN_RUNNING_CHECK_MS = 15 * 60_000;

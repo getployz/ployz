@@ -566,6 +566,7 @@ describe("volume runs", () => {
           message: "VolumeBusy: data is busy with a mirror; ployz volume release data stops it",
           details: { run: expect.objectContaining({ id: first.id }) },
         },
+        busy: expect.objectContaining({ id: first.id, kind: "mirror", state: "requested" }),
       });
       expect(volumeBusyMessage({ kind: "sync", volumeName: "data" })).toBe("VolumeBusy: data is busy with a mirror refresh; ployz volume release data stops it");
       expect(await rows()).toHaveLength(1);
@@ -623,13 +624,93 @@ describe("volume runs", () => {
           code: "conflict", message: "data is starting on fsn-2; it finishes there",
           details: { run: expect.objectContaining({ id: committed.id }), move_to: "fsn-2" },
         },
+        busy: expect.objectContaining({ id: committed.id }),
       });
       expect(await request({ kind: "sync", args: { full: false } })).toEqual({
         ok: false,
         refusal: { code: "conflict", message: "VolumeBusy: data is starting on fsn-2; it finishes there", details: { run: expect.objectContaining({ id: committed.id }) } },
+        busy: expect.objectContaining({ id: committed.id }),
       });
       expect(await lanes()).toEqual(before);
       expect(send).not.toHaveBeenCalled();
+    });
+
+    it("a release on a Deploy's lane refuses, so the Deploy ends it, and a Deploy yields it", async () => {
+      const [deployed] = (await harness.pool.query(
+        `insert into volume_run (organization_id, environment_id, volume_id, volume_name, docker_volume, kind, args, state, inngest_run_id)
+         values ($1, 'env-1', $2, 'data', $3, 'deploy', '{"deployment":"d-1","resume":null}', 'running', 'deploy-1') returning id`,
+        [organizationId, volumeId, dockerVolume])).rows as Array<{ id: string }>;
+
+      expect(await release()).toMatchObject({
+        ok: false,
+        refusal: { code: "conflict", message: "data is deploying; the Deploy ends its run", details: { run: expect.objectContaining({ id: deployed?.id }) } },
+        busy: expect.objectContaining({ id: deployed?.id, kind: "deploy" }),
+      });
+      expect(await runEffect(requestVolumeRun({ userId, organizationId }, { volumeId, environment, kind: "mirror", args: { to: "fsn-2" } }, { end: "yielded" })))
+        .toMatchObject({ ok: true, run: { kind: "mirror" } });
+      expect(await lanes()).toMatchObject([{ id: deployed?.id, state: "yielded", message: "a Deploy took this run over" }, { kind: "mirror", state: "requested" }]);
+    });
+
+    describe("a lane landing between the read and the insert", () => {
+      const landings = {
+        sync: '{"full":false}',
+        release: "{}",
+        delete_mirror: '{"slot":"fsn-2","confirmed_name":null}',
+      };
+      const waitingOnLock = async () => {
+        for (let poll = 0; poll < 200; poll++) {
+          const { rows: waiting } = await harness.pool.query(
+            "select 1 from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'");
+          if (waiting.length > 0) return;
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+        throw new Error("the insert never waited on the landing lane");
+      };
+
+      for (const [kind, args] of Object.entries(landings)) {
+        it(`${kind}: a yielded request waits for it to commit, then takes it over and goes first`, async () => {
+          const landing = await harness.pool.connect();
+          try {
+            await landing.query("begin");
+            const { rows: [landed] } = await landing.query(
+              `insert into volume_run (organization_id, environment_id, volume_id, volume_name, docker_volume, kind, args, state)
+               values ($1, 'env-1', $2, 'data', $3, $4, $5, 'requested') returning id`,
+              [organizationId, volumeId, dockerVolume, kind, args]) as { rows: Array<{ id: string }> };
+
+            const taking = runEffect(requestVolumeRun({ userId, organizationId }, { volumeId, environment, kind: "mirror", args: { to: "fsn-2" } }, { end: "yielded" }));
+            await waitingOnLock();
+            await landing.query("commit");
+
+            expect(await taking).toMatchObject({ ok: true, run: { kind: "mirror", state: "requested" } });
+            expect(await lanes()).toMatchObject([
+              { id: landed?.id, kind, state: "yielded", message: "a Deploy took this run over" },
+              { kind: "mirror", state: "requested" },
+            ]);
+            expect(send).toHaveBeenCalledWith(expect.objectContaining({ name: "volume/run.taken", data: { runId: landed?.id } }));
+          } finally {
+            landing.release();
+          }
+        });
+      }
+
+      it("a plain request still refuses the lane that landed, naming it", async () => {
+        const landing = await harness.pool.connect();
+        try {
+          await landing.query("begin");
+          const { rows: [landed] } = await landing.query(
+            `insert into volume_run (organization_id, environment_id, volume_id, volume_name, docker_volume, kind, args, state)
+             values ($1, 'env-1', $2, 'data', $3, 'sync', '{"full":false}', 'requested') returning id`,
+            [organizationId, volumeId, dockerVolume]) as { rows: Array<{ id: string }> };
+          const asking = request({ kind: "mirror", args: { to: "fsn-2" } });
+          await waitingOnLock();
+          await landing.query("commit");
+
+          expect(await asking).toMatchObject({ ok: false, refusal: { code: "conflict" }, busy: expect.objectContaining({ id: landed?.id, kind: "sync" }) });
+          expect(await lanes()).toMatchObject([{ id: landed?.id, state: "requested" }]);
+        } finally {
+          landing.release();
+        }
+      });
     });
 
     it("a release with no run open repairs from the copies, taking nothing over", async () => {

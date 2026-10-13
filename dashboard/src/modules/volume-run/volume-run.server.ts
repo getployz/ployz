@@ -49,6 +49,7 @@ import {
   VOLUME_RUN_RUNNING_CHECK_MS,
   VOLUME_RUN_UNCLAIMED_LIMIT_MS,
   type VolumeRunArgs,
+  type VolumeLaneInput,
   type VolumeRunInput,
   type VolumeRunKind,
   type VolumeRunPhase,
@@ -138,6 +139,9 @@ export const finishesThere = (volumeName: string, server: string) => `${volumeNa
 
 /** A lane past its point of no return: a Move that committed, or a restore, which commits from its first step. */
 const pastReturn = (lane: VolumeRunRow) => lane.phase === "committed" || lane.kind === "restore";
+type LaneEnd = "cancelled" | "yielded";
+/** The lane stays: past its return, or a Deploy's own lane that only another Deploy may yield. */
+const keepsLane = (lane: VolumeRunRow, end: LaneEnd) => pastReturn(lane) || (lane.kind === "deploy" && end === "cancelled");
 
 // SAFETY: the row's kind and args were written together from one VolumeRunInput.
 const laneInput = (lane: Pick<VolumeRunRow, "kind" | "args">) => ({ kind: lane.kind, args: lane.args }) as VolumeRunInput;
@@ -166,6 +170,7 @@ const activeLane = Effect.fn("VolumeRun.activeLane")(function* (volumeId: string
 
 const laneRefusal = Effect.fn("VolumeRun.laneRefusal")(function* (lane: VolumeRunRow, kind: VolumeRunKind) {
   const run = volumeRunView(lane);
+  if (lane.kind === "deploy") return { code: "conflict", message: `${lane.volumeName} is deploying; the Deploy ends its run`, details: { run } } satisfies StoreRefusal;
   if (!pastReturn(lane)) return { code: "conflict", message: volumeBusyMessage(lane), details: { run } } satisfies StoreRefusal;
   const target = yield* laneTarget(lane);
   const finishes = finishesThere(lane.volumeName, target ?? "its new Server");
@@ -309,7 +314,7 @@ export const planVolumeRun = Effect.fn("VolumeRun.plan")(function* (
     if (refusal !== null) return { ok: false, refusal } satisfies VolumeRunPlan;
   }
   const lane = yield* activeLane(input.volumeId);
-  if (lane !== undefined && (input.kind !== "release" || pastReturn(lane))) {
+  if (lane !== undefined && (input.kind !== "release" || keepsLane(lane, "cancelled"))) {
     return { ok: false, refusal: yield* laneRefusal(lane, input.kind) } satisfies VolumeRunPlan;
   }
   const members = yield* observeVolumeMembers(organizationId, volume.dockerVolume, input).pipe(Effect.option);
@@ -344,22 +349,28 @@ export const planVolumeRun = Effect.fn("VolumeRun.plan")(function* (
   return { ok: true, volume, asked } satisfies VolumeRunPlan;
 });
 
+export type RequestOptions = {
+  readonly id?: string;
+  /** `yielded` takes over a warm lane as a Deploy or a staged placement does; a release always cancels. */
+  readonly end?: "yielded";
+};
+
 export const requestVolumeRun = Effect.fn("VolumeRun.request")(function* (
   caller: { readonly userId: string | null; readonly organizationId: string },
   input: { readonly volumeId: string; readonly environment: EnvironmentRef } & VolumeRunInput,
-  id: string = crypto.randomUUID(),
+  options: RequestOptions = {},
 ) {
   const database = yield* Database;
   const volume = yield* resolveVolume(caller.organizationId, input.environment, input.volumeId);
   if (input.kind === "seed") {
     const refusal = yield* seedLandingRefusal(caller.organizationId, input.environment, input.volumeId, input.args.into.volumeId);
-    if (refusal !== null) return { ok: false, refusal } as const;
+    if (refusal !== null) return { ok: false, refusal, busy: null } as const;
   }
-  return yield* database.transaction(insertRun(caller, input, volume, id));
+  return yield* database.transaction(insertRun(caller, input, volume, options.id ?? crypto.randomUUID(), options.end ?? endOf(input.kind)));
 });
 
 export type LaneTaker = {
-  readonly input: { readonly volumeId: string } & VolumeRunInput;
+  readonly input: { readonly volumeId: string } & VolumeLaneInput;
   readonly volume: ResolvedVolume;
   readonly id: string;
 };
@@ -368,55 +379,70 @@ export type LaneTake = { readonly run: VolumeRunView; readonly ended: VolumeRunV
 
 export type LaneTakes =
   | { readonly ok: true; readonly takes: readonly LaneTake[] }
-  | { readonly ok: false; readonly refusal: StoreRefusal };
+  | { readonly ok: false; readonly refusal: StoreRefusal; readonly busy: VolumeRunView | null };
 
-type LaneEnd = "cancelled" | "yielded";
+const endOf = (kind: VolumeRunKind): LaneEnd | null => kind === "release" ? "cancelled" : null;
 
 const TAKEN_BY = {
   cancelled: "volume release took this run over",
   yielded: "a Deploy took this run over",
 } satisfies Record<LaneEnd, string>;
 
-class LaneRefused extends Data.TaggedError("LaneRefused")<{ readonly refusal: StoreRefusal }> {}
+/** `busy` is the lane that refused the take, so a caller can wait on it or step aside without a second read. */
+class LaneRefused extends Data.TaggedError("LaneRefused")<{ readonly refusal: StoreRefusal; readonly busy: VolumeRunView | null }> {}
 
 type Caller = { readonly userId: string | null; readonly organizationId: string };
 
-const takeLane = Effect.fn("VolumeRun.takeLane")(function* (caller: Caller, { input, volume, id }: LaneTaker, end: LaneEnd | null) {
+const TAKE_ROUNDS = 3;
+
+/**
+ * Takes the Volume's lane. With `end`, an active warm lane ends as `end` first, under its row lock. The insert waits on
+ * any lane committing concurrently, so a conflict means a lane landed between the read and the insert; the next round
+ * reads it under the lock and takes it over too. `owner` is the Inngest run that already runs the row, so it starts
+ * `running` and is never enqueued.
+ */
+const takeLane = Effect.fn("VolumeRun.takeLane")(function* (caller: Caller, { input, volume, id }: LaneTaker, end: LaneEnd | null, owner: string | null = null) {
   const { drizzle } = yield* Database;
-  const lane = end === null ? undefined : yield* activeLane(input.volumeId, true);
-  let taken: VolumeRunRow | undefined;
-  if (lane !== undefined && end !== null) {
-    if (pastReturn(lane)) return yield* new LaneRefused({ refusal: yield* laneRefusal(lane, input.kind) });
-    [taken] = yield* drizzle.update(volumeRun).set(ended(end, TAKEN_BY[end]))
-      .where(and(eq(volumeRun.id, lane.id), inArray(volumeRun.state, ACTIVE_VOLUME_RUN_STATES), eq(volumeRun.phase, "warm")))
-      .returning();
-  }
-  const [inserted] = yield* drizzle.insert(volumeRun).values({
-    id,
-    organizationId: caller.organizationId,
-    environmentId: volume.environmentId,
-    volumeId: input.volumeId,
-    volumeName: volume.volumeName,
-    dockerVolume: volume.dockerVolume,
-    refquotaBytes: volume.refquotaBytes,
-    kind: input.kind,
-    args: input.args,
-    requestedByUserId: caller.userId,
-  }).onConflictDoNothing().returning();
-  if (inserted === undefined) {
+  for (let round = 1; ; round++) {
+    const lane = end === null ? undefined : yield* activeLane(input.volumeId, true);
+    let taken: VolumeRunRow | undefined;
+    if (lane !== undefined && end !== null) {
+      if (keepsLane(lane, end)) return yield* new LaneRefused({ refusal: yield* laneRefusal(lane, input.kind), busy: volumeRunView(lane) });
+      [taken] = yield* drizzle.update(volumeRun).set(ended(end, TAKEN_BY[end]))
+        .where(and(eq(volumeRun.id, lane.id), inArray(volumeRun.state, ACTIVE_VOLUME_RUN_STATES), eq(volumeRun.phase, "warm")))
+        .returning();
+    }
+    const [inserted] = yield* drizzle.insert(volumeRun).values({
+      id,
+      organizationId: caller.organizationId,
+      environmentId: volume.environmentId,
+      volumeId: input.volumeId,
+      volumeName: volume.volumeName,
+      dockerVolume: volume.dockerVolume,
+      refquotaBytes: volume.refquotaBytes,
+      kind: input.kind,
+      args: input.args,
+      state: owner === null ? "requested" : "running",
+      inngestRunId: owner,
+      requestedByUserId: caller.userId,
+    }).onConflictDoNothing().returning();
+    if (inserted !== undefined) {
+      if (owner === null) yield* enqueueRun(inserted);
+      if (taken !== undefined) yield* enqueueEvent(createVolumeRunTakenEvent({ runId: taken.id }));
+      return { run: volumeRunView(inserted), ended: taken === undefined ? null : volumeRunView(taken) } satisfies LaneTake;
+    }
+    if (end !== null && round < TAKE_ROUNDS) continue;
     const active = yield* activeLane(input.volumeId);
     return yield* new LaneRefused({
       refusal: active === undefined
         ? { code: "conflict", message: "A run on this Volume just ended. Try again.", details: null }
         : yield* laneRefusal(active, input.kind),
+      busy: active === undefined ? null : volumeRunView(active),
     });
   }
-  yield* enqueueRun(inserted);
-  if (taken !== undefined) yield* enqueueEvent(createVolumeRunTakenEvent({ runId: taken.id }));
-  return { run: volumeRunView(inserted), ended: taken === undefined ? null : volumeRunView(taken) } satisfies LaneTake;
 });
 
-const refused = (error: LaneRefused) => Effect.succeed({ ok: false, refusal: error.refusal } as const);
+const refused = (error: LaneRefused) => Effect.succeed({ ok: false, refusal: error.refusal, busy: error.busy } as const);
 
 /** Volumes are taken in id order, so two takers never deadlock. */
 export const takeLanes = Effect.fn("VolumeRun.takeLanes")(function* (caller: Caller, takers: readonly LaneTaker[], end: LaneEnd) {
@@ -429,10 +455,11 @@ export const takeLanes = Effect.fn("VolumeRun.takeLanes")(function* (caller: Cal
   })).pipe(Effect.catchTag("LaneRefused", refused));
 });
 
-export const insertRun = Effect.fn("VolumeRun.insert")(function* (caller: Caller, input: { readonly volumeId: string } & VolumeRunInput, volume: ResolvedVolume, id: string) {
+export const insertRun = Effect.fn("VolumeRun.insert")(function* (
+  caller: Caller, input: { readonly volumeId: string } & VolumeRunInput, volume: ResolvedVolume, id: string, end: LaneEnd | null = endOf(input.kind),
+) {
   const database = yield* Database;
-  const taken = yield* database.transaction(takeLane(caller, { input, volume, id }, input.kind === "release" ? "cancelled" : null))
-    .pipe(Effect.catchTag("LaneRefused", refused));
+  const taken = yield* database.transaction(takeLane(caller, { input, volume, id }, end)).pipe(Effect.catchTag("LaneRefused", refused));
   return "ok" in taken ? taken : { ok: true, run: taken.run } as const;
 });
 
@@ -461,7 +488,7 @@ export const releaseLanesOff = Effect.fn("VolumeRun.releaseLanesOff")(function* 
   const released: string[] = [];
   for (const lane of lanes) {
     const input = laneInput(lane);
-    if (pastReturn(lane) || input.kind === "release") continue;
+    if (pastReturn(lane) || input.kind === "release" || lane.kind === "deploy") continue;
     const bound = machine.name !== null && isDestination(input, { id: machine.id, name: machine.name });
     if (!bound && !writes.includes(lane.dockerVolume)) continue;
     const taken = yield* insertRun({ userId: null, organizationId }, { volumeId: lane.volumeId, kind: "release", args: {} }, {
