@@ -86,14 +86,34 @@ const needsUpgrade: (error: RpcError) => boolean = Schema.is(Schema.Struct({
   details: Schema.Struct({ capability: Schema.Literal(requirements.metrics.capability) }),
 }));
 
-function availability(history: MetricHistory, names: Names, hasSample: boolean): MetricAvailability {
+function availability(history: MetricHistory, timedOut: readonly ServerRef[], names: Names, hasSample: boolean): MetricAvailability {
   const refs = (failures: readonly MachineFailure<RpcError>[]) => failures.map((failure) => serverRef(failure.machine_id, names));
   const refused = refs(history.unanswered.filter((failure) => needsUpgrade(failure.error)));
-  const silent = refs(history.unanswered.filter((failure) => !needsUpgrade(failure.error)));
-  if (history.unanswered.length === 0) return hasSample ? { type: "normal" } : { type: "no_readings" };
+  const silent = [...refs(history.unanswered.filter((failure) => !needsUpgrade(failure.error))), ...timedOut];
+  if (refused.length === 0 && silent.length === 0) return hasSample ? { type: "normal" } : { type: "no_readings" };
   if (hasSample) return { type: "mixed", needsUpgrade: refused, unanswered: silent };
   // A Server that answered with nothing only says the Service is not there, so the ones that did not answer explain the empty chart.
   return silent.length > 0 ? { type: "unanswered", servers: silent, needsUpgrade: refused } : { type: "needs_upgrade", servers: refused };
+}
+
+/** The daemon answers a read past its deadline with one timeout gap over the whole range, which says nothing about the Server's data. */
+function timedOutOver(reply: MetricHistoryReply, window: MetricWindow): boolean {
+  const [gap, ...rest] = reply.gaps;
+  return gap !== undefined && rest.length === 0 && gap.reason === "timeout" && toMs(gap.from) <= window.from && toMs(gap.to) >= window.to;
+}
+
+type Answer = { readonly server: ServerRef; readonly reply: MetricHistoryReply; readonly gaps: readonly Gap[] };
+
+/** Splits the replies into answers and the Servers whose read timed out over the whole range. */
+function answers(read: Extract<MetricRead, { type: "history" }>, names: Names) {
+  const answered: Answer[] = [];
+  const timedOut: ServerRef[] = [];
+  for (const machine of read.history.machines) {
+    const server = serverRef(machine.machine_id, names);
+    if (timedOutOver(machine.value, read.window)) timedOut.push(server);
+    else answered.push({ server, reply: machine.value, gaps: mergeGaps(machine.value.gaps.map(toGap)) });
+  }
+  return { answered, timedOut };
 }
 
 const toGap = (gap: MetricGap): Gap => ({ from: toMs(gap.from), to: toMs(gap.to), reason: gap.reason });
@@ -175,30 +195,24 @@ export function serviceMetrics(read: MetricRead, names: Names): ServiceMetrics {
     return { availability: { type: "offline" }, window: read.window, stepMs: null, all: EMPTY_SERVICE, allGaps: [], byServer: [], markers: [] };
   }
   const { history } = read;
-  const replies = history.machines.map((machine) => ({
-    server: serverRef(machine.machine_id, names),
-    reply: machine.value,
-    gaps: mergeGaps(machine.value.gaps.map(toGap)),
-  }));
-  // Every up Server answers, and one without the Service answers a not_sampled gap over the whole range, so those gap
-  // the sum only where no Server has data. A timeout is a Server whose share is missing, so it gaps the sum wherever it is.
-  const sampled = replies.map((entry) => entry.gaps.filter((gap) => gap.reason === "not_sampled"));
-  const timedOut = replies.flatMap((entry) => entry.gaps.filter((gap) => gap.reason === "timeout"));
-  const allGaps = mergeGaps([...(sampled.length === 0 ? [] : sampled.reduce(intersectGaps)), ...timedOut]);
+  const { answered, timedOut } = answers(read, names);
+  // Every up Server answers, and one without the Service answers a not_sampled gap over the whole range, so a span is a gap
+  // in the sum only where no answering Server has data.
+  const allGaps = answered.length === 0 ? [] : answered.map((entry) => entry.gaps).reduce(intersectGaps);
   const all = serviceSeries(servicePoints(history.points), allGaps);
-  const byServer = replies
+  const byServer = answered
     .map(({ server, reply, gaps }) => ({ server, series: serviceSeries(servicePoints(reply.points), gaps), gaps, markers: reply.markers ?? [] }))
     .filter((entry) => entry.markers.length > 0 || hasSamples(Object.values(entry.series)))
     .map(({ server, series: own, gaps }) => ({ server, series: own, gaps }))
     .sort((left, right) => byName(left.server, right.server));
   return {
-    availability: availability(history, names, hasSamples(Object.values(all))),
+    availability: availability(history, timedOut, names, hasSamples(Object.values(all))),
     window: read.window,
     stepMs: stepMs(history),
     all,
     allGaps,
     byServer,
-    markers: markers(history.machines.map((machine) => machine.value), names),
+    markers: markers(answered.map((entry) => entry.reply), names),
   };
 }
 
@@ -213,7 +227,8 @@ export function serverMetrics(read: MetricRead, names: Names): ServerMetrics {
     };
   }
   const { history } = read;
-  const gaps = mergeGaps((history.machines[0]?.value.gaps ?? []).map(toGap));
+  const { answered, timedOut } = answers(read, names);
+  const gaps = answered[0]?.gaps ?? [];
   const points = hostPoints(history.points);
   const interfaceNames = [...new Set(points.flatMap((point) => Object.keys(point.interfaces ?? {})))]
     .filter((name) => !HIDDEN_INTERFACE.test(name));
@@ -238,7 +253,7 @@ export function serverMetrics(read: MetricRead, names: Names): ServerMetrics {
   const memoryTotal = series(points, gaps, (point) => point.memory?.total);
   const hasSample = hasSamples([cpu, memoryUsed, memoryTotal, disk, ...interfaces.flatMap((iface) => [iface.netIn, iface.netOut])]);
   return {
-    availability: availability(history, names, hasSample),
+    availability: availability(history, timedOut, names, hasSample),
     window: read.window,
     stepMs: stepMs(history),
     cpu, memoryUsed, memoryTotal, interfaces, disk, gaps,
