@@ -20,6 +20,7 @@ mod planning;
 mod progress;
 mod render;
 mod report;
+mod schedule;
 
 pub(crate) use apply::{Outcome, apply_requested};
 pub(crate) use convergence::{Converged, converge};
