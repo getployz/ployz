@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { renderHook, waitFor } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { toast } from "sonner";
 import { afterEach, expect, it, vi } from "vitest";
@@ -51,12 +51,12 @@ it("Delete copy toasts only once the delete run ends, with the Server's words wh
   const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
   const { result } = renderHook(() => useDeleteCopy("acme", environment, { id: "v1", name: "data" }), { wrapper });
 
-  await result.current("web-3");
+  act(() => result.current("web-3"));
   await waitFor(() => expect(read).toHaveBeenCalledWith({ data: { organizationSlug: "acme", id: "run-1" } }));
   expect(success).not.toHaveBeenCalled();
   await waitFor(() => expect(success).toHaveBeenCalledWith("Copy deleted"), { timeout: 5_000 });
 
-  await result.current("web-3");
+  act(() => result.current("web-3"));
   await waitFor(() => expect(error).toHaveBeenCalledWith("web-3 still mounts data."));
   expect(success).toHaveBeenCalledTimes(1);
 });
@@ -68,7 +68,7 @@ it("Delete copy toasts a refusal without watching anything", async () => {
   const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={new QueryClient()}>{children}</QueryClientProvider>;
   const { result } = renderHook(() => useDeleteCopy("acme", environment, { id: "v1", name: "data" }), { wrapper });
 
-  await result.current("web-3");
-  expect(error).toHaveBeenCalledWith("data is busy.");
+  act(() => result.current("web-3"));
+  await waitFor(() => expect(error).toHaveBeenCalledWith("data is busy."));
   expect(read).not.toHaveBeenCalled();
 });
