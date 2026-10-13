@@ -4,28 +4,28 @@ use std::{
 };
 
 use ployz_core::{
-    CREATE_CONTAINER_CAPABILITY, CapabilityName, CertificateHost, CertificateMaterialChange,
-    CertificateMaterialPublished, CodecError, ContainerCreated, ContainerHostname, ContainerId,
-    ContainerKind, ContainerLabels, ContainerObservationMap, ContainerRuntimeObservation,
-    ContractDescription, CreateContainerRequest, DESCRIBE_CONTRACT_CAPABILITY,
-    DescribeContractRequest, DiskSpace, DockerVolumeName, ENSURE_IMAGE_INGEST_CAPABILITY,
-    EnsureImageIngestRequest, ExtraHost, FanoutFailure, FanoutOutcome, FanoutResponse,
-    FramingError, GET_CONTAINER_OBSERVATIONS_CAPABILITY, GET_INGRESS_PROXY_CONFIG_CAPABILITY,
-    GetContainerObservationsRequest, GetIngressProxyConfigRequest, HealthObservation,
-    ImageIngestDestination, ImageIngestOpened, ImageIngestReason, ImagePulled, ImageRemoval,
-    ImageRemovalOutcome, ImageSummary, ImagesRemoved, IngressHost, IngressProxyConfig,
-    InspectMachineUpgradeRequest, InspectWireGuardRequest, LIST_IMAGES_CAPABILITY,
-    ListImagesRequest, MANAGED_LABEL, MachineFailure, MachineGateway, MachineId, MachineImages,
-    MachineName, MachineRelease, MachineSubnet, MachineSuccess, MachineTokenRequest, MachineUpdate,
+    BuildGrantId, BuildGrantInspected, CREATE_CONTAINER_CAPABILITY, CapabilityName,
+    CertificateHost, CertificateMaterialChange, CertificateMaterialPublished, CodecError,
+    ContainerCreated, ContainerHostname, ContainerId, ContainerKind, ContainerLabels,
+    ContainerObservationMap, ContainerRuntimeObservation, ContractDescription,
+    CreateContainerRequest, DESCRIBE_CONTRACT_CAPABILITY, DescribeContractRequest, DiskSpace,
+    DockerVolumeName, ENSURE_IMAGE_INGEST_CAPABILITY, EnsureImageIngestRequest, ExtraHost,
+    FORGET_MACHINE_CAPABILITY, FanoutFailure, FanoutOutcome, FanoutResponse, ForgetRequest,
+    Forgotten, FramingError, GET_CONTAINER_OBSERVATIONS_CAPABILITY,
+    GET_INGRESS_PROXY_CONFIG_CAPABILITY, GetContainerObservationsRequest,
+    GetIngressProxyConfigRequest, HealthObservation, ImageDigest, ImageIngestDestination,
+    ImageIngestOpened, ImageIngestReason, ImagePulled, ImageRemoval, ImageRemovalOutcome,
+    ImageSummary, ImagesRemoved, IngressHost, IngressProxyConfig, InspectBuildGrantRequest,
+    InspectRequest, LEAVE_MACHINE_CAPABILITY, LIST_IMAGES_CAPABILITY, LeaveRequest, Left,
+    LeftPhase, ListImagesRequest, MANAGED_LABEL, MachineFailure, MachineGateway, MachineId,
+    MachineImages, MachineName, MachineRelease, MachineSubnet, MachineSuccess, MachineUpdate,
     MachineUpgradeAttempt, MachineUpgradeAttemptId, MachineUpgradeOutcome, MachineUpgradeStage,
     MachineVersion, ManagementAddress, NAMESPACE_LABEL, NameMatches, Namespace, OpaquePayload,
     PROTOCOL_MAJOR, PULL_IMAGE_FROM_MACHINE_CAPABILITY, PartialResult, PortPublication,
-    PublicIpDiscovery, PublicIpUpdate, PublishCertificateMaterialRequest,
-    PullImageFromMachineRequest, RESET_MACHINE_CAPABILITY, RemoveImagesRequest,
-    RemoveLocalMachineRequest, RemoveMachineRequest, RequestMachineUpgradeRequest, ResetAccepted,
-    ResetRequest, ResolvedServiceSpec, ResponseKind, RpcError, RpcErrorCode, RpcRequestBody,
-    RpcResponse, RpcResponseBody, ServiceId, ServiceName, UpdateMachineRequest, VolumeSource,
-    encode_grpc_frame, grpc_frames, op,
+    PruneImagesRequest, PublicIpDiscovery, PublicIpUpdate, PublishCertificateMaterialRequest,
+    PullImageFromMachineRequest, RequestMachineUpgradeRequest, ResolvedServiceSpec, ResponseKind,
+    RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RpcResponseBody, ServiceId, ServiceName,
+    TokenRequest, UpdateMachineRequest, VolumeSource, encode_grpc_frame, grpc_frames, op,
 };
 use prost::Message;
 use serde_json::{Value, json};
@@ -768,12 +768,12 @@ fn image_list_contract_keeps_machine_local_store_and_platforms() {
 }
 
 #[test]
-fn image_removal_contract_reports_each_reference_without_force() {
-    let request = op::RemoveImages::into_request(RemoveImagesRequest {
-        references: vec!["ployz-build/web:ployz-sha256-1".into()],
+fn image_pruning_contract_names_repositories_and_reports_each_reference() {
+    let request = op::PruneImages::into_request(PruneImagesRequest {
+        repositories: vec!["ghcr.io/acme/api".into()],
     });
     assert_eq!(request.encode().unwrap().decode_request().unwrap(), request);
-    assert_eq!(request.body.command(), "remove_images");
+    assert_eq!(request.body.command(), "prune_images");
 
     let removed = ImagesRemoved {
         results: vec![
@@ -802,9 +802,40 @@ fn image_removal_contract_reports_each_reference_without_force() {
             .unwrap()
             .decode_response()
             .unwrap()
-            .decode::<op::RemoveImages>()
+            .decode::<op::PruneImages>()
             .unwrap(),
         removed
+    );
+}
+
+#[test]
+fn build_grant_inspection_omits_an_absent_push() {
+    let id = BuildGrantId::parse("a".repeat(64)).unwrap();
+    let request = op::InspectBuildGrant::into_request(InspectBuildGrantRequest { id });
+    assert_eq!(request.encode().unwrap().decode_request().unwrap(), request);
+    assert_eq!(request.body.command(), "inspect_build_grant");
+
+    let open = BuildGrantInspected {
+        pushed: None,
+        expires_in_seconds: 60,
+    };
+    assert_eq!(
+        serde_json::to_value(&open).unwrap(),
+        json!({ "expires_in_seconds": 60 })
+    );
+    let pushed = BuildGrantInspected {
+        pushed: Some(ImageDigest::parse(format!("sha256:{}", "b".repeat(64))).unwrap()),
+        expires_in_seconds: 0,
+    };
+    assert_eq!(
+        RpcResponse::from(pushed.clone())
+            .encode()
+            .unwrap()
+            .decode_response()
+            .unwrap()
+            .decode::<op::InspectBuildGrant>()
+            .unwrap(),
+        pushed
     );
 }
 
@@ -1482,17 +1513,44 @@ fn typed_errors_preserve_future_error_codes() {
 }
 
 #[test]
-fn reset_command_and_acknowledgement_have_a_stable_capability() {
-    let request = op::Reset::into_request(ResetRequest {}).encode().unwrap();
+fn leave_and_forget_round_trip_under_stable_capabilities() {
+    let requests = [
+        op::Leave::into_request(LeaveRequest {}),
+        op::Forget::into_request(ForgetRequest {
+            machine_id: MachineId::parse(MACHINE_ID).unwrap(),
+        }),
+    ];
+    for request in requests {
+        assert_eq!(
+            request.clone().encode().unwrap().decode_request().unwrap(),
+            request
+        );
+    }
+    let left = RpcResponse::from(Left::Left {
+        phase: LeftPhase::Resetting,
+        reset_warning: None,
+    });
+    assert_eq!(left.kind(), ResponseKind::Left);
     assert_eq!(
-        request.decode_request().unwrap(),
-        op::Reset::into_request(ResetRequest {})
+        left.encode()
+            .unwrap()
+            .decode_response()
+            .unwrap()
+            .decode::<op::Leave>()
+            .unwrap(),
+        Left::Left {
+            phase: LeftPhase::Resetting,
+            reset_warning: None,
+        }
     );
-
-    let response = RpcResponse::from(ResetAccepted {});
-    assert_eq!(response.kind(), ResponseKind::ResetAccepted);
-    assert!(response.decode::<op::Reset>().is_ok());
-    assert_eq!(RESET_MACHINE_CAPABILITY, "ployz.machine.reset.v1");
+    let forgotten = RpcResponse::from(Forgotten::Forgotten);
+    assert_eq!(forgotten.kind(), ResponseKind::Forgotten);
+    assert_eq!(
+        forgotten.decode::<op::Forget>().unwrap(),
+        Forgotten::Forgotten
+    );
+    assert_eq!(LEAVE_MACHINE_CAPABILITY, "ployz.machine.leave.v1");
+    assert_eq!(FORGET_MACHINE_CAPABILITY, "ployz.machine.forget.v1");
 }
 
 #[test]
@@ -1500,27 +1558,12 @@ fn volume_and_container_commands_keep_machine_local_inputs_exact() {
     use std::collections::BTreeMap;
 
     use ployz_core::{
-        CreateVolumeReport, CreateVolumeRequest, DockerVolume, DockerVolumeId, DockerVolumeName,
-        InspectVolumeRequest, ListVolumesRequest, RemoveVolumeRequest, VolumeInventory,
+        DockerVolume, DockerVolumeId, DockerVolumeName, ListVolumesRequest, RemoveVolumeRequest,
+        VolumeInventory,
     };
 
     assert!(DockerVolumeName::parse("").is_err());
     let name = DockerVolumeName::parse("data").unwrap();
-    let create = CreateVolumeRequest {
-        name: name.clone(),
-        driver: "local".into(),
-        options: BTreeMap::from([("type".into(), "none".into())]),
-        labels: BTreeMap::from([("purpose".into(), "database".into())]),
-    };
-    assert_eq!(
-        op::CreateVolume::into_request(create.clone())
-            .encode()
-            .unwrap()
-            .decode_request()
-            .unwrap()
-            .body,
-        RpcRequestBody::CreateVolume(create)
-    );
     assert_eq!(
         op::ListVolumes::into_request(ListVolumesRequest {})
             .encode()
@@ -1529,15 +1572,6 @@ fn volume_and_container_commands_keep_machine_local_inputs_exact() {
             .unwrap()
             .body,
         RpcRequestBody::ListVolumes(ListVolumesRequest {})
-    );
-    assert_eq!(
-        op::InspectVolume::into_request(InspectVolumeRequest { name: name.clone() })
-            .encode()
-            .unwrap()
-            .decode_request()
-            .unwrap()
-            .body,
-        RpcRequestBody::InspectVolume(InspectVolumeRequest { name: name.clone() })
     );
     assert_eq!(
         op::RemoveVolume::into_request(RemoveVolumeRequest {
@@ -1566,22 +1600,6 @@ fn volume_and_container_commands_keep_machine_local_inputs_exact() {
             driver: "local".into(),
         },
     };
-    let volume_response = RpcResponse::from(CreateVolumeReport::Verified {
-        volume: volume.clone(),
-    });
-    assert_eq!(volume_response.kind(), ResponseKind::CreateVolumeReport);
-    assert_eq!(
-        volume_response.decode::<op::CreateVolume>().unwrap(),
-        CreateVolumeReport::Verified {
-            volume: volume.clone()
-        }
-    );
-    assert_eq!(
-        RpcResponse::from(volume.clone())
-            .decode::<op::InspectVolume>()
-            .unwrap(),
-        volume
-    );
     assert_eq!(
         RpcResponse::from(VolumeInventory {
             volumes: vec![volume.clone()],
@@ -1626,6 +1644,110 @@ fn volume_and_container_commands_keep_machine_local_inputs_exact() {
 }
 
 #[test]
+fn ensure_container_names_the_want_the_observation_and_the_refusal_on_the_wire() {
+    use ployz_core::{
+        ContainerLocator, ContainerNow, ContainerRefusal, ContainerRefusalReason, ContainerWant,
+        CreationKey, Drain, ENSURE_CONTAINER_CAPABILITY, EnsureContainerRequest, EnsuredContainer,
+        NewContainer, RunTarget, SlotKey, StopOptions,
+    };
+
+    let spec: ResolvedServiceSpec = serde_json::from_value(json!({
+        "service_id": "11111111111111111111111111111111",
+        "name": "api",
+        "mode": { "mode": "replicated", "replicas": 1 },
+        "container": { "image": "alpine:3.23.3", "pull_policy": "missing" }
+    }))
+    .unwrap();
+    let slot = SlotKey {
+        namespace: Namespace::parse("shop").unwrap(),
+        kind: ContainerKind::ServiceContainer,
+        creation_key: CreationKey::try_from("deploy/slot-1".to_owned()).unwrap(),
+    };
+    let slot_json = json!({
+        "namespace": "shop",
+        "kind": "service_container",
+        "creation_key": "deploy/slot-1"
+    });
+    let running = EnsureContainerRequest {
+        want: ContainerWant::Running {
+            container: RunTarget::New(NewContainer {
+                slot: slot.clone(),
+                resolved_spec: spec.clone(),
+                deployment_id: None,
+                registry_auth: None,
+            }),
+        },
+    };
+    assert_eq!(
+        serde_json::to_value(&running).unwrap(),
+        json!({ "want": { "state": "running", "container": { "new": {
+            "slot": slot_json, "resolved_spec": spec
+        } } } })
+    );
+    let request = op::EnsureContainer::into_request(running);
+    assert_eq!(request.encode().unwrap().decode_request().unwrap(), request);
+
+    let id = ContainerId::parse("a".repeat(64)).unwrap();
+    let stopped: EnsureContainerRequest = serde_json::from_value(json!({
+        "want": { "state": "stopped", "container": { "id": id }, "drain": 250 }
+    }))
+    .unwrap();
+    assert_eq!(
+        stopped.want,
+        ContainerWant::Stopped {
+            container: ContainerLocator::Id(id),
+            drain: Drain::try_from(250).unwrap(),
+            stop: StopOptions::default(),
+        }
+    );
+    let gone: EnsureContainerRequest = serde_json::from_value(json!({
+        "want": { "state": "gone", "container": { "key": slot_json }, "drain": 0 }
+    }))
+    .unwrap();
+    assert_eq!(
+        gone.want,
+        ContainerWant::Gone {
+            container: ContainerLocator::Key(slot.clone()),
+            drain: Drain::NONE,
+        }
+    );
+    assert!(
+        serde_json::from_value::<EnsureContainerRequest>(json!({
+            "want": { "state": "stopped", "container": { "id": id } }
+        }))
+        .is_err(),
+        "a Stopped want names its drain"
+    );
+
+    let refused = EnsuredContainer::Refused {
+        now: ContainerNow::Absent {
+            of: ContainerLocator::Key(slot),
+        },
+        refusal: ContainerRefusal {
+            reason: ContainerRefusalReason::NotFound,
+            message: "no Container at the slot".into(),
+        },
+    };
+    assert_eq!(
+        serde_json::to_value(&refused).unwrap(),
+        json!({
+            "status": "refused",
+            "now": { "is": "absent", "of": { "key": slot_json } },
+            "refusal": { "reason": "not_found", "message": "no Container at the slot" }
+        })
+    );
+    let response = RpcResponse::from(refused.clone());
+    assert_eq!(response.decode::<op::EnsureContainer>().unwrap(), refused);
+    let later: ContainerRefusal = serde_json::from_value(json!({
+        "reason": "quota_exhausted",
+        "message": "a reason this build does not know"
+    }))
+    .unwrap();
+    assert_eq!(later.reason, ContainerRefusalReason::Unrecognized);
+    assert_eq!(ENSURE_CONTAINER_CAPABILITY, "ployz.container.ensure.v1");
+}
+
+#[test]
 fn remove_volumes_request_identifies_each_volume_by_machine_and_name() {
     use ployz_core::{DockerVolumeId, DockerVolumeName, RemoveVolumesRequest};
 
@@ -1658,8 +1780,10 @@ fn remove_volumes_request_identifies_each_volume_by_machine_and_name() {
 #[test]
 fn machine_administration_requests_round_trip_as_typed_payloads() {
     let requests = [
-        op::MachineToken::into_request(MachineTokenRequest {
-            public_ip: PublicIpDiscovery::Override("203.0.113.7".parse().unwrap()),
+        op::Inspect::into_request(InspectRequest {
+            token: Some(TokenRequest {
+                public_ip: PublicIpDiscovery::Override("203.0.113.7".parse().unwrap()),
+            }),
             ..Default::default()
         }),
         op::UpdateMachine::into_request(UpdateMachineRequest {
@@ -1670,11 +1794,6 @@ fn machine_administration_requests_round_trip_as_typed_payloads() {
                 ..Default::default()
             },
         }),
-        op::RemoveLocalMachine::into_request(RemoveLocalMachineRequest::default()),
-        op::RemoveMachine::into_request(RemoveMachineRequest {
-            machine_id: MachineId::parse(MACHINE_ID).unwrap(),
-        }),
-        op::InspectWireguard::into_request(InspectWireGuardRequest {}),
     ];
     for request in requests {
         assert_eq!(
@@ -1700,19 +1819,6 @@ fn machine_upgrade_request_and_receipt_have_one_typed_wire_contract() {
             .body,
         RpcRequestBody::RequestMachineUpgrade(request)
     );
-    let inspect = InspectMachineUpgradeRequest {
-        attempt_id: Some(attempt_id),
-    };
-    assert_eq!(
-        op::InspectMachineUpgrade::into_request(inspect.clone())
-            .encode()
-            .unwrap()
-            .decode_request()
-            .unwrap()
-            .body,
-        RpcRequestBody::InspectMachineUpgrade(inspect)
-    );
-
     let attempt = MachineUpgradeAttempt {
         attempt_id,
         target: MachineVersion::parse("1.2.3-beta.4").unwrap(),
@@ -1721,16 +1827,39 @@ fn machine_upgrade_request_and_receipt_have_one_typed_wire_contract() {
             error: "checksum mismatch".into(),
         },
     };
-    let response = RpcResponse::from(attempt.clone());
     assert_eq!(
-        response
-            .clone()
+        RpcResponse::from(attempt.clone())
             .decode::<op::RequestMachineUpgrade>()
             .unwrap(),
         attempt
     );
+
+    let mut details = ployz_core::MachineDetails {
+        id: MachineId::parse(MACHINE_ID).unwrap(),
+        phase: ployz_core::LocalMachinePhase::Participating,
+        machine: None,
+        public_key: ployz_core::WireGuardPublicKey([7; 32]),
+        advertised_endpoints: Vec::new(),
+        store_version: BTreeMap::new(),
+        rtts: Vec::new(),
+        management_clients: Vec::new(),
+        telemetry: None,
+        storage: None,
+        upgrade: None,
+        token: None,
+    };
+    let encoded = serde_json::to_value(&details).unwrap();
+    assert!(encoded.get("upgrade").is_none(), "{encoded}");
     assert_eq!(
-        response.decode::<op::InspectMachineUpgrade>().unwrap(),
-        attempt
+        serde_json::from_value::<ployz_core::MachineDetails>(encoded).unwrap(),
+        details
+    );
+    details.upgrade = Some(attempt);
+    assert_eq!(
+        serde_json::from_value::<ployz_core::MachineDetails>(
+            serde_json::to_value(&details).unwrap()
+        )
+        .unwrap(),
+        details
     );
 }

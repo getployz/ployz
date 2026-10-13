@@ -30,11 +30,11 @@ use ployz_core::{
     LogHistoryRequest, LogMetadata, LogOrigin, MANAGED_LABEL, Machine, MachineDetails, MachineId,
     MachineList, MachineName, MachineObservation, MachinePath, MachineRelease, MachineRpc,
     MachineRpcServer, MachineRuntime, MachineUpgradeAttempt, MachineUpgradeOutcome, MachineVersion,
-    MembershipObservation, MirrorMarker, NAMESPACE_LABEL, Namespace, OpaquePayload, PROTOCOL_MAJOR,
+    MembershipObservation, NAMESPACE_LABEL, Namespace, OpaquePayload, PROTOCOL_MAJOR,
     ProvisionedCopy, ProvisionedVolumeMaximumBytes, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT,
     ResolvedServiceSpec, RoutingRequest, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
-    RuntimeWatchFrame, ServiceId, ServiceName, StorageBacking, StorageCapacity, VolumeCopy,
-    VolumeCopyView, VolumeInventory, WireGuardPublicKey, WriterMarker, encode_runtime_watch_frame,
+    RuntimeWatchFrame, ServiceId, ServiceName, SlotId, StorageBacking, StorageCapacity, VolumeCopy,
+    VolumeCopyView, VolumeInventory, WireGuardPublicKey, WriterEpoch, encode_runtime_watch_frame,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -729,6 +729,8 @@ impl Fleet {
                         management_clients: Vec::new(),
                         telemetry: None,
                         storage: None,
+                        upgrade: machine.upgrades.last().cloned(),
+                        token: None,
                     }
                     .into(),
                 )
@@ -799,18 +801,19 @@ impl Fleet {
                     .find(|copy| copy.name == request.name)
                     .map(|copy| match copy.role {
                         CopyRole::Slot => VolumeCopy::Slot {
-                            mirror: MirrorMarker::Idle,
+                            slot: SlotId::new(1),
                             readonly: true,
                             newest: None,
                             resume_token: None,
+                            pull: None,
                         },
                         CopyRole::Writer | CopyRole::Switching => VolumeCopy::Root {
-                            writer: WriterMarker::Idle,
                             readonly: false,
                             newest: None,
+                            epoch: WriterEpoch::default(),
                         },
                     });
-                unary(VolumeCopyView { copy, lease: None }.into())
+                unary(VolumeCopyView { copy }.into())
             }
             RpcRequestBody::RequestMachineUpgrade(request) => {
                 let machine = self.by_id_mut(target)?;
@@ -835,26 +838,6 @@ impl Fleet {
                 machine.version = target_version;
                 machine.upgrades.push(attempt.clone());
                 unary(attempt.into())
-            }
-            RpcRequestBody::InspectMachineUpgrade(request) => {
-                let machine = self.by_id(target)?;
-                let attempt = match request.attempt_id {
-                    Some(id) => machine
-                        .upgrades
-                        .iter()
-                        .find(|attempt| attempt.attempt_id == id),
-                    None => machine.upgrades.last(),
-                };
-                unary(match attempt {
-                    Some(attempt) => attempt.clone().into(),
-                    None => RpcError {
-                        code: RpcErrorCode::NotFound,
-                        message: format!("{} has no such upgrade attempt", machine.name),
-                        details: Value::Null,
-                        cause: Vec::new(),
-                    }
-                    .into(),
-                })
             }
             RpcRequestBody::TailLogs(request) => {
                 let machine = self.by_id(target)?;

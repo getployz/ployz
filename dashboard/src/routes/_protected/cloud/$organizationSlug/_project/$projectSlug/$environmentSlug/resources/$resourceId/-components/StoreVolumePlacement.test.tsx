@@ -24,11 +24,11 @@ const mirrorAsOf = (server: string, when: Date): Member => {
 
 function panel(
   members: Member[], placement: PlacementRow | null, running: VolumeRunView | null = null, accepting = members.map((entry) => entry.machine.id),
-  upgrade: string[] = [], unknown: string[] = [],
+  upgrade: string[] = [],
 ) {
   const stage = vi.fn();
   render(<VolumePlacementPanel volume={{ id: "v1", name: "data", mounts: [{ service: "postgres" }] }} members={members} row={placement} running={running}
-    accepting={accepting} upgrade={upgrade} unknown={unknown} disabled={false} stage={stage} />);
+    accepting={accepting} upgrade={upgrade} disabled={false} stage={stage} />);
   return stage;
 }
 const primary = () => screen.getByRole("combobox", { name: "Primary" });
@@ -125,16 +125,6 @@ describe("VolumePlacementPanel", () => {
     panel([member("web-1", "unanswered"), mirrorAsOf("web-2", new Date(2026, 9, 10, 10, 36))], row(["web-2"]), null, [id("web-1")]);
     expect(screen.getByRole("alert").textContent).toBe("web-1 is not answeringChanges after 10:36 lost");
     expect(screen.queryByRole("button", { name: "Use mirror" })).toBeNull();
-  });
-
-  it("only shows the placement while a Server with storage can't say what it serves, and claims no Upgrade", () => {
-    panel([member("web-1", "unanswered"), mirrorAsOf("web-2", new Date(2026, 9, 10, 10, 36)), member("web-3", "mirror")], row(["web-2"]), null, undefined, [], ["db-quiet"]);
-    expect(screen.getByText("Ployz can’t tell whether db-quiet can move volumes")).toBeTruthy();
-    expect(screen.queryByText(/Upgrade/)).toBeNull();
-    expect(screen.getByRole("button", { name: "Use mirror" }).hasAttribute("disabled")).toBe(true);
-    expect(screen.queryByRole("button", { name: /^Remove mirror on/ })).toBeNull();
-    expect(screen.queryByRole("button", { name: /^Delete copy on/ })).toBeNull();
-    expect(primary().hasAttribute("data-disabled") || primary().hasAttribute("disabled")).toBe(true);
   });
 
   it("only shows the placement while a Server with storage runs an older daemon", () => {

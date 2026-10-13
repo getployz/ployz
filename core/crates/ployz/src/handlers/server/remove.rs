@@ -8,7 +8,7 @@ use super::{ConnectionOptions, target};
 use crate::approval::{self, Verb};
 use crate::cloud_account::{self, Credential, Release};
 use crate::cloud_login::{CredentialStore, LoginError};
-use crate::cluster::{CloudHold, copies_left_behind, refuse_last_managed};
+use crate::cluster::{CloudHold, LeftNotForgotten, copies_left_behind, refuse_last_managed};
 use crate::connect::Remover;
 use crate::context::ConnectionSource;
 use crate::drain::{replicated_services_on, services_on};
@@ -229,7 +229,7 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
             let removed = client
                     .remove_machine(&selected_target, &confirmation, Remover::Operator)
                     .await
-                    .map_err(crate::failure::refusal_from_rpc)?;
+                    .map_err(|error| reset_removal_refusal(error, selected.name.as_str()))?;
             reset_failure = removed.reset_warning;
         }
         crate::ui::stream(format_args!("Removed Server {}.", selected.name));
@@ -436,6 +436,18 @@ fn machine_removal_refusal(error: RpcError) -> Error {
     }
 }
 
+/// A reset removal's refusal. A Server that reset before the Cluster could forget it needs
+/// only the no-reset removal to finish.
+fn reset_removal_refusal(error: RpcError, name: &str) -> Error {
+    if LeftNotForgotten::from_rpc_error(&error).is_some() {
+        Error::from(error)
+            .context(format!("Server {name} reset but is still listed."))
+            .hint(Hint::Next(format!("ployz server rm {name} --no-reset")))
+    } else {
+        crate::failure::refusal_from_rpc(error)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use ployz_core::{
@@ -446,8 +458,10 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::{
-        VolumeOwner, machine_removal_refusal, qualified_labels, replicated_services_on, services_on,
+        VolumeOwner, machine_removal_refusal, qualified_labels, replicated_services_on,
+        reset_removal_refusal, services_on,
     };
+    use crate::ui::Hint;
 
     #[test]
     fn a_volume_name_two_environments_share_is_qualified_by_environment() {
@@ -492,6 +506,26 @@ mod tests {
             "The Server could not be reset; use --no-reset to remove it from the Cluster without resetting."
         );
         assert_eq!(refusal.causes(), ["Server fra-1 did not respond"]);
+        assert_eq!(refusal.report().code, RpcErrorCode::Unavailable);
+    }
+
+    #[test]
+    fn a_reset_server_still_listed_names_the_no_reset_removal() {
+        let error = RpcError {
+            code: RpcErrorCode::Unavailable,
+            message: "the entry could not reach the Cluster store".into(),
+            details: json!({ "left": true, "reset_warning": null }),
+            cause: Vec::new(),
+        };
+        let refusal = reset_removal_refusal(error, "fra-1");
+        assert_eq!(
+            refusal.to_string(),
+            "Server fra-1 reset but is still listed."
+        );
+        assert_eq!(
+            refusal.hints(),
+            [Hint::Next("ployz server rm fra-1 --no-reset".into())]
+        );
         assert_eq!(refusal.report().code, RpcErrorCode::Unavailable);
     }
 

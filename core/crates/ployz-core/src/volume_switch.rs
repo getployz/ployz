@@ -1,162 +1,15 @@
-//! Lease, position, markers and switch verbs shared by a Volume run and the Machines it drives.
+//! Snapshots, markers and copies shared by a Volume run and the Machines it drives.
 
 use std::{fmt, str::FromStr, time::Duration};
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::{CopyRole, DockerVolumeName, MachineName, ManagementAddress, RpcError, RpcErrorCode};
+use crate::{CopyRole, DockerVolumeName, MachineName, RpcError, RpcErrorCode, WriterEpoch};
 
 /// How long a Machine waits on one call to its volume plugin, such as the call that
 /// mounts a handed-over Volume and starts its Container.
 pub const VOLUME_PLUGIN_CALL_TIMEOUT: Duration = Duration::from_secs(120);
-
-/// Lease number of one Volume run, numbered by the operator driving the run.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS)]
-#[serde(transparent)]
-pub struct Lease(u64);
-
-impl Lease {
-    #[must_use]
-    pub const fn new(lease: u64) -> Self {
-        Self(lease)
-    }
-
-    #[must_use]
-    pub const fn get(self) -> u64 {
-        self.0
-    }
-}
-
-impl fmt::Display for Lease {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(formatter)
-    }
-}
-
-/// Position of a request in its run: step, round and verb within the round, ordered in that order.
-///
-/// `06-freeze` is `(6, 0, 0)`; round verbs are `(4, round, sub)` with one `sub` per verb.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS)]
-pub struct Pos {
-    pub seq: u16,
-    pub round: u32,
-    pub sub: u8,
-}
-
-impl Pos {
-    /// Where departure leaves a record: past every step a run can send, so each late
-    /// request of that run meets `stale_step` and only a newer lease is admitted.
-    pub const DEPARTED: Self = Self {
-        seq: u16::MAX,
-        round: u32::MAX,
-        sub: u8::MAX,
-    };
-
-    #[must_use]
-    pub const fn step(seq: u16) -> Self {
-        Self {
-            seq,
-            round: 0,
-            sub: 0,
-        }
-    }
-}
-
-impl fmt::Display for Pos {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{}.{}.{}", self.seq, self.round, self.sub)
-    }
-}
-
-/// Whether a run is mid-switch on this copy. Adopting a newer lease keeps it.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "snake_case")]
-pub enum Cycle {
-    Open,
-    Closed,
-}
-
-/// One Machine's admission record for one Volume name.
-///
-/// Stored as the ZFS user property `ployz:lease.<name>` on the managed root (an uppercase
-/// letter in `<name>` written as `:` and its lowercase), value
-/// `<lease>:<seq>.<round>.<sub>:<open|closed>`, so it outlives every copy of the Volume.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct LeaseRecord {
-    pub lease: Lease,
-    pub pos: Pos,
-    pub cycle: Cycle,
-}
-
-impl fmt::Display for LeaseRecord {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let cycle = match self.cycle {
-            Cycle::Open => "open",
-            Cycle::Closed => "closed",
-        };
-        write!(formatter, "{}:{}:{cycle}", self.lease, self.pos)
-    }
-}
-
-/// A stored lease record that does not read as `<lease>:<seq>.<round>.<sub>:<open|closed>`.
-#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
-#[error("invalid lease record {0:?}; expected <lease>:<seq>.<round>.<sub>:<open|closed>")]
-pub struct LeaseRecordParseError(pub String);
-
-impl FromStr for LeaseRecord {
-    type Err = LeaseRecordParseError;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let invalid = || LeaseRecordParseError(value.to_owned());
-        let mut fields = value.split(':');
-        let (Some(lease), Some(pos), Some(cycle), None) =
-            (fields.next(), fields.next(), fields.next(), fields.next())
-        else {
-            return Err(invalid());
-        };
-        let mut parts = pos.split('.');
-        let (Some(seq), Some(round), Some(sub), None) =
-            (parts.next(), parts.next(), parts.next(), parts.next())
-        else {
-            return Err(invalid());
-        };
-        Ok(Self {
-            lease: Lease(lease.parse().map_err(|_| invalid())?),
-            pos: Pos {
-                seq: seq.parse().map_err(|_| invalid())?,
-                round: round.parse().map_err(|_| invalid())?,
-                sub: sub.parse().map_err(|_| invalid())?,
-            },
-            cycle: match cycle {
-                "open" => Cycle::Open,
-                "closed" => Cycle::Closed,
-                _ => return Err(invalid()),
-            },
-        })
-    }
-}
-
-/// What every switch request carries. The Machine compares it with its own record.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct Switch {
-    pub lease: Lease,
-    pub pos: Pos,
-}
-
-/// What the fence rule decided for a request, under the dataset lock.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "snake_case")]
-pub enum FenceDecision {
-    /// Same lease, later position: run the effect and record the position.
-    Admit,
-    /// Same lease and position: answer from the marker, or finish an incomplete effect.
-    Replay,
-    /// Newer lease, or no record yet: write the record, then run the effect.
-    Adopt,
-    RefuseStaleLease,
-    RefuseStaleStep,
-}
 
 /// ZFS `guid` of a snapshot; stable across send and receive.
 ///
@@ -199,26 +52,63 @@ impl From<SnapshotGuid> for String {
     }
 }
 
-/// Name of a run's snapshot without the `@`: `w-<lease>-<round>` taken warm, `f-<lease>` taken final.
+/// ZFS `guid` of a slot parent dataset. A slot is created fresh and destroyed whole, so the
+/// guid names one incarnation of the slot: a slot pulled again after a Forget gets a new one
+/// even when it lands the same snapshot.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS)]
+#[serde(try_from = "String", into = "String")]
+#[ts(type = "string")]
+pub struct SlotId(u64);
+
+impl SlotId {
+    #[must_use]
+    pub const fn new(guid: u64) -> Self {
+        Self(guid)
+    }
+
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl fmt::Display for SlotId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+impl TryFrom<String> for SlotId {
+    type Error = std::num::ParseIntError;
+
+    fn try_from(guid: String) -> Result<Self, Self::Error> {
+        guid.parse().map(Self)
+    }
+}
+
+impl From<SlotId> for String {
+    fn from(guid: SlotId) -> Self {
+        guid.to_string()
+    }
+}
+
+/// Name of a copy's snapshot without the `@`: `w-<run>-<round>` taken warm, `f-<run>` taken
+/// final, or `dep-<unix seconds>` taken when the Machine departed, the restore point of a
+/// copy no run ever snapshotted.
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize, TS)]
 #[serde(try_from = "String", into = "String")]
 pub struct SnapshotName(String);
 
 impl SnapshotName {
     #[must_use]
-    pub fn warm(lease: Lease, round: u32) -> Self {
-        Self(format!("w-{lease}-{round}"))
-    }
-
-    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
 }
 
-/// A snapshot name that is not `w-<lease>-<round>` or `f-<lease>`.
+/// A snapshot name that is not `w-<run>-<round>`, `f-<run>` or `dep-<unix seconds>`.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
-#[error("invalid run snapshot name {0:?}; expected w-<lease>-<round> or f-<lease>")]
+#[error("invalid snapshot name {0:?}; expected w-<run>-<round>, f-<run> or dep-<unix seconds>")]
 pub struct SnapshotNameParseError(pub String);
 
 impl FromStr for SnapshotName {
@@ -229,8 +119,9 @@ impl FromStr for SnapshotName {
         let valid = match value.split_once('-') {
             Some(("w", rest)) => rest
                 .split_once('-')
-                .is_some_and(|(lease, index)| is_number(lease) && is_number(index)),
-            Some(("f", lease)) => is_number(lease),
+                .is_some_and(|(run, index)| is_number(run) && is_number(index)),
+            Some(("f", run)) => is_number(run),
+            Some(("dep", seconds)) => is_number(seconds),
             _ => false,
         };
         valid.then(|| Self(value.to_owned())).ok_or_else(invalid)
@@ -269,263 +160,62 @@ pub struct Snapshot {
     pub created_unix_seconds: i64,
 }
 
-/// `ployz:writer` on a Volume root: the phase of the copy that holds the writes.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(tag = "phase", rename_all = "snake_case")]
-pub enum WriterMarker {
-    Idle,
-    Stopping,
-    Frozen { guid: SnapshotGuid },
-    Thawing,
-    Handed { guid: SnapshotGuid },
-}
-
-impl fmt::Display for WriterMarker {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Idle => formatter.write_str("idle"),
-            Self::Stopping => formatter.write_str("stopping"),
-            Self::Frozen { guid } => write!(formatter, "frozen:{guid}"),
-            Self::Thawing => formatter.write_str("thawing"),
-            Self::Handed { guid } => write!(formatter, "handed:{guid}"),
-        }
-    }
-}
-
-/// `ployz:mirror` on a slot: the phase of a read-only copy.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(tag = "phase", rename_all = "snake_case")]
-pub enum MirrorMarker {
-    Idle,
-    Final { guid: SnapshotGuid },
-    HandedIn { guid: SnapshotGuid },
-    Promoting,
-}
-
-impl fmt::Display for MirrorMarker {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Idle => formatter.write_str("idle"),
-            Self::Final { guid } => write!(formatter, "final:{guid}"),
-            Self::HandedIn { guid } => write!(formatter, "handed_in:{guid}"),
-            Self::Promoting => formatter.write_str("promoting"),
-        }
-    }
-}
-
-/// A stored marker that is not one of the known phases.
-#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
-#[error("invalid {property} marker {value:?}")]
-pub struct MarkerParseError {
-    pub property: &'static str,
-    pub value: String,
-}
-
-fn marker_parts(value: &str) -> (&str, Option<&str>) {
-    value
-        .split_once(':')
-        .map_or((value, None), |(phase, guid)| (phase, Some(guid)))
-}
-
-fn parse_guid(guid: Option<&str>) -> Option<SnapshotGuid> {
-    guid.and_then(|guid| guid.parse().ok()).map(SnapshotGuid)
-}
-
-impl FromStr for WriterMarker {
-    type Err = MarkerParseError;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let invalid = || MarkerParseError {
-            property: "ployz:writer",
-            value: value.to_owned(),
-        };
-        Ok(match marker_parts(value) {
-            ("idle", None) => Self::Idle,
-            ("stopping", None) => Self::Stopping,
-            ("thawing", None) => Self::Thawing,
-            ("frozen", guid) => Self::Frozen {
-                guid: parse_guid(guid).ok_or_else(invalid)?,
-            },
-            ("handed", guid) => Self::Handed {
-                guid: parse_guid(guid).ok_or_else(invalid)?,
-            },
-            _ => return Err(invalid()),
-        })
-    }
-}
-
-impl FromStr for MirrorMarker {
-    type Err = MarkerParseError;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let invalid = || MarkerParseError {
-            property: "ployz:mirror",
-            value: value.to_owned(),
-        };
-        Ok(match marker_parts(value) {
-            ("idle", None) => Self::Idle,
-            ("promoting", None) => Self::Promoting,
-            ("final", guid) => Self::Final {
-                guid: parse_guid(guid).ok_or_else(invalid)?,
-            },
-            ("handed_in", guid) => Self::HandedIn {
-                guid: parse_guid(guid).ok_or_else(invalid)?,
-            },
-            _ => return Err(invalid()),
-        })
-    }
-}
-
 /// The copy of a Volume this Machine holds, by its place in the dataset layout.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum VolumeCopy {
     /// `<pool>/ployz/<name>`: the writer's dataset, mounted for Containers.
     Root {
-        writer: WriterMarker,
         readonly: bool,
         newest: Option<Snapshot>,
+        /// The run of writes this root belongs to; 0 until `SetVolumeCopy` numbers it.
+        #[serde(default)]
+        epoch: WriterEpoch,
     },
     /// `<pool>/ployz-mirror/<name>`: a read-only copy Docker never sees. `newest` is of
     /// its `fs` child; `resume_token` is set while a receive into `fs` is interrupted.
     Slot {
-        mirror: MirrorMarker,
+        /// The slot parent's guid, which changes when the slot is destroyed and created again.
+        slot: SlotId,
         readonly: bool,
         newest: Option<Snapshot>,
         #[serde(default)]
         resume_token: Option<String>,
+        /// The `SetVolumeCopy` pull in flight, from its start until its prune is done.
+        #[serde(default)]
+        pull: Option<Pull>,
     },
 }
 
-/// Live answer to `InspectVolumeCopy`: what this Machine holds and what it last admitted.
+/// A `SetVolumeCopy` pull into a slot: which snapshot it fetches and, once the receive
+/// has stopped without landing it, why.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct Pull {
+    pub target: SnapshotName,
+    #[serde(default)]
+    pub failure: Option<String>,
+}
+
+/// Live answer to `InspectVolumeCopy`: what this Machine holds.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct VolumeCopyView {
     pub copy: Option<VolumeCopy>,
-    pub lease: Option<LeaseRecord>,
 }
 
-/// Ask a Machine what it holds for one Volume name. Carries no lease.
+/// Ask a Machine what it holds for one Volume name.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct InspectVolumeCopyRequest {
     pub name: DockerVolumeName,
 }
 
-/// `03-declare`: create the slot parent for a mirror bounded by `refquota_bytes`.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct DeclareMirrorRequest {
-    pub switch: Switch,
-    pub name: DockerVolumeName,
-    pub refquota_bytes: u64,
-}
-
-/// A leased verb that needs only the Volume name: BeginRound, Prune, Destroy, Forget.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct MirrorRequest {
-    pub switch: Switch,
-    pub name: DockerVolumeName,
-}
-
-/// A source switch that stops or restarts the Container holding this Volume.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct SourceContainerRequest {
-    pub switch: Switch,
-    pub name: DockerVolumeName,
-    pub container_id: crate::ContainerId,
-}
-
-/// Irreversibly hand the frozen source snapshot to the target.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct HandOverRequest {
-    pub switch: Switch,
-    pub name: DockerVolumeName,
-    pub guid: SnapshotGuid,
-}
-
-/// A target verb that leaves Docker holding the Volume as `resolved_spec` declares it:
-/// Promote, Restore, and StartHandedContainer, which also creates the Service Container
-/// under the creation key `handoff-<guid>` and starts it.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct ServiceVolumeRequest {
-    pub switch: Switch,
-    pub name: DockerVolumeName,
-    pub namespace: crate::Namespace,
-    pub resolved_spec: crate::ResolvedServiceSpec,
-}
-
-/// Commit on the writer: drop run snapshots older than the mirror's newest.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct CommitRequest {
-    pub switch: Switch,
-    pub name: DockerVolumeName,
-    pub mirror_newest: SnapshotGuid,
-}
-
-/// Warm on the writer: take `w-<lease>-<round>` unless the newest warm snapshot already
-/// captures every write.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct WarmRequest {
-    pub switch: Switch,
-    pub name: DockerVolumeName,
-}
-
-/// StartReceive on the mirror: pull `target` from the writer Machine at `from`, as a full
-/// stream, an increment over `base`, or a resume of an interrupted stream.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct StartReceiveRequest {
-    pub switch: Switch,
-    pub name: DockerVolumeName,
-    pub from: ManagementAddress,
-    pub base: Option<SnapshotGuid>,
-    pub target: SnapshotName,
-    pub resume_token: Option<String>,
-}
-
 /// SeedVolume on the writer: a new Volume `into` holding the restore point `guid` of
-/// `name`, received locally from the writer's own snapshot. Leased on `name`; converges
-/// on retry, replying once `into` is a root here.
+/// `name`, received locally from the writer's own snapshot. Resent until it converges: it
+/// answers the copy of `into`, a slot while it copies and a root once it lands.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct SeedVolumeRequest {
-    pub switch: Switch,
     pub name: DockerVolumeName,
     pub into: DockerVolumeName,
     pub guid: SnapshotGuid,
-}
-
-/// Ask a mirror Machine how the receive of `round` is going. Carries no lease.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct InspectReceiveRequest {
-    pub name: DockerVolumeName,
-    pub round: u32,
-}
-
-/// What the last admitted receive left on the slot.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(tag = "state", rename_all = "snake_case")]
-pub enum ReceiveStatus {
-    /// No receive of the asked round was admitted on this slot.
-    Idle,
-    Running {
-        target: SnapshotName,
-    },
-    Done {
-        newest: Snapshot,
-    },
-    /// The stream broke; StartReceive again with `token` at the same position.
-    Resumable {
-        target: SnapshotName,
-        token: String,
-    },
-    Failed {
-        target: SnapshotName,
-        reason: String,
-    },
-}
-
-/// Answer to `InspectReceive`: the round the slot last admitted and its state.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct ReceiveView {
-    pub round: Option<u32>,
-    pub status: ReceiveStatus,
 }
 
 /// Which stream a mirror asks its writer Machine for over the mesh.
@@ -597,21 +287,10 @@ pub const DATASET_ROOT: &str = "ployz";
 /// The mirror root under a Pool: `<pool>/ployz-mirror/<name>` holds a Volume's slot.
 pub const MIRROR_ROOT: &str = "ployz-mirror";
 
-/// Every admitted switch verb answers the same shape, so a replay answers as the original did.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct SwitchReply {
-    pub decision: FenceDecision,
-    /// The record after admission.
-    pub lease: LeaseRecord,
-    pub copy: Option<VolumeCopy>,
-}
-
 /// Why a Machine refused a switch request, in `RpcError.details`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "reason", rename_all = "snake_case")]
 pub enum SwitchError {
-    StaleLease,
-    StaleStep,
     Precondition,
     Busy,
     VolumeSwitching,
@@ -641,9 +320,7 @@ impl SwitchError {
 
     const fn rpc_code(self) -> RpcErrorCode {
         match self {
-            Self::StaleLease
-            | Self::StaleStep
-            | Self::Precondition
+            Self::Precondition
             | Self::Busy
             | Self::VolumeSwitching
             | Self::NoWriter
@@ -660,33 +337,26 @@ pub struct KnownCopy {
     pub role: CopyRole,
 }
 
-/// Whether a plain Deploy may mount a Volume on this Machine. `held` is what the Machine
-/// holds and last admitted; `elsewhere` is every copy its replicated observation knows on
-/// other Machines.
+/// Whether a plain Deploy may mount a Volume on this Machine. `held` is the copy this
+/// Machine holds; `elsewhere` is every copy its replicated observation knows on other
+/// Machines.
 ///
-/// A Machine holding nothing mounts only a Volume no Machine holds and it never admitted a
-/// run for: a fresh Volume. Its own root mounts only while idle, closed and writable.
+/// A Machine holding nothing mounts a fresh Volume while no other Machine holds a copy.
+/// Its own root mounts while writable.
 ///
 /// # Errors
-/// `NoWriter` when the data lives elsewhere or was departed; `VolumeSwitching` when a run
-/// holds the root.
+/// `NoWriter` when the data lives elsewhere or only in this Machine's slot;
+/// `VolumeSwitching` when a run holds the root read-only.
 pub fn admit_plain_mount(
-    held: &VolumeCopyView,
+    held: Option<&VolumeCopy>,
     elsewhere: &[KnownCopy],
 ) -> Result<(), SwitchError> {
-    match &held.copy {
-        None if elsewhere.is_empty() && held.lease.is_none() => Ok(()),
+    match held {
+        None if elsewhere.is_empty() => Ok(()),
         None | Some(VolumeCopy::Slot { .. }) => Err(SwitchError::NoWriter),
         Some(VolumeCopy::Root {
-            writer: WriterMarker::Idle,
-            readonly: false,
-            ..
-        }) if held
-            .lease
-            .is_none_or(|record| record.cycle == Cycle::Closed) =>
-        {
-            Ok(())
-        }
+            readonly: false, ..
+        }) => Ok(()),
         Some(VolumeCopy::Root { .. }) => Err(SwitchError::VolumeSwitching),
     }
 }
@@ -721,9 +391,7 @@ pub fn no_writer_message(name: &str, copies: &[KnownCopy]) -> String {
         );
     }
     match copies {
-        [] => format!(
-            "Volume {name} has no writer: no Server holds a copy and this Server recorded a run for it; restore it from a backup or remove it before deploying"
-        ),
+        [] => format!("Volume {name} has no writer and no Server holds a copy of it"),
         [only] => format!(
             "Volume {name} has no writer; {} holds its only copy. Make it the writer: ployz volume restore {name} --from {}",
             only.machine, only.machine
@@ -757,24 +425,18 @@ mod tests {
 
     #[test]
     fn plain_mount_admission_table() {
-        let record = |cycle| LeaseRecord {
-            lease: Lease(3),
-            pos: Pos::step(2),
-            cycle,
+        let root = |readonly| VolumeCopy::Root {
+            readonly,
+            newest: None,
+            epoch: WriterEpoch::default(),
         };
-        let root = |writer, readonly| {
-            Some(VolumeCopy::Root {
-                writer,
-                readonly,
-                newest: None,
-            })
-        };
-        let slot = Some(VolumeCopy::Slot {
-            mirror: MirrorMarker::Idle,
+        let slot = VolumeCopy::Slot {
+            slot: SlotId::new(1),
             readonly: true,
             newest: None,
             resume_token: None,
-        });
+            pull: None,
+        };
         let known = |role| {
             vec![KnownCopy {
                 machine: name("fsn-2"),
@@ -782,69 +444,44 @@ mod tests {
             }]
         };
         let rows = [
-            (None, None, vec![], Ok(())),
+            ("nothing anywhere", None, vec![], Ok(())),
             (
-                None,
+                "a slot elsewhere",
                 None,
                 known(CopyRole::Slot),
                 Err(SwitchError::NoWriter),
             ),
             (
-                None,
+                "a writer elsewhere",
                 None,
                 known(CopyRole::Writer),
                 Err(SwitchError::NoWriter),
             ),
             (
-                None,
-                Some(record(Cycle::Closed)),
+                "a slot here",
+                Some(slot),
                 vec![],
                 Err(SwitchError::NoWriter),
             ),
-            (slot.clone(), None, vec![], Err(SwitchError::NoWriter)),
-            (root(WriterMarker::Idle, false), None, vec![], Ok(())),
+            ("a writable root", Some(root(false)), vec![], Ok(())),
             (
-                root(WriterMarker::Idle, false),
-                Some(record(Cycle::Closed)),
+                "a writable root beside a slot elsewhere",
+                Some(root(false)),
                 known(CopyRole::Slot),
                 Ok(()),
             ),
             (
-                root(WriterMarker::Idle, false),
-                Some(record(Cycle::Open)),
+                "a read-only root",
+                Some(root(true)),
                 vec![],
-                Err(SwitchError::VolumeSwitching),
-            ),
-            (
-                root(WriterMarker::Idle, true),
-                None,
-                vec![],
-                Err(SwitchError::VolumeSwitching),
-            ),
-            (
-                root(WriterMarker::Stopping, false),
-                None,
-                vec![],
-                Err(SwitchError::VolumeSwitching),
-            ),
-            (
-                root(
-                    WriterMarker::Handed {
-                        guid: SnapshotGuid(1),
-                    },
-                    true,
-                ),
-                Some(record(Cycle::Closed)),
-                known(CopyRole::Slot),
                 Err(SwitchError::VolumeSwitching),
             ),
         ];
-        for (copy, lease, elsewhere, expected) in rows {
-            let held = VolumeCopyView { copy, lease };
+        for (case, held, elsewhere, expected) in rows {
             assert_eq!(
-                admit_plain_mount(&held, &elsewhere),
+                admit_plain_mount(held.as_ref(), &elsewhere),
                 expected,
-                "held {held:?}, elsewhere {elsewhere:?}"
+                "{case}"
             );
         }
     }
@@ -875,7 +512,7 @@ mod tests {
         );
         assert_eq!(
             no_writer_message("data", &[]),
-            "Volume data has no writer: no Server holds a copy and this Server recorded a run for it; restore it from a backup or remove it before deploying"
+            "Volume data has no writer and no Server holds a copy of it"
         );
     }
 
@@ -916,104 +553,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn lease_record_round_trips_through_its_property_value() {
-        let record = LeaseRecord {
-            lease: Lease(7),
-            pos: Pos {
-                seq: 4,
-                round: 2,
-                sub: 5,
-            },
-            cycle: Cycle::Open,
-        };
-        assert_eq!(record.to_string(), "7:4.2.5:open");
-        assert_eq!("7:4.2.5:open".parse::<LeaseRecord>().unwrap(), record);
-        assert_eq!(
-            "7:2.0.0:closed".parse::<LeaseRecord>().unwrap().cycle,
-            Cycle::Closed
-        );
-        for invalid in [
-            "",
-            "7",
-            "7:2.0.0",
-            "7:2.0:closed",
-            "7:2.0.0:ajar",
-            "x:2.0.0:open",
-        ] {
-            assert_eq!(
-                invalid.parse::<LeaseRecord>(),
-                Err(LeaseRecordParseError(invalid.to_owned()))
-            );
-        }
-    }
-
-    #[test]
-    fn positions_order_by_step_then_round_then_sub() {
-        let later_round = Pos {
-            seq: 4,
-            round: 2,
-            sub: 1,
-        };
-        let earlier_round_later_sub = Pos {
-            seq: 4,
-            round: 1,
-            sub: 5,
-        };
-        assert!(earlier_round_later_sub < later_round);
-        assert!(Pos::step(5) > later_round);
-        assert!(Pos::step(2) < Pos::step(3));
-        assert!(later_round < Pos::DEPARTED && Pos::step(u16::MAX - 1) < Pos::DEPARTED);
-    }
-
-    #[test]
-    fn markers_round_trip_through_their_property_values() {
-        for (text, marker) in [
-            ("idle", WriterMarker::Idle),
-            ("stopping", WriterMarker::Stopping),
-            (
-                "frozen:42",
-                WriterMarker::Frozen {
-                    guid: SnapshotGuid(42),
-                },
-            ),
-            ("thawing", WriterMarker::Thawing),
-            (
-                "handed:42",
-                WriterMarker::Handed {
-                    guid: SnapshotGuid(42),
-                },
-            ),
-        ] {
-            assert_eq!(marker.to_string(), text);
-            assert_eq!(text.parse::<WriterMarker>().unwrap(), marker);
-        }
-        for (text, marker) in [
-            ("idle", MirrorMarker::Idle),
-            (
-                "final:9",
-                MirrorMarker::Final {
-                    guid: SnapshotGuid(9),
-                },
-            ),
-            (
-                "handed_in:9",
-                MirrorMarker::HandedIn {
-                    guid: SnapshotGuid(9),
-                },
-            ),
-            ("promoting", MirrorMarker::Promoting),
-        ] {
-            assert_eq!(marker.to_string(), text);
-            assert_eq!(text.parse::<MirrorMarker>().unwrap(), marker);
-        }
-        for invalid in ["", "frozen", "frozen:x", "idle:1", "handed", "-"] {
-            assert!(invalid.parse::<WriterMarker>().is_err(), "{invalid:?}");
-        }
-        assert!("final".parse::<MirrorMarker>().is_err());
-        assert!("thawing".parse::<MirrorMarker>().is_err());
-    }
-
     fn through_javascript(value: serde_json::Value) -> serde_json::Value {
         use serde_json::Value;
         match value {
@@ -1041,17 +580,27 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_names_are_run_snapshots_or_a_departure_restore_point() {
+        for valid in ["w-3-1", "f-3", "dep-1690000000"] {
+            assert_eq!(valid.parse::<SnapshotName>().unwrap().as_str(), valid);
+        }
+        for invalid in ["w-3", "f-", "dep-", "dep-x", "d-1", "manual"] {
+            assert!(invalid.parse::<SnapshotName>().is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
     fn switch_errors_carry_their_reason_in_details() {
-        let error = SwitchError::StaleStep.rpc_error("too late");
+        let error = SwitchError::NoWriter.rpc_error("nothing to mount");
         assert_eq!(error.code, RpcErrorCode::Conflict);
-        assert_eq!(error.details, serde_json::json!({ "reason": "stale_step" }));
+        assert_eq!(error.details, serde_json::json!({ "reason": "no_writer" }));
         assert_eq!(
             SwitchError::from_details(&error.details),
-            Some(SwitchError::StaleStep)
+            Some(SwitchError::NoWriter)
         );
         assert_eq!(
-            SwitchError::from_details(&SwitchError::StaleLease.rpc_error("").details),
-            Some(SwitchError::StaleLease)
+            SwitchError::from_details(&SwitchError::NoCapacity.rpc_error("").details),
+            Some(SwitchError::NoCapacity)
         );
         assert_eq!(
             SwitchError::from_details(&serde_json::json!({ "reason": "unknown" })),

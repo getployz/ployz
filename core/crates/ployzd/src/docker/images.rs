@@ -1,4 +1,8 @@
-//! Image tag times and unforced, in-use-safe image removal for Image Cleanup.
+//! Image Cleanup on this Machine: find each repository's superseded build images and
+//! remove them unforced, keeping any a Container uses.
+//!
+//! Only `repository:ployz-sha256-*` tags, which Direct Image Transfer creates, are
+//! candidates.
 
 use std::collections::HashSet;
 
@@ -6,9 +10,19 @@ use bollard::{
     errors::Error as DockerError,
     query_parameters::{ListContainersOptionsBuilder, RemoveImageOptions},
 };
-use ployz_core::{ImageRemoval, ImageRemovalOutcome, ImagesRemoved};
+use ployz_core::{DiskSpace, ImageRemoval, ImageRemovalOutcome, ImageSummary, ImagesRemoved};
 
 use super::{ContainerRuntime, Error};
+
+const RETENTION_TAG: &str = ":ployz-sha256-";
+/// Unused images kept for rollback.
+const KEEP: usize = 3;
+/// Unused images kept when the Docker root is nearly full.
+const KEEP_UNDER_PRESSURE: usize = 1;
+/// Beyond [`KEEP`], an unused image goes once this idle.
+const IDLE_SECONDS: i64 = 7 * 24 * 60 * 60;
+/// Below this free share of the Docker root, keep only [`KEEP_UNDER_PRESSURE`].
+const PRESSURE_FREE_PERCENT: u64 = 20;
 
 impl ContainerRuntime {
     /// Unix seconds this Machine last tagged the image, when Docker recorded it.
@@ -26,6 +40,32 @@ impl ContainerRuntime {
             }) => Ok(None),
             Err(error) => Err(error.into()),
         }
+    }
+
+    /// Remove each repository's superseded build images.
+    ///
+    /// # Errors
+    ///
+    /// Returns when Docker cannot list images or Containers; per-reference failures
+    /// are results.
+    pub async fn prune_images(&self, repositories: &[String]) -> Result<ImagesRemoved, Error> {
+        let now = chrono::Utc::now().timestamp();
+        let mut references = Vec::new();
+        for repository in repositories {
+            let store = self
+                .list_images(Some(&format!("{repository}{RETENTION_TAG}*")), true)
+                .await?;
+            references.extend(superseded(
+                &store.images,
+                repository,
+                under_pressure(store.docker_root),
+                now,
+            ));
+        }
+        if references.is_empty() {
+            return Ok(ImagesRemoved::default());
+        }
+        self.remove_images(&references).await
     }
 
     /// Remove each reference without force. A reference whose image any Container
@@ -71,6 +111,39 @@ impl ContainerRuntime {
     }
 }
 
+/// Retention tags in `repository` to remove, newest kept. Images a Container uses,
+/// or whose use Docker did not count, are neither kept nor removed.
+fn superseded(images: &[ImageSummary], repository: &str, pressure: bool, now: i64) -> Vec<String> {
+    let prefix = format!("{repository}{RETENTION_TAG}");
+    let mut unused = images
+        .iter()
+        .filter(|image| image.containers == 0)
+        .flat_map(|image| {
+            image
+                .repo_tags
+                .iter()
+                .filter(|tag| tag.starts_with(&prefix))
+                .map(|tag| (image.last_tagged, tag))
+        })
+        .collect::<Vec<_>>();
+    // Newest first; an unknown tag time sorts oldest.
+    unused.sort_by_key(|(tagged, _)| std::cmp::Reverse(*tagged));
+    let keep = if pressure { KEEP_UNDER_PRESSURE } else { KEEP };
+    unused
+        .into_iter()
+        .skip(keep)
+        .filter(|(tagged, _)| pressure || tagged.is_some_and(|at| now - at > IDLE_SECONDS))
+        .map(|(_, tag)| tag.clone())
+        .collect()
+}
+
+fn under_pressure(space: Option<DiskSpace>) -> bool {
+    space.is_some_and(|space| {
+        u128::from(space.free_bytes) * 100
+            < u128::from(space.total_bytes) * u128::from(PRESSURE_FREE_PERCENT)
+    })
+}
+
 fn refusal(error: DockerError) -> ImageRemovalOutcome {
     if let DockerError::DockerResponseServerError { status_code, .. } = &error {
         match status_code {
@@ -87,6 +160,80 @@ fn refusal(error: DockerError) -> ImageRemovalOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const NOW: i64 = 100 * 24 * 60 * 60;
+    const DAY: i64 = 24 * 60 * 60;
+
+    fn image(tag: &str, days_ago: Option<i64>, containers: i64) -> ImageSummary {
+        ImageSummary {
+            id: format!("sha256:{tag}"),
+            repo_tags: vec![format!("ployz-build/web:ployz-sha256-{tag}")],
+            created: 0,
+            size: 1,
+            containers,
+            platforms: Vec::new(),
+            last_tagged: days_ago.map(|days| NOW - days * DAY),
+        }
+    }
+
+    fn removed(images: &[ImageSummary], pressure: bool) -> Vec<String> {
+        superseded(images, "ployz-build/web", pressure, NOW)
+            .into_iter()
+            .map(|tag| {
+                tag.trim_start_matches("ployz-build/web:ployz-sha256-")
+                    .to_owned()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn keeps_three_unused_and_removes_older_idle_ones() {
+        let images = [
+            image("running", Some(30), 1),
+            image("uncounted", Some(30), -1),
+            image("a", Some(1), 0),
+            image("b", Some(2), 0),
+            image("c", Some(3), 0),
+            image("recent", Some(4), 0),
+            image("old", Some(8), 0),
+            image("unknown", None, 0),
+        ];
+        assert_eq!(removed(&images, false), ["old"]);
+    }
+
+    #[test]
+    fn pressure_keeps_only_the_newest_unused() {
+        let images = [
+            image("running", Some(30), 1),
+            image("a", Some(1), 0),
+            image("b", Some(2), 0),
+            image("unknown", None, 0),
+        ];
+        assert_eq!(removed(&images, true), ["b", "unknown"]);
+    }
+
+    #[test]
+    fn ignores_other_repositories_and_tags() {
+        let mut other = image("x", Some(90), 0);
+        other.repo_tags = vec![
+            "ployz-build/web-api:ployz-sha256-x".into(),
+            "ployz-build/web:latest".into(),
+        ];
+        assert!(removed(&[other.clone(), other.clone(), other.clone(), other], true).is_empty());
+    }
+
+    #[test]
+    fn pressure_starts_below_a_fifth_free() {
+        let space = |free_bytes| {
+            Some(DiskSpace {
+                total_bytes: 100,
+                free_bytes,
+            })
+        };
+        assert!(under_pressure(space(19)));
+        assert!(!under_pressure(space(20)));
+        assert!(!under_pressure(None));
+    }
 
     #[test]
     fn docker_refusals_map_to_removal_outcomes() {

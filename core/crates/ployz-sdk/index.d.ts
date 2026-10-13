@@ -38,7 +38,6 @@ import type {
   MetricHistory,
   MetricHistoryInput,
   RequestMachineUpgradeRequest,
-  InspectMachineUpgradeRequest,
   ObservedDataLoss,
   LocalMachineRemoved,
   DataLossConfirmation,
@@ -62,63 +61,24 @@ import type {
 export * from "./generated/payloads";
 export type { CapabilityName } from "./generated/capabilities";
 import type {
-  CommitRequest,
   CopyObservation,
-  DeclareMirrorRequest,
-  HandOverRequest,
-  InspectReceiveRequest,
   InspectVolumeCopyRequest,
-  MirrorRequest,
-  ReceiveView,
   SeedVolumeRequest,
-  ServiceVolumeRequest,
-  SnapshotGuid,
-  SourceContainerRequest,
-  SwitchReply,
-  Switch,
+  SetVolumeCopyReply,
+  SetVolumeCopyRequest,
   VolumeCopyView,
-  WarmRequest,
 } from "./generated/payloads";
 
-/** StartReceive on a mirror: pull `target` from the writer Machine at management address `from`. */
-export type StartReceiveRequest = {
-  switch: Switch;
-  name: string;
-  from: string;
-  base: SnapshotGuid | null;
-  target: string;
-  resume_token: string | null;
-};
-
-/** One request `Client.volumeSwitch` sends: a Volume run verb and its payload. */
+/** One request `Client.volumeSwitch` sends: a Volume copy verb and its payload. */
 export type VolumeSwitchRequest =
   | { command: "inspect_volume_copy"; payload: InspectVolumeCopyRequest }
-  | { command: "declare_mirror"; payload: DeclareMirrorRequest }
-  | { command: "begin_round"; payload: MirrorRequest }
-  | { command: "commit_snapshots"; payload: CommitRequest }
-  | { command: "warm_snapshot"; payload: WarmRequest }
-  | { command: "start_receive"; payload: StartReceiveRequest }
-  | { command: "inspect_receive"; payload: InspectReceiveRequest }
-  | { command: "prune_mirror"; payload: MirrorRequest }
-  | { command: "destroy_mirror"; payload: MirrorRequest }
-  | { command: "forget_snapshots"; payload: MirrorRequest }
-  | { command: "forget_lease"; payload: MirrorRequest }
-  | { command: "demote_volume"; payload: MirrorRequest }
-  | { command: "withdraw"; payload: SourceContainerRequest }
-  | { command: "freeze"; payload: SourceContainerRequest }
-  | { command: "hand_over"; payload: HandOverRequest }
-  | { command: "thaw"; payload: SourceContainerRequest }
-  | { command: "close"; payload: MirrorRequest }
-  | { command: "accept_hand_off"; payload: HandOverRequest }
-  | { command: "promote"; payload: ServiceVolumeRequest }
-  | { command: "start_handed_container"; payload: ServiceVolumeRequest }
-  | { command: "clear_final"; payload: MirrorRequest }
-  | { command: "restore"; payload: ServiceVolumeRequest }
-  | { command: "seed_volume"; payload: SeedVolumeRequest };
+  | { command: "seed_volume"; payload: SeedVolumeRequest }
+  | { command: "set_volume_copy"; payload: SetVolumeCopyRequest };
 
-/** The reply payload of one Volume run verb. */
-export type VolumeSwitchReply<C extends VolumeSwitchRequest["command"]> =
-  C extends "inspect_volume_copy" ? VolumeCopyView : C extends "inspect_receive" ? ReceiveView : SwitchReply;
+/** The reply payload of one Volume copy verb. */
+export type VolumeSwitchReply<C extends VolumeSwitchRequest["command"]> = C extends "set_volume_copy"
+  ? SetVolumeCopyReply
+  : VolumeCopyView;
 
 /** Same serialized descriptors as CLI contexts. Backend only: Management is an admin capability. */
 export type Connection = (
@@ -366,6 +326,11 @@ export declare class Client {
   /** Stop one Container. A rejection with `unavailable` means the stop may have happened. */
   stopContainer(machine: string, container: string): Promise<void>;
   /**
+   * Remove one stopped Container, keeping its Volumes. A Container the Machine no longer
+   * has resolves too, so a retry after a crash converges.
+   */
+  removeContainer(machine: string, container: string): Promise<void>;
+  /**
    * Start one Container and wait for it the way a Deploy does: `serving` once it serves,
    * `unconfirmed` when it started but wasn't seen serving in time, `unhealthy` when it
    * failed its healthcheck or didn't pass it before its deadline.
@@ -381,21 +346,17 @@ export declare class Client {
   /**
    * Send one Volume switch request to one Machine and answer its reply payload. Only the Volume
    * run verbs are accepted; any other command rejects `invalid_argument`. Not retried. A fence
-   * refusal rejects with an `RpcError` whose `details` is a `SwitchError`.
+   * refusal rejects with an `RpcError` whose `details` is a `SwitchError`; a `set_volume_copy`
+   * refusal rejects with one whose `details` is a `SetVolumeCopyRefused`.
    */
   volumeSwitch<R extends VolumeSwitchRequest>(
     machine: MachineTarget,
     request: R,
   ): Promise<VolumeSwitchReply<R["command"]>>;
-  /** Ask one Machine to Upgrade. Repeating the request with the same attempt ID returns that attempt. */
+  /** Ask one Machine to Upgrade. Repeating the request with the same attempt ID returns that attempt, so resending it is the poll. Its daemon restarts during the Upgrade, so a caller polling for the outcome keeps polling through `unavailable`. */
   requestMachineUpgrade(
     machine: MachineTarget,
     request: RequestMachineUpgradeRequest,
-  ): Promise<MachineUpgradeAttempt>;
-  /** Read one Machine's Upgrade attempt. Its daemon restarts during the Upgrade, so a caller polling for the outcome keeps polling through `unavailable`. */
-  inspectMachineUpgrade(
-    machine: MachineTarget,
-    request: InspectMachineUpgradeRequest,
   ): Promise<MachineUpgradeAttempt>;
   dataLossIfNamespaceDestroyed(
     namespace: Namespace,
@@ -486,10 +447,10 @@ export interface ConfigStore {
   githubCheckIn(build: string, claims: GithubClaims, connections: Connection[]): Promise<GithubCheckIn>;
   /** The steps route only: take a runner's report (`{from, events, platforms?, installFailed?}`). */
   githubReport(build: string, claims: GithubClaims, report: unknown): Promise<{ received: number; ended: boolean }>;
-  /** Cloud only: end a build whose run reported its end, completed or timed out: end its grant, write its receipt. */
+  /** Cloud only: end a build whose run reported its end, completed or timed out: read its grant, write its receipt. */
   githubFinish(build: string, timedOut: boolean, connections: Connection[]): Promise<GithubFinish>;
-  /** Cloud only: end the grants of a Deployment's builds still on GitHub and fail them; cancel the returned runs. */
-  githubCancel(deployment: string, connections: Connection[]): Promise<GithubBuild[]>;
+  /** Cloud only: fail a Deployment's builds still on GitHub; cancel the returned runs. Their grants expire by themselves. */
+  githubCancel(deployment: string): Promise<GithubBuild[]>;
 }
 export type GithubStart = { kind: "reused" } | { kind: "dispatch"; runner: string } | { kind: "skipped"; message: string };
 export type GithubCheckIn = { grant: string; commit: string; fingerprint: string; ployzVersion: string; deployment: PreparationInput["deployment"] };

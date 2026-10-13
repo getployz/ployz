@@ -81,6 +81,8 @@ async fn real_catch_up_client_retries_readiness_and_placement_to_their_budget() 
                                         },
                                     ),
                                     storage: None,
+                                    upgrade: None,
+                                    token: None,
                                 })
                             }
                             RpcRequestBody::ListContainers(_) => {
@@ -210,6 +212,8 @@ async fn catch_up_uses_primitives_and_never_replaces_a_key_conflict_or_unknown_s
                                     ),
                                 }),
                                 storage: None,
+                                upgrade: None,
+                                token: None,
                             })
                         }
                         RpcRequestBody::CreateContainer(create) => {
@@ -410,9 +414,11 @@ async fn top_level_catch_up_uses_fresh_target_eligibility_and_reuses_hidden_full
                             rtts: Vec::new(),
                             management_clients: Vec::new(),
                             storage: None,
+                            upgrade: None,
                             telemetry: Some(TelemetryObservation::BridgeCapacity {
                                 bridge: BridgeEndpointCapacity::new(1, 1),
                             }),
+                            token: None,
                         }),
                         RpcRequestBody::StartContainer(start) => {
                             assert!(eligible);
@@ -525,9 +531,11 @@ async fn provisioned_globals_use_target_storage_and_report_unknown() {
                             rtts: Vec::new(),
                             management_clients: Vec::new(),
                             storage,
+                            upgrade: None,
                             telemetry: Some(ployz_core::TelemetryObservation::BridgeCapacity {
                                 bridge: BridgeEndpointCapacity::new(10, 0),
                             }),
+                            token: None,
                         }),
                         RpcRequestBody::ListContainers(_) => RpcResponse::from(ContainerList {
                             containers: Vec::new(),

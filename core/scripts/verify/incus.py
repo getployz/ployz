@@ -9,6 +9,8 @@ import releases
 import sys
 import time
 
+DEFAULT_SIZES = dict(memory="2GiB", disk="24GiB")
+
 
 class Provider:
     def __init__(self, run, commands, core):
@@ -17,6 +19,8 @@ class Provider:
         self.bridge = "pv" + run["id"]
         self.pool = (run["provider_state"].setdefault("storage_pool", os.environ.get("PLOYZ_VERIFY_INCUS_POOL", "ployz-verify"))
                      if "provider_state" in run else "ployz-verify")
+        state = run.get("provider_state", {})
+        self.sizes = {resource: state.setdefault(resource, default) for resource, default in DEFAULT_SIZES.items()}
         self.prefix = ([] if os.geteuid() == 0 else ["sudo", "-n"]) + ["incus", "--force-local", "--quiet"]
 
     def incus(self, *args, project=None, **kwargs):
@@ -42,7 +46,8 @@ class Provider:
 
     def start(self, node):
         self.incus("launch", self.run["image"], node["name"], "--vm", "--no-profiles", "-n", self.bridge,
-                   "-s", self.pool, "-d", "root,size=24GiB", "-c", "limits.cpu=2", "-c", "limits.memory=2GiB",
+                   "-s", self.pool, "-d", "root,size=" + self.sizes["disk"], "-c", "limits.cpu=2",
+                   "-c", "limits.memory=" + self.sizes["memory"],
                    "-c", "security.secureboot=false")
         self.wait_agent(node)
 

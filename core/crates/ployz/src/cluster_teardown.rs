@@ -1,12 +1,12 @@
 use ployz_core::{
     ClusterTeardown, DataLoss, DataLossConfirmation, DescribeContractRequest, MachineFailure,
-    MachineSuccess, ObservedDataLoss, PartialResult, RemoveMachineRequest, RpcError,
-    UnconfirmedDataLoss, derive_namespaces, op,
+    MachineSuccess, ObservedDataLoss, PartialResult, RpcError, UnconfirmedDataLoss,
+    derive_namespaces, op,
 };
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    cluster::{Client, evict_machine},
+    cluster::{Client, evict_machine, forget},
     deploy::{DeploySnapshot, VolumeFate},
     ui::Gaps,
 };
@@ -161,9 +161,9 @@ impl Client {
                     return Err(error);
                 }
                 Err(error) => {
-                    let _ = self
-                        .call::<op::RemoveMachine>(RemoveMachineRequest { machine_id }, None)
-                        .await;
+                    if machine_id != current {
+                        let _ = forget(self, machine_id).await;
+                    }
                     result.failures.push(MachineFailure { machine_id, error });
                 }
             }

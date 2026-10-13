@@ -1,6 +1,21 @@
 import "@tanstack/react-start/server-only";
-import type { ContainerId, CopyObservation, DestructiveEffect, EnvironmentRef, MachineId, MachineName, SwitchError, VolumeSwitchReply, VolumeSwitchRequest } from "@ployz/sdk";
-import { and, desc, eq, inArray, isNotNull, isNull, lt, max, sql } from "drizzle-orm";
+import type {
+  ContainerId,
+  CopyObservation,
+  CopyRefusal,
+  DestructiveEffect,
+  EnvironmentRef,
+  ExpectedCopy,
+  MachineId,
+  MachineName,
+  SnapshotGuid,
+  SwitchError,
+  VolumeCopy,
+  VolumeSwitchReply,
+  VolumeSwitchRequest,
+  WantedCopy,
+} from "@ployz/sdk";
+import { and, desc, eq, inArray, isNull, lt, max, sql } from "drizzle-orm";
 import { Effect, Option, Schema } from "effect";
 import { NonRetriableError } from "inngest";
 import type { OperationAsked } from "#/modules/approvals/approvals.server";
@@ -15,7 +30,7 @@ import { organizationMachine } from "#/modules/machines/tables";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { type Requirement, requirementFor, requirements } from "#/modules/runtime/daemon-compat";
 import { observeVolumeCopies, type PloyzSdkError, sdkFailureMessage } from "#/modules/runtime/ployz.server";
-import { type Planned, planFromCopies, type Refusal, type RefusalCode } from "#/modules/volume-run/plan";
+import { alreadyOn, newestGuid, type Planned, planFromCopies, type Refusal, type RefusalCode } from "#/modules/volume-run/plan";
 import { isBehind, isCurrent, releaseLine } from "#/modules/server-upgrade/server-upgrade";
 import { channelRelease, organizationReleaseChannel } from "#/modules/server-upgrade/server-upgrade.server";
 import { volumeRun } from "#/modules/volume-run/tables";
@@ -73,7 +88,7 @@ export function volumeRunView(row: VolumeRunRow): VolumeRunView {
     args: row.args,
     orphan: row.orphan,
     state: row.state,
-    lease: row.lease,
+    epoch: row.epoch,
     message: row.message,
     created_at: row.createdAt.toISOString(),
     updated_at: row.updatedAt.toISOString(),
@@ -163,8 +178,6 @@ const refusalCode = {
   no_writer: "conflict",
   two_writers: "conflict",
   volume_switching: "conflict",
-  handed: "conflict",
-  stale_slot: "conflict",
   second_mirror: "conflict",
   no_mirror: "conflict",
   no_copy: "conflict",
@@ -179,16 +192,26 @@ const deletesCopy = (volume: ResolvedVolume, member: AnsweredMember): Destructiv
   path: `volumes/${member.machine.id}/${volume.dockerVolume}`,
 });
 
-/** The copies a phase deletes with no other copy left: a Mirror Remove with no writer, or a Release that discards the handed copy. */
-function phaseEffects(volume: ResolvedVolume, phase: PlannedPhase): DestructiveEffect[] {
+/**
+ * The copies a phase deletes with no other copy left: a Mirror Remove with no writer, or a Release that undoes a cut
+ * and discards the copy its target pulled. `source` is the slot that keeps the cut's stopped Container.
+ */
+function phaseEffects(volume: ResolvedVolume, phase: PlannedPhase, source: MachineId | null): DestructiveEffect[] {
   switch (phase.kind) {
     case "delete_mirror":
       return phase.forget === null ? phase.destroy.map((member) => deletesCopy(volume, member)) : [];
-    case "release":
-      return phase.thaw && phase.mirror !== null ? [deletesCopy(volume, phase.mirror)] : [];
+    case "release": {
+      const { from } = phase;
+      if (from.kind !== "slots") return [];
+      const kept = from.slots.find((member) => member.machine.id === source);
+      if (kept === undefined) return [];
+      const at = newestGuid(kept.view.copy);
+      return from.slots.filter((member) => member !== kept && newestGuid(member.view.copy) === at).map((member) => deletesCopy(volume, member));
+    }
     case "mirror":
     case "sync":
     case "move":
+    case "landed":
     case "restore":
     case "demote":
     case "seed":
@@ -229,12 +252,22 @@ export const planVolumeRun = Effect.fn("VolumeRun.plan")(function* (
   }
   const planned = planFromCopies({ ...input, volumeName: volume.volumeName, orphan: false }, members.value);
   if (!planned.ok) {
-    const { code, message, to } = planned.refusal;
-    const details = to === undefined ? null : { move_to: to };
-    return { ok: false, refusal: { code: refusalCode[code], message, details } } satisfies VolumeRunPlan;
+    const { code, message } = planned.refusal;
+    return { ok: false, refusal: { code: refusalCode[code], message, details: null } } satisfies VolumeRunPlan;
   }
   const verb = VERBS[input.kind];
-  const effects = phaseEffects(volume, planned.phase);
+  const { phase } = planned;
+  if (phase.kind === "landed") {
+    const source = yield* keptOn(organizationId, volume.dockerVolume, phase.behind.map((member) => member.machine)).pipe(Effect.orElseSucceed(() => null));
+    if (source === null) {
+      const { code, message } = alreadyOn(volume.volumeName, phase.target.machine.name);
+      return { ok: false, refusal: { code: refusalCode[code], message, details: null } } satisfies VolumeRunPlan;
+    }
+  }
+  const source = phase.kind === "release" && phase.from.kind === "slots"
+    ? yield* keptOn(organizationId, volume.dockerVolume, phase.from.slots.map((member) => member.machine)).pipe(Effect.orElseSucceed(() => null))
+    : null;
+  const effects = phaseEffects(volume, phase, source?.machine.id ?? null);
   const asked: OperationAsked | null = verb === null ? null : {
     subject: `volume:${input.volumeId}`,
     verb,
@@ -383,36 +416,44 @@ const openSession = Effect.fn("VolumeRun.openSession")(function* (organizationId
   return session.connected;
 });
 
-const SwitchErrorDetails = Schema.Struct({
-  details: Schema.Struct({
-    reason: Schema.Literals(["stale_lease", "stale_step", "precondition", "busy", "volume_switching", "no_writer", "no_capacity", "restore_point_gone"]),
-  }),
-});
+/** The reasons SeedVolume and the copy verbs may refuse with. */
+export type SwitchReason = CopyRefusal | SwitchError["reason"];
+
+const SWITCH_REASONS = [
+  "mismatch", "no_transition", "busy", "no_capacity", "behind", "written", "no_source",
+  "precondition", "volume_switching", "no_writer", "restore_point_gone",
+] as const satisfies readonly SwitchReason[];
+
+const SwitchErrorDetails = Schema.Struct({ details: Schema.Struct({ reason: Schema.Literals(SWITCH_REASONS) }) });
 const decodeSwitchError = Schema.decodeUnknownOption(SwitchErrorDetails);
 
-export function switchErrorOf(error: PloyzSdkError): SwitchError["reason"] | null {
+export function switchErrorOf(error: PloyzSdkError): SwitchReason | null {
   const decoded = decodeSwitchError("cause" in error ? error.cause : undefined);
   return Option.isSome(decoded) ? decoded.value.details.reason : null;
 }
 
-export type SwitchMessages = Partial<Record<SwitchError["reason"], string>>;
+const CopyRefusedDetails = Schema.Struct({
+  details: Schema.Struct({
+    reason: Schema.Literals(["mismatch", "no_transition", "busy", "no_capacity", "behind", "written", "no_source"]),
+    copy: Schema.NullOr(Schema.Unknown),
+  }),
+});
+const decodeCopyRefused = Schema.decodeUnknownOption(CopyRefusedDetails);
 
-export function switchFailureMessage(
-  reason: SwitchError["reason"],
-  ctx: Pick<RunContext, "volumeName">,
-  machine: MachineRef,
-  overrides: SwitchMessages = {},
-): string | undefined {
+export function switchFailureMessage(reason: SwitchReason, ctx: Pick<RunContext, "volumeName">, machine: MachineRef): string | undefined {
   const name = ctx.volumeName;
-  const override = overrides[reason];
-  if (override !== undefined) return override;
   switch (reason) {
-    case "stale_lease":
-      return `a newer run took ${name}'s lease; this run stopped`;
-    case "stale_step":
-      return `${name}'s lease moved past this step`;
+    case "mismatch":
     case "precondition":
       return `${name}'s copy on ${machine.name} changed under this run`;
+    case "no_transition":
+      return `${name}'s copy on ${machine.name} can't get there from where it is`;
+    case "behind":
+      return `${name}'s copy on ${machine.name} lacks the snapshot this run needs`;
+    case "written":
+      return `${name} on ${machine.name} was written after its final snapshot`;
+    case "no_source":
+      return `${name}'s mirror on ${machine.name} has no Server to pull from`;
     case "volume_switching":
       return `${name} is mid-run; wait or volume release ${name}`;
     case "no_writer":
@@ -426,26 +467,18 @@ export function switchFailureMessage(
   }
 }
 
-/** A failed attempt the step may retry; `reason` is the Machine's SwitchError, if it gave one. */
+/** A failed attempt the step may retry; `reason` is the Machine's refusal, if it gave one. */
 export class SwitchAttemptError extends Error {
-  constructor(readonly reason: SwitchError["reason"] | null, message: string) {
+  constructor(readonly reason: SwitchReason | null, message: string) {
     super(message);
   }
 }
 
-/**
- * With `throw` a refusal fails only the step, so a Move can thaw its source or add its next command before it records
- * the failure. A newer lease or a later step still ends the run, since nothing of this run may follow it.
- */
-export type SwitchOptions = { readonly messages?: SwitchMessages; readonly onRefusal?: "fail" | "throw" };
+/** The verbs a run still sends through `sendSwitch`: SeedVolume and the reads. */
+type SwitchRequest = Extract<VolumeSwitchRequest, { command: "seed_volume" | "inspect_volume_copy" }>;
 
-export const sendSwitch = <R extends VolumeSwitchRequest>(
-  ctx: RunContext,
-  inngestRunId: string,
-  machine: MachineRef,
-  request: R,
-  options: SwitchOptions = {},
-) => {
+/** A refusal with a message ends the run; Busy and transport failures fail only the attempt, so the step retries. */
+export const sendSwitch = <R extends SwitchRequest>(ctx: RunContext, inngestRunId: string, machine: MachineRef, request: R) => {
   // SAFETY: a Machine answers each Volume Switch verb with that verb's reply; the session types the pair loosely.
   return Effect.gen(function* () {
     yield* requireOwner(ctx.id, inngestRunId);
@@ -453,60 +486,105 @@ export const sendSwitch = <R extends VolumeSwitchRequest>(
     return yield* session.volumeSwitch(machine.id, request).pipe(
       Effect.catch((error): Effect.Effect<never, Error, Database> => {
         const reason = switchErrorOf(error);
-        const message = reason === null ? undefined : switchFailureMessage(reason, ctx, machine, options.messages);
-        if (message !== undefined) {
-          const thrown = options.onRefusal === "throw" && reason !== "stale_lease" && reason !== "stale_step";
-          return thrown ? Effect.fail(new NonRetriableError(clip(message))) : failRun(ctx, inngestRunId, message);
-        }
+        const message = reason === null ? undefined : switchFailureMessage(reason, ctx, machine);
+        if (message !== undefined) return failRun(ctx, inngestRunId, message);
         return Effect.fail(new SwitchAttemptError(reason, `${request.command} on ${machine.name}: ${sdkFailureMessage(error, [machine])}`));
       }),
     );
   }).pipe(Effect.scoped) as Effect.Effect<VolumeSwitchReply<R["command"]>, Error, Database | OrganizationRuntime>;
 };
 
-export type Holder = ServiceSpec & { readonly containerId: ContainerId };
+/** Plain JSON, since a step returns it: the copy the Machine holds now, after the step or after its refusal. */
+export type CopyAnswer =
+  | { readonly ok: true; readonly copy: VolumeCopy | null }
+  | { readonly ok: false; readonly reason: CopyRefusal; readonly copy: VolumeCopy | null; readonly message: string };
 
-/** The one Service container on the writer that mounts this Volume: Freeze stops it, Thaw restarts it, and Start rebuilds it on the target. */
-export const findHolder = Effect.fn("VolumeRun.findHolder")(function* (ctx: RunContext, inngestRunId: string, writer: MachineRef) {
+/**
+ * One SetVolumeCopy. A refusal is an answer, since the run decides what follows it; only a failure to ask fails the
+ * attempt, so the step retries.
+ */
+export const setVolumeCopy = Effect.fn("VolumeRun.setVolumeCopy")(function* (
+  ctx: RunContext,
+  inngestRunId: string,
+  machine: MachineRef,
+  expect: ExpectedCopy,
+  want: WantedCopy,
+) {
   yield* requireOwner(ctx.id, inngestRunId);
   const session = yield* openSession(ctx.organizationId);
+  return yield* session.volumeSwitch(machine.id, { command: "set_volume_copy", payload: { name: ctx.dockerVolume, expect, want } }).pipe(
+    Effect.map((reply): CopyAnswer => ({ ok: true, copy: reply.copy })),
+    Effect.catch((error) => {
+      const refused = decodeCopyRefused("cause" in error ? error.cause : undefined);
+      if (Option.isNone(refused)) {
+        return Effect.fail(new SwitchAttemptError(null, `set_volume_copy on ${machine.name}: ${sdkFailureMessage(error, [machine])}`));
+      }
+      const { reason } = refused.value.details;
+      // SAFETY: the Machine sends the copy it holds, as the SDK's VolumeCopy.
+      const copy = refused.value.details.copy as VolumeCopy | null;
+      const message = switchFailureMessage(reason, ctx, machine) ?? `${machine.name} is busy with ${ctx.volumeName}`;
+      return Effect.succeed<CopyAnswer>({ ok: false, reason, copy, message });
+    }),
+  );
+}, Effect.scoped);
+
+export const inspectCopy = (ctx: RunContext, inngestRunId: string, machine: MachineRef) =>
+  sendSwitch(ctx, inngestRunId, machine, { command: "inspect_volume_copy", payload: { name: ctx.dockerVolume } }).pipe(
+    Effect.map((view) => view.copy),
+  );
+
+export type Holder = ServiceSpec & { readonly containerId: ContainerId };
+
+/** Drain::DEFAULT: how long the cut lets requests in flight finish once the Container is out of ingress. */
+export const DRAIN_MS = 3_000;
+
+const serviceContainers = Effect.fn("VolumeRun.serviceContainers")(function* (organizationId: string, dockerVolume: string) {
+  const session = yield* openSession(organizationId);
   const frame = yield* session.watchFirstFrame(5_000);
-  const holders = frame.containers.filter((container) =>
-    container.machine_id === writer.id
-    && container.kind === "service_container"
-    && container.resolved_spec.volumes.some(({ source }) => source.kind === "provisioned" && source.name === ctx.dockerVolume));
+  return frame.containers.filter((container) =>
+    container.kind === "service_container"
+    && container.resolved_spec.volumes.some(({ source }) => source.kind === "provisioned" && source.name === dockerVolume));
+}, Effect.scoped);
+
+/** The one Service container on `machine` that mounts this Volume: the cut stops it, an undo starts it, and B's start copies its spec. */
+export const findHolder = Effect.fn("VolumeRun.findHolder")(function* (ctx: RunContext, inngestRunId: string, machine: MachineRef) {
+  yield* requireOwner(ctx.id, inngestRunId);
+  const holders = (yield* serviceContainers(ctx.organizationId, ctx.dockerVolume)).filter((container) => container.machine_id === machine.id);
   const [holder] = holders;
   if (holder === undefined || holders.length > 1) {
     const found = holders.length === 0 ? "no Service container" : `${holders.length} Service containers`;
-    return { ok: false, refusal: { code: "invalid", message: `${ctx.volumeName} has ${found} on ${writer.name}; a move needs exactly one` } } as const;
+    return { ok: false, refusal: { code: "invalid", message: `${ctx.volumeName} has ${found} on ${machine.name}; a move needs exactly one` } } as const;
   }
-  return { ok: true, holder: { containerId: holder.container_id, namespace: holder.namespace, redactedSpec: holder.resolved_spec } } as const;
-}, Effect.scoped);
+  const holderOf: Holder = {
+    containerId: holder.container_id,
+    namespace: holder.namespace,
+    redactedSpec: holder.resolved_spec,
+  };
+  return { ok: true, holder: holderOf } as const;
+});
 
-/** Restore registers the Volume with the spec of the newest Service container that mounts it, stopped ones included. */
-export const findSpec = Effect.fn("VolumeRun.findSpec")(function* (ctx: RunContext, inngestRunId: string) {
+/** Whether B already runs the Service, so a resent start can't be what makes it run. */
+export const runningOn = Effect.fn("VolumeRun.runningOn")(function* (ctx: RunContext, inngestRunId: string, machine: MachineRef) {
   yield* requireOwner(ctx.id, inngestRunId);
-  const session = yield* openSession(ctx.organizationId);
-  const frame = yield* session.watchFirstFrame(5_000);
-  const newest = frame.containers
-    .filter((container) =>
-      container.kind === "service_container"
-      && container.resolved_spec.volumes.some(({ source }) => source.kind === "provisioned" && source.name === ctx.dockerVolume))
-    .reduce<(typeof frame.containers)[number] | undefined>(
-      (found, container) => found === undefined || container.created_at_unix_nanos > found.created_at_unix_nanos ? container : found,
-      undefined,
-    );
-  if (newest !== undefined) return { ok: true, spec: { namespace: newest.namespace, redactedSpec: newest.resolved_spec } satisfies ServiceSpec } as const;
-  const { drizzle } = yield* Database;
-  const [kept] = yield* drizzle.select({ spec: volumeRun.serviceSpec }).from(volumeRun)
-    .where(and(eq(volumeRun.volumeId, ctx.volumeId), isNotNull(volumeRun.serviceSpec)))
-    .orderBy(desc(volumeRun.createdAt))
-    .limit(1);
-  if (kept?.spec === null || kept?.spec === undefined) {
-    return { ok: false, refusal: { code: "invalid", message: `no Service container mounts ${ctx.volumeName}, and no earlier run saw one; Restore takes its spec from one` } } as const;
-  }
-  return { ok: true, spec: kept.spec } as const;
-}, Effect.scoped);
+  return (yield* serviceContainers(ctx.organizationId, ctx.dockerVolume))
+    .some((container) => container.machine_id === machine.id && container.runtime.state === "running");
+});
+
+export type Kept = { readonly machine: MachineRef; readonly containerId: ContainerId };
+
+/** With only slots left, the cut's source is the one of them that keeps a Service container for this Volume. */
+export const keptOn = Effect.fn("VolumeRun.keptOn")(function* (organizationId: string, dockerVolume: string, machines: readonly MachineRef[]) {
+  const kept = (yield* serviceContainers(organizationId, dockerVolume)).flatMap((container) => {
+    const machine = machines.find((candidate) => candidate.id === container.machine_id);
+    return machine === undefined ? [] : [{ machine, containerId: container.container_id } satisfies Kept];
+  });
+  return kept.length === 1 ? kept[0] ?? null : null;
+});
+
+export const findKept = Effect.fn("VolumeRun.findKept")(function* (ctx: RunContext, inngestRunId: string, machines: readonly MachineRef[]) {
+  yield* requireOwner(ctx.id, inngestRunId);
+  return yield* keptOn(ctx.organizationId, ctx.dockerVolume, machines);
+});
 
 export const copyImage = Effect.fn("VolumeRun.copyImage")(function* (ctx: RunContext, inngestRunId: string, from: MachineRef, holder: Holder, to: MachineRef) {
   yield* requireOwner(ctx.id, inngestRunId);
@@ -516,31 +594,44 @@ export const copyImage = Effect.fn("VolumeRun.copyImage")(function* (ctx: RunCon
   );
 }, Effect.scoped);
 
-type StartHanded = Extract<VolumeSwitchRequest, { command: "start_handed_container" }>;
+/** Keyed on the Volume and G, so a resend after a crash finds the Container the first send made. */
+export const creationKey = (ctx: Pick<RunContext, "volumeId">, at: SnapshotGuid) => `${ctx.volumeId}-${at}`;
 
-export const startHanded = Effect.fn("VolumeRun.startHanded")(function* (
+/**
+ * B becomes the writer at G and creates the Service from A's stopped Container. The spec is read and sent inside one
+ * step, so it never lands in a step result.
+ */
+export const startOnTarget = Effect.fn("VolumeRun.startOnTarget")(function* (
   ctx: RunContext,
   inngestRunId: string,
-  from: MachineRef,
-  holder: Holder,
-  to: MachineRef,
-  stamp: StartHanded["payload"]["switch"],
+  move: { readonly from: MachineRef; readonly holder: Holder; readonly to: MachineRef; readonly expect: ExpectedCopy; readonly at: SnapshotGuid; readonly epoch: number },
 ) {
   yield* requireOwner(ctx.id, inngestRunId);
+  const { from, holder, to } = move;
   const session = yield* openSession(ctx.organizationId);
   const { container } = yield* session.inspectContainer(from.id, holder.containerId).pipe(
     Effect.mapError((error) => new Error(`reading ${holder.redactedSpec.name}'s spec on ${from.name}: ${sdkFailureMessage(error, [from])}`)),
   );
   const spec = container.resolved_spec;
-  yield* sendSwitch(ctx, inngestRunId, to, {
-    command: "start_handed_container",
-    payload: {
-      switch: stamp,
-      name: ctx.dockerVolume,
+  return yield* setVolumeCopy(ctx, inngestRunId, to, move.expect, {
+    kind: "writer",
+    at: move.at,
+    epoch: move.epoch,
+    start: {
+      kind: "create",
       namespace: holder.namespace,
       resolved_spec: { ...spec, container: { ...spec.container, pull_policy: "never" } },
+      creation_key: creationKey(ctx, move.at),
     },
-  } satisfies StartHanded, { onRefusal: "throw" });
+  });
+}, Effect.scoped);
+
+export const removeContainer = Effect.fn("VolumeRun.removeContainer")(function* (ctx: RunContext, inngestRunId: string, machine: MachineRef, containerId: ContainerId) {
+  yield* requireOwner(ctx.id, inngestRunId);
+  const session = yield* openSession(ctx.organizationId);
+  yield* session.removeContainer(machine.id, containerId).pipe(
+    Effect.mapError((error) => new Error(`removing ${ctx.volumeName}'s old Container on ${machine.name}: ${sdkFailureMessage(error, [machine])}`)),
+  );
 }, Effect.scoped);
 
 /** Each managed Server's copy of `dockerVolume`; a Server that doesn't answer in time is a member that didn't answer. */
@@ -593,25 +684,22 @@ export const observeMembers = Effect.fn("VolumeRun.observe")(function* (ctx: Run
   return yield* observeVolumeMembers(ctx.organizationId, ctx.dockerVolume, ctx.kind);
 });
 
-/** Above every lease this Volume's runs took and every record its participants hold, so a Cloud database reset can't reuse one. */
-export const takeLease = Effect.fn("VolumeRun.lease")(function* (
-  ctx: RunContext,
-  inngestRunId: string,
-  participants: readonly AnsweredMember[],
-  spec: ServiceSpec | null,
-) {
+/**
+ * The epoch the run gives a new writer: above every epoch the Machines show and every epoch this Volume's runs took,
+ * so neither a Cloud database reset nor a Machine reset can reuse one. Taken once; a replay reads it back.
+ */
+export const takeEpoch = Effect.fn("VolumeRun.epoch")(function* (ctx: RunContext, inngestRunId: string, observed: number) {
   yield* requireOwner(ctx.id, inngestRunId);
   const { drizzle } = yield* Database;
-  const held = Math.max(0, ...participants.map((member) => member.view.lease?.lease ?? 0));
-  const [recorded] = yield* drizzle.select({ lease: max(volumeRun.lease) }).from(volumeRun)
+  const [recorded] = yield* drizzle.select({ epoch: max(volumeRun.epoch) }).from(volumeRun)
     .where(and(eq(volumeRun.volumeId, ctx.volumeId), sql`${volumeRun.id} <> ${ctx.id}`));
   yield* drizzle.update(volumeRun)
-    .set({ lease: Math.max(held, recorded?.lease ?? 0) + 1, serviceSpec: spec ?? undefined, updatedAt: new Date() })
-    .where(and(eq(volumeRun.id, ctx.id), isNull(volumeRun.lease)));
+    .set({ epoch: Math.max(observed, recorded?.epoch ?? 0) + 1, updatedAt: new Date() })
+    .where(and(eq(volumeRun.id, ctx.id), isNull(volumeRun.epoch)));
   const row = yield* readRow(ctx.id);
-  const lease = row?.lease;
-  if (lease === null || lease === undefined) return yield* Effect.fail(new Error(`Volume run ${ctx.id} has no lease.`));
-  return { lease };
+  const epoch = row?.epoch;
+  if (epoch === null || epoch === undefined) return yield* Effect.fail(new Error(`Volume run ${ctx.id} has no epoch.`));
+  return { epoch };
 });
 
 const CLOSED_BY = {

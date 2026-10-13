@@ -810,15 +810,6 @@ pub struct JoinedChain {
 }
 
 impl JoinedChain {
-    pub(crate) fn new(first: &(dyn Error + 'static), then: &(dyn Error + 'static)) -> Self {
-        let mut lines = Vec::new();
-        for error in [first, then] {
-            lines.push(error.to_string());
-            lines.extend(ui::causes(error));
-        }
-        Self::of(lines).expect("each error gives a line")
-    }
-
     /// A chain of `lines`, outermost first; `None` when there are none.
     pub(crate) fn of(lines: Vec<String>) -> Option<Self> {
         lines.into_iter().rev().fold(None, |next, line| {

@@ -20,16 +20,14 @@ use tokio::net::UnixListener;
 use tower_service::Service;
 
 mod capacity;
-mod container_step;
+mod copy;
 mod departure;
-mod lease;
+mod inspect;
 mod mirror;
 mod pool;
 mod removal;
 mod seed;
 mod storage;
-mod switch_source;
-mod switch_target;
 mod transfer;
 
 use storage::{
@@ -171,45 +169,15 @@ async fn serve(listener: UnixListener, storage: VolumeStorage) -> io::Result<()>
         .route("/Storage.Inspect", post(capacity::inspect))
         .route("/Storage.Prepare", post(capacity::prepare))
         .route("/Storage.Demote", post(departure::demote))
-        .route("/Volume.Inspect", post(lease::inspect))
-        .route("/Volume.Withdraw", post(switch_source::withdraw))
-        .route(
-            "/Volume.MarkContainerStopping",
-            post(switch_source::mark_stopping),
-        )
-        .route("/Volume.Freeze", post(switch_source::freeze))
-        .route("/Volume.HandOver", post(switch_source::hand_over))
-        .route("/Volume.Thaw", post(switch_source::thaw))
-        .route("/Volume.Close", post(switch_source::close))
-        .route(
-            "/Volume.AcceptHandOff",
-            post(switch_target::accept_hand_off),
-        )
-        .route("/Volume.ClearFinal", post(switch_target::clear_final))
-        .route("/Volume.Promote", post(switch_target::promote))
-        .route("/Volume.FinishPromote", post(switch_target::finish_promote))
-        .route("/Volume.Unregister", post(switch_target::unregister))
-        .route(
-            "/Volume.AdmitHandedStart",
-            post(switch_target::admit_handed_start),
-        )
-        .route(
-            "/Volume.StartHandedContainer",
-            post(switch_target::start_handed_container),
-        )
-        .route("/Volume.Restore", post(switch_target::restore))
+        .route("/Volume.Inspect", post(inspect::inspect))
         .route("/Volume.Seed", post(seed::seed_volume))
-        .route("/Volume.DeclareMirror", post(mirror::declare))
-        .route("/Volume.BeginRound", post(mirror::begin_round))
-        .route("/Volume.CommitSnapshots", post(mirror::commit))
-        .route("/Volume.WarmSnapshot", post(mirror::warm))
-        .route("/Volume.StartReceive", post(transfer::start_receive))
-        .route("/Volume.InspectReceive", post(transfer::inspect_receive))
-        .route("/Volume.PruneMirror", post(mirror::prune))
-        .route("/Volume.DestroyMirror", post(mirror::destroy))
-        .route("/Volume.ForgetSnapshots", post(mirror::forget))
-        .route("/Volume.ForgetLease", post(mirror::forget_lease))
-        .route("/Volume.Demote", post(departure::demote_volume))
+        .route("/Volume.Copy.Inspect", post(copy::inspect))
+        .route("/Volume.Copy.Cut", post(copy::cut))
+        .route("/Volume.Copy.Snapshot", post(copy::snapshot))
+        .route("/Volume.Copy.Forget", post(copy::forget))
+        .route("/Volume.Copy.Writer", post(copy::writer))
+        .route("/Volume.Copy.Pull", post(copy::pull))
+        .route("/Volume.Copy.Destroy", post(copy::destroy))
         .route("/VolumeDriver.Create", post(create))
         .route("/VolumeDriver.Remove", post(removal::remove))
         .route("/VolumeDriver.Get", post(removal::get))
@@ -366,6 +334,24 @@ mod tests {
         }
     }
 
+    fn commands(test: &TestDir) -> String {
+        fs::read_to_string(test.0.join("commands")).unwrap_or_default()
+    }
+
+    fn property(test: &TestDir, dataset: &str, property: &str) -> Option<String> {
+        fs::read_to_string(test.0.join("props").join(dataset).join(property))
+            .ok()
+            .map(|value| value.trim_end().to_owned())
+    }
+
+    fn snapshot_names(test: &TestDir, dataset: &str) -> Vec<String> {
+        property(test, dataset, "snapshots")
+            .unwrap_or_default()
+            .lines()
+            .map(|line| line.split(['@', '\t']).nth(1).unwrap().to_owned())
+            .collect()
+    }
+
     #[path = "remove_tests.rs"]
     mod remove_tests;
 
@@ -381,8 +367,8 @@ mod tests {
     #[path = "dataset_safety_tests.rs"]
     mod dataset_safety_tests;
 
-    #[path = "lease_tests.rs"]
-    mod lease_tests;
+    #[path = "inspect_tests.rs"]
+    mod inspect_tests;
 
     #[path = "slot_tests.rs"]
     mod slot_tests;
@@ -390,17 +376,8 @@ mod tests {
     #[path = "departure_tests.rs"]
     mod departure_tests;
 
-    #[path = "switch_source_tests.rs"]
-    mod switch_source_tests;
-
-    #[path = "switch_target_tests.rs"]
-    mod switch_target_tests;
-
-    #[path = "mirror_tests.rs"]
-    mod mirror_tests;
-
-    #[path = "receive_tests.rs"]
-    mod receive_tests;
+    #[path = "copy_tests.rs"]
+    mod copy_tests;
     mod seed_tests;
 
     use fake_zfs::{USABLE_POOL, fake_zfs};
@@ -439,6 +416,30 @@ mod tests {
         assert!(log.contains("zfs create -o refquota=1073741824 tank/ployz/data"));
         assert!(log.contains("zfs mount tank/ployz/data"));
         assert!(!log.contains("recordsize"));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn create_refuses_a_name_whose_writer_is_held_in_its_slot() {
+        let test = TestDir::new();
+        fs::write(test.0.join("root"), "").unwrap();
+        fs::write(test.0.join("mirror"), "").unwrap();
+        fs::write(test.0.join("mirror-fs"), "").unwrap();
+        let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
+        let socket = test.0.join("plugin.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = tokio::spawn(serve(listener, VolumeStorage::with_programs(zpool, zfs)));
+
+        let response = post(
+            &socket,
+            "/VolumeDriver.Create",
+            json!({"Name":"data","Opts":{"size":"1g"}}),
+        )
+        .await;
+        let error = response.get("Err").and_then(Value::as_str).unwrap();
+        assert!(error.contains("slot tank/ployz-mirror/data"), "{error}");
+        let log = fs::read_to_string(test.0.join("commands")).unwrap_or_default();
+        assert!(!log.contains("zfs create"), "{log}");
         server.abort();
     }
 

@@ -56,10 +56,20 @@ export class PloyzProviderError extends Data.TaggedError(
   readonly cause: unknown;
 }> {}
 
+/**
+ * The Server answered its Leave, so it reset, but the entry couldn't Forget its row. The removal finishes with Forget
+ * alone, keeping the Leave's warning: once reset, the Server can't be read to send the whole removal again.
+ */
+export class LeftNotForgotten extends Data.TaggedError("LeftNotForgotten")<{
+  readonly resetWarning: string | null;
+  readonly cause: unknown;
+}> {}
+
 export type PloyzSdkError =
   | PloyzProviderError
   | MissingDataLossIdentities
-  | ServerLacks;
+  | ServerLacks
+  | LeftNotForgotten;
 
 export interface PloyzSession {
   readonly logs: (options: LogOptions) => Effect.Effect<AsyncIterable<LogEvent>, PloyzSdkError>;
@@ -92,15 +102,11 @@ export interface PloyzSession {
     machine: MachineTarget,
     scope: DrainScope,
   ) => Effect.Effect<DrainReport, PloyzSdkError>;
-  /** Ask one Server to Upgrade; repeating it with the same attempt ID returns that attempt. */
+  /** Ask one Server to Upgrade; resending it with the same attempt ID is the poll. */
   readonly requestMachineUpgrade: (
     machine: MachineTarget,
     attemptId: MachineUpgradeAttemptId,
     release: string,
-  ) => Effect.Effect<MachineUpgradeAttempt, PloyzSdkError>;
-  readonly inspectMachineUpgrade: (
-    machine: MachineTarget,
-    attemptId: MachineUpgradeAttemptId,
   ) => Effect.Effect<MachineUpgradeAttempt, PloyzSdkError>;
   readonly volumeSwitch: <R extends VolumeSwitchRequest>(
     machine: MachineTarget,
@@ -115,6 +121,7 @@ export interface PloyzSession {
   readonly stopContainer: (machine: string, container: string) => Effect.Effect<void, PloyzSdkError>;
   /** How a started Container ended up: past its healthcheck and serving, unconfirmed, or failing its healthcheck. */
   readonly startContainer: (machine: string, container: string) => Effect.Effect<"serving" | "unconfirmed" | "unhealthy", PloyzSdkError>;
+  readonly removeContainer: (machine: string, container: string) => Effect.Effect<void, PloyzSdkError>;
   readonly copyContainerImage: (
     source: MachineTarget,
     container: string,
@@ -185,12 +192,25 @@ function serverLacksFromSdkError(cause: unknown) {
   return Option.isSome(decoded) ? new ServerLacks({ machineId: decoded.value.details.target, capability: decoded.value.details.capability }) : null;
 }
 
+const LeftNotForgottenError = Schema.Struct({
+  code: Schema.String,
+  message: Schema.String,
+  details: Schema.Struct({ left: Schema.Literal(true), reset_warning: Schema.NullOr(Schema.String) }),
+});
+
+function leftNotForgottenFromSdkError(cause: unknown) {
+  const decoded = Schema.decodeUnknownOption(LeftNotForgottenError)(cause);
+  return Option.isSome(decoded) ? new LeftNotForgotten({ resetWarning: decoded.value.details.reset_warning, cause }) : null;
+}
+
 export function asSdkFailure(operation: string, cause: unknown): PloyzSdkError {
   const missingDataLoss = missingDataLossFromSdkError(cause);
   if (missingDataLoss !== null) return missingDataLoss;
   const lack = serverLacksFromSdkError(cause);
   if (lack !== null) return lack;
-  if (cause instanceof MissingDataLossIdentities || cause instanceof ServerLacks) return cause;
+  const left = leftNotForgottenFromSdkError(cause);
+  if (left !== null) return left;
+  if (cause instanceof MissingDataLossIdentities || cause instanceof ServerLacks || cause instanceof LeftNotForgotten) return cause;
   if (cause instanceof PloyzProviderError) return cause;
   return new PloyzProviderError({ operation, cause });
 }
@@ -278,12 +298,11 @@ function wrapClient(client: Client): PloyzSession {
     observeService: (namespace, service) => sdkPromise("observe service", () => client.observeService(namespace, service)),
     stopContainer: (machine, container) => sdkPromise("stop container", () => client.stopContainer(machine, container)),
     startContainer: (machine, container) => sdkPromise("start container", () => client.startContainer(machine, container)),
+    removeContainer: (machine, container) => sdkPromise("remove container", () => client.removeContainer(machine, container)),
     copyContainerImage: (source, container, dest) =>
       sdkPromise("copy container image", () => client.copyContainerImage(source, container, dest)),
     requestMachineUpgrade: (machine, attemptId, release) =>
       sdkPromise("request machine upgrade", () => client.requestMachineUpgrade(machine, { attempt_id: attemptId, release })),
-    inspectMachineUpgrade: (machine, attemptId) =>
-      sdkPromise("inspect machine upgrade", () => client.inspectMachineUpgrade(machine, { attempt_id: attemptId })),
     publishCertificateMaterial: (request) =>
       sdkPromise("publish certificate material", () => client.publishCertificateMaterial(request).then(() => undefined)),
     watch,

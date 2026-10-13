@@ -159,6 +159,10 @@ class Client {
     return withRpcError(this._inner.inspectContainer(machine, container));
   }
 
+  removeContainer(machine, container) {
+    return withRpcError(this._inner.removeContainer(machine, container));
+  }
+
   copyContainerImage(source, container, dest) {
     return withRpcError(this._inner.copyContainerImage(source, container, dest));
   }
@@ -169,10 +173,6 @@ class Client {
 
   requestMachineUpgrade(machine, request) {
     return withRpcError(this._inner.requestMachineUpgrade(machine, request));
-  }
-
-  inspectMachineUpgrade(machine, request) {
-    return withRpcError(this._inner.inspectMachineUpgrade(machine, request));
   }
 
   dataLossIfNamespaceDestroyed(namespace, destroyVolumes = false) {
@@ -384,7 +384,7 @@ async function openConfigStore(url, sealingSecret) {
     githubCheckIn: (build, claims, connections) => withRpcError(store.githubCheckIn(build, claims, connections)),
     githubReport: (build, claims, report) => withRpcError(store.githubReport(build, claims, report)),
     githubFinish: (build, timedOut, connections) => withRpcError(store.githubFinish(build, timedOut, connections)),
-    githubCancel: (deployment, connections) => withRpcError(store.githubCancel(deployment, connections)),
+    githubCancel: (deployment) => withRpcError(store.githubCancel(deployment)),
   };
 }
 

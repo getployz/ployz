@@ -1,4 +1,4 @@
-import type { Snapshot, SnapshotGuid, VolumeSwitchRequest } from "@ployz/sdk";
+import type { ContainerId, ExpectedCopy, Snapshot, VolumeCopy, WantedCopy } from "@ployz/sdk";
 import { Effect, Option, Schema } from "effect";
 import { NonRetriableError } from "inngest";
 import { attemptLifecycle } from "#/modules/inngest/attempt-lifecycle";
@@ -9,29 +9,34 @@ import {
   inngestFunctionFinishedEventType,
   volumeRunRequestedEventType,
 } from "#/modules/inngest/events";
-import { participantsOf, type PlanInput, type Planned, planFromCopies, undoClearsTarget } from "#/modules/volume-run/plan";
-import { copyName, type Member, type VolumeRunArgs } from "#/modules/volume-run/volume-run";
+import { alreadyOn, epochOf, expectOf, observedEpoch, type PlanInput, type Planned, planFromCopies } from "#/modules/volume-run/plan";
+import { type AnsweredMember, copyName, type Member, type VolumeRunArgs } from "#/modules/volume-run/volume-run";
 import {
   claimVolumeRun,
   cleanOrphanSlots,
   closeStaleVolumeRuns,
   closeVolumeRun,
+  type CopyAnswer,
   copyImage,
+  DRAIN_MS,
   endRun,
   failRun,
   findHolder,
-  findSpec,
+  findKept,
   type Holder,
+  inspectCopy,
   type MachineRef,
   observeMembers,
   organizationsWithMachines,
   refuseRun,
+  removeContainer,
+  runningOn,
   type RunContext,
   sendSwitch,
-  startHanded,
+  setVolumeCopy,
+  startOnTarget,
   SwitchAttemptError,
-  type SwitchOptions,
-  takeLease,
+  takeEpoch,
 } from "#/modules/volume-run/volume-run.server";
 import { runInngestEffect } from "#/server/run.server";
 import type { AppServices } from "#/server/runtime.server";
@@ -44,10 +49,8 @@ export const RUN_VOLUME_FUNCTION_ID = "run-volume";
 export const MAX_ROUNDS = 3;
 const POLL_INTERVAL = "5s";
 const MAX_POLLS = 500;
-// Cloud's own patience for Promote's task on the target: 120 checks five seconds apart, ten minutes.
-const PROMOTE_CHECKS = 120;
 // Docker decides how long a Container step takes; 120 checks five seconds apart wait out ten minutes of it.
-const CONTAINER_CHECKS = 120;
+const BUSY_CHECKS = 120;
 
 const VolumeRunRequestedData = Schema.Struct({
   organizationId: Schema.String.check(Schema.isNonEmpty()),
@@ -55,29 +58,13 @@ const VolumeRunRequestedData = Schema.Struct({
   runId: Schema.String.check(Schema.isUUID()),
 });
 
-type Pos = { readonly seq: number; readonly round: number; readonly sub: number };
-type At = (pos: Pos) => { lease: number; pos: Pos };
-type MirrorAt = (pos: Pos) => { switch: ReturnType<At>; name: string };
 type PhaseOf<K> = Extract<Extract<Planned, { ok: true }>["phase"], { kind: K }>;
 type RunSteps = {
   readonly step: StepTools;
   readonly runEffect: EffectRunner;
   readonly run: RunContext;
   readonly runId: string;
-  readonly at: At;
-  readonly mirrorRequest: MirrorAt;
 };
-type Asked<T> =
-  | { readonly ok: true; readonly working: false; readonly value: T }
-  | { readonly ok: true; readonly working: true }
-  | { readonly ok: false; readonly message: string };
-type Received = { readonly ok: true; readonly guid: SnapshotGuid; readonly name: string } | { readonly ok: false; readonly message: string };
-type Newest = { readonly name: string; readonly guid: SnapshotGuid; readonly created_unix_seconds: number } | null;
-
-const newestOf = (snapshot: Snapshot | null | undefined): Newest =>
-  snapshot === null || snapshot === undefined
-    ? null
-    : { name: snapshot.name, guid: snapshot.guid, created_unix_seconds: snapshot.created_unix_seconds };
 
 export async function runVolume(
   { event, step, runId }: { event: { data: unknown }; step: StepTools; runId: string },
@@ -102,482 +89,481 @@ export async function runVolume(
     await step.run("02-refuse", () => runEffect(refuseRun(run, runId, plan.refusal)));
     return { runId: run.id, refused: plan.refusal };
   }
+  const steps: RunSteps = { step, runEffect, run, runId };
   const { phase } = plan;
-  if (phase.kind === "restore") return restoreVolume({ step, runEffect, run, runId }, phase);
-  if (phase.kind === "demote") return demoteVolume({ step, runEffect, run, runId }, phase);
-  if (phase.kind === "seed") return seedVolume({ step, runEffect, run, runId }, phase);
-  const source = phase.kind === "move" ? (phase.start === "close" ? null : phase.writer) : phase.kind === "release" && phase.thaw ? phase.source : null;
-  let holder: Holder | null = null;
-  if (source !== null) {
-    const found = await step.run("02-holder", () => runEffect(findHolder(run, runId, source.machine)));
-    if (!found.ok) {
-      await step.run("02-refuse", () => runEffect(refuseRun(run, runId, found.refusal)));
-      return { runId: run.id, refused: found.refusal };
-    }
-    holder = found.holder;
+  if (phase.kind === "seed") return seedVolume(steps, phase);
+  if (phase.kind === "delete_mirror") return deleteMirror(steps, phase);
+  if (phase.kind === "landed") return landVolume(steps, phase);
+  const { epoch } = await step.run("02-epoch", () => runEffect(takeEpoch(run, runId, observedEpoch(members))));
+  switch (phase.kind) {
+    case "restore":
+      return restoreVolume(steps, phase, epoch);
+    case "demote":
+      return demoteVolume(steps, phase, epoch);
+    case "release":
+      return releaseVolume(steps, phase, epoch);
+    case "move":
+      return moveVolume(steps, phase, epoch);
+    case "mirror":
+    case "sync":
+      return mirrorVolume(steps, phase, epoch);
   }
-  const spec = holder === null
-    ? await step.run("02-spec", () => runEffect(findSpec(run, runId).pipe(Effect.map((found) => found.ok ? found.spec : null))))
-    : { namespace: holder.namespace, redactedSpec: holder.redactedSpec };
-  const { lease } = await step.run("02-lease", () => runEffect(takeLease(run, runId, participantsOf(phase), spec)));
-  const at = (pos: Pos) => ({ lease, pos });
-  const mirrorRequest = (pos: Pos) => ({ switch: at(pos), name: run.dockerVolume });
-  const verb = (id: string, effect: ReturnType<typeof sendSwitch>) => step.run(id, () => runEffect(effect.pipe(Effect.asVoid)));
-  const steps: RunSteps = { step, runEffect, run, runId, at, mirrorRequest };
-
-  if (phase.kind === "move") return moveVolume(steps, phase, lease, holder);
-  if (phase.kind === "release") {
-    if (holder !== null) {
-      const thaw = sourceRequest(steps, holder, { seq: 13, round: 0, sub: 0 });
-      await containerStep(steps, "13-thaw", sendSwitch(run, runId, phase.source.machine, { command: "thaw", payload: thaw }), `${phase.source.machine.name} is still starting ${holder.redactedSpec.name}`);
-    }
-    if (phase.mirror !== null) {
-      const clear = mirrorRequest({ seq: 14, round: 0, sub: 0 });
-      await verb("14-clear-final", sendSwitch(run, runId, phase.mirror.machine, { command: "clear_final", payload: clear }));
-    }
-    await step.run("15-finish", () => runEffect(endRun(run, runId, "done", null)));
-    return { runId: run.id, released: phase.source.machine.name };
-  }
-  if (phase.kind === "delete_mirror") {
-    for (const slot of phase.destroy) {
-      await verb(`03-destroy-${slot.machine.name}`, sendSwitch(run, runId, slot.machine, {
-        command: "destroy_mirror",
-        payload: mirrorRequest({ seq: 3, round: 0, sub: 0 }),
-      }));
-    }
-    if (phase.forget !== null) {
-      await verb("04-forget", sendSwitch(run, runId, phase.forget.machine, {
-        command: "forget_snapshots",
-        payload: mirrorRequest({ seq: 4, round: 0, sub: 0 }),
-      }));
-    }
-    for (const member of phase.forgetLease) {
-      await verb(`04-forget-lease-${member.machine.name}`, sendSwitch(run, runId, member.machine, {
-        command: "forget_lease",
-        payload: mirrorRequest({ seq: 4, round: 0, sub: 1 }),
-      }));
-    }
-    await step.run("05-finish", () => runEffect(endRun(run, runId, "done", null)));
-    return { runId: run.id, destroyed: phase.destroy.map((slot) => slot.machine.name) };
-  }
-
-  const writer = phase.writer;
-  const mirror = phase.kind === "mirror" ? phase.target : phase.mirror;
-  const A = writer.machine;
-  const B = mirror.machine;
-  const declare = (id: string, pos: Pos) =>
-    verb(id, sendSwitch(run, runId, B, {
-      command: "declare_mirror",
-      payload: { switch: at(pos), name: run.dockerVolume, refquota_bytes: run.refquotaBytes },
-    }));
-
-  if (phase.kind === "mirror" && phase.declare) await declare("03-declare", { seq: 3, round: 0, sub: 0 });
-  if (phase.kind === "sync" && phase.full) {
-    await verb("03-reset-destroy", sendSwitch(run, runId, B, {
-      command: "destroy_mirror",
-      payload: mirrorRequest({ seq: 3, round: 0, sub: 0 }),
-    }));
-    await verb("03-reset-forget", sendSwitch(run, runId, A, {
-      command: "forget_snapshots",
-      payload: mirrorRequest({ seq: 3, round: 0, sub: 1 }),
-    }));
-    await declare("03-reset-declare", { seq: 3, round: 0, sub: 2 });
-  }
-
-  const rounds = await runRounds(steps, { A, B, writerAddress: writer.address });
-  await step.run("05-finish", () => runEffect(endRun(run, runId, "done", null)));
-  return { runId: run.id, rounds };
 }
 
-type RestoreSteps = Pick<RunSteps, "step" | "runEffect" | "run" | "runId">;
+const fail = ({ step, runEffect, run, runId }: RunSteps, id: string, message: string): Promise<never> =>
+  step.run(id, () => runEffect(failRun(run, runId, message))).then(() => {
+    throw new NonRetriableError(message);
+  });
+
+const finish = ({ step, runEffect, run, runId }: RunSteps, id: string, message: string | null = null) =>
+  step.run(id, () => runEffect(endRun(run, runId, "done", message)));
+
+/**
+ * One SetVolumeCopy. A Machine answers Busy while a Container step or another switch holds the Volume, so the run
+ * sleeps and asks again with the same request, which spends no retry.
+ */
+async function settle({ step, runEffect }: RunSteps, id: string, ask: Effect.Effect<CopyAnswer, Error, AppServices>, still: string) {
+  for (let check = 0; check < BUSY_CHECKS; check += 1) {
+    if (check > 0) await step.sleep(`${id}-wait-${check}`, POLL_INTERVAL);
+    const answer = await step.run(check === 0 ? id : `${id}-${check}`, () => runEffect(ask));
+    if (answer.ok || answer.reason !== "busy") return answer;
+  }
+  throw new NonRetriableError(`${still} after ${BUSY_CHECKS} checks`);
+}
+
+const setCopy = (steps: RunSteps, id: string, machine: MachineRef, expect: ExpectedCopy, want: WantedCopy, still: string) =>
+  settle(steps, id, setVolumeCopy(steps.run, steps.runId, machine, expect, want), still);
+
+/** A step whose refusal ends what the run is doing; the caller decides whether that fails the run or undoes it. */
+async function mustSet(steps: RunSteps, id: string, machine: MachineRef, expect: ExpectedCopy, want: WantedCopy, still: string) {
+  const answer = await setCopy(steps, id, machine, expect, want, still);
+  if (!answer.ok) throw new NonRetriableError(answer.message);
+  return answer.copy;
+}
+
+const isWriterAt = (copy: VolumeCopy | null, at: Snapshot) =>
+  copy?.kind === "root" && !copy.readonly && copy.newest?.guid === at.guid;
+
+/** A slot holding a snapshot: what an undo after the cut expects of A, the slot keeping the stopped Container. */
+type SlotAt = Extract<VolumeCopy, { kind: "slot" }> & { readonly newest: Snapshot };
+
+const slotAt = (copy: VolumeCopy | null): SlotAt | null =>
+  copy?.kind === "slot" && copy.newest !== null ? { ...copy, newest: copy.newest } : null;
+
+const pulled = (copy: VolumeCopy | null, target: Snapshot) =>
+  copy?.kind === "slot" && copy.pull === null && copy.newest?.guid === target.guid;
+
+/**
+ * B pulls `target` from A and the run asks again until the pull lands. Every check resends the same request: it finishes
+ * a landed pull, leaves a running one alone, and resumes one a restart of B stopped.
+ */
+async function pull(steps: RunSteps, prefix: string, ctx: { readonly B: MachineRef; readonly copy: VolumeCopy | null; readonly from: string; readonly target: Snapshot }) {
+  const { step, run } = steps;
+  const { B, target } = ctx;
+  const slot = copyName(run.volumeName, B.name);
+  const want: WantedCopy = { kind: "mirror", from: ctx.from, target: target.name, drain: DRAIN_MS };
+  const still = `${slot} is still busy`;
+  let copy = await mustSet(steps, `${prefix}-pull`, B, expectOf(ctx.copy), want, still);
+  for (let poll = 0; poll < MAX_POLLS; poll += 1) {
+    if (pulled(copy, target)) return copy;
+    const failure = copy?.kind === "slot" ? copy.pull?.failure ?? null : null;
+    if (failure !== null) throw new NonRetriableError(`${slot} could not receive ${target.name}: ${failure}`);
+    // A landed pull still verifying keeps `pull` set, so only an idle copy skips the wait.
+    const idle = copy?.kind === "slot" && copy.pull === null;
+    if (!idle) await step.sleep(`${prefix}-wait-${poll}`, POLL_INTERVAL);
+    copy = await mustSet(steps, `${prefix}-repull-${poll}`, B, expectOf(copy), want, still);
+  }
+  throw new NonRetriableError(`${slot} is still receiving ${target.name} after ${MAX_POLLS} checks`);
+}
+
+/**
+ * Warm rounds: A snapshots `w-<epoch>-<round>` and B pulls it, until B already holds A's newest or the rounds run out.
+ * A takes no snapshot when nothing was written, so its newest is then what B pulls.
+ */
+async function runRounds(steps: RunSteps, ctx: { readonly A: AnsweredMember; readonly B: MachineRef; readonly copy: VolumeCopy | null; readonly epoch: number }) {
+  const { A, B, epoch } = ctx;
+  let copy = ctx.copy;
+  for (let round = 0; round < MAX_ROUNDS; round += 1) {
+    const prefix = `03-r${round}`;
+    const warmed = await mustSet(steps, `${prefix}-snapshot`, A.machine, { kind: "writer", epoch: epochOf(A) }, {
+      kind: "snapshot",
+      name: `w-${epoch}-${round}`,
+    }, `${A.machine.name} is still busy with ${steps.run.volumeName}`);
+    const target = warmed?.newest ?? null;
+    if (target === null) throw new NonRetriableError(`${steps.run.volumeName}'s writer on ${A.machine.name} made no snapshot`);
+    if (pulled(copy, target)) return { rounds: round, copy };
+    copy = await pull(steps, prefix, { B, copy, from: A.address, target });
+  }
+  return { rounds: MAX_ROUNDS, copy };
+}
+
+async function mirrorVolume(steps: RunSteps, phase: PhaseOf<"mirror"> | PhaseOf<"sync">, epoch: number) {
+  const { run } = steps;
+  const A = phase.writer;
+  const target = phase.kind === "mirror" ? phase.target : phase.mirror;
+  const B = target.machine;
+  let copy = target.view.copy;
+  try {
+    if (phase.kind === "sync" && phase.full) {
+      await mustSet(steps, "03-reset-forget-mirror", B, expectOf(copy), { kind: "forget" }, `${B.name} is still busy with ${run.volumeName}`);
+      await mustSet(steps, "03-reset-forget-writer", A.machine, { kind: "writer", epoch: epochOf(A) }, { kind: "forget" }, `${A.machine.name} is still busy with ${run.volumeName}`);
+      copy = null;
+    }
+    const { rounds } = await runRounds(steps, { A, B, copy, epoch });
+    await finish(steps, "05-finish");
+    return { runId: run.id, rounds };
+  } catch (error) {
+    return fail(steps, "05-failed", (error instanceof Error ? error.message : String(error)));
+  }
+}
+
+async function deleteMirror(steps: RunSteps, phase: PhaseOf<"delete_mirror">) {
+  const { run } = steps;
+  try {
+    for (const slot of phase.destroy) {
+      await mustSet(steps, `03-forget-${slot.machine.name}`, slot.machine, expectOf(slot.view.copy), { kind: "forget" }, `${slot.machine.name} is still busy with ${run.volumeName}`);
+    }
+    if (phase.forget !== null) {
+      const writer = phase.forget;
+      await mustSet(steps, "04-forget", writer.machine, { kind: "writer", epoch: epochOf(writer) }, { kind: "forget" }, `${writer.machine.name} is still busy with ${run.volumeName}`);
+    }
+  } catch (error) {
+    return fail(steps, "05-failed", (error instanceof Error ? error.message : String(error)));
+  }
+  await finish(steps, "05-finish");
+  return { runId: run.id, destroyed: phase.destroy.map((slot) => slot.machine.name) };
+}
 
 /** Restore makes the one copy left the writer; it starts no Container, so the next Deploy runs the Service on it. */
-async function restoreVolume({ step, runEffect, run, runId }: RestoreSteps, phase: PhaseOf<"restore">) {
-  const found = await step.run("02-spec", () => runEffect(findSpec(run, runId)));
-  if (!found.ok) {
-    await step.run("02-refuse", () => runEffect(refuseRun(run, runId, found.refusal)));
-    return { runId: run.id, refused: found.refusal };
+async function restoreVolume(steps: RunSteps, phase: PhaseOf<"restore">, epoch: number) {
+  const { run } = steps;
+  const source = phase.from;
+  const from = source.machine;
+  const copy = source.view.copy;
+  const at = copy?.newest ?? null;
+  if (copy === null || at === null) return fail(steps, "03-failed", `${copyName(run.volumeName, from.name)} holds no snapshot to restore`);
+  const keep = copy.kind === "root" ? copy.epoch : epoch;
+  try {
+    await mustSet(steps, "03-restore", from, expectOf(copy), { kind: "writer", at: at.guid, epoch: keep, start: null }, `${from.name} is still busy with ${run.volumeName}`);
+  } catch (error) {
+    return fail(steps, "03-failed", (error instanceof Error ? error.message : String(error)));
   }
-  const { spec } = found;
-  const from = phase.from.machine;
-  const { lease } = await step.run("02-lease", () => runEffect(takeLease(run, runId, participantsOf(phase), spec)));
-  await step.run("03-restore", () => runEffect(sendSwitch(run, runId, from, {
-    command: "restore",
-    payload: { switch: { lease, pos: { seq: 3, round: 0, sub: 0 } }, name: run.dockerVolume, namespace: spec.namespace, resolved_spec: spec.redactedSpec },
-  }).pipe(Effect.asVoid)));
   const lostAfter = phase.lostAfter;
   const message = lostAfter === null
-    ? `data restored on ${from.name}`
-    : `data restored on ${from.name} from ${new Date(lostAfter.created_unix_seconds * 1000).toISOString()}; writes after that time are lost`;
-  await step.run("04-finish", () => runEffect(endRun(run, runId, "done", message)));
+    ? `${run.volumeName} restored on ${from.name}`
+    : `${run.volumeName} restored on ${from.name} from ${new Date(lostAfter.created_unix_seconds * 1000).toISOString()}; writes after that time are lost`;
+  await finish(steps, "04-finish", message);
   return { runId: run.id, restored: from.name };
 }
 
 /** An old copy takes writes no other copy will see, so the run seals it before anything else and asks for a rerun. */
-async function demoteVolume({ step, runEffect, run, runId }: RestoreSteps, phase: PhaseOf<"demote">) {
+async function demoteVolume(steps: RunSteps, phase: PhaseOf<"demote">, epoch: number) {
+  const { run } = steps;
   const old = phase.old.machine;
-  const { lease } = await step.run("02-lease", () => runEffect(takeLease(run, runId, participantsOf(phase), null)));
-  await step.run("03-demote", () => runEffect(sendSwitch(run, runId, old, {
-    command: "demote_volume",
-    payload: { switch: { lease, pos: { seq: 3, round: 0, sub: 0 } }, name: run.dockerVolume },
-  }).pipe(Effect.asVoid)));
+  try {
+    await mustSet(steps, "03-demote", old, { kind: "writer", epoch: epochOf(phase.old) }, {
+      kind: "mirror",
+      from: null,
+      target: `f-${epoch}`,
+      drain: DRAIN_MS,
+    }, `${old.name} is still stopping ${run.volumeName}'s Service`);
+  } catch (error) {
+    return fail(steps, "03-failed", (error instanceof Error ? error.message : String(error)));
+  }
   const message = `${copyName(run.volumeName, old.name)} was older than ${copyName(run.volumeName, phase.writer.machine.name)} and is now read-only; `
     + `writes to it since ${phase.writer.machine.name} took over are lost. Run this again`;
-  await step.run("04-finish", () => runEffect(endRun(run, runId, "failed", message)));
+  await steps.step.run("04-finish", () => steps.runEffect(endRun(run, steps.runId, "failed", message)));
   return { runId: run.id, demoted: old.name };
 }
 
 /**
- * Seed copies one restore point of this Volume into a new Volume's slot on the same Machine, then lands it as an
- * unregistered root, so the Deploy that follows adopts it. The copy runs on the Machine; the run only asks after it.
+ * Release ends whatever a Move left in flight. A cut that stopped on a read-only root starts its Container again; a
+ * writer whose Move reached B drops the Container A kept; with only slots left, the one keeping the cut's Container
+ * becomes the writer again once every other copy at its snapshot is gone.
  */
-async function seedVolume({ step, runEffect, run, runId }: RestoreSteps, phase: PhaseOf<"seed">) {
+async function releaseVolume(steps: RunSteps, phase: PhaseOf<"release">, epoch: number) {
+  const { run } = steps;
+  const { from } = phase;
+  const kept = async (id: string, machines: readonly MachineRef[]) =>
+    steps.step.run(id, () => steps.runEffect(findKept(run, steps.runId, machines)));
+  const resume = async (id: string, member: AnsweredMember, containerId: ContainerId | null) => {
+    const copy = member.view.copy;
+    const at = copy?.newest ?? null;
+    if (copy?.kind !== "root" || at === null) return;
+    await mustSet(steps, id, member.machine, expectOf(copy), {
+      kind: "writer",
+      at: at.guid,
+      epoch,
+      start: containerId === null ? null : { kind: "kept", container_id: containerId },
+    }, `${member.machine.name} is still starting ${run.volumeName}'s Service`);
+  };
+  try {
+    if (from.kind === "cut" || from.kind === "writer") {
+      const root = from.kind === "cut" ? from.root : from.writer;
+      if (from.kind === "cut" && (root.view.copy?.newest ?? null) === null) {
+        throw new NonRetriableError(`${run.volumeName} on ${root.machine.name} stopped before its first snapshot; volume move ${run.volumeName} --to <another server> again`);
+      }
+      const holder = await kept("03-holder", [root.machine]);
+      await resume("04-resume", root, holder?.containerId ?? null);
+      if (from.kind === "writer") {
+        for (const slot of from.behind) {
+          const old = await kept(`05-kept-${slot.machine.name}`, [slot.machine]);
+          if (old !== null) await steps.step.run(`05-remove-${slot.machine.name}`, () => steps.runEffect(removeContainer(run, steps.runId, slot.machine, old.containerId)));
+        }
+      }
+      await finish(steps, "06-finish");
+      return { runId: run.id, released: root.machine.name };
+    }
+    const source = await kept("03-holder", from.slots.map((slot) => slot.machine));
+    const owner = source === null ? undefined : from.slots.find((slot) => slot.machine.id === source.machine.id);
+    const cut = slotAt(owner?.view.copy ?? null);
+    if (source === null || owner === undefined || cut === null) {
+      return fail(steps, "03-no-source", `${run.volumeName} has no writer and no stopped Service on its copies; volume restore ${run.volumeName} --from <server>`);
+    }
+    const found = await steps.step.run("03-spec", () => steps.runEffect(findHolder(run, steps.runId, owner.machine)));
+    // SAFETY: step output is the JSON of a Holder, and a Holder holds only JSON values.
+    const holder = found.ok ? found.holder as Holder : null;
+    const others = from.slots.filter((slot) => slot !== owner);
+    const done = await undoAfterCut(steps, { A: owner.machine, holder, containerId: source.containerId, source: cut, epoch, others });
+    await finish(steps, "06-finish");
+    return { runId: run.id, released: done === "undone" ? owner.machine.name : null };
+  } catch (error) {
+    return fail(steps, "06-failed", (error instanceof Error ? error.message : String(error)));
+  }
+}
+
+/**
+ * Undo after the cut. B's slot at G goes first, so a start B was sent earlier refuses on its expect; only then does A
+ * become the writer again. B already the writer at G means the Move landed, so it goes forward. Any other root on B
+ * leaves A a slot, since A as the writer beside it would be a second writable root.
+ */
+async function undoAfterCut(
+  steps: RunSteps,
+  ctx: {
+    readonly A: MachineRef;
+    readonly holder: Holder | null;
+    readonly containerId: ContainerId;
+    readonly source: SlotAt;
+    readonly epoch: number;
+    readonly others: readonly { readonly machine: MachineRef }[];
+  },
+): Promise<"undone" | "forward"> {
+  const { step, runEffect, run, runId } = steps;
+  const { A, source } = ctx;
+  const at = source.newest;
+  const forward = async (B: MachineRef, copy: VolumeCopy | null) => {
+    await startOnB(steps, ["13-running", "13-start"], { A, B, holder: ctx.holder, copy, at, epoch: ctx.epoch });
+    await step.run("13-remove", () => runEffect(removeContainer(run, runId, A, ctx.containerId)));
+    return "forward" as const;
+  };
+  const otherRoot = (B: MachineRef, copy: Extract<VolumeCopy, { kind: "root" }>) => new NonRetriableError(
+    `${copyName(run.volumeName, B.name)} ${copy.readonly ? "is a read-only copy mid-cut" : `writes at a snapshot other than ${at.name}`}; `
+      + `${run.volumeName}'s Service stays stopped on ${A.name}`,
+  );
+  for (const { machine } of ctx.others) {
+    const now = await step.run(`13-inspect-${machine.name}`, () => runEffect(inspectCopy(run, runId, machine)));
+    if (isWriterAt(now, at)) return forward(machine, now);
+    if (now?.kind === "root") throw otherRoot(machine, now);
+    if (now?.kind !== "slot" || now.newest?.guid !== at.guid) continue;
+    const forgot = await setCopy(steps, `13-forget-${machine.name}`, machine, expectOf(now), { kind: "forget" }, `${machine.name} is still busy with ${run.volumeName}`);
+    if (forgot.ok) continue;
+    if (isWriterAt(forgot.copy, at)) return forward(machine, forgot.copy);
+    if (forgot.copy?.kind === "root") throw otherRoot(machine, forgot.copy);
+    throw new NonRetriableError(forgot.message);
+  }
+  await mustSet(steps, "14-undo", A, expectOf(source), {
+    kind: "writer",
+    at: at.guid,
+    epoch: ctx.epoch,
+    start: { kind: "kept", container_id: ctx.containerId },
+  }, `${A.name} is still starting ${run.volumeName}'s Service`);
+  return "undone";
+}
+
+/** B already writes at G, so the Move lacks only B's Service and A's kept Container gone; A is the slot keeping it. */
+async function landVolume(steps: RunSteps, phase: PhaseOf<"landed">) {
+  const { step, runEffect, run, runId } = steps;
+  const source = await step.run("02-source", () => runEffect(findKept(run, runId, phase.behind.map((member) => member.machine))));
+  const writer = source === null ? undefined : phase.behind.find((member) => member.machine.id === source.machine.id);
+  if (writer === undefined) {
+    const refusal = alreadyOn(run.volumeName, phase.target.machine.name);
+    await step.run("02-refuse", () => runEffect(refuseRun(run, runId, refusal)));
+    return { runId: run.id, refused: refusal };
+  }
+  return moveVolume(steps, { kind: "move", writer, target: phase.target, start: "start" }, epochOf(phase.target));
+}
+
+/**
+ * A Move: warm rounds, the image, the cut on A, B's pull of the cut's snapshot G, B's start, and A's Container removed.
+ * Until B is told to start it undoes back to A; from then on it only goes forward.
+ */
+async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, epoch: number) {
+  const { step, runEffect, run, runId } = steps;
+  const A = phase.writer.machine;
+  const B = phase.target.machine;
+  const name = run.volumeName;
+  const forwardOnly = `volume move ${name} --to ${B.name} again continues from there`;
+  let source = phase.writer.view.copy;
+  let copy = phase.target.view.copy;
+
+  const found = await step.run("02-holder", () => runEffect(findHolder(run, runId, A)));
+  if (!found.ok) {
+    if (phase.start === "start") return finishOnTarget(steps, phase, null, epoch);
+    await step.run("02-refuse", () => runEffect(refuseRun(run, runId, found.refusal)));
+    return { runId: run.id, refused: found.refusal };
+  }
+  // SAFETY: step output is the JSON of a Holder, and a Holder holds only JSON values.
+  const holder = found.holder as Holder;
+
+  if (phase.start === "rounds" || phase.start === "cut") {
+    try {
+      if (phase.start === "rounds") ({ copy } = await runRounds(steps, { A: phase.writer, B, copy, epoch }));
+    } catch (error) {
+      return fail(steps, "03-failed", (error instanceof Error ? error.message : String(error)));
+    }
+    try {
+      await step.run("04-image", () => runEffect(copyImage(run, runId, A, holder, B)));
+      source = await mustSet(steps, "05-cut", A, { kind: "writer", epoch: epochOf(phase.writer) }, {
+        kind: "mirror",
+        from: null,
+        target: `f-${epoch}`,
+        drain: DRAIN_MS,
+      }, `${A.name} is still stopping ${holder.redactedSpec.name}`);
+    } catch (error) {
+      return undoBeforeCut(steps, { A, B, holder, epoch, message: (error instanceof Error ? error.message : String(error)) });
+    }
+  }
+
+  const cut = slotAt(source);
+  if (cut === null) return fail(steps, "06-failed", `${copyName(name, A.name)} holds no final snapshot`);
+  if (phase.start !== "start") {
+    try {
+      copy = await pull(steps, "06-final", { B, copy, from: phase.writer.address, target: cut.newest });
+    } catch (error) {
+      return undoMove(steps, { A, B, holder, source: cut, epoch, message: (error instanceof Error ? error.message : String(error)) });
+    }
+  }
+  return finishOnTarget(steps, { ...phase, target: { ...phase.target, view: { ...phase.target.view, copy } } }, holder, epoch, forwardOnly);
+}
+
+/** Steps 5 and 6: B becomes the writer at G and starts the Service, then A's kept Container goes. */
+async function finishOnTarget(steps: RunSteps, phase: PhaseOf<"move">, holder: Holder | null, epoch: number, forwardOnly?: string) {
+  const { step, runEffect, run, runId } = steps;
+  const A = phase.writer.machine;
+  const B = phase.target.machine;
+  const copy = phase.target.view.copy;
+  const at = phase.writer.view.copy?.kind === "slot" ? phase.writer.view.copy.newest : null;
+  const message = forwardOnly ?? `volume move ${run.volumeName} --to ${B.name} again continues from there`;
+  try {
+    await startOnB(steps, ["07-running", "08-start"], { A, B, holder, copy, at: at ?? copy?.newest ?? null, epoch });
+    const kept = holder ?? (await step.run("09-kept", () => runEffect(findKept(run, runId, [A]))));
+    if (kept !== null) await step.run("09-remove", () => runEffect(removeContainer(run, runId, A, kept.containerId)));
+  } catch (error) {
+    return fail(steps, "09-stopped", `${(error instanceof Error ? error.message : String(error))}; ${message}`);
+  }
+  await finish(steps, "10-finish");
+  return { runId: run.id, moved: B.name };
+}
+
+/**
+ * B runs the Service before anything removes A's kept Container, so a start that fails on B never leaves the Service
+ * down on both Machines. A B that writes but runs nothing is sent the same start again, under the same creation key.
+ */
+async function startOnB(
+  steps: RunSteps,
+  [runningId, startId]: readonly [string, string],
+  ctx: { readonly A: MachineRef; readonly B: MachineRef; readonly holder: Holder | null; readonly copy: VolumeCopy | null; readonly at: Snapshot | null; readonly epoch: number },
+) {
+  const { step, runEffect, run, runId } = steps;
+  const { A, B, holder, copy, at } = ctx;
+  const running = await step.run(runningId, () => runEffect(runningOn(run, runId, B)));
+  if (running) return;
+  if (holder === null || at === null) throw new NonRetriableError(`${run.volumeName} has no Service container on ${A.name} to start on ${B.name}`);
+  const started = await settle(steps, startId, startOnTarget(run, runId, {
+    from: A,
+    holder,
+    to: B,
+    expect: expectOf(copy),
+    at: at.guid,
+    epoch: copy?.kind === "root" ? copy.epoch : ctx.epoch,
+  }), `${B.name} is still starting ${holder.redactedSpec.name}`);
+  if (!started.ok) throw new NonRetriableError(started.message);
+}
+
+/**
+ * Before the cut A is still the writer, so its kept Container starts again; a cut that landed meanwhile undoes as after
+ * the cut. A takes the run's epoch, so a cut this run sent that lands late expects the old one and refuses.
+ */
+async function undoBeforeCut(steps: RunSteps, ctx: { readonly A: MachineRef; readonly B: MachineRef; readonly holder: Holder; readonly epoch: number; readonly message: string }) {
+  const { step, runEffect, run, runId } = steps;
+  const { A, holder } = ctx;
+  try {
+    const now = await step.run("12-inspect", () => runEffect(inspectCopy(run, runId, A)));
+    const cut = slotAt(now);
+    if (cut !== null) return undoMove(steps, { ...ctx, source: cut });
+    const at = now?.newest ?? null;
+    if (now?.kind !== "root" || at === null) throw new NonRetriableError(`${copyName(run.volumeName, A.name)} is gone`);
+    await mustSet(steps, "13-undo", A, expectOf(now), {
+      kind: "writer",
+      at: at.guid,
+      epoch: ctx.epoch,
+      start: { kind: "kept", container_id: holder.containerId },
+    }, `${A.name} is still starting ${holder.redactedSpec.name}`);
+  } catch (error) {
+    if (error instanceof NonRetriableError) return fail(steps, "13-failed", `${error.message}; volume release ${run.volumeName} when it is back`);
+    return fail(steps, "13-unanswered", `${A.name} did not answer; volume release ${run.volumeName} when it is back`);
+  }
+  return fail(steps, "14-undone", ctx.message);
+}
+
+async function undoMove(
+  steps: RunSteps,
+  ctx: { readonly A: MachineRef; readonly B: MachineRef; readonly holder: Holder; readonly source: SlotAt; readonly epoch: number; readonly message: string },
+) {
+  const { run } = steps;
+  try {
+    const done = await undoAfterCut(steps, { A: ctx.A, holder: ctx.holder, containerId: ctx.holder.containerId, source: ctx.source, epoch: ctx.epoch, others: [{ machine: ctx.B }] });
+    if (done === "forward") {
+      await finish(steps, "15-finish");
+      return { runId: run.id, moved: ctx.B.name };
+    }
+  } catch (error) {
+    return fail(steps, "15-unanswered", `${(error instanceof Error ? error.message : String(error))}; volume release ${run.volumeName} when it is back`);
+  }
+  return fail(steps, "15-undone", ctx.message);
+}
+
+/**
+ * Seed copies one restore point of this Volume into a new Volume's slot on the same Machine, then lands it as an
+ * unregistered root, so the Deploy that follows adopts it. The Machine copies and lands; the run resends the same
+ * request until the copy it answers is a root.
+ */
+async function seedVolume({ step, runEffect, run, runId }: RunSteps, phase: PhaseOf<"seed">) {
   // SAFETY: the run's kind is seed, so its args are seed's.
   const args = run.args as VolumeRunArgs["seed"];
   const source = phase.source.machine;
-  const into = args.into.dockerVolume;
-  const { lease } = await step.run("02-lease", () => runEffect(takeLease(run, runId, participantsOf(phase), null)));
-  const seed = (id: string, pos: Pos) => step.run(id, () => runEffect(sendSwitch(run, runId, source, {
-    command: "seed_volume",
-    payload: { switch: { lease, pos }, name: run.dockerVolume, into, guid: args.guid },
-  }).pipe(
-    Effect.asVoid,
-    Effect.catchIf((error) => error instanceof SwitchAttemptError && error.reason === "busy", () => Effect.void),
-  )));
-  const fail = async (id: string, message: string): Promise<never> => {
+  const failed = async (id: string, message: string): Promise<never> => {
     await step.run(id, () => runEffect(failRun(run, runId, message)));
     throw new NonRetriableError(message);
   };
 
-  await seed("03-seed", { seq: 3, round: 0, sub: 0 });
-  let restarts = 0;
   for (let poll = 0; ; poll += 1) {
-    if (poll === MAX_POLLS) return fail("04-too-long", `${args.into.name} is still copying after ${MAX_POLLS} checks`);
-    await step.sleep(`04-wait-${poll}`, POLL_INTERVAL);
-    const status = await step.run(`04-inspect-${poll}`, () =>
-      runEffect(sendSwitch(run, runId, source, { command: "inspect_receive", payload: { name: into, round: 0 } })
-        .pipe(Effect.map((view) => view.status))));
-    if (status.state === "running") continue;
-    if (status.state === "failed") return fail("04-failed", `${args.into.name} could not copy ${args.name}: ${status.reason}`);
-    if (status.state === "resumable") {
-      restarts += 1;
-      await seed(`04-restart-${poll}`, { seq: 3, round: 0, sub: restarts });
-      continue;
-    }
-    break;
-  }
-
-  await seed("05-land", { seq: 5, round: 0, sub: 0 });
-  const landed = await step.run("06-check", () => runEffect(sendSwitch(run, runId, source, {
-    command: "inspect_volume_copy",
-    payload: { name: into },
-  }).pipe(Effect.map((view) => view.copy?.kind === "root"))));
-  if (!landed) return fail("06-not-landed", `${args.into.name} did not land on ${source.name}`);
-  await step.run("07-finish", () => runEffect(endRun(run, runId, "done", `${args.into.name} copied from ${run.volumeName} on ${source.name}`)));
-  return { runId: run.id, seeded: args.into.name };
-}
-
-const sourceRequest = ({ at, run }: RunSteps, holder: Holder, pos: Pos) =>
-  ({ switch: at(pos), name: run.dockerVolume, container_id: holder.containerId });
-
-const serviceRequest = ({ at, run }: RunSteps, holder: Holder, pos: Pos) => ({
-  switch: at(pos),
-  name: run.dockerVolume,
-  namespace: holder.namespace,
-  resolved_spec: holder.redactedSpec,
-});
-
-const MOVE_STARTS = ["rounds", "handover", "accept", "promote", "start", "close"] as const;
-
-/**
- * One verb whose refusal the Move handles itself: the step records the refusal as its result, and the run throws it
- * from there, so a refused step and a step that ran out of retries reach the same catch.
- */
-async function attempt(
-  { step, runEffect, run, runId }: RunSteps,
-  id: string,
-  machine: MachineRef,
-  request: Exclude<VolumeSwitchRequest, { command: "inspect_volume_copy" | "inspect_receive" }>,
-) {
-  const result = await step.run(id, () => runEffect(sendSwitch(run, runId, machine, request, { onRefusal: "throw" }).pipe(
-    Effect.map((reply) => ({ ok: true as const, reply })),
-    Effect.catchIf((error) => error instanceof NonRetriableError, (error) => Effect.succeed({ ok: false as const, message: error.message })),
-  )));
-  if (!result.ok) throw new NonRetriableError(result.message);
-  return result.reply;
-}
-
-/**
- * Freeze's docker stop and the docker start of a Thaw or a handed Start run on the Machine until Docker answers, and
- * the Machine answers Busy meanwhile. The run sleeps and asks again at the same position, which spends no retry.
- */
-async function containerStep<T>({ step, runEffect }: RunSteps, id: string, effect: Effect.Effect<T, Error, AppServices>, still: string) {
-  for (let check = 0; check < CONTAINER_CHECKS; check += 1) {
-    if (check > 0) await step.sleep(`${id}-wait-${check}`, POLL_INTERVAL);
-    // SAFETY: step output is the JSON of an Asked<T>, and each T a Container step answers holds only JSON values.
-    const asked = (await step.run(check === 0 ? id : `${id}-${check}`, () => runEffect(effect.pipe(
-      Effect.map((value): Asked<T> => ({ ok: true, working: false, value })),
-      Effect.catchIf((error) => error instanceof SwitchAttemptError && error.reason === "busy", () => Effect.succeed<Asked<T>>({ ok: true, working: true })),
-      Effect.catchIf((error) => error instanceof NonRetriableError, (error) => Effect.succeed<Asked<T>>({ ok: false, message: error.message })),
-    )))) as Asked<T>;
-    if (!asked.ok) throw new NonRetriableError(asked.message);
-    if (!asked.working) return asked.value;
-  }
-  throw new NonRetriableError(`${still} after ${CONTAINER_CHECKS} checks`);
-}
-
-/** Steps 05 to 08 can be undone by thawing the source; from 09 on the target holds the only writable future, so a Move only goes forward. */
-async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, lease: number, holder: Holder | null) {
-  const { step, runEffect, run, runId, at, mirrorRequest } = steps;
-  const A = phase.writer.machine;
-  const B = phase.target.machine;
-  const name = run.volumeName;
-  const from = (start: (typeof MOVE_STARTS)[number]) =>
-    phase.start !== "undo" && MOVE_STARTS.indexOf(phase.start) <= MOVE_STARTS.indexOf(start);
-  const switchStep = <R extends VolumeSwitchRequest>(id: string, machine: MachineRef, request: R, options?: SwitchOptions) =>
-    step.run(id, () => runEffect(sendSwitch(run, runId, machine, request, options)));
-  const fail = (id: string, message: string) =>
-    step.run(id, () => runEffect(failRun(run, runId, message))).then(() => {
-      throw new NonRetriableError(message);
-    });
-  const forward = `volume move ${name} --to ${B.name} again continues from there`;
-  const required = (value: Holder | null) => {
-    if (value === null) throw new NonRetriableError(`${name} has no Service container on ${A.name}`);
-    return value;
-  };
-
-  const undo = async (message: string) => {
-    try {
-      const thaw = sourceRequest(steps, required(holder), { seq: 13, round: 0, sub: 0 });
-      await containerStep(steps, "13-thaw", sendSwitch(run, runId, A, { command: "thaw", payload: thaw }, {
-        messages: { precondition: `${name} is handed to ${B.name}; ${forward}` },
-      }), `${A.name} is still starting ${required(holder).redactedSpec.name}`);
-    } catch {
-      return fail("13-unanswered", `${A.name} did not answer; volume move ${name} --to ${B.name} or volume release ${name} when it is back`);
-    }
-    if (undoClearsTarget(phase)) {
-      const clear = mirrorRequest({ seq: 14, round: 0, sub: 0 });
-      await switchStep("14-clear-final", B, { command: "clear_final", payload: clear });
-    }
-    return fail("14-undone", message);
-  };
-
-  if (phase.start === "undo") return undo(`${name}'s earlier move was undone; volume move ${name} --to ${B.name} to move it`);
-
-  let guid = phase.guid;
-  if (phase.start === "rounds") {
-    if (phase.declare) {
-      await switchStep("03-declare", B, {
-        command: "declare_mirror",
-        payload: { switch: at({ seq: 3, round: 0, sub: 0 }), name: run.dockerVolume, refquota_bytes: run.refquotaBytes },
-      });
-    }
-    await runRounds(steps, { A, B, writerAddress: phase.writer.address });
-  }
-  if (from("start")) await step.run("04-image", () => runEffect(copyImage(run, runId, A, required(holder), B)));
-
-  if (from("handover")) {
-    try {
-      if (phase.start === "rounds") {
-        await attempt(steps, "05-withdraw", A, {
-          command: "withdraw",
-          payload: sourceRequest(steps, required(holder), { seq: 5, round: 0, sub: 0 }),
-        });
-        const frozen = await containerStep(steps, "06-freeze", sendSwitch(run, runId, A, {
-          command: "freeze",
-          payload: sourceRequest(steps, required(holder), { seq: 6, round: 0, sub: 0 }),
-        }, { onRefusal: "throw" }), `${A.name} is still stopping ${required(holder).redactedSpec.name}`);
-        const writer = frozen.copy?.kind === "root" ? frozen.copy.writer : null;
-        if (writer?.phase !== "frozen") throw new NonRetriableError(`${name} on ${A.name} did not freeze`);
-        const frozenGuid = writer.guid;
-        guid = frozenGuid;
-        await sendFinal(steps, { A, B, writerAddress: phase.writer.address, lease, guid: frozenGuid });
-      }
-      if (guid === null) throw new NonRetriableError(`${name} on ${A.name} has no final snapshot`);
-      const handed = guid;
-      await attempt(steps, "08-handover", A, {
-        command: "hand_over",
-        payload: { switch: at({ seq: 8, round: 0, sub: 0 }), name: run.dockerVolume, guid: handed },
-      });
-    } catch (error) {
-      return undo(error instanceof Error ? error.message : String(error));
-    }
-  }
-
-  try {
-    if (from("accept")) {
-      if (guid === null) throw new NonRetriableError(`${name} on ${A.name} has no final snapshot`);
-      const handed = guid;
-      await attempt(steps, "09-accept", B, {
-        command: "accept_hand_off",
-        payload: { switch: at({ seq: 9, round: 0, sub: 0 }), name: run.dockerVolume, guid: handed },
-      });
-    }
-    if (from("promote")) await promote(steps, B, required(holder));
-    if (from("start")) {
-      await containerStep(steps, "11-start", startHanded(run, runId, A, required(holder), B, at({ seq: 11, round: 0, sub: 0 })), `${B.name} is still starting ${required(holder).redactedSpec.name}`);
-    }
-    await attempt(steps, "12-close", A, { command: "close", payload: mirrorRequest({ seq: 12, round: 0, sub: 0 }) });
-  } catch (error) {
-    return fail("12-stopped", `${error instanceof Error ? error.message : String(error)}; ${forward}`);
-  }
-  await step.run("12-finish", () => runEffect(endRun(run, runId, "done", null)));
-  return { runId: run.id, moved: B.name };
-}
-
-/** Promote runs as a task on the target; asking again at the same position reports Busy until the root is writable. */
-async function promote(steps: RunSteps, B: MachineRef, holder: Holder) {
-  const { step, runEffect, run, runId } = steps;
-  for (let check = 0; check < PROMOTE_CHECKS; check += 1) {
-    if (check > 0) await step.sleep(`10-promote-wait-${check}`, POLL_INTERVAL);
-    const checked = await step.run(`10-promote-${check}`, () => runEffect(
-      sendSwitch(run, runId, B, {
-        command: "promote",
-        payload: serviceRequest(steps, holder, { seq: 10, round: 0, sub: 0 }),
-      }, { onRefusal: "throw" }).pipe(
-        Effect.map((reply) => ({ ok: true as const, promoted: reply.copy?.kind === "root" && !reply.copy.readonly })),
-        Effect.catchIf((error) => error instanceof SwitchAttemptError && error.reason === "busy", () => Effect.succeed({ ok: true as const, promoted: false })),
-        Effect.catchIf((error) => error instanceof NonRetriableError, (error) => Effect.succeed({ ok: false as const, message: error.message })),
-      ),
-    ));
-    if (!checked.ok) throw new NonRetriableError(checked.message);
-    if (checked.promoted) return;
-  }
-  throw new NonRetriableError(`${copyName(run.volumeName, B.name)} is still promoting after ${PROMOTE_CHECKS} checks`);
-}
-
-/** The frozen source's last snapshot, `f-<lease>`, onto the mirror; Accept later requires exactly this guid. */
-async function sendFinal(
-  steps: RunSteps,
-  ctx: { readonly A: MachineRef; readonly B: MachineRef; readonly writerAddress: string; readonly lease: number; readonly guid: SnapshotGuid },
-) {
-  const { run, at, mirrorRequest } = steps;
-  const { B, guid } = ctx;
-  const begun = await attempt(steps, "07-final-0-begin", B, {
-    command: "begin_round",
-    payload: mirrorRequest({ seq: 7, round: 0, sub: 0 }),
-  });
-  const base = begun.copy?.newest?.guid ?? null;
-  const receive = (id: string, token: string | null) =>
-    attempt(steps, id, B, {
-      command: "start_receive",
-      payload: {
-        switch: at({ seq: 7, round: 0, sub: 3 }),
-        name: run.dockerVolume,
-        from: ctx.writerAddress,
-        base,
-        target: `f-${ctx.lease}`,
-        resume_token: token,
-      },
-    });
-  await receive("07-final-3-receive", null);
-  const received = await pollReceive(steps, B, 0, "07-final", receive);
-  if (!received.ok) throw new NonRetriableError(received.message);
-  if (received.guid !== guid) {
-    throw new NonRetriableError(`${copyName(run.volumeName, B.name)} received ${received.guid}, not the frozen ${guid}`);
-  }
-  await attempt(steps, "07-final-4-prune", B, {
-    command: "prune_mirror",
-    payload: mirrorRequest({ seq: 7, round: 0, sub: 4 }),
-  });
-}
-
-async function runRounds(
-  steps: RunSteps,
-  ctx: { readonly A: MachineRef; readonly B: MachineRef; readonly writerAddress: string },
-) {
-  const { step, runEffect, run, runId, at, mirrorRequest } = steps;
-  const { A, B } = ctx;
-  const switchStep = (id: string, machine: MachineRef, request: Parameters<typeof sendSwitch>[3], options?: SwitchOptions) =>
-    step.run(id, () => runEffect(sendSwitch(run, runId, machine, request, options).pipe(
-      Effect.map((reply) => ("copy" in reply ? { newest: newestOf(reply.copy?.newest) } : { newest: newestOf(null) })),
+    if (poll === MAX_POLLS) return failed("03-too-long", `${args.into.name} is still copying after ${MAX_POLLS} checks`);
+    if (poll > 0) await step.sleep(`03-wait-${poll}`, POLL_INTERVAL);
+    const copy = await step.run(`03-seed-${poll}`, () => runEffect(sendSwitch(run, runId, source, {
+      command: "seed_volume",
+      payload: { name: run.dockerVolume, into: args.into.dockerVolume, guid: args.guid },
+    }).pipe(
+      Effect.map((view) => view.copy),
+      Effect.catchIf((error) => error instanceof SwitchAttemptError && error.reason === "busy", () => Effect.succeed(null)),
     )));
-
-  for (let round = 0; round < MAX_ROUNDS; round += 1) {
-    const prefix = `04-r${round}`;
-    const begun = await switchStep(`${prefix}-0-begin`, B, {
-      command: "begin_round",
-      payload: mirrorRequest({ seq: 4, round, sub: 0 }),
-    });
-    const mirrored = begun.newest;
-    if (mirrored !== null) {
-      const diverged = `${copyName(run.volumeName, B.name)} diverged at ${new Date(mirrored.created_unix_seconds * 1000).toISOString()}; volume sync --full to rebuild`;
-      await switchStep(`${prefix}-1-commit`, A, {
-        command: "commit_snapshots",
-        payload: { switch: at({ seq: 4, round, sub: 1 }), name: run.dockerVolume, mirror_newest: mirrored.guid },
-      }, { messages: { precondition: diverged } });
-    }
-    const warmed = await switchStep(`${prefix}-2-warm`, A, {
-      command: "warm_snapshot",
-      payload: mirrorRequest({ seq: 4, round, sub: 2 }),
-    });
-    const target = warmed.newest;
-    if (target === null) {
-      await step.run(`${prefix}-2-no-snapshot`, () =>
-        runEffect(failRun(run, runId, `${run.volumeName}'s writer on ${A.name} made no snapshot`)));
-      return round;
-    }
-    if (mirrored !== null && mirrored.guid === target.guid) return round;
-
-    const receive = (id: string, token: string | null) =>
-      switchStep(id, B, {
-        command: "start_receive",
-        payload: {
-          switch: at({ seq: 4, round, sub: 3 }),
-          name: run.dockerVolume,
-          from: ctx.writerAddress,
-          base: mirrored?.guid ?? null,
-          target: target.name,
-          resume_token: token,
-        },
-      });
-    await receive(`${prefix}-3-receive`, null);
-    const received = await pollReceive(steps, B, round, prefix, receive);
-    if (!received.ok) {
-      await step.run(`${prefix}-3-failed`, () => runEffect(failRun(run, runId, received.message)));
-      throw new Error("unreachable: failRun ends the run");
-    }
-
-    await switchStep(`${prefix}-4-prune`, B, {
-      command: "prune_mirror",
-      payload: mirrorRequest({ seq: 4, round, sub: 4 }),
-    });
-    await switchStep(`${prefix}-5-commit`, A, {
-      command: "commit_snapshots",
-      payload: { switch: at({ seq: 4, round, sub: 5 }), name: run.dockerVolume, mirror_newest: received.guid },
-    });
+    if (copy?.kind === "root") break;
+    const failure = copy?.kind === "slot" ? copy.pull?.failure : null;
+    if (failure) return failed("03-failed", `${args.into.name} could not copy ${args.name}: ${failure}`);
   }
-  return MAX_ROUNDS;
-}
 
-async function pollReceive(
-  { step, runEffect, run, runId }: RunSteps,
-  B: MachineRef,
-  round: number,
-  prefix: string,
-  receive: (id: string, token: string | null) => Promise<object>,
-): Promise<Received> {
-  const slot = copyName(run.volumeName, B.name);
-  for (let poll = 0; poll < MAX_POLLS; poll += 1) {
-    await step.sleep(`${prefix}-3-wait-${poll}`, POLL_INTERVAL);
-    const status = await step.run(`${prefix}-3-inspect-${poll}`, () =>
-      runEffect(sendSwitch(run, runId, B, { command: "inspect_receive", payload: { name: run.dockerVolume, round } })
-        .pipe(Effect.map((view) => view.status))));
-    switch (status.state) {
-      case "running":
-        continue;
-      case "done":
-        return { ok: true, guid: status.newest.guid, name: status.newest.name };
-      case "resumable":
-        await receive(`${prefix}-3-resume-${poll}`, status.token);
-        continue;
-      case "failed":
-        return { ok: false, message: `${slot} could not receive ${status.target}: ${status.reason}` };
-      case "idle":
-        return { ok: false, message: `${slot} stopped receiving without a result` };
-    }
-  }
-  return { ok: false, message: `${slot} is still receiving after ${MAX_POLLS} checks` };
+  await step.run("04-finish", () => runEffect(endRun(run, runId, "done", `${args.into.name} copied from ${run.volumeName} on ${source.name}`)));
+  return { runId: run.id, seeded: args.into.name };
 }
 
 async function sweepOrphans(step: Pick<PloyzStepTools, "run">, runEffect: EffectRunner) {

@@ -1,0 +1,1 @@
+ALTER TABLE "volume_run" DROP COLUMN "lease";

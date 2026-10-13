@@ -1,6 +1,6 @@
 import type { ChangeKind, MachineId, MachineName } from "@ployz/sdk";
 import type { ChangeGroup } from "#/modules/config-store/store-deployments";
-import { planFromCopies } from "#/modules/volume-run/plan";
+import { epochOf, planFromCopies } from "#/modules/volume-run/plan";
 import { runWords } from "#/modules/volume-run/volume-copies";
 import type { RuntimeVolumeCopy } from "#/modules/runtime/runtime.collection";
 import { type AnsweredMember, type Member, parseDockerVolumeName, type VolumeRunInput, type VolumeRunView } from "#/modules/volume-run/volume-run";
@@ -82,12 +82,11 @@ export type PlacementChange =
 
 const toDate = (seconds: number | undefined) => (seconds === undefined ? null : new Date(seconds * 1000));
 const isRoot = (member: AnsweredMember) => member.view.copy?.kind === "root";
-const leaseOf = (member: AnsweredMember) => member.view.lease?.lease ?? 0;
 
 export function observePlacement(members: readonly Member[]): ObservedPlacement {
   const answered = members.filter((member): member is AnsweredMember => member.answered);
   const roots = answered.filter(isRoot).sort((a, b) =>
-    Number(b.view.copy?.readonly === false) - Number(a.view.copy?.readonly === false) || leaseOf(b) - leaseOf(a));
+    Number(b.view.copy?.readonly === false) - Number(a.view.copy?.readonly === false) || epochOf(b) - epochOf(a));
   const primary = roots[0] ?? null;
   const copies = answered.flatMap((member): ObservedCopy[] => {
     const copy = member.view.copy;
@@ -170,7 +169,7 @@ export function placementChanges(volume: PlacementVolume, members: readonly Memb
   const changes: PlacementChange[] = staged.deletes
     .filter((id) => copyOn(id) !== undefined && !applied.includes(id))
     .map((id) => ({ kind: "delete_copy", volume, server: machine(id) }));
-  // A move to a mirror is unfinished while that mirror is still listed: after the hand-over the target holds the root,
+  // A move to a mirror is unfinished while that mirror is still listed: once the target writes it holds the root,
   // yet the next Deploy must finish the same move, not take the mirror away.
   const handing = observed.primary?.id === staged.primary && applied.includes(staged.primary);
   const moving = observed.primary?.id !== staged.primary || handing;
@@ -183,7 +182,7 @@ export function placementChanges(volume: PlacementVolume, members: readonly Memb
     const target = copyOn(staged.primary);
     const how: MoveHow = target !== undefined && observed.primary === null ? "restore" : applied.includes(staged.primary) ? "promote" : "copy";
     const from = handing
-      ? observed.copies.find((copy) => copy.kind === "root")?.server ?? null
+      ? observed.copies.find((copy) => copy.kind === "slot" && copy.server.id !== staged.primary)?.server ?? null
       : observed.primary ?? (how === "restore" ? observed.unanswered[0] ?? null : null);
     changes.push({
       kind: "move",
@@ -303,7 +302,7 @@ export function placementTargets(
     member.answered && detached.has(member.machine.id) ? { ...member, view: { ...member.view, copy: null } } : member);
   const accepts = (kind: "move" | "mirror", member: Member) => {
     const planned = planFromCopies({ kind, args: { to: member.machine.name }, volumeName: volume.name, orphan: false }, cleared);
-    return planned.ok;
+    return planned.ok && planned.phase.kind !== "landed";
   };
   const candidates = members.filter((member) => servers.includes(member.machine.id));
   const mirrors = appliedMirrors(observed, row);

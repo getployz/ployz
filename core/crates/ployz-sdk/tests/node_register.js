@@ -10,7 +10,7 @@ const pkg = process.env.PLOYZ_SDK_PACKAGE;
 const socketDirectory = process.env.PLOYZ_SOCKET_DIRECTORY;
 const connectionsFor = (id) => [{ unix: path.join(socketDirectory, `${id}.sock`) }];
 const machineId = process.env.PLOYZ_MACHINE_ID;
-const isolatedMachineId = process.env.PLOYZ_ISOLATED_MACHINE_ID;
+const notParticipatingMachineId = process.env.PLOYZ_NOT_PARTICIPATING_MACHINE_ID;
 const unknownMachineId = process.env.PLOYZ_UNKNOWN_MACHINE_ID;
 
 if (
@@ -18,7 +18,7 @@ if (
   !pkg ||
   !socketDirectory ||
   !machineId ||
-  !isolatedMachineId ||
+  !notParticipatingMachineId ||
   !unknownMachineId
 ) {
   throw new Error("Node register smoke is missing environment");
@@ -81,11 +81,16 @@ function joinerIdentity() {
     throw new Error("second register must reuse the saved assignment");
   }
 
-  const isolatedClient = await sdk.connect({ connections: connectionsFor(isolatedMachineId) });
-  const isolated = await expectRpc(() => isolatedClient.register(assignment), "unavailable");
-  await isolatedClient.close();
-  if (isolated.message !== "this Machine is isolation-locked") {
-    throw new Error(`expected isolation lock, got ${isolated.message}`);
+  const notParticipatingClient = await sdk.connect({
+    connections: connectionsFor(notParticipatingMachineId),
+  });
+  const notParticipating = await expectRpc(
+    () => notParticipatingClient.register(assignment),
+    "unavailable",
+  );
+  await notParticipatingClient.close();
+  if (notParticipating.message !== "Machine is not participating") {
+    throw new Error(`expected not participating, got ${notParticipating.message}`);
   }
 
   await expectRpc(

@@ -118,7 +118,6 @@ pub(crate) struct VolumeRun {
     /// Cloud started it for a Volume no config holds any more.
     pub(crate) orphan: bool,
     pub(crate) state: VolumeRunState,
-    pub(crate) lease: Option<u64>,
     /// Why it failed or was refused.
     pub(crate) message: Option<String>,
     pub(crate) created_at: String,

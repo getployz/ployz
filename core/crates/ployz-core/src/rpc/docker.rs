@@ -60,11 +60,6 @@ impl VolumeSource {
 pub struct ListVolumesRequest {}
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct InspectVolumeRequest {
-    pub name: DockerVolumeName,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RemoveVolumeRequest {
     pub name: DockerVolumeName,
     #[serde(default)]

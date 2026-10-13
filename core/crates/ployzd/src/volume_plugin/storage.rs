@@ -12,13 +12,39 @@ use std::{
 use ployzd::machine_pool::MachinePool;
 use tokio::{
     process::Command,
-    sync::{Mutex, OwnedMutexGuard, watch},
+    sync::{Mutex, OwnedMutexGuard},
 };
 
 use super::{DockerVolumeName, Result, VolumeError, pool::PoolStorage, transfer::RECEIVE_STALL};
 
 pub(super) use ployz_core::{DATASET_ROOT, MIRROR_ROOT};
 pub(super) const MOUNT_ROOT: &str = "/var/lib/ployz-volumes";
+/// Set on a root renamed into place until Docker's Create registers it with its labels.
+/// Get and List hide a marked root, so Docker never records it without them.
+pub(super) const PROMOTE_PROPERTY: &str = "ployz:promote";
+/// Set by ZFS on a dataset whose `receive -s` was interrupted; `-` otherwise.
+pub(super) const RESUME_TOKEN_PROPERTY: &str = "receive_resume_token";
+/// On a root: the SetVolumeCopy run of writes it belongs to. Missing reads as 0.
+pub(super) const EPOCH_PROPERTY: &str = "ployz:epoch";
+/// Set on a root the cut renames into its slot, so the rename carries it to the slot's
+/// `fs`. It means Docker on this Machine still holds a record for the Volume, and plugin
+/// Get keeps answering for it until a Writer want makes the root writable again.
+pub(super) const CUT_PROPERTY: &str = "ployz:cut";
+/// On a slot parent: the target of the SetVolumeCopy pull in flight, from its start until
+/// its prune is done.
+pub(super) const PULL_PROPERTY: &str = "ployz:pull";
+
+pub(super) fn slot_parent(pool: &MachinePool, name: &DockerVolumeName) -> String {
+    format!("{}/{MIRROR_ROOT}/{name}", pool.name())
+}
+
+pub(super) fn slot_fs(pool: &MachinePool, name: &DockerVolumeName) -> String {
+    format!("{}/fs", slot_parent(pool, name))
+}
+
+pub(super) fn root_dataset(pool: &MachinePool, name: &DockerVolumeName) -> String {
+    format!("{}/{DATASET_ROOT}/{name}", pool.name())
+}
 
 #[derive(Debug, Eq, PartialEq)]
 pub(super) enum Place<'name> {
@@ -53,9 +79,6 @@ impl<'name> Place<'name> {
 pub(super) struct VolumeStorage {
     pub(super) pool: PoolStorage,
     pub(super) zfs: PathBuf,
-    pub(super) docker: PathBuf,
-    pub(super) mount_grant: Arc<std::sync::Mutex<Option<super::switch_source::MountGrant>>>,
-    pub(super) steps: super::container_step::ContainerSteps,
     pub(super) mutation: MutationLock,
     pub(super) installation: ployzd::mutation::MutationGate,
     pub(super) receives: super::transfer::Receives,
@@ -76,59 +99,20 @@ pub(super) fn committed_bytes(dataset: &Dataset, pool: &str) -> u64 {
     }
 }
 
-/// A lock whose waiters can refuse instead of queueing while the holder calls Docker.
-#[derive(Clone)]
+/// The plugin's one mutation lock: every storage change runs under it.
+#[derive(Clone, Default)]
 pub(super) struct MutationLock {
     lock: Arc<Mutex<()>>,
-    docker_bound: Arc<watch::Sender<bool>>,
-}
-
-impl Default for MutationLock {
-    fn default() -> Self {
-        Self {
-            lock: Arc::default(),
-            docker_bound: Arc::new(watch::Sender::new(false)),
-        }
-    }
 }
 
 pub(super) struct HeldMutation {
     _guard: OwnedMutexGuard<()>,
-    docker_bound: Arc<watch::Sender<bool>>,
-}
-
-impl Drop for HeldMutation {
-    fn drop(&mut self) {
-        self.docker_bound.send_replace(false);
-    }
 }
 
 impl MutationLock {
     pub(super) async fn lock(&self) -> HeldMutation {
-        self.held(Arc::clone(&self.lock).lock_owned().await)
-    }
-
-    pub(super) async fn lock_unless_docker_bound(&self) -> Option<HeldMutation> {
-        if let Ok(guard) = Arc::clone(&self.lock).try_lock_owned() {
-            return Some(self.held(guard));
-        }
-        let mut docker_bound = self.docker_bound.subscribe();
-        tokio::select! {
-            biased;
-            guard = Arc::clone(&self.lock).lock_owned() => Some(self.held(guard)),
-            _ = docker_bound.wait_for(|bound| *bound) => None,
-        }
-    }
-
-    pub(super) fn raise_docker_bound(&self) {
-        self.docker_bound.send_replace(true);
-    }
-
-    fn held(&self, guard: OwnedMutexGuard<()>) -> HeldMutation {
-        self.docker_bound.send_replace(false);
         HeldMutation {
-            _guard: guard,
-            docker_bound: Arc::clone(&self.docker_bound),
+            _guard: Arc::clone(&self.lock).lock_owned().await,
         }
     }
 }
@@ -143,9 +127,6 @@ impl VolumeStorage {
         Self {
             pool: PoolStorage::new("zpool"),
             zfs: "zfs".into(),
-            docker: "docker".into(),
-            mount_grant: Arc::default(),
-            steps: Default::default(),
             mutation: MutationLock::default(),
             installation: ployzd::mutation::MutationGate::new(run_dir, data_dir),
             receives: super::transfer::Receives::default(),
@@ -165,9 +146,6 @@ impl VolumeStorage {
         Self {
             pool: PoolStorage::new(zpool).with_backing(backing),
             zfs: zfs.into(),
-            docker: fixture.join("docker"),
-            mount_grant: Arc::default(),
-            steps: Default::default(),
             mutation: MutationLock::default(),
             installation: ployzd::mutation::MutationGate::new(
                 fixture.join("admission-run"),
@@ -190,28 +168,6 @@ impl VolumeStorage {
         Ok((local, installation))
     }
 
-    /// Docker holds its per-Volume lock across a plugin Mount or Remove, so those refuse
-    /// rather than wait behind a holder that is calling Docker for the same Volume.
-    pub(super) async fn admit_docker_request(
-        &self,
-        name: &DockerVolumeName,
-    ) -> Result<(HeldMutation, ployzd::mutation::MutationGuard)> {
-        let local = self
-            .mutation
-            .lock_unless_docker_bound()
-            .await
-            .ok_or_else(|| {
-                VolumeError::from(format!(
-                    "VolumeSwitching: Volume {name} has an active storage mutation"
-                ))
-            })?;
-        let installation = self
-            .installation
-            .try_mutation()
-            .map_err(|error| VolumeError::from(ployz_core::error_chain::inline(&error)))?;
-        Ok((local, installation))
-    }
-
     pub(super) async fn create_volume(
         &self,
         pool: &MachinePool,
@@ -226,11 +182,18 @@ impl VolumeStorage {
         if let Some(existing) = Self::dataset(&datasets, pool, name)? {
             existing.require_requested(name, requested)?;
             if self.unregistered(&existing.name).await? {
-                self.zfs(&["inherit", super::lease::PROMOTE_PROPERTY, &existing.name])
+                self.zfs(&["inherit", PROMOTE_PROPERTY, &existing.name])
                     .await?;
                 ployzd::faults::kill_inside("Create");
             }
             return Ok(());
+        }
+
+        let slot = slot_parent(pool, name);
+        if datasets.iter().any(|dataset| dataset.name == slot) {
+            return Err(VolumeError::from(format!(
+                "Volume {name} is held in slot {slot}; promote or restore it before creating it again"
+            )));
         }
 
         if matches!(origin, CapacityAdmission::Required) {
@@ -287,18 +250,13 @@ impl VolumeStorage {
     }
 
     pub(super) async fn mountpoint(&self, name: &DockerVolumeName) -> Result<String> {
-        if let Some(granted) = self.granted_mountpoint(name).await? {
-            return Ok(granted);
-        }
-        let _guard = self.admit_docker_request(name).await?;
+        let _guard = self.admit_mutation().await?;
         let pool = self.one_pool().await?;
         let datasets = self.datasets(&pool).await?;
         let dataset = Self::dataset(&datasets, &pool, name)?
             .ok_or_else(|| format!("Provisioned Volume {name} does not exist"))?;
         dataset.require_provisioned(name)?;
         dataset.require_not_switching(name)?;
-        self.require_writer_idle(&pool, &datasets, dataset, name)
-            .await?;
         if dataset.mounted {
             return Ok(dataset.mountpoint.clone());
         }
@@ -312,33 +270,6 @@ impl VolumeStorage {
             return Err(format!("Provisioned Volume {name} did not mount").into());
         }
         Ok(dataset.mountpoint.clone())
-    }
-
-    /// A root mounts for a Container only while no run holds it: idle marker and no
-    /// open cycle in this Machine's record.
-    async fn require_writer_idle(
-        &self,
-        pool: &MachinePool,
-        datasets: &[Dataset],
-        root: &Dataset,
-        name: &DockerVolumeName,
-    ) -> Result<()> {
-        let writer = self.writer_marker(root).await?;
-        if writer != ployz_core::WriterMarker::Idle {
-            return Err(format!(
-                "VolumeSwitching: Volume {name} is mid-run on this Machine (writer {writer}); wait for the run to finish"
-            )
-            .into());
-        }
-        if let Some(record) = self.lease_record(datasets, pool, name).await?
-            && record.cycle == ployz_core::Cycle::Open
-        {
-            return Err(format!(
-                "VolumeSwitching: Volume {name} is mid-run on this Machine (record {record} is open); wait for the run to finish"
-            )
-            .into());
-        }
-        Ok(())
     }
 
     pub(super) async fn one_pool(&self) -> Result<MachinePool> {
@@ -394,6 +325,13 @@ impl VolumeStorage {
             return Err(format!("ZFS did not report managed root dataset {root_name}").into());
         }
         Ok(dataset)
+    }
+
+    pub(super) async fn exists(&self, dataset: &str) -> Result<bool> {
+        let names = self
+            .zfs(&["list", "-H", "-o", "name", "-t", "filesystem"])
+            .await?;
+        Ok(names.lines().any(|name| name == dataset))
     }
 
     pub(super) async fn zfs(&self, args: &[&str]) -> Result<String> {

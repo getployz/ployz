@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { MachineId } from "@ployz/sdk";
 import { Effect } from "effect";
 import { MissingDataLossIdentities } from "#/modules/runtime/data-loss-confirm";
-import { PloyzProviderError } from "#/modules/runtime/ployz.server";
+import { ServerLacks } from "#/modules/runtime/daemon-compat";
+import { asSdkFailure, PloyzProviderError } from "#/modules/runtime/ployz.server";
 import { asRemoveMachineOutcome } from "./machine-removal.server";
 
 const identities = [
@@ -35,6 +36,28 @@ describe("asRemoveMachineOutcome", () => {
         ),
       ),
     ).resolves.toEqual({ kind: "refused", failureCode: "conflict", message });
+  });
+
+  it("ends on a daemon that lacks the step, naming the Server", async () => {
+    await expect(
+      Effect.runPromise(
+        asRemoveMachineOutcome(
+          Effect.fail(new ServerLacks({ machineId: "machine-1", capability: "ployz.machine.forget.v1" })),
+          [{ id: "machine-1", name: "fsn-1" }],
+        ),
+      ),
+    ).resolves.toMatchObject({ kind: "refused", failureCode: "server_lacks" });
+  });
+
+  it("keeps a Leave the Server answered before its Forget failed, as a result the step remembers", async () => {
+    const cause = {
+      code: "unavailable",
+      message: "the Cluster store is unavailable",
+      details: { left: true, reset_warning: "Docker reset failed" },
+    };
+    await expect(
+      Effect.runPromise(asRemoveMachineOutcome(Effect.fail(asSdkFailure("remove machine", cause)))),
+    ).resolves.toEqual({ kind: "left", resetWarning: "Docker reset failed" });
   });
 
   it("leaves any other failure to the step's retries", async () => {

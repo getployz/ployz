@@ -11,7 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "#
 import { Spinner } from "#/components/ui/spinner";
 import { cn } from "#/lib/utils";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
-import { placementLacking, placementServers, placementUnknown } from "#/modules/volume-placement/daemon-release";
+import { placementBlockers, placementServers } from "#/modules/volume-placement/daemon-release";
 import {
   appliedMirrors, editPlacement, failover, lossTime, observePlacement, type Placement, type PlacementEdit,
   placementChanges, type PlacementItem, placementForm, type PlacementRow, placementTargets, type PlacementVolume, targetPlacement,
@@ -42,7 +42,7 @@ export function StoreVolumePlacement({ organizationSlug, environment, volume }: 
     </SettingsSection>;
   }
   const accepting = placementServers(lens.machines);
-  return <VolumePlacementPanel volume={volume} members={members} row={row} running={running} disabled={pending} upgrade={placementLacking(lens.machines)} unknown={placementUnknown(lens.machines)}
+  return <VolumePlacementPanel volume={volume} members={members} row={row} running={running} disabled={pending} upgrade={placementBlockers(lens.machines)}
     accepting={members.filter((member) => accepting.has(member.machine.id)).map((member) => member.machine.id)} stage={stage} />;
 }
 
@@ -56,7 +56,7 @@ const KIND_CLASSES = {
   remove: "border-destructive-border bg-destructive-soft text-destructive",
 } satisfies Record<ChangeKind, string>;
 
-export function VolumePlacementPanel({ volume, members, row, running, accepting, upgrade, unknown, disabled, stage }: {
+export function VolumePlacementPanel({ volume, members, row, running, accepting, upgrade, disabled, stage }: {
   volume: PanelVolume;
   members: readonly Member[];
   row: PlacementRow | null;
@@ -65,8 +65,6 @@ export function VolumePlacementPanel({ volume, members, row, running, accepting,
   accepting: readonly MachineId[];
   /** Servers with storage whose daemon lacks the volume verbs: until they upgrade, the panel only shows. */
   upgrade: readonly string[];
-  /** Servers with storage whose record lists no capabilities: the panel only shows, and claims no Upgrade. */
-  unknown: readonly string[];
   disabled: boolean;
   stage: (staged: Placement | null, mirrors: readonly MachineId[]) => void;
 }) {
@@ -79,7 +77,7 @@ export function VolumePlacementPanel({ volume, members, row, running, accepting,
     </SettingsSection>;
   }
   const deploying = row?.deploymentId != null;
-  const blocked = upgrade.length > 0 || unknown.length > 0;
+  const blocked = upgrade.length > 0;
   const locked = disabled || deploying || blocked;
   const applied = appliedMirrors(observed, row);
   const edit = (change: PlacementEdit) => stage(editPlacement(target, change), applied);
@@ -103,8 +101,7 @@ export function VolumePlacementPanel({ volume, members, row, running, accepting,
         <Button variant="outline" size="sm" disabled={locked} onClick={() => edit({ kind: "move", to: offer.mirror.id })}>Use mirror</Button>
       </AlertAction> : null}
     </Alert> : null}
-    {upgrade.length ? <p className="text-sm text-muted-foreground">Upgrade {upgrade.join(", ")} to a newer Ployz</p>
-      : unknown.length ? <p className="text-sm text-muted-foreground">Ployz can’t tell whether {unknown.join(", ")} can move volumes</p> : null}
+    {upgrade.length ? <p className="text-sm text-muted-foreground">Upgrade {upgrade.join(", ")} to a newer Ployz</p> : null}
     {running || deploying ? <div role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
       <Spinner role="presentation" aria-hidden="true" />
       <span>{running ? [runWords(running), running.message].filter(Boolean).join(" · ") : "Deploying"}</span>

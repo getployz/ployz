@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import * as api from '@ployz/sdk/config';
@@ -29,3 +30,9 @@ for (const path of ['/ready\u0001probe', '/ready\tprobe', '/ready\nprobe', '/rea
   assert.throws(() => api.parseServiceSetting('healthcheckPath', path));
 }
 assert.equal(api.parseServiceSetting('healthcheckPath', '/café?escaped=%0A'), '/café?escaped=%0A');
+
+// Every method index.d.ts promises on Client is forwarded by the index.js wrapper.
+const declared = readFileSync(new URL('../index.d.ts', import.meta.url), 'utf8').match(/^export declare class Client \{\n([\s\S]*?)^\}/m)[1];
+const methods = [...declared.matchAll(/^  (\w+)[<(]/gm)].map(([, name]) => name);
+assert.ok(methods.includes('removeContainer'));
+assert.deepEqual(methods.filter(name => typeof require('@ployz/sdk').Client.prototype[name] !== 'function'), []);

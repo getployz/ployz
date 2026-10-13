@@ -90,6 +90,13 @@ does not know, so a client attached through it sees no capabilities for the
 peer until the entry upgrades. The live refusal still decides, so nothing wrong
 runs.
 
+Under rule 6's second branch, these Machine RPC verbs are removed within the
+major with no shim: InspectWireguard, CreateVolume, InspectVolume,
+InspectMachineUpgrade, RemoveImages, EndBuildGrant, Initialize, Join,
+MachineToken, Reset, RemoveLocalMachine, RemoveMachine. A daemon without one
+stops advertising its capability and refuses the route. A client that sends one
+names the capability from its own catalog.
+
 **Red flags:** a required new field, a migration step, a reader that rejects
 unknown fields on replicated data, a daemon behaviour that depends on every
 peer being upgraded.
@@ -106,18 +113,19 @@ what that observer saw; different observers may legitimately disagree until thei
 observations converge. Weak semantics stated honestly beat strong semantics
 enforced badly.
 
-**Machine-local lease records.** A Volume switch is a sequence of Machine RPCs
+**Expected copies.** A Volume Run is a sequence of `SetVolumeCopy` requests
 driven by one operator, and that operator's own late or retried requests can
-arrive after a Machine has moved on. Each Machine keeps one lease record per
-Volume on its Pool and fences such requests against it. A stale lease or an
-earlier step is refused, and a repeat answers what it already did. The operator
-numbers the lease. The Machine only compares it with its own record (bet 6). No
-Machine's record claims to be the Cluster's view of the Volume, and no Machine
-reads another's.
+arrive after a Machine has moved on. Each request names the copy the operator
+last saw on that Machine and the copy it wants there. The Machine compares the
+expected copy with its own. A match takes the one allowed transition, a copy
+already at the want answers success, and anything else is refused. Every reply
+reports the Machine's copy as it is now. A Writer reports its epoch, and the
+Machine never checks it. No Machine keeps a record of the run, claims the
+Cluster's view of the Volume, or reads another Machine's copy.
 
 **Red flags:** fencing tokens, leases, leader election, quorum reads, any API or
-message claiming a complete or canonical Cluster view. A Machine-local lease
-record that fences one operator's late requests is none of these.
+message claiming a complete or canonical Cluster view. A request that names the
+copy it expects on one Machine is none of these.
 
 ## 2. AP over C — inside the Cluster
 
@@ -166,8 +174,11 @@ closing was the first case.
 
 A requested operation that Cloud steps (drain, upgrade, cleanup, server removal,
 a Service restart, start or stop) is a bounded command, not a durable workflow.
-It is admitted once per request key through the outbox, writes a receipt per leg,
-never resends an uncertain leg, and never runs again on its own.
+It is admitted once per request key through the outbox, writes a receipt per
+leg, never resends an uncertain leg unless the leg is idempotent, and never runs
+again on its own. A leg that names the state it wants, and carries either its
+expected prior state or a key that finds its own earlier effect, is idempotent
+and may be resent. The Machine replies with its current state either way.
 
 The Observe Store runs continuously, and it only observes the Machine it runs
 on. It never places, moves, restarts, or removes a container, and no Deploy
@@ -189,12 +200,18 @@ restores the prior release: Replacement Compensation, allowed only within one
 release line, where the Stable promise keeps everything the newer daemon wrote
 readable by the older one.
 
-**Volume handover.** A Volume Move can restart its stopped source Container with
-Thaw until HandOver records the handed marker. HandOver is the point of no
-return: after it, the only exit is forward through target promotion and start.
-Thaw and HandOver make that decision under the source's dataset lock. Close
-keeps the read-only source as the reverse mirror before Docker forgets its
-Volume registration. Moving back is another Move, with that mirror as its base.
+**Volume handover.** At the cut, the source becomes a Mirror at its final
+Snapshot G. It stops its Container and keeps it. Until Cloud sends the target
+`Writer{start}`, undo sets the source back to Writer at G and starts that same
+Container. That request is the point of no return, and Cloud enforces it, not a
+Machine. One Inngest step reads the full spec from the source's stopped
+Container and hands it to the target's `Writer{start}`, and Cloud removes the
+source Container once the target starts. If the source dies between the cut and
+that step, its spec cannot be read. The target stays a Mirror at G and the run
+stops. Once the source answers, running the Move again finishes it. If the
+source is gone for good, `server rm` it and then `volume restore --from` the
+target. The source's Mirror is the reverse mirror. Moving
+back is another Move, with that Mirror as its base.
 
 **Why.** Pretending a multi-Machine operation is atomic requires either lying in
 the result or coordination machinery bet 1 forbids. Reporting the true
@@ -252,18 +269,20 @@ Different computers, independent stores, and direct CLI and Cloud operators can
 still select overlapping subnets from incomplete observations. No cross-store
 synchronization or subnet repair system is provided.
 
-Volume Runs follow the same rule. The operator numbers each run's lease from its
-own store and keeps one run open per Volume. Each Machine admits a step only if
-it is not behind the Machine's own record (bet 1) and its own markers allow it.
-If the operator's store forgets numbers, or two operators drive the same Volume,
-a Machine refuses whichever request is behind its record. Neither side waits for
-the other.
+Volume Runs follow the same rule. The operator keeps one run open per Volume,
+and that is the only lock. Each Machine takes a step only if its own copy
+matches the step's expected copy (bet 1). A Writer keeps its own newest two run
+Snapshots and never prunes by another Machine's copy. A late request from a
+dead run is refused once its expected copy is gone. If it still matches, the
+worst case is a Volume with no Writer until the next plan, never two Writers.
+Two operators driving the same Volume may collide, and that risk is documented,
+not refused. Neither Machine waits for the other.
 
 Cloud smooths what it can see, and promises nothing. A Machine that was removed
 without a reset, while its Volume was restored elsewhere, may come back still
 holding a writable copy and running its Container. That copy decides nothing on
 its own. When Cloud next sees both copies, it will name the one with the older
-lease as old and demote it. That demotion ships with Restore. Until then both
+writer epoch as old and demote it to a Mirror. That demotion ships with Restore. Until then both
 copies can take writes, and the old one's writes are lost when it is demoted.
 That window is accepted and documented, not prevented.
 
@@ -307,7 +326,8 @@ flowchart LR
   another's state is pending.
 - A clock-based safety wait. That includes a deadline, a budget, or a grace
   period whose expiry is what makes an effect safe. A driver bounding its own
-  patience is fine.
+  patience is fine. A drain that a driver asks a Machine to wait before stopping
+  its own Container is patience, not a safety wait.
 - A resource identity meaningful without its Machine, or a required round trip
   to an allocator.
 - A Cluster-side single writer, or machinery that prevents two operators instead
@@ -329,12 +349,15 @@ only a successful connection confirms reachability and the intended Machine.
 The Cluster remains independently operable without Cloud.
 
 Volume Runs need an operator to start and step them. With Cloud, that operator
-is Cloud: its `volume_run` rows number each run's lease and keep one run open
-per Volume. That is the operator's bookkeeping, like allocation history in bet
-6. It serializes Cloud's own runs, and it is not runtime truth. Each Machine
-fences every step itself. Cloud may read what Machines report to choose a lease
-or to notice an old copy, but no Machine waits for Cloud's view. Without an
-operator, a Volume stays put. No Cluster operation's correctness depends on
+is Cloud: its per-Volume Inngest singleton and its `volume_run` rows keep one
+run open per Volume. That is the operator's bookkeeping, like allocation history
+in bet 6. It serializes Cloud's own runs, and it is not runtime truth. Each
+Machine checks every step against its own copy. Cloud reads what Machines
+report, each Writer's epoch included, to plan a run and to notice an old copy,
+but no Machine waits for Cloud's view. At the cut, one Inngest step reads the
+source's full Container spec and hands it to the target's `Writer{start}`, so
+the spec's secrets never land in a step result or a row. Without an operator, a
+Volume stays put. No Cluster operation's correctness depends on
 Cloud, only the availability of Volume Runs.
 
 Removing Cloud access disables that pairing's connections immediately. Endpoint
@@ -431,24 +454,26 @@ storage preparation independently enforce fresh Machine-local admission.
 These checks admit work for an already-selected target; they do not schedule
 work across Machines.
 
-**Volume switch verbs.** Moving a Provisioned Volume between Machines is ZFS
-work on both Pools: snapshots, send and receive, promoting a mirror, fencing a
-late request against the lease record. That is Machine-local resource management
-and a Machine-local safety boundary, so the daemon owns these verbs and the
-tasks behind them (a receive that outlives the request, a Promote, a Start),
-each admitted on this Machine's own record and markers. Cloud sequences the
-verbs; it never performs one.
+**Volume copy transitions.** Moving a Provisioned Volume between Machines is ZFS
+work on both Pools: snapshots, send and receive, turning a Mirror into a Writer
+and back, refusing a late request whose expected copy is gone. That is
+Machine-local resource management and a Machine-local safety boundary, so the
+daemon owns `SetVolumeCopy`'s transition table and the tasks behind it (a pull
+that outlives the request, a Container stop or start), each admitted against
+this Machine's own copy. Cloud sequences the requests; it never performs a
+transition.
 
-The Container steps are such tasks too: Freeze's docker stop, and the docker
-start of a Thaw or a handed Start. Docker decides how long they take, and a
-caller's deadline cannot know that, so the step runs in a task keyed by the
-Volume's lease record and the mount grant lives as long as the task. The verb
-answers within a few seconds, with Busy while Docker works. A replay with the
-same record waits on the task, or reads what Docker answered, and Docker runs
-once per record. Like a receive, this is behavior that continues after its
-command returns, which bet 3 flags. It is bounded: the task ends when Docker
-answers, it never retries or starts other work, and the Volume Run that asked
-keeps asking until it does.
+The Container steps are such tasks too: the docker stop of the cut, and the
+docker start of an undo or a `Writer{start}`. Docker decides how long they
+take, and a caller's deadline cannot know that, so the step runs in a task and
+the mount grant lives as long as the task. The request answers within a few
+seconds, with Busy while Docker works. The same request again waits on the
+task, or reads what Docker answered, and Docker runs once per transition.
+`Writer{start}` names its Container with a `creation_key` Cloud supplies, so a
+replay or a later Deploy finds that Container instead of creating a second.
+Like a pull, this is behavior that continues after its command returns, which
+bet 3 flags. It is bounded: the task ends when Docker answers, it never retries
+or starts other work, and the Volume Run that asked keeps asking until it does.
 
 **Serving outlives the daemon.** Corrosion and Internal DNS are daemon-owned but
 not daemon-hosted: a daemon stop, restart, crash or upgrade never stops them. The

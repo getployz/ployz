@@ -1,7 +1,5 @@
 use clap::ArgMatches;
-use ployz_core::{
-    InitializeRequest, InspectRequest, LocalMachinePhase, MachineName, MachineRelease, op,
-};
+use ployz_core::{EnrollAs, EnrollRequest, LocalMachinePhase, MachineName, MachineRelease};
 
 use super::super::runtime;
 use super::{ConnectionOptions, helpers};
@@ -71,34 +69,29 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
         } else {
             helpers::connect_direct(matches, &connection).await?
         };
-        let mut token = target
-            .call_repeatable::<op::MachineToken>(token_request.clone(), None)
-            .await?;
-        let details = target
-            .call_repeatable::<op::Inspect>(InspectRequest::default(), None)
-            .await?;
+        let (details, mut token) =
+            helpers::inspect_token(&mut target, token_request.clone()).await?;
         if details.phase != LocalMachinePhase::Uninitialized {
             helpers::confirm(yes, "Reset the Server before initialising a new Cluster?")?;
-            helpers::reset(&mut target).await?;
+            helpers::leave(&mut target).await?;
             target = helpers::reconnect_direct(matches, &connection).await?;
-            token = target
-                .call_repeatable::<op::MachineToken>(token_request, None)
-                .await?;
+            token = helpers::inspect_token(&mut target, token_request).await?.1;
         }
         let name = helpers::machine_name(requested_name, &token)?;
-        let machine = helpers::initialize(
+        let machine = helpers::enroll(
             &mut target,
-            InitializeRequest {
-                initial_policy: policy,
-                name,
-                cluster_network,
-                public_ip: token.public_ip,
-                advertised_endpoints: token.advertised_endpoints,
+            EnrollRequest {
+                role: EnrollAs::Founder {
+                    initial_policy: policy,
+                    name,
+                    cluster_network,
+                    public_ip: token.public_ip,
+                    advertised_endpoints: token.advertised_endpoints,
+                },
                 wireguard_mtu,
             },
         )
-        .await?
-        .machine;
+        .await?;
         let connection = connection.with_machine_id(machine.id);
         Ok::<_, Error>((machine, connection))
     })?;

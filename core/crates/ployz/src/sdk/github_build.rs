@@ -3,7 +3,7 @@
 //! Store's secrets or a Machine, so neither leaves Rust except to the one runner
 //! the Store authorized:
 //!
-//!   start (reuse or dispatch) ──▶ check-in (grant + inputs) ──▶ reports … ──▶ finish (end grant ──▶ receipt)
+//!   start (reuse or dispatch) ──▶ check-in (grant + inputs) ──▶ reports … ──▶ finish (inspect grant ──▶ receipt)
 //!
 //! A run that never checked in, or that GitHub failed for its own reasons, is
 //! skipped: the next Builder of the build's walk takes it. A failed build step fails it.
@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use ployz_core::{
-    BuildGrantId, BuildGrantRepository, EndBuildGrantRequest, MintBuildGrantRequest,
+    BuildGrantId, BuildGrantRepository, InspectBuildGrantRequest, MintBuildGrantRequest,
     RETAINED_DIGEST_TAG_PREFIX, RpcError, RpcErrorCode,
 };
 use ployz_store::{
@@ -200,15 +200,10 @@ pub async fn github_check_in(
         move |store| store.github_check_in(&id, run_id, &grant)
     })
     .await;
-    if let Err(error) = checked_in {
-        // Lost to another check-in or the walk moving on: the secret never left, but end it.
-        let _ = session
-            .end_build_grant(EndBuildGrantRequest { id: minted.id })
-            .await;
-        session.close().await;
-        return Err(error);
-    }
     session.close().await;
+    // Lost to another check-in or the walk moving on: the secret never left, and the
+    // grant expires by itself.
+    checked_in?;
     Ok(GithubCheckIn {
         grant: minted.grant.to_secret_string(),
         commit: commit.to_string(),
@@ -327,14 +322,14 @@ pub async fn github_report(
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GithubFinish {
-    /// Still on GitHub: its Machine couldn't be reached to end the grant yet.
+    /// Still on GitHub: its Machine couldn't be reached to read the grant yet.
     Waiting,
     /// Where the build is now: built, failed, or pending for the next Builder.
     Ended(BuildStatus),
 }
 
 /// End a GitHub build whose run reported its end, completed, or ran out of time
-/// (`timed_out`, and Cloud cancelled it): end its grant on the Machine that minted
+/// (`timed_out`, and Cloud cancelled it): read its grant on the Machine that minted
 /// it, and write the receipt from the digest it received. A run that never checked
 /// in, or that GitHub failed for its own reasons, is skipped for the next Builder.
 ///
@@ -372,14 +367,18 @@ pub async fn github_finish(
             };
         }
         Some(grant) => {
-            let Some(pushed) = end_grant(grant, connections).await else {
-                if !timed_out {
-                    return Ok(GithubFinish::Waiting);
+            let pushed = match inspect_grant(grant, connections).await {
+                GrantRead::Pushed(pushed) => pushed,
+                GrantRead::Refused(message) => {
+                    return settle(&store, id, run_id, GithubEnd::Failed { message }).await;
                 }
-                let end = GithubEnd::Failed {
-                    message: "your Machine couldn't be reached to confirm the push".to_owned(),
-                };
-                return settle(&store, id, run_id, end).await;
+                GrantRead::Unreachable if !timed_out => return Ok(GithubFinish::Waiting),
+                GrantRead::Unreachable => {
+                    let end = GithubEnd::Failed {
+                        message: "your Machine couldn't be reached to confirm the push".to_owned(),
+                    };
+                    return settle(&store, id, run_id, end).await;
+                }
             };
             match (pushed, &build.ended) {
                 (Some(pushed), Some(RunEnd::Built { platforms })) => {
@@ -431,44 +430,68 @@ async fn settle(
     .map(GithubFinish::Ended)
 }
 
-/// End `grant` on the Machine that minted it: what it received, if anything;
-/// none while that Machine can't be reached. Idempotent.
-async fn end_grant(
-    grant: &GithubGrant,
-    connections: Vec<Connection>,
-) -> Option<Option<ployz_core::ImageDigest>> {
+/// What reading a grant on the Machine that minted it found.
+#[derive(Debug, Eq, PartialEq)]
+enum GrantRead {
+    /// What it received, if anything. A grant that expired or whose Machine restarted
+    /// received nothing more.
+    Pushed(Option<ployz_core::ImageDigest>),
+    /// The Machine cannot read grants; the build fails with this sentence.
+    Refused(String),
+    /// The Machine can't be reached now.
+    Unreachable,
+}
+
+async fn inspect_grant(grant: &GithubGrant, connections: Vec<Connection>) -> GrantRead {
     let connections: Vec<Connection> = connections
         .into_iter()
         .filter(|connection| connection.machine_id() == Some(&grant.machine))
         .collect();
-    let session = session(connections).await.ok()?;
-    let id = BuildGrantId::parse(&grant.id).ok()?;
-    let ended = session.end_build_grant(EndBuildGrantRequest { id }).await;
+    let Ok(session) = session(connections).await else {
+        return GrantRead::Unreachable;
+    };
+    let Ok(id) = BuildGrantId::parse(&grant.id) else {
+        return GrantRead::Unreachable;
+    };
+    let read = session
+        .inspect_build_grant(InspectBuildGrantRequest { id })
+        .await;
     session.close().await;
-    match ended {
-        Ok(ended) => Some(ended.pushed),
-        // The grant expired or its Machine restarted: nothing more can arrive.
-        Err(error) if error.code == RpcErrorCode::NotFound => Some(None),
-        Err(_) => None,
+    grant_read(read, &grant.machine)
+}
+
+fn grant_read(
+    read: Result<ployz_core::BuildGrantInspected, RpcError>,
+    machine: &ployz_core::MachineId,
+) -> GrantRead {
+    match read {
+        Ok(inspected) => GrantRead::Pushed(inspected.pushed),
+        Err(error) if error.code == RpcErrorCode::NotFound => GrantRead::Pushed(None),
+        Err(error) => {
+            let error = crate::connect::name_refusal(
+                error,
+                <ployz_core::op::InspectBuildGrant as ployz_core::Rpc>::PATH,
+                &ployz_core::MachineTarget::from(machine),
+            );
+            match crate::failure::Refusal::of(&error) {
+                Some(refusal) => GrantRead::Refused(refusal.to_string()),
+                None => GrantRead::Unreachable,
+            }
+        }
     }
 }
 
-/// Stop Deployment `id`'s builds still on GitHub: end each grant and fail each
-/// build. Returns them, for Cloud to cancel their runs. Idempotent.
+/// Stop Deployment `id`'s builds still on GitHub: fail each build. Returns them, for
+/// Cloud to cancel their runs. Their grants expire by themselves. Idempotent.
 ///
 /// # Errors
 /// Returns a storage error.
 pub async fn github_cancel(
     store: Arc<ConfigStore>,
     deployment: ployz_store::DeploymentId,
-    connections: Vec<Connection>,
 ) -> Result<Vec<ployz_store::GithubBuild>, RpcError> {
     let builds = store_call(&store, move |store| store.github_outstanding(&deployment)).await?;
     for build in &builds {
-        if let Some(grant) = &build.grant {
-            // ponytail: a Machine out of reach keeps the grant until it expires by itself.
-            let _ = end_grant(grant, connections.clone()).await;
-        }
         let (id, run_id) = (build.id.clone(), build.run.run_id);
         let end = GithubEnd::Failed {
             message: "cancelled".to_owned(),
@@ -506,6 +529,34 @@ fn conflict(message: &str) -> RpcError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_machine_that_cannot_read_grants_fails_the_build_by_name() {
+        let machine = ployz_core::MachineId::random();
+        let error = |code| RpcError {
+            code,
+            message: "refused".into(),
+            details: Value::Null,
+            cause: Vec::new(),
+        };
+        let GrantRead::Refused(message) =
+            grant_read(Err(error(RpcErrorCode::Unsupported)), &machine)
+        else {
+            panic!("an Unsupported reply must refuse the build");
+        };
+        assert!(
+            message.contains("ployz.build.grant.inspect.v1"),
+            "{message}"
+        );
+        assert_eq!(
+            grant_read(Err(error(RpcErrorCode::NotFound)), &machine),
+            GrantRead::Pushed(None)
+        );
+        assert_eq!(
+            grant_read(Err(error(RpcErrorCode::Unavailable)), &machine),
+            GrantRead::Unreachable
+        );
+    }
 
     #[tokio::test]
     async fn a_report_that_ends_a_build_and_says_install_failed_is_refused() {

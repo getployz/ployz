@@ -64,13 +64,10 @@ pub fn typescript_declarations() -> String {
         seen: BTreeSet::new(),
         by_name: BTreeMap::new(),
     };
-    declarations.add::<ployz_core::BuildGrantEnded>();
-    declarations.add::<ployz_core::SourceContainerRequest>();
-    declarations.add::<ployz_core::HandOverRequest>();
-    declarations.add::<ployz_core::ServiceVolumeRequest>();
+    declarations.add::<ployz_core::BuildGrantInspected>();
     declarations.add::<ployz_core::BuildGrantMinted>();
     declarations.add::<ClusterTeardown>();
-    declarations.add::<ployz_core::EndBuildGrantRequest>();
+    declarations.add::<ployz_core::InspectBuildGrantRequest>();
     declarations.add::<ployz_core::MintBuildGrantRequest>();
     declarations.add::<ContractDescription>();
     declarations.add::<DataLossConfirmation>();
@@ -87,7 +84,6 @@ pub fn typescript_declarations() -> String {
     declarations.add::<ployz_core::MachineUpdate>();
     declarations.add::<ployz_core::MachineUpdated>();
     declarations.add::<ployz_core::RequestMachineUpgradeRequest>();
-    declarations.add::<ployz_core::InspectMachineUpgradeRequest>();
     declarations.add::<ployz_core::MachineUpgradeAttempt>();
     declarations.add::<ployz_core::SetManagementClientResponse>();
     declarations.add::<MachineTarget>();
@@ -144,15 +140,14 @@ pub fn typescript_declarations() -> String {
     declarations.add::<super::MetricHistoryInput>();
     declarations.add::<super::CopyObservation>();
     declarations.add::<ployz_core::InspectVolumeCopyRequest>();
+    declarations.add::<ployz_core::SeedVolumeRequest>();
     declarations.add::<ployz_core::VolumeCopyView>();
-    declarations.add::<ployz_core::DeclareMirrorRequest>();
-    declarations.add::<ployz_core::MirrorRequest>();
-    declarations.add::<ployz_core::CommitRequest>();
-    declarations.add::<ployz_core::WarmRequest>();
-    declarations.add::<ployz_core::InspectReceiveRequest>();
-    declarations.add::<ployz_core::ReceiveView>();
-    declarations.add::<ployz_core::SwitchReply>();
     declarations.add::<ployz_core::SwitchError>();
+    declarations.add::<ployz_core::SetVolumeCopyRequest>();
+    declarations.add::<ployz_core::SetVolumeCopyReply>();
+    declarations.add::<ployz_core::SetVolumeCopyRefused>();
+    declarations.add::<ployz_core::EnsureContainerRequest>();
+    declarations.add::<ployz_core::EnsuredContainer>();
     declarations.add::<ployz_store::tools::ToolDef>();
     declarations.add::<ployz_store::tools::Place>();
     declarations.add::<ployz_store::tools::Step>();

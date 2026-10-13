@@ -201,7 +201,7 @@ async fn run_contract_case(case: &str) {
         })
         .await
         .expect("detached launch did not finish");
-        let observed = existing_request(&request, &data).unwrap().unwrap();
+        let observed = replay(&request, &data, &run).await.unwrap().unwrap();
         if case == "cancelled-launch-failed" {
             assert!(matches!(
                 observed.outcome,
@@ -233,7 +233,7 @@ async fn run_contract_case(case: &str) {
         "retry-active" => {
             assert!(matches!(accepted.outcome, MachineUpgradeOutcome::Accepted));
             assert_eq!(
-                existing_request(&request, &data).unwrap(),
+                replay(&request, &data, &run).await.unwrap(),
                 Some(accepted.clone())
             );
             assert!(matches!(
@@ -245,7 +245,7 @@ async fn run_contract_case(case: &str) {
                 release: MachineRelease::parse("1.2.4").unwrap(),
             };
             assert!(matches!(
-                existing_request(&conflict, &data),
+                replay(&conflict, &data, &run).await,
                 Err(Error::AttemptConflict(id)) if id == attempt_id
             ));
 
@@ -280,7 +280,13 @@ async fn run_contract_case(case: &str) {
             }
         }
         "interrupted" => {
-            let observed = inspect(Some(attempt_id), &data, &run).await.unwrap();
+            assert!(matches!(
+                read(&data).unwrap().attempt.outcome,
+                MachineUpgradeOutcome::Accepted
+            ));
+            let observed = replay(&request, &data, &run).await.unwrap().unwrap();
+            assert_eq!(read(&data).unwrap().attempt, observed);
+            assert_eq!(latest(&data, &run).await.unwrap(), Some(observed.clone()));
             assert!(matches!(
                 observed.outcome,
                 MachineUpgradeOutcome::Interrupted {
@@ -292,7 +298,7 @@ async fn run_contract_case(case: &str) {
         }
         "inspection-unknown" => {
             assert!(matches!(
-                inspect(Some(attempt_id), &data, &run).await,
+                replay(&request, &data, &run).await,
                 Err(Error::WorkerEvidence(ref message))
                     if message.contains("manager unavailable")
             ));
@@ -311,10 +317,7 @@ async fn run_contract_case(case: &str) {
                 } if error == "launch Machine upgrade worker: worker launch refused"
             ));
             assert!(!admission.active().unwrap());
-            assert_eq!(
-                inspect(Some(attempt_id), &data, &run).await.unwrap(),
-                accepted
-            );
+            assert_eq!(replay(&request, &data, &run).await.unwrap(), Some(accepted));
         }
         other => panic!("unknown upgrade contract case {other}"),
     }

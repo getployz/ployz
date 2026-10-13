@@ -15,7 +15,7 @@ import {
 import { organizationPairing as schemaOrganizationPairing } from "#/modules/runtime/tables";
 import type { Actor } from "#/modules/identity/actor";
 import { requireAccess } from "#/modules/organization/access.server";
-import { Ployz, PloyzProviderError, ployzVersion, rpcErrorCode } from "#/modules/runtime/ployz.server";
+import { Ployz, PloyzProviderError, ployzVersion } from "#/modules/runtime/ployz.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { PostHog } from "#/modules/analytics/posthog.server";
 import {
@@ -411,11 +411,7 @@ export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
         });
       }));
       // The assignment commits before dispatch; a lost response is never replayed.
-      const registration = yield* session.register(assignment).pipe(Effect.catch((error): Effect.Effect<never, Conflict | PloyzProviderError> => {
-        return rpcErrorCode(error) === "conflict"
-          ? Effect.fail(new Conflict({ message: "The saved enrollment assignment conflicts with the Entry Machine's current observation." }))
-          : Effect.fail(error);
-      }));
+      const registration = yield* session.register(assignment);
       return { kind: "join" as const, pairing: state.pairing, storage: request.storage, registration };
     }));
   },

@@ -123,6 +123,19 @@ impl Client {
             .map_err(rpc_to_napi)
     }
 
+    /// Remove stopped Container `container` from `machine`, keeping its Volumes. A
+    /// Container the Machine no longer has answers Ok.
+    ///
+    /// # Errors
+    /// Returns the Machine's refusal, or the transport's error when it did not answer.
+    #[napi]
+    pub async fn remove_container(&self, machine: String, container: String) -> Result<()> {
+        let (machine, container) = ids(&machine, &container)?;
+        ployz::sdk::agent::remove_one(&self.inner, machine, container)
+            .await
+            .map_err(rpc_to_napi)
+    }
+
     /// Start Container `container` on `machine` and wait for it the way a Deploy does.
     /// Answers `serving`, `unconfirmed` when it started but was not seen serving, or
     /// `unhealthy` when it failed its healthcheck or did not pass it in time.

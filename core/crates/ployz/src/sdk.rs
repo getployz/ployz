@@ -126,29 +126,7 @@ pub struct ObservedCopy {
 fn volume_switch_path(body: &RpcRequestBody) -> Result<&'static str, RpcError> {
     use RpcRequestBody as Body;
     match body {
-        Body::InspectVolumeCopy(_)
-        | Body::DeclareMirror(_)
-        | Body::BeginRound(_)
-        | Body::CommitSnapshots(_)
-        | Body::WarmSnapshot(_)
-        | Body::StartReceive(_)
-        | Body::InspectReceive(_)
-        | Body::PruneMirror(_)
-        | Body::DestroyMirror(_)
-        | Body::ForgetSnapshots(_)
-        | Body::ForgetLease(_)
-        | Body::DemoteVolume(_)
-        | Body::Withdraw(_)
-        | Body::Freeze(_)
-        | Body::HandOver(_)
-        | Body::Thaw(_)
-        | Body::Close(_)
-        | Body::AcceptHandOff(_)
-        | Body::Promote(_)
-        | Body::StartHandedContainer(_)
-        | Body::ClearFinal(_)
-        | Body::SeedVolume(_)
-        | Body::Restore(_) => body
+        Body::InspectVolumeCopy(_) | Body::SeedVolume(_) | Body::SetVolumeCopy(_) => body
             .unary_path()
             .ok_or_else(|| invalid_argument(format!("{} is not a unary RPC", body.command()))),
         _ => Err(invalid_argument(format!(
@@ -156,6 +134,33 @@ fn volume_switch_path(body: &RpcRequestBody) -> Result<&'static str, RpcError> {
             body.command()
         ))),
     }
+}
+
+/// The JSON a Volume switch verb's answer carries, or the Machine's error as it sent it.
+#[expect(
+    clippy::wildcard_enum_match_arm,
+    reason = "the volume copy verbs answer with two reply kinds; any other kind is a Machine fault"
+)]
+fn volume_switch_payload(command: &str, body: RpcResponseBody) -> Result<Value, RpcError> {
+    let payload = match body {
+        RpcResponseBody::VolumeCopyView(view) => serde_json::to_value(view),
+        RpcResponseBody::SetVolumeCopyReply(reply) => serde_json::to_value(reply),
+        RpcResponseBody::Error(error) => return Err(error),
+        other => {
+            return Err(RpcError {
+                code: RpcErrorCode::Internal,
+                message: format!("Machine answered {command} with {}", other.kind().as_str()),
+                details: Value::Null,
+                cause: Vec::new(),
+            });
+        }
+    };
+    payload.map_err(|error| RpcError {
+        code: RpcErrorCode::Internal,
+        message: "Volume switch reply could not be encoded".into(),
+        details: Value::Null,
+        cause: vec![error.to_string()],
+    })
 }
 
 struct SessionInner {
@@ -378,16 +383,16 @@ impl Session {
         .await
     }
 
-    /// End a Build Grant on the entry Machine and read what it received. Idempotent.
+    /// Read what a Build Grant on the entry Machine received. Reading does not end it.
     ///
     /// # Errors
     /// Returns cancellation, transport errors, or `not_found` once the grant expired
     /// or the Machine restarted.
-    pub async fn end_build_grant(
+    pub async fn inspect_build_grant(
         &self,
-        request: ployz_core::EndBuildGrantRequest,
-    ) -> Result<ployz_core::BuildGrantEnded, RpcError> {
-        self.unary::<op::EndBuildGrant>(request).await
+        request: ployz_core::InspectBuildGrantRequest,
+    ) -> Result<ployz_core::BuildGrantInspected, RpcError> {
+        self.unary::<op::InspectBuildGrant>(request).await
     }
 
     /// Describe the entry Machine contract.
@@ -673,11 +678,8 @@ impl Session {
     ///
     /// Returns `invalid_argument` when `request` is not one of the Volume switch
     /// commands or `machine` is not a Machine Target, and the Machine's [`RpcError`]
-    /// otherwise, its `details` a `SwitchError` when the fence refused.
-    #[expect(
-        clippy::wildcard_enum_match_arm,
-        reason = "the switch verbs answer with three reply kinds; any other kind is a Machine fault"
-    )]
+    /// otherwise, its `details` a `SwitchError` when the fence refused or a
+    /// `SetVolumeCopyRefused` when SetVolumeCopy refused.
     pub async fn volume_switch(&self, machine: &str, request: Value) -> Result<Value, RpcError> {
         let target =
             MachineTarget::parse(machine).map_err(|error| invalid_argument(error.to_string()))?;
@@ -694,30 +696,7 @@ impl Session {
                 Some(crate::connect::TARGET_RPC_TIMEOUT),
             ))
             .await?;
-        let payload = match response.body {
-            RpcResponseBody::SwitchReply(reply) => serde_json::to_value(reply),
-            RpcResponseBody::VolumeCopyView(view) => serde_json::to_value(view),
-            RpcResponseBody::ReceiveView(view) => serde_json::to_value(view),
-            RpcResponseBody::Error(error) => return Err(error),
-            other => {
-                return Err(RpcError {
-                    code: RpcErrorCode::Internal,
-                    message: format!(
-                        "Machine answered {} with {}",
-                        request.body.command(),
-                        other.kind().as_str()
-                    ),
-                    details: Value::Null,
-                    cause: Vec::new(),
-                });
-            }
-        };
-        payload.map_err(|error| RpcError {
-            code: RpcErrorCode::Internal,
-            message: "Volume switch reply could not be encoded".into(),
-            details: Value::Null,
-            cause: vec![error.to_string()],
-        })
+        volume_switch_payload(request.body.command(), response.body)
     }
 
     /// Live Observation of Data Loss that removing `machine` would cause.
@@ -928,7 +907,9 @@ impl Session {
     }
 
     /// Ask `machine` to Upgrade to `request.release`. Repeating the request with the same attempt ID
-    /// returns that attempt; a different one while an Upgrade or mutation runs is refused as `conflict`.
+    /// returns that attempt, so resending it is the poll; a different one while an Upgrade or
+    /// mutation runs is refused as `conflict`. The daemon restarts during the Upgrade, so a caller
+    /// polling for the outcome keeps polling through `unavailable`.
     ///
     /// # Errors
     ///
@@ -941,23 +922,6 @@ impl Session {
         request: ployz_core::RequestMachineUpgradeRequest,
     ) -> Result<ployz_core::MachineUpgradeAttempt, RpcError> {
         self.repeatable::<op::RequestMachineUpgrade>(machine, request)
-            .await
-    }
-
-    /// Read `machine`'s Upgrade attempt. Its daemon restarts during the Upgrade, so a caller
-    /// polling for the outcome keeps polling through `unavailable`.
-    ///
-    /// # Errors
-    ///
-    /// Returns a generated [`RpcError`] when the session is closed, `machine`
-    /// is not a Machine Target, the attempt is not the Machine's latest
-    /// (`not_found`), or the Machine does not answer.
-    pub async fn inspect_machine_upgrade(
-        &self,
-        machine: &str,
-        request: ployz_core::InspectMachineUpgradeRequest,
-    ) -> Result<ployz_core::MachineUpgradeAttempt, RpcError> {
-        self.repeatable::<op::InspectMachineUpgrade>(machine, request)
             .await
     }
 

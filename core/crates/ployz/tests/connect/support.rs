@@ -16,15 +16,14 @@ use ployz::{
 };
 use ployz_core::{
     AdvertisedEndpoint, ContainerCreated, ContainerId, ContainerList, ContractDescription,
-    CreateVolumeReport, CreateVolumeRequest, DataLoss, DataLossConfirmation, DockerVolume,
-    DockerVolumeId, DockerVolumeName, DockerVolumeStorageObservation, LocalMachinePhase,
-    LocalMachineRemoved, MANAGED_LABEL, Machine, MachineDetails, MachineId, MachineList,
-    MachineName, MachineObservation, MachinePath, MachineRemoved, MachineRpc, MachineRpcServer,
-    MachineStorageObservation, MembershipObservation, NAMESPACE_LABEL, ObservedDataLoss,
-    OpaquePayload, PROTOCOL_MAJOR, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, Registered,
-    RemoveMachineRequest, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RuntimeWatchFrame,
-    RuntimeWatchRequest, VolumeInventory, VolumeObservationFailure, VolumeRemoved,
-    WireGuardPublicKey, encode_runtime_watch_frame, op,
+    CreateVolumeRequest, DataLoss, DataLossConfirmation, DockerVolume, DockerVolumeId,
+    DockerVolumeName, DockerVolumeStorageObservation, ForgetRequest, Forgotten, Left, LeftPhase,
+    LocalMachinePhase, MANAGED_LABEL, Machine, MachineDetails, MachineId, MachineList, MachineName,
+    MachineObservation, MachinePath, MachineRpc, MachineRpcServer, MachineStorageObservation,
+    MembershipObservation, NAMESPACE_LABEL, ObservedDataLoss, OpaquePayload, PROTOCOL_MAJOR,
+    RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, Registered, RpcError, RpcErrorCode, RpcRequestBody,
+    RpcResponse, RuntimeWatchFrame, RuntimeWatchRequest, VolumeInventory, VolumeObservationFailure,
+    VolumeRemoved, WireGuardPublicKey, encode_runtime_watch_frame, op,
 };
 use serde_json::Value;
 use tokio::net::TcpListener;
@@ -173,14 +172,10 @@ pub(super) struct DiscoveryService {
         Arc<Mutex<BTreeMap<MachineId, Vec<VolumeObservationFailure>>>>,
     pub(super) listed_containers: Arc<Mutex<Vec<ployz_core::ContainerObservation>>>,
     pub(super) exec_frames: Option<Vec<ployz_core::ExecResponseFrame>>,
-    pub(super) accept_volume_creates: bool,
-    pub(super) existing_created_volume: Option<DockerVolume>,
-    pub(super) created_volume_verification_error: Option<RpcError>,
     pub(super) inspect_container_result: Option<ployz_core::ContainerDetails>,
     pub(super) create_container_error: Option<RpcError>,
     pub(super) create_container_blocked: Option<Arc<tokio::sync::Notify>>,
     pub(super) list_machines_blocked: Option<Arc<tokio::sync::Notify>>,
-    pub(super) created_volumes: Arc<Mutex<Vec<(MachineId, CreateVolumeRequest)>>>,
     pub(super) created_containers: Arc<Mutex<Vec<ployz_core::CreateContainerRequest>>>,
     pub(super) removed_volumes: Arc<Mutex<Vec<DockerVolumeId>>>,
     pub(super) reset_warning: Arc<Mutex<Option<String>>>,
@@ -189,6 +184,12 @@ pub(super) struct DiscoveryService {
     pub(super) management_clients: Arc<Mutex<Vec<ployz_core::ManagementClientLabel>>>,
     /// Inspect fails, so who manages the Machine can't be read.
     pub(super) inspect_fails: bool,
+    /// Leave fails in transport, as when the entry can't reach its target.
+    pub(super) leave_unavailable: bool,
+    /// Leave's refusal payload, as when the entry no longer lists its target.
+    pub(super) leave_error: Option<RpcError>,
+    /// How many Forgets fail as unavailable, before any of them deletes a row.
+    pub(super) forget_failures: Arc<AtomicUsize>,
     register_error: Arc<Mutex<Option<RpcError>>>,
     pub(super) register_calls: Arc<AtomicUsize>,
     pub(super) lose_register_reply: bool,
@@ -233,14 +234,10 @@ impl DiscoveryService {
             volume_observation_failures: Arc::new(Mutex::new(BTreeMap::new())),
             listed_containers: Arc::new(Mutex::new(Vec::new())),
             exec_frames: None,
-            accept_volume_creates: false,
-            existing_created_volume: None,
-            created_volume_verification_error: None,
             inspect_container_result: None,
             create_container_error: None,
             create_container_blocked: None,
             list_machines_blocked: None,
-            created_volumes: Arc::new(Mutex::new(Vec::new())),
             created_containers: Arc::default(),
             removed_volumes: Arc::new(Mutex::new(Vec::new())),
             reset_warning: Arc::new(Mutex::new(None)),
@@ -248,6 +245,9 @@ impl DiscoveryService {
             removed_machines: Arc::new(Mutex::new(Vec::new())),
             management_clients: Arc::default(),
             inspect_fails: false,
+            leave_unavailable: false,
+            leave_error: None,
+            forget_failures: Arc::new(AtomicUsize::new(0)),
             register_error: Arc::new(Mutex::new(None)),
             register_calls: Arc::new(AtomicUsize::new(0)),
             lose_register_reply: false,
@@ -559,20 +559,15 @@ impl MachineRpc for DiscoveryService {
                 management_clients: self.management_clients.lock().unwrap().clone(),
                 telemetry,
                 storage: inspect.include_storage.then_some(self.storage),
+                upgrade: None,
+                token: None,
             })
             .encode()
             .unwrap(),
         ))
     }
 
-    async fn machine_token(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
-    }
-
-    async fn initialize(
+    async fn enroll(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
@@ -628,13 +623,6 @@ impl MachineRpc for DiscoveryService {
         Ok(Response::new(
             RpcResponse::from(registered).encode().unwrap(),
         ))
-    }
-
-    async fn join(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
     }
 
     async fn set_management_client(
@@ -743,37 +731,6 @@ impl MachineRpc for DiscoveryService {
         ))
     }
 
-    async fn create_volume(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        if !self.accept_volume_creates {
-            return Err(Status::unimplemented("unused"));
-        }
-        let machine_id =
-            MachineId::parse(request.metadata().get("machine").unwrap().to_str().unwrap()).unwrap();
-        let request = request.into_inner().decode_request().unwrap();
-        let RpcRequestBody::CreateVolume(create) = request.body else {
-            return Err(Status::invalid_argument("expected create_volume"));
-        };
-        self.created_volumes
-            .lock()
-            .unwrap()
-            .push((machine_id, create.clone()));
-        let volume = self
-            .existing_created_volume
-            .clone()
-            .unwrap_or_else(|| created_volume(machine_id, create));
-        let report = match self.created_volume_verification_error.clone() {
-            Some(error) => CreateVolumeReport::Unverified {
-                id: volume.id,
-                error,
-            },
-            None => CreateVolumeReport::Verified { volume },
-        };
-        Ok(Response::new(RpcResponse::from(report).encode().unwrap()))
-    }
-
     async fn request_machine_upgrade(
         &self,
         request: Request<OpaquePayload>,
@@ -800,28 +757,6 @@ impl MachineRpc for DiscoveryService {
         if self.lose_upgrade_reply.swap(false, Ordering::SeqCst) {
             return Err(Status::unavailable("reply lost after dispatch"));
         }
-        Ok(Response::new(reply.encode().unwrap()))
-    }
-
-    async fn inspect_machine_upgrade(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let RpcRequestBody::InspectMachineUpgrade(body) = self.upgrade_call(request).body else {
-            return Err(Status::invalid_argument("expected inspect_machine_upgrade"));
-        };
-        let stored = self.upgrade_attempt.lock().unwrap().clone();
-        let reply = match stored {
-            Some(attempt) if body.attempt_id.is_none_or(|id| id == attempt.attempt_id) => {
-                RpcResponse::from(attempt)
-            }
-            _ => RpcResponse::from(RpcError {
-                code: RpcErrorCode::NotFound,
-                message: "Machine upgrade attempt was not found".into(),
-                details: Value::Null,
-                cause: Vec::new(),
-            }),
-        };
         Ok(Response::new(reply.encode().unwrap()))
     }
 
@@ -925,38 +860,6 @@ impl MachineRpc for DiscoveryService {
         Ok(Response::new(response.encode().unwrap()))
     }
 
-    async fn inspect_volume(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        self.inspect_calls.fetch_add(1, Ordering::SeqCst);
-        let machine_id =
-            MachineId::parse(request.metadata().get("machine").unwrap().to_str().unwrap()).unwrap();
-        let request = request.into_inner().decode_request().unwrap();
-        let RpcRequestBody::InspectVolume(inspect) = request.body else {
-            return Err(Status::invalid_argument("expected inspect_volume"));
-        };
-        let response = self
-            .listed_volumes
-            .lock()
-            .unwrap()
-            .get(&machine_id)
-            .and_then(|volumes| volumes.iter().find(|volume| volume.id.name == inspect.name))
-            .cloned()
-            .map_or_else(
-                || {
-                    RpcResponse::from(RpcError {
-                        code: RpcErrorCode::NotFound,
-                        message: format!("Docker Volume {:?} was not found", inspect.name),
-                        details: Value::Null,
-                        cause: Vec::new(),
-                    })
-                },
-                RpcResponse::from,
-            );
-        Ok(Response::new(response.encode().unwrap()))
-    }
-
     async fn create_container(
         &self,
         request: Request<OpaquePayload>,
@@ -1007,79 +910,7 @@ impl MachineRpc for DiscoveryService {
         ))
     }
 
-    async fn withdraw(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented(
-            "Volume switch verbs are not used by this fixture",
-        ))
-    }
-    async fn freeze(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented(
-            "Volume switch verbs are not used by this fixture",
-        ))
-    }
-    async fn hand_over(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented(
-            "Volume switch verbs are not used by this fixture",
-        ))
-    }
-    async fn thaw(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented(
-            "Volume switch verbs are not used by this fixture",
-        ))
-    }
-    async fn close(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented(
-            "Volume switch verbs are not used by this fixture",
-        ))
-    }
-    async fn accept_hand_off(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented(
-            "Volume switch verbs are not used by this fixture",
-        ))
-    }
-    async fn promote(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented(
-            "Volume switch verbs are not used by this fixture",
-        ))
-    }
-    async fn start_handed_container(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented(
-            "Volume switch verbs are not used by this fixture",
-        ))
-    }
-    async fn clear_final(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented(
-            "Volume switch verbs are not used by this fixture",
-        ))
-    }
-    async fn restore(
+    async fn set_volume_copy(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
@@ -1088,95 +919,6 @@ impl MachineRpc for DiscoveryService {
         ))
     }
     async fn seed_volume(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented(
-            "Volume switch verbs are not used by this fixture",
-        ))
-    }
-    async fn declare_mirror(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented(
-            "Volume switch verbs are not used by this fixture",
-        ))
-    }
-    async fn begin_round(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented(
-            "Volume switch verbs are not used by this fixture",
-        ))
-    }
-    async fn commit_snapshots(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented(
-            "Volume switch verbs are not used by this fixture",
-        ))
-    }
-    async fn warm_snapshot(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented(
-            "Volume switch verbs are not used by this fixture",
-        ))
-    }
-    async fn start_receive(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented(
-            "Volume switch verbs are not used by this fixture",
-        ))
-    }
-    async fn inspect_receive(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented(
-            "Volume switch verbs are not used by this fixture",
-        ))
-    }
-    async fn prune_mirror(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented(
-            "Volume switch verbs are not used by this fixture",
-        ))
-    }
-    async fn destroy_mirror(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented(
-            "Volume switch verbs are not used by this fixture",
-        ))
-    }
-    async fn forget_snapshots(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented(
-            "Volume switch verbs are not used by this fixture",
-        ))
-    }
-    async fn forget_lease(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented(
-            "Volume switch verbs are not used by this fixture",
-        ))
-    }
-
-    async fn demote_volume(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
@@ -1257,6 +999,13 @@ impl MachineRpc for DiscoveryService {
     }
 
     async fn remove_container(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented("unused"))
+    }
+
+    async fn ensure_container(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
@@ -1422,13 +1171,13 @@ impl MachineRpc for DiscoveryService {
     ) -> Result<Response<OpaquePayload>, Status> {
         Err(Status::unimplemented("unused"))
     }
-    async fn end_build_grant(
+    async fn inspect_build_grant(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         Err(Status::unimplemented("unused"))
     }
-    async fn remove_images(
+    async fn prune_images(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
@@ -1477,13 +1226,6 @@ impl MachineRpc for DiscoveryService {
         Err(Status::unimplemented("unused"))
     }
 
-    async fn reset(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
-    }
-
     async fn update_machine(
         &self,
         request: Request<OpaquePayload>,
@@ -1512,20 +1254,26 @@ impl MachineRpc for DiscoveryService {
         ))
     }
 
-    async fn remove_local_machine(
+    async fn leave(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let machine_id =
             MachineId::parse(request.metadata().get("machine").unwrap().to_str().unwrap()).unwrap();
         let request = request.into_inner().decode_request().unwrap();
-        assert!(matches!(
-            request.body,
-            RpcRequestBody::RemoveLocalMachine(_)
-        ));
+        assert!(matches!(request.body, RpcRequestBody::Leave(_)));
+        if self.leave_unavailable {
+            return Err(Status::unavailable("target unavailable"));
+        }
+        if let Some(error) = &self.leave_error {
+            return Ok(Response::new(
+                RpcResponse::from(error.clone()).encode().unwrap(),
+            ));
+        }
         self.reset_machines.lock().unwrap().push(machine_id);
         Ok(Response::new(
-            RpcResponse::from(LocalMachineRemoved {
+            RpcResponse::from(Left::Left {
+                phase: LeftPhase::Resetting,
                 reset_warning: self.reset_warning.lock().unwrap().clone(),
             })
             .encode()
@@ -1533,26 +1281,36 @@ impl MachineRpc for DiscoveryService {
         ))
     }
 
-    async fn remove_machine(
+    async fn forget(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = request.into_inner().decode_request().unwrap();
-        let RpcRequestBody::RemoveMachine(RemoveMachineRequest { machine_id }) = request.body
-        else {
-            return Err(Status::invalid_argument("expected remove_machine"));
+        let RpcRequestBody::Forget(ForgetRequest { machine_id }) = request.body else {
+            return Err(Status::invalid_argument("expected forget"));
         };
+        if self
+            .forget_failures
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                left.checked_sub(1)
+            })
+            .is_ok()
+        {
+            return Ok(Response::new(
+                RpcResponse::from(RpcError {
+                    code: RpcErrorCode::Unavailable,
+                    message: "the Cluster store is unavailable".into(),
+                    details: Value::Null,
+                    cause: Vec::new(),
+                })
+                .encode()
+                .unwrap(),
+            ));
+        }
         self.removed_machines.lock().unwrap().push(machine_id);
         Ok(Response::new(
-            RpcResponse::from(MachineRemoved {}).encode().unwrap(),
+            RpcResponse::from(Forgotten::Forgotten).encode().unwrap(),
         ))
-    }
-
-    async fn inspect_wireguard(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
     }
 }
 

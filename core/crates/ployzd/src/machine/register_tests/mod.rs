@@ -1,6 +1,4 @@
-use ployz_core::{
-    JoinRequest, LocalMachinePhase, MachineId, RegisterRequest, RpcErrorCode, WireGuardPublicKey,
-};
+use ployz_core::{LocalMachinePhase, MachineId, RegisterRequest, RpcErrorCode, WireGuardPublicKey};
 
 use super::{LocalMachine, LocalMachineError, LocalMachineStore, RecordOwner};
 use crate::corrosion::{AdminClient, fake_cluster};
@@ -64,18 +62,15 @@ async fn register_rpc_exact_replay_returns_the_original_joinable_assignment() {
 
     let target = LocalMachine::new(target_store);
     target
-        .join(JoinRequest {
-            registration: replay,
+        .enroll(ployz_core::EnrollRequest {
+            role: ployz_core::EnrollAs::Member {
+                registration: replay,
+            },
             wireguard_mtu: None,
         })
         .await
         .unwrap();
     assert_eq!(target.record().phase(), LocalMachinePhase::Joining);
-
-    let conflict = rpc_register(&service, request("other", public_key))
-        .await
-        .unwrap_err();
-    assert_eq!(conflict.code, RpcErrorCode::Conflict);
 
     server.abort();
     drop(service);
@@ -99,8 +94,10 @@ async fn register_does_not_reconstruct_membership_while_joining() {
         AdminClient::new("/no/such/ployz-admin.sock"),
     )));
     joiner
-        .join(JoinRequest {
-            registration: registered,
+        .enroll(ployz_core::EnrollRequest {
+            role: ployz_core::EnrollAs::Member {
+                registration: registered,
+            },
             wireguard_mtu: None,
         })
         .await
@@ -121,54 +118,7 @@ async fn register_does_not_reconstruct_membership_while_joining() {
 }
 
 #[tokio::test]
-async fn isolation_lock_refuses_admit_when_replica_exceeds_three_and_others_are_uncontactable() {
-    let (data_dir, store, founder) = open_store("ployzd-register-isolation-admit");
-    let (replicated, server) = fake_cluster::store().await;
-    replicated.publish_local_machine(&founder).await.unwrap();
-    publish_peers(&replicated, 3).await;
-    let (admin_server, admin, admin_root) = serve_membership(&[]).await;
-    let local =
-        LocalMachine::new(store).with_cluster(Some((replicated.clone(), AdminClient::new(&admin))));
-    let error = local
-        .register(request("joiner", WireGuardPublicKey([1; 32])))
-        .await
-        .unwrap_err();
-    assert!(matches!(error, LocalMachineError::IsolationLocked));
-    assert_eq!(replicated.machines().await.unwrap().observations.len(), 4);
-
-    admin_server.abort();
-    let _ = std::fs::remove_dir_all(admin_root);
-    server.abort();
-    drop(local);
-    let _ = std::fs::remove_dir_all(data_dir);
-}
-
-#[tokio::test]
-async fn isolation_lock_does_not_fire_when_a_peer_is_still_up() {
-    let (data_dir, store, founder) = open_store("ployzd-register-isolation-split-admit");
-    let (replicated, cluster) = fake_cluster::store().await;
-    replicated.publish_local_machine(&founder).await.unwrap();
-    let peers = publish_peers(&replicated, 3).await;
-    let visible = peers.first().expect("three peers");
-    let (admin_server, admin, admin_root) = serve_membership(&[(visible, "Alive")]).await;
-    let local =
-        LocalMachine::new(store).with_cluster(Some((replicated.clone(), AdminClient::new(&admin))));
-
-    let registered = local
-        .register(request("joiner", WireGuardPublicKey([1; 32])))
-        .await
-        .unwrap();
-    assert_eq!(registered.assigned_machine.name.as_str(), "joiner");
-
-    admin_server.abort();
-    let _ = std::fs::remove_dir_all(admin_root);
-    cluster.abort();
-    drop(local);
-    let _ = std::fs::remove_dir_all(data_dir);
-}
-
-#[tokio::test]
-async fn client_assignment_publishes_through_entry_and_replays_without_overwriting() {
+async fn client_assignment_publishes_through_entry_and_a_changed_register_overwrites_it() {
     let (local, replicated, founder, data_dir, server) = participating().await;
     let id = MachineId::random();
     let mut identity = request("edge", WireGuardPublicKey([21; 32]));
@@ -182,16 +132,13 @@ async fn client_assignment_publishes_through_entry_and_replays_without_overwriti
         Some(first.assigned_machine.clone())
     );
     assert_eq!(local.register(identity.clone()).await.unwrap(), first);
-    let mut wrong_key = identity.clone();
-    wrong_key.public_key = WireGuardPublicKey([22; 32]);
-    assert!(local.register(wrong_key).await.is_err());
-    let mut occupied = identity;
-    occupied.machine_id = MachineId::random();
-    occupied.public_key = WireGuardPublicKey([23; 32]);
-    assert!(local.register(occupied).await.is_err());
+    let mut rekeyed = identity;
+    rekeyed.public_key = WireGuardPublicKey([22; 32]);
+    let overwritten = local.register(rekeyed).await.unwrap().assigned_machine;
+    assert_eq!(overwritten.public_key, WireGuardPublicKey([22; 32]));
     assert_eq!(
         replicated.machine(id.as_str()).await.unwrap(),
-        Some(first.assigned_machine)
+        Some(overwritten)
     );
     server.abort();
     drop(local);
@@ -199,7 +146,7 @@ async fn client_assignment_publishes_through_entry_and_replays_without_overwriti
 }
 
 #[tokio::test]
-async fn register_requires_assignment_and_preserves_observed_rows_on_conflicts() {
+async fn register_requires_a_valid_assignment_and_preserves_the_row_on_refusal() {
     let (data_dir, store, founder) = open_store("ployzd-register-publication");
     let (replicated, server) = fake_cluster::store().await;
     replicated.publish_local_machine(&founder).await.unwrap();
@@ -219,18 +166,13 @@ async fn register_requires_assignment_and_preserves_observed_rows_on_conflicts()
     );
     identity.assigned_subnet = Some("10.210.1.0/24".parse().unwrap());
     let first = rpc_register(&service, identity.clone()).await.unwrap();
-    for change in 0..4 {
+    for change in 0..2 {
         let mut invalid = identity.clone();
         match change {
             0 => invalid.advertised_endpoints.clear(),
-            1 => invalid.assigned_subnet = Some("10.211.1.0/24".parse().unwrap()),
-            2 => invalid.public_key = WireGuardPublicKey([2; 32]),
-            _ => invalid.machine_id = MachineId::random(),
+            _ => invalid.assigned_subnet = Some("10.211.1.0/24".parse().unwrap()),
         }
-        assert_eq!(
-            rpc_register(&service, invalid).await.unwrap_err().code,
-            RpcErrorCode::Conflict
-        );
+        assert!(rpc_register(&service, invalid).await.is_err());
         assert_eq!(
             replicated
                 .machine(identity.machine_id.as_str())

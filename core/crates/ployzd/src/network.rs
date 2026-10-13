@@ -18,7 +18,7 @@ mod linux;
 pub(crate) use endpoints::interface_addresses;
 pub use endpoints::{DiscoveredNetwork, discover_network};
 pub use firewall::apply_firewall_rules;
-pub use linux::{NetworkPlane, inspect_wireguard_device};
+pub use linux::NetworkPlane;
 
 pub const DOCKER_NETWORK_NAME: &str = "ployz";
 pub const WIREGUARD_INTERFACE_NAME: &str = "ployz-wg";
@@ -63,8 +63,6 @@ impl std::fmt::Debug for WireGuardPrivateKey {
 
 #[derive(Debug, Error)]
 pub enum NetworkError {
-    #[error("configured Machine has no WireGuard private key")]
-    MissingPrivateKey,
     #[error(
         "refusing to change the retained WireGuard interface: {reason}; safe recovery: {recovery}"
     )]

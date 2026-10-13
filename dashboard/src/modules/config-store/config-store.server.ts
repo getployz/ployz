@@ -33,13 +33,12 @@ export const readStore = <Q extends ConfigQuery>(organizationId: string, query: 
   );
 
 /**
- * Stop a Deployment's builds still on GitHub: end their Build Grants, fail them, cancel their runs. Idempotent. Its
- * cancellation, and a worker that gave up on it, call it.
+ * Stop a Deployment's builds still on GitHub: fail them and cancel their runs. Their Build Grants expire by
+ * themselves. Idempotent. Its cancellation, and a worker that gave up on it, call it.
  */
-export const cancelStoreGithubBuilds = Effect.fn("ConfigStore.cancelGithubBuilds")(function* (organizationId: string, deploymentId: string) {
+export const cancelStoreGithubBuilds = Effect.fn("ConfigStore.cancelGithubBuilds")(function* (deploymentId: string) {
   const store = yield* cloudStore;
-  const connections = yield* connectionsOf(organizationId);
-  const builds = yield* storeTry(() => store.githubCancel(deploymentId, connections));
+  const builds = yield* storeTry(() => store.githubCancel(deploymentId));
   yield* Effect.forEach(builds, ({ run }) => cancelGithubRun({ installationId: run.installation_id, fullName: run.repository, runId: run.run_id }).pipe(
     Effect.ignore,
   ), { concurrency: 4, discard: true });
@@ -187,8 +186,7 @@ const afterWrite = Effect.fn("ConfigStore.afterWrite")(function* (
   organizationId: string, command: ConfigCommand, written: ConfigCommitted,
 ) {
   if (command.command === "cancel") {
-    // Cancellation ends outstanding Build Grants at once; best effort, as the walk's next look ends them too.
-    yield* cancelStoreGithubBuilds(organizationId, command.deployment).pipe(
+    yield* cancelStoreGithubBuilds(command.deployment).pipe(
       Effect.catch((error) => Effect.logWarning("Could not stop a cancelled Deployment's GitHub builds.", error)),
     );
   }

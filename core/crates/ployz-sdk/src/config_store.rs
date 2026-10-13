@@ -454,7 +454,7 @@ impl ConfigStore {
     }
 
     /// End a build whose run reported its end, completed or ran out of time:
-    /// `"waiting"` while its Machine can't end the grant, else `{ended: status}`.
+    /// `"waiting"` while its Machine can't read the grant, else `{ended: status}`.
     ///
     /// # Errors
     /// Returns a storage error, or `conflict` when it ended meanwhile.
@@ -471,20 +471,15 @@ impl ConfigStore {
         )
     }
 
-    /// Stop Deployment `deployment`'s builds still on GitHub: end their grants and
-    /// fail them. Returns them (`GithubBuild[]`) so Cloud cancels their runs.
+    /// Stop Deployment `deployment`'s builds still on GitHub: fail them. Returns them
+    /// (`GithubBuild[]`) so Cloud cancels their runs.
     ///
     /// # Errors
     /// Returns a storage error.
     #[napi]
-    pub async fn github_cancel(
-        &self,
-        deployment: String,
-        connections: serde_json::Value,
-    ) -> Result<serde_json::Value> {
+    pub async fn github_cancel(&self, deployment: String) -> Result<serde_json::Value> {
         let deployment = DeploymentId::parse(deployment).map_err(rpc_to_napi)?;
-        let connections = crate::parse_connections(connections)?;
-        to_json(ployz::sdk::github_cancel(Arc::clone(&self.store), deployment, connections).await)
+        to_json(ployz::sdk::github_cancel(Arc::clone(&self.store), deployment).await)
     }
 }
 

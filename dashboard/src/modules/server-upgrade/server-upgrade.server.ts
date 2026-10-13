@@ -275,12 +275,16 @@ type AttemptOnServer = {
   readonly organizationId: string;
   readonly machineId: string;
   readonly attemptId: MachineUpgradeAttemptId;
+  readonly channel: ReleaseChannel;
 };
 
-/** The attempt as the Server reports it now; null while it can't be read (its daemon restarts mid-Upgrade). */
-const inspectUpgradeOnServer = Effect.fn("ServerUpgrade.inspectOnServer")(function* (input: AttemptOnServer) {
+/**
+ * The attempt as the Server reports it now, read by resending its request; null while it can't be read (its daemon
+ * restarts mid-Upgrade).
+ */
+const resendUpgradeOnServer = Effect.fn("ServerUpgrade.resendOnServer")(function* (input: AttemptOnServer) {
   const session = yield* openSession(input.organizationId);
-  const attempt = yield* session.inspectMachineUpgrade(input.machineId, input.attemptId);
+  const attempt = yield* session.requestMachineUpgrade(input.machineId, input.attemptId, input.channel);
   yield* noteAttempt(input.organizationId, attempt);
   return attempt;
 }, Effect.scoped, Effect.catch((error) =>
@@ -296,7 +300,7 @@ export const pollUpgradeOnServer = Effect.fn("ServerUpgrade.poll")(function* (in
   const [row] = yield* drizzle.select({ startedAt: serverUpgradeAttempt.startedAt }).from(serverUpgradeAttempt)
     .where(attemptWhere(input.organizationId, input.attemptId));
   if (row === undefined || outlivedObservation(row.startedAt, Date.now())) return { kind: "expired" } as const;
-  const attempt = yield* inspectUpgradeOnServer(input);
+  const attempt = yield* resendUpgradeOnServer(input);
   return attempt === null ? { kind: "unreadable" } as const : { kind: "read", attempt } as const;
 });
 

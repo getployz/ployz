@@ -3,15 +3,17 @@
 use std::sync::Arc;
 
 use ployz_core::{
-    ContainerChanged, ContainerCreated, ContainerId, ContainerKind, CreateVolumeReport,
-    CreateVolumeRequest, DockerVolumeName, ImageIngestOpened, ImageIngestReason, ImagePulled,
-    ImagesRemoved, LocalMachinePhase, MachineStorageObservation, Namespace,
-    PullImageFromMachineRequest, ResolvedServiceSpec, VolumeRemoved,
+    ContainerChanged, ContainerCreated, ContainerId, ContainerKind, ContainerLocator, ContainerNow,
+    ContainerObservation, ContainerRefusal, ContainerRefusalReason, ContainerRuntimeObservation,
+    ContainerWant, CopyRefusal, DockerVolumeName, Drain, EnsuredContainer, ImageIngestOpened,
+    ImageIngestReason, ImagePulled, ImagesRemoved, LocalMachinePhase, MachineStorageObservation,
+    Namespace, NewContainer, PruneImagesRequest, PullImageFromMachineRequest, ResolvedServiceSpec,
+    RunTarget, StopOptions, VolumeRemoved,
 };
 
 use super::super::ingress::admit_ingress_service;
 use super::{Error, LocalMachine};
-use crate::docker::{ContainerRequest, ImageIngest};
+use crate::docker::{ContainerRequest, ImageIngest, same_creation};
 use crate::machine::{STORAGE_OBSERVATION_TIMEOUT, local_storage};
 
 impl LocalMachine {
@@ -79,14 +81,14 @@ impl LocalMachine {
         .await
     }
 
-    /// A plain Deploy mounts `name` only on its writer: a root nothing holds, or nothing at
-    /// all while no Machine holds a copy and this Machine never recorded a run for it.
+    /// A plain Deploy mounts `name` only on its writer: this Machine's writable root, or
+    /// nothing at all while no other Machine holds a copy.
     async fn admit_plain_mount(
         &self,
         me: &ployz_core::MachineId,
         name: &DockerVolumeName,
     ) -> Result<(), Error> {
-        use ployz_core::{DockerVolumeStorageObservation, KnownCopy, SwitchError};
+        use ployz_core::{CopyRole, DockerVolumeStorageObservation, KnownCopy, SwitchError};
         let held: ployz_core::VolumeCopyView = self
             .plugin()
             .call(
@@ -96,6 +98,11 @@ impl LocalMachine {
             .await?;
         let replicated = self.replicated()?;
         let machines = replicated.machines().await?.observations;
+        let machine_name =
+            |id: &ployz_core::MachineId| match machines.iter().find(|machine| machine.id == *id) {
+                Some(machine) => Some(machine.name.clone()),
+                None => ployz_core::MachineName::parse(id.as_str()).ok(),
+            };
         let elsewhere: Vec<KnownCopy> = replicated
             .volumes()
             .await?
@@ -107,27 +114,32 @@ impl LocalMachine {
                 else {
                     return None;
                 };
-                let machine = match machines
-                    .iter()
-                    .find(|machine| machine.id == volume.id.machine_id)
-                {
-                    Some(machine) => machine.name.clone(),
-                    None => ployz_core::MachineName::parse(volume.id.machine_id.as_str()).ok()?,
-                };
                 Some(KnownCopy {
-                    machine,
-                    role: role.unwrap_or(ployz_core::CopyRole::Writer),
+                    machine: machine_name(&volume.id.machine_id)?,
+                    role: role.unwrap_or(CopyRole::Writer),
                 })
             })
             .collect();
-        match ployz_core::admit_plain_mount(&held, &elsewhere) {
+        match ployz_core::admit_plain_mount(held.copy.as_ref(), &elsewhere) {
             Ok(()) => Ok(()),
-            Err(SwitchError::NoWriter) => Err(SwitchError::NoWriter
-                .rpc_error(ployz_core::no_writer_message(
-                    ployz_core::Namespace::declared_volume_name(name).unwrap_or(name.as_str()),
-                    &elsewhere,
-                ))
-                .into()),
+            Err(SwitchError::NoWriter) => {
+                // This Server's own slot is a copy Restore can name, beside any elsewhere.
+                let mut copies = elsewhere;
+                if let Some(ployz_core::VolumeCopy::Slot { .. }) = held.copy
+                    && let Some(machine) = machine_name(me)
+                {
+                    copies.push(KnownCopy {
+                        machine,
+                        role: CopyRole::Slot,
+                    });
+                }
+                Err(SwitchError::NoWriter
+                    .rpc_error(ployz_core::no_writer_message(
+                        ployz_core::Namespace::declared_volume_name(name).unwrap_or(name.as_str()),
+                        &copies,
+                    ))
+                    .into())
+            }
             Err(reason) => Err(reason
                 .rpc_error(format!(
                     "Volume {name} is mid-run on this Machine; wait for the run to finish"
@@ -241,27 +253,102 @@ impl LocalMachine {
         .await
     }
 
-    /// Create one local Docker Volume while holding Machine mutation admission.
+    /// Take one running managed Container out of ingress, wait `drain`, stop it.
     ///
-    /// # Errors
+    /// Contract: the caller holds `installation` and no admission turn. The
+    /// helper takes the exclusive turn for the Docker stop itself, so a caller
+    /// already holding a turn deadlocks.
     ///
-    /// Returns when local state or Docker is unavailable, admission is busy, or Docker cannot
-    /// create the Volume.
-    pub(crate) async fn create_volume(
+    /// The stopping mark is set without a turn so replication tells every proxy
+    /// while the drain sleeps. The stop clears the mark whether it succeeds or
+    /// fails, so a Container that failed to stop is routed again. A daemon
+    /// restart forgets the mark; a still-running Container returns to ingress
+    /// and the resend redoes the drain.
+    ///
+    /// Polls no proxy and reads no other Machine.
+    pub(crate) async fn stop_behind_ingress(
         &self,
-        request: CreateVolumeRequest,
-    ) -> Result<CreateVolumeReport, Error> {
+        installation: &crate::mutation::MutationGuard,
+        container: &ContainerId,
+        drain: Drain,
+        stop: &StopOptions,
+    ) -> Result<ContainerObservation, Error> {
+        let _ = installation;
+        let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+        let machine_id = self.record().id();
+        let observed = containers.inspect_managed(container, &machine_id).await?;
+        if !is_running(&observed) {
+            return Ok(observed);
+        }
+        containers.mark_stopping(*container);
+        tokio::time::sleep(drain.as_duration()).await;
+        let turn = self.owner.admission_lock().write_owned().await;
+        let stopped = containers
+            .stop(
+                container,
+                stop.signal.as_deref(),
+                stop.grace_period_seconds.map(i32::from),
+            )
+            .await;
+        drop(turn);
+        stopped?;
+        Ok(containers.inspect_managed(container, &machine_id).await?)
+    }
+
+    /// The cut's Container half: drain and stop every holder of the Volume, then run
+    /// `zfs` under the exclusive turn once no holder runs. The holders are listed again
+    /// under the turn, so one started during the drain is `Busy` too, as is one the
+    /// stop left running. A `Busy` cut leaves the root a writer.
+    ///
+    /// Detached from the RPC with the installation held, so a caller that hangs up
+    /// does not abandon a half-stopped Container.
+    pub(crate) async fn cut_volume_copy<Z, Fut>(
+        &self,
+        name: DockerVolumeName,
+        drain: Drain,
+        zfs: Z,
+    ) -> Result<Result<(), CopyRefusal>, Error>
+    where
+        Z: FnOnce() -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Result<(), Error>> + Send + 'static,
+    {
         let local = self.clone();
-        self.finish_mutation(async move {
-            let machine_id = local.record().id();
-            Ok(local
-                .containers
-                .as_ref()
-                .ok_or(Error::DockerUnavailable)?
-                .create_volume(&machine_id, request)
-                .await?)
+        self.finish_installed(move |installation| async move {
+            let containers = local.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+            let stop = StopOptions::default();
+            for holder in containers.volume_holder_ids(&name).await? {
+                let observed = local
+                    .stop_behind_ingress(&installation, &holder, drain, &stop)
+                    .await?;
+                if is_running(&observed) {
+                    return Ok(Err(CopyRefusal::Busy));
+                }
+            }
+            let _turn = local.owner.admission_lock().write_owned().await;
+            if local.volume_holder_running(&name).await? {
+                return Ok(Err(CopyRefusal::Busy));
+            }
+            zfs().await.map(Ok)
         })
         .await
+    }
+
+    /// Whether Docker runs any Container that mounts the Volume `name`. A holder gone
+    /// between the list and its inspect does not run.
+    pub(crate) async fn volume_holder_running(
+        &self,
+        name: &DockerVolumeName,
+    ) -> Result<bool, Error> {
+        let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+        let machine_id = self.record().id();
+        for holder in containers.volume_holder_ids(name).await? {
+            match containers.inspect_managed(&holder, &machine_id).await {
+                Ok(observed) if is_running(&observed) => return Ok(true),
+                Ok(_) | Err(crate::docker::Error::ContainerNotFound(_)) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(false)
     }
 
     /// Remove one local Docker Volume while holding Machine mutation admission.
@@ -288,16 +375,16 @@ impl LocalMachine {
         .await
     }
 
-    /// Remove unused image references while holding Machine mutation admission, so no
-    /// Container is created from a reference as it is removed.
+    /// Remove each repository's superseded build images while holding Machine mutation
+    /// admission, so no Container is created from a reference as it is removed.
     ///
     /// # Errors
     ///
     /// Returns when Docker is unavailable, admission is busy, or Docker cannot list
-    /// Containers.
-    pub(crate) async fn remove_images(
+    /// images or Containers.
+    pub(crate) async fn prune_images(
         &self,
-        references: Vec<String>,
+        request: PruneImagesRequest,
     ) -> Result<ImagesRemoved, Error> {
         let local = self.clone();
         self.finish_mutation(async move {
@@ -305,7 +392,7 @@ impl LocalMachine {
                 .containers
                 .as_ref()
                 .ok_or(Error::DockerUnavailable)?
-                .remove_images(&references)
+                .prune_images(&request.repositories)
                 .await?)
         })
         .await
@@ -362,6 +449,131 @@ impl LocalMachine {
         .await
     }
 
+    /// Make one Container match `want` and answer with what is then observed.
+    ///
+    /// # Errors
+    ///
+    /// Returns when the Container cannot be observed as this Machine's own, Docker
+    /// is unavailable, or an effect fails for a reason that is not a refusal.
+    pub(crate) async fn ensure_container(
+        &self,
+        want: ContainerWant,
+    ) -> Result<EnsuredContainer, Error> {
+        let locator = want_locator(&want);
+        let now = self.container_now(&locator).await?;
+        let refusal = match plan_container(want, &now, &self.record().phase()) {
+            ContainerStep::Done => return Ok(EnsuredContainer::Ensured { now: redacted(now) }),
+            ContainerStep::Refuse(refusal) => {
+                return Ok(EnsuredContainer::Refused {
+                    now: redacted(now),
+                    refusal,
+                });
+            }
+            ContainerStep::CreateAndStart(new) => self.create_and_start(new).await?,
+            ContainerStep::Start(id) => {
+                self.start_container(id).await?;
+                None
+            }
+            ContainerStep::Stop { id, drain, stop } => {
+                let local = self.clone();
+                self.finish_installed(move |installation| async move {
+                    local
+                        .stop_behind_ingress(&installation, &id, drain, &stop)
+                        .await?;
+                    Ok(())
+                })
+                .await?;
+                None
+            }
+            ContainerStep::StopThenRemove { id, drain } => {
+                let local = self.clone();
+                self.finish_installed(move |installation| async move {
+                    local
+                        .stop_behind_ingress(&installation, &id, drain, &StopOptions::default())
+                        .await?;
+                    let turn = local.owner.admission_lock().write_owned().await;
+                    let removed = local
+                        .containers
+                        .as_ref()
+                        .ok_or(Error::DockerUnavailable)?
+                        .remove(&id, true, false)
+                        .await;
+                    drop(turn);
+                    removed?;
+                    Ok(())
+                })
+                .await?;
+                None
+            }
+            ContainerStep::Remove(id) => {
+                match self.remove_container(id, true, false).await {
+                    Ok(_) | Err(Error::Docker(crate::docker::Error::ContainerNotFound(_))) => {}
+                    Err(error) => return Err(error),
+                }
+                None
+            }
+        };
+        let now = redacted(self.container_now(&locator).await?);
+        Ok(match refusal {
+            None => EnsuredContainer::Ensured { now },
+            Some(refusal) => EnsuredContainer::Refused { now, refusal },
+        })
+    }
+
+    async fn container_now(&self, locator: &ContainerLocator) -> Result<ContainerNow, Error> {
+        let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+        let machine_id = self.record().id();
+        let observed = match locator {
+            ContainerLocator::Id(id) => match containers.inspect_managed(id, &machine_id).await {
+                Ok(observed) => Some(observed),
+                Err(crate::docker::Error::ContainerNotFound(_)) => None,
+                Err(error) => return Err(error.into()),
+            },
+            ContainerLocator::Key(slot) => containers.inspect_slot(&machine_id, slot).await?,
+        };
+        Ok(observed.map_or_else(
+            || ContainerNow::Absent {
+                of: locator.clone(),
+            },
+            ContainerNow::Present,
+        ))
+    }
+
+    async fn create_and_start(&self, new: NewContainer) -> Result<Option<ContainerRefusal>, Error> {
+        let local = self.clone();
+        let outcome = self
+            .finish_mutation(async move {
+                let created = local
+                    .create_container_admitted(
+                        new.slot.kind,
+                        &new.slot.namespace,
+                        &new.resolved_spec,
+                        Some(new.slot.creation_key.as_str().to_owned()),
+                        new.deployment_id,
+                        new.registry_auth,
+                    )
+                    .await;
+                let created = match created {
+                    Ok(created) => created,
+                    Err(error) => return create_refusal(error).map(Some),
+                };
+                let containers = local.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+                // A racing create adopted a hook another request already started: never run it twice.
+                if new.slot.kind == ContainerKind::PreDeployHook {
+                    let adopted = containers
+                        .inspect_managed(&created.container_id, &local.record().id())
+                        .await?;
+                    if !never_started(&adopted) {
+                        return Ok(None);
+                    }
+                }
+                containers.start(&created.container_id).await?;
+                Ok(None)
+            })
+            .await?;
+        Ok(outcome)
+    }
+
     async fn create_container_admitted(
         &self,
         kind: ContainerKind,
@@ -398,365 +610,202 @@ impl LocalMachine {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use std::sync::Arc;
+/// Whether Docker still runs the Container's process. Paused and restarting count as
+/// running: both can write the Volume again without a start.
+fn is_running(observed: &ContainerObservation) -> bool {
+    matches!(
+        observed.runtime,
+        ContainerRuntimeObservation::Running { .. }
+            | ContainerRuntimeObservation::Paused
+            | ContainerRuntimeObservation::Restarting
+    )
+}
 
-    use ployz_core::{MachineId, Namespace, ResolvedServiceSpec, ServiceId, ServiceMode};
-    use serde_json::json;
-
-    use crate::machine::{LocalMachine, LocalMachineError, LocalMachineStore, RecordOwner};
-    use crate::storage::test_support::FakePlugin;
-
-    #[tokio::test]
-    async fn fresh_service_revocation_preserves_management_and_trusted_ingress() {
-        use crate::docker::test_support::{FakeDocker, fake_runtime_with};
-        use ployz_core::{AdvertisedEndpoint, ContainerKind, MachineName};
-        let data_dir =
-            std::env::temp_dir().join(format!("ployzd-role-admission-{}", MachineId::random()));
-        let mut store = LocalMachineStore::open(&data_dir).unwrap();
-        store
-            .initialize(ployz_core::InitializeRequest {
-                initial_policy: Default::default(),
-                name: MachineName::parse("local").unwrap(),
-                cluster_network: "10.210.0.0/16".parse().unwrap(),
-                public_ip: None,
-                advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
-                wireguard_mtu: None,
-            })
-            .unwrap();
-        let owner = RecordOwner::spawn(store).unwrap();
-        let (runtime, fake) = fake_runtime_with(FakeDocker {
-            create_barrier: Some(Arc::new(tokio::sync::Barrier::new(1))),
-            ..Default::default()
-        })
-        .await;
-        let local = LocalMachine::new(owner.clone()).with_containers(Some(runtime.clone()));
-        let spec: ResolvedServiceSpec = serde_json::from_value(json!({
-            "service_id": ServiceId::random(), "name": "api", "mode": serde_json::to_value(ServiceMode::Global).unwrap(),
-            "container": {"image":"example.test/api", "pull_policy":"missing"}
-        })).unwrap();
-        let namespace = Namespace::parse("app").unwrap();
-        let existing = local
-            .create_container(
-                ContainerKind::ServiceContainer,
-                &namespace,
-                &spec,
-                None,
-                None,
-                None,
-            )
-            .await
-            .unwrap();
-        let update = serde_json::from_value(json!({
-            "accepts_services": false, "accepts_ingress": true, "accepts_builds": true
-        }))
-        .unwrap();
-        owner
-            .mutate(move |store| store.update(update, &[]))
-            .await
-            .unwrap()
-            .unwrap();
-        for kind in [
-            ContainerKind::ServiceContainer,
-            ContainerKind::PreDeployHook,
-        ] {
-            let error = local
-                .create_container(kind, &namespace, &spec, None, None, None)
-                .await
-                .unwrap_err();
-            assert!(error.to_string().contains("accept"), "{error}");
+/// The observation as it goes on the wire: env and Config values redacted, as
+/// ListContainers redacts them unless asked.
+fn redacted(now: ContainerNow) -> ContainerNow {
+    match now {
+        ContainerNow::Present(mut observed) => {
+            observed.redact_values();
+            ContainerNow::Present(observed)
         }
-        let error = local
-            .prepare_volumes(vec![ployz_core::ServiceStorageSpec::from(&spec)])
-            .await
-            .unwrap_err();
-        assert!(error.to_string().contains("accept"), "{error}");
-        let labels = fake
-            .request_bodies
-            .lock()
-            .unwrap()
-            .iter()
-            .find(|(path, _)| path.ends_with("/containers/create"))
-            .unwrap()
-            .1
-            .get("Labels")
-            .unwrap()
-            .clone();
-        fake.existing_container.lock().unwrap().as_mut().unwrap()["Config"] =
-            json!({"Labels": labels});
-        runtime.start(&existing.container_id).await.unwrap();
-        runtime
-            .stop(&existing.container_id, None, None)
-            .await
-            .unwrap();
-        runtime
-            .remove(&existing.container_id, false, false)
-            .await
-            .unwrap();
-        assert!(fake.existing_container.lock().unwrap().is_none());
-        let ingress = ployz_core::caddy_service_spec("caddy:test".into(), Default::default())
-            .to_resolved(ServiceId::random(), Default::default())
-            .unwrap();
-        let error = local
-            .create_container(
-                ContainerKind::ServiceContainer,
-                &namespace,
-                &ingress,
-                None,
-                None,
-                None,
-            )
-            .await
-            .unwrap_err();
-        assert!(error.to_string().contains("accept"), "{error}");
-        local
-            .create_container(
-                ContainerKind::ServiceContainer,
-                &Namespace::system(),
-                &ingress,
-                None,
-                None,
-                None,
-            )
-            .await
-            .unwrap();
-        std::fs::remove_dir_all(data_dir).unwrap();
-    }
-
-    #[tokio::test]
-    async fn cancelled_create_finishes_before_reset_cleanup() {
-        for before_create in [false, true] {
-            use crate::docker::test_support::{FakeDocker, fake_runtime_with};
-            use ployz_core::{AdvertisedEndpoint, ContainerKind, LocalMachinePhase, MachineName};
-            let data_dir =
-                std::env::temp_dir().join(format!("ployzd-admission-{}", MachineId::random()));
-            let mut store = LocalMachineStore::open(&data_dir).unwrap();
-            store
-                .initialize(ployz_core::InitializeRequest {
-                    initial_policy: Default::default(),
-                    name: MachineName::parse("local").unwrap(),
-                    cluster_network: "10.210.0.0/16".parse().unwrap(),
-                    public_ip: None,
-                    advertised_endpoints: vec![AdvertisedEndpoint(
-                        "192.0.2.1:51820".parse().unwrap(),
-                    )],
-                    wireguard_mtu: None,
-                })
-                .unwrap();
-            let barrier = Arc::new(tokio::sync::Barrier::new(2));
-            let (runtime, fake) = fake_runtime_with(FakeDocker {
-                create_barrier: (!before_create).then(|| barrier.clone()),
-                image_barrier: before_create.then(|| barrier.clone()),
-                ..Default::default()
-            })
-            .await;
-            let owner = RecordOwner::spawn(store).unwrap();
-            let plugin = FakePlugin::default();
-            plugin.reply("Storage.Demote", json!({"Ok": []}));
-            let (plugin, _plugin_server) = plugin.serve(&data_dir);
-            let local = LocalMachine::new(owner.clone()).with_containers(Some(runtime.clone()));
-            let resetting = LocalMachine::new(owner)
-                .with_containers(Some(runtime))
-                .with_plugin(plugin);
-            let spec: ResolvedServiceSpec = serde_json::from_value(json!({
-            "service_id": ServiceId::random(), "name": "api", "mode": serde_json::to_value(ServiceMode::Replicated { replicas: 1.try_into().unwrap() }).unwrap(),
-            "container":{"image":"example.test/api", "pull_policy":"missing"}
-        })).unwrap();
-            let namespace = Namespace::parse("app").unwrap();
-            let creating = tokio::spawn({
-                let local = local.clone();
-                let spec = spec.clone();
-                let namespace = namespace.clone();
-                async move {
-                    local
-                        .create_container(
-                            ContainerKind::ServiceContainer,
-                            &namespace,
-                            &spec,
-                            None,
-                            None,
-                            None,
-                        )
-                        .await
-                }
-            });
-            tokio::time::timeout(std::time::Duration::from_secs(5), barrier.wait())
-                .await
-                .unwrap();
-            creating.abort();
-            let _ = creating.await;
-            let mut reset = Box::pin(resetting.reset());
-            assert!(
-                tokio::time::timeout(std::time::Duration::from_millis(50), &mut reset)
-                    .await
-                    .is_err(),
-                "reset must wait for the admitted create even after its caller is cancelled"
-            );
-            barrier.wait().await;
-            tokio::time::timeout(std::time::Duration::from_secs(5), reset)
-                .await
-                .unwrap()
-                .unwrap();
-            assert!(fake.existing_container.lock().unwrap().is_none());
-            assert_eq!(local.record().phase(), LocalMachinePhase::Resetting);
-            assert!(matches!(
-                local
-                    .create_container(
-                        ContainerKind::ServiceContainer,
-                        &namespace,
-                        &spec,
-                        None,
-                        None,
-                        None,
-                    )
-                    .await,
-                Err(LocalMachineError::NotParticipating)
-            ));
-            std::fs::remove_dir_all(data_dir).unwrap();
-        }
-    }
-
-    #[tokio::test]
-    async fn joining_admits_direct_create() {
-        use crate::docker::test_support::{FakeDocker, fake_runtime_with};
-        use ployz_core::{AdvertisedEndpoint, ContainerKind, Machine, MachineName};
-        let data_dir =
-            std::env::temp_dir().join(format!("ployzd-joining-admission-{}", MachineId::random()));
-        let owner = RecordOwner::spawn(LocalMachineStore::open(&data_dir).unwrap()).unwrap();
-        let barrier = Arc::new(tokio::sync::Barrier::new(2));
-        let (runtime, _) = fake_runtime_with(FakeDocker {
-            create_barrier: Some(barrier.clone()),
-            ..Default::default()
-        })
-        .await;
-        let local = LocalMachine::new(owner.clone()).with_containers(Some(runtime));
-        let spec: ResolvedServiceSpec = serde_json::from_value(json!({
-            "service_id": ServiceId::random(), "name": "api", "mode": serde_json::to_value(ServiceMode::Global).unwrap(),
-            "container": {"image":"example.test/api", "pull_policy":"missing"}
-        })).unwrap();
-        let namespace = Namespace::parse("app").unwrap();
-        assert!(matches!(
-            local
-                .create_container(
-                    ContainerKind::ServiceContainer,
-                    &namespace,
-                    &spec,
-                    None,
-                    None,
-                    None,
-                )
-                .await,
-            Err(LocalMachineError::NotParticipating)
-        ));
-        let record = owner.record();
-        let machine = Machine {
-            labels: Default::default(),
-            accepts_builds: true,
-            accepts_services: true,
-            accepts_ingress: true,
-            id: record.id(),
-            name: MachineName::parse("joining").unwrap(),
-            subnet: "10.210.0.0/24".parse().unwrap(),
-            public_key: record.private_key().public_key(),
-            public_ip: None,
-            advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
-            runtime: Default::default(),
-            build_concurrency: None,
-        };
-        let mut peer = machine.clone();
-        peer.id = MachineId::random();
-        owner
-            .mutate(move |store| store.join(machine, vec![peer], Default::default(), None))
-            .await
-            .unwrap()
-            .unwrap();
-        let release = tokio::spawn(async move {
-            barrier.wait().await;
-            barrier.wait().await;
-        });
-        local
-            .create_container(
-                ContainerKind::ServiceContainer,
-                &namespace,
-                &spec,
-                None,
-                None,
-                None,
-            )
-            .await
-            .unwrap();
-        release.await.unwrap();
-        std::fs::remove_dir_all(data_dir).unwrap();
-    }
-
-    #[tokio::test]
-    async fn removal_warning_keeps_recovery_available_without_container_admission() {
-        use crate::{
-            corrosion::{AdminClient, fake_cluster},
-            docker::test_support::{FakeDocker, fake_runtime_with},
-        };
-        use ployz_core::{
-            AdvertisedEndpoint, ContainerKind, LocalMachinePhase, MachineName,
-            RemoveLocalMachineRequest,
-        };
-        let data_dir =
-            std::env::temp_dir().join(format!("ployzd-removal-admission-{}", MachineId::random()));
-        let mut store = LocalMachineStore::open(&data_dir).unwrap();
-        store
-            .initialize(ployz_core::InitializeRequest {
-                initial_policy: Default::default(),
-                name: MachineName::parse("local").unwrap(),
-                cluster_network: "10.210.0.0/16".parse().unwrap(),
-                public_ip: None,
-                advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
-                wireguard_mtu: None,
-            })
-            .unwrap();
-        let (replicated, server) = fake_cluster::store().await;
-        server.abort();
-        let _ = server.await;
-        let (runtime, _) = fake_runtime_with(FakeDocker::default()).await;
-        let owner = RecordOwner::spawn(store).unwrap();
-        let restarting = owner.restart_requested();
-        let plugin = FakePlugin::default();
-        plugin.reply("Storage.Demote", json!({"Ok": []}));
-        let (plugin, _plugin_server) = plugin.serve(&data_dir);
-        let local = LocalMachine::new(owner)
-            .with_containers(Some(runtime))
-            .with_cluster(Some((replicated, AdminClient::new("/no/such/admin.sock"))))
-            .with_plugin(plugin);
-        let removed = local
-            .remove_local(RemoveLocalMachineRequest {
-                restart_on_cleanup_failure: false,
-            })
-            .await
-            .unwrap();
-        assert!(removed.reset_warning.is_some());
-        assert!(!*restarting.borrow());
-        assert_eq!(local.record().phase(), LocalMachinePhase::Resetting);
-        assert!(
-            local.record().machine().is_some(),
-            "historical Machine remains available for recovery"
-        );
-        let spec: ResolvedServiceSpec = serde_json::from_value(json!({
-            "service_id": ServiceId::random(), "name":"api", "mode": serde_json::to_value(ServiceMode::Global).unwrap(),
-            "container":{"image":"example.test/api", "pull_policy":"missing"}
-        })).unwrap();
-        let namespace = Namespace::parse("app").unwrap();
-        assert!(matches!(
-            local
-                .create_container(
-                    ContainerKind::ServiceContainer,
-                    &namespace,
-                    &spec,
-                    None,
-                    None,
-                    None,
-                )
-                .await,
-            Err(LocalMachineError::NotParticipating)
-        ));
-        std::fs::remove_dir_all(data_dir).unwrap();
+        absent @ ContainerNow::Absent { .. } => absent,
     }
 }
+
+/// Whether Docker created the Container but never ran it. A one-shot hook in any
+/// other state has already run, or is running, its command.
+fn never_started(observed: &ContainerObservation) -> bool {
+    matches!(observed.runtime, ContainerRuntimeObservation::Created)
+}
+
+#[derive(Clone, Debug, PartialEq)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "a creation step carries the whole resolved spec, as the want it came from does"
+)]
+enum ContainerStep {
+    Done,
+    Refuse(ContainerRefusal),
+    CreateAndStart(NewContainer),
+    Start(ContainerId),
+    Stop {
+        id: ContainerId,
+        drain: Drain,
+        stop: StopOptions,
+    },
+    StopThenRemove {
+        id: ContainerId,
+        drain: Drain,
+    },
+    Remove(ContainerId),
+}
+
+fn plan_container(
+    want: ContainerWant,
+    now: &ContainerNow,
+    phase: &LocalMachinePhase,
+) -> ContainerStep {
+    let present = match now {
+        ContainerNow::Present(observed) => Some(observed),
+        ContainerNow::Absent { .. } => None,
+    };
+    match want {
+        ContainerWant::Running { .. }
+            if !matches!(
+                phase,
+                LocalMachinePhase::Joining | LocalMachinePhase::Participating
+            ) =>
+        {
+            ContainerStep::Refuse(refuse(
+                ContainerRefusalReason::NotParticipating,
+                "Machine is not participating",
+            ))
+        }
+        ContainerWant::Running {
+            container: RunTarget::New(new),
+        } => match present {
+            None => ContainerStep::CreateAndStart(new),
+            Some(observed)
+                if same_creation(
+                    observed,
+                    &new.slot.namespace,
+                    new.slot.kind,
+                    &new.resolved_spec,
+                ) =>
+            {
+                match new.slot.kind {
+                    ContainerKind::ServiceContainer => run_step(observed),
+                    // Start an unstarted hook only through the admitted create, which
+                    // reinspects it there: another request may have started it since.
+                    ContainerKind::PreDeployHook if never_started(observed) => {
+                        ContainerStep::CreateAndStart(new)
+                    }
+                    // A hook that ran once is adopted as it is, so its exit status is the reply.
+                    ContainerKind::PreDeployHook => ContainerStep::Done,
+                }
+            }
+            Some(_) => ContainerStep::Refuse(refuse(
+                ContainerRefusalReason::SlotOccupied,
+                "the slot holds a Container created from another spec",
+            )),
+        },
+        ContainerWant::Running {
+            container: RunTarget::Existing(locator),
+        } => present.map_or_else(|| not_found(&locator), run_step),
+        ContainerWant::Stopped {
+            container,
+            drain,
+            stop,
+        } => match present {
+            None => not_found(&container),
+            Some(observed) if is_running(observed) => ContainerStep::Stop {
+                id: observed.container_id,
+                drain,
+                stop,
+            },
+            Some(_) => ContainerStep::Done,
+        },
+        ContainerWant::Gone { container, drain } => match present {
+            // The remove helper deletes a spec Docker no longer has a Container for. A slot
+            // names no spec row without Docker, so an absent Key is already gone.
+            None => match container {
+                ContainerLocator::Id(id) => ContainerStep::Remove(id),
+                ContainerLocator::Key(_) => ContainerStep::Done,
+            },
+            Some(observed) if is_running(observed) => ContainerStep::StopThenRemove {
+                id: observed.container_id,
+                drain,
+            },
+            Some(observed) => ContainerStep::Remove(observed.container_id),
+        },
+    }
+}
+
+fn run_step(observed: &ContainerObservation) -> ContainerStep {
+    if is_running(observed) {
+        ContainerStep::Done
+    } else {
+        ContainerStep::Start(observed.container_id)
+    }
+}
+
+fn not_found(locator: &ContainerLocator) -> ContainerStep {
+    ContainerStep::Refuse(refuse(
+        ContainerRefusalReason::NotFound,
+        format!("no Container at {locator:?}"),
+    ))
+}
+
+fn refuse(reason: ContainerRefusalReason, message: impl Into<String>) -> ContainerRefusal {
+    ContainerRefusal {
+        reason,
+        message: message.into(),
+    }
+}
+
+fn want_locator(want: &ContainerWant) -> ContainerLocator {
+    match want {
+        ContainerWant::Running {
+            container: RunTarget::New(new),
+        } => ContainerLocator::Key(new.slot.clone()),
+        ContainerWant::Running {
+            container: RunTarget::Existing(locator),
+        }
+        | ContainerWant::Stopped {
+            container: locator, ..
+        }
+        | ContainerWant::Gone {
+            container: locator, ..
+        } => locator.clone(),
+    }
+}
+
+fn create_refusal(error: Error) -> Result<ContainerRefusal, Error> {
+    use crate::docker::Error as Docker;
+    #[expect(
+        clippy::wildcard_enum_match_arm,
+        reason = "only create-path errors a driver can act on become refusals"
+    )]
+    let reason = match &error {
+        Error::NotParticipating => ContainerRefusalReason::NotParticipating,
+        Error::IngressProxyServiceSpec(_) => ContainerRefusalReason::InvalidIngress,
+        Error::Docker(
+            Docker::WorkNotAccepted
+            | Docker::ServicePlacementMismatch
+            | Docker::ProvisionedStorageUnsupported
+            | Docker::StorageUnobservable,
+        ) => ContainerRefusalReason::NotEligible,
+        Error::Docker(Docker::SlotNameOccupied(_)) => ContainerRefusalReason::SlotOccupied,
+        Error::Docker(Docker::ImagePull(_)) => ContainerRefusalReason::ImagePullFailed,
+        Error::Docker(Docker::ExternalVolumeNotFound(_) | Docker::VolumeShapeMismatch { .. }) => {
+            ContainerRefusalReason::VolumesNotPrepared
+        }
+        _ => return Err(error),
+    };
+    Ok(refuse(reason, ployz_core::error_chain::inline(&error)))
+}
+
+#[cfg(test)]
+#[path = "container_tests.rs"]
+mod tests;

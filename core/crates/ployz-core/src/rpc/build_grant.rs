@@ -1,4 +1,4 @@
-//! Typed requests and outcomes for minting and ending a Build Grant.
+//! Typed requests and outcomes for minting and inspecting a Build Grant.
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -13,7 +13,7 @@ pub struct MintBuildGrantRequest {
 /// A minted grant. The Machine keeps it in memory only; a restart ends it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct BuildGrantMinted {
-    /// Handle for [`EndBuildGrantRequest`]; not secret.
+    /// Handle for [`InspectBuildGrantRequest`]; not secret.
     pub id: crate::BuildGrantId,
     /// Secret-bearing grant for the pusher only.
     #[ts(type = "string")]
@@ -22,17 +22,22 @@ pub struct BuildGrantMinted {
     pub expires_in_seconds: u64,
 }
 
-/// End a Build Grant because its Build finished or was cancelled.
+/// Read what a Build Grant received. Reading neither spends the grant nor shows its
+/// secret; the grant ends by expiring. An unknown id, expired or lost to a daemon
+/// restart, is `not_found`.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct EndBuildGrantRequest {
+pub struct InspectBuildGrantRequest {
     pub id: crate::BuildGrantId,
 }
 
-/// What the Machine received under an ended grant.
+/// What the Machine has received under a live grant.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct BuildGrantEnded {
-    /// `sha256:` digest of the manifest the Machine verified and stored, when the
-    /// push completed; absent when nothing was pushed.
-    #[serde(default)]
+pub struct BuildGrantInspected {
+    /// `sha256:` digest of the manifest the Machine verified and stored, once the
+    /// push completed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
     pub pushed: Option<crate::ImageDigest>,
+    /// The grant ends by itself this long from now.
+    pub expires_in_seconds: u64,
 }

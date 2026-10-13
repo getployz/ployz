@@ -9,6 +9,7 @@ import { cancelGithubRun, checkGithubBuildWorkflow, dispatchGithubBuildWorkflow,
 import { verifyGithubOidcToken } from "#/modules/github/github-oidc.server";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import { createGithubBuildRunCompletedEvent, type ConfigDeploymentAdmittedEventData } from "#/modules/inngest/events";
+import { requirements, serversLacking } from "#/modules/runtime/daemon-compat";
 import { firstRuntimeFrame } from "#/modules/runtime/organization-runtime.server";
 import { AppConfig } from "#/server/config.server";
 import { BuildGrantUnavailable, Conflict, Forbidden, NotFound, Unauthorized, Validation } from "#/server/public-error";
@@ -49,6 +50,18 @@ export type StoreGithubTarget = {
 const serversBuild = (organizationId: string) => firstRuntimeFrame(organizationId).pipe(
   Effect.map((frame) => frame === null || frame.machines.some(({ machine }) => machine.accepts_builds)),
   Effect.orElseSucceed(() => true),
+);
+
+/**
+ * The Servers whose records say they can't read a Build Grant back. Any Server may mint the grant, so one such Server
+ * is enough to send the build to its next Builder. No answer names none: the build is attempted.
+ */
+const serversLackingGrants = (organizationId: string) => firstRuntimeFrame(organizationId).pipe(
+  Effect.map((frame) => frame === null ? [] : serversLacking(
+    frame.machines.map(({ machine }) => ({ name: machine.name, capabilities: machine.runtime.capabilities ?? [] })),
+    requirements.buildGrantInspect,
+  )),
+  Effect.orElseSucceed((): string[] => []),
 );
 
 /**
@@ -106,6 +119,8 @@ export const startStoreGithubBuild = Effect.fn("StoreGithub.start")(function* (o
     if (workflow.readiness !== "ready" || !workflow.fullName || !workflow.defaultBranch) {
       return yield* skip(`${repository} has no .github/workflows/ployz-build.yml on its default branch`);
     }
+    const lacking = yield* serversLackingGrants(organizationId);
+    if (lacking.length > 0) return yield* skip(`GitHub builds need a newer Ployz on ${lacking.join(", ")}`);
     const connections = yield* connectionsOf(organizationId);
     const start = yield* storeTry(() => store.githubStart(target.build, connections));
     if (start.kind !== "dispatch") return done;
@@ -155,7 +170,7 @@ export const checkStoreGithubBuild = Effect.fn("StoreGithub.check")(function* (
   const deploymentId = build.id.slice(0, build.id.indexOf("."));
   const view = yield* storeTry(() => store.read(organizationId, { query: "deployment", id: deploymentId }));
   if (view.status !== "queued" && view.status !== "running") {
-    yield* cancelStoreGithubBuilds(organizationId, deploymentId);
+    yield* cancelStoreGithubBuilds(deploymentId);
     return "done" as const;
   }
   const finish = (timedOut: boolean) => Effect.gen(function* () {

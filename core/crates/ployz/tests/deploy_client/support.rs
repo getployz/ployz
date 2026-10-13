@@ -17,14 +17,14 @@ use ployz::{
 use ployz_core::{
     AdvertisedEndpoint, CapabilityName, ContainerAddress, ContainerCreated, ContainerDetails,
     ContainerId, ContainerKind, ContainerList, ContainerObservationMap, ContainerPath,
-    ContainerRuntimeObservation, ContractDescription, CreateVolumeReport, DockerVolume,
-    DockerVolumeId, DockerVolumeName, ExecResponseFrame, GET_CONTAINER_OBSERVATIONS_CAPABILITY,
-    HealthObservation, HealthcheckSpec, LocalMachinePhase, MACHINE_STORAGE_OBSERVATION_CAPABILITY,
-    Machine, MachineDetails, MachineId, MachineImages, MachineList, MachineName,
-    MachineObservation, MachineRpc, MachineRpcServer, MembershipObservation, Namespace,
-    OpaquePayload, PROTOCOL_MAJOR, RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig,
-    RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, ServiceId, ServiceMount, ServiceVolume,
-    ServiceVolumeGraph, ServiceVolumeReference, UpdateOrder, VolumeInventory, WireGuardPublicKey,
+    ContainerRuntimeObservation, ContractDescription, DockerVolume, DockerVolumeName,
+    ExecResponseFrame, GET_CONTAINER_OBSERVATIONS_CAPABILITY, HealthObservation, HealthcheckSpec,
+    LocalMachinePhase, MACHINE_STORAGE_OBSERVATION_CAPABILITY, Machine, MachineDetails, MachineId,
+    MachineImages, MachineList, MachineName, MachineObservation, MachineRpc, MachineRpcServer,
+    MembershipObservation, Namespace, OpaquePayload, PROTOCOL_MAJOR, RequestedServiceSpec,
+    ResolvedServiceSpec, ResolvedUpdateConfig, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
+    ServiceId, ServiceMount, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference,
+    UpdateOrder, VolumeInventory, WireGuardPublicKey,
 };
 use serde_json::Value;
 use tokio::net::TcpListener;
@@ -362,7 +362,7 @@ impl MachineRpc for DeployService {
                     ployz_core::BUILD_CAPABILITY,
                     ployz_core::ENSURE_IMAGE_INGEST_CAPABILITY,
                     ployz_core::PULL_IMAGE_FROM_MACHINE_CAPABILITY,
-                    ployz_core::REMOVE_IMAGES_CAPABILITY,
+                    ployz_core::PRUNE_IMAGES_CAPABILITY,
                 ]
                 .map(|name| CapabilityName::parse(name).unwrap()),
             );
@@ -425,65 +425,6 @@ impl MachineRpc for DeployService {
             volumes: self.volumes.lock().unwrap().clone(),
             failures: Vec::new(),
         }))
-    }
-
-    async fn create_volume(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        self.record_mutation();
-        if let Some(error) = &self.create_volume_error {
-            return encoded(RpcResponse::from(error.clone()));
-        }
-        let machine_id = machine_from_metadata(&request)?;
-        let RpcRequestBody::CreateVolume(create) =
-            request.into_inner().decode_request().unwrap().body
-        else {
-            return Err(Status::invalid_argument("expected create_volume"));
-        };
-        let storage = if create.driver == "ployz" {
-            let bound_bytes = create
-                .options
-                .get("size")
-                .and_then(|size| size.strip_suffix('b'))
-                .unwrap()
-                .parse()
-                .unwrap();
-            ployz_core::DockerVolumeStorageObservation::Provisioned {
-                mountpoint: ployz_core::MachinePath::parse(format!(
-                    "/var/lib/ployz-volumes/{}",
-                    create.name
-                ))
-                .unwrap(),
-                bound_bytes,
-                used_bytes: 0,
-                role: None,
-            }
-        } else {
-            ployz_core::DockerVolumeStorageObservation::Plain {
-                driver: create.driver,
-            }
-        };
-        let volume = DockerVolume {
-            id: DockerVolumeId {
-                machine_id,
-                name: create.name,
-            },
-            options: create.options,
-            labels: create.labels,
-            storage,
-        };
-        self.volumes.lock().unwrap().push(volume.clone());
-        let report = self.create_volume_verification_error.clone().map_or(
-            CreateVolumeReport::Verified {
-                volume: volume.clone(),
-            },
-            |error| CreateVolumeReport::Unverified {
-                id: volume.id,
-                error,
-            },
-        );
-        encoded(RpcResponse::from(report))
     }
 
     async fn create_container(
@@ -572,15 +513,11 @@ impl MachineRpc for DeployService {
             management_clients: Vec::new(),
             telemetry,
             storage: self.machines.first().and_then(|machine| machine.storage),
+            upgrade: None,
+            token: None,
         }))
     }
-    async fn machine_token(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
-    }
-    async fn initialize(
+    async fn enroll(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
@@ -588,13 +525,6 @@ impl MachineRpc for DeployService {
         unused()
     }
     async fn register(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        self.record_mutation();
-        unused()
-    }
-    async fn join(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
@@ -609,12 +539,6 @@ impl MachineRpc for DeployService {
         unused()
     }
     async fn request_machine_upgrade(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
-    }
-    async fn inspect_machine_upgrade(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
@@ -744,145 +668,19 @@ impl MachineRpc for DeployService {
             .collect();
         encoded(RpcResponse::from(ContainerObservationMap { containers }))
     }
-    async fn inspect_volume(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
-    }
     async fn inspect_volume_copy(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         unused()
     }
-    async fn withdraw(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
-    }
-    async fn freeze(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
-    }
-    async fn hand_over(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
-    }
-    async fn thaw(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
-    }
-    async fn close(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
-    }
-    async fn accept_hand_off(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
-    }
-    async fn promote(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
-    }
-    async fn start_handed_container(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
-    }
-    async fn clear_final(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
-    }
-    async fn restore(
+    async fn set_volume_copy(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         unused()
     }
     async fn seed_volume(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
-    }
-    async fn declare_mirror(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
-    }
-    async fn begin_round(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
-    }
-    async fn commit_snapshots(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
-    }
-    async fn warm_snapshot(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
-    }
-    async fn start_receive(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
-    }
-    async fn inspect_receive(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
-    }
-    async fn prune_mirror(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
-    }
-    async fn destroy_mirror(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
-    }
-    async fn forget_snapshots(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
-    }
-    async fn forget_lease(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
-    }
-    async fn demote_volume(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
@@ -939,6 +737,13 @@ impl MachineRpc for DeployService {
         encoded(RpcResponse::from(ployz_core::ContainerChanged {
             container_id: remove.container_id,
         }))
+    }
+
+    async fn ensure_container(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented("unused"))
     }
     async fn exec(
         &self,
@@ -1086,17 +891,20 @@ impl MachineRpc for DeployService {
     ) -> Result<Response<OpaquePayload>, Status> {
         Err(Status::unimplemented("unused"))
     }
-    async fn end_build_grant(
+    async fn inspect_build_grant(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         Err(Status::unimplemented("unused"))
     }
-    async fn remove_images(
+    async fn prune_images(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
+        if self.builds.is_none() {
+            return unused();
+        }
+        encoded(RpcResponse::from(ployz_core::ImagesRemoved::default()))
     }
     async fn pull_image_from_machine(
         &self,
@@ -1133,13 +941,6 @@ impl MachineRpc for DeployService {
     ) -> Result<Response<OpaquePayload>, Status> {
         unused()
     }
-    async fn reset(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        self.record_mutation();
-        unused()
-    }
     async fn update_machine(
         &self,
         _request: Request<OpaquePayload>,
@@ -1147,24 +948,18 @@ impl MachineRpc for DeployService {
         self.record_mutation();
         unused()
     }
-    async fn remove_local_machine(
+    async fn leave(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         self.record_mutation();
         unused()
     }
-    async fn remove_machine(
+    async fn forget(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         self.record_mutation();
-        unused()
-    }
-    async fn inspect_wireguard(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
         unused()
     }
 }

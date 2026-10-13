@@ -356,9 +356,12 @@ const s4: Task = {
 
 /** The Machine effects of the trial: `<server> <command> <subject>` and how many more times each ran. */
 const effects = (evidence: Evidence) => delta(evidence.before.machine, evidence.after.machine);
+const matching = (got: Multiset, pattern: RegExp) =>
+  Object.entries(got).reduce((sum, [key, count]) => (pattern.test(key) ? sum + count : sum), 0);
 /** How many effects of the trial match `pattern`. */
-const times = (evidence: Evidence, pattern: RegExp) =>
-  Object.entries(effects(evidence)).reduce((sum, [key, count]) => (pattern.test(key) ? sum + count : sum), 0);
+const times = (evidence: Evidence, pattern: RegExp) => matching(effects(evidence), pattern);
+/** How many Volume runs the trial started, as `volume-run <kind> <volume>`, match `pattern`. */
+const runs = (evidence: Evidence, pattern: RegExp) => matching(delta(evidence.before.actions, evidence.after.actions), pattern);
 /** Each effect matching `scope` ran as often as `expected` says, and none ran that it does not name. */
 const exactly = (got: Multiset, scope: RegExp, expected: Readonly<Record<string, number>>) => [
   ...Object.entries(expected).flatMap(([key, count]) => ((got[key] ?? 0) === count ? [] : [`${key} ran ${got[key] ?? 0} times, not ${count}`])),
@@ -451,7 +454,7 @@ const a3: Task = {
   fleet: {},
   allowed: edits("machine"),
   check: (evidence) => need(
-    [times(evidence, / declare_mirror /) === 1, `${times(evidence, / declare_mirror /)} Mirror runs, not 1`],
+    [runs(evidence, /^volume-run mirror pgdata$/) === 1, `${runs(evidence, /^volume-run mirror pgdata$/)} Mirror runs, not 1`],
     [asked(evidence) === 0, `${asked(evidence)} approvals asked`],
   ),
 };
@@ -471,7 +474,7 @@ const a4: Task = {
   },
   allowed: edits("machine"),
   check: (evidence) => need(
-    [times(evidence, / destroy_mirror /) === 1, `${times(evidence, / destroy_mirror /)} mirror removals, not 1`],
+    [runs(evidence, /^volume-run delete_mirror pgdata$/) === 1, `${runs(evidence, /^volume-run delete_mirror pgdata$/)} mirror removals, not 1`],
     [asked(evidence) === 1, `${asked(evidence)} approvals asked, not 1`],
   ),
 };
@@ -563,7 +566,7 @@ const a7: Task = {
     return need(
       [releases === 1, `${releases} Releases, not 1`],
       [named(evidence, "volume_move").length === 0, "the agent moved uploads"],
-      [times(evidence, / hand_over /) === 0, "a Machine handed uploads over"],
+      [runs(evidence, /^volume-run move uploads$/) === 0, "a Move ran on uploads"],
     );
   },
 };
@@ -613,8 +616,7 @@ const a10: Task = {
     return need(
       [mirrors.length === 1, `${mirrors.length} volume_mirror calls, not 1`],
       [mirrors.every((call) => (inputOf(call)?.server ?? "web-2") === "web-2"), "volume_mirror named a server other than web-2"],
-      [times(evidence, / declare_mirror /) === 0, "a full Mirror ran"],
-      [times(evidence, / begin_round /) === 1, `${times(evidence, / begin_round /)} Sync rounds, not 1`],
+      [runs(evidence, /^volume-run (mirror|sync) pgdata$/) === 1, `${runs(evidence, /^volume-run (mirror|sync) pgdata$/)} refresh runs, not 1`],
       [asked(evidence) === 0, `${asked(evidence)} approvals asked`],
     );
   },

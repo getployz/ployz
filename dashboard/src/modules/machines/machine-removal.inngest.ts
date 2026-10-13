@@ -86,27 +86,23 @@ export async function executeProcessMachineRemove({
   }
 
   const attempt = prepared.attempt;
-  const removed = await step.run("remove-machine", () =>
+  const sent = await step.run("remove-machine", () =>
     runInngestEffect(Effect.scoped(removeMachineActivity({ ...attempt, inngestRunId: runId }))),
   );
+  // The Server reset and its row is still listed. The memoized reply is the proof of the reset: Forget alone finishes,
+  // retried while the Server still reads as suspect, and never sends the removal again.
+  const removed = sent.kind === "left"
+    ? await step.run("forget-machine", () =>
+      runInngestEffect(Effect.scoped(removeMachineActivity({ ...attempt, inngestRunId: runId }, { resetWarning: sent.resetWarning }))),
+    )
+    : sent;
 
-  if (removed.kind === "lost") {
-    await step.run("complete-lost", () =>
-      runInngestEffect(
-        completeMachineRemoveAttemptActivity({
-          attemptId,
-          inngestRunId: runId,
-          completion: {
-            state: "failed",
-            failureCode: "lost",
-            failureMessage: "Cloud lost track of the removal after asking the Server; it may be reset already.",
-          },
-          now: new Date(),
-        }),
-      ),
-    );
-    return { attemptId, status: "lost" as const };
+  // The attempt is no longer this run's running attempt: it finished, was cancelled or failed, or another run claimed
+  // it. This run asked nothing and leaves the outcome alone.
+  if (removed.kind === "superseded") {
+    return { attemptId, status: "superseded", skipped: true };
   }
+
   if (removed.kind === "refused") {
     await step.run("complete-refused", () =>
       runInngestEffect(

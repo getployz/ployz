@@ -1,13 +1,28 @@
 use std::time::Duration;
 
 use ployz_core::{
-    AdvertisedEndpoint, InspectRequest, InspectWireGuardRequest, JoinRequest, ListMachinesRequest,
-    LocalMachinePhase, Machine, MachineId, MachineName, MachineToken, MachineTokenRequest,
-    MachineUpdate, RegisterRequest, RemoveMachineRequest, RttObservation, UpdateMachineRequest,
-    WireGuardDevice, WireGuardPublicKey, op,
+    AdvertisedEndpoint, EnrollAs, EnrollRequest, ForgetRequest, Forgotten, InspectRequest,
+    ListMachinesRequest, LocalMachinePhase, Machine, MachineId, MachineName, MachineToken,
+    MachineUpdate, RegisterRequest, RttObservation, TokenRequest, UpdateMachineRequest, op,
 };
 
-use super::{Cluster, TestkitError, docker, response};
+use super::{Cluster, TestkitError, command_error, docker_output, response};
+
+const WIREGUARD_INTERFACE: &str = "ployz-wg";
+
+/// A Machine container's WireGuard device, with keys and addresses as `wg` prints them.
+#[derive(Debug)]
+pub struct WireGuardDump {
+    pub public_key: String,
+    pub listen_port: u16,
+    pub peers: Vec<WireGuardDumpPeer>,
+}
+
+#[derive(Debug)]
+pub struct WireGuardDumpPeer {
+    pub public_key: String,
+    pub allowed_ips: Vec<String>,
+}
 
 impl Cluster {
     pub async fn register_second(&self) -> Result<ployz_core::Registered, TestkitError> {
@@ -28,8 +43,8 @@ impl Cluster {
         let assigned = registration.assigned_machine.clone();
         self.join(
             target,
-            JoinRequest {
-                registration,
+            EnrollRequest {
+                role: EnrollAs::Member { registration },
                 wireguard_mtu: None,
             },
         )
@@ -120,24 +135,19 @@ impl Cluster {
         )
     }
 
-    pub async fn remove_machine(
-        &self,
-        entry: usize,
-        machine_id: MachineId,
-    ) -> Result<(), TestkitError> {
+    pub async fn forget(&self, entry: usize, machine_id: MachineId) -> Result<(), TestkitError> {
         let mut client = self.client(entry).await?;
-        response(
+        match response(
             client
-                .remove_machine(
-                    op::RemoveMachine::into_request(RemoveMachineRequest { machine_id })
-                        .encode()?,
-                )
+                .forget(op::Forget::into_request(ForgetRequest { machine_id }).encode()?)
                 .await?
                 .into_inner(),
         )?
-        .decode::<op::RemoveMachine>()
-        .map(|_| ())
-        .map_err(Into::into)
+        .decode::<op::Forget>()?
+        {
+            Forgotten::Forgotten => Ok(()),
+            Forgotten::Refused { error, .. } => Err(TestkitError::Rpc(error.message)),
+        }
     }
 
     pub async fn inspect_rtts(&self, index: usize) -> Result<Vec<RttObservation>, TestkitError> {
@@ -164,11 +174,12 @@ impl Cluster {
         advertised_endpoints: Vec<AdvertisedEndpoint>,
     ) -> Result<MachineToken, TestkitError> {
         let mut client = self.client(index).await?;
-        Ok(response(
+        response(
             client
-                .machine_token(
-                    op::MachineToken::into_request(MachineTokenRequest {
+                .inspect(
+                    op::Inspect::into_request(InspectRequest {
                         advertised_endpoints,
+                        token: Some(TokenRequest::default()),
                         ..Default::default()
                     })
                     .encode()?,
@@ -176,39 +187,52 @@ impl Cluster {
                 .await?
                 .into_inner(),
         )?
-        .decode::<op::MachineToken>()?)
+        .decode::<op::Inspect>()?
+        .token
+        .ok_or_else(|| TestkitError::Rpc("this Server's Ployz does not report a token".into()))
     }
 
-    pub async fn inspect_wireguard(&self, index: usize) -> Result<WireGuardDevice, TestkitError> {
-        let mut client = self.client(index).await?;
-        Ok(response(
-            client
-                .inspect_wireguard(
-                    op::InspectWireguard::into_request(InspectWireGuardRequest {}).encode()?,
-                )
-                .await?
-                .into_inner(),
-        )?
-        .decode::<op::InspectWireguard>()?
-        .device)
-    }
-
-    pub fn inject_wireguard_peer(
-        &self,
-        index: usize,
-        key: WireGuardPublicKey,
-    ) -> Result<(), TestkitError> {
-        docker([
+    /// Read one Machine container's WireGuard device with `wg show dump`.
+    pub fn wireguard_dump(&self, index: usize) -> Result<WireGuardDump, TestkitError> {
+        let output = docker_output([
             "exec",
             &self.container_name(index)?,
             "wg",
-            "set",
-            "ployz-wg",
-            "peer",
-            &key.to_string(),
-            "allowed-ips",
-            "203.0.113.9/32",
-        ])
+            "show",
+            WIREGUARD_INTERFACE,
+            "dump",
+        ])?;
+        if !output.status.success() {
+            return Err(command_error(output));
+        }
+        let text = String::from_utf8_lossy(&output.stdout);
+        let unreadable = || TestkitError::DockerCommand(format!("unreadable wg dump: {text}"));
+        let mut lines = text
+            .lines()
+            .map(|line| line.split('\t').collect::<Vec<_>>());
+        let device = lines.next().ok_or_else(unreadable)?;
+        let [_, public_key, listen_port, ..] = device.as_slice() else {
+            return Err(unreadable());
+        };
+        let listen_port = listen_port.parse().map_err(|_| unreadable())?;
+        let peers = lines
+            .map(|peer| match peer.as_slice() {
+                [public_key, _, _, allowed_ips, ..] => Ok(WireGuardDumpPeer {
+                    public_key: (*public_key).to_owned(),
+                    allowed_ips: allowed_ips
+                        .split(',')
+                        .filter(|address| *address != "(none)")
+                        .map(str::to_owned)
+                        .collect(),
+                }),
+                _ => Err(unreadable()),
+            })
+            .collect::<Result<_, _>>()?;
+        Ok(WireGuardDump {
+            public_key: (*public_key).to_owned(),
+            listen_port,
+            peers,
+        })
     }
 
     pub fn seed_container_row(

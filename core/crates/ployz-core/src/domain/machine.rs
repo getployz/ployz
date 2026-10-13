@@ -7,7 +7,6 @@ use std::{
 };
 use ts_rs::TS;
 
-use ipnet::IpNet;
 use serde::{Deserialize, Serialize};
 
 use super::NameMatches;
@@ -258,7 +257,7 @@ impl FromStr for StorageChoice {
     }
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case", tag = "mode", content = "address")]
 pub enum PublicIpDiscovery {
     #[default]
@@ -267,7 +266,7 @@ pub enum PublicIpDiscovery {
     Override(IpAddr),
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct MachineToken {
     pub id: MachineId,
     pub public_key: WireGuardPublicKey,
@@ -673,57 +672,6 @@ pub fn rtt_statistics(samples_ms: &[f64]) -> Option<RttStatistics> {
         median_ns: (median * 1_000_000.0) as u64,
         population_stddev_ns: (variance.sqrt() * 1_000_000.0) as u64,
     })
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct WireGuardDevice {
-    pub interface_name: String,
-    pub public_key: WireGuardPublicKey,
-    pub listen_port: u16,
-    #[serde(default)]
-    pub peers: Vec<WireGuardPeer>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct WireGuardPeer {
-    pub public_key: WireGuardPublicKey,
-    #[serde(default)]
-    pub endpoint: Option<SocketAddr>,
-    #[serde(default)]
-    pub last_handshake_unix_seconds: Option<u64>,
-    pub received_bytes: u64,
-    pub sent_bytes: u64,
-    #[serde(default)]
-    pub allowed_ips: Vec<IpNet>,
-    #[serde(default)]
-    pub machine: Option<MachineIdentity>,
-    #[serde(default)]
-    pub rtt: Option<RttStatistics>,
-}
-
-#[must_use]
-pub fn associate_wireguard_peers(
-    mut device: WireGuardDevice,
-    machines: &[Machine],
-    rtts: &BTreeMap<MachineId, RttStatistics>,
-) -> WireGuardDevice {
-    for peer in &mut device.peers {
-        let mut matches = machines
-            .iter()
-            .filter(|machine| machine.public_key == peer.public_key);
-        let Some(machine) = matches.next() else {
-            continue;
-        };
-        if matches.next().is_some() {
-            continue;
-        }
-        peer.machine = Some(MachineIdentity {
-            id: machine.id,
-            name: machine.name.clone(),
-        });
-        peer.rtt = rtts.get(&machine.id).cloned();
-    }
-    device
 }
 
 crate::value::open_string_enum!(LocalMachinePhase, Unrecognized {

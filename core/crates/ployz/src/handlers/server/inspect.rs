@@ -1,13 +1,13 @@
 use clap::ArgMatches;
 use ployz_core::{
-    InspectMachineUpgradeRequest, InspectRequest, MachineObservation, MachineStorageObservation,
-    MachineTarget, MembershipObservation, RpcErrorCode, op,
+    InspectRequest, MachineObservation, MachineStorageObservation, MachineTarget,
+    MembershipObservation, op,
 };
 use serde_json::{Value, json};
 
 use super::with_client;
 use crate::{
-    connect::{ConnectError, TARGET_RPC_TIMEOUT},
+    connect::TARGET_RPC_TIMEOUT,
     handlers::{Error, leaf_matches},
     ui::{self, Cell, Gaps, Table, Tone},
 };
@@ -148,25 +148,15 @@ pub(in crate::handlers) fn inspect(root: &ArgMatches) -> Result<(), Error> {
                     Error::from(error)
                         .context(format!("Could not inspect Server {}.", selector.as_str()))
                 })?;
-            let upgrade = match client
-                .call_repeatable::<op::InspectMachineUpgrade>(
-                    InspectMachineUpgradeRequest { attempt_id: None },
-                    Some(&selector),
-                )
-                .await
-            {
-                Ok(attempt) => Some(attempt),
-                Err(ConnectError::Remote(error)) if error.code == RpcErrorCode::NotFound => None,
-                Err(error) => return Err(error.into()),
-            };
             let mut server = serde_json::to_value(&details)?;
             if let Value::Object(fields) = &mut server {
+                fields.remove("upgrade");
                 fields.insert("public_key".into(), json!(details.public_key.to_string()));
                 if let Some(machine) = &details.machine {
                     fields.insert("machine".into(), super::machine_json(machine));
                 }
             }
-            crate::ui::show(&json!({ "server": server, "upgrade": upgrade }))
+            crate::ui::show(&json!({ "server": server, "upgrade": details.upgrade }))
         })
     })
 }

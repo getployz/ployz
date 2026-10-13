@@ -23,6 +23,7 @@ pub mod service;
 mod storage_capacity;
 pub mod stream;
 pub mod value;
+mod volume_copy;
 mod volume_switch;
 
 pub use container_metadata::*;
@@ -41,6 +42,7 @@ pub use service::*;
 pub use storage_capacity::*;
 pub use stream::*;
 pub use value::*;
+pub use volume_copy::*;
 pub use volume_switch::*;
 
 /// How long a Machine may take to become ready after start or restart,

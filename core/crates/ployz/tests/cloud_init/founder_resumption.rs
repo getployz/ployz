@@ -93,13 +93,15 @@ async fn new_founding_claim_with_reset_resets_then_initializes() {
     let machine_addr = serve_machine(daemon.clone()).await;
     connect_daemon(machine_addr)
         .await
-        .call::<op::Initialize>(
-            InitializeRequest {
-                initial_policy: Default::default(),
-                name: founder.name,
-                cluster_network: "10.210.0.0/16".parse().unwrap(),
-                public_ip: None,
-                advertised_endpoints: founder.advertised_endpoints,
+        .call::<op::Enroll>(
+            EnrollRequest {
+                role: EnrollAs::Founder {
+                    initial_policy: Default::default(),
+                    name: founder.name,
+                    cluster_network: "10.210.0.0/16".parse().unwrap(),
+                    public_ip: None,
+                    advertised_endpoints: founder.advertised_endpoints,
+                },
                 wireguard_mtu: None,
             },
             None,
@@ -153,16 +155,18 @@ async fn resumed_founder_uses_the_matching_participating_machine() {
     let machine_addr = serve_machine(daemon.clone()).await;
     connect_daemon(machine_addr)
         .await
-        .call::<op::Initialize>(
-            InitializeRequest {
-                initial_policy: ployz_core::InitialMachinePolicy {
-                    accepts_ingress: false,
-                    ..Default::default()
+        .call::<op::Enroll>(
+            EnrollRequest {
+                role: EnrollAs::Founder {
+                    initial_policy: ployz_core::InitialMachinePolicy {
+                        accepts_ingress: false,
+                        ..Default::default()
+                    },
+                    name: founder.name,
+                    cluster_network: "10.210.0.0/16".parse().unwrap(),
+                    public_ip: None,
+                    advertised_endpoints: founder.advertised_endpoints,
                 },
-                name: founder.name,
-                cluster_network: "10.210.0.0/16".parse().unwrap(),
-                public_ip: None,
-                advertised_endpoints: founder.advertised_endpoints,
                 wireguard_mtu: None,
             },
             None,
@@ -223,13 +227,15 @@ async fn resumed_founder_converges_before_pairing_and_final_completion() {
     let machine_addr = serve_machine(daemon.clone()).await;
     connect_daemon(machine_addr)
         .await
-        .call::<op::Initialize>(
-            InitializeRequest {
-                initial_policy: Default::default(),
-                name: founder.name,
-                cluster_network: "10.210.0.0/16".parse().unwrap(),
-                public_ip: founder.public_ip,
-                advertised_endpoints: founder.advertised_endpoints,
+        .call::<op::Enroll>(
+            EnrollRequest {
+                role: EnrollAs::Founder {
+                    initial_policy: Default::default(),
+                    name: founder.name,
+                    cluster_network: "10.210.0.0/16".parse().unwrap(),
+                    public_ip: founder.public_ip,
+                    advertised_endpoints: founder.advertised_endpoints,
+                },
                 wireguard_mtu: None,
             },
             None,
@@ -434,7 +440,7 @@ async fn founder_recovery_rejects_replaced_identity() {
             .unwrap();
         assert!(!output.status.success());
         let error = String::from_utf8_lossy(&output.stderr);
-        assert!(error.contains("different Server identity"), "{error}");
+        assert!(error.contains("different enrollment"), "{error}");
         assert_eq!(daemon.initialize_requests().len(), 1);
         assert_eq!(daemon.reset_count(), 0);
         assert!(enroll.callbacks().is_empty());

@@ -2,7 +2,6 @@
 
 use std::{
     os::unix::fs::{MetadataExt, PermissionsExt},
-    sync::Arc,
     time::Duration,
 };
 
@@ -465,9 +464,6 @@ async fn concurrent_and_retried_first_creates_converge_on_one_pool() {
     let second = VolumeStorage {
         pool: first.pool.clone(),
         zfs: first.zfs.clone(),
-        docker: first.docker.clone(),
-        mount_grant: Arc::default(),
-        steps: Default::default(),
         mutation: Default::default(),
         installation: first.installation.clone(),
         receives: Default::default(),
@@ -537,9 +533,6 @@ async fn a_second_process_cannot_use_a_pool_before_its_owner_finishes() {
     let second = VolumeStorage {
         pool: first.pool.clone(),
         zfs: first.zfs.clone(),
-        docker: first.docker.clone(),
-        mount_grant: Arc::default(),
-        steps: Default::default(),
         mutation: Default::default(),
         installation: first.installation.clone(),
         receives: Default::default(),
@@ -948,8 +941,6 @@ case "$name" in
         if [ -e '{trim_disabled}' ]; then echo disable; else echo '-'; fi
         ;;
       'set org.debian:periodic-trim=disable ployz') touch '{trim_disabled}' ;;
-      'get -H -o value ployz:writer '*) echo '-' ;;
-      'get -H -o value ployz:lease'*) echo '-' ;;
       'get -H -o value ployz:promote '*) echo '-' ;;
       'destroy -r ployz/ployz/other') rm '{other}' '{other_bound}' ;;
       *) echo "unexpected fake zfs command: $*" >&2; exit 2 ;;
@@ -1024,9 +1015,6 @@ esac
             sys_dev_block,
         ),
         zfs: program("zfs"),
-        docker: program("docker"),
-        mount_grant: Arc::default(),
-        steps: Default::default(),
         mutation: Default::default(),
         installation: ployzd::mutation::MutationGate::new(
             directory.join("admission-run"),

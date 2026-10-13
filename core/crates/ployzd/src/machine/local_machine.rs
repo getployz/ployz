@@ -9,26 +9,25 @@ use std::{
 };
 
 use ployz_core::{
-    DockerVolumeName, InitializeRequest, Initialized, InspectRequest, JoinAccepted, JoinRequest,
-    LocalMachinePhase, LocalMachineRemoved, Machine, MachineDetails, MachineId, MachineIdentity,
-    MachineList, MachineObservation, MachineRemoved, MachineToken, MachineTokenRequest,
-    MachineUpdated, ManagementAddress, MembershipEvidence, PublicIpDiscovery, RegisterRequest,
-    Registered, RemoveLocalMachineRequest, RemoveMachineRequest, ResetAccepted, RttObservation,
-    RttStatistics, SelectedEndpoint, UpdateMachineRequest, WireGuardInspected,
-    associate_wireguard_peers, synthesize_membership,
+    DockerVolumeName, EnrollRequest, Enrolled, ForgetRequest, Forgotten, InspectRequest,
+    LeaveRequest, Left, LeftPhase, LocalMachinePhase, Machine, MachineDetails, MachineId,
+    MachineIdentity, MachineList, MachineObservation, MachineToken, MachineUpdated,
+    ManagementAddress, MembershipEvidence, PublicIpDiscovery, RegisterRequest, Registered,
+    RpcError, RpcErrorCode, RttObservation, RttStatistics, SelectedEndpoint, UpdateMachineRequest,
+    synthesize_membership,
 };
 use thiserror::Error;
 
 use super::{
-    LocalMachineRecord, LocalMachineStore, RecordOwner, RecordOwnerStopped, StoreError,
-    local_runtime, store::Installation,
+    EnrollPlan, LocalMachineRecord, RecordOwner, RecordOwnerStopped, StoreError, local_runtime,
+    store::Installation,
 };
 
 use crate::{
     corrosion::{AdminClient, MembershipState, ReplicatedStore, membership_states_by_address},
     docker::ContainerRuntime,
     host_capacity,
-    network::{NetworkError, discover_network, inspect_wireguard_device},
+    network::{NetworkError, discover_network},
 };
 
 /// Live Observation and membership operations for this Machine.
@@ -121,8 +120,6 @@ pub enum Error {
     OperationTask(#[from] tokio::task::JoinError),
     #[error("Register requires a client-selected Machine Subnet")]
     MissingAssignment,
-    #[error("this Machine is isolation-locked")]
-    IsolationLocked,
     #[error(transparent)]
     Admission(#[from] crate::mutation::Error),
     #[error(transparent)]
@@ -242,6 +239,18 @@ impl LocalMachine {
         .await?
     }
 
+    /// Run `work` holding the installation guard and no turn. `work` takes the turns it
+    /// needs itself, so a drain inside it never holds one. Detached like admitted work.
+    async fn finish_installed<T, F, Fut>(&self, work: F) -> Result<T, Error>
+    where
+        T: Send + 'static,
+        F: FnOnce(crate::mutation::MutationGuard) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Result<T, Error>> + Send + 'static,
+    {
+        let installation = self.admit_installation()?;
+        tokio::spawn(work(installation)).await?
+    }
+
     #[cfg(test)]
     pub(crate) async fn hold_mutation_for_test(
         &self,
@@ -293,18 +302,21 @@ impl LocalMachine {
     /// or a Docker error when a requested telemetry probe fails.
     pub async fn inspect(&self, request: InspectRequest) -> Result<MachineDetails, Error> {
         let record = self.record();
+        let token = match request.token {
+            Some(token) => Some(
+                self.token(token.public_ip, &request.advertised_endpoints)
+                    .await?,
+            ),
+            None => None,
+        };
         let advertised_endpoints = if !request.advertised_endpoints.is_empty() {
             request.advertised_endpoints
         } else if let Some(machine) = record.machine() {
             machine.advertised_endpoints.clone()
+        } else if let Some(token) = &token {
+            token.advertised_endpoints.clone()
         } else {
-            discover_network(
-                request
-                    .public_ip_override
-                    .map_or(PublicIpDiscovery::Auto, PublicIpDiscovery::Override),
-            )
-            .await?
-            .endpoints
+            discover_network(PublicIpDiscovery::Auto).await?.endpoints
         };
         let store_version = match &self.cluster {
             Some(cluster) => cluster.replicated.version().await?,
@@ -336,6 +348,16 @@ impl LocalMachine {
         } else {
             None
         };
+        let upgrade =
+            match crate::installer::upgrade::latest(self.owner.data_dir(), self.owner.run_dir())
+                .await
+            {
+                Ok(upgrade) => upgrade,
+                Err(error) => {
+                    tracing::warn!(%error, "could not read the latest upgrade attempt");
+                    None
+                }
+            };
         Ok(MachineDetails {
             id: record.id(),
             phase: record.phase(),
@@ -347,26 +369,27 @@ impl LocalMachine {
             management_clients: record.management_clients().cloned().collect(),
             telemetry,
             storage,
+            upgrade,
+            token,
         })
     }
 
-    /// Live Observation of the token a peer uses to register this Machine.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::Network`] when endpoint discovery fails.
-    pub async fn machine_token(&self, request: MachineTokenRequest) -> Result<MachineToken, Error> {
+    async fn token(
+        &self,
+        public_ip: PublicIpDiscovery,
+        requested_endpoints: &[ployz_core::AdvertisedEndpoint],
+    ) -> Result<MachineToken, Error> {
         let record = self.record();
-        let discovered = discover_network(request.public_ip).await?;
+        let discovered = discover_network(public_ip).await?;
         let capacity = host_capacity::observe();
         Ok(MachineToken {
             id: record.id(),
             public_key: record.wireguard_private_key.public_key(),
             public_ip: discovered.public_ip,
-            advertised_endpoints: if request.advertised_endpoints.is_empty() {
+            advertised_endpoints: if requested_endpoints.is_empty() {
                 discovered.endpoints
             } else {
-                request.advertised_endpoints
+                requested_endpoints.to_vec()
             },
             runtime: local_runtime(),
             memory_total_bytes: capacity.memory_total_bytes,
@@ -375,86 +398,59 @@ impl LocalMachine {
         })
     }
 
-    /// Live Observation of the WireGuard device, enriched with Membership
-    /// Observation when a Cluster is available.
+    /// Enroll this Machine as a founder or member and request restart. A resend
+    /// that names the stored enrollment replays it without restarting.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Network`] when the device cannot be inspected.
-    pub async fn inspect_wireguard(&self) -> Result<WireGuardInspected, Error> {
-        let device = inspect_wireguard_device()?;
-        let Some(cluster) = &self.cluster else {
-            return Ok(WireGuardInspected { device });
-        };
-        let machines = match cluster.replicated.machines().await {
-            Ok(snapshot) => snapshot.observations,
-            Err(error) => {
-                eprintln!(
-                    "WireGuard Machine enrichment is unavailable: {error}",
-                    error = ployz_core::error_chain::inline(&error),
-                );
-                Vec::new()
-            }
-        };
-        let rtts = match machine_rtts(&cluster.admin, &cluster.replicated).await {
-            Ok(rtts) => rtts,
-            Err(error) => {
-                eprintln!(
-                    "WireGuard RTT enrichment is unavailable: {error}",
-                    error = ployz_core::error_chain::inline(&error),
-                );
-                Vec::new()
-            }
-        }
-        .into_iter()
-        .filter_map(|observation| {
-            observation
-                .machine
-                .map(|machine| (machine.id, observation.statistics))
-        })
-        .collect();
-        Ok(WireGuardInspected {
-            device: associate_wireguard_peers(device, &machines, &rtts),
-        })
+    /// Returns when mutation admission is busy, the record owner has stopped, the
+    /// request is invalid, or storage departure fails.
+    pub async fn enroll(&self, request: EnrollRequest) -> Result<Enrolled, Error> {
+        let local = self.clone();
+        self.finish_mutation(async move { local.enroll_admitted(request).await })
+            .await
     }
 
-    /// Persist this Machine as the first participant and request restart.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::RecordOwner`] when the record owner has stopped and
-    /// [`Error::Store`] when initialize is not legal in the current phase.
-    async fn initialize_admitted(&self, request: InitializeRequest) -> Result<Initialized, Error> {
-        let (machine, installation) = self
+    async fn enroll_admitted(&self, request: EnrollRequest) -> Result<Enrolled, Error> {
+        let (plan, installation) = self
             .owner
-            .mutate(move |store| store.plan_initialize(request))
+            .mutate(move |store| store.plan_enrollment(request))
             .await??;
-        self.install(installation).await?;
+        let machine = match plan {
+            EnrollPlan::Fresh => {
+                let machine = installation
+                    .machine()
+                    .cloned()
+                    .expect("an enrollment owns its Machine");
+                self.install(installation).await?;
+                self.owner.request_restart();
+                machine
+            }
+            EnrollPlan::Replay(machine) => machine,
+            EnrollPlan::Conflict(now) => {
+                return Ok(Enrolled::Refused {
+                    error: RpcError {
+                        code: RpcErrorCode::Conflict,
+                        message: enroll_conflict(&now.phase).into(),
+                        details: serde_json::Value::Null,
+                        cause: Vec::new(),
+                    },
+                    now,
+                });
+            }
+        };
         tracing::info!(
             name = machine.name.as_str(),
             id = machine.id.as_str(),
-            "initialize accepted"
+            "enrolled"
         );
-        self.owner.request_restart();
-        Ok(Initialized { machine })
-    }
-
-    /// Initialize this Machine under local mutation admission.
-    ///
-    /// # Errors
-    ///
-    /// Returns when mutation admission is busy, the local task fails, or initialization is not
-    /// legal in the current persisted phase.
-    pub async fn initialize(&self, request: InitializeRequest) -> Result<Initialized, Error> {
-        let local = self.clone();
-        self.finish_mutation(async move { local.initialize_admitted(request).await })
-            .await
+        Ok(Enrolled::Enrolled { machine })
     }
 
     /// Publish a client-selected assignment from a participating Entry Machine.
     ///
     /// # Errors
-    /// Rejects absent assignments, observed conflicts, isolation, or unavailable storage.
+    /// Rejects absent assignments, invalid assignments, or unavailable storage.
     pub async fn register(&self, request: RegisterRequest) -> Result<Registered, Error> {
         let local = self.clone();
         self.finish_mutation(async move {
@@ -472,101 +468,20 @@ impl LocalMachine {
     async fn publish_assignment(&self, request: RegisterRequest) -> Result<Registered, Error> {
         let replicated = self.replicated()?;
         let publication = replicated.machine_publication().await;
-        let machines = replicated.machines().await?.observations;
+        // Other Machines' rows are not consulted: Cloud owns concurrency, and a
+        // Register for an existing id overwrites its row.
         let snapshot = ployz_core::EnrollmentSnapshot {
             network: replicated.cluster_network().await?,
-            machines,
-            target_versions: replicated.version().await?,
+            machines: Vec::new(),
+            target_versions: BTreeMap::new(),
         };
         let assignment = ployz_core::allocate_enrollment(&request, &snapshot, &[])?;
-        if !snapshot
-            .machines
-            .iter()
-            .any(|m| m.id == assignment.machine.id)
-        {
-            if self.isolation_locked().await? {
-                return Err(Error::IsolationLocked);
-            }
-            publication.publish(&assignment.machine).await?;
-        }
+        publication.publish(&assignment.machine).await?;
         Ok(registered(
             assignment.machine,
             replicated.machines().await?.observations,
             replicated.version().await?,
         ))
-    }
-
-    /// Isolation lock: replica larger than three and every other Machine
-    /// uncontactable on Membership Observation.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::ClusterStoreUnavailable`] when the Cluster store is missing,
-    /// and [`Error::Cluster`] when the machines replica cannot be read.
-    /// Unreadable Membership Observation does not lock.
-    pub(crate) async fn isolation_locked(&self) -> Result<bool, Error> {
-        let me = self.record().id();
-        let Some(cluster) = &self.cluster else {
-            return Err(Error::ClusterStoreUnavailable);
-        };
-        let machines = cluster.replicated.machines().await?.observations;
-        let Ok(states) = cluster.admin.membership_states().await else {
-            return Ok(false);
-        };
-        Ok(isolation_lock(
-            &me,
-            &machines,
-            &membership_states_by_address(states),
-        ))
-    }
-
-    /// Persist a join assignment and request restart.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::RecordOwner`] when the record owner has stopped
-    /// and [`Error::Store`] when join is not legal in the current phase.
-    async fn join_admitted(&self, request: JoinRequest) -> Result<JoinAccepted, Error> {
-        let installation = self
-            .owner
-            .mutate(move |store| {
-                store.plan_join(
-                    request.registration.assigned_machine,
-                    request.registration.visible_peers,
-                    request.registration.target_versions,
-                    request.wireguard_mtu,
-                )
-            })
-            .await??;
-        let already_accepted = installation.is_none();
-        if let Some(installation) = installation {
-            self.install(installation).await?;
-        }
-        let record = self.record();
-        let machine = record
-            .machine()
-            .expect("join persisted the assigned Machine");
-        tracing::info!(
-            name = machine.name.as_str(),
-            id = machine.id.as_str(),
-            "join accepted"
-        );
-        if !already_accepted {
-            self.owner.request_restart();
-        }
-        Ok(JoinAccepted { already_accepted })
-    }
-
-    /// Persist a join assignment under local mutation admission and request restart.
-    ///
-    /// # Errors
-    ///
-    /// Returns when mutation admission is busy, the local task fails, or join is not legal in
-    /// the current persisted phase.
-    pub async fn join(&self, request: JoinRequest) -> Result<JoinAccepted, Error> {
-        let local = self.clone();
-        self.finish_mutation(async move { local.join_admitted(request).await })
-            .await
     }
 
     /// Membership Observation of Machines visible from this participating Machine.
@@ -651,65 +566,77 @@ impl LocalMachine {
         Ok(MachineUpdated { machine })
     }
 
-    /// Remove a peer Machine from the Cluster. Restarting when the target is
-    /// this Machine in the resetting Local Machine Phase.
+    /// Forget another Machine: delete its replicated row. A missing row is success.
     ///
     /// # Errors
     ///
     /// Returns [`Error::ClusterStoreUnavailable`] when the Cluster store is
     /// missing and [`Error::Cluster`] when the replicated delete fails.
-    pub async fn remove_peer(
-        &self,
-        request: RemoveMachineRequest,
-    ) -> Result<MachineRemoved, Error> {
+    pub async fn forget(&self, request: ForgetRequest) -> Result<Forgotten, Error> {
         let local = self.clone();
-        self.finish_mutation(async move { local.remove_peer_admitted(request).await })
-            .await
+        self.finish_mutation(async move {
+            let now = local.record().now();
+            if now.id == request.machine_id {
+                return Ok(Forgotten::Refused {
+                    error: refusal(
+                        RpcErrorCode::InvalidArgument,
+                        "this is the Machine itself; send Leave to it instead",
+                    ),
+                    now,
+                });
+            }
+            local
+                .replicated()?
+                .remove_machine(&request.machine_id)
+                .await?;
+            Ok(Forgotten::Forgotten)
+        })
+        .await
     }
 
-    async fn remove_peer_admitted(
-        &self,
-        request: RemoveMachineRequest,
-    ) -> Result<MachineRemoved, Error> {
-        self.replicated()?
-            .remove_machine(&request.machine_id)
-            .await?;
-        let local = self.record();
-        if local.id() == request.machine_id && local.phase() == LocalMachinePhase::Resetting {
-            self.owner.request_restart();
-        }
-        Ok(MachineRemoved {})
-    }
-
-    /// Remove this Machine: clean managed containers, persist reset, and
-    /// best-effort delete the replicated row. Once admitted, cleanup and phase commit
-    /// continue if the caller disconnects.
+    /// Leave the Cluster: clean managed containers, depart storage, persist the
+    /// reset, best-effort delete this Machine's replicated row, and restart the
+    /// daemon into the reset. Once admitted, the leave continues if the caller
+    /// disconnects. A resend on a Machine already resetting repeats the cleanup.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::ClusterStoreUnavailable`] when the Cluster store is
-    /// missing, [`Error::DockerUnavailable`] when Docker is missing,
+    /// Returns [`Error::Upgrade`] when the upgrade receipt cannot be read,
     /// [`Error::Cleanup`] when managed container removal fails,
     /// [`Error::RecordOwner`] when the record owner has stopped,
     /// [`Error::Store`] when reset cannot be prepared or committed, and
     /// [`Error::OperationTask`] if the admitted operation task fails.
-    pub async fn remove_local(
-        &self,
-        request: RemoveLocalMachineRequest,
-    ) -> Result<LocalMachineRemoved, Error> {
+    pub async fn leave(&self, _: LeaveRequest) -> Result<Left, Error> {
+        if self.record().phase() == LocalMachinePhase::Uninitialized {
+            return Ok(Left::Left {
+                phase: LeftPhase::Uninitialized,
+                reset_warning: None,
+            });
+        }
+        match crate::installer::upgrade::latest(self.owner.data_dir(), self.owner.run_dir()).await {
+            Ok(Some(attempt)) if !attempt.is_terminal() => {
+                return Ok(Left::Refused {
+                    error: refusal(
+                        RpcErrorCode::Conflict,
+                        "an upgrade is running on this Machine; resend Leave once it finishes",
+                    ),
+                    now: self.record().now(),
+                });
+            }
+            Ok(_) => {}
+            Err(error) => return Err(error.into()),
+        }
         let local = self.clone();
-        self.finish_mutation(async move { local.remove_local_admitted(request).await })
+        self.finish_mutation(async move { local.leave_admitted().await })
             .await
     }
 
-    async fn remove_local_admitted(
-        &self,
-        request: RemoveLocalMachineRequest,
-    ) -> Result<LocalMachineRemoved, Error> {
+    async fn leave_admitted(&self) -> Result<Left, Error> {
         let machine_id = self.record().id();
-        let replicated = self.replicated()?;
-        let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
-        let publication = replicated.machine_publication().await;
+        let publication = match &self.cluster {
+            Some(cluster) => Some(cluster.replicated.machine_publication().await),
+            None => None,
+        };
         let prepared_reset = self
             .owner
             .mutate(|store| {
@@ -720,7 +647,9 @@ impl LocalMachine {
                 }
             })
             .await??;
-        if let Err(error) = containers.remove_all_managed().await {
+        if let Some(containers) = &self.containers
+            && let Err(error) = containers.remove_all_managed().await
+        {
             return Err(Error::Cleanup(ployz_core::error_chain::inline(&error)));
         }
         self.depart_storage().await?;
@@ -729,41 +658,15 @@ impl LocalMachine {
                 .mutate(move |store| prepared_reset.commit(store))
                 .await??;
         }
-        let reset_warning = publication
-            .remove(&machine_id)
-            .await
-            .err()
-            .map(|error| ployz_core::error_chain::inline(&error));
-        Ok(local_removal_response(
-            &self.owner,
-            reset_warning,
-            request.restart_on_cleanup_failure,
-        ))
-    }
-
-    /// Begin a Local Machine Phase reset and request daemon restart.
-    /// Once admitted, cleanup and phase commit continue if the caller disconnects.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::Docker`] when managed container cleanup fails,
-    /// [`Error::RecordOwner`] when the record owner has stopped,
-    /// [`Error::Store`] when reset is not legal in the current phase, and
-    /// [`Error::OperationTask`] if the admitted operation task fails.
-    pub async fn reset(&self) -> Result<ResetAccepted, Error> {
-        let local = self.clone();
-        self.finish_mutation(async move { local.reset_admitted().await })
-            .await
-    }
-
-    async fn reset_admitted(&self) -> Result<ResetAccepted, Error> {
-        if let Some(containers) = &self.containers {
-            containers.remove_all_managed().await?;
-        }
-        self.depart_storage().await?;
-        self.owner.mutate(LocalMachineStore::begin_reset).await??;
-        self.owner.request_restart();
-        Ok(ResetAccepted {})
+        let reset_warning = match publication {
+            Some(publication) => publication
+                .remove(&machine_id)
+                .await
+                .err()
+                .map(|error| ployz_core::error_chain::inline(&error)),
+            None => None,
+        };
+        Ok(leave_response(&self.owner, reset_warning))
     }
 }
 
@@ -872,18 +775,18 @@ fn rtts_by_machine(
         .collect()
 }
 
-fn isolation_lock(
-    me: &MachineId,
-    machines: &[Machine],
-    states: &BTreeMap<ManagementAddress, MembershipEvidence>,
-) -> bool {
-    machines.len() > 3
-        && machines.iter().all(|machine| {
-            machine.id == *me
-                || !states
-                    .get(&machine.management_address())
-                    .is_some_and(MembershipEvidence::invites_rpc)
-        })
+fn enroll_conflict(phase: &LocalMachinePhase) -> &'static str {
+    match phase {
+        LocalMachinePhase::Resetting => {
+            "this Machine is resetting; resend Enroll once it is uninitialized"
+        }
+        LocalMachinePhase::Uninitialized
+        | LocalMachinePhase::Joining
+        | LocalMachinePhase::Participating
+        | LocalMachinePhase::Unrecognized(_) => {
+            "this Machine already holds a different enrollment; send Leave before enrolling it again"
+        }
+    }
 }
 
 /// Associate one value per management address; duplicate addresses are dropped.
@@ -899,15 +802,21 @@ fn unique_identities<T>(entries: impl IntoIterator<Item = (IpAddr, T)>) -> BTree
     identities
 }
 
-fn local_removal_response(
-    owner: &RecordOwner,
-    reset_warning: Option<String>,
-    restart_on_warning: bool,
-) -> LocalMachineRemoved {
-    if reset_warning.is_none() || restart_on_warning {
-        owner.request_restart();
+fn leave_response(owner: &RecordOwner, reset_warning: Option<String>) -> Left {
+    owner.request_restart();
+    Left::Left {
+        phase: LeftPhase::Resetting,
+        reset_warning,
     }
-    LocalMachineRemoved { reset_warning }
+}
+
+fn refusal(code: RpcErrorCode, message: &str) -> RpcError {
+    RpcError {
+        code,
+        message: message.into(),
+        details: serde_json::Value::Null,
+        cause: Vec::new(),
+    }
 }
 
 #[cfg(test)]
@@ -918,10 +827,7 @@ mod departure_tests;
 mod tests {
     use std::collections::BTreeMap;
 
-    use super::{
-        RuntimeWatchTelemetry, isolation_lock, local_removal_response, read_admin,
-        unique_identities,
-    };
+    use super::{RuntimeWatchTelemetry, leave_response, read_admin, unique_identities};
     use crate::corrosion::AdminClient;
     use ployz_core::{
         AdvertisedEndpoint, CORROSION_GOSSIP_PORT, Machine, MachineId, MachineIdentity,
@@ -940,26 +846,37 @@ mod tests {
         (dir, owner)
     }
 
-    #[test]
-    fn failed_local_removal_keeps_the_daemon_available_for_entry_fallback() {
-        let (_dir, owner) = owner();
-        let restart_rx = owner.restart_requested();
-        let removed =
-            local_removal_response(&owner, Some("replicated delete failed".into()), false);
+    #[tokio::test]
+    async fn inspect_answers_when_upgrade_evidence_cannot_be_read() {
+        let (dir, owner) = owner();
+        std::fs::write(dir.path().join("upgrade-attempt.json"), b"not json").unwrap();
+        let details = super::LocalMachine::new(owner)
+            .inspect(ployz_core::InspectRequest {
+                advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
+                token: None,
+                include_rtts: false,
+                include_storage: false,
+                telemetry: ployz_core::InspectTelemetry::None,
+            })
+            .await
+            .unwrap();
 
-        assert_eq!(
-            removed.reset_warning.as_deref(),
-            Some("replicated delete failed")
-        );
-        assert!(!*restart_rx.borrow());
+        assert_eq!(details.upgrade, None);
     }
 
     #[test]
-    fn failed_remote_removal_restarts_after_delegating_entry_fallback() {
+    fn leave_with_a_publication_warning_still_restarts() {
         let (_dir, owner) = owner();
         let restart_rx = owner.restart_requested();
-        local_removal_response(&owner, Some("replicated delete failed".into()), true);
+        let left = leave_response(&owner, Some("replicated delete failed".into()));
 
+        assert_eq!(
+            left,
+            ployz_core::Left::Left {
+                phase: ployz_core::LeftPhase::Resetting,
+                reset_warning: Some("replicated delete failed".into()),
+            }
+        );
         assert!(*restart_rx.borrow());
     }
 
@@ -1028,47 +945,10 @@ mod tests {
         assert_eq!(peer_row.rtt, None);
     }
 
-    #[test]
-    fn isolation_lock_ignores_replicas_of_three() {
-        let me = machine("edge", ENTRY_ID, 1);
-        let machines = [
-            me.clone(),
-            machine("peer", PEER_ID, 2),
-            machine("third", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 3),
-        ];
-        assert!(!isolation_lock(&me.id, &machines, &BTreeMap::new()));
-    }
-
-    #[test]
-    fn isolation_lock_fires_when_every_other_machine_is_uncontactable() {
-        let [me, peer, third, fourth] = four_machines();
-        let machines = [me.clone(), peer, third, fourth];
-        assert!(isolation_lock(&me.id, &machines, &BTreeMap::new()));
-    }
-
-    #[test]
-    fn isolation_lock_does_not_fire_when_a_peer_invites_rpc() {
-        let [me, peer, third, fourth] = four_machines();
-        let machines = [me.clone(), peer.clone(), third, fourth];
-        let up = BTreeMap::from([(peer.management_address(), MembershipEvidence::Up)]);
-        let suspect = BTreeMap::from([(peer.management_address(), MembershipEvidence::Suspect)]);
-        assert!(!isolation_lock(&me.id, &machines, &up));
-        assert!(!isolation_lock(&me.id, &machines, &suspect));
-    }
-
     #[tokio::test]
     async fn missing_admin_socket_is_unavailable_telemetry() {
         let admin = AdminClient::new("/no/such/ployz-admin.sock");
         assert!(read_admin(&admin).await.is_none());
-    }
-
-    fn four_machines() -> [Machine; 4] {
-        [
-            machine("edge", ENTRY_ID, 1),
-            machine("peer", PEER_ID, 2),
-            machine("third", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 3),
-            machine("fourth", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 4),
-        ]
     }
 
     fn machine(name: &str, id: &str, seed: u8) -> Machine {

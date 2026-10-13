@@ -29,65 +29,6 @@ use crate::{
 
 const MAX_CONTAINER_OBSERVATION_WAIT: Duration = Duration::from_secs(5);
 
-/// The Volumes whose Promote task runs in this process.
-#[derive(Clone, Default)]
-struct Promotions(Arc<std::sync::Mutex<BTreeSet<ployz_core::DockerVolumeName>>>);
-
-struct Promoting {
-    promotions: Promotions,
-    name: ployz_core::DockerVolumeName,
-}
-
-impl Promotions {
-    fn start(&self, name: &ployz_core::DockerVolumeName) -> Option<Promoting> {
-        self.0
-            .lock()
-            .expect("promotion registry is not poisoned")
-            .insert(name.clone())
-            .then(|| Promoting {
-                promotions: self.clone(),
-                name: name.clone(),
-            })
-    }
-}
-
-impl Drop for Promoting {
-    fn drop(&mut self) {
-        self.promotions
-            .0
-            .lock()
-            .expect("promotion registry is not poisoned")
-            .remove(&self.name);
-    }
-}
-
-fn mirror(request: &ployz_core::ServiceVolumeRequest) -> ployz_core::MirrorRequest {
-    ployz_core::MirrorRequest {
-        switch: request.switch,
-        name: request.name.clone(),
-    }
-}
-
-/// The Provisioned source `resolved_spec` mounts under the requested Volume name.
-#[allow(clippy::result_large_err)]
-fn volume_source(
-    request: &ployz_core::ServiceVolumeRequest,
-) -> Result<ployz_core::VolumeSource, RpcError> {
-    request
-        .resolved_spec
-        .volume_graph()
-        .mounted_provisioned_volumes()
-        .map(|volume| &volume.source)
-        .find(|source| source.docker_volume_name() == Some(&request.name))
-        .cloned()
-        .ok_or_else(|| {
-            ployz_core::SwitchError::Precondition.rpc_error(format!(
-                "the resolved spec mounts no Provisioned Volume {}",
-                request.name
-            ))
-        })
-}
-
 const DEFAULT_OBSERVE_SOCKET: &str = "/run/ployz/observe.sock";
 
 #[derive(Clone)]
@@ -99,7 +40,6 @@ pub struct MachineService {
     machine_api_port: u16,
     runtime_watch: Arc<RuntimeWatch>,
     switch_mutation: Arc<tokio::sync::Mutex<()>>,
-    promotions: Promotions,
     pub(crate) builds: Arc<crate::build::Runner>,
     pub(crate) grants: Arc<crate::management::BuildGrants>,
 }
@@ -118,7 +58,6 @@ impl MachineService {
             machine_api_port: MACHINE_API_PORT,
             runtime_watch: Arc::default(),
             switch_mutation: Arc::default(),
-            promotions: Promotions::default(),
             builds: crate::build::Runner::new(Default::default(), Default::default())
                 .expect("default Build policy"),
             grants: Arc::default(),
@@ -240,46 +179,6 @@ impl MachineService {
             Err(error) => respond(error),
         }
     }
-
-    /// Leaves Docker holding the Volume with `source`'s labels and options. A record Docker
-    /// took without labels, through Get after a crash inside Create, is dropped and made again.
-    #[allow(clippy::result_large_err)]
-    async fn register_volume(
-        &self,
-        request: &ployz_core::ServiceVolumeRequest,
-        source: &ployz_core::VolumeSource,
-    ) -> Result<(), RpcError> {
-        let containers = self.containers()?;
-        let machine_id = self.local_record().id();
-        if let Ok(volume) = containers.inspect_volume(&machine_id, &request.name).await
-            && volume.driver() == ployz_core::PROVISIONED_VOLUME_DRIVER
-            && !volume.labels.contains_key(ployz_core::MANAGED_LABEL)
-        {
-            self.local
-                .plugin()
-                .call::<()>("Volume.Unregister", &mirror(request))
-                .await?;
-        }
-        containers
-            .ensure_volume_source(&machine_id, source)
-            .await
-            .map_err(|error| RpcError::from(&error))
-    }
-
-    #[allow(clippy::result_large_err)]
-    async fn finish_promote(
-        &self,
-        request: &ployz_core::ServiceVolumeRequest,
-        source: &ployz_core::VolumeSource,
-    ) -> Result<(), RpcError> {
-        crate::faults::hold_task("Promote").await;
-        let _guard = self.switch_mutation.lock().await;
-        self.local
-            .plugin()
-            .call::<()>("Volume.FinishPromote", &mirror(request))
-            .await?;
-        self.register_volume(request, source).await
-    }
 }
 
 #[tonic::async_trait]
@@ -322,26 +221,11 @@ impl MachineRpc for MachineService {
         finish(self.local.inspect(expect::<op::Inspect>(request)?).await)
     }
 
-    async fn machine_token(
+    async fn enroll(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        finish(
-            self.local
-                .machine_token(expect::<op::MachineToken>(request)?)
-                .await,
-        )
-    }
-
-    async fn initialize(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        finish(
-            self.local
-                .initialize(expect::<op::Initialize>(request)?)
-                .await,
-        )
+        finish(self.local.enroll(expect::<op::Enroll>(request)?).await)
     }
 
     async fn register(
@@ -349,13 +233,6 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         finish(self.local.register(expect::<op::Register>(request)?).await)
-    }
-
-    async fn join(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        finish(self.local.join(expect::<op::Join>(request)?).await)
     }
 
     async fn set_management_client(
@@ -424,25 +301,6 @@ impl MachineRpc for MachineService {
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::MarkContainerStopping>(request)?;
         let _guard = self.switch_mutation.lock().await;
-        if let Some(volume) = &request.volume {
-            if let Err(error) = self.require_joined() {
-                return respond(error);
-            }
-            crate::faults::apply("MarkContainerStopping").await;
-            let source = ployz_core::SourceContainerRequest {
-                switch: volume.switch,
-                name: volume.name.clone(),
-                container_id: request.container_id,
-            };
-            if let Err(error) = self
-                .local
-                .plugin()
-                .call::<ployz_core::SwitchReply>("Volume.MarkContainerStopping", &source)
-                .await
-            {
-                return respond(error);
-            }
-        }
         let containers = match self.containers() {
             Ok(containers) => containers,
             Err(error) => return respond(error),
@@ -453,11 +311,7 @@ impl MachineRpc for MachineService {
             .await
         {
             Ok(details) => {
-                if let Some(volume) = request.volume {
-                    containers.mark_source_stopping(request.container_id, volume.switch.lease);
-                } else {
-                    containers.mark_stopping(request.container_id);
-                }
+                containers.mark_stopping(request.container_id);
                 respond(details)
             }
             Err(error) => respond(RpcError::from(&error)),
@@ -532,6 +386,14 @@ impl MachineRpc for MachineService {
         )
     }
 
+    async fn ensure_container(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::EnsureContainer>(request)?;
+        finish(self.local.ensure_container(request.want).await)
+    }
+
     async fn remove_container(
         &self,
         request: Request<OpaquePayload>,
@@ -542,14 +404,6 @@ impl MachineRpc for MachineService {
                 .remove_container(request.container_id, request.remove_volumes, request.force)
                 .await,
         )
-    }
-
-    async fn create_volume(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::CreateVolume>(request)?;
-        finish(self.local.create_volume(request).await)
     }
 
     async fn inspect_storage(
@@ -592,22 +446,6 @@ impl MachineRpc for MachineService {
         }
     }
 
-    async fn inspect_volume(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::InspectVolume>(request)?;
-        let machine_id = self.local_record().id();
-        let containers = match self.containers() {
-            Ok(containers) => containers,
-            Err(error) => return respond(error),
-        };
-        match containers.inspect_volume(&machine_id, &request.name).await {
-            Ok(volume) => respond(volume),
-            Err(error) => respond(RpcError::from(&error)),
-        }
-    }
-
     async fn remove_volume(
         &self,
         request: Request<OpaquePayload>,
@@ -629,247 +467,11 @@ impl MachineRpc for MachineService {
         .await
     }
 
-    async fn withdraw(
+    async fn set_volume_copy(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::Withdraw>(request)?;
-        let _guard = self.switch_mutation.lock().await;
-        if let Err(error) = self.require_joined() {
-            return respond(error);
-        }
-        crate::faults::apply("Withdraw").await;
-        let result = self
-            .local
-            .plugin()
-            .call::<ployz_core::SwitchReply>("Volume.Withdraw", &request)
-            .await;
-        match result {
-            Ok(reply) => {
-                if let Ok(containers) = self.containers() {
-                    containers.mark_source_stopping(request.container_id, request.switch.lease);
-                }
-                respond(reply)
-            }
-            Err(error) => respond(error),
-        }
-    }
-
-    async fn freeze(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::Freeze>(request)?;
-        self.switch_verb::<ployz_core::SwitchReply>("Freeze", "Volume.Freeze", &request)
-            .await
-    }
-
-    async fn hand_over(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::HandOver>(request)?;
-        self.switch_verb::<ployz_core::SwitchReply>("HandOver", "Volume.HandOver", &request)
-            .await
-    }
-
-    async fn thaw(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::Thaw>(request)?;
-        let _guard = self.switch_mutation.lock().await;
-        if let Err(error) = self.require_joined() {
-            return respond(error);
-        }
-        crate::faults::apply("Thaw").await;
-        let result = self
-            .local
-            .plugin()
-            .call::<ployz_core::SwitchReply>("Volume.Thaw", &request)
-            .await;
-        match result {
-            Ok(reply) => {
-                if let Ok(containers) = self.containers() {
-                    containers.clear_source_stopping(&request.container_id, request.switch.lease);
-                }
-                respond(reply)
-            }
-            Err(error) => respond(error),
-        }
-    }
-
-    async fn close(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::Close>(request)?;
-        self.switch_verb::<ployz_core::SwitchReply>("Close", "Volume.Close", &request)
-            .await
-    }
-
-    async fn accept_hand_off(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::AcceptHandOff>(request)?;
-        self.switch_verb::<ployz_core::SwitchReply>(
-            "AcceptHandOff",
-            "Volume.AcceptHandOff",
-            &request,
-        )
-        .await
-    }
-
-    async fn promote(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::Promote>(request)?;
-        let source = match volume_source(&request) {
-            Ok(source) => source,
-            Err(error) => return respond(error),
-        };
-        let _guard = self.switch_mutation.lock().await;
-        if let Err(error) = self.require_joined() {
-            return respond(error);
-        }
-        crate::faults::apply("Promote").await;
-        let Some(promoting) = self.promotions.start(&request.name) else {
-            return respond(
-                ployz_core::SwitchError::Busy
-                    .rpc_error(format!("Volume {} is being promoted", request.name)),
-            );
-        };
-        let reply = match self
-            .local
-            .plugin()
-            .call::<ployz_core::SwitchReply>("Volume.Promote", &mirror(&request))
-            .await
-        {
-            Ok(reply) => reply,
-            Err(error) => return respond(error),
-        };
-        let service = self.clone();
-        tokio::spawn(async move {
-            if let Err(error) = service.finish_promote(&request, &source).await {
-                tracing::warn!(volume = %request.name, error = error.message, "Promote stopped");
-            }
-            drop(promoting);
-        });
-        respond(reply)
-    }
-
-    async fn start_handed_container(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::StartHandedContainer>(request)?;
-        let source = match volume_source(&request) {
-            Ok(source) => source,
-            Err(error) => return respond(error),
-        };
-        let _guard = self.switch_mutation.lock().await;
-        if let Err(error) = self.require_joined() {
-            return respond(error);
-        }
-        crate::faults::apply("StartHandedContainer").await;
-        let admitted = match self
-            .local
-            .plugin()
-            .call::<ployz_core::SwitchReply>("Volume.AdmitHandedStart", &mirror(&request))
-            .await
-        {
-            Ok(admitted) => admitted,
-            Err(error) => return respond(error),
-        };
-        if admitted.lease.cycle == ployz_core::Cycle::Closed {
-            return respond(admitted);
-        }
-        let Some(ployz_core::VolumeCopy::Root {
-            newest: Some(handed),
-            ..
-        }) = admitted.copy
-        else {
-            return respond(ployz_core::SwitchError::Precondition.rpc_error(format!(
-                "Volume {} has no handed-over snapshot to start from",
-                request.name
-            )));
-        };
-        if let Err(error) = self.register_volume(&request, &source).await {
-            return respond(error);
-        }
-        let created = match self
-            .local
-            .create_container(
-                ployz_core::ContainerKind::ServiceContainer,
-                &request.namespace,
-                &request.resolved_spec,
-                Some(format!("handoff-{}", handed.guid)),
-                None,
-                None,
-            )
-            .await
-        {
-            Ok(created) => created,
-            Err(error) => return local_error(error),
-        };
-        crate::faults::kill_inside("StartHandedContainer");
-        let start = ployz_core::SourceContainerRequest {
-            switch: request.switch,
-            name: request.name,
-            container_id: created.container_id,
-        };
-        match self
-            .local
-            .plugin()
-            .call::<ployz_core::SwitchReply>("Volume.StartHandedContainer", &start)
-            .await
-        {
-            Ok(reply) => respond(ployz_core::SwitchReply {
-                decision: admitted.decision,
-                ..reply
-            }),
-            Err(error) => respond(error),
-        }
-    }
-
-    async fn clear_final(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::ClearFinal>(request)?;
-        self.switch_verb::<ployz_core::SwitchReply>("ClearFinal", "Volume.ClearFinal", &request)
-            .await
-    }
-
-    async fn restore(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::Restore>(request)?;
-        let source = match volume_source(&request) {
-            Ok(source) => source,
-            Err(error) => return respond(error),
-        };
-        let _guard = self.switch_mutation.lock().await;
-        if let Err(error) = self.require_joined() {
-            return respond(error);
-        }
-        crate::faults::apply("Restore").await;
-        let reply = match self
-            .local
-            .plugin()
-            .call::<ployz_core::SwitchReply>("Volume.Restore", &mirror(&request))
-            .await
-        {
-            Ok(reply) => reply,
-            Err(error) => return respond(error),
-        };
-        match self.register_volume(&request, &source).await {
-            Ok(()) => respond(reply),
-            Err(error) => respond(error),
-        }
+        self.set_copy(request).await
     }
 
     async fn seed_volume(
@@ -877,126 +479,7 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::SeedVolume>(request)?;
-        self.switch_verb::<ployz_core::SwitchReply>("SeedVolume", "Volume.Seed", &request)
-            .await
-    }
-
-    async fn declare_mirror(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::DeclareMirror>(request)?;
-        self.switch_verb::<ployz_core::SwitchReply>(
-            "DeclareMirror",
-            "Volume.DeclareMirror",
-            &request,
-        )
-        .await
-    }
-
-    async fn begin_round(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::BeginRound>(request)?;
-        self.switch_verb::<ployz_core::SwitchReply>("BeginRound", "Volume.BeginRound", &request)
-            .await
-    }
-
-    async fn commit_snapshots(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::CommitSnapshots>(request)?;
-        self.switch_verb::<ployz_core::SwitchReply>(
-            "CommitSnapshots",
-            "Volume.CommitSnapshots",
-            &request,
-        )
-        .await
-    }
-
-    async fn warm_snapshot(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::WarmSnapshot>(request)?;
-        self.switch_verb::<ployz_core::SwitchReply>("WarmSnapshot", "Volume.WarmSnapshot", &request)
-            .await
-    }
-
-    async fn start_receive(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::StartReceive>(request)?;
-        self.switch_verb::<ployz_core::SwitchReply>("StartReceive", "Volume.StartReceive", &request)
-            .await
-    }
-
-    async fn inspect_receive(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::InspectReceive>(request)?;
-        self.switch_verb::<ployz_core::ReceiveView>(
-            "InspectReceive",
-            "Volume.InspectReceive",
-            &request,
-        )
-        .await
-    }
-
-    async fn prune_mirror(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::PruneMirror>(request)?;
-        self.switch_verb::<ployz_core::SwitchReply>("PruneMirror", "Volume.PruneMirror", &request)
-            .await
-    }
-
-    async fn destroy_mirror(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::DestroyMirror>(request)?;
-        self.switch_verb::<ployz_core::SwitchReply>(
-            "DestroyMirror",
-            "Volume.DestroyMirror",
-            &request,
-        )
-        .await
-    }
-
-    async fn forget_snapshots(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::ForgetSnapshots>(request)?;
-        self.switch_verb::<ployz_core::SwitchReply>(
-            "ForgetSnapshots",
-            "Volume.ForgetSnapshots",
-            &request,
-        )
-        .await
-    }
-
-    async fn forget_lease(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::ForgetLease>(request)?;
-        self.switch_verb::<ployz_core::SwitchReply>("ForgetLease", "Volume.ForgetLease", &request)
-            .await
-    }
-
-    async fn demote_volume(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::DemoteVolume>(request)?;
-        self.switch_verb::<ployz_core::SwitchReply>("DemoteVolume", "Volume.Demote", &request)
+        self.switch_verb::<ployz_core::VolumeCopyView>("SeedVolume", "Volume.Seed", &request)
             .await
     }
 
@@ -1123,45 +606,18 @@ impl MachineRpc for MachineService {
         )
     }
 
-    async fn inspect_machine_upgrade(
+    async fn leave(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        finish(
-            self.local
-                .inspect_upgrade(expect::<op::InspectMachineUpgrade>(request)?)
-                .await,
-        )
+        finish(self.local.leave(expect::<op::Leave>(request)?).await)
     }
 
-    async fn remove_local_machine(
+    async fn forget(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        finish(
-            self.local
-                .remove_local(expect::<op::RemoveLocalMachine>(request)?)
-                .await,
-        )
-    }
-
-    async fn remove_machine(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        finish(
-            self.local
-                .remove_peer(expect::<op::RemoveMachine>(request)?)
-                .await,
-        )
-    }
-
-    async fn inspect_wireguard(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        expect::<op::InspectWireguard>(request)?;
-        finish(self.local.inspect_wireguard().await)
+        finish(self.local.forget(expect::<op::Forget>(request)?).await)
     }
 
     async fn list_images(
@@ -1180,12 +636,15 @@ impl MachineRpc for MachineService {
         respond(images)
     }
 
-    async fn remove_images(
+    async fn prune_images(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::RemoveImages>(request)?;
-        finish(self.local.remove_images(request.references).await)
+        finish(
+            self.local
+                .prune_images(expect::<op::PruneImages>(request)?)
+                .await,
+        )
     }
 
     async fn ensure_image_ingest(
@@ -1234,13 +693,13 @@ impl MachineRpc for MachineService {
         }
     }
 
-    async fn end_build_grant(
+    async fn inspect_build_grant(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::EndBuildGrant>(request)?;
-        match self.grants.end(&request.id) {
-            Ok(ended) => respond(ended),
+        let request = expect::<op::InspectBuildGrant>(request)?;
+        match self.grants.inspect(&request.id) {
+            Ok(inspected) => respond(inspected),
             Err(error) => respond(error),
         }
     }
@@ -1314,14 +773,6 @@ impl MachineRpc for MachineService {
             Ok(()) => respond(CertificateMaterialPublished {}),
             Err(error) => respond(cluster_store_error(error)),
         }
-    }
-
-    async fn reset(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        expect::<op::Reset>(request)?;
-        finish(self.local.reset().await)
     }
 }
 
@@ -1416,9 +867,6 @@ fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Stat
             details: Value::Null,
             cause: Vec::new(),
         }),
-        LocalMachineError::IsolationLocked => {
-            respond(unavailable(&ployz_core::error_chain::inline(&error)))
-        }
         LocalMachineError::Admission(crate::mutation::Error::Busy) => respond(RpcError {
             code: RpcErrorCode::Conflict,
             message: "a Ployz installation or upgrade is active".into(),
@@ -1552,3 +1000,5 @@ fn internal_response(error: impl std::error::Error + 'static) -> Status {
 #[cfg(test)]
 #[path = "local_tests.rs"]
 mod tests;
+#[path = "local_volume_copy.rs"]
+mod volume_copy;

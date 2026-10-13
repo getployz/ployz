@@ -1,19 +1,17 @@
 //! Departure: when a Machine leaves its cluster or is installed afresh, every root it
-//! holds becomes a slot and every lease record closes past its last step, so nothing left
-//! behind is taken for the writer and a later restore starts from an ordinary slot.
+//! holds becomes a slot, so nothing left behind is taken for the writer and a later restore
+//! starts from an ordinary slot.
 
 use std::collections::BTreeSet;
 
 use axum::{Json, extract::State};
-use ployz_core::{Cycle, LeaseRecord, MirrorMarker, MirrorRequest, Pos, RpcError, SwitchReply};
+use ployz_core::RpcError;
 use ployzd::machine_pool::MachinePool;
 
 use super::{
-    DATASET_ROOT, Dataset, DockerVolumeName, Place, VolumeStorage,
-    lease::{
-        LEASE_PROPERTY_PREFIX, MIRROR_PROPERTY, WRITER_PROPERTY, internal, slot_fs, slot_parent,
-    },
-    mirror::name,
+    Dataset, DockerVolumeName, Place, VolumeStorage,
+    inspect::internal,
+    storage::{slot_fs, slot_parent},
 };
 
 /// Prefix of the snapshot a departure takes on each root before demoting it.
@@ -28,8 +26,7 @@ enum Departure<'datasets> {
 }
 
 impl VolumeStorage {
-    /// Demotes every root to a slot, idles every slot marker and closes every lease
-    /// record. Answers the names demoted, for the daemon to forget in Docker.
+    /// Demotes every root to a slot. Answers the names demoted, for the daemon to forget in Docker.
     async fn demote_all(&self, now_unix_seconds: i64) -> super::Result<Vec<String>> {
         let _guard = self.admit_mutation().await?;
         let Some(pool) = self.pool.one_usable().await? else {
@@ -54,36 +51,10 @@ impl VolumeStorage {
                 demoted.push(name.to_string());
             }
         }
-        self.close_lease_records(&pool, &datasets).await?;
         Ok(demoted)
     }
 
-    /// Demotes this Machine's copy of one Volume, the old copy Cloud found beside a newer
-    /// writer. The root turns read-only before it moves, so a Container still writing to
-    /// it fails at once. The record closes at the request's step only once the root is a
-    /// slot: Cloud tells the old copy by its lower record, so a demote cut short by a busy
-    /// mount must not raise it above the writer's. The retry redoes what is left.
-    async fn demote_volume(
-        &self,
-        request: &MirrorRequest,
-        now_unix_seconds: i64,
-    ) -> Result<SwitchReply, RpcError> {
-        let name = name(&request.name)?;
-        let mut scope = self.leased(&name, &request.switch).await?;
-        scope.admitted.lease.cycle = Cycle::Closed;
-        if let Some(root) = Self::dataset(&scope.datasets, &scope.pool, &name).map_err(internal)? {
-            self.zfs(&["set", "readonly=on", &root.name])
-                .await
-                .map_err(internal)?;
-        }
-        self.demote_copy(&scope.pool, &scope.datasets, &name, now_unix_seconds)
-            .await
-            .map_err(internal)?;
-        self.reply(&scope.pool, &name, scope.admitted).await
-    }
-
-    /// Turns `name`'s root into a sealed slot with an idle marker. Answers whether it
-    /// demoted anything.
+    /// Turns `name`'s root into a sealed slot. Answers whether it demoted anything.
     async fn demote_copy(
         &self,
         pool: &MachinePool,
@@ -117,14 +88,6 @@ impl VolumeStorage {
             }
             Departure::Departed => false,
         };
-        if let Some(slot) = Self::slot(datasets, pool, name) {
-            self.zfs(&[
-                "set",
-                &format!("{MIRROR_PROPERTY}={}", MirrorMarker::Idle),
-                &slot.name,
-            ])
-            .await?;
-        }
         Ok(demoted)
     }
 
@@ -141,11 +104,7 @@ impl VolumeStorage {
             (Some(_), _, Some(_)) => Departure::RootBesideMirror,
             (Some(root), Some(_), None) => Departure::RootBesideEmptySlot(root),
             (Some(root), None, None) => Departure::Root(root),
-            (None, _, Some(fs))
-                if !fs.readonly || self.property(&fs.name, WRITER_PROPERTY).await?.is_some() =>
-            {
-                Departure::UnsealedSlot(fs)
-            }
+            (None, _, Some(fs)) if !fs.readonly => Departure::UnsealedSlot(fs),
             (None, _, _) => Departure::Departed,
         })
     }
@@ -192,51 +151,6 @@ impl VolumeStorage {
 
     async fn seal(&self, fs: &str) -> super::Result<()> {
         self.zfs(&["set", "readonly=on", fs]).await?;
-        self.zfs(&["inherit", WRITER_PROPERTY, fs]).await?;
-        Ok(())
-    }
-
-    /// Every record on the managed root keeps its lease and closes at [`Pos::DEPARTED`]:
-    /// each late request of that run is behind it, and the next run's newer lease adopts.
-    async fn close_lease_records(
-        &self,
-        pool: &MachinePool,
-        datasets: &[Dataset],
-    ) -> super::Result<()> {
-        let root = format!("{}/{DATASET_ROOT}", pool.name());
-        if !datasets.iter().any(|dataset| dataset.name == root) {
-            return Ok(());
-        }
-        let listed = self
-            .zfs(&[
-                "get",
-                "-H",
-                "-o",
-                "property,value",
-                "-s",
-                "local",
-                "all",
-                &root,
-            ])
-            .await?;
-        for line in listed.lines() {
-            let Some((property, value)) = line.split_once('\t') else {
-                continue;
-            };
-            if !property.starts_with(LEASE_PROPERTY_PREFIX) {
-                continue;
-            }
-            let record = value
-                .parse::<LeaseRecord>()
-                .map_err(|error| format!("{error} on {root}"))?;
-            let closed = LeaseRecord {
-                pos: Pos::DEPARTED,
-                cycle: Cycle::Closed,
-                ..record
-            };
-            self.zfs(&["set", &format!("{property}={closed}"), &root])
-                .await?;
-        }
         Ok(())
     }
 }
@@ -246,12 +160,4 @@ pub(super) async fn demote(
 ) -> Json<Result<Vec<String>, RpcError>> {
     let now = chrono::Utc::now().timestamp();
     Json(storage.demote_all(now).await.map_err(internal))
-}
-
-pub(super) async fn demote_volume(
-    State(storage): State<VolumeStorage>,
-    Json(request): Json<MirrorRequest>,
-) -> Json<Result<SwitchReply, RpcError>> {
-    let now = chrono::Utc::now().timestamp();
-    Json(storage.demote_volume(&request, now).await)
 }

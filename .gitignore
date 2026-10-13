@@ -9,3 +9,4 @@ node_modules/
 !/.claude/skills/
 !/.claude/settings.json
 /.scratch/
+__pycache__/

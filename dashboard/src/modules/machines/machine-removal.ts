@@ -3,6 +3,7 @@ import {
   dataLossIdentitySchema,
   type DataLossIdentity,
 } from "#/modules/runtime/data-loss-identity";
+import { requirements, ServerLacks, serverSupports } from "#/modules/runtime/daemon-compat";
 
 export const MACHINE_REMOVE_ATTEMPT_STATES = [
   "pending",
@@ -157,5 +158,32 @@ export type MachineRemoveCompletion =
 
 export type RemoveMachineOutcome =
   | { kind: "removed"; resetWarning: string | null }
-  | { kind: "refused"; failureCode: "conflict"; message: string }
+  /** The Server reset, and its row is still listed: Forget alone finishes the removal, with the Leave's warning. */
+  | { kind: "left"; resetWarning: string | null }
+  | { kind: "refused"; failureCode: "conflict" | "server_lacks"; message: string }
   | { kind: "missing_identities"; identities: DataLossIdentity[] };
+
+type RemovalServer = { readonly id: string; readonly capabilities: readonly string[] };
+
+/**
+ * The Server whose record lacks its removal step. The target leaves unless `noReset`; the entry forgets the target's
+ * row, and Cloud can't tell ahead which Server it dials, so each one counts.
+ */
+export function removalLack(
+  servers: readonly RemovalServer[],
+  removal: { readonly target: string; readonly entries: readonly string[]; readonly noReset: boolean },
+): ServerLacks | null {
+  const steps = [
+    ...(removal.noReset ? [] : [{ machineId: removal.target, requirement: requirements.leave }]),
+    ...removal.entries
+      .filter((entry) => entry !== removal.target)
+      .map((machineId) => ({ machineId, requirement: requirements.forget })),
+  ];
+  for (const { machineId, requirement } of steps) {
+    const server = servers.find((candidate) => candidate.id === machineId);
+    if (server !== undefined && serverSupports(server, requirement) === false) {
+      return new ServerLacks({ machineId, capability: requirement.capability });
+    }
+  }
+  return null;
+}

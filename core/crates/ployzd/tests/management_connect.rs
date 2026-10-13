@@ -25,9 +25,9 @@ use ployz::{
     context::Connection,
 };
 use ployz_core::{
-    AdvertisedEndpoint, DescribeContractRequest, InitializeRequest, MANAGEMENT_ALPN, MachineId,
-    MachineName, MachineRpcClient, ManagementCapability, ManagementClientLabel, RpcErrorCode,
-    SetManagementClientRequest, op,
+    AdvertisedEndpoint, DescribeContractRequest, EnrollAs, EnrollRequest, MANAGEMENT_ALPN,
+    MachineId, MachineName, MachineRpcClient, ManagementCapability, ManagementClientLabel,
+    RpcErrorCode, SetManagementClientRequest, op,
 };
 use ployzd::{
     machine::{LocalMachine, LocalMachineStore, RecordOwner},
@@ -700,14 +700,18 @@ async fn build_grant_contract() {
         "{seen:?}"
     );
 
-    // Ending the Build ends the grant: live streams stop and a redial is refused.
-    let ended = grants.end(&minted.id).unwrap();
+    // Reading the grant reports the push without spending anything more, and the
+    // spent grant refuses a redial.
+    let inspected = grants.inspect(&minted.id).unwrap();
     assert_eq!(
-        ended.pushed.as_ref().map(ployz_core::ImageDigest::as_str),
+        inspected
+            .pushed
+            .as_ref()
+            .map(ployz_core::ImageDigest::as_str),
         Some(format!("sha256:{hex}").as_str())
     );
-    wait_until(|| registry.refusal().is_some()).await;
-    assert!(http.head(&blob).send().await.is_err());
+    assert!(inspected.expires_in_seconds > 0);
+    assert_eq!(http.head(&blob).send().await.unwrap().status(), 403);
     let again = open_grant_registry(&minted.grant, relay).await.unwrap();
     assert!(
         http.get(format!("http://{}/v2/", again.address()))
@@ -716,7 +720,7 @@ async fn build_grant_contract() {
             .is_err()
     );
     assert!(again.refusal().is_some());
-    assert_eq!(grants.end(&minted.id).unwrap(), ended);
+    assert_eq!(grants.inspect(&minted.id).unwrap().pushed, inspected.pushed);
     machine.stop().await;
 }
 
@@ -758,8 +762,8 @@ async fn already_held_contract() {
         format!("ployz-sha256-{}", "b".repeat(64)),
     ] {
         let (minted, _, _registry) = head(reference.clone()).await;
-        let ended = machine.grants.end(&minted.id).unwrap();
-        assert_eq!(ended.pushed, None, "{reference}");
+        let inspected = machine.grants.inspect(&minted.id).unwrap();
+        assert_eq!(inspected.pushed, None, "{reference}");
     }
 
     let (minted, manifests, _registry) = head(format!("ployz-sha256-{HELD}")).await;
@@ -771,9 +775,12 @@ async fn already_held_contract() {
         .await
         .unwrap();
     assert_eq!(put.status(), 403);
-    let ended = machine.grants.end(&minted.id).unwrap();
+    let inspected = machine.grants.inspect(&minted.id).unwrap();
     assert_eq!(
-        ended.pushed.as_ref().map(ployz_core::ImageDigest::as_str),
+        inspected
+            .pushed
+            .as_ref()
+            .map(ployz_core::ImageDigest::as_str),
         Some(format!("sha256:{HELD}").as_str())
     );
     machine.stop().await;
@@ -894,12 +901,14 @@ async fn participating_in(network: &str) -> (tempfile::TempDir, RecordOwner, Loc
     let owner = RecordOwner::spawn(LocalMachineStore::open(dir.path()).unwrap()).unwrap();
     let local = LocalMachine::new(owner.clone());
     local
-        .initialize(InitializeRequest {
-            initial_policy: Default::default(),
-            name: MachineName::parse("first").unwrap(),
-            cluster_network: network.parse().unwrap(),
-            public_ip: None,
-            advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
+        .enroll(EnrollRequest {
+            role: EnrollAs::Founder {
+                initial_policy: Default::default(),
+                name: MachineName::parse("first").unwrap(),
+                cluster_network: network.parse().unwrap(),
+                public_ip: None,
+                advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
+            },
             wireguard_mtu: None,
         })
         .await
@@ -947,8 +956,8 @@ async fn rotate(channel: Channel) -> ManagementCapability {
 
 async fn activate(channel: Channel) {
     MachineRpcClient::new(channel)
-        .machine_token(
-            op::MachineToken::into_request(ployz_core::MachineTokenRequest::default())
+        .inspect(
+            op::Inspect::into_request(ployz_core::InspectRequest::default())
                 .encode()
                 .unwrap(),
         )
@@ -957,7 +966,7 @@ async fn activate(channel: Channel) {
         .into_inner()
         .decode_response()
         .unwrap()
-        .decode::<op::MachineToken>()
+        .decode::<op::Inspect>()
         .unwrap();
 }
 

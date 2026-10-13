@@ -41,7 +41,16 @@ async fn catch_up_waits_for_removal_and_rechecks_phase() {
     }))
     .unwrap();
     local
-        .join(machine.clone(), vec![machine], BTreeMap::new(), None)
+        .enroll(ployz_core::EnrollRequest {
+            role: ployz_core::EnrollAs::Member {
+                registration: ployz_core::Registered {
+                    assigned_machine: machine.clone(),
+                    visible_peers: vec![machine],
+                    target_versions: BTreeMap::new(),
+                },
+            },
+            wireguard_mtu: None,
+        })
         .unwrap();
     let local = RecordOwner::spawn(local).unwrap();
 

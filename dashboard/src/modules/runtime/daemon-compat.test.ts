@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { requirementFor, requirements, ServerLacks, serverSupports } from "./daemon-compat";
-import { asSdkFailure, PloyzProviderError, sdkFailureMessage } from "./ployz.server";
+import { requirementFor, requirements, ServerLacks, serversLacking, serverSupports } from "./daemon-compat";
+import { asSdkFailure, LeftNotForgotten, PloyzProviderError, rpcErrorCode, sdkFailureMessage } from "./ployz.server";
 
 describe("serverSupports", () => {
   it("reads the Server's record, and claims nothing when the record lists no capabilities", () => {
@@ -9,14 +9,35 @@ describe("serverSupports", () => {
     expect(serverSupports({ capabilities: [] }, requirements.volumeMove)).toBe("unknown");
   });
 
+  it("names only the Servers whose records lack the capability, attempting those that list none", () => {
+    const listingNone = { name: "ash-1", capabilities: [] };
+    const servers = [
+      { name: "fsn-1", capabilities: [requirements.buildGrantInspect.capability] },
+      { name: "hel-1", capabilities: [requirements.liveLogs.capability] },
+      listingNone,
+    ];
+    expect(serverSupports(listingNone, requirements.buildGrantInspect)).toBe("unknown");
+    expect(serversLacking(servers, requirements.buildGrantInspect)).toEqual(["hel-1"]);
+    expect(serversLacking(servers, requirements.pruneImages)).toEqual(["fsn-1", "hel-1"]);
+  });
+
+  it("leaves Server removal to the daemon on a record from before capabilities", () => {
+    expect(requirements.leave.capability).toBe("ployz.machine.leave.v1");
+    expect(requirements.forget.capability).toBe("ployz.machine.forget.v1");
+    expect(serverSupports({ capabilities: [] }, requirements.leave)).toBe("unknown");
+    expect(serverSupports({ capabilities: [] }, requirements.forget)).toBe("unknown");
+  });
+
   it("names the feature a refused capability belongs to", () => {
     expect(requirementFor("ployz.logs.tail.v1")).toBe(requirements.liveLogs);
+    expect(requirementFor("ployz.build.grant.inspect.v1")).toBe(requirements.buildGrantInspect);
+    expect(requirementFor("ployz.image.prune.v1")).toBe(requirements.pruneImages);
     expect(requirementFor("ployz.something.v9")).toBeNull();
   });
 });
 
 /** The error @ployz/sdk throws for a daemon's refusal, as its index.js builds it from the native `PLOYZ_RPC_ERROR:` message. */
-function rpcError(payload: { code: string; message: string; details: Record<string, string> }) {
+function rpcError(payload: { code: string; message: string; details: Record<string, string> | { left: boolean; reset_warning: string | null } }) {
   const native = new Error(`PLOYZ_RPC_ERROR:${JSON.stringify(payload)}`);
   return Object.assign(new Error(payload.message, { cause: native }), { name: "RpcError", code: payload.code, details: payload.details });
 }
@@ -31,6 +52,18 @@ describe("asSdkFailure", () => {
     const failure = asSdkFailure("logs", rpcError({ code: "unsupported", message: "disabled", details: { cause: "disabled" } }));
     expect(failure).toBeInstanceOf(PloyzProviderError);
     expect(sdkFailureMessage(failure)).toBe("unsupported: disabled");
+  });
+
+  it("keeps the Leave a Server answered before its Forget failed, with the failure's code", () => {
+    const failure = asSdkFailure("remove machine", rpcError({ code: "unavailable", message: "the Cluster store is unavailable", details: { left: true, reset_warning: null } }));
+    expect(failure).toBeInstanceOf(LeftNotForgotten);
+    expect(failure).toMatchObject({ resetWarning: null });
+    expect(rpcErrorCode(failure)).toBe("unavailable");
+  });
+
+  it("keeps a failure without a Leave reply as the provider's own failure", () => {
+    const failure = asSdkFailure("remove machine", rpcError({ code: "unavailable", message: "down", details: { left: false, reset_warning: null } }));
+    expect(failure).toBeInstanceOf(PloyzProviderError);
   });
 });
 

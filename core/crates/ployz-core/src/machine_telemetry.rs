@@ -36,7 +36,7 @@ impl BridgeEndpointCapacity {
 }
 
 /// Fresh telemetry requested from a Machine inspection.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
 pub enum InspectTelemetry {
     /// Do not probe telemetry.

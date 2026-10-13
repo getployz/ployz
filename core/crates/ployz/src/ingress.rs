@@ -3,11 +3,10 @@
 use std::{collections::BTreeSet, time::Duration};
 
 use ployz_core::{
-    ContainerDetails, ContainerId, ContainerObservation, EnvironmentValues,
-    GetIngressProxyConfigRequest, MachineId, MachineTarget, MarkContainerStoppingRequest,
-    PlacementConstraint, PortPublication, QualifiedService, RequestedServiceSpec, RpcError,
-    RpcErrorCode, SourceContainerRequest, StopContainerRequest, caddy_service_spec,
-    ingress_upstream, op,
+    ContainerId, ContainerObservation, EnvironmentValues, GetIngressProxyConfigRequest, MachineId,
+    MachineTarget, MarkContainerStoppingRequest, PlacementConstraint, PortPublication,
+    QualifiedService, RequestedServiceSpec, RpcError, RpcErrorCode, StopContainerRequest,
+    caddy_service_spec, ingress_upstream, op,
 };
 
 use crate::{
@@ -139,7 +138,6 @@ async fn withdraw(client: &Client, machine_id: &MachineId, container_id: &Contai
         .invoke::<op::MarkContainerStopping>(
             MarkContainerStoppingRequest {
                 container_id: *container_id,
-                volume: None,
             },
             &MachineTarget::from(machine_id),
             Some(TARGET_RPC_TIMEOUT),
@@ -161,35 +159,6 @@ async fn withdraw(client: &Client, machine_id: &MachineId, container_id: &Contai
         }
     };
     wait_for_withdrawal(client, &details.container).await;
-}
-
-/// Fence a source Volume and mark its Container stopping.
-/// Wait up to ten seconds for reachable Ingress Proxies to confirm withdrawal.
-/// Unconfirmed proxies produce a warning. Returns the source specification for a move.
-///
-/// # Errors
-///
-/// Returns on RPC transport failure or when the source lease or Container is refused.
-pub async fn withdraw_volume(
-    client: &Client,
-    machine_id: &MachineId,
-    request: SourceContainerRequest,
-) -> Result<ContainerDetails, RpcError> {
-    let details = client
-        .invoke::<op::MarkContainerStopping>(
-            MarkContainerStoppingRequest {
-                container_id: request.container_id,
-                volume: Some(ployz_core::MirrorRequest {
-                    switch: request.switch,
-                    name: request.name,
-                }),
-            },
-            &MachineTarget::from(machine_id),
-            Some(TARGET_RPC_TIMEOUT),
-        )
-        .await?;
-    wait_for_withdrawal(client, &details.container).await;
-    Ok(details)
 }
 
 async fn wait_for_withdrawal(client: &Client, observation: &ContainerObservation) {
@@ -308,54 +277,6 @@ mod tests {
             ["caddy", "run", "-c", "/config/caddy/Caddyfile"]
         );
         assert_eq!(caddy.ports.len(), 3);
-    }
-
-    #[tokio::test]
-    async fn source_withdrawal_preserves_a_lease_refusal_without_polling_proxies() {
-        use ployz_core::{
-            Lease, MirrorRequest, Pos, RpcRequestBody, RpcResponse, Switch, SwitchError,
-        };
-        use tonic::{Request, Response};
-
-        let source = SourceContainerRequest {
-            switch: Switch {
-                lease: Lease::new(7),
-                pos: Pos::step(5),
-            },
-            name: "data".parse().unwrap(),
-            container_id: ContainerId::parse("a".repeat(64)).unwrap(),
-        };
-        let refused = SwitchError::StaleLease.rpc_error("a newer move owns the source");
-        let (client, server) = crate::connect::test_support::rpc_client({
-            let source = source.clone();
-            let refused = refused.clone();
-            move |request: Request<ployz_core::OpaquePayload>| {
-                let source = source.clone();
-                let refused = refused.clone();
-                async move {
-                    let RpcRequestBody::MarkContainerStopping(request) =
-                        request.into_inner().decode_request().unwrap().body
-                    else {
-                        panic!("a refused withdrawal must not inspect proxies");
-                    };
-                    assert_eq!(request.container_id, source.container_id);
-                    assert_eq!(
-                        request.volume,
-                        Some(MirrorRequest {
-                            switch: source.switch,
-                            name: source.name
-                        })
-                    );
-                    Ok(Response::new(RpcResponse::from(refused).encode().unwrap()))
-                }
-            }
-        })
-        .await;
-        let error = withdraw_volume(&client, &MachineId::random(), source)
-            .await
-            .unwrap_err();
-        assert_eq!(error, refused);
-        server.abort();
     }
 
     fn running(image: &str) -> Running {

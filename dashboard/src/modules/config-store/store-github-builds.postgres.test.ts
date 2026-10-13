@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { it } from "@effect/vitest";
-import type { ConfigCommand } from "@ployz/sdk";
+import type { ConfigCommand, JsonValue } from "@ployz/sdk";
 import { Effect, Layer } from "effect";
 import type { StoreCall } from "./store.contract";
 import { expect } from "vitest";
@@ -11,7 +11,7 @@ import {
 } from "#/modules/config-store/store-github-builds.server";
 import { GITHUB_OIDC_ISSUER, GithubOidcKeys } from "#/modules/github/github-oidc.server";
 import { type ConnectedRuntimeClient, OrganizationRuntime, type OrganizationRuntimeService } from "#/modules/runtime/organization-runtime.server";
-import { fakeGithubApi } from "#/test/fake-github";
+import { fakeGithubApiBy } from "#/test/fake-github";
 import { acmeWeb, seedStoreGitService, storeTestCloud } from "#/test/store-cloud";
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000b001";
@@ -38,9 +38,14 @@ function oidcToken(claims: Partial<RunnerClaims> = {}, key: crypto.KeyObject = s
   return `${body}.${crypto.sign("RSA-SHA256", Buffer.from(body), key).toString("base64url")}`;
 }
 
-/** GitHub with `acme/web` through installation 7, without the build workflow. */
-const github = fakeGithubApi({
-  "https://api.github.com/repositories/42": { id: 42, full_name: "acme/web", default_branch: "main" },
+/** GitHub with `acme/web` through installation 7; its build workflow appears once `workflowReady` is set. */
+let workflowReady = false;
+const github = fakeGithubApiBy(({ url }): JsonValue | undefined => {
+  if (url === "https://api.github.com/repositories/42") return { id: 42, full_name: "acme/web", default_branch: "main" };
+  if (workflowReady && url === "https://api.github.com/repos/acme/web/actions/workflows/ployz-build.yml") {
+    return { path: ".github/workflows/ployz-build.yml", state: "active" };
+  }
+  return undefined;
 });
 
 it.live(
@@ -119,6 +124,27 @@ it.live(
       });
       expect(yield* provided(planStoreGithubBuilds(plan).pipe(Effect.provideService(OrganizationRuntime, noBuilders))))
         .toMatchObject([{ build: `${serversFirst}.web`, hasNext: false }]);
+
+      // A Server whose record says it can't read a Build Grant back sends the build to its next Builder, by name.
+      workflowReady = true;
+      const oldServer = "00000000-0000-4000-8000-00000000b104";
+      yield* write({ command: "admit", admit: "deploy", id: oldServer, environment: here, services: [], version: null, accept_volume_loss: [] });
+      yield* Effect.promise(() => store.pinSources(oldServer, { web: HEAD }));
+      const lacking = asTestDouble<OrganizationRuntimeService>()({
+        cancel: () => Effect.void,
+        open: () => Effect.succeed({ status: "connected" as const, connected: asTestDouble<ConnectedRuntimeClient>()({
+          watchFirstFrame: () => Effect.succeed({ machines: [
+            { machine: { name: "fsn-1", runtime: { capabilities: [] } } },
+            { machine: { name: "hel-1", runtime: { capabilities: ["ployz.logs.tail.v1"] } } },
+          ] }),
+        }) }),
+      });
+      const oldTarget = { ...target, build: `${oldServer}.web` };
+      expect(yield* provided(startStoreGithubBuild(ORGANIZATION, oldTarget).pipe(Effect.provideService(OrganizationRuntime, lacking))))
+        .toEqual({ kind: "done" });
+      expect(yield* Effect.promise(() => store.read(ORGANIZATION, { query: "deployment", id: oldServer }))).toMatchObject({
+        builds: [{ service: "web", status: "pending", message: "GitHub builds need a newer Ployz on hel-1" }],
+      });
 
       // An admission carries how many Servers could run it: none here.
       const admission = { operation: "write", command: {

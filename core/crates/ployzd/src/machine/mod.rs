@@ -33,8 +33,8 @@ mod store;
 pub use record_owner::{RecordOwner, RecordOwnerStopped};
 #[cfg(test)]
 use store::PENDING_RESET_FILE_NAME;
+pub use store::{EnrollPlan, LocalMachineStore, StoreError};
 pub(crate) use store::{InterruptedReset, Opened};
-pub use store::{LocalMachineStore, StoreError};
 
 pub(crate) use local_machine::RuntimeWatchTelemetry;
 pub use local_machine::{Error as LocalMachineError, LocalMachine};
@@ -469,6 +469,16 @@ impl LocalMachineRecord {
     #[must_use]
     pub fn machine(&self) -> Option<&Machine> {
         self.body.machine()
+    }
+
+    /// This Machine's own enrollment facts, as lifecycle refusals report them.
+    #[must_use]
+    pub fn now(&self) -> ployz_core::MachineNow {
+        ployz_core::MachineNow {
+            id: self.id(),
+            phase: self.phase(),
+            machine: self.machine().cloned(),
+        }
     }
 
     /// Cluster IPv4 pool when this participating Machine has one.

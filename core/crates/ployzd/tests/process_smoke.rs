@@ -11,8 +11,9 @@ use std::{
 };
 
 use ployz_core::{
-    AdvertisedEndpoint, DESCRIBE_CONTRACT_CAPABILITY, DescribeContractRequest, InspectRequest,
-    JoinRequest, Machine, MachineId, MachineName, MachineRpcClient, Registered, op,
+    AdvertisedEndpoint, DESCRIBE_CONTRACT_CAPABILITY, DescribeContractRequest, EnrollAs,
+    EnrollRequest, Enrolled, InspectRequest, Machine, MachineId, MachineName, MachineRpcClient,
+    Registered, op,
 };
 use tonic::transport::{Channel, Endpoint};
 
@@ -170,8 +171,8 @@ fn join_leaves_a_journal_line_and_records_the_restart() {
     join(&socket);
     let stderr = wait_and_stderr(&mut daemon.0, "join");
     assert!(
-        stderr.contains("join accepted"),
-        "join missing from journal stderr: {stderr}"
+        stderr.contains("enrolled"),
+        "enrollment missing from journal stderr: {stderr}"
     );
     assert!(
         stderr.contains("shutting down") && stderr.contains("restart requested"),
@@ -435,14 +436,16 @@ fn join(path: &Path) {
         build_concurrency: None,
     };
     tokio::runtime::Runtime::new().unwrap().block_on(async {
-        connect(path)
+        let enrolled = connect(path)
             .await
-            .join(
-                op::Join::into_request(JoinRequest {
-                    registration: Registered {
-                        assigned_machine: assigned,
-                        visible_peers: vec![peer],
-                        target_versions: [("actor".into(), 1)].into(),
+            .enroll(
+                op::Enroll::into_request(EnrollRequest {
+                    role: EnrollAs::Member {
+                        registration: Registered {
+                            assigned_machine: assigned,
+                            visible_peers: vec![peer],
+                            target_versions: [("actor".into(), 1)].into(),
+                        },
                     },
                     wireguard_mtu: None,
                 })
@@ -454,7 +457,11 @@ fn join(path: &Path) {
             .into_inner()
             .decode_response()
             .unwrap()
-            .decode::<op::Join>()
+            .decode::<op::Enroll>()
             .unwrap();
+        assert!(
+            matches!(enrolled, Enrolled::Enrolled { .. }),
+            "{enrolled:?}"
+        );
     });
 }

@@ -8,9 +8,9 @@ use clap::{ArgMatches, Command};
 use crate::cli::{base, switch};
 use ipnet::Ipv4Net;
 use ployz_core::{
-    CloudEnrollToken, DescribeContractRequest, InitializeRequest, InspectRequest, JoinRequest,
-    LocalMachinePhase, Machine, MachineDetails, MachineName, MachineToken, MachineTokenRequest,
-    ManagementCapability, ManagementClientLabel, SetManagementClientRequest, StorageChoice, op,
+    CloudEnrollToken, DescribeContractRequest, EnrollAs, EnrollRequest, InspectRequest,
+    LocalMachinePhase, Machine, MachineDetails, MachineName, MachineToken, ManagementCapability,
+    ManagementClientLabel, SetManagementClientRequest, StorageChoice, TokenRequest, op,
 };
 
 use super::{Error, config_path, leaf_matches, required, runtime};
@@ -201,12 +201,14 @@ async fn enroll_current_identity(
     initial_policy: &ployz_core::InitialMachinePolicy,
     url: &str,
 ) -> Result<(MachineDetails, MachineToken, MachineName, Outcome), Error> {
-    let details = client
-        .call_repeatable::<op::Inspect>(InspectRequest::default(), None)
-        .await?;
-    let machine_token = client
-        .call_repeatable::<op::MachineToken>(MachineTokenRequest::default(), None)
-        .await?;
+    let (details, machine_token) = crate::handlers::server::inspect_token(
+        client,
+        InspectRequest {
+            token: Some(TokenRequest::default()),
+            ..Default::default()
+        },
+    )
+    .await?;
     let name = crate::handlers::server::machine_name(requested_name, &machine_token)?;
     let identity = EnrollIdentity::from_machine_token(
         name.clone(),
@@ -264,10 +266,12 @@ where
         .await?;
         client = provision_storage(matches, client, join.storage, install).await?;
         report.step(Step::Join);
-        crate::handlers::server::join(
+        crate::handlers::server::enroll(
             &mut client,
-            JoinRequest {
-                registration: join.registration,
+            EnrollRequest {
+                role: EnrollAs::Member {
+                    registration: join.registration,
+                },
                 wireguard_mtu: matches.get_one::<u32>("wg-mtu").copied(),
             },
         )
@@ -384,14 +388,16 @@ where
             .await?;
             client = provision_storage(matches, client, storage, install).await?;
             report.step(Step::Join);
-            let initialized = crate::handlers::server::initialize(
+            let machine = crate::handlers::server::enroll(
                 &mut client,
-                InitializeRequest {
-                    initial_policy,
-                    name,
-                    cluster_network,
-                    public_ip: machine_token.public_ip,
-                    advertised_endpoints: machine_token.advertised_endpoints,
+                EnrollRequest {
+                    role: EnrollAs::Founder {
+                        initial_policy,
+                        name,
+                        cluster_network,
+                        public_ip: machine_token.public_ip,
+                        advertised_endpoints: machine_token.advertised_endpoints,
+                    },
                     wireguard_mtu: matches.get_one::<u32>("wg-mtu").copied(),
                 },
             )
@@ -402,7 +408,7 @@ where
                 "the first Server did not become ready",
             )
             .await?;
-            (initialized.machine, ready)
+            (machine, ready)
         }
     };
 
@@ -653,7 +659,7 @@ async fn ensure_uninitialized(
         ));
     }
     crate::handlers::server::confirm(yes, "Reset this Server before joining the Cluster?")?;
-    crate::handlers::server::reset(&mut client).await?;
+    crate::handlers::server::leave(&mut client).await?;
     wait_phase(
         matches,
         LocalMachinePhase::Uninitialized,

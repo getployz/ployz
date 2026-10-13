@@ -1,13 +1,12 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::sync::Arc;
 
 use ployz::{
     connect::{SystemConnector, connect_selected_with},
     context::{Connection, ConnectionSource, SelectedConnections},
 };
 use ployz_core::{
-    ContainerKind, CreateVolumeRequest, DockerVolumeId, DockerVolumeName, ListMachinesRequest,
-    MachineTarget, Namespace, RemoveVolumesRequest, ResolvedServiceSpec, ServiceId,
-    VolumeRemovalOutcome, op,
+    ContainerKind, DockerVolumeId, DockerVolumeName, ListMachinesRequest, Namespace,
+    RemoveVolumesRequest, ResolvedServiceSpec, ServiceId, VolumeRemovalOutcome, op,
 };
 use ployz_testkit::{Cluster, ClusterPlan};
 use serde_json::json;
@@ -39,8 +38,10 @@ async fn volume_mounts_and_partial_results_stay_machine_local() {
         panic!("expected two Machines: {machines:?}")
     };
     let shared = DockerVolumeName::parse("shared").unwrap();
-    for machine in &machines {
-        create_volume(&mut client, &machine.machine.id, &shared).await;
+    for index in 0..machines.len() {
+        cluster
+            .docker(index, &["volume", "create", shared.as_str()])
+            .unwrap();
     }
     let shared_ids = |volumes: &[ployz_core::MachineSuccess<ployz_core::VolumeInventory>]| {
         volumes
@@ -162,17 +163,8 @@ async fn volume_mounts_and_partial_results_stay_machine_local() {
         [second_machine.machine.id]
     );
 
-    client
-        .call::<op::CreateVolume>(
-            CreateVolumeRequest {
-                name: DockerVolumeName::parse("reachable").unwrap(),
-                driver: "local".into(),
-                options: BTreeMap::new(),
-                labels: BTreeMap::new(),
-            },
-            Some(&MachineTarget::from(&first_machine.machine.id)),
-        )
-        .await
+    cluster
+        .docker(0, &["volume", "create", "reachable"])
         .unwrap();
     cluster.stop(1).unwrap();
     let partial = client.list_volumes(&machines).await;
@@ -241,23 +233,4 @@ fn mount_spec(index: usize, name: &DockerVolumeName) -> ResolvedServiceSpec {
         ]
     }))
     .unwrap()
-}
-
-async fn create_volume(
-    client: &mut ployz::connect::Client,
-    machine: &ployz_core::MachineId,
-    name: &DockerVolumeName,
-) {
-    client
-        .call::<op::CreateVolume>(
-            CreateVolumeRequest {
-                name: name.clone(),
-                driver: "local".into(),
-                options: BTreeMap::new(),
-                labels: BTreeMap::new(),
-            },
-            Some(&MachineTarget::from(machine)),
-        )
-        .await
-        .unwrap();
 }

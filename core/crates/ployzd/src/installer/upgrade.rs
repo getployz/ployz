@@ -76,11 +76,13 @@ struct StoredAttempt {
     attempt: MachineUpgradeAttempt,
 }
 
-/// Return the durable result of retrying the same request without requiring installation
-/// ownership. The receipt is atomically replaced, so an active worker can be observed safely.
-pub(crate) fn existing_request(
+/// Return the attempt this request already started, reconciled as [`latest`] does, so a
+/// resend after the worker died reads `Interrupted` rather than its last stored stage. Needs
+/// no installation ownership, so a lost reply is recovered while the worker holds the lock.
+pub(crate) async fn replay(
     request: &RequestMachineUpgradeRequest,
     data_dir: &Path,
+    run_dir: &Path,
 ) -> Result<Option<MachineUpgradeAttempt>, Error> {
     let Some(stored) = read_optional(data_dir)? else {
         return Ok(None);
@@ -91,7 +93,19 @@ pub(crate) fn existing_request(
     if stored.requested != request.release {
         return Err(Error::AttemptConflict(request.attempt_id));
     }
-    Ok(Some(stored.attempt))
+    settle(stored, data_dir, run_dir).await.map(Some)
+}
+
+/// Read the latest attempt, turning a stopped worker without terminal evidence into
+/// interruption.
+pub(crate) async fn latest(
+    data_dir: &Path,
+    run_dir: &Path,
+) -> Result<Option<MachineUpgradeAttempt>, Error> {
+    let Some(stored) = read_optional(data_dir)? else {
+        return Ok(None);
+    };
+    settle(stored, data_dir, run_dir).await.map(Some)
 }
 
 /// Own acceptance and worker launch independently of the requesting client's lifetime.
@@ -172,17 +186,12 @@ async fn request_locked(
     Ok(stored.attempt)
 }
 
-/// Read an attempt, turning a stopped worker without terminal evidence into interruption.
-pub(crate) async fn inspect(
-    attempt_id: Option<MachineUpgradeAttemptId>,
+async fn settle(
+    mut stored: StoredAttempt,
     data_dir: &Path,
     run_dir: &Path,
 ) -> Result<MachineUpgradeAttempt, Error> {
     let admission = mutation::MutationGate::new(run_dir, data_dir);
-    let mut stored = read(data_dir)?;
-    if attempt_id.is_some_and(|attempt_id| attempt_id != stored.attempt.attempt_id) {
-        return Err(Error::NotFound);
-    }
     if stored.attempt.is_terminal() {
         match admission.try_installation() {
             Ok(_guard) => admission.clear_active(stored.attempt.attempt_id.as_str())?,
@@ -276,10 +285,7 @@ async fn work(
 
 /// Reconcile a retained receipt before serving requests after daemon restart.
 pub(crate) async fn reconcile(data_dir: &Path, run_dir: &Path) -> Result<(), Error> {
-    match inspect(None, data_dir, run_dir).await {
-        Ok(_) | Err(Error::NotFound) => Ok(()),
-        Err(error) => Err(error),
-    }
+    latest(data_dir, run_dir).await.map(drop)
 }
 
 pub(super) async fn reconcile_for_install(

@@ -1,8 +1,6 @@
 use crate::{
-    CommitRequest, DeclareMirrorRequest, HandOverRequest, InspectReceiveRequest,
-    InspectVolumeCopyRequest, MirrorRequest, ReceiveView, SeedVolumeRequest, ServiceVolumeRequest,
-    SourceContainerRequest, StartReceiveRequest, StorageCapacity, SwitchReply, VolumeCopyView,
-    WarmRequest,
+    InspectVolumeCopyRequest, SeedVolumeRequest, SetVolumeCopyReply, SetVolumeCopyRequest,
+    StorageCapacity, VolumeCopyView,
     metrics::{MetricHistoryReply, MetricHistoryRequest},
 };
 use std::{
@@ -25,10 +23,9 @@ use thiserror::Error;
 
 use crate::{
     AdvertisedEndpoint, CapabilityName, CertificateHost, ContainerId, ContainerKind,
-    ContainerObservation, DockerVolume, Machine, MachineId, MachineLogService, MachineName,
-    MachineObservation, MachineRuntime, MachineToken, MachineUpdate, ManagementCapability,
-    ManagementClientLabel, Namespace, PublicIpDiscovery, ResolvedServiceSpec, StorageChoice,
-    WireGuardDevice, WireGuardPublicKey,
+    ContainerObservation, Machine, MachineId, MachineLogService, MachineName, MachineObservation,
+    MachineRuntime, MachineUpdate, ManagementCapability, ManagementClientLabel, Namespace,
+    ResolvedServiceSpec, StorageChoice, WireGuardPublicKey,
 };
 
 mod docker;
@@ -219,28 +216,101 @@ pub enum CodecError {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DescribeContractRequest {}
 
-/// The empty payload of the reset command.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-pub struct ResetRequest {}
-
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct MachineTokenRequest {
-    pub advertised_endpoints: Vec<AdvertisedEndpoint>,
-    pub public_ip: PublicIpDiscovery,
+/// This Machine's own enrollment facts, returned with every lifecycle refusal.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct MachineNow {
+    pub id: MachineId,
+    pub phase: crate::LocalMachinePhase,
+    #[serde(default)]
+    pub machine: Option<Machine>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct InitializeRequest {
-    /// Complete policy committed in the first Machine assignment, before participation.
-    pub initial_policy: crate::InitialMachinePolicy,
-    pub name: MachineName,
-    pub cluster_network: Ipv4Net,
-    #[serde(default)]
-    pub public_ip: Option<IpAddr>,
-    pub advertised_endpoints: Vec<AdvertisedEndpoint>,
-    #[serde(default)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct EnrollRequest {
+    #[serde(rename = "as")]
+    pub role: EnrollAs,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wireguard_mtu: Option<u32>,
+}
+
+#[allow(clippy::large_enum_variant)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum EnrollAs {
+    /// First Machine of a new Cluster.
+    Founder {
+        name: MachineName,
+        #[ts(type = "string")]
+        cluster_network: Ipv4Net,
+        /// Complete policy committed in the first Machine assignment, before participation.
+        initial_policy: crate::InitialMachinePolicy,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(type = "string | null")]
+        public_ip: Option<IpAddr>,
+        #[serde(default)]
+        advertised_endpoints: Vec<AdvertisedEndpoint>,
+    },
+    /// Joins with the registration a Cluster member issued.
+    Member { registration: Registered },
+}
+
+/// A resend replays `Enrolled` with the stored record; the daemon restarts only
+/// after a fresh enrollment.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum Enrolled {
+    Enrolled {
+        machine: Machine,
+    },
+    /// Enrolled as someone else. `error.code` is `conflict`.
+    Refused {
+        now: MachineNow,
+        error: RpcError,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct LeaveRequest {}
+
+/// A successful Leave cannot report a Machine that still participates.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum LeftPhase {
+    Resetting,
+    Uninitialized,
+}
+
+/// A resend on a Machine already Resetting or Uninitialized replies `Left` with that phase.
+#[allow(clippy::large_enum_variant)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum Left {
+    Left {
+        phase: LeftPhase,
+        /// Publication removal failed best effort; the local leave happened.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reset_warning: Option<String>,
+    },
+    /// An upgrade attempt is nonterminal. `error.code` is `conflict`.
+    Refused { now: MachineNow, error: RpcError },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct ForgetRequest {
+    pub machine_id: MachineId,
+}
+
+/// A missing row is success.
+#[allow(clippy::large_enum_variant)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum Forgotten {
+    Forgotten,
+    /// `machine_id` is this Machine; a Machine leaves itself with Leave. `error.code` is `invalid_argument`.
+    Refused {
+        now: MachineNow,
+        error: RpcError,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -261,13 +331,6 @@ pub struct RegisterRequest {
     pub advertised_endpoints: Vec<AdvertisedEndpoint>,
     #[serde(default)]
     pub runtime: MachineRuntime,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct JoinRequest {
-    pub registration: Registered,
-    #[serde(default)]
-    pub wireguard_mtu: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -366,8 +429,6 @@ pub struct StopContainerRequest {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MarkContainerStoppingRequest {
     pub container_id: ContainerId,
-    #[serde(default)]
-    pub volume: Option<MirrorRequest>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -377,6 +438,77 @@ pub struct RemoveContainerRequest {
     pub remove_volumes: bool,
     #[serde(default)]
     pub force: bool,
+}
+
+/// The place one Container creation lands on a Machine. The same slot names the
+/// same Container across resends; a different spec in it is an occupied slot.
+#[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize, TS)]
+pub struct SlotKey {
+    pub namespace: Namespace,
+    pub kind: ContainerKind,
+    pub creation_key: crate::CreationKey,
+}
+
+/// A Container named either by its Docker id or by the slot its creation landed on.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ContainerLocator {
+    Id(ContainerId),
+    Key(SlotKey),
+}
+
+/// Ask a Machine to make one Container match a wanted state.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct EnsureContainerRequest {
+    pub want: ContainerWant,
+}
+
+/// The state a driver wants one Container in. The Machine converges to it and
+/// answers with what it then observes.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "state", rename_all = "snake_case")]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "a Running want carries the whole resolved spec; one request holds one"
+)]
+pub enum ContainerWant {
+    Running {
+        container: RunTarget,
+    },
+    Stopped {
+        container: ContainerLocator,
+        drain: crate::Drain,
+        #[serde(default)]
+        stop: crate::StopOptions,
+    },
+    Gone {
+        container: ContainerLocator,
+        drain: crate::Drain,
+    },
+}
+
+/// What `Running` runs: a new creation in a slot, or a Container that already exists.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "a new creation carries the whole resolved spec; one request holds one"
+)]
+pub enum RunTarget {
+    New(NewContainer),
+    Existing(ContainerLocator),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct NewContainer {
+    pub slot: SlotKey,
+    pub resolved_spec: ResolvedServiceSpec,
+    /// Correlation metadata, never part of the Service configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deployment_id: Option<crate::DeploymentLogId>,
+    /// Credentials for pulling the image; used for this pull only, never stored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registry_auth: Option<crate::RegistryAuth>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -588,15 +720,16 @@ impl PeerImagePull {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ImagePulled {}
 
-/// Remove image references from this Machine's store. Never forced: a reference
-/// whose image any Container uses is kept and reported in use.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-pub struct RemoveImagesRequest {
-    pub references: Vec<String>,
+/// Remove the superseded build images of each repository from this Machine's store.
+/// Repositories are Docker's short names, so a registry prefix stays. Never forced:
+/// a reference whose image any Container uses is kept and reported in use.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct PruneImagesRequest {
+    pub repositories: Vec<String>,
 }
 
-/// One result per requested reference, in request order.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+/// One result per superseded reference found; empty in the steady state.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct ImagesRemoved {
     pub results: Vec<ImageRemoval>,
 }
@@ -673,20 +806,6 @@ impl fmt::Debug for CertificateMaterialChange {
 pub struct UpdateMachineRequest {
     pub update: MachineUpdate,
 }
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-pub struct RemoveLocalMachineRequest {
-    #[serde(default)]
-    pub restart_on_cleanup_failure: bool,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct RemoveMachineRequest {
-    pub machine_id: MachineId,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-pub struct InspectWireGuardRequest {}
 
 macro_rules! define_request_body {
     (
@@ -847,26 +966,11 @@ struct RequestHeader {
     command: String,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-pub struct ResetAccepted {}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct Initialized {
-    pub machine: Machine,
-}
-
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct Registered {
     pub assigned_machine: Machine,
     pub visible_peers: Vec<Machine>,
     pub target_versions: BTreeMap<String, i64>,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-pub struct JoinAccepted {
-    /// The matching assignment was already durably accepted; no restart requested.
-    #[serde(default)]
-    pub already_accepted: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -911,6 +1015,54 @@ pub struct ContainerCreated {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ContainerChanged {
     pub container_id: ContainerId,
+}
+
+/// The Machine's answer to `EnsureContainer`: the Container as now observed, and
+/// the refusal when the want could not be met.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum EnsuredContainer {
+    Ensured {
+        now: ContainerNow,
+    },
+    Refused {
+        now: ContainerNow,
+        refusal: ContainerRefusal,
+    },
+}
+
+/// What the Machine observes at the asked-for Container, after any effect.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "is", rename_all = "snake_case")]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "a present Container is the whole observation; one reply holds one"
+)]
+pub enum ContainerNow {
+    Present(ContainerObservation),
+    Absent { of: ContainerLocator },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct ContainerRefusal {
+    pub reason: ContainerRefusalReason,
+    pub message: String,
+}
+
+/// Why a Machine would not meet a want. An unknown reason from a newer Machine
+/// reads as `Unrecognized`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ContainerRefusalReason {
+    NotParticipating,
+    NotEligible,
+    InvalidIngress,
+    SlotOccupied,
+    ImagePullFailed,
+    VolumesNotPrepared,
+    NotFound,
+    #[serde(other)]
+    Unrecognized,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -970,14 +1122,6 @@ pub struct MachineUpdated {
 pub struct LocalMachineRemoved {
     #[serde(default)]
     pub reset_warning: Option<String>,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-pub struct MachineRemoved {}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct WireGuardInspected {
-    pub device: WireGuardDevice,
 }
 
 /// Envelope identity: one row is the wire kind and the payload stored in that
@@ -1051,11 +1195,10 @@ macro_rules! define_responses {
 
 define_responses! {
     ContractDescription(ContractDescription) => "contract_description";
+    SetVolumeCopyReply(SetVolumeCopyReply) => "set_volume_copy_reply";
     MachineDetails(MachineDetails) => "machine_details";
-    MachineToken(MachineToken) => "machine_token";
-    Initialized(Initialized) => "initialized";
+    Enrolled(Enrolled) => "enrolled";
     Registered(Registered) => "registered";
-    JoinAccepted(JoinAccepted) => "join_accepted";
     SetManagementClientResponse(SetManagementClientResponse) => "management_client_set";
     MachineList(MachineList) => "machine_list";
     ContainerList(ContainerList) => "container_list";
@@ -1063,29 +1206,24 @@ define_responses! {
     ContainerObservationMap(ContainerObservationMap) => "container_observation_map";
     ContainerCreated(ContainerCreated) => "container_created";
     ContainerChanged(ContainerChanged) => "container_changed";
-    DockerVolume(DockerVolume) => "docker_volume";
-    CreateVolumeReport(CreateVolumeReport) => "create_volume_report";
+    EnsuredContainer(EnsuredContainer) => "ensured_container";
     StorageCapacity(crate::StorageCapacity) => "storage_capacity";
     PreparedVolumes(PreparedVolumes) => "prepared_volumes";
     VolumeInventory(VolumeInventory) => "volume_inventory";
     VolumeRemoved(VolumeRemoved) => "volume_removed";
     VolumeCopyView(crate::VolumeCopyView) => "volume_copy_view";
-    SwitchReply(crate::SwitchReply) => "switch_reply";
-    ReceiveView(crate::ReceiveView) => "receive_view";
     MachineImages(MachineImages) => "machine_images";
     ImageIngestOpened(ImageIngestOpened) => "image_ingest_opened";
     ImagePulled(ImagePulled) => "image_pulled";
     ImagesRemoved(ImagesRemoved) => "images_removed";
     BuildGrantMinted(BuildGrantMinted) => "build_grant_minted";
-    BuildGrantEnded(BuildGrantEnded) => "build_grant_ended";
+    BuildGrantInspected(BuildGrantInspected) => "build_grant_inspected";
     IngressProxyConfig(IngressProxyConfig) => "ingress_proxy_config";
     CertificateMaterialPublished(CertificateMaterialPublished) => "certificate_material_published";
     MachineUpdated(MachineUpdated) => "machine_updated";
     MachineUpgradeAttempt(MachineUpgradeAttempt) => "machine_upgrade_attempt";
-    LocalMachineRemoved(LocalMachineRemoved) => "local_machine_removed";
-    MachineRemoved(MachineRemoved) => "machine_removed";
-    WireGuardInspected(WireGuardInspected) => "wireguard_inspected";
-    ResetAccepted(ResetAccepted) => "reset_accepted";
+    Left(Left) => "left";
+    Forgotten(Forgotten) => "forgotten";
     MetricHistoryReply(MetricHistoryReply) => "metric_history";
     Error(RpcError) => "error";
 }
@@ -1407,26 +1545,33 @@ mod set_management_client_wire {
     }
 
     #[test]
-    fn initialize_and_join_carry_no_pairing() {
-        let initialize = serde_json::to_value(InitializeRequest {
-            initial_policy: Default::default(),
-            name: MachineName::parse("first").unwrap(),
-            cluster_network: "10.210.0.0/16".parse().unwrap(),
-            public_ip: None,
-            advertised_endpoints: machine().advertised_endpoints,
-            wireguard_mtu: None,
-        })
-        .unwrap();
-        let join = serde_json::to_value(JoinRequest {
-            registration: Registered {
-                assigned_machine: machine(),
-                visible_peers: vec![machine()],
-                target_versions: BTreeMap::new(),
+    fn enroll_names_its_role_and_carries_no_pairing() {
+        let founder = serde_json::to_value(EnrollRequest {
+            role: EnrollAs::Founder {
+                name: MachineName::parse("first").unwrap(),
+                cluster_network: "10.210.0.0/16".parse().unwrap(),
+                initial_policy: Default::default(),
+                public_ip: None,
+                advertised_endpoints: machine().advertised_endpoints,
             },
             wireguard_mtu: None,
         })
         .unwrap();
-        for request in [initialize, join] {
+        let member = serde_json::to_value(EnrollRequest {
+            role: EnrollAs::Member {
+                registration: Registered {
+                    assigned_machine: machine(),
+                    visible_peers: vec![machine()],
+                    target_versions: BTreeMap::new(),
+                },
+            },
+            wireguard_mtu: Some(1380),
+        })
+        .unwrap();
+        assert_eq!(founder.pointer("/as/kind"), Some(&json!("founder")));
+        assert_eq!(member.pointer("/as/kind"), Some(&json!("member")));
+        assert_eq!(member.get("wireguard_mtu"), Some(&json!(1380)));
+        for request in [founder, member] {
             assert!(request.get("cloud_pairing").is_none(), "{request}");
             assert!(!request.to_string().contains("secret"), "{request}");
         }
@@ -1533,8 +1678,8 @@ mod streaming_routing_tests {
             Some("ployz.build.v1")
         );
         assert_eq!(
-            super::capability_of("/ployz.rpc.v1.MachineRpc/DeclareMirror"),
-            Some("ployz.volume.mirror.declare.v1")
+            super::capability_of("/ployz.rpc.v1.MachineRpc/SetVolumeCopy"),
+            Some("ployz.volume.copy.set.v1")
         );
         for path in [
             "/ployz.rpc.v1.MachineRpc/Nope",

@@ -19,7 +19,7 @@ mod integration_tests;
 pub(crate) mod test_support;
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeSet, HashMap},
     net::{Ipv4Addr, SocketAddr},
     path::PathBuf,
     sync::Arc,
@@ -50,7 +50,7 @@ use http_health::probe as http_health_probe;
 use observe::ObservationSink;
 
 pub(crate) use create::container_log_config;
-pub(crate) use lifecycle::{ContainerRequest, require_eligible};
+pub(crate) use lifecycle::{ContainerRequest, require_eligible, same_creation};
 pub(crate) use managed_service::{DesiredContainer, Ensure, ManagedService};
 pub(crate) use peer_pull::pull_from_ingest;
 pub use spec_store::{Error as SpecStoreError, MachineSpecStore};
@@ -173,18 +173,12 @@ impl LocalDocker {
     }
 }
 
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum Withdrawal {
-    Stop,
-    Source(ployz_core::Lease),
-}
-
 #[derive(Clone)]
 pub struct ContainerRuntime {
     docker: LocalDocker,
     specs: MachineSpecStore,
     sink: Option<ObservationSink>,
-    stopping: watch::Sender<BTreeMap<ContainerId, Withdrawal>>,
+    stopping: watch::Sender<BTreeSet<ContainerId>>,
     checks: Arc<std::sync::Mutex<CheckRecords>>,
     stranded: Arc<tokio::sync::Mutex<observe::StrandedIngress>>,
 }
@@ -196,7 +190,7 @@ impl ContainerRuntime {
             docker,
             specs,
             sink: None,
-            stopping: watch::Sender::new(BTreeMap::new()),
+            stopping: watch::Sender::new(BTreeSet::new()),
             checks: Arc::new(std::sync::Mutex::new(CheckRecords::new(chrono::Utc::now()))),
             stranded: Arc::default(),
         }
@@ -205,44 +199,13 @@ impl ContainerRuntime {
     /// Report this Container as `stopping` until its stop runs,
     /// so the Ingress Proxies stop routing to it before it stops.
     pub fn mark_stopping(&self, container_id: ContainerId) {
-        self.mark_withdrawn(container_id, Withdrawal::Stop);
-    }
-
-    /// Withdraw source ingress for this lease without superseding an ordinary stop.
-    pub(crate) fn mark_source_stopping(&self, container_id: ContainerId, lease: ployz_core::Lease) {
-        self.mark_withdrawn(container_id, Withdrawal::Source(lease));
-    }
-
-    fn mark_withdrawn(&self, container_id: ContainerId, withdrawal: Withdrawal) {
-        self.stopping.send_if_modified(|stopping| {
-            if stopping.get(&container_id) == Some(&withdrawal)
-                || stopping.get(&container_id) == Some(&Withdrawal::Stop)
-            {
-                return false;
-            }
-            stopping.insert(container_id, withdrawal);
-            true
-        });
-    }
-
-    /// Clear source withdrawals through this lease, preserving ordinary stops.
-    pub(crate) fn clear_source_stopping(
-        &self,
-        container_id: &ContainerId,
-        lease: ployz_core::Lease,
-    ) {
-        self.stopping.send_if_modified(|stopping| {
-            if !matches!(stopping.get(container_id), Some(Withdrawal::Source(withdrawn)) if *withdrawn <= lease) {
-                return false;
-            }
-            stopping.remove(container_id);
-            true
-        });
+        self.stopping
+            .send_if_modified(|stopping| stopping.insert(container_id));
     }
 
     fn clear_stopping(&self, container_id: &ContainerId) {
         self.stopping
-            .send_if_modified(|stopping| stopping.remove(container_id).is_some());
+            .send_if_modified(|stopping| stopping.remove(container_id));
     }
 
     /// Drop what the daemon remembers about a container Docker no longer has.
@@ -434,7 +397,7 @@ impl ContainerRuntime {
                     ),
             };
         }
-        let runtime = withdrawn(runtime, self.stopping.borrow().contains_key(container_id));
+        let runtime = withdrawn(runtime, self.stopping.borrow().contains(container_id));
         let container =
             ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
                 container_id: *container_id,
@@ -922,6 +885,8 @@ pub enum Error {
     ContainerNotFound(ContainerId),
     #[error("Docker name '{0}' is occupied by incompatible creation inputs")]
     SlotNameOccupied(String),
+    #[error("image pull failed")]
+    ImagePull(#[source] bollard::errors::Error),
     #[error("pre-deploy container requested without a pre-deploy hook")]
     MissingPreDeployHook,
     #[error("container duration exceeds Docker's range")]
@@ -954,8 +919,16 @@ impl Error {
             | Self::Docker(bollard::errors::Error::DockerResponseServerError {
                 status_code: 404,
                 ..
+            })
+            | Self::ImagePull(bollard::errors::Error::DockerResponseServerError {
+                status_code: 404,
+                ..
             }) => RpcErrorCode::NotFound,
             Self::Docker(bollard::errors::Error::DockerResponseServerError {
+                status_code: 409,
+                ..
+            })
+            | Self::ImagePull(bollard::errors::Error::DockerResponseServerError {
                 status_code: 409,
                 ..
             })
@@ -983,6 +956,7 @@ impl Error {
             | Self::InvalidValue { .. }
             | Self::NotManaged => RpcErrorCode::InvalidArgument,
             Self::Docker(_)
+            | Self::ImagePull(_)
             | Self::Io(_)
             | Self::Json(_)
             | Self::Network(_)
