@@ -1,7 +1,11 @@
 import type { MachineId, MachineName, Namespace, ResolvedServiceSpec, VolumeCopyView } from "@ployz/sdk";
 
-export const VOLUME_RUN_STATES = ["requested", "running", "done", "failed", "cancelled", "lost", "not_started"] as const;
+export const VOLUME_RUN_STATES = ["requested", "running", "done", "failed", "cancelled", "lost", "not_started", "yielded"] as const;
 export type VolumeRunState = (typeof VOLUME_RUN_STATES)[number];
+/** A lane is `warm` until its run commits the Volume to the new writer; nothing writes `committed` yet. */
+export const VOLUME_RUN_PHASES = ["warm", "committed"] as const;
+export type VolumeRunPhase = (typeof VOLUME_RUN_PHASES)[number];
+
 export const ACTIVE_VOLUME_RUN_STATES = ["requested", "running"] as const satisfies readonly VolumeRunState[];
 
 export const VOLUME_RUN_KINDS = ["mirror", "sync", "delete_mirror", "move", "release", "restore", "seed"] as const;

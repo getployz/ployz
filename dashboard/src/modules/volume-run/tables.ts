@@ -7,8 +7,10 @@ import type { ServiceSpec } from "#/modules/volume-run/volume-run";
 import {
   type AnyVolumeRunArgs,
   VOLUME_RUN_KINDS,
+  VOLUME_RUN_PHASES,
   VOLUME_RUN_STATES,
   type VolumeRunKind,
+  type VolumeRunPhase,
   type VolumeRunState,
 } from "#/modules/volume-run/volume-run";
 
@@ -31,6 +33,13 @@ export const volumeRun = pgTable(
     state: text("state").default("requested").notNull().$type<VolumeRunState>(),
     /** The epoch this run gives a new writer, so a later run on the Volume numbers above it. */
     epoch: bigint("epoch", { mode: "number" }),
+    /**
+     * The lane number a Machine fences on. One Postgres sequence numbers every row, so concurrent inserts never
+     * share one; the active index lets only one lane row per Volume in at a time, so each later row on a Volume
+     * draws a larger number. Gaps are fine: a Machine only compares.
+     */
+    gen: bigint("gen", { mode: "number" }).generatedAlwaysAsIdentity().notNull(),
+    phase: text("phase").default("warm").notNull().$type<VolumeRunPhase>(),
     /** The Service spec seen when the run started; Restore reads it once that Service's Server is gone. */
     serviceSpec: jsonb("service_spec").$type<ServiceSpec>(),
     inngestRunId: text("inngest_run_id"),
@@ -47,6 +56,7 @@ export const volumeRun = pgTable(
     index("volume_run_latest_idx").on(table.organizationId, table.volumeId, table.createdAt.desc()),
     check("volume_run_kind_check", sql`${table.kind} in (${sqlStringLiterals(VOLUME_RUN_KINDS)})`),
     check("volume_run_state_check", sql`${table.state} in (${sqlStringLiterals(VOLUME_RUN_STATES)})`),
+    check("volume_run_phase_check", sql`${table.phase} in (${sqlStringLiterals(VOLUME_RUN_PHASES)})`),
     check("volume_run_message_check", sql`${table.message} is null or length(${table.message}) between 1 and 1024`),
   ],
 );

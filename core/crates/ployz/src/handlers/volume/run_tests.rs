@@ -386,3 +386,19 @@ fn a_run_that_did_not_finish_is_the_command_s_failure() {
     let error = ended(&failed, "Mirror", follow).unwrap_err().report();
     assert_eq!(error.code, RpcErrorCode::Unavailable);
 }
+
+#[test]
+fn a_yielded_run_says_a_deploy_took_its_volume() {
+    let mut yielded: VolumeRun =
+        serde_json::from_value(run("yielded", "move", json!({ "to": "web-2" }))).unwrap();
+    assert_eq!(yielded.state, VolumeRunState::Yielded);
+    yielded.message = Some("a Deploy took the Volume".to_owned());
+    let error = ended(&yielded, "Move", format!("ployz volume runs data {RUN}"))
+        .unwrap_err()
+        .report();
+    assert_eq!(error.code, RpcErrorCode::Conflict);
+    assert_eq!(
+        error.message,
+        "The Move gave way to a Deploy: a Deploy took the Volume"
+    );
+}
