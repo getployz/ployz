@@ -89,8 +89,8 @@ const answered = (members: readonly Member[]) => members.filter((member): member
 const observeMembers = (run: RunContext) => observeVolumeMembers(run.organizationId, run.dockerVolume, { kind: "deploy", args: run.args as VolumeRunArgs["deploy"] });
 
 /**
- * The writer, or the slot a cut left keeping the stopped Service, with that Service's Container. Of two roots it is the
- * one a sync's demote keeps, so the Deploy never writes on the root the next sync cuts.
+ * The writer, or the slot a cut left keeping the stopped Service. Of two roots it is the one a sync's demote keeps, so
+ * the Deploy never writes on the root the next sync cuts.
  */
 const writerOf = Effect.fn("VolumeRun.writerOf")(function* (run: RunContext, members: readonly AnsweredMember[]) {
   const roots = members.filter((member) => member.view.copy?.kind === "root");
@@ -100,15 +100,15 @@ const writerOf = Effect.fn("VolumeRun.writerOf")(function* (run: RunContext, mem
       const named = roots.map((member) => copyName(run.volumeName, member.machine.name)).join(" and ");
       return yield* Effect.fail(new NonRetriableError(`${run.volumeName} has two writers, ${named}`));
     }
-    return { member: writer, kept: null };
+    return writer;
   }
   const [root] = roots;
-  if (root !== undefined) return { member: root, kept: null };
+  if (root !== undefined) return root;
   const slots = members.filter((member) => member.view.copy?.kind === "slot");
   const kept = yield* keptOn(run.organizationId, run.dockerVolume, slots.map((member) => member.machine));
   const held = kept === null ? undefined : slots.find((member) => member.machine.id === kept.machine.id);
-  if (held === undefined || kept === null) return yield* Effect.fail(new NonRetriableError(`${run.volumeName} has no writer and no stopped Service on its copies`));
-  return { member: held, kept };
+  if (held === undefined) return yield* Effect.fail(new NonRetriableError(`${run.volumeName} has no writer and no stopped Service on its copies`));
+  return held;
 });
 
 const fenceTaken = Effect.fn("VolumeRun.fenceTaken")(function* (run: RunContext, inngestRunId: string) {
@@ -116,7 +116,7 @@ const fenceTaken = Effect.fn("VolumeRun.fenceTaken")(function* (run: RunContext,
     const members = yield* observeMembers(run);
     for (const member of members) if (!member.answered && member.lack !== undefined) return yield* Effect.fail(new NonRetriableError(member.lack));
     const replied = answered(members);
-    const { member: writer, kept } = yield* writerOf(run, replied);
+    const writer = yield* writerOf(run, replied);
     const floored = yield* setVolumeCopy(run, inngestRunId, writer.machine, expectOf(writer.view.copy), { kind: "floor" });
     if (!floored.ok) {
       if (floored.reason === "mismatch" && round < FENCE_ROUNDS) continue;
@@ -124,6 +124,8 @@ const fenceTaken = Effect.fn("VolumeRun.fenceTaken")(function* (run: RunContext,
     }
     const copy = floored.copy;
     if (copy?.kind === "root") return { on: writer.machine.name };
+    // Read after the floor: a cut can flip a root it observed before the floor rose, and stops nothing on A after it.
+    const kept = copy?.kind === "slot" ? yield* keptOn(run.organizationId, run.dockerVolume, [writer.machine]) : null;
     if (copy?.kind !== "slot" || copy.newest === null || kept === null) {
       return yield* Effect.fail(new NonRetriableError(`${run.volumeName} has no copy to deploy on ${writer.machine.name}`));
     }

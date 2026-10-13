@@ -2249,6 +2249,21 @@ describe("volume runs", () => {
       expect(containers).toEqual([{ machine: "fsn-1", id: "web-fsn-1", running: true }]);
     });
 
+    it("a cut that flips A between the observe and the floor: the promote still starts the stopped app on A", async () => {
+      const cut = newSnap("f-1");
+      machines = [{ name: "fsn-1", pool: true, copy: writerCopy(base, 1, true) }, { name: "fsn-2", pool: true, copy: slotCopy(cut) }];
+      containers = [{ machine: "fsn-1", id: "web-fsn-1", running: false }];
+      beforeSet.set("floor@fsn-1", () => { named("fsn-1").copy = slotCopy(cut); });
+      await moving();
+      const [placed] = await place();
+
+      expect(await fence(placed)).toEqual({ on: "fsn-1" });
+
+      expect(verbs).toEqual(["floor@fsn-1", "writer@fsn-1(kept)"]);
+      expect(machines[0]?.copy).toMatchObject({ kind: "root", readonly: false, newest: { guid: cut.guid } });
+      expect(containers).toEqual([{ machine: "fsn-1", id: "web-fsn-1", running: true }]);
+    });
+
     it("on a committed lane: it follows to B with the move's gen and the app runs only on B", async () => {
       const cut = afterCut();
       const taken = await moving("committed");
