@@ -9,8 +9,11 @@ anything, it stops and asks you.
 
 The agent works in the project and environment you're looking at, unless you name another. It
 can create a project, add and change services, [configs](../services/configs.md), volumes and
-domains, review what's staged, publish and deploy. It can also read your GitHub repositories and
-work on your servers. It doesn't create environments.
+domains, review what's staged, publish and deploy. It can list an environment's deployments,
+follow one to its end, redeploy a failed, cancelled or unknown one, start a queued one now, and
+cancel one, like the [deployment page](../deploy/deployments.md#redeploy-or-cancel-a-deployment)'s
+buttons. It can also read your GitHub repositories and work on your servers. It doesn't create
+environments.
 
 ## What it can do on your servers
 
@@ -103,6 +106,8 @@ server, like **Remove fra-1**.
 - **Only removals ask.** Deploys that roll out a new image, change variables or scale a service
   go ahead without a card. Under such a deploy you'll see **Didn't ask. Nothing destroyed.**
   Restarting, starting or stopping a service never asks, and neither does upgrading a server.
+  Redeploying a deployment doesn't ask either, because it ships exactly what that deployment did
+  and you already approved anything it removes. Starting a queued one doesn't ask.
 - **One at a time.** The agent runs at most one command that might ask per reply, so you never
   get two cards for one message.
 - **You approve one plan.** If the change moves on before you answer, the card says the plan
