@@ -237,6 +237,8 @@ export const stampPlacements = Effect.fn("VolumePlacement.stamp")(function* (org
     ));
 });
 
+const NOT_OLD = { message: "Not an old copy" };
+
 export const deleteOldCopy = Effect.fn("VolumePlacement.deleteOldCopy")(function* (
   organizationId: string,
   userId: string | null,
@@ -247,32 +249,35 @@ export const deleteOldCopy = Effect.fn("VolumePlacement.deleteOldCopy")(function
   const busy = yield* claimed(organizationId, row);
   if (busy !== null) return { ok: false, refusal: { message: busy.message } } as const;
   const members = yield* inspect(organizationId, input.environment, input.volumeId);
-  if (!oldCopies(observePlacement(members), row === undefined ? null : view(row)).some((copy) => copy.server.name === input.server)) {
-    return { ok: false, refusal: { message: "Not an old copy" } } as const;
-  }
+  const old = oldCopies(observePlacement(members), row === undefined ? null : view(row)).find((copy) => copy.server.name === input.server);
+  if (old === undefined) return { ok: false, refusal: NOT_OLD } as const;
   const run = { volumeId: input.volumeId, environment: input.environment, kind: "delete_mirror", args: { slot: input.server, confirmed_name: null } } as const;
   const planned = yield* planVolumeRun(organizationId, run);
   if (!planned.ok) return { ok: false, refusal: { message: planned.refusal.message } } as const;
-  const requested = yield* requestUnclaimedRun({ userId, organizationId }, run);
+  const requested = yield* requestUnclaimedRun({ userId, organizationId }, run, old.server.id);
   return requested.ok ? { ok: true, run: requested.run } as const : { ok: false, refusal: { message: requested.refusal.message } } as const;
 });
 
 /**
- * Requests `run` unless a Deploy still runs the Volume's placement. The row lock makes the check and the insert one step
- * against stampPlacements: a Deploy stamped after it finds the run going and waits for it.
+ * Requests `run` unless a Deploy still runs the Volume's placement, or, for an old copy's delete, the placement now keeps
+ * the copy on `deletes`. The row lock makes the check and the insert one step against stampPlacements and staging: a
+ * Deploy stamped after it finds the run going and waits for it.
  */
 export const requestUnclaimedRun = Effect.fn("VolumePlacement.requestUnclaimedRun")(function* (
   caller: { readonly userId: string | null; readonly organizationId: string },
   input: { readonly volumeId: string; readonly environment: EnvironmentRef } & Extract<VolumeRunInput, { kind: "sync" | "delete_mirror" }>,
+  deletes: MachineId | null = null,
 ) {
   const database = yield* Database;
   const volume = yield* resolveVolume(caller.organizationId, input.environment, input.volumeId);
   return yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
-    const [row] = yield* drizzle.select({ deploymentId: volumePlacement.deploymentId }).from(volumePlacement)
+    const [row] = yield* drizzle.select().from(volumePlacement)
       .where(and(eq(volumePlacement.organizationId, caller.organizationId), eq(volumePlacement.volumeId, input.volumeId))).for("update");
     const busy = yield* claimed(caller.organizationId, row);
     if (busy !== null) return { ok: false, refusal: busy } as const;
+    const kept = row === undefined ? [] : [...row.mirrors ?? [], ...row.staged === null ? [] : [row.staged.primary, ...row.staged.mirrors]];
+    if (deletes !== null && kept.includes(deletes)) return { ok: false, refusal: NOT_OLD } as const;
     return yield* insertRun(caller, input, volume, randomUUID());
   }));
 });
