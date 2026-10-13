@@ -509,7 +509,10 @@ async fn retire<H: RetireHost>(
     }
     match host.remove(candidate.container).await {
         Ok(()) => Outcome::Retired,
-        Err(error) => Outcome::Failed(error),
+        Err(error) => {
+            host.unmark_stopping(candidate.container);
+            Outcome::Failed(error)
+        }
     }
 }
 
@@ -1450,6 +1453,22 @@ mod tests {
         assert_eq!(*host.marked.lock().unwrap(), vec![id("a")]);
         assert_eq!(*host.unmarked.lock().unwrap(), vec![id("a")]);
         assert_eq!(*host.removals.lock().unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_failed_removal_clears_the_stopping_mark() {
+        let local = machine("local", 1);
+        let (_cluster, store) = acked_cluster(&[&local]).await;
+        let host = FakeHost {
+            remove_fails: true,
+            ..FakeHost::new(&[id("a"), id("b")], ackers(&[&local]))
+        };
+        let mut stopping = JoinSet::new();
+        round(&host, &store, &mut Retirer::default(), &mut stopping).await;
+        while stopping.join_next().await.is_some() {}
+
+        assert_eq!(*host.removals.lock().unwrap(), 1);
+        assert_eq!(*host.unmarked.lock().unwrap(), vec![id("a")]);
     }
 
     #[tokio::test(start_paused = true)]
