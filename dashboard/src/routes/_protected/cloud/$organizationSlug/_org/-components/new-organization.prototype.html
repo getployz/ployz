@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="en" class="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>New organization · prototype</title>
+<style>
+:root {
+  --background: #fafafa; --foreground: #171717; --card: #fff; --popover: #fff; --primary: #171717; --primary-foreground: #fafafa;
+  --muted: #f2f2f2; --muted-foreground: #666; --border: #dedede; --changed: #d0268c; --radius: 0.75rem;
+  --shadow: 0 1px 3px hsl(0 0% 0% / .1), 0 8px 24px -4px hsl(0 0% 0% / .12);
+}
+.dark { --background: #0a0a0a; --foreground: #ededed; --card: #161616; --popover: #161616; --primary: #ededed; --primary-foreground: #0a0a0a;
+  --muted: #262626; --muted-foreground: #a1a1a1; --border: #333; --changed: hsl(324 69% 60%); }
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { font: 14px/1.45 "Geist", ui-sans-serif, system-ui, sans-serif; background: var(--background); color: var(--foreground); }
+button, input { font: inherit; color: inherit; }
+.app { display: flex; height: 100vh; min-height: 560px; }
+.rail { width: 232px; border-right: 1px solid var(--border); display: flex; flex-direction: column; padding: 12px; gap: 2px; }
+.logo { width: 40px; height: 40px; border-radius: 10px; background: var(--changed); margin-bottom: 12px; display: grid; place-items: center; font-weight: 700; color: #fff; }
+.place { display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border-radius: 8px; color: var(--muted-foreground); }
+.place.on { background: var(--muted); color: var(--foreground); }
+.spacer { flex: 1; }
+.row { display: flex; align-items: center; gap: 10px; height: 44px; width: 100%; padding: 0 6px; border-radius: 8px; border: 0; background: none; cursor: pointer; text-align: left; }
+.row:hover, .row[aria-expanded=true] { background: var(--muted); }
+.avatar { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 600; flex: none; }
+.org-mark { width: 22px; height: 22px; border-radius: 6px; display: grid; place-items: center; font-size: 11px; font-weight: 700; color: #fff; flex: none; }
+.grow { flex: 1; min-width: 0; }
+.t { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sub { font-size: 12px; color: var(--muted-foreground); }
+.chev { color: var(--muted-foreground); }
+.main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.top { height: 52px; border-bottom: 1px solid var(--border); display: flex; align-items: center; padding: 0 20px; gap: 8px; }
+.crumb-btn { display: flex; align-items: center; gap: 8px; border: 0; background: none; padding: 6px 8px; border-radius: 8px; cursor: pointer; font-weight: 500; }
+.crumb-btn:hover, .crumb-btn[aria-expanded=true] { background: var(--muted); }
+.slash { color: var(--border); font-size: 20px; }
+.content { flex: 1; padding: 32px; overflow: auto; }
+h1 { font-size: 22px; margin: 0 0 20px; letter-spacing: -.01em; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+.card { border: 1px solid var(--border); background: var(--card); border-radius: var(--radius); padding: 16px; height: 104px; }
+.empty { border: 1px dashed var(--border); border-radius: var(--radius); padding: 48px; text-align: center; }
+.empty p { color: var(--muted-foreground); margin: 6px 0 16px; }
+.btn { height: 36px; padding: 0 14px; border-radius: 8px; border: 1px solid var(--border); background: var(--card); cursor: pointer; font-weight: 500; }
+.btn.primary { background: var(--primary); color: var(--primary-foreground); border-color: var(--primary); }
+.btn:disabled { opacity: .45; cursor: default; }
+.menu { position: fixed; z-index: 20; background: var(--popover); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); padding: 4px; width: 260px; }
+.menu[hidden] { display: none; }
+.search { width: 100%; height: 34px; border: 0; border-bottom: 1px solid var(--border); background: none; padding: 0 10px; outline: none; margin-bottom: 4px; }
+.label { font-size: 12px; color: var(--muted-foreground); padding: 6px 10px 2px; }
+.item { display: flex; align-items: center; gap: 10px; width: 100%; height: 34px; padding: 0 10px; border: 0; border-radius: 8px; background: none; cursor: pointer; text-align: left; }
+.item:hover, .item.hl { background: var(--muted); }
+.item .check { margin-left: auto; opacity: 0; }
+.item.cur .check { opacity: 1; }
+.sep { height: 1px; background: var(--border); margin: 4px -4px; }
+.kbd { margin-left: auto; font-size: 11px; color: var(--muted-foreground); border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; }
+.overlay { position: fixed; inset: 0; background: rgb(0 0 0 / .55); display: grid; place-items: center; z-index: 30; }
+.overlay[hidden] { display: none; }
+.dialog { width: 420px; background: var(--popover); border: 1px solid var(--border); border-radius: 14px; box-shadow: var(--shadow); }
+.dialog .body { padding: 20px; }
+.dialog h2 { font-size: 16px; margin: 0 0 16px; }
+.field label { display: block; font-size: 13px; font-weight: 500; margin-bottom: 6px; }
+.input { width: 100%; height: 38px; border: 1px solid var(--border); border-radius: 8px; background: var(--background); padding: 0 12px; outline: none; }
+.input:focus { border-color: var(--changed); box-shadow: 0 0 0 3px color-mix(in srgb, var(--changed) 25%, transparent); }
+.url { margin-top: 8px; font: 12px/1.4 "Geist Mono", ui-monospace, monospace; color: var(--muted-foreground); display: flex; align-items: center; }
+.url input { border: 0; background: none; padding: 0; outline: none; font: inherit; color: var(--foreground); min-width: 2ch; border-bottom: 1px dashed var(--border); }
+.foot { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--border); background: color-mix(in srgb, var(--muted) 40%, transparent); border-radius: 0 0 14px 14px; }
+.page { position: fixed; inset: 0; background: var(--background); z-index: 25; display: flex; flex-direction: column; }
+.page[hidden] { display: none; }
+.page .bar { height: 52px; display: flex; align-items: center; padding: 0 20px; }
+.page .center { flex: 1; display: grid; place-items: center; }
+.page .stack { width: 420px; }
+.page h2 { font-size: 28px; letter-spacing: -.02em; margin: 0 0 6px; }
+.page .lede { color: var(--muted-foreground); margin: 0 0 28px; }
+.big { height: 48px; font-size: 16px; }
+.switcher { position: fixed; right: 16px; bottom: 16px; z-index: 50; display: flex; gap: 4px; padding: 4px; border-radius: 10px; background: #000; border: 1px solid #333; font-size: 12px; }
+.switcher button { border: 0; background: none; color: #aaa; padding: 6px 10px; border-radius: 7px; cursor: pointer; }
+.switcher button.on { background: #262626; color: #fff; }
+.note { position: fixed; left: 248px; bottom: 16px; z-index: 50; font-size: 12px; color: var(--muted-foreground); max-width: 520px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <nav class="rail">
+    <div class="logo">P</div>
+    <div class="place on">▦ Projects</div>
+    <div class="place">▤ Servers</div>
+    <div class="place">◷ Activity</div>
+    <div class="spacer"></div>
+    <div class="place">⚙ Organization</div>
+    <button class="row" id="account" aria-expanded="false">
+      <span class="avatar" style="background:#3b3b3b">NP</span>
+      <span class="grow"><span class="t">Nick Potts</span><span class="t sub" data-org-name></span></span>
+      <span class="chev">⇅</span>
+    </button>
+  </nav>
+  <section class="main">
+    <header class="top">
+      <button class="crumb-btn" id="crumb" aria-expanded="false">
+        <span class="org-mark" data-org-mark></span><span data-org-name></span><span class="chev">⇅</span>
+      </button>
+      <span class="slash">/</span><span class="sub">Projects</span>
+    </header>
+    <div class="content" id="content"></div>
+  </section>
+</div>
+
+<div class="menu" id="menu" hidden>
+  <input class="search" id="search" placeholder="Find organization…">
+  <div id="orgList"></div>
+  <div class="sep"></div>
+  <button class="item" id="newOrg">＋ New organization</button>
+</div>
+
+<div class="overlay" id="overlay" hidden>
+  <form class="dialog" id="dialog" autocomplete="off">
+    <div class="body">
+      <h2>New organization</h2>
+      <div class="field">
+        <label for="name">Name</label>
+        <input class="input" id="name" placeholder="Acme">
+        <div class="url">ployz.app/cloud/<input id="slug" size="4" spellcheck="false"></div>
+      </div>
+    </div>
+    <div class="foot">
+      <button type="button" class="btn" data-cancel>Cancel</button>
+      <button class="btn primary" data-create disabled>Create</button>
+    </div>
+  </form>
+</div>
+
+<div class="page" id="page" hidden>
+  <div class="bar"><button class="btn" data-cancel>← Back</button></div>
+  <div class="center">
+    <form class="stack" id="pageForm" autocomplete="off">
+      <h2>New organization</h2>
+      <p class="lede">Its own projects, servers and billing.</p>
+      <input class="input big" id="pageName" placeholder="Name">
+      <div class="url">ployz.app/cloud/<input id="pageSlug" size="4" spellcheck="false"></div>
+      <div style="margin-top:24px"><button class="btn primary big" style="width:100%" data-create disabled>Create</button></div>
+    </form>
+  </div>
+</div>
+
+<div class="note" id="note"></div>
+<div class="switcher" id="switcher">
+  <button data-v="a" class="on">A · Switcher + dialog</button>
+  <button data-v="b">B · Full page</button>
+  <button data-theme>◐</button>
+</div>
+
+<script>
+const palette = ["#d0268c", "#2f6fe0", "#1f9d74", "#c98a12", "#7a4fd6", "#c4402f"];
+const orgs = [
+  { name: "Nick's Projects", slug: "nick", projects: 4 },
+  { name: "Potts Labs", slug: "potts-labs", projects: 2 },
+];
+let current = "nick";
+let variant = location.hash.slice(1) === "b" ? "b" : "a";
+const notes = {
+  a: "A. Vercel's pattern. The org name in the top bar and the account row both open the switcher. ⌘⇧O opens it too. New organization opens a small dialog.",
+  b: "B. Railway's pattern. Same switcher, but New organization goes to its own page with one big field.",
+};
+const $ = (s) => document.querySelector(s);
+const slugify = (s) => s.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40);
+const mark = (o) => `<span class="org-mark" style="background:${palette[orgs.indexOf(o) % palette.length]}">${o.name[0].toUpperCase()}</span>`;
+const cur = () => orgs.find((o) => o.slug === current);
+
+function render() {
+  const o = cur();
+  document.querySelectorAll("[data-org-name]").forEach((el) => el.textContent = o.name);
+  const m = $("[data-org-mark]"); m.textContent = o.name[0].toUpperCase(); m.style.background = palette[orgs.indexOf(o) % palette.length];
+  $("#content").innerHTML = o.projects
+    ? `<h1>Projects</h1><div class="grid">${Array.from({ length: o.projects }, (_, i) => `<div class="card"><b>${["web", "api", "worker", "blog"][i] ?? "app"}</b><div class="sub">production · 2 services</div></div>`).join("")}</div>`
+    : `<h1>Projects</h1><div class="empty"><b>No projects yet</b><p>Deploy from GitHub or an image, or add a server first.</p><button class="btn primary">New project</button> <button class="btn">Add server</button></div>`;
+  document.querySelectorAll("#switcher [data-v]").forEach((b) => b.classList.toggle("on", b.dataset.v === variant));
+  $("#note").textContent = notes[variant];
+}
+
+function listOrgs(filter = "") {
+  const shown = orgs.filter((o) => o.name.toLowerCase().includes(filter.toLowerCase()));
+  $("#orgList").innerHTML = `<div class="label">Organizations</div>` + shown.map((o) =>
+    `<button class="item ${o.slug === current ? "cur" : ""}" data-slug="${o.slug}">${mark(o)}<span class="t grow">${o.name}</span><span class="check">✓</span></button>`).join("");
+}
+
+let anchor = null;
+function openMenu(btn) {
+  closeMenu();
+  anchor = btn; btn.setAttribute("aria-expanded", "true");
+  const r = btn.getBoundingClientRect(), menu = $("#menu");
+  menu.hidden = false; listOrgs(); $("#search").value = "";
+  if (btn.id === "account") { menu.style.left = r.left + "px"; menu.style.top = (r.top - menu.offsetHeight - 6) + "px"; }
+  else { menu.style.left = r.left + "px"; menu.style.top = (r.bottom + 6) + "px"; }
+  $("#search").focus();
+}
+function closeMenu() { $("#menu").hidden = true; anchor?.setAttribute("aria-expanded", "false"); anchor = null; }
+
+$("#account").onclick = (e) => { e.stopPropagation(); anchor === $("#account") ? closeMenu() : openMenu($("#account")); };
+$("#crumb").onclick = (e) => { e.stopPropagation(); anchor === $("#crumb") ? closeMenu() : openMenu($("#crumb")); };
+$("#menu").onclick = (e) => e.stopPropagation();
+document.addEventListener("click", closeMenu);
+$("#search").oninput = (e) => listOrgs(e.target.value);
+$("#orgList").onclick = (e) => { const b = e.target.closest("[data-slug]"); if (!b) return; current = b.dataset.slug; closeMenu(); render(); };
+$("#newOrg").onclick = () => { closeMenu(); openCreate(); };
+
+let slugTouched = false;
+function wire(nameEl, slugEl, form) {
+  const sync = () => {
+    if (!slugTouched) slugEl.value = slugify(nameEl.value);
+    slugEl.size = Math.max(4, slugEl.value.length);
+    form.querySelector("[data-create]").disabled = !nameEl.value.trim() || !slugEl.value;
+  };
+  nameEl.oninput = sync;
+  slugEl.oninput = () => { slugTouched = true; slugEl.value = slugify(slugEl.value.replace(/-$/, "") ) + (slugEl.value.endsWith("-") ? "-" : ""); sync(); };
+  form.onsubmit = (e) => {
+    e.preventDefault();
+    let slug = slugify(slugEl.value), n = 2;
+    while (orgs.some((o) => o.slug === slug)) slug = `${slugify(slugEl.value)}-${n++}`;
+    orgs.push({ name: nameEl.value.trim(), slug, projects: 0 });
+    current = slug; closeCreate(); render();
+  };
+  return sync;
+}
+const syncDialog = wire($("#name"), $("#slug"), $("#dialog"));
+const syncPage = wire($("#pageName"), $("#pageSlug"), $("#pageForm"));
+
+function openCreate() {
+  slugTouched = false;
+  if (variant === "a") { $("#name").value = ""; syncDialog(); $("#overlay").hidden = false; $("#name").focus(); }
+  else { $("#pageName").value = ""; syncPage(); $("#page").hidden = false; $("#pageName").focus(); }
+}
+function closeCreate() { $("#overlay").hidden = true; $("#page").hidden = true; }
+document.querySelectorAll("[data-cancel]").forEach((b) => b.onclick = closeCreate);
+$("#overlay").onclick = (e) => { if (e.target === $("#overlay")) closeCreate(); };
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") { closeMenu(); closeCreate(); }
+  if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "o") { e.preventDefault(); openMenu($("#crumb")); }
+});
+document.querySelectorAll("#switcher [data-v]").forEach((b) => b.onclick = () => { variant = b.dataset.v; location.hash = variant; closeCreate(); render(); });
+$("#switcher [data-theme]").onclick = () => document.documentElement.classList.toggle("dark");
+render();
+</script>
+</body>
+</html>
