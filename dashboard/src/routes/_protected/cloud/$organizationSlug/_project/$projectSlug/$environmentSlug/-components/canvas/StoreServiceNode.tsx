@@ -23,6 +23,7 @@ import type { StoreCanvasService } from "./types";
 import { deploymentQuery, useCachedStoreView, useInFlightDeployments } from "#/modules/config-store/store-view.queries";
 import { useRuntimeService } from "#/providers/runtime-provider";
 import { useUnreachableHost } from "#/modules/uptime/uptime.queries";
+import { useContainerTrouble } from "./use-container-trouble";
 
 /**
  * A Config Store Service on the canvas and in its phone list: what runs now on its status line, anything about Deploys
@@ -42,8 +43,10 @@ export function StoreServiceCard({ service, domains, changeCount, runtimeIdentit
   const plan = useCachedStoreView(params.organizationSlug, running === null ? null : deploymentQuery(running.id));
   const chip = deployChip(service, changeCount, inFlight, plan?.ok ? restartedServices(plan.value) : null);
   const status = runtimeLine(service, runtime, { lens: runtimeLens, desiredReplicas, deploying: chip?.kind === "deploying" });
-  const unreachable = useUnreachableHost({ organizationSlug: params.organizationSlug, environmentId }, service.id);
-  const issues = nodeIssues(status, domains, unreachable);
+  const scope = { organizationSlug: params.organizationSlug, environmentId };
+  const unreachable = useUnreachableHost(scope, service.id);
+  const trouble = useContainerTrouble(scope, service.name);
+  const issues = nodeIssues(status, domains, { unreachable, trouble });
   const domain = publicDomain(domains);
   const surface = stagedSurface(light, service.change);
   const icon = <Avatar><AvatarFallback>{getServiceIcon({ source: { type: service.source } })}</AvatarFallback></Avatar>;
@@ -64,8 +67,8 @@ export function StoreServiceCard({ service, domains, changeCount, runtimeIdentit
     </span>
   );
 
-  // An open uptime incident: the ⚠ opens Monitoring, where the evidence and the fix are.
-  const openMonitoring = issues?.uptime ? (event: MouseEvent) => {
+  // An open uptime incident, or an OOM kill or restart: the ⚠ opens Monitoring, where the evidence and the fix are.
+  const openMonitoring = issues?.monitoring ? (event: MouseEvent) => {
     event.preventDefault();
     event.stopPropagation();
     void navigate({ to: ENVIRONMENT_SERVICE_ROUTE_TO, params: { ...params, serviceId: service.id }, search: { tab: "monitoring" } });

@@ -1,5 +1,6 @@
 import type { DeploymentSummary, DeploymentView, DomainRow, ReviewLifecycleKind, ServiceListing } from "@ployz/sdk";
 import { plural } from "#/lib/plural";
+import type { Marker } from "#/modules/metrics/metrics-model";
 import type { RuntimeServiceRecord } from "#/modules/runtime/runtime.collection";
 import type { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { containerServing } from "#/routes/_protected/cloud/$organizationSlug/-components/services-online";
@@ -75,23 +76,45 @@ export function runtimeLine(
   }
 }
 
+/** What a Service's containers went through in the last hour, as its ⚠ says it. An OOM kill outranks a restart. */
+export type ContainerTrouble = "OOM" | "Restarting";
+
+/** How long a marker counts toward the ⚠ after it happened. */
+export const TROUBLE_WINDOW_MS = 60 * 60_000;
+
+/** What `markers` say at `now` (Unix milliseconds): only those in the hour before it count, however old the read is. */
+export function containerTrouble(markers: readonly Pick<Marker, "kind" | "at" | "server" | "replica">[], now: number): ContainerTrouble | null {
+  const recent = markers.filter((marker) => marker.at > now - TROUBLE_WINDOW_MS);
+  if (recent.some((marker) => marker.kind === "oom")) return "OOM";
+  const restarted = new Set<string>();
+  for (const marker of recent.filter((marker) => marker.kind === "restart")) {
+    const replica = `${marker.server.id}/${marker.replica}`;
+    if (restarted.has(replica)) return "Restarting";
+    restarted.add(replica);
+  }
+  return null;
+}
+
 /**
- * A node's ⚠ N: how many things on it the user can fix, red when one is its Service being down. `uptime` when one is an
- * open uptime incident, so the ⚠ opens Monitoring.
+ * A node's ⚠: how many things on it the user can fix, red when one is its Service being down. `trouble` names what its
+ * containers went through, and the ⚠ shows it ahead of the count. `monitoring` when an open uptime incident or that
+ * trouble is among them, so the ⚠ opens Monitoring, where the evidence is.
  */
-export type NodeIssues = { count: number; tone: "bad" | "warn"; uptime: boolean };
+export type NodeIssues = { count: number; tone: "bad" | "warn"; monitoring: boolean; trouble: ContainerTrouble | null };
 
 /**
  * What on a node the user can fix: a Service that's down or struggling, a failing healthcheck, domains that need them,
- * and the hostname of an open uptime incident, which is red. Uptime adds nothing when the Service is already down, and
- * shares one issue with a domain needing attention on the same hostname.
+ * the hostname of an open uptime incident (`unreachable`), which is red, and an OOM kill or crash loop in the last hour
+ * (`trouble`), which is amber. Uptime adds nothing when the Service is already down, and shares one issue with a domain
+ * needing attention on the same hostname.
  */
-export function nodeIssues(status: RuntimeLine, domains: readonly Pick<DomainRow, "status" | "hostname">[], unreachable: string | null = null): NodeIssues | null {
+export function nodeIssues(status: RuntimeLine, domains: readonly Pick<DomainRow, "status" | "hostname">[],
+  { unreachable = null, trouble = null }: { unreachable?: string | null; trouble?: ContainerTrouble | null } = {}): NodeIssues | null {
   const attention = domains.filter((domain) => domain.status === "needs_attention");
   const uptime = !status.down && unreachable !== null;
   const own = uptime && !attention.some((domain) => domain.hostname === unreachable);
-  const count = (status.down || status.tone === "warn" ? 1 : 0) + (status.checkFailing ? 1 : 0) + attention.length + (own ? 1 : 0);
-  return count === 0 ? null : { count, tone: status.down || uptime ? "bad" : "warn", uptime: own };
+  const count = (status.down || status.tone === "warn" ? 1 : 0) + (status.checkFailing ? 1 : 0) + attention.length + (own ? 1 : 0) + (trouble ? 1 : 0);
+  return count === 0 ? null : { count, tone: status.down || uptime ? "bad" : "warn", monitoring: own || trouble !== null, trouble };
 }
 
 /** The public domain a Service's card shows, of its domains: the first custom one, else the generated one; `live` once it's set up. */
