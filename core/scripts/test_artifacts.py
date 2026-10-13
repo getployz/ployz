@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import tomllib
@@ -88,6 +89,36 @@ class Keys(unittest.TestCase):
         workflow = (artifacts.CORE.parent / ".github" / "workflows" / "cloud.yml").read_text()
         looked_up = re.search(r'artifacts\.py lookup sdk --extra ("[^"]*"|\S+)', workflow)[1].strip('"')
         self.assertEqual(looked_up, stored)
+
+    def test_a_local_build_stores_the_sdk_under_other_options_than_ci(self):
+        def stored_extra(ci):
+            """The --extra a cache-missing build stores the SDK under, run with stubbed tools in a scratch checkout."""
+            with tempfile.TemporaryDirectory() as scratch:
+                root = Path(scratch)
+                (root / "scripts").mkdir()
+                shutil.copy(artifacts.CORE / "scripts" / "build-cloud-sdk.sh", root / "scripts")
+                (root / "scripts" / "build-config-wasm.sh").touch()
+                (root / "crates" / "ployz-sdk").mkdir(parents=True)
+                for profile in ["debug", "release"]:
+                    (root / "target" / profile).mkdir(parents=True)
+                    (root / "target" / profile / "libployz_sdk.so").touch()
+                    (root / "target" / profile / "libployz_sdk.dylib").touch()
+                subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+                stubs = root / "bin"
+                stubs.mkdir()
+                for tool, body in [("python3", 'echo "$*" >> "$STUB_LOG"\ncase "$2" in key) echo "key $*" ;; fetch) exit 1 ;; esac'),
+                                   ("cargo", ":"), ("node", ":")]:
+                    (stubs / tool).write_text(f"#!/usr/bin/env bash\n{body}\n")
+                    (stubs / tool).chmod(0o755)
+                env = {"PATH": f"{stubs}:{os.environ['PATH']}", "HOME": scratch, "STUB_LOG": str(root / "log"),
+                       "CARGO_TARGET_DIR": str(root / "target"), **({"CI": "true"} if ci else {})}
+                subprocess.run(["bash", root / "scripts" / "build-cloud-sdk.sh"], env=env, check=True)
+                stores = re.findall(r"^scripts/artifacts\.py store sdk --extra (.*) --expect ", (root / "log").read_text(), re.M)
+                self.assertEqual(len(stores), 1)
+                return stores[0]
+
+        self.assertEqual(stored_extra(ci=True), "features= profile=release")
+        self.assertNotEqual(stored_extra(ci=False), stored_extra(ci=True))
 
     def test_a_clean_tree_has_its_commit_key(self):
         if artifacts.git("status", "--porcelain", "--", "crates", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "scripts"):
