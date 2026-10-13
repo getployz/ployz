@@ -1,13 +1,14 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     net::TcpListener,
     sync::{Arc, Mutex},
     time::SystemTime,
 };
 
 use ployz_core::{
-    CertificateHost, DockerVolume, DockerVolumeId, DockerVolumeName, IngressHost, IssuanceClock,
-    IssuanceFailure, Machine, MachineId,
+    CertificateHost, ContainerId, DeploymentLogId, DockerVolume, DockerVolumeId, DockerVolumeName,
+    IngressHost, IssuanceClock, IssuanceFailure, Machine, MachineId, QualifiedService,
+    ServingPointer,
 };
 use serde_json::json;
 
@@ -498,10 +499,20 @@ async fn identity_store(
     (store, task)
 }
 
+/// Corrosion re-renders schema.sql before creating its tables, which declares
+/// the SQLite keyword column `key` as `KEY`; an unaliased `SELECT key` then
+/// reports `KEY`.
+fn corrosion_db() -> rusqlite::Connection {
+    let schema = include_str!("schema.sql").replacen("    key  ", "    KEY  ", 1);
+    assert_ne!(schema, include_str!("schema.sql"));
+    let db = rusqlite::Connection::open_in_memory().unwrap();
+    db.execute_batch(&schema).unwrap();
+    db
+}
+
 #[tokio::test]
 async fn machine_reads_reject_document_identity_different_from_row_key() {
-    let db = rusqlite::Connection::open_in_memory().unwrap();
-    db.execute_batch(include_str!("schema.sql")).unwrap();
+    let db = corrosion_db();
     let key = MachineId::parse("a".repeat(32)).unwrap();
     let document = json!({"id": "b".repeat(32), "name": "peer", "subnet": "10.210.1.0/24", "labels": {}, "accepts_builds": true, "accepts_services": true, "accepts_ingress": true,
         "public_key": vec![1; 32], "advertised_endpoints": []}).to_string();
@@ -513,6 +524,64 @@ async fn machine_reads_reject_document_identity_different_from_row_key() {
     let (store, task) = identity_store(db).await;
     assert!(store.machine(key.as_str()).await.is_err());
     assert!(store.machines().await.is_err());
+    task.abort();
+}
+
+#[tokio::test]
+async fn serving_pointers_round_trip_and_set_aside_malformed_rows() {
+    let db = corrosion_db();
+    let pointer = |deploy: &str, container: &str| ServingPointer {
+        deploy: DeploymentLogId::parse(deploy).unwrap(),
+        containers: vec![ContainerId::parse(container.repeat(64)).unwrap()],
+        previous: None,
+        retiring: Vec::new(),
+    };
+    let api = QualifiedService::parse("app/api").unwrap();
+    let web = QualifiedService::parse("app/web").unwrap();
+    let rows = [
+        (
+            ServingPointer::key(&api),
+            serde_json::to_string(&pointer("d1", "a")).unwrap(),
+        ),
+        (
+            ServingPointer::key(&web),
+            serde_json::to_string(&pointer("d2", "b")).unwrap(),
+        ),
+        ("serving/app/broken".to_owned(), "{".to_owned()),
+        ("network".to_owned(), "\"10.210.0.0/16\"".to_owned()),
+    ];
+    for (key, value) in rows {
+        db.execute(
+            "INSERT INTO cluster (key, value) VALUES (?, ?)",
+            rusqlite::params![key, value],
+        )
+        .unwrap();
+    }
+    let (store, task) = identity_store(db).await;
+
+    let pointers = store.serving_pointers().await.unwrap();
+    assert_eq!(pointers.get(&api), Some(&pointer("d1", "a")));
+    assert_eq!(pointers.get(&web), Some(&pointer("d2", "b")));
+    let broken = QualifiedService::parse("app/broken").unwrap();
+    assert_eq!(pointers.get(&broken), None);
+    let broken_row = [(
+        "serving/app/broken",
+        "EOF while parsing an object at line 1 column 1",
+    )];
+    let mut warned = BTreeSet::new();
+    assert_eq!(pointers.newly_malformed(&mut warned), broken_row);
+    let next_pass = store.serving_pointers().await.unwrap();
+    assert_eq!(next_pass.newly_malformed(&mut warned), []);
+    assert_eq!(next_pass.newly_malformed(&mut warned), []);
+    assert_eq!(
+        super::ServingPointers::default().newly_malformed(&mut warned),
+        []
+    );
+    assert_eq!(
+        next_pass.newly_malformed(&mut warned),
+        broken_row,
+        "a repaired then re-broken row warns again"
+    );
     task.abort();
 }
 
@@ -543,8 +612,7 @@ async fn container_reads_reject_row_identity_and_owner_mismatches() {
         (container.container_id.to_string(), "b".repeat(32)),
         (container.container_id.to_string(), String::new()),
     ] {
-        let db = rusqlite::Connection::open_in_memory().unwrap();
-        db.execute_batch(include_str!("schema.sql")).unwrap();
+        let db = corrosion_db();
         db.execute(
             "INSERT INTO containers (id, machine_id, container) VALUES (?, ?, ?)",
             rusqlite::params![id, owner, serde_json::to_string(&container).unwrap()],
@@ -593,8 +661,7 @@ async fn volume_reads_reject_machine_qualified_identity_mismatches() {
         (machine, "other"),
         (MachineId::parse("b".repeat(32)).unwrap(), "data"),
     ] {
-        let db = rusqlite::Connection::open_in_memory().unwrap();
-        db.execute_batch(include_str!("schema.sql")).unwrap();
+        let db = corrosion_db();
         db.execute(
             "INSERT INTO volumes (machine_id, name, volume) VALUES (?, ?, ?)",
             rusqlite::params![
@@ -657,8 +724,7 @@ async fn store_preserves_published_identities_and_keyed_incomplete_rows() {
         machine_id: machine.id,
         name: DockerVolumeName::parse("pending").unwrap(),
     };
-    let db = rusqlite::Connection::open_in_memory().unwrap();
-    db.execute_batch(include_str!("schema.sql")).unwrap();
+    let db = corrosion_db();
     db.execute(
         "INSERT INTO machines (id) VALUES (?)",
         [incomplete_machine.as_str()],
@@ -786,8 +852,7 @@ async fn replicated_bodies_ignore_fields_from_newer_machines() {
         .and_then(serde_json::Value::as_object_mut)
         .unwrap()
         .insert("added_by_a_newer_machine".into(), json!(true));
-    let db = rusqlite::Connection::open_in_memory().unwrap();
-    db.execute_batch(include_str!("schema.sql")).unwrap();
+    let db = corrosion_db();
     db.execute(
         "INSERT INTO machines (id, info) VALUES (?, ?)",
         rusqlite::params![
@@ -841,8 +906,7 @@ async fn replicated_bodies_ignore_fields_from_newer_machines() {
 
 #[tokio::test]
 async fn certificate_rows_round_trip_material_and_refusal_through_the_store() {
-    let db = rusqlite::Connection::open_in_memory().unwrap();
-    db.execute_batch(include_str!("schema.sql")).unwrap();
+    let db = corrosion_db();
     let (store, task) = identity_store(db).await;
     let hostname = IngressHost::parse("app.example.com").unwrap();
     let pair = rcgen::generate_simple_self_signed([hostname.as_str().to_owned()]).unwrap();
@@ -869,8 +933,7 @@ async fn certificate_rows_round_trip_material_and_refusal_through_the_store() {
 
 #[tokio::test]
 async fn published_material_is_left_alone_by_acme_and_clear_hands_it_back() {
-    let db = rusqlite::Connection::open_in_memory().unwrap();
-    db.execute_batch(include_str!("schema.sql")).unwrap();
+    let db = corrosion_db();
     let (store, task) = identity_store(db).await;
     let hostname = IngressHost::parse("app.example.com").unwrap();
     let published_name = CertificateHost::from(hostname.clone());

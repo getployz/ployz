@@ -10,7 +10,7 @@ use hickory_server::proto::{
     op::{Message, Metadata, Query as WireQuery},
     rr::{Name, RData, Record, RecordType, rdata::A},
 };
-use ployz_core::MachineId;
+use ployz_core::{DeploymentLogId, MachineId, ServingPointer};
 use tempfile::TempDir;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -168,6 +168,35 @@ async fn stays_silent_until_the_first_projection_load() {
             .contains(&"loading: Corrosion unavailable".to_owned()),
         "{:?}",
         harness.keeper.statuses()
+    );
+
+    shutdown.cancel();
+    assert_eq!(process.await.unwrap().unwrap(), DnsExit::Stopped);
+}
+
+#[tokio::test]
+async fn a_pointer_row_narrows_answers_to_the_pointed_containers() {
+    let harness = Harness::new();
+    harness.publish_replicas(3).await;
+    let shutdown = CancellationToken::new();
+    let process = harness.spawn(&shutdown);
+    harness.wait_for_replicas(3).await;
+
+    let pointed = replica_observations(1).remove(0);
+    let pointer = ServingPointer {
+        deploy: DeploymentLogId::parse("d1").unwrap(),
+        containers: vec![pointed.container_id],
+        previous: None,
+        retiring: Vec::new(),
+    };
+    harness.cluster.write_serving_pointer(
+        &ServingPointer::key(&pointed.identity()),
+        &serde_json::to_string(&pointer).unwrap(),
+    );
+    harness.wait_for_replicas(1).await;
+    assert_eq!(
+        harness.answers().await,
+        Some(vec![Ipv4Addr::new(10, 210, 1, 1)])
     );
 
     shutdown.cancel();
