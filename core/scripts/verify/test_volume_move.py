@@ -354,6 +354,19 @@ class VolumeMoveTests(unittest.TestCase):
         self.assertIsNone(volume_move.nth_after(lines, 200.5, 2))
         self.assertIsNone(volume_move.nth_after(lines, 300.0, 1))
 
+    def test_kill_passes_on_rc_0_or_an_auxiliary_refusal_after_the_main_process_died(self):
+        moved = dict(before="41", after="77", invocation="a", invocation_after="b")
+        stayed = dict(before="41", after="41", invocation="a", invocation_after="a")
+        auxiliary = f"{volume_move.AUXILIARY}: Input/output error"
+        self.assertTrue(volume_move.check_kill(dict(moved, rc="0", out=""))["landed"])
+        self.assertTrue(volume_move.check_kill(dict(moved, rc="1", out=auxiliary))["landed"])
+        self.assertTrue(volume_move.check_kill(dict(stayed, invocation_after="b", rc="1", out=auxiliary))["landed"])
+        for name, fields in [("no change", dict(stayed, rc="1", out=auxiliary)),
+                             ("other text", dict(moved, rc="1", out="Failed to kill unit: Access denied")),
+                             ("rc 5", dict(moved, rc="5", out=auxiliary))]:
+            with self.subTest(name), self.assertRaises(RuntimeError):
+                volume_move.check_kill(fields)
+
     def test_clean_move_passes_and_records_the_new_writer(self):
         summary, _ = self.run_cases([volume_move.CASES[0]])
         self.assertTrue(summary["passed"], summary)

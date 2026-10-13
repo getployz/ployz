@@ -132,6 +132,7 @@ def nth_after(lines, moment, nth):
 
 
 TERMINAL = {"done", "failed", "cancelled", "lost", "not_started"}
+AUXILIARY = "Failed to send signal SIGKILL to auxiliary processes"
 SNAPSHOT_BOUND = 8
 SERVICE = "db"
 VOLUME = "data"
@@ -197,6 +198,15 @@ def run_rows(data):
                 walk(value)
     walk(data)
     return rows
+
+
+def check_kill(fields):
+    """On these guests `systemctl kill` exits 1 when it cannot signal the unit's auxiliary processes, though the
+    main process died. Accept that only when the unit's MainPID or InvocationID moved."""
+    landed = fields.get("before") != fields.get("after") or fields.get("invocation") != fields.get("invocation_after")
+    if fields.get("rc") != "0" and not (fields.get("rc") == "1" and AUXILIARY in fields.get("out", "") and landed):
+        raise RuntimeError(f"systemctl kill failed: {fields}")
+    return dict(fields, landed=landed)
 
 
 def machine_state(output):
@@ -563,9 +573,18 @@ class VolumeMove:
             self.runner_state("start")
         elif action in ("kill-ployz", "kill-docker"):
             unit = "ployz.service" if action == "kill-ployz" else "docker.service"
-            self.sh(machine, f"systemctl kill -s KILL {unit}")
+            kill = self.sh(machine, f"""
+before=$(systemctl show -p MainPID --value {unit}); invocation=$(systemctl show -p InvocationID --value {unit})
+rc=0; out=$(systemctl kill -s KILL {unit} 2>&1) || rc=$?
+sleep 1
+echo "rc=$rc"; echo "out=$(printf %s "$out" | tr '\\n' ' ')"; echo "before=$before"; echo "invocation=$invocation"
+echo "after=$(systemctl show -p MainPID --value {unit})"
+echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
+""", check=False)
+            fields = dict(line.split("=", 1) for line in kill.stdout.splitlines() if "=" in line)
             self.sleep(3)
             self.sh(machine, "systemctl start docker.service ployz.service", check=False)
+            return [check_kill(dict(fields, kill=unit, machine=machine))]
         return []
 
     def prepare(self, case, other):
