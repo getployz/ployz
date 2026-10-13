@@ -53,7 +53,7 @@ pub(crate) use create::container_log_config;
 pub(crate) use lifecycle::{ContainerCreated, ContainerRequest, require_eligible, same_creation};
 pub(crate) use managed_service::{DesiredContainer, Ensure, ManagedService};
 pub(crate) use peer_pull::pull_from_ingest;
-pub use spec_store::{Error as SpecStoreError, MachineSpecStore};
+pub use spec_store::{Error as SpecStoreError, FloorTurn, MachineSpecStore};
 pub use unregistry::ImageIngest;
 
 #[cfg(test)]
@@ -196,6 +196,14 @@ impl ContainerRuntime {
             checks: Arc::new(std::sync::Mutex::new(CheckRecords::new(chrono::Utc::now()))),
             stranded: Arc::default(),
         }
+    }
+
+    pub async fn floor_turn(&self) -> FloorTurn<'_> {
+        self.specs.floor_turn().await
+    }
+
+    pub async fn clear_floors(&self) -> Result<(), Error> {
+        Ok(self.specs.clear_floors().await?)
     }
 
     /// Report this Container as `stopping` until its stop runs,

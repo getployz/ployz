@@ -37,6 +37,33 @@ impl fmt::Display for WriterEpoch {
     }
 }
 
+/// Which lane Cloud opened on a Volume. The Machine keeps the newest one it accepted per
+/// Volume as its floor and refuses a lower one. A request without one reads as 0.
+#[derive(
+    Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS,
+)]
+#[serde(transparent)]
+#[ts(type = "number")]
+pub struct VolumeGen(u64);
+
+impl VolumeGen {
+    #[must_use]
+    pub const fn new(gen_: u64) -> Self {
+        Self(gen_)
+    }
+
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl fmt::Display for VolumeGen {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
 /// The idempotency key a driver gives a new Container.
 ///
 /// Invariant: non-empty, at most 512 bytes. No charset rule: the daemon hashes
