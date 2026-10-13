@@ -176,9 +176,28 @@ async fn remove_cloud_server(
     env: &[(&str, &str)],
     extra: &[&str],
 ) -> (std::process::Output, DiscoveryService) {
+    leave_cloud_server("rm", service, server, env, extra).await
+}
+
+async fn forget_cloud_server(
+    service: DiscoveryService,
+    server: &str,
+    env: &[(&str, &str)],
+    extra: &[&str],
+) -> (std::process::Output, DiscoveryService) {
+    leave_cloud_server("forget", service, server, env, extra).await
+}
+
+async fn leave_cloud_server(
+    verb: &str,
+    service: DiscoveryService,
+    server: &str,
+    env: &[(&str, &str)],
+    extra: &[&str],
+) -> (std::process::Output, DiscoveryService) {
     *service.management_clients.lock().unwrap() =
         vec![ployz_core::ManagementClientLabel::parse("cloud").unwrap()];
-    let output = remove_server(&service, Dial::Connect, server, env, extra).await;
+    let output = leave_server(verb, &service, Dial::Connect, server, env, extra).await;
     (output, service)
 }
 
@@ -189,6 +208,17 @@ enum Dial {
 }
 
 async fn remove_server(
+    service: &DiscoveryService,
+    dial: Dial,
+    server: &str,
+    env: &[(&str, &str)],
+    extra: &[&str],
+) -> std::process::Output {
+    leave_server("rm", service, dial, server, env, extra).await
+}
+
+async fn leave_server(
+    verb: &str,
     service: &DiscoveryService,
     dial: Dial,
     server: &str,
@@ -221,7 +251,7 @@ async fn remove_server(
             config.to_str().unwrap(),
             "--json",
             "server",
-            "rm",
+            verb,
             server,
         ])
         .args(&context)
@@ -285,7 +315,9 @@ fn fake_cloud(settled: &'static str, gated: bool) -> (String, Asked, Reads) {
             }
             let mut body = vec![0; length];
             reader.read_exact(&mut body).unwrap();
-            let (status, reply) = if line.starts_with("DELETE /api/cli/servers/") {
+            let starts = line.starts_with("DELETE /api/cli/servers/")
+                || (line.starts_with("POST /api/cli/servers/") && line.contains("/forget "));
+            let (status, reply) = if starts {
                 let body = serde_json::from_slice(&body).unwrap();
                 seen.lock().unwrap().push((line.trim().to_owned(), body));
                 if gated && !approved {
@@ -360,7 +392,7 @@ async fn cloud_removes_its_last_server_for_the_cli() {
 }
 
 #[tokio::test]
-async fn a_server_cloud_manages_leaves_through_cloud_even_without_a_reset() {
+async fn a_server_cloud_manages_is_forgotten_through_cloud() {
     let (cloud, asked, _) = fake_cloud(
         r#"{"state":"succeeded","reset_warning":null,"release":{"kind":"others_remain"}}"#,
         false,
@@ -368,11 +400,11 @@ async fn a_server_cloud_manages_leaves_through_cloud_even_without_a_reset() {
     let mut service = DiscoveryService::new(test_description());
     service.machines.push(machine('b', "two"));
     service.storage_capacity = Some(empty_storage());
-    let (output, service) = remove_cloud_server(
+    let (output, service) = forget_cloud_server(
         service,
         "two",
         &[("PLOYZ_TOKEN", "ployz_acme"), ("PLOYZ_CLOUD_URL", &cloud)],
-        &["--no-reset", "--confirm", "two"],
+        &["--confirm", "two"],
     )
     .await;
     assert_eq!(output.status.code(), Some(0), "{output:?}");
@@ -383,10 +415,13 @@ async fn a_server_cloud_manages_leaves_through_cloud_even_without_a_reset() {
         panic!("Cloud was asked {asked:?}");
     };
     assert!(
-        line.starts_with(&format!("DELETE /api/cli/servers/{} ", machine_id('b'))),
+        line.starts_with(&format!(
+            "POST /api/cli/servers/{}/forget ",
+            machine_id('b')
+        )),
         "{line}"
     );
-    assert_eq!(body, &json!({ "no_reset": true }));
+    assert_eq!(body, &json!({}));
     let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(
         result.get("cloud_released"),
@@ -405,11 +440,11 @@ async fn an_agent_gets_the_approval_a_cloud_removal_needs() {
     let mut service = DiscoveryService::new(test_description());
     service.machines.push(machine('b', "two"));
     service.storage_capacity = Some(empty_storage());
-    let (output, service) = remove_cloud_server(
+    let (output, service) = forget_cloud_server(
         service,
         "two",
         &[("PLOYZ_TOKEN", "ployz_acme"), ("PLOYZ_CLOUD_URL", &cloud)],
-        &["--no-reset", "--confirm", "two"],
+        &["--confirm", "two"],
     )
     .await;
     let error: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
@@ -423,7 +458,7 @@ async fn an_agent_gets_the_approval_a_cloud_removal_needs() {
         .and_then(serde_json::Value::as_str)
         .unwrap_or_default();
     assert!(
-        retry.starts_with("ployz server rm two --no-reset --connect tcp://")
+        retry.starts_with("ployz server forget two --connect tcp://")
             && retry.ends_with(" --confirm two --approval apr_9"),
         "{retry}"
     );
@@ -656,8 +691,7 @@ async fn a_server_that_does_not_answer_leaves_without_a_reset_only_when_dead_is_
         let connect = connect.clone();
         async move {
             tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
-                .args(["--json", "--connect", &connect, "server", "rm", server])
-                .args(["--no-reset"])
+                .args(["--json", "--connect", &connect, "server", "forget", server])
                 .args(extra)
                 .output()
                 .await
@@ -692,7 +726,7 @@ async fn a_server_that_does_not_answer_leaves_without_a_reset_only_when_dead_is_
         .as_str()
         .unwrap();
     assert!(
-        retry.starts_with("ployz server rm two --no-reset --connect"),
+        retry.starts_with("ployz server forget two --connect"),
         "{retry}"
     );
     assert!(retry.ends_with("--confirm dead"), "{retry}");
@@ -730,7 +764,7 @@ async fn a_server_that_does_not_answer_leaves_without_a_reset_only_when_dead_is_
     server.abort();
 }
 
-const DEAD_REFUSAL: &str = "Server two did not answer in 10s. Removing it without a reset leaves any Volume copies on it behind and needs dead typed. No changes made.";
+const DEAD_REFUSAL: &str = "Server two did not answer in 10s. Forgetting it leaves any Volume copies on it behind and needs dead typed. No changes made.";
 
 #[tokio::test]
 async fn a_server_listed_up_that_never_replies_leaves_without_a_reset_when_dead_is_typed() {
@@ -744,8 +778,7 @@ async fn a_server_listed_up_that_never_replies_leaves_without_a_reset_when_dead_
         let connect = connect.clone();
         async move {
             tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
-                .args(["--json", "--connect", &connect, "server", "rm", "two"])
-                .args(["--no-reset"])
+                .args(["--json", "--connect", &connect, "server", "forget", "two"])
                 .args(extra)
                 .output()
                 .await
@@ -791,7 +824,7 @@ async fn a_server_that_stops_answering_after_its_name_is_typed_is_kept() {
 
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
         .args(["--json", "--connect", &format!("tcp://{address}")])
-        .args(["server", "rm", "two", "--no-reset", "--confirm", "two"])
+        .args(["server", "forget", "two", "--confirm", "two"])
         .output()
         .await
         .unwrap();
@@ -813,10 +846,7 @@ async fn a_server_that_stops_answering_after_its_name_is_typed_is_kept() {
         .unwrap()
         .as_str()
         .unwrap();
-    assert!(
-        retry.starts_with("ployz server rm two --no-reset"),
-        "{retry}"
-    );
+    assert!(retry.starts_with("ployz server forget two"), "{retry}");
     assert!(retry.ends_with("--confirm dead"), "{retry}");
     assert!(removals.lock().unwrap().is_empty());
     server.abort();
@@ -851,11 +881,11 @@ async fn a_server_that_answers_holding_copies_is_refused_before_cloud_or_any_con
         )]),
     });
     for confirm in ["two", "dead"] {
-        let (output, service) = remove_cloud_server(
+        let (output, service) = forget_cloud_server(
             service.clone(),
             "two",
             &[("PLOYZ_TOKEN", "ployz_acme"), ("PLOYZ_CLOUD_URL", &cloud)],
-            &["--no-reset", "--confirm", confirm],
+            &["--confirm", confirm],
         )
         .await;
         assert_eq!(output.status.code(), Some(1), "{output:?}");
@@ -868,8 +898,8 @@ async fn a_server_that_answers_holding_copies_is_refused_before_cloud_or_any_con
         assert_eq!(
             error.pointer("/error/message"),
             Some(&json!(
-                "Server two answers and holds copies of Volumes app-prod_logs; removing it \
-                 without a reset leaves them behind. No changes made. Drop --no-reset so the \
+                "Server two answers and holds copies of Volumes app-prod_logs; forgetting it \
+                 leaves them behind. No changes made. Remove it with ployz server rm so its \
                  reset demotes them."
             )),
             "{error}"

@@ -1229,7 +1229,7 @@ fn stopped_answering(machine: &Machine) -> RpcError {
     RpcError {
         code: RpcErrorCode::ConfirmationRequired,
         message: format!(
-            "Server {} stopped answering after its name was typed. Removing it without a reset leaves any Volume copies on it behind, so it needs dead typed. No changes made.",
+            "Server {} stopped answering after its name was typed. Forgetting it leaves any Volume copies on it behind, so it needs dead typed. No changes made.",
             machine.name
         ),
         details: json!({
@@ -1264,7 +1264,7 @@ pub enum Remover {
     Operator,
 }
 
-/// Removing `machine` without a reset leaves its copies of `volumes` behind: only its
+/// Forgetting `machine` leaves its copies of `volumes` behind: only its
 /// reset demotes them.
 pub(crate) fn copies_left_behind<'a>(
     machine: &MachineName,
@@ -1273,8 +1273,8 @@ pub(crate) fn copies_left_behind<'a>(
     RpcError {
         code: RpcErrorCode::Conflict,
         message: format!(
-            "Server {machine} answers and holds copies of Volumes {}; removing it without a reset \
-             leaves them behind. No changes made. Drop --no-reset so the reset demotes them.",
+            "Server {machine} answers and holds copies of Volumes {}; forgetting it leaves them \
+             behind. No changes made. Remove it with ployz server rm so its reset demotes them.",
             volumes.into_iter().collect::<Vec<_>>().join(", ")
         ),
         details: Value::Null,

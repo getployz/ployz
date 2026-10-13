@@ -465,15 +465,12 @@ pub(crate) fn command() -> Command {
         .subcommand(base("ls", "List Servers"))
         .subcommand(
             base("rm", "Remove a Server")
-                .long_about("Remove a Server from the Cluster and reset it. Type the Server's name with --confirm, or in a terminal when it asks; elsewhere it fails with confirmation_required, naming what goes and the exact command to retry. When Cloud manages the Server, Cloud removes it even with --context or --connect, asking a human first when the Organization wants that.")
-                .arg(switch("no-reset", None).help(
-                    "Remove the Server from the Cluster without resetting it; use when the Server is unreachable",
-                ))
-                .arg(value("confirm", None).value_name("SERVER").help("The Server's name, typed to confirm its removal; dead for a Server removed with --no-reset that does not answer"))
+                .long_about("Remove a Server from the Cluster and reset it; for a Server that is gone or can't be reset, use ployz server forget. Type the Server's name with --confirm, or in a terminal when it asks; elsewhere it fails with confirmation_required, naming what goes and the exact command to retry. When Cloud manages the Server, Cloud removes it even with --context or --connect, asking a human first when the Organization wants that.")
+                .arg(value("confirm", None).value_name("SERVER").help("The Server's name, typed to confirm its removal"))
                 .arg(positional("server", true))
                 .arg(crate::cli::approval())
                 .arg(
-                    volume_acceptance().conflicts_with("no-reset").help("Accept loss of Cluster access: repeat once per exact volume name; reset does not erase volume data on the host"),
+                    volume_acceptance().help("Accept loss of Cluster access: repeat once per exact volume name; reset does not erase volume data on the host"),
                 ),
         )
         .subcommand(

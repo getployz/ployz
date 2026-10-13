@@ -313,9 +313,8 @@ mod tests {
                 .try_get_matches_from([
                     "ployz",
                     "server",
-                    "rm",
+                    "forget",
                     "worker",
-                    "--no-reset",
                     "--accept-volume-loss",
                     "data",
                 ])
