@@ -11,7 +11,7 @@ pub mod layout;
 pub(crate) mod metrics;
 mod query;
 mod serve;
-mod unit;
+pub(crate) mod unit;
 
 use std::{
     fs,

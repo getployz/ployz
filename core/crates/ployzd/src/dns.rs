@@ -47,8 +47,8 @@ mod query;
 mod service;
 mod spec;
 
-pub(crate) use process::InstalledExe;
 pub use process::{ABDICATED, DnsExit, serve};
+pub(crate) use process::{InstalledExe, identity_of};
 use query::{InternalQuery, MachineServiceTarget, Query, parse};
 pub use service::{DnsService, DnsSupervision};
 

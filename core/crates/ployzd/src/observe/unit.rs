@@ -1,21 +1,86 @@
-//! `ployz-observe.service`, converged by the daemon on every start.
+//! `ployz-observe.service`, converged by the daemon on every start like
+//! Internal DNS, so the Observe Store runs this daemon's binary whatever the
+//! installer that put the binary in place knew about it.
 
 use std::{io, path::Path};
 
-use crate::dns::InstalledExe;
+use crate::{
+    dns::InstalledExe,
+    runtime_unit::{self, UNIT_DIR, systemctl},
+};
 
-/// Converge `ployz-observe.service` in `unit_dir` onto `exe`.
+const UNIT_NAME: &str = "ployz-observe.service";
+
+/// Write the runtime unit and start the Observe Store, restarting it when it
+/// runs other software. A legacy unit in `/etc` shadows the runtime one until
+/// the next install removes it; both run the same binary path.
 ///
 /// # Errors
 ///
-/// Returns an error when the unit cannot be written.
-pub(crate) async fn converge_in(
-    _unit_dir: &Path,
-    _exe: &InstalledExe,
-    _data_dir: &Path,
-    _socket: &Path,
+/// Returns an error when the daemon's own binary cannot be identified or the
+/// unit cannot be written.
+pub(crate) async fn converge(data_dir: &Path, socket: &Path) -> io::Result<()> {
+    converge_in(
+        Path::new(UNIT_DIR),
+        &InstalledExe::current()?,
+        data_dir,
+        socket,
+    )
+    .await
+}
+
+async fn converge_in(
+    unit_dir: &Path,
+    exe: &InstalledExe,
+    data_dir: &Path,
+    socket: &Path,
 ) -> io::Result<()> {
+    runtime_unit::install(
+        &unit_dir.join(UNIT_NAME),
+        &unit_text(exe.path(), data_dir, socket),
+    )
+    .await?;
+    let verb = if runtime_unit::runs_other_software(UNIT_NAME, exe).await {
+        "restart"
+    } else {
+        "start"
+    };
+    systemctl(&[verb, "--no-block", UNIT_NAME]).await;
     Ok(())
+}
+
+/// The harvester runs as root to link Docker's root-only log files, so its
+/// cgroup limits keep a runaway harvester from starving the Machine.
+fn unit_text(exe: &Path, data_dir: &Path, socket: &Path) -> String {
+    format!(
+        "# Written by ployzd. Removed by uninstall and reboot.
+[Unit]
+Description=Ployz Log Store
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+ExecStart={exe} --data-dir {data_dir} --socket {socket} observe
+EnvironmentFile=-/etc/default/ployz
+Restart=always
+RestartSec=2
+CPUQuota=10%
+MemoryMax=256M
+IOWeight=10
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectControlGroups=true
+ProtectHome=read-only
+ProtectKernelTunables=true
+PrivateTmp=true
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=true
+",
+        exe = exe.display(),
+        data_dir = data_dir.display(),
+        socket = socket.display(),
+    )
 }
 
 #[cfg(test)]
@@ -30,7 +95,9 @@ mod tests {
     /// Logs every call; `show` answers the main PID in `main-pid`, or 0 when nothing runs.
     const SYSTEMCTL: &str = r#"echo "$*" >> "$PLOYZ_OBSERVE_UNIT_ROOT/systemctl.log"
 if [ "$1" = show ]; then
-  if [ -f "$PLOYZ_OBSERVE_UNIT_ROOT/main-pid" ]; then cat "$PLOYZ_OBSERVE_UNIT_ROOT/main-pid"; else echo 0; fi
+  pid=0
+  if [ -f "$PLOYZ_OBSERVE_UNIT_ROOT/main-pid" ]; then read -r pid < "$PLOYZ_OBSERVE_UNIT_ROOT/main-pid"; fi
+  echo "$pid"
 fi"#;
 
     fn write_script(path: &Path, body: &str) {
@@ -126,7 +193,10 @@ fi"#;
                 )),
                 "{case}: unit does not run this daemon's binary:\n{unit}"
             );
-            assert!(!unit.contains("[Install]"), "{case}: runtime unit is enabled");
+            assert!(
+                !unit.contains("[Install]"),
+                "{case}: runtime unit is enabled"
+            );
             let expected: &[&str] = match case {
                 "absent" => &["daemon-reload", "start --no-block ployz-observe.service"],
                 "other-software" => &["daemon-reload", "restart --no-block ployz-observe.service"],

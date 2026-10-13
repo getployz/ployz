@@ -14,13 +14,14 @@ use super::{
     process::{InstalledExe, identity_of},
     spec::{DnsSpec, SpecFile},
 };
-use crate::{filesystem::atomic_write, machine::LocalMachineRecord};
+use crate::{
+    machine::LocalMachineRecord,
+    runtime_unit::{self, UNIT_DIR, restart_needed, systemctl},
+};
 
 const UNIT_NAME: &str = "ployz-dns.service";
 const HOST_UNIT_NAME: &str = "ployz.service";
-const UNIT_DIR: &str = "/run/systemd/system";
 const PROBE_BOUND: Duration = Duration::from_secs(2);
-const SYSTEMCTL_BOUND: Duration = Duration::from_secs(5);
 const STOP_BOUND: Duration = Duration::from_secs(5);
 
 /// Who starts and restarts `ployzd dns`.
@@ -169,16 +170,7 @@ impl DnsService {
             Some(spec) => {
                 self.inner.spec_file.publish(Some(spec))?;
                 if self.inner.supervision == DnsSupervision::Systemd {
-                    if fs::read_to_string(&self.inner.unit_file).ok().as_deref()
-                        != Some(&self.inner.unit_text)
-                    {
-                        atomic_write(
-                            &self.inner.unit_file,
-                            self.inner.unit_text.as_bytes(),
-                            0o644,
-                        )?;
-                        systemctl(&["daemon-reload"]).await;
-                    }
+                    runtime_unit::install(&self.inner.unit_file, &self.inner.unit_text).await?;
                     systemctl(&["start", "--no-block", UNIT_NAME]).await;
                 }
             }
@@ -200,51 +192,8 @@ impl DnsService {
     }
 
     async fn move_onto_own_binary(&self) {
-        let Some(output) = systemctl(&["show", "-p", "MainPID", "--value", UNIT_NAME]).await else {
-            return;
-        };
-        let pid = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-        if pid.is_empty() || pid == "0" {
-            return;
-        }
-        let theirs = identity_of(&PathBuf::from(format!("/proc/{pid}/exe"))).ok();
-        if restart_needed(theirs, self.inner.own_exe.identity()) {
+        if runtime_unit::runs_other_software(UNIT_NAME, &self.inner.own_exe).await {
             systemctl(&["restart", "--no-block", UNIT_NAME]).await;
-        }
-    }
-}
-
-pub(crate) fn restart_needed(theirs: Option<(u64, u64)>, ours: Option<(u64, u64)>) -> bool {
-    matches!((theirs, ours), (Some(theirs), Some(ours)) if theirs != ours)
-}
-
-async fn systemctl(args: &[&str]) -> Option<std::process::Output> {
-    let run = Command::new("systemctl")
-        .args(args)
-        .env_remove("NOTIFY_SOCKET")
-        .stdin(Stdio::null())
-        .kill_on_drop(true)
-        .output();
-    match tokio::time::timeout(SYSTEMCTL_BOUND, run).await {
-        Ok(Ok(output)) if output.status.success() => Some(output),
-        Ok(Ok(output)) => {
-            eprintln!(
-                "systemctl {} failed: {}",
-                args.join(" "),
-                String::from_utf8_lossy(&output.stderr).trim()
-            );
-            None
-        }
-        Ok(Err(error)) => {
-            eprintln!("systemctl {} could not run: {error}", args.join(" "));
-            None
-        }
-        Err(_) => {
-            eprintln!(
-                "systemctl {} did not finish within {SYSTEMCTL_BOUND:?}",
-                args.join(" ")
-            );
-            None
         }
     }
 }
@@ -353,14 +302,6 @@ mod tests {
         ));
         assert!(!runs_as_host_unit("0::/system.slice/ployz-dns.service\n"));
         assert!(!runs_as_host_unit(""));
-    }
-
-    #[test]
-    fn restart_needed_only_for_other_software() {
-        assert!(restart_needed(Some((1, 2)), Some((1, 3))));
-        assert!(!restart_needed(Some((1, 2)), Some((1, 2))));
-        assert!(!restart_needed(None, Some((1, 2))));
-        assert!(!restart_needed(Some((1, 2)), None));
     }
 
     #[tokio::test]

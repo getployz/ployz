@@ -205,6 +205,12 @@ impl Daemon {
             &local_record,
         )
         .await?;
+        if config.dns == DnsSupervision::Systemd
+            && let Err(error) =
+                crate::observe::unit::converge(&config.data_dir, &config.socket).await
+        {
+            eprintln!("WARNING: the Observe Store did not start: {error}");
+        }
         let mut network = NetworkPlane::start(&local_record).await?;
         let machine_api_listener = match config
             .machine_api_address
