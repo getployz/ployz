@@ -1481,6 +1481,51 @@ mod set_volume_copy {
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 
+    /// A Deploy that floors the Volume while a Writer raise runs its route starts its
+    /// own Container next, so the raise must not start an older one beside it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    async fn a_floor_raised_during_a_raise_refuses_its_start_stale() {
+        let (data_dir, _store, service, fake) =
+            fake_docker_service("ployzd-copy-raise-fenced").await;
+        let plugin = FakePlugin::default();
+        plugin.reply(INSPECT_ROUTE, writer_root(1, Some(snapshot("f-1", 7))));
+        plugin.reply(WRITER_ROUTE, writer_root(2, Some(snapshot("f-1", 7))));
+        let replies = plugin.replies.clone();
+        let raising = std::sync::Arc::new(tokio::sync::Notify::new());
+        let raised = raising.clone();
+        plugin.on(WRITER_ROUTE, move || {
+            replies.lock().unwrap().insert(
+                INSPECT_ROUTE.into(),
+                writer_root(2, Some(snapshot("f-1", 7))),
+            );
+            raised.notify_one();
+            tokio::task::block_in_place(|| {
+                std::thread::sleep(std::time::Duration::from_millis(300));
+            });
+        });
+        let (socket, server) = plugin.serve(&data_dir);
+        let service = service.with_volume_plugin(socket);
+        let kept = stopped_container(&service).await;
+        let raise = at_gen(
+            json!({"name":VOLUME, "expect":{"kind":"writer", "epoch":1},
+                "want":{"kind":"writer", "at":"7", "epoch":2,
+                    "start":{"kind":"kept", "container_id":kept.to_string()}}}),
+            1,
+        );
+
+        let (refused, _) = tokio::join!(set_copy(&service, raise), async {
+            raising.notified().await;
+            set_copy(&service, floor(2)).await
+        });
+        let error = refusal(&refused);
+        assert_eq!(error.details["reason"], json!("stale"), "{error:?}");
+        assert_eq!(error.details["floor"], json!(2));
+        assert_eq!(running(&fake), 0, "{:?}", holder_status(&fake));
+        server.abort();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
     #[tokio::test]
     #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
     async fn a_request_queued_behind_a_cut_refuses_stale_once_a_floor_fenced_it() {

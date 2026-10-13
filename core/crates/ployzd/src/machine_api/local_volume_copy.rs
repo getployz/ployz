@@ -127,18 +127,21 @@ impl MachineService {
                         StartState::Gone => {
                             return Err(refused(CopyRefusal::NoTransition, copy, &name));
                         }
-                        StartState::Stopped => self.run_start(&start).await?,
+                        StartState::Stopped => self.run_start(start, &name, r#gen).await?,
                     }
                 }
                 Ok(copy)
             }
             (CopyTransition::MirrorToWriter, WantedCopy::Writer { at, epoch, start }) => {
-                let copy = self
-                    .plugin_copy(WRITER_ROUTE, &WriterRequest { name, at, epoch })
-                    .await?;
+                let request = WriterRequest {
+                    name: name.clone(),
+                    at,
+                    epoch,
+                };
+                let copy = self.plugin_copy(WRITER_ROUTE, &request).await?;
                 crate::faults::kill_inside("SetVolumeCopy.MirrorToWriter");
                 if let Some(start) = start {
-                    self.run_start(&start).await?;
+                    self.run_start(start, &name, r#gen).await?;
                 }
                 Ok(copy)
             }
@@ -304,30 +307,22 @@ impl MachineService {
     }
 
     /// Create the Container when `start` asks for one and it is absent, then start it.
-    /// Both halves are idempotent, so a resend after either converges.
-    async fn run_start(&self, start: &Start) -> Result<(), LocalMachineError> {
-        let container_id = match start {
-            Start::Kept { container_id } => *container_id,
-            Start::Create {
-                namespace,
-                resolved_spec,
-                creation_key,
-            } => {
-                self.local
-                    .create_container(
-                        ContainerKind::ServiceContainer,
-                        namespace,
-                        resolved_spec,
-                        Some(creation_key.as_str().to_owned()),
-                        None,
-                        None,
-                    )
-                    .await?
-                    .container_id
-            }
-        };
-        self.local.start_container(container_id).await?;
-        Ok(())
+    /// Both halves are idempotent, so a resend after either converges. `Stale` when a
+    /// newer lane raised the floor after this request was admitted.
+    async fn run_start(
+        &self,
+        start: Start,
+        name: &DockerVolumeName,
+        r#gen: VolumeGen,
+    ) -> Result<(), LocalMachineError> {
+        match self
+            .local
+            .start_volume_holder(start, name.clone(), r#gen)
+            .await?
+        {
+            Ok(()) => Ok(()),
+            Err(floor) => Err(stale(floor, self.inspect_copy(name).await?, name)),
+        }
     }
 }
 

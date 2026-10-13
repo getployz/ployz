@@ -8,7 +8,7 @@ use ployz_core::{
     ContainerWant, DockerVolumeName, Drain, EnsuredContainer, ImageIngestOpened, ImageIngestReason,
     ImagePulled, ImagesRemoved, LocalMachinePhase, MachineStorageObservation, Namespace,
     NewContainer, PruneImagesRequest, PullImageFromMachineRequest, ResolvedServiceSpec, RunTarget,
-    StopOptions, VolumeGen, VolumeRemoved,
+    Start, StopOptions, VolumeGen, VolumeRemoved,
 };
 use ployz_core::{
     AnswerWhen, HEALTH_POLL_INTERVAL, HealthFailure, HealthPoll, HealthVerdict, HealthcheckSpec,
@@ -166,6 +166,7 @@ impl LocalMachine {
     ///
     /// Returns when local state, networking, storage, or Docker cannot safely create the
     /// requested container.
+    #[cfg(test)]
     pub(crate) async fn create_container(
         &self,
         kind: ContainerKind,
@@ -208,6 +209,53 @@ impl LocalMachine {
                 .start(&container_id)
                 .await?;
             Ok(())
+        })
+        .await
+    }
+
+    /// A Writer's start: create its Container when absent, then start it, under one
+    /// exclusive turn. A floor raised above `gen` starts nothing, since the newer lane
+    /// may have started its own holder of the Volume already. A start ordered after
+    /// the check waits for the turn, so it sees this holder running.
+    ///
+    /// # Errors
+    ///
+    /// Returns when the floor cannot be read, or Docker cannot create or start the
+    /// Container.
+    pub(crate) async fn start_volume_holder(
+        &self,
+        start: Start,
+        name: DockerVolumeName,
+        r#gen: VolumeGen,
+    ) -> Result<Result<(), VolumeGen>, Error> {
+        let local = self.clone();
+        self.finish_mutation(async move {
+            let containers = local.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+            if let Err(floor) = containers.floor_turn().await.admit(&name, r#gen).await? {
+                return Ok(Err(floor));
+            }
+            let container_id = match start {
+                Start::Kept { container_id } => container_id,
+                Start::Create {
+                    namespace,
+                    resolved_spec,
+                    creation_key,
+                } => {
+                    local
+                        .create_container_admitted(
+                            ContainerKind::ServiceContainer,
+                            &namespace,
+                            &resolved_spec,
+                            Some(creation_key.as_str().to_owned()),
+                            None,
+                            None,
+                        )
+                        .await?
+                        .container_id
+                }
+            };
+            containers.start(&container_id).await?;
+            Ok(Ok(()))
         })
         .await
     }
