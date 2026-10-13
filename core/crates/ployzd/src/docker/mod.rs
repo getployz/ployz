@@ -205,6 +205,11 @@ impl ContainerRuntime {
             .send_if_modified(|stopping| stopping.insert(container_id));
     }
 
+    #[cfg(test)]
+    pub(crate) fn stopping_ids_for_test(&self) -> BTreeSet<ContainerId> {
+        self.stopping.borrow().clone()
+    }
+
     pub(crate) fn clear_stopping(&self, container_id: &ContainerId) {
         self.stopping
             .send_if_modified(|stopping| stopping.remove(container_id));

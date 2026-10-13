@@ -271,6 +271,41 @@ impl LocalMachine {
         Ok(containers.inspect_managed(container, &machine_id).await?)
     }
 
+    /// Stop and remove one managed Container, already drained, under one exclusive
+    /// admission turn. `still_wanted` runs first under that turn, so nothing that
+    /// changes its answer while the turn is awaited reaches Docker. Answers whether
+    /// the Container was removed; false means `still_wanted` refused it.
+    pub(crate) async fn remove_drained_if<W>(
+        &self,
+        container: ContainerId,
+        still_wanted: W,
+    ) -> Result<bool, Error>
+    where
+        W: std::future::Future<Output = Result<bool, crate::corrosion::Error>> + Send + 'static,
+    {
+        let local = self.clone();
+        self.finish_mutation(async move {
+            if !still_wanted.await? {
+                return Ok(false);
+            }
+            let containers = local.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+            let machine_id = local.record().id();
+            match containers.inspect_managed(&container, &machine_id).await {
+                Ok(observed) if is_running(&observed) => {
+                    containers.stop(&container, None, None).await?;
+                }
+                Ok(_) | Err(crate::docker::Error::ContainerNotFound(_)) => {}
+                Err(error) => return Err(error.into()),
+            }
+            let remove_volumes = AnonymousVolumes::default() == AnonymousVolumes::Remove;
+            match containers.remove(&container, remove_volumes, false).await {
+                Ok(()) | Err(crate::docker::Error::ContainerNotFound(_)) => Ok(true),
+                Err(error) => Err(error.into()),
+            }
+        })
+        .await
+    }
+
     /// The cut's Container half: drain and stop every holder of the Volume, then run
     /// `zfs` under the exclusive turn once no holder runs. The holders are listed again
     /// under the turn, so one started during the drain is `Busy` too, as is one the

@@ -6,8 +6,8 @@ use std::{
 };
 
 use ployz_core::{
-    AnonymousVolumes, ContainerId, ContainerLocator, ContainerWant, DeploymentLogId, Drain,
-    Machine, MachineId, MachineName, ManagementAddress, MembershipEvidence, QualifiedService,
+    ContainerId, DeploymentLogId, Drain, Machine, MachineId, MachineName, ManagementAddress,
+    MembershipEvidence, QualifiedService,
 };
 use tokio::{task::JoinSet, time::Instant};
 use tokio_util::sync::CancellationToken;
@@ -29,6 +29,7 @@ const DEBOUNCE: Duration = Duration::from_millis(200);
 const DEBOUNCE_LIMIT: Duration = Duration::from_secs(2);
 const MEMBERSHIP_SAMPLE_TIMEOUT: Duration = Duration::from_secs(1);
 const LIST_TIMEOUT: Duration = Duration::from_secs(10);
+const DRAIN_RECHECK: Duration = Duration::from_millis(100);
 
 pub(crate) trait RetireHost: Clone + Send + Sync + 'static {
     fn local_containers(&self) -> impl Future<Output = io::Result<BTreeSet<ContainerId>>> + Send;
@@ -37,7 +38,13 @@ pub(crate) trait RetireHost: Clone + Send + Sync + 'static {
     fn mark_stopping(&self, container: ContainerId);
     fn unmark_stopping(&self, container: ContainerId);
     fn drain(&self) -> impl Future<Output = ()> + Send;
-    fn remove(&self, container: ContainerId) -> impl Future<Output = io::Result<()>> + Send;
+    /// Stop and remove the drained Container under the Machine's exclusive
+    /// admission turn, if `still_retired` answers true under that turn.
+    fn remove(
+        &self,
+        container: ContainerId,
+        still_retired: impl Future<Output = Result<bool, CorrosionError>> + Send + 'static,
+    ) -> impl Future<Output = Outcome> + Send;
 }
 
 #[derive(Clone)]
@@ -93,17 +100,12 @@ impl RetireHost for DaemonHost {
         tokio::time::sleep(Drain::DEFAULT.as_duration()).await;
     }
 
-    async fn remove(&self, container: ContainerId) -> io::Result<()> {
-        let want = ContainerWant::Gone {
-            container: ContainerLocator::Id(container),
-            drain: Drain::NONE,
-            anonymous_volumes: AnonymousVolumes::default(),
-        };
-        self.machine
-            .ensure_container(want)
-            .await
-            .map(|_| ())
-            .map_err(io::Error::other)
+    async fn remove(
+        &self,
+        container: ContainerId,
+        still_retired: impl Future<Output = Result<bool, CorrosionError>> + Send + 'static,
+    ) -> Outcome {
+        remove_drained(&self.machine, container, still_retired).await
     }
 }
 
@@ -471,48 +473,81 @@ async fn round<H: RetireHost>(
     }
 }
 
-enum Outcome {
+pub(crate) enum Outcome {
     Retired,
     /// A pointer now serves the Container or no longer retires it.
     Kept,
     Failed(io::Error),
 }
 
-/// Rereads the Service pointer before taking the Container out of ingress and
-/// again after the drain, so a repoint during the round or the drain keeps it.
+/// Reads the Service pointer before taking the Container out of ingress, so a
+/// repoint during the round never drains it; every `DRAIN_RECHECK` of the drain,
+/// so a repoint that names it again routes it back before the drain ends; and
+/// under the admission turn that stops and removes it, so a repoint any time
+/// before the stop keeps it.
 async fn retire<H: RetireHost>(
     host: &H,
     replicated: &ReplicatedStore,
     candidate: &Candidate,
 ) -> Outcome {
-    let still_retired = async || match replicated.serving_pointers().await {
-        Ok(pointers) => Ok(candidate.still_retired_by(&pointers)),
-        Err(error) => Err(io::Error::other(error)),
-    };
-    match still_retired().await {
+    match still_retired(replicated.clone(), candidate.clone()).await {
         Ok(true) => {}
         Ok(false) => return Outcome::Kept,
-        Err(error) => return Outcome::Failed(error),
+        Err(error) => return Outcome::Failed(io::Error::other(error)),
     }
     host.mark_stopping(candidate.container);
-    host.drain().await;
-    match still_retired().await {
-        Ok(true) => {}
-        Ok(false) => {
-            host.unmark_stopping(candidate.container);
-            return Outcome::Kept;
-        }
-        Err(error) => {
-            host.unmark_stopping(candidate.container);
-            return Outcome::Failed(error);
+    let _marked = Marked {
+        host,
+        container: candidate.container,
+    };
+    let drain = host.drain();
+    tokio::pin!(drain);
+    loop {
+        tokio::select! {
+            () = &mut drain => break,
+            () = tokio::time::sleep(DRAIN_RECHECK) => {
+                if let Ok(false) = still_retired(replicated.clone(), candidate.clone()).await {
+                    return Outcome::Kept;
+                }
+            }
         }
     }
-    match host.remove(candidate.container).await {
-        Ok(()) => Outcome::Retired,
-        Err(error) => {
-            host.unmark_stopping(candidate.container);
-            Outcome::Failed(error)
-        }
+    host.remove(
+        candidate.container,
+        still_retired(replicated.clone(), candidate.clone()),
+    )
+    .await
+}
+
+async fn still_retired(
+    replicated: ReplicatedStore,
+    candidate: Candidate,
+) -> Result<bool, CorrosionError> {
+    Ok(candidate.still_retired_by(&replicated.serving_pointers().await?))
+}
+
+/// Clears the stopping mark however the retire ends: a removed Container is
+/// gone, and one kept or failed is routed again.
+struct Marked<'a, H: RetireHost> {
+    host: &'a H,
+    container: ContainerId,
+}
+
+impl<H: RetireHost> Drop for Marked<'_, H> {
+    fn drop(&mut self) {
+        self.host.unmark_stopping(self.container);
+    }
+}
+
+async fn remove_drained(
+    machine: &LocalMachine,
+    container: ContainerId,
+    still_retired: impl Future<Output = Result<bool, CorrosionError>> + Send + 'static,
+) -> Outcome {
+    match machine.remove_drained_if(container, still_retired).await {
+        Ok(true) => Outcome::Retired,
+        Ok(false) => Outcome::Kept,
+        Err(error) => Outcome::Failed(io::Error::other(error)),
     }
 }
 
@@ -611,6 +646,7 @@ fn finish(
 mod tests {
     use std::{
         collections::{BTreeMap, BTreeSet},
+        future::Future,
         io,
         sync::{Arc, Mutex},
         time::Duration,
@@ -624,12 +660,12 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use super::{
-        Ackers, Candidate, FORCE_AFTER, Membership, PENDING_TICK, RetireHost, Retirer, Verdict,
-        required_ackers, round, run,
+        Ackers, Candidate, FORCE_AFTER, Membership, Outcome, PENDING_TICK, RetireHost, Retirer,
+        Verdict, remove_drained, required_ackers, round, run,
     };
     use crate::corrosion::{
-        IngressRouteAck, IngressRouteChange, ReplicatedObservations, ReplicatedStore,
-        ServingPointers,
+        Error as CorrosionError, IngressRouteAck, IngressRouteChange, ReplicatedObservations,
+        ReplicatedStore, ServingPointers,
         fake_cluster::FakeCluster,
         store_tests::{corrosion_db, identity_store},
     };
@@ -1156,6 +1192,7 @@ mod tests {
         remove_fails: bool,
         on_membership: Hook,
         on_drain: Hook,
+        drain_holds: bool,
     }
 
     impl FakeHost {
@@ -1172,6 +1209,7 @@ mod tests {
                 remove_fails: false,
                 on_membership: Arc::default(),
                 on_drain: Arc::default(),
+                drain_holds: false,
             }
         }
     }
@@ -1211,18 +1249,30 @@ mod tests {
 
         async fn drain(&self) {
             run_hook(&self.on_drain);
+            if self.drain_holds {
+                std::future::pending::<()>().await;
+            }
         }
 
-        async fn remove(&self, container: ContainerId) -> io::Result<()> {
+        async fn remove(
+            &self,
+            container: ContainerId,
+            still_retired: impl Future<Output = Result<bool, CorrosionError>> + Send + 'static,
+        ) -> Outcome {
+            match still_retired.await {
+                Ok(true) => {}
+                Ok(false) => return Outcome::Kept,
+                Err(error) => return Outcome::Failed(io::Error::other(error)),
+            }
             *self.removals.lock().unwrap() += 1;
             if self.remove_fails {
-                return Err(io::Error::other("Docker refused the stop"));
+                return Outcome::Failed(io::Error::other("Docker refused the stop"));
             }
             if !self.local.lock().unwrap().remove(&container) {
-                return Err(io::Error::from(io::ErrorKind::NotFound));
+                return Outcome::Failed(io::Error::from(io::ErrorKind::NotFound));
             }
             self.retired.lock().unwrap().push(container);
-            Ok(())
+            Outcome::Retired
         }
     }
 
@@ -1417,6 +1467,257 @@ mod tests {
         })
     }
 
+    /// A real Local Machine on fake Docker, removing as `DaemonHost` does.
+    #[derive(Clone)]
+    struct MachineHost {
+        machine: crate::machine::LocalMachine,
+        containers: crate::docker::ContainerRuntime,
+        local: BTreeSet<ContainerId>,
+        ackers: Membership,
+    }
+
+    impl RetireHost for MachineHost {
+        async fn local_containers(&self) -> io::Result<BTreeSet<ContainerId>> {
+            Ok(self.local.clone())
+        }
+
+        async fn membership(&self) -> Membership {
+            self.ackers.clone()
+        }
+
+        fn mark_stopping(&self, container: ContainerId) {
+            self.containers.mark_stopping(container);
+        }
+
+        fn unmark_stopping(&self, container: ContainerId) {
+            self.containers.clear_stopping(&container);
+        }
+
+        async fn drain(&self) {}
+
+        async fn remove(
+            &self,
+            container: ContainerId,
+            still_retired: impl Future<Output = Result<bool, CorrosionError>> + Send + 'static,
+        ) -> Outcome {
+            remove_drained(&self.machine, container, still_retired).await
+        }
+    }
+
+    struct RealMachine {
+        owner: crate::machine::RecordOwner,
+        host: MachineHost,
+        named: Arc<Mutex<BTreeMap<String, serde_json::Value>>>,
+        requests: Arc<Mutex<Vec<(axum::http::Method, String)>>>,
+        data_dir: std::path::PathBuf,
+        a: ContainerId,
+        b: ContainerId,
+    }
+
+    impl RealMachine {
+        /// Running Containers A and B on an enrolled Local Machine, with A retired
+        /// by `d2` and every acker routing B.
+        async fn start(cluster: &FakeCluster) -> Self {
+            use crate::docker::test_support::{FakeDocker, fake_runtime_with, spec_with_sources};
+            let data_dir =
+                std::env::temp_dir().join(format!("ployzd-retire-{}", MachineId::random()));
+            let mut machine_store = crate::machine::LocalMachineStore::open(&data_dir).unwrap();
+            machine_store
+                .enroll(ployz_core::EnrollRequest {
+                    role: ployz_core::EnrollAs::Founder {
+                        initial_policy: Default::default(),
+                        name: MachineName::parse("local").unwrap(),
+                        cluster_network: "10.210.0.0/16".parse().unwrap(),
+                        public_ip: None,
+                        advertised_endpoints: vec![AdvertisedEndpoint(
+                            "192.0.2.1:51820".parse().unwrap(),
+                        )],
+                    },
+                    wireguard_mtu: None,
+                })
+                .unwrap();
+            let owner = crate::machine::RecordOwner::spawn(machine_store).unwrap();
+            let (containers, fake) = fake_runtime_with(FakeDocker {
+                named_containers: Some(Arc::new(Mutex::new(BTreeMap::new()))),
+                ..Default::default()
+            })
+            .await;
+            let local_machine = crate::machine::LocalMachine::new(owner.clone())
+                .with_containers(Some(containers.clone()))
+                .with_zpool("true");
+            let named = fake.named_containers.clone().unwrap();
+            let ids = |named: &Mutex<BTreeMap<String, serde_json::Value>>| -> BTreeSet<String> {
+                named
+                    .lock()
+                    .unwrap()
+                    .values()
+                    .map(|container| container["Id"].as_str().unwrap().to_owned())
+                    .collect()
+            };
+            let mut created = Vec::new();
+            for key in ["a", "b"] {
+                let before = ids(&named);
+                let new: ployz_core::NewContainer = serde_json::from_value(serde_json::json!({
+                    "slot": {"namespace": "app", "kind": "service_container", "creation_key": key},
+                    "resolved_spec": spec_with_sources(vec![]),
+                    "answer": "started",
+                }))
+                .unwrap();
+                local_machine
+                    .ensure_container(ployz_core::ContainerWant::Running {
+                        container: ployz_core::RunTarget::New(new),
+                    })
+                    .await
+                    .unwrap();
+                let id = ids(&named).difference(&before).next().unwrap().clone();
+                created.push(ContainerId::parse(id).unwrap());
+            }
+            let [a, b] = created[..] else {
+                unreachable!("two Containers were created")
+            };
+            cluster.write_serving_pointer(
+                &ServingPointer::key(&service()),
+                &serde_json::to_string(&ServingPointer {
+                    deploy: deploy("d2"),
+                    containers: vec![b],
+                    previous: Some(deploy("d1")),
+                    retiring: vec![a],
+                })
+                .unwrap(),
+            );
+            let local = machine("local", 1);
+            cluster
+                .store()
+                .publish_ingress_routes(
+                    &local.id,
+                    &BTreeMap::from([(service(), IngressRouteChange::Upsert(ack("d2", &[b])))]),
+                )
+                .await
+                .unwrap();
+            Self {
+                owner,
+                host: MachineHost {
+                    machine: local_machine,
+                    containers,
+                    local: BTreeSet::from([a, b]),
+                    ackers: ackers(&[&local]),
+                },
+                named,
+                requests: fake.requests.clone(),
+                data_dir,
+                a,
+                b,
+            }
+        }
+
+        fn exists(&self, container: ContainerId) -> bool {
+            let id = container.to_string();
+            self.named
+                .lock()
+                .unwrap()
+                .values()
+                .any(|named| named["Id"] == id.as_str())
+        }
+
+        fn stopped(&self, container: ContainerId) -> bool {
+            let stop = format!("/containers/{container}/stop");
+            self.requests
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(_, path)| *path == stop)
+        }
+
+        fn exit(&self, container: ContainerId) {
+            let id = container.to_string();
+            let mut named = self.named.lock().unwrap();
+            let named = named
+                .values_mut()
+                .find(|named| named["Id"] == id.as_str())
+                .unwrap();
+            named["State"] = serde_json::json!({"Status": "exited", "ExitCode": 0});
+        }
+    }
+
+    impl Drop for RealMachine {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.data_dir);
+        }
+    }
+
+    async fn next_outcome(stopping: &mut JoinSet<(ContainerId, Verdict, Outcome)>) -> Outcome {
+        let (_, _, outcome) = tokio::time::timeout(Duration::from_secs(10), stopping.join_next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        outcome
+    }
+
+    #[tokio::test]
+    async fn a_repoint_while_the_stop_waits_for_admission_keeps_the_container() {
+        let cluster = FakeCluster::start();
+        let store = cluster.store();
+        let machine = RealMachine::start(&cluster).await;
+        let admission = machine.owner.admission_lock();
+        // An image transfer holds the shared admission turn, as pull_image_from_machine does.
+        let transfer = admission.clone().read_owned().await;
+        let mut stopping = JoinSet::new();
+        round(
+            &machine.host,
+            &store,
+            &mut Retirer::default(),
+            &mut stopping,
+        )
+        .await;
+        assert_eq!(stopping.len(), 1);
+        // A queued exclusive turn takes the free permits, so a shared one no longer fits.
+        while admission.try_read().is_ok() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(!machine.stopped(machine.a), "the stop waits for admission");
+
+        cluster.write_serving_pointer(
+            &ServingPointer::key(&service()),
+            &serde_json::to_string(&ServingPointer {
+                deploy: deploy("d3"),
+                containers: vec![machine.a],
+                previous: Some(deploy("d2")),
+                retiring: vec![machine.b],
+            })
+            .unwrap(),
+        );
+        drop(transfer);
+
+        assert!(matches!(next_outcome(&mut stopping).await, Outcome::Kept));
+        assert!(!machine.stopped(machine.a), "d3 serves A");
+        assert!(machine.exists(machine.a), "d3 serves A");
+        assert!(machine.host.containers.stopping_ids_for_test().is_empty());
+    }
+
+    #[tokio::test]
+    async fn retiring_an_exited_container_clears_its_stopping_mark() {
+        let cluster = FakeCluster::start();
+        let store = cluster.store();
+        let machine = RealMachine::start(&cluster).await;
+        machine.exit(machine.a);
+        let mut stopping = JoinSet::new();
+        round(
+            &machine.host,
+            &store,
+            &mut Retirer::default(),
+            &mut stopping,
+        )
+        .await;
+
+        assert!(matches!(
+            next_outcome(&mut stopping).await,
+            Outcome::Retired
+        ));
+        assert!(!machine.exists(machine.a));
+        assert!(machine.host.containers.stopping_ids_for_test().is_empty());
+    }
+
     #[tokio::test]
     async fn a_repoint_while_the_round_decides_keeps_the_container() {
         let local = machine("local", 1);
@@ -1451,6 +1752,31 @@ mod tests {
         while stopping.join_next().await.is_some() {}
 
         assert_eq!(*host.marked.lock().unwrap(), vec![id("a")]);
+        assert_eq!(*host.unmarked.lock().unwrap(), vec![id("a")]);
+        assert_eq!(*host.removals.lock().unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_repoint_naming_the_container_mid_drain_routes_it_again_before_the_drain_ends() {
+        let local = machine("local", 1);
+        let (cluster, store) = acked_cluster(&[&local]).await;
+        let host = FakeHost {
+            drain_holds: true,
+            ..FakeHost::new(&[id("a"), id("b")], ackers(&[&local]))
+        };
+        let mut stopping = JoinSet::new();
+        round(&host, &store, &mut Retirer::default(), &mut stopping).await;
+        while host.marked.lock().unwrap().is_empty() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        run_hook(&roll_back_to_a(&cluster));
+
+        let (_, _, outcome) = tokio::time::timeout(Duration::from_secs(2), stopping.join_next())
+            .await
+            .expect("the drain must end once the pointer names the Container")
+            .unwrap()
+            .unwrap();
+        assert!(matches!(outcome, Outcome::Kept));
         assert_eq!(*host.unmarked.lock().unwrap(), vec![id("a")]);
         assert_eq!(*host.removals.lock().unwrap(), 0);
     }
