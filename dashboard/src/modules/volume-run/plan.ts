@@ -57,7 +57,7 @@ export function roleOf(member: Member): Role {
   return copy.readonly ? "cutting" : "writer";
 }
 
-export const isUnadoptedSeed = (member: Member) =>
+const isUnadoptedSeed = (member: Member) =>
   member.answered && member.view.copy?.kind === "root" && member.view.copy.seed;
 
 export const epochOf = (member: AnsweredMember) => (member.view.copy?.kind === "root" ? member.view.copy.epoch : 0);
