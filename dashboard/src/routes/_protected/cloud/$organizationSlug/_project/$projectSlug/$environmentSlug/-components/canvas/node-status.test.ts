@@ -133,25 +133,33 @@ describe("nodeIssues", () => {
 describe("containerTrouble", () => {
   const web1 = { id: "m1", name: "web-1" };
   const web2 = { id: "m2", name: "web-2" };
-  const marker = (kind: "oom" | "exit" | "restart", replica: string, server = web1) => ({ kind, replica, server });
+  const now = Date.UTC(2026, 9, 12, 12);
+  const marker = (kind: "oom" | "exit" | "restart", replica: string, server = web1, at = now - 60_000) => ({ kind, replica, server, at });
 
   it("says nothing when each replica restarted once, as a requested restart or rollback does", () => {
-    expect(containerTrouble([marker("restart", "web-1"), marker("restart", "web-2"), marker("restart", "web-3")])).toBeNull();
+    expect(containerTrouble([marker("restart", "web-1"), marker("restart", "web-2"), marker("restart", "web-3")], now)).toBeNull();
   });
 
   it("says Restarting when one replica restarted twice", () => {
-    expect(containerTrouble([marker("restart", "web-1"), marker("restart", "web-2"), marker("restart", "web-1")])).toBe("Restarting");
+    expect(containerTrouble([marker("restart", "web-1"), marker("restart", "web-2"), marker("restart", "web-1")], now)).toBe("Restarting");
   });
 
   it("tells apart same-named replicas on different Servers", () => {
-    expect(containerTrouble([marker("restart", "web-1", web1), marker("restart", "web-1", web2)])).toBeNull();
+    expect(containerTrouble([marker("restart", "web-1", web1), marker("restart", "web-1", web2)], now)).toBeNull();
   });
 
   it("says OOM for one OOM kill, over any restarts, and nothing for exits alone", () => {
-    expect(containerTrouble([marker("oom", "web-1")])).toBe("OOM");
-    expect(containerTrouble([marker("restart", "web-1"), marker("restart", "web-1"), marker("oom", "web-2")])).toBe("OOM");
-    expect(containerTrouble([marker("exit", "web-1"), marker("exit", "web-1")])).toBeNull();
-    expect(containerTrouble([])).toBeNull();
+    expect(containerTrouble([marker("oom", "web-1")], now)).toBe("OOM");
+    expect(containerTrouble([marker("restart", "web-1"), marker("restart", "web-1"), marker("oom", "web-2")], now)).toBe("OOM");
+    expect(containerTrouble([marker("exit", "web-1"), marker("exit", "web-1")], now)).toBeNull();
+    expect(containerTrouble([], now)).toBeNull();
+  });
+
+  it("counts only markers from the hour before now", () => {
+    const hour = 60 * 60_000;
+    expect(containerTrouble([marker("oom", "web-1", web1, now - hour + 1)], now)).toBe("OOM");
+    expect(containerTrouble([marker("oom", "web-1", web1, now - hour)], now)).toBeNull();
+    expect(containerTrouble([marker("restart", "web-1", web1, now - 2 * hour), marker("restart", "web-1")], now)).toBeNull();
   });
 });
 

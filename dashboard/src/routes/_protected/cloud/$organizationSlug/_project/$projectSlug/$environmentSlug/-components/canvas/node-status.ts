@@ -79,10 +79,15 @@ export function runtimeLine(
 /** What a Service's containers went through in the last hour, as its ⚠ says it. An OOM kill outranks a restart. */
 export type ContainerTrouble = "OOM" | "Restarting";
 
-export function containerTrouble(markers: readonly Pick<Marker, "kind" | "server" | "replica">[]): ContainerTrouble | null {
-  if (markers.some((marker) => marker.kind === "oom")) return "OOM";
+/** How long a marker counts toward the ⚠ after it happened. */
+export const TROUBLE_WINDOW_MS = 60 * 60_000;
+
+/** What `markers` say at `now` (Unix milliseconds): only those in the hour before it count, however old the read is. */
+export function containerTrouble(markers: readonly Pick<Marker, "kind" | "at" | "server" | "replica">[], now: number): ContainerTrouble | null {
+  const recent = markers.filter((marker) => marker.at > now - TROUBLE_WINDOW_MS);
+  if (recent.some((marker) => marker.kind === "oom")) return "OOM";
   const restarted = new Set<string>();
-  for (const marker of markers.filter((marker) => marker.kind === "restart")) {
+  for (const marker of recent.filter((marker) => marker.kind === "restart")) {
     const replica = `${marker.server.id}/${marker.replica}`;
     if (restarted.has(replica)) return "Restarting";
     restarted.add(replica);
