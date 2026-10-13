@@ -26,11 +26,13 @@ sdk=$wt/core/crates/ployz-sdk/ployz-sdk.node
 if [ ! -f "$sdk" ] || [ -n "$(find "$wt/core/crates" -newer "$sdk" -type f \( -name '*.rs' -o -name Cargo.toml \) -print -quit)" ]; then build_sdk=1; fi
 
 # vite reads the env file once and loads the SDK once, and the worker runs a bundle of the code it started with, so
-# only an instance without real Servers, started in this mode on this port, with unchanged dependencies, is reused.
-mode="billing=${BILLING:-0} fake-servers=${FAKE_SERVERS:-0}"
+# only an instance without real Servers, started by this up.sh in this mode on this port, with unchanged dependencies,
+# is reused.
+mode="billing=${BILLING:-0} fake-servers=${FAKE_SERVERS:-0} up=$(sha1sum < "$dash/scripts/verify/up.sh" | cut -c1-12)"
 reseed=0
 if [ "$fresh" = 0 ] && [ "${VERIFY_REAL_SERVERS:-0}" != 1 ] && [ "$install$build_sdk" = 00 ] \
   && [ "$(cat "$run/mode" 2>/dev/null)" = "$mode" ] && kill -0 "$(cat "$run/vite.pid" 2>/dev/null)" 2>/dev/null \
+  && kill -0 "$(cat "$run/hosted-dns.pid" 2>/dev/null)" 2>/dev/null \
   && [ "$(docker inspect -f '{{.State.Running}}' "$name" 2>/dev/null)" = true ] \
   && { [ -z "${1:-}" ] || [ "$1" = "$(sed -n 's/^PORT=//p' "$run/env")" ]; }; then
   reseed=1
