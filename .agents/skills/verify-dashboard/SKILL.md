@@ -12,7 +12,7 @@ One command gives this checkout its own Postgres, seed and `vite dev`, signed in
 ```bash
 scripts/verify/up.sh          # free port; BILLING=1 scripts/verify/up.sh turns billing on
 SERVERS=2 scripts/verify/up.sh   # also real Servers paired through Cloud; DAEMON=stable (default), beta, checkout or a version
-FAKE_SERVERS=1 scripts/verify/up.sh   # no real Servers; the Servers list shows fra-1, fra-2 and syd-1 from a fixture
+FAKE_SERVERS=1 scripts/verify/up.sh   # no real Servers; the Servers list shows fra-1, fra-2, syd-1 and ams-1 from a fixture
 ```
 
 With `SERVERS`, `up.sh` also starts an Inngest dev server and the worker for this checkout, then runs `../core/scripts/verify-cluster` (see [verify-server](../verify-server/SKILL.md)). That command enrolls the Machines through this dashboard with an Organization Token. Deploys and enrollment follow-ups then really run. `.verify/run/info` adds the Inngest UI URL for function runs and the `verify-cluster cli` line for the cluster. Enrolling through Cloud needs the daemon version to equal this checkout's CLI version, so use `stable` on a release commit and `checkout` otherwise. The first run builds the shared VM image, which takes a few minutes.
@@ -77,7 +77,7 @@ The instance runs `down.sh` by itself after 15 minutes with nothing connected to
 
 - Without `SERVERS`, no Server answers. Service nodes read **Queued · Can't reach servers**, Logs and runtime status stay empty, and Inngest points at a dead port, so anything that sends an Inngest event fails at that call.
 - Without `SERVERS`, metrics are fixture replies (`PLOYZ_VERIFY_METRICS=1`), not readings; they prove the charts and states render, not that a daemon samples.
-- `FAKE_SERVERS=1` (`PLOYZ_VERIFY_RUNTIME=1`) fakes the Runtime Watch with three Servers: fra-1 (`0123…`) answers metrics, fra-2 (`1111…`) is offline and doesn't answer, syd-1 (`2222…`) runs 0.2.4 and needs an upgrade. Only the Servers list and what reads the watch see them; deploys still go nowhere.
+- `FAKE_SERVERS=1` (`PLOYZ_VERIFY_RUNTIME=1`) fakes the Runtime Watch with four Servers: fra-1 (`0123…`) answers metrics, fra-2 (`1111…`) is offline and doesn't answer, syd-1 (`2222…`) runs 0.2.4 and needs an upgrade, ams-1 (`4444…`) answers with no readings yet. Only the Servers list and what reads the watch see them; deploys still go nowhere.
 - Hosted DNS is fake (`scripts/verify/hosted-dns.ts`, requests in `.verify/run/hosted-dns.log`). It grants `<org slug>.ployz.test` and signs certificates with a throwaway CA, so generated addresses deploy but resolve nowhere and fail TLS verification.
 - GitHub and Polar are fake. Connecting a repository or completing checkout cannot be verified here; `BILLING=1` only renders the billing UI.
 

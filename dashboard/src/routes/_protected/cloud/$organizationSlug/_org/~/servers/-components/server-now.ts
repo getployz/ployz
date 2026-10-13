@@ -19,11 +19,23 @@ export type ServerNow =
 
 export const usageFraction = (usage: Usage) => usage.used / usage.total;
 
-// The daemon samples CPU and memory every 10 seconds and disk every 60. A reading counts as now while it is within three
-// of its own samples (or three buckets, on a broader read) of the read's end, the freshness `ployz metrics` uses.
+// The daemon samples CPU and memory every 10 seconds and disk every 60; `ployz metrics` calls three samples fresh.
 const FRESH_SAMPLES = 3;
 const HOST_SAMPLE_MS = 10_000;
-const DISK_SAMPLE_MS = 60_000;
+export const DISK_SAMPLE_MS = 60_000;
+
+/**
+ * The last of `samples` while it still counts as now: within three of its own samples, or three buckets on a broader
+ * read, of the read's end.
+ */
+export function freshLast<S extends { readonly at: number }>(
+  samples: readonly S[],
+  read: { readonly window: { readonly to: number }; readonly stepMs: number | null },
+  sampleMs = HOST_SAMPLE_MS,
+): S | undefined {
+  const last = samples.at(-1);
+  return last !== undefined && last.at >= read.window.to - FRESH_SAMPLES * Math.max(read.stepMs ?? 0, sampleMs) ? last : undefined;
+}
 
 const usage = (used: number, total: number): Usage | null => total > 0 ? { used, total } : null;
 
@@ -39,15 +51,10 @@ export function serverNow(metrics: ServerMetrics): ServerNow {
       return { type: "no_readings" };
     case "normal":
     case "mixed": {
-      const step = metrics.stepMs ?? 0;
-      const fresh = <S extends { readonly at: number }>(samples: readonly S[], sampleMs: number) => {
-        const last = samples.at(-1);
-        return last !== undefined && last.at >= metrics.window.to - FRESH_SAMPLES * Math.max(step, sampleMs) ? last : undefined;
-      };
-      const cpu = fresh(metrics.cpu, HOST_SAMPLE_MS);
-      const used = fresh(metrics.memoryUsed, HOST_SAMPLE_MS);
-      const total = fresh(metrics.memoryTotal, HOST_SAMPLE_MS);
-      const disk = fresh(metrics.disk, DISK_SAMPLE_MS);
+      const cpu = freshLast(metrics.cpu, metrics);
+      const used = freshLast(metrics.memoryUsed, metrics);
+      const total = freshLast(metrics.memoryTotal, metrics);
+      const disk = freshLast(metrics.disk, metrics, DISK_SAMPLE_MS);
       const now = {
         type: "meters",
         cpu: cpu?.value ?? null,

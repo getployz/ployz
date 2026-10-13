@@ -39,12 +39,14 @@ export function serviceMarkersQueryOptions(scope: { organizationSlug: string; en
   });
 }
 
-/** A runtime Service's metrics over `from`..`to`, by the namespace and name it runs under. */
+/**
+ * A runtime Service's metrics over `from`..`to`, by the namespace and name it runs under. Each read asks every Server,
+ * so it refreshes when the page mounts or regains focus, never on a timer.
+ */
 export function runtimeServiceMetricsQueryOptions(input: ReadRuntimeServiceMetricsInput) {
   return queryOptions({
     queryKey: ["metrics", "runtime-service", input.organizationSlug, input.namespace, input.name, input.from, input.to] as const,
     queryFn: () => readRuntimeServiceMetricsServerFn({ data: input }),
     staleTime: 30_000,
-    refetchInterval: 60_000,
   });
 }

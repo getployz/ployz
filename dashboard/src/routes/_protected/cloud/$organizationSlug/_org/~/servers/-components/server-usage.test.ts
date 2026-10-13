@@ -1,33 +1,12 @@
 import { describe, expect, it } from "vitest";
-import type { ServerMetrics, ServiceMetrics, ServiceSeries } from "#/modules/metrics/metrics-model";
-import { diskSegments, serverUsage, serviceUsageOn } from "./server-usage";
+import type { ServiceMetrics, ServiceSeries } from "#/modules/metrics/metrics-model";
+import { diskSegments, serviceUsageOn } from "./server-usage";
 
 const window = { from: 0, to: 120_000 };
 const at = (...values: number[]) => values.map((value, index) => ({ at: index * 60_000, value }));
 
-const server = (extra: Partial<ServerMetrics>): ServerMetrics => ({
-  availability: { type: "normal" }, window, stepMs: 60_000,
-  cpu: [], memoryUsed: [], memoryTotal: [], interfaces: [], disk: [], gaps: [],
-  ...extra,
-});
-
 const series = (extra: Partial<ServiceSeries>): ServiceSeries => ({
   cpu: [], memory: [], memoryLimit: [], netIn: [], netOut: [], diskRead: [], diskWrite: [], ...extra,
-});
-
-describe("serverUsage", () => {
-  it("reads the latest CPU, memory and disk", () => {
-    expect(serverUsage(server({
-      cpu: at(0.2, 0.37),
-      memoryUsed: at(10, 11),
-      memoryTotal: at(32, 32),
-      disk: [{ at: 0, total: 1800, free: 1500 }, { at: 60_000, total: 1800, free: 1390 }],
-    }))).toEqual({ cpu: 0.37, memory: { used: 11, total: 32 }, disk: { used: 410, total: 1800 } });
-  });
-
-  it("has nothing where the Server sent nothing, never a zero", () => {
-    expect(serverUsage(server({}))).toEqual({ cpu: null, memory: null, disk: null });
-  });
 });
 
 describe("diskSegments", () => {
@@ -41,14 +20,14 @@ describe("diskSegments", () => {
       .toEqual([["Used", 410], ["Free", 1390]]);
   });
 
-  it("covers every used byte when the pool went unmeasured", () => {
+  it("never calls the bytes an unmeasured pool may hold Other", () => {
     expect(diskSegments({ at: 0, total: 1800, free: 1390, logsAndMetrics: 38 }).map((segment) => [segment.label, segment.bytes]))
-      .toEqual([["Logs and metrics", 38], ["Other", 372], ["Free", 1390]]);
+      .toEqual([["Logs and metrics", 38], ["Used", 372], ["Free", 1390]]);
   });
 
-  it("covers every used byte when logs and metrics went unmeasured", () => {
+  it("leaves the rest Used when logs and metrics went unmeasured", () => {
     expect(diskSegments({ at: 0, total: 1800, free: 1390, volumes: 214, mirrors: 96 }).map((segment) => [segment.label, segment.bytes]))
-      .toEqual([["Volumes", 214], ["Mirrors", 96], ["Other", 100], ["Free", 1390]]);
+      .toEqual([["Volumes", 214], ["Mirrors", 96], ["Used", 100], ["Free", 1390]]);
   });
 });
 
@@ -65,6 +44,11 @@ describe("serviceUsageOn", () => {
       { server: fra2, series: series({ cpu: at(2), memory: at(900) }), gaps: [] },
     ]), fra1.id);
     expect(usage).toEqual({ cpu: 0.24, memory: 318 });
+  });
+
+  it("is null when this Server's readings stopped before the read's end", () => {
+    const stale = { ...metrics([{ server: fra1, series: series({ cpu: at(0.1, 0.24), memory: at(300, 318) }), gaps: [] }]), window: { from: 0, to: 600_000 } };
+    expect(serviceUsageOn(stale, fra1.id)).toBeNull();
   });
 
   it("is null when this Server sent no readings", () => {
