@@ -1,5 +1,6 @@
 import { testConfigEnvironment } from "#/test/config-environment";
 import { assert, it } from "@effect/vitest";
+import { vi } from "vitest";
 import { sql } from "drizzle-orm";
 import {
   ConfigProvider,
@@ -16,6 +17,7 @@ import {
   DatabasePostCommitFailure,
   afterDatabaseCommit,
 } from "#/server/database.server";
+import { Pool } from "pg";
 import { postgresTestDatabase } from "#/test/postgres";
 
 class Rollback extends Data.TaggedError("Rollback") {}
@@ -96,3 +98,25 @@ it.live(
   60_000,
 );
 
+it.live("keeps the pool's error listener until every client is closed", () =>
+  Effect.gen(function* () {
+    const testDatabase = yield* postgresTestDatabase;
+    const configLayer = AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({
+      env: { ...testConfigEnvironment(), DATABASE_URL: testDatabase.url.href },
+    }))));
+    const listenersAtRemove: number[] = [];
+    const end: (this: Pool) => Promise<void> = Pool.prototype.end;
+    const spy = vi.spyOn(Pool.prototype, "end").mockImplementation(function (this: Pool) {
+      this.on("remove", () => listenersAtRemove.push(this.listenerCount("error")));
+      return end.call(this);
+    });
+    yield* Effect.gen(function* () {
+      const { drizzle } = yield* BetterAuthDatabase;
+      yield* Effect.promise(() => Promise.all(Array.from({ length: 4 }, () => drizzle.execute(sql`select pg_sleep(0.05)`))));
+    }).pipe(
+      Effect.provide(DatabaseLive.pipe(Layer.provide(configLayer))),
+      Effect.ensuring(Effect.sync(() => spy.mockRestore())),
+    );
+    assert.deepStrictEqual(listenersAtRemove, [1, 1, 1, 1]);
+  }),
+);
