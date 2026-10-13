@@ -85,6 +85,10 @@ deployment ships what that deployment froze, so it leaves them staged and says *
 Deploy**. A restore that failed is taken back, and that deployment can't be redeployed. Restore
 again instead.
 
+A restore, or discarding one, is refused with "A Deploy or restore is starting. Try again." while
+a deploy in the same environment is starting. Once a deploy has taken a restore, you can't discard
+the restore until that deploy ends.
+
 ## Move a volume
 
 With Ployz Cloud, **Make primary** on a mirror or `ployz volume move data --to web-2` moves a

@@ -63,7 +63,7 @@ describe("volume placement", () => {
           if (query.query === "namespaces") {
             return { namespaces: ["production", "staging"].map((name) => ({ namespace: `shop-${name}`, project: "shop", environment: name })) };
           }
-          if (query.query === "deployment") return { in_flight: inFlight };
+          if (query.query === "deployment") return { in_flight: inFlight, nodes: [] };
           if (query.query === "diff") return { version: "diff-7" };
           if (query.environment?.environment === "staging") {
             return {
