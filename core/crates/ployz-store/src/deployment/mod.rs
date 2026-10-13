@@ -773,6 +773,9 @@ fn save(tx: &mut dyn Tx, stored: &mut Stored) -> Result<(), RpcError> {
             stored.summary.ended_at.into(),
         ],
     )?;
+    if !stored.summary.in_flight {
+        crate::review::scrub_sealed(tx, &stored.summary.environment_id)?;
+    }
     Ok(())
 }
 

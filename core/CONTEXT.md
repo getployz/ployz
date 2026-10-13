@@ -322,7 +322,7 @@ One command restoring a field, node, or the whole Environment into Working State
 _Avoid_: Layered reset plans, loop of Saved writes, implicit deployment cancellation
 
 **History**:
-The selected Environment's immutable Saved revisions, newest first. Restore stages a complete saved snapshot. Undo reverses only that revision's change relative to its recorded predecessor and preserves unrelated later edits. The first recorded revision has no Undo. A preview names the exact draft fields the final candidate overwrites; staging requires the exact current review version and explicit consent for those fields. Neither action saves or deploys. Variable secrets restore their sealed versioned values within the same Environment; preview values remain redacted. Registry credential material stays current outside snapshots.
+The selected Environment's immutable Saved revisions, newest first. Restore stages a complete saved snapshot. Undo reverses only that revision's change relative to its recorded predecessor and preserves unrelated later edits. The first recorded revision has no Undo. A preview names the exact draft fields the final candidate overwrites; staging requires the exact current review version and explicit consent for those fields. Neither action saves or deploys. History never changes a sealed variable: one sealed now keeps its current value, one deleted since stays deleted, one added since stays, and History refuses to bring back plain text for a key that was ever sealed. Preview values remain redacted. Registry credential material stays current outside snapshots.
 _Avoid_: deployment history, commit graph, second draft
 
 **Node Introduction**:

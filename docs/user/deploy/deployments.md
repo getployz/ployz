@@ -56,19 +56,32 @@ ployz deploy
 
 ## Saved history
 
-Open **History** at the top of the canvas to see this environment's saved versions. Expand a
-version to review its changes, then use its **⋮** menu:
+Open **History** at the top of the canvas to see this environment's saved versions. Each version
+is titled from what it changed unless it was saved with a message, and lists its changes one per
+row, folding past three. The version's **⋮** menu:
 
-- **Undo this change** reverses that version's changed fields and preserves unrelated later edits.
-  The first recorded version has no earlier version to undo.
-- **Restore this version** stages its complete configuration in the current draft.
+- **Undo these N changes** reverses that version's changed fields and keeps the versions saved
+  after it. The first recorded version has no earlier version to undo.
+- **Roll back to #N** stages that version's complete configuration, undoing every later version.
+  The current version has nothing to roll back to.
+
+Each row's **⋮** undoes that one change. A change the same save tied to others undoes with them,
+and the menu says how many: adding a Service together with another Service's reference to it,
+a Volume together with its mounts, or a Source with its repository and branch. Every action stages
+on the canvas; nothing is saved or deployed until you do.
 
 If an action would overwrite draft changes, the confirmation lists exactly which fields.
 Cancel changes nothing. If someone edits the environment after your review, reopen the action
 to review the new draft. Save or Deploy makes the staged result a saved version.
 
-History restores configuration references and sealed variable values, with secrets masked in
-review. It does not recover deleted Volume data or undo private-image credential rotations.
+Undo and Roll back pass the same checks as an edit made by hand. One that would leave a
+reference to a deleted Service, reuse a name or hostname another Service took since, or break a
+rule is refused with the reason, and nothing is staged.
+
+History restores configuration references. It never changes a sealed variable: a sealed value
+keeps its current value, a sealed variable you deleted stays deleted, one added since stays, and a
+variable that was ever sealed can't come back as plain text. It does not recover deleted Volume data or undo
+private-image credential rotations.
 An accepted deployment and its retries keep their original snapshot while you edit the draft.
 
 From the CLI, `ployz history` lists versions. `ployz history restore 2 --preview` reviews a

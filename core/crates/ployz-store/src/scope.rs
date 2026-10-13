@@ -544,6 +544,7 @@ pub(crate) fn persist_working(
             environment.summary.id.as_str().into(),
         ],
     )?;
+    crate::review::sealed::record(tx, environment.summary.id.as_str(), &environment.working)?;
     // A row the draft changed is its own now, whatever proposal brought it.
     crate::branch::release_changed(tx, environment)
 }

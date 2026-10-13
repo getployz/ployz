@@ -27,6 +27,9 @@ import { AddServerDialog } from "#/routes/_protected/cloud/$organizationSlug/_or
  */
 export const BottomBarSlot = createContext<HTMLElement | null>(null);
 
+/** History stages counted by the scene: a stage replaces the changes, so the Change message typed for them goes. */
+export const HistoryStages = createContext<{ count: number; staged: () => void }>({ count: 0, staged: () => {} });
+
 const DEPLOYED_SHOWS_MS = 6_000;
 /** Far more Deployments than one bar shows, so the oldest ids it forgets are long ended. */
 const WATCHED_LIMIT = 100;
@@ -98,7 +101,10 @@ export function BottomBar({
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const viewedId = useCanvasInspectorSelection().deploymentId;
   const [open, setOpen] = useState(false);
-  const [message, setMessage] = useState("");
+  const stages = useContext(HistoryStages).count;
+  const [typed, setTyped] = useState({ message: "", stages });
+  const message = typed.stages === stages ? typed.message : "";
+  const setMessage = (message: string) => setTyped({ message, stages });
   const [confirmingDiscard, setConfirmingDiscard] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const workspaceRef = useRef<HTMLElement | null>(null);

@@ -19,7 +19,7 @@ import { canvasPositionSchema } from "#/modules/canvas/canvas-positions";
 import { CanvasInspectorOverlay } from "./CanvasInspectorOverlay";
 import { useCanvasInspectorSelection } from "./useCanvasInspectorSelection";
 import { LOADING_NODE, canvasNodeTypes } from "./canvas/canvas-node-types";
-import { BottomBarSlot } from "./canvas/BottomBar";
+import { BottomBarSlot, HistoryStages } from "./canvas/BottomBar";
 import { CanvasFlow } from "./canvas/CanvasFlow";
 import { DeploymentLightingProvider, useOpenDeployment } from "./deployment-page";
 import { useCanvasCopies } from "./canvas/useCanvasCopies";
@@ -160,9 +160,12 @@ export function EnvironmentCanvasScene() {
   const { selectedNodeId, selectedServiceId, deploymentId, deploymentReturnTo, deploymentList, history, newBranch, prPlan } = useCanvasInspectorSelection();
   const lighting = useOpenDeployment();
   const [bottomBarSlot, setBottomBarSlot] = useState<HTMLElement | null>(null);
+  const [historyStages, setHistoryStages] = useState(0);
+  const stages = { count: historyStages, staged: () => setHistoryStages((count) => count + 1) };
 
   return (
     <BottomBarSlot.Provider value={bottomBarSlot}>
+    <HistoryStages.Provider value={stages}>
     <StorePickingProvider newBranch={newBranch}>
     <StorePrPickingProvider prPlan={prPlan}>
     <CanvasInspectorOverlay
@@ -190,6 +193,7 @@ export function EnvironmentCanvasScene() {
     </CanvasInspectorOverlay>
     </StorePrPickingProvider>
     </StorePickingProvider>
+    </HistoryStages.Provider>
     </BottomBarSlot.Provider>
   );
 }

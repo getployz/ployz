@@ -74,7 +74,9 @@ A sealed variable is encrypted when you save it, and the dashboard never shows i
 Your service still gets the real value when it deploys.
 
 - New variables are plain unless you tick **Sealed**.
-- To seal a plain variable, choose **Seal** from its menu. You can't unseal it.
+- To seal a plain variable, choose **Seal** from its menu. You can't unseal it. Saving the
+  sealed value removes its earlier values from History too, so older versions show **Sealed**.
+  A retried deployment of an older version gets the sealed value, not the one it had.
 - To change a sealed value, delete the variable and add it again. Setting a sealed variable to
   a plain value is refused, so a secret never turns into plain text by mistake.
 - A sealed value is stored exactly as typed, so it can't hold a

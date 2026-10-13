@@ -1966,13 +1966,17 @@ export type HistoryContainerKind = "service" | "pre_deploy_hook" | "system";
 
 export type HistoryGapReason = "not_captured" | "corrupt";
 
-export type HistoryPreview = { environment: EnvironmentSummary, revision: Revision, action: HistoryAction,
+export type HistoryPreview = { environment: EnvironmentSummary, revision: Revision, action: HistoryAction, change?: string,
 /**
  * The exact current Diff version, required when staging this preview.
  */
 version: string, changes: Array<NodeChange>, total_count: number, overwritten: Array<string>, };
 
-export type HistoryPreviewQuery = { environment: EnvironmentRef, revision: Revision, action: HistoryAction, };
+export type HistoryPreviewQuery = { environment: EnvironmentRef, revision: Revision, action: HistoryAction,
+/**
+ * Undo only this change of the revision, by its path, and what it links.
+ */
+change?: string, };
 
 export type HistoryQuery = { environment: EnvironmentRef,
 /**
@@ -3603,7 +3607,12 @@ export type SavedRevision = { revision: Revision, message: string | null, saved_
 /**
  * Seconds since the Unix epoch; absent on legacy snapshots.
  */
-saved_at: number | null, predecessor: Revision | null, changes: Array<NodeChange>, total_count: number, };
+saved_at: number | null, predecessor: Revision | null, changes: Array<NodeChange>, total_count: number,
+/**
+ * Change path to how many changes undoing that one change reverses, for
+ * changes the same save linked together. Absent means one.
+ */
+linked: { [key in string]: number }, };
 
 export type SavedServiceIntent = { id: string, lineageId: string, slug: string, config: AuthoredServiceConfig, variables: Array<SavedVariableIntent>, volumeAttachments: Array<VolumeAttachment>,
 /**
@@ -4141,7 +4150,7 @@ export type Source = "server" | "cloud_cache";
 
 export type SourceKind = "empty" | "uploaded" | "git" | "image";
 
-export type StageHistory = { environment: EnvironmentRef, revision: Revision, action: HistoryAction, version: string, accept_overwrite?: boolean, };
+export type StageHistory = { environment: EnvironmentRef, revision: Revision, action: HistoryAction, change?: string, version: string, accept_overwrite?: boolean, };
 
 export type Start = { deployment: DeploymentId, };
 
