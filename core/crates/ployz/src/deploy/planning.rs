@@ -1,10 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
-    ContainerAction, DataLoss, DependencyCondition, HookContainer, IngressHost, MachineId,
-    MachineObservation, MembershipObservation, Namespace, ObservedDataLoss, PreservedVolume,
-    PruneRefusal, QualifiedService, RequestedServiceSpec, ServiceId, ServiceMode, ServiceName,
-    ServiceObservation, ServicePlacementEligibility, ServicePlacementIneligibleReason,
+    ContainerAction, ContainerId, DataLoss, DependencyCondition, HookContainer, IngressHost,
+    MachineId, MachineObservation, MembershipObservation, Namespace, ObservedDataLoss,
+    PreservedVolume, PruneRefusal, QualifiedService, RequestedServiceSpec, ServiceId, ServiceMode,
+    ServiceName, ServiceObservation, ServicePlacementEligibility, ServicePlacementIneligibleReason,
     VolumeToCreate, explicit_ingress_hosts, hostname_owners, machine_matches_placement,
     same_service_mode_kind,
 };
@@ -226,7 +226,10 @@ pub fn plan_deploy(
     intent: &DeployIntent,
     snapshot: &DeploySnapshot,
 ) -> Result<DeployPlan, PlanError> {
-    let mut planned = plan_operations(intent, snapshot)?;
+    Ok(admit(intent, snapshot, plan_operations(intent, snapshot)?))
+}
+
+fn admit(intent: &DeployIntent, snapshot: &DeploySnapshot, mut planned: Planned) -> DeployPlan {
     let budgets = std::mem::take(&mut planned.volumes.budgets);
     let mut plan = seal_plan(planned, snapshot, &intent.namespace);
     plan.registry_auth.clone_from(&intent.registry_auth);
@@ -249,65 +252,76 @@ pub fn plan_deploy(
         }
     }
     plan.preview.storage = budgets;
-    Ok(plan)
+    plan
 }
 
-/// How a slot repair brings back one Machine's missing Global container.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// What brings back one ingress Server's Ingress Proxy.
+#[derive(Clone, Debug)]
 pub enum SlotAction {
-    /// No container is observed there, so one is created.
-    Create,
-    /// A stopped container with the same spec is started again.
-    Start,
+    /// No Ingress Proxy is observed there, so one is created. Admission trouble here
+    /// fails only this Server's repair.
+    Create(Result<DeployPlan, PlanError>),
+    /// The newest Ingress Proxy at rest there starts again as it is.
+    Start(ContainerId),
+    /// The Server's containers went unobserved, so it was not checked.
+    Unchecked(String),
 }
 
-/// One ingress Server's plan to bring back its Ingress Proxy.
+/// One ingress Server's repair.
 #[derive(Clone, Debug)]
 pub struct SlotRepair {
     pub machine_id: MachineId,
     pub action: SlotAction,
-    /// Admission trouble here fails only this Server's repair.
-    pub plan: Result<DeployPlan, PlanError>,
 }
 
-/// Plan each Server of [`DeploySnapshot::empty_ingress`] on its own: start the newest
-/// Ingress Proxy at rest there with its own spec, or create one from `intent`.
+/// Plan each ingress Server of `snapshot` on its own: start the newest Ingress Proxy at
+/// rest there, create one from `intent` where none is observed, and list the Servers
+/// that went unobserved.
 #[must_use]
 pub fn plan_ingress_repairs(intent: &DeployIntent, snapshot: &DeploySnapshot) -> Vec<SlotRepair> {
-    snapshot
+    let service_id = snapshot.system_ingress().map(|service| service.service_id);
+    let unchecked = snapshot
+        .unobserved_ingress()
+        .into_iter()
+        .map(|(machine, cause)| SlotRepair {
+            machine_id: machine.machine.id,
+            action: SlotAction::Unchecked(cause),
+        });
+    let repairs = snapshot
         .empty_ingress()
         .into_iter()
-        .map(|empty| {
-            let machine_id = empty.machine.machine.id;
-            let Some(stopped) = empty.stopped else {
-                return SlotRepair {
-                    machine_id,
-                    action: SlotAction::Create,
-                    plan: plan_deploy(intent, &snapshot.only(empty.machine)),
-                };
-            };
-            let start = Planned {
-                operations: vec![DeployOperation::RunContainer {
-                    machine_id,
-                    spec: stopped.resolved_spec.clone(),
-                    skip_health_monitor: intent.options.skip_health_monitor,
-                }],
-                volumes: PlannedVolumes {
-                    creates: Vec::new(),
-                    budgets: Vec::new(),
-                },
-                would_remove: Vec::new(),
-                preserved_volumes: Vec::new(),
-                prune_refusal: None,
-                warnings: Vec::new(),
-            };
-            SlotRepair {
-                machine_id,
-                action: SlotAction::Start,
-                plan: Ok(seal_plan(start, snapshot, &intent.namespace)),
+        .map(|empty| SlotRepair {
+            machine_id: empty.machine.machine.id,
+            action: match empty.stopped {
+                Some(stopped) => SlotAction::Start(stopped.container_id),
+                None => SlotAction::Create(plan_create(
+                    intent,
+                    &snapshot.only(empty.machine),
+                    service_id,
+                )),
+            },
+        });
+    let mut all: Vec<_> = repairs.chain(unchecked).collect();
+    all.sort_by_key(|repair| repair.machine_id);
+    all
+}
+
+/// Plan the Ingress Proxy on the one Machine of `only` as the same Service its siblings
+/// run, which `only` cannot see: they share its creation key.
+fn plan_create(
+    intent: &DeployIntent,
+    only: &DeploySnapshot,
+    service_id: Option<ServiceId>,
+) -> Result<DeployPlan, PlanError> {
+    let mut planned = plan_operations(intent, only)?;
+    if let Some(service_id) = service_id {
+        for operation in &mut planned.operations {
+            if let DeployOperation::RunContainer { spec, .. } = operation {
+                spec.service_id = service_id;
             }
-        })
-        .collect()
+        }
+    }
+    Ok(admit(intent, only, planned))
 }
 
 fn seal_plan(planned: Planned, snapshot: &DeploySnapshot, namespace: &Namespace) -> DeployPlan {

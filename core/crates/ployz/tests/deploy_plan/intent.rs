@@ -397,16 +397,29 @@ fn planned_ingress(snapshot: &DeploySnapshot) -> Vec<SlotRepair> {
     plan_ingress_repairs(&intent, snapshot)
 }
 
-fn ingress_repairs(snapshot: &DeploySnapshot) -> Vec<(MachineId, SlotAction)> {
+#[derive(Debug, PartialEq)]
+enum Repair {
+    Create,
+    Start(ContainerId),
+    Unchecked,
+}
+
+fn ingress_repairs(snapshot: &DeploySnapshot) -> Vec<(MachineId, Repair)> {
     planned_ingress(snapshot)
         .into_iter()
         .map(|repair| {
-            let plan = repair.plan.unwrap();
-            assert!(operations(plan.preview()).iter().all(|operation| {
-                operation.machine_id() == repair.machine_id
-                    && matches!(operation, DeployOperation::RunContainer { .. })
-            }));
-            (repair.machine_id, repair.action)
+            let shown = match repair.action {
+                SlotAction::Create(plan) => {
+                    assert!(operations(plan.unwrap().preview()).iter().all(|operation| {
+                        operation.machine_id() == repair.machine_id
+                            && matches!(operation, DeployOperation::RunContainer { .. })
+                    }));
+                    Repair::Create
+                }
+                SlotAction::Start(container_id) => Repair::Start(container_id),
+                SlotAction::Unchecked(_) => Repair::Unchecked,
+            };
+            (repair.machine_id, shown)
         })
         .collect()
 }
@@ -419,10 +432,7 @@ fn running() -> ContainerRuntimeObservation {
 
 #[test]
 fn ingress_repair_creates_a_missing_slot_and_starts_a_stopped_one() {
-    let running = ployz_core::ContainerRuntimeObservation::Running {
-        health: ployz_core::HealthObservation::Healthy,
-    };
-    let exited = ployz_core::ContainerRuntimeObservation::Exited { code: 0 };
+    let exited = ContainerRuntimeObservation::Exited { code: 0 };
     let snapshot = DeploySnapshot {
         machines: vec![
             machine('1', "serving"),
@@ -430,7 +440,7 @@ fn ingress_repair_creates_a_missing_slot_and_starts_a_stopped_one() {
             machine('3', "stopped"),
         ],
         containers: vec![
-            ingress_container('a', '1', "caddy:test", running),
+            ingress_container('a', '1', "caddy:test", running()),
             ingress_container('c', '3', "caddy:test", exited),
         ],
         ..Default::default()
@@ -438,9 +448,63 @@ fn ingress_repair_creates_a_missing_slot_and_starts_a_stopped_one() {
     assert_eq!(
         ingress_repairs(&snapshot),
         [
-            (machine_id('2'), SlotAction::Create),
-            (machine_id('3'), SlotAction::Start)
+            (machine_id('2'), Repair::Create),
+            (machine_id('3'), Repair::Start(container_id('c')))
         ]
+    );
+}
+
+#[test]
+fn a_created_ingress_proxy_joins_the_service_its_siblings_run() {
+    let snapshot = DeploySnapshot {
+        machines: vec![machine('1', "serving"), machine('2', "missing")],
+        containers: vec![ingress_container('a', '1', "caddy:test", running())],
+        ..Default::default()
+    };
+    let repairs = planned_ingress(&snapshot);
+    let [
+        SlotRepair {
+            action: SlotAction::Create(Ok(plan)),
+            ..
+        },
+    ] = repairs.as_slice()
+    else {
+        panic!("expected one create, got {repairs:?}");
+    };
+    assert!(matches!(
+        operations(plan.preview()).as_slice(),
+        [DeployOperation::RunContainer { spec, .. }] if spec.service_id == service_id('a')
+    ));
+}
+
+#[test]
+fn a_stopped_replacement_starts_as_it_is_whatever_its_creation_key() {
+    let mut replacement = ingress_container(
+        'b',
+        '1',
+        "caddy:test",
+        ContainerRuntimeObservation::Exited { code: 0 },
+    );
+    replacement
+        .try_update(|parts| {
+            parts.labels.insert(
+                "ployz.creation.key".into(),
+                format!(
+                    "global:{}:shape:replace:{}",
+                    service_id('a'),
+                    container_id('a')
+                ),
+            );
+        })
+        .unwrap();
+    let snapshot = DeploySnapshot {
+        machines: vec![machine('1', "stopped")],
+        containers: vec![replacement],
+        ..Default::default()
+    };
+    assert_eq!(
+        ingress_repairs(&snapshot),
+        [(machine_id('1'), Repair::Start(container_id('b')))]
     );
 }
 
@@ -472,15 +536,10 @@ fn ingress_repair_starts_a_stopped_older_proxy_and_leaves_active_or_unwanted_one
         ],
         ..Default::default()
     };
-    let repairs = planned_ingress(&snapshot);
     assert_eq!(
         ingress_repairs(&snapshot),
-        [(machine_id('2'), SlotAction::Start)]
+        [(machine_id('2'), Repair::Start(container_id('b')))]
     );
-    assert!(matches!(
-        operations(repairs.first().unwrap().plan.as_ref().unwrap().preview()).as_slice(),
-        [DeployOperation::RunContainer { spec, .. }] if spec.container.image == "caddy:old"
-    ));
 }
 
 #[test]
@@ -491,24 +550,28 @@ fn ingress_repair_that_cannot_admit_on_one_server_still_plans_the_other() {
         ..Default::default()
     };
     let repairs = planned_ingress(&snapshot);
-    assert_eq!(
-        repairs
-            .iter()
-            .map(|repair| (repair.machine_id, repair.action, repair.plan.is_ok()))
-            .collect::<Vec<_>>(),
-        [
-            (machine_id('1'), SlotAction::Create, false),
-            (machine_id('2'), SlotAction::Create, true)
-        ]
-    );
+    let plans: Vec<_> = repairs
+        .iter()
+        .map(|repair| match &repair.action {
+            SlotAction::Create(plan) => (repair.machine_id, plan.as_ref().ok()),
+            other @ (SlotAction::Start(_) | SlotAction::Unchecked(_)) => {
+                panic!("expected a create, got {other:?}")
+            }
+        })
+        .collect();
     assert!(matches!(
-        operations(repairs.get(1).unwrap().plan.as_ref().unwrap().preview()).as_slice(),
-        [DeployOperation::RunContainer { machine_id: on, .. }, ..] if *on == machine_id('2')
+        plans.as_slice(),
+        [(full, None), (free, Some(plan))]
+            if *full == machine_id('1') && *free == machine_id('2')
+                && matches!(
+                    operations(plan.preview()).as_slice(),
+                    [DeployOperation::RunContainer { machine_id: on, .. }, ..] if *on == machine_id('2')
+                )
     ));
 }
 
 #[test]
-fn a_server_whose_containers_went_unobserved_gets_no_ingress_repair() {
+fn a_server_whose_containers_went_unobserved_is_unchecked_not_repaired() {
     let mut unlisted = machine('1', "unlisted");
     unlisted.machine.public_ip = Some(std::net::IpAddr::from([192, 0, 2, 1]));
     let snapshot = DeploySnapshot {
@@ -527,8 +590,16 @@ fn a_server_whose_containers_went_unobserved_gets_no_ingress_repair() {
     };
     assert_eq!(
         ingress_repairs(&snapshot),
-        [(machine_id('3'), SlotAction::Create)]
+        [
+            (machine_id('1'), Repair::Unchecked),
+            (machine_id('2'), Repair::Unchecked),
+            (machine_id('3'), Repair::Create)
+        ]
     );
+    assert!(matches!(
+        &planned_ingress(&snapshot).first().unwrap().action,
+        SlotAction::Unchecked(cause) if cause.contains("container listing failed")
+    ));
     assert_eq!(snapshot.ingress_returning(), [None]);
 }
 

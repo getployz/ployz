@@ -334,13 +334,23 @@ impl Run {
             }
             Err(error) => Err(error.to_string()),
         };
-        let evidence = match filled {
-            Ok(repairs) if repairs.is_empty() => return,
-            Ok(repairs) => RunEvidence::Ingress(repairs),
-            Err(cause) => RunEvidence::IngressUnchecked(cause),
+        let evidence: Vec<_> = match filled {
+            Ok(check) => (!check.repairs.is_empty())
+                .then_some(RunEvidence::Ingress(check.repairs))
+                .into_iter()
+                .chain(
+                    check
+                        .unchecked
+                        .into_iter()
+                        .map(RunEvidence::IngressUnchecked),
+                )
+                .collect(),
+            Err(cause) => vec![RunEvidence::IngressUnchecked(cause)],
         };
-        if let Err(error) = self.record(evidence).await {
-            tracing::warn!(%error, "couldn't record what the Deploy did to ingress");
+        for evidence in evidence {
+            if let Err(error) = self.record(evidence).await {
+                tracing::warn!(%error, "couldn't record what the Deploy did to ingress");
+            }
         }
     }
 

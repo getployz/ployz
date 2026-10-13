@@ -4,14 +4,15 @@ use std::collections::BTreeSet;
 
 use futures_util::future::join_all;
 use ployz_core::{
-    ContainerObservation, DeployOutcome, EnvironmentValues, FailedOperation, MachineObservation,
-    PlacementConstraint, QualifiedService, RequestedServiceSpec, caddy_service_spec,
+    ContainerId, ContainerLocator, ContainerObservation, ContainerWant, DeployOutcome,
+    EnvironmentValues, FailedOperation, MachineObservation, PlacementConstraint, QualifiedService,
+    RequestedServiceSpec, RunTarget, caddy_service_spec,
 };
 use ployz_store::{IngressAction, IngressFailure, IngressRepair};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    connect::Client,
+    connect::{Client, TARGET_RPC_TIMEOUT},
     deploy::{DeployIntent, DeployPlan, Outcome, SlotAction},
     failure::Failure,
 };
@@ -71,6 +72,14 @@ pub(crate) async fn follow_roles(
     ))
 }
 
+/// What a Deploy's ingress step did, or would do, on each ingress Server.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct IngressCheck {
+    pub repairs: Vec<IngressRepair>,
+    /// One cause per ingress Server whose containers went unobserved, naming it.
+    pub unchecked: Vec<String>,
+}
+
 /// Bring back the Ingress Proxy on every Server with the ingress role where it is
 /// missing or stopped, with the image it runs elsewhere. Never replaces, stops or
 /// removes one; each Server's repair runs on its own, and a failure only reports.
@@ -81,21 +90,29 @@ pub(crate) async fn follow_roles(
 pub(crate) async fn fill_slots(
     client: &mut Client,
     cancel: &CancellationToken,
-) -> Result<Vec<IngressRepair>, Failure> {
-    let repairs = slot_repairs(client).await?;
+) -> Result<IngressCheck, Failure> {
+    let Slots { runs, unchecked } = slot_repairs(client).await?;
     let client = &*client;
-    Ok(join_all(repairs.into_iter().map(|repair| async move {
-        let (shown, plan) = repair?;
-        let outcome = client.confirm(&plan, cancel, None).await;
-        Ok::<_, IngressRepair>(IngressRepair {
-            failure: failure(&outcome),
-            ..shown
-        })
+    let repairs = join_all(runs.into_iter().map(|(shown, work)| async move {
+        let failure = match work {
+            None => return shown,
+            Some(Work::Create(plan)) => failure(&client.confirm(&plan, cancel, None).await),
+            Some(Work::Start(container_id)) => client
+                .ensure_container(
+                    &shown.machine,
+                    ContainerWant::Running {
+                        container: RunTarget::Existing(ContainerLocator::Id(container_id)),
+                    },
+                    Some(TARGET_RPC_TIMEOUT),
+                )
+                .await
+                .err()
+                .map(|error| classify(error.to_string())),
+        };
+        IngressRepair { failure, ..shown }
     }))
-    .await
-    .into_iter()
-    .map(|repair| repair.unwrap_or_else(|unplanned| unplanned))
-    .collect())
+    .await;
+    Ok(IngressCheck { repairs, unchecked })
 }
 
 /// The repairs [`fill_slots`] would run, by Server; runs nothing.
@@ -103,75 +120,97 @@ pub(crate) async fn fill_slots(
 /// # Errors
 ///
 /// Fails when observation, image discovery or planning fails.
-pub(crate) async fn planned_slots(client: &mut Client) -> Result<Vec<IngressRepair>, Failure> {
-    Ok(slot_repairs(client)
-        .await?
-        .into_iter()
-        .map(|repair| repair.map_or_else(|unplanned| unplanned, |(shown, _)| shown))
-        .collect())
+pub(crate) async fn planned_slots(client: &mut Client) -> Result<IngressCheck, Failure> {
+    let Slots { runs, unchecked } = slot_repairs(client).await?;
+    Ok(IngressCheck {
+        repairs: runs.into_iter().map(|(shown, _)| shown).collect(),
+        unchecked,
+    })
 }
 
-/// Each Server's repair with its plan, or with the failure that kept it from planning.
-async fn slot_repairs(
-    client: &mut Client,
-) -> Result<Vec<Result<(IngressRepair, DeployPlan), IngressRepair>>, Failure> {
+enum Work {
+    Create(DeployPlan),
+    Start(ContainerId),
+}
+
+/// Each Server's repair with its work, or `None` with the failure that kept it from
+/// planning; and the Servers left unchecked.
+#[derive(Default)]
+struct Slots {
+    runs: Vec<(IngressRepair, Option<Work>)>,
+    unchecked: Vec<String>,
+}
+
+async fn slot_repairs(client: &mut Client) -> Result<Slots, Failure> {
     let (machines, Some(requested)) = wanted(client, IngressImage::Keep).await? else {
-        return Ok(Vec::new());
+        return Ok(Slots::default());
     };
     let intent = DeployIntent::apply_one(
         QualifiedService::system_ingress().namespace,
         requested,
         crate::deploy::plan_options(false, false),
     );
-    let repairs = client.plan_ingress_repairs(intent).await?;
-    Ok(repairs
-        .into_iter()
-        .map(|repair| {
-            let server = machines
-                .iter()
-                .find(|entry| entry.machine.id == repair.machine_id)
-                .map_or_else(
-                    || repair.machine_id.to_string(),
-                    |entry| entry.machine.name.to_string(),
-                );
-            let shown = IngressRepair {
-                machine: repair.machine_id,
-                server,
-                action: match repair.action {
-                    SlotAction::Create => IngressAction::Create,
-                    SlotAction::Start => IngressAction::Start,
-                },
-                failure: None,
-            };
-            match repair.plan {
-                Ok(plan) => Ok((shown, plan)),
-                Err(error) => Err(IngressRepair {
-                    failure: Some(IngressFailure::Failed {
+    let mut slots = Slots::default();
+    for repair in client.plan_ingress_repairs(intent).await? {
+        let server = machines
+            .iter()
+            .find(|entry| entry.machine.id == repair.machine_id)
+            .map_or_else(
+                || repair.machine_id.to_string(),
+                |entry| entry.machine.name.to_string(),
+            );
+        let shown = |action, failure| IngressRepair {
+            machine: repair.machine_id,
+            server: server.clone(),
+            action,
+            failure,
+        };
+        let run = match repair.action {
+            SlotAction::Unchecked(cause) => {
+                slots
+                    .unchecked
+                    .push(format!("{server} went unobserved ({cause})"));
+                continue;
+            }
+            SlotAction::Start(container_id) => (
+                shown(IngressAction::Start, None),
+                Some(Work::Start(container_id)),
+            ),
+            SlotAction::Create(Ok(plan)) => {
+                (shown(IngressAction::Create, None), Some(Work::Create(plan)))
+            }
+            SlotAction::Create(Err(error)) => (
+                shown(
+                    IngressAction::Create,
+                    Some(IngressFailure::Failed {
                         cause: error.to_string(),
                     }),
-                    ..shown
-                }),
-            }
-        })
-        .collect())
+                ),
+                None,
+            ),
+        };
+        slots.runs.push(run);
+    }
+    Ok(slots)
 }
 
 fn failure(outcome: &Outcome) -> Option<IngressFailure> {
     let DeployOutcome::Failed { failed, .. } = outcome else {
         return None;
     };
-    let cause = match failed {
+    Some(classify(match failed {
         FailedOperation::Operation { error, .. } | FailedOperation::Replacement { error, .. } => {
             error.to_string()
         }
-    };
-    Some(
-        if cause.contains("address already in use") || cause.contains("port is already allocated") {
-            IngressFailure::PortTaken { cause }
-        } else {
-            IngressFailure::Failed { cause }
-        },
-    )
+    }))
+}
+
+fn classify(cause: String) -> IngressFailure {
+    if cause.contains("address already in use") || cause.contains("port is already allocated") {
+        IngressFailure::PortTaken { cause }
+    } else {
+        IngressFailure::Failed { cause }
+    }
 }
 
 async fn wanted(

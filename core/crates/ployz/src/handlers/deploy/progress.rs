@@ -104,7 +104,7 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
         detail: Some(ingress_verb(repair.action).to_owned()),
         timing: Timing::Unavailable,
     }));
-    if ingress_unchecked(view).is_some() {
+    if ingress_unchecked(view).next().is_some() {
         rows.push(Row {
             subject: Subject::Service(QualifiedService::system_ingress()),
             state: State::Unknown,
@@ -131,7 +131,7 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
 /// Start once there is observed work, preserving one caption for a clean no-op.
 pub(super) fn visible(view: &DeploymentView) -> bool {
     !view.deployment.ingress.is_empty()
-        || ingress_unchecked(view).is_some()
+        || ingress_unchecked(view).next().is_some()
         || view
             .preview
             .as_ref()
@@ -147,7 +147,7 @@ pub(super) fn visible(view: &DeploymentView) -> bool {
 pub(super) fn noop(view: &DeploymentView) -> bool {
     view.deployment.status == DeploymentStatus::Applied
         && view.deployment.ingress.is_empty()
-        && ingress_unchecked(view).is_none()
+        && ingress_unchecked(view).next().is_none()
         && view
             .nodes
             .iter()
@@ -165,11 +165,11 @@ pub(super) fn ingress_verb(action: IngressAction) -> &'static str {
     }
 }
 
-fn ingress_unchecked(view: &DeploymentView) -> Option<&str> {
+fn ingress_unchecked(view: &DeploymentView) -> impl Iterator<Item = &str> {
     view.deployment
         .warnings
         .iter()
-        .find_map(|warning| match warning {
+        .filter_map(|warning| match warning {
             DeploymentWarning::IngressUnchecked { cause } => Some(cause.as_str()),
             DeploymentWarning::Fragile { .. }
             | DeploymentWarning::NotSet { .. }
@@ -518,9 +518,14 @@ mod tests {
             Vec::new(),
             view.namespace.clone(),
         ));
-        view.deployment.warnings = vec![DeploymentWarning::IngressUnchecked {
-            cause: "Couldn't list the Cluster's Servers.".into(),
-        }];
+        view.deployment.warnings = vec![
+            DeploymentWarning::IngressUnchecked {
+                cause: "lab-1 went unobserved (connection refused)".into(),
+            },
+            DeploymentWarning::IngressUnchecked {
+                cause: "lab-2 went unobserved (no answer)".into(),
+            },
+        ];
         assert!(!noop(&view) && visible(&view));
         assert!(completion(&view, command).is_ok());
         assert!(frame(&view).rows.iter().any(|row| {
@@ -529,7 +534,10 @@ mod tests {
         }));
         assert_eq!(
             ingress_warnings(&view),
-            ["Couldn't check ingress: Couldn't list the Cluster's Servers. Deploy again to retry."]
+            [
+                "Couldn't check ingress: lab-1 went unobserved (connection refused). Deploy again to retry.",
+                "Couldn't check ingress: lab-2 went unobserved (no answer). Deploy again to retry."
+            ]
         );
     }
 

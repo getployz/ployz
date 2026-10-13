@@ -749,6 +749,7 @@ fn ingress_repairs(matches: &ArgMatches) -> Result<Vec<ployz_store::IngressRepai
                 .map_err(|error| error.to_string())?;
             crate::ingress::planned_slots(&mut client)
                 .await
+                .map(|check| check.repairs)
                 .map_err(|error| error.to_string())
         })
 }

@@ -309,27 +309,8 @@ impl DeploySnapshot {
     /// Ingress Proxy's placement, observed in full, and holding no active one.
     #[must_use]
     pub fn empty_ingress(&self) -> Vec<EmptyIngress<'_>> {
-        let placement = self
-            .services_in(&Namespace::system())
-            .iter()
-            .find(|service| service.identity == QualifiedService::system_ingress())
-            .and_then(ServiceObservation::observed_global_slot_spec)
-            .map(|spec| spec.placement.clone())
-            .unwrap_or_default();
-        let unobserved: BTreeSet<MachineId> = self
-            .container_failures
-            .iter()
-            .map(|failure| failure.machine_id)
-            .chain(self.container_omissions.iter().copied())
-            .collect();
-        self.machines
-            .iter()
-            .filter(|machine| {
-                machine.invites_rpc()
-                    && machine.machine.accepts_ingress
-                    && ployz_core::machine_matches_placement(&machine.machine, &placement)
-                    && !unobserved.contains(&machine.machine.id)
-            })
+        self.ingress_eligible()
+            .filter(|machine| self.unobserved(machine.machine.id).is_none())
             .filter_map(|machine| {
                 let held: Vec<_> = self
                     .containers
@@ -351,6 +332,47 @@ impl DeploySnapshot {
                 Some(EmptyIngress { machine, stopped })
             })
             .collect()
+    }
+
+    /// The ingress Servers whose containers went unobserved, so whether their Ingress
+    /// Proxy runs is unknown, each with why.
+    fn unobserved_ingress(&self) -> Vec<(&MachineObservation, String)> {
+        self.ingress_eligible()
+            .filter_map(|machine| Some((machine, self.unobserved(machine.machine.id)?)))
+            .collect()
+    }
+
+    /// Why `machine`'s container listing is missing from this snapshot, if it is.
+    fn unobserved(&self, machine: MachineId) -> Option<String> {
+        self.container_failures
+            .iter()
+            .find(|failure| failure.machine_id == machine)
+            .map(|failure| failure.error.to_string())
+            .or_else(|| {
+                self.container_omissions
+                    .contains(&machine)
+                    .then(|| "no answer".to_owned())
+            })
+    }
+
+    fn ingress_eligible(&self) -> impl Iterator<Item = &MachineObservation> {
+        let placement = self
+            .system_ingress()
+            .as_ref()
+            .and_then(ServiceObservation::observed_global_slot_spec)
+            .map(|spec| spec.placement.clone())
+            .unwrap_or_default();
+        self.machines.iter().filter(move |machine| {
+            machine.invites_rpc()
+                && machine.machine.accepts_ingress
+                && ployz_core::machine_matches_placement(&machine.machine, &placement)
+        })
+    }
+
+    fn system_ingress(&self) -> Option<ServiceObservation> {
+        self.services_in(&Namespace::system())
+            .into_iter()
+            .find(|service| service.identity == QualifiedService::system_ingress())
     }
 
     /// One entry per Server in [`Self::empty_ingress`]: its public address, or `None`
