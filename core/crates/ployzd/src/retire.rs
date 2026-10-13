@@ -15,8 +15,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     corrosion::{
-        AdminClient, Error as CorrosionError, IngressRouteAck, MachineView, ReplicatedStore,
-        ServingPointers, Subscription, membership_states_by_address,
+        AdminClient, Error as CorrosionError, IngressRouteAck, MachineView, ReplicatedObservations,
+        ReplicatedStore, ServingPointers, Subscription, membership_states_by_address,
     },
     docker::ContainerRuntime,
     machine::LocalMachine,
@@ -78,11 +78,7 @@ impl RetireHost for DaemonHost {
                     None
                 }
             };
-        required_ackers(
-            machines.observations.clone(),
-            &self.machine_id,
-            states.as_ref(),
-        )
+        required_ackers(machines.as_ref().clone(), &self.machine_id, states.as_ref())
     }
 
     async fn retire(&self, container: ContainerId) -> io::Result<()> {
@@ -100,10 +96,14 @@ impl RetireHost for DaemonHost {
 }
 
 fn required_ackers(
-    machines: Vec<Machine>,
+    machines: ReplicatedObservations<Machine, MachineId>,
     local: &MachineId,
     states: Option<&BTreeMap<ManagementAddress, MembershipEvidence>>,
 ) -> BTreeMap<MachineId, MachineName> {
+    if !machines.incomplete_ids.is_empty() {
+        return BTreeMap::new();
+    }
+    let machines = machines.observations;
     let Some(states) = states else {
         return machines
             .into_iter()
@@ -432,7 +432,8 @@ mod tests {
 
     use super::{Candidate, FORCE_AFTER, RetireHost, Retirer, Verdict, required_ackers, run};
     use crate::corrosion::{
-        IngressRouteAck, IngressRouteChange, ServingPointers, fake_cluster::FakeCluster,
+        IngressRouteAck, IngressRouteChange, ReplicatedObservations, ServingPointers,
+        fake_cluster::FakeCluster,
     };
 
     type Acks = BTreeMap<(MachineId, QualifiedService), IngressRouteAck>;
@@ -499,6 +500,13 @@ mod tests {
             .iter()
             .map(|machine| ((machine.id, service()), ack("d2", &[id("b")])))
             .collect()
+    }
+
+    fn complete(machines: Vec<Machine>) -> ReplicatedObservations<Machine, MachineId> {
+        ReplicatedObservations {
+            observations: machines,
+            incomplete_ids: Vec::new(),
+        }
     }
 
     fn decide_now(
@@ -588,7 +596,7 @@ mod tests {
         );
         let states = BTreeMap::from([(suspect.management_address(), MembershipEvidence::Suspect)]);
         let required = required_ackers(
-            vec![local.clone(), down.clone(), suspect.clone()],
+            complete(vec![local.clone(), down.clone(), suspect.clone()]),
             &local.id,
             Some(&states),
         );
@@ -606,8 +614,33 @@ mod tests {
     #[test]
     fn without_a_membership_sample_every_machine_must_ack() {
         let (local, other) = (machine("local", 1), machine("other", 2));
-        let required = required_ackers(vec![local.clone(), other.clone()], &local.id, None);
+        let required = required_ackers(
+            complete(vec![local.clone(), other.clone()]),
+            &local.id,
+            None,
+        );
         assert_eq!(required, ackers(&[&local, &other]));
+    }
+
+    #[test]
+    fn a_partly_replicated_machine_row_holds_retirement() {
+        let (local, other) = (machine("local", 1), machine("other", 2));
+        let required = required_ackers(
+            ReplicatedObservations {
+                observations: vec![local.clone()],
+                incomplete_ids: vec![other.id],
+            },
+            &local.id,
+            Some(&BTreeMap::new()),
+        );
+        let decided = decide_now(
+            &mut Retirer::default(),
+            &pointers(),
+            &acked_away(&[&local]),
+            &required,
+            &[id("a")],
+        );
+        assert!(decided.is_empty());
     }
 
     #[tokio::test(start_paused = true)]
