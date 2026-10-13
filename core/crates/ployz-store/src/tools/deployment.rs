@@ -159,7 +159,6 @@ fn show(view: &DeploymentView) -> Value {
     shown
 }
 
-/// `deployment_show` waiting on Deployment `number`, in the place `call` named.
 fn follow(call: &Call, number: u64) -> Call {
     let mut input = place(call);
     input.insert("deployment".into(), number.into());
