@@ -127,7 +127,7 @@ async fn probe_ingress_hostname(
     hostname: &IngressHost,
     machine_ids: &[MachineId],
     cluster_addresses: &[IpAddr],
-    ingress_returning: &[IpAddr],
+    ingress_returning: &[Option<IpAddr>],
 ) -> Option<HostnameVerdict> {
     let addresses = resolve_ingress_addresses(hostname).await;
     let answers = join_all(addresses.into_iter().map(|address| async move {
@@ -142,24 +142,29 @@ fn judge_answers(
     answers: &[(IpAddr, VerifyAnswer)],
     machine_ids: &[MachineId],
     cluster_addresses: &[IpAddr],
-    ingress_returning: &[IpAddr],
+    ingress_returning: &[Option<IpAddr>],
 ) -> Option<HostnameVerdict> {
     let verdict = hostname_verdict(answers, machine_ids, cluster_addresses);
     let awaiting_ingress = verdict == HostnameVerdict::Refused(Refusal::Unreachable)
         && answers
             .iter()
             .filter(|(_, answer)| *answer == VerifyAnswer::NoAnswer)
-            .all(|(address, _)| ingress_returning.contains(address));
+            .all(|(address, _)| {
+                ingress_returning.contains(&Some(*address))
+                    || (ingress_returning.contains(&None) && !cluster_addresses.contains(address))
+            });
     (!awaiting_ingress).then_some(verdict)
 }
 
 /// Probe Ingress Hostnames from planned ports and warn when they do not reach this Cluster.
-/// `ingress_returning` holds the Servers whose Ingress Proxy this Deploy brings back.
+/// `ingress_returning` holds the public address of each Server whose Ingress Proxy this
+/// Deploy brings back, `None` when it has none recorded. A silent address that is no
+/// Server's recorded one may be such a Server's, so it does not warn either.
 pub async fn resolve_ingress_dns_warnings_for_ports<'a>(
     ports: impl IntoIterator<Item = &'a PortPublication>,
     machine_ids: &[MachineId],
     cluster_addresses: &[IpAddr],
-    ingress_returning: &[IpAddr],
+    ingress_returning: &[Option<IpAddr>],
 ) -> Vec<IngressDnsWarning> {
     let targets = ingress_targets_from_ports(ports);
     let Ok(client) = Client::builder()
@@ -271,7 +276,12 @@ mod tests {
         };
         let cluster = [repairing, other];
         assert_eq!(
-            judge_answers(&silent(&[repairing]), &machines, &cluster, &[repairing]),
+            judge_answers(
+                &silent(&[repairing]),
+                &machines,
+                &cluster,
+                &[Some(repairing)]
+            ),
             None
         );
         assert_eq!(
@@ -283,8 +293,30 @@ mod tests {
                 &silent(&[repairing, other]),
                 &machines,
                 &cluster,
-                &[repairing]
+                &[Some(repairing)]
             ),
+            Some(HostnameVerdict::Refused(Refusal::Unreachable))
+        );
+    }
+
+    #[test]
+    fn silence_at_an_unrecorded_address_waits_for_a_returning_server_without_one() {
+        let (recorded, unrecorded) = (
+            "192.0.2.1".parse().unwrap(),
+            "198.51.100.7".parse().unwrap(),
+        );
+        let machines = [MachineId::parse("a".repeat(32)).unwrap()];
+        let silent = |address| [(address, VerifyAnswer::NoAnswer)];
+        assert_eq!(
+            judge_answers(&silent(unrecorded), &machines, &[recorded], &[None]),
+            None
+        );
+        assert_eq!(
+            judge_answers(&silent(recorded), &machines, &[recorded], &[None]),
+            Some(HostnameVerdict::Refused(Refusal::Unreachable))
+        );
+        assert_eq!(
+            judge_answers(&silent(unrecorded), &machines, &[recorded], &[]),
             Some(HostnameVerdict::Refused(Refusal::Unreachable))
         );
     }

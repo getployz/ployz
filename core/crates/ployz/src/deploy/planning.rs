@@ -261,88 +261,53 @@ pub enum SlotAction {
     Start,
 }
 
-/// One Machine's plan to fill its slot of a Global Service.
+/// One ingress Server's plan to bring back its Ingress Proxy.
 #[derive(Clone, Debug)]
 pub struct SlotRepair {
     pub machine_id: MachineId,
     pub action: SlotAction,
-    pub plan: DeployPlan,
+    /// Admission trouble here fails only this Server's repair.
+    pub plan: Result<DeployPlan, PlanError>,
 }
 
-/// Plan only the Machines where `intent` would create or start a container and
-/// nothing else: a Machine whose plan replaces, stops or removes anything is
-/// left alone, so a repair never changes a running or drifted container.
-///
-/// # Errors
-/// Returns the same admission failures as [`plan_deploy`].
-pub fn plan_slot_repairs(
-    intent: &DeployIntent,
-    snapshot: &DeploySnapshot,
-) -> Result<Vec<SlotRepair>, PlanError> {
-    let planned = plan_operations(intent, snapshot)?;
-    let mut by_machine = BTreeMap::<MachineId, Vec<DeployOperation>>::new();
-    for operation in planned.operations {
-        by_machine
-            .entry(operation.machine_id())
-            .or_default()
-            .push(operation);
-    }
-    Ok(by_machine
+/// Plan each Server of [`DeploySnapshot::empty_ingress`] on its own: start the newest
+/// Ingress Proxy at rest there with its own spec, or create one from `intent`.
+#[must_use]
+pub fn plan_ingress_repairs(intent: &DeployIntent, snapshot: &DeploySnapshot) -> Vec<SlotRepair> {
+    snapshot
+        .empty_ingress()
         .into_iter()
-        .filter_map(|(machine_id, operations)| {
-            let action = slot_action(machine_id, &operations, snapshot)?;
-            let plan = seal_plan(
-                Planned {
-                    operations,
-                    volumes: PlannedVolumes {
-                        creates: Vec::new(),
-                        budgets: Vec::new(),
-                    },
-                    would_remove: Vec::new(),
-                    preserved_volumes: Vec::new(),
-                    prune_refusal: None,
-                    warnings: Vec::new(),
+        .map(|empty| {
+            let machine_id = empty.machine.machine.id;
+            let Some(stopped) = empty.stopped else {
+                return SlotRepair {
+                    machine_id,
+                    action: SlotAction::Create,
+                    plan: plan_deploy(intent, &snapshot.only(empty.machine)),
+                };
+            };
+            let start = Planned {
+                operations: vec![DeployOperation::RunContainer {
+                    machine_id,
+                    spec: stopped.resolved_spec.clone(),
+                    skip_health_monitor: intent.options.skip_health_monitor,
+                }],
+                volumes: PlannedVolumes {
+                    creates: Vec::new(),
+                    budgets: Vec::new(),
                 },
-                snapshot,
-                &intent.namespace,
-            );
-            Some(SlotRepair {
+                would_remove: Vec::new(),
+                preserved_volumes: Vec::new(),
+                prune_refusal: None,
+                warnings: Vec::new(),
+            };
+            SlotRepair {
                 machine_id,
-                action,
-                plan,
-            })
-        })
-        .collect())
-}
-
-fn slot_action(
-    machine_id: MachineId,
-    operations: &[DeployOperation],
-    snapshot: &DeploySnapshot,
-) -> Option<SlotAction> {
-    let mut action = None;
-    for operation in operations {
-        match operation {
-            DeployOperation::RunContainer { spec, .. } => {
-                let stopped = snapshot.containers.iter().any(|container| {
-                    container.machine_id == machine_id && container.resolved_spec == *spec
-                });
-                action = Some(if stopped {
-                    SlotAction::Start
-                } else {
-                    SlotAction::Create
-                });
+                action: SlotAction::Start,
+                plan: Ok(seal_plan(start, snapshot, &intent.namespace)),
             }
-            DeployOperation::PrepareVolumes { .. } | DeployOperation::WaitHealthy { .. } => {}
-            DeployOperation::StopContainer { .. }
-            | DeployOperation::RemoveContainer { .. }
-            | DeployOperation::ReplaceContainer(_)
-            | DeployOperation::StopHook { .. }
-            | DeployOperation::RunHook { .. }
-            | DeployOperation::RemoveVolume { .. } => return None,
-        }
-    }
-    action
+        })
+        .collect()
 }
 
 fn seal_plan(planned: Planned, snapshot: &DeploySnapshot, namespace: &Namespace) -> DeployPlan {

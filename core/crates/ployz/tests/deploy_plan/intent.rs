@@ -1,10 +1,11 @@
 use std::collections::BTreeMap;
 
 use super::support::*;
-use ployz::deploy::{SlotAction, plan_slot_repairs, preview_deploy};
+use ployz::deploy::{SlotAction, SlotRepair, plan_ingress_repairs, preview_deploy};
 use ployz_core::{
-    ConfiguredHealthcheck, DependencyCondition, DeployWarning, HealthcheckCommand, HealthcheckSpec,
-    PreDeployHook, ServiceDependency, ServiceName,
+    ConfiguredHealthcheck, ContainerRuntimeObservation, DependencyCondition, DeployWarning,
+    HealthObservation, HealthcheckCommand, HealthcheckSpec, MachineFailure, PreDeployHook,
+    RpcError, RpcErrorCode, ServiceDependency, ServiceName,
 };
 
 #[test]
@@ -390,20 +391,30 @@ fn ingress_container(
     observed
 }
 
-fn ingress_repairs(snapshot: &DeploySnapshot) -> Vec<(MachineId, SlotAction)> {
+fn planned_ingress(snapshot: &DeploySnapshot) -> Vec<SlotRepair> {
     let ingress = ployz_core::caddy_service_spec("caddy:test".into(), Default::default());
     let intent = DeployIntent::apply_all(Namespace::system(), [&ingress], PlanOptions::default());
-    plan_slot_repairs(&intent, snapshot)
-        .unwrap()
+    plan_ingress_repairs(&intent, snapshot)
+}
+
+fn ingress_repairs(snapshot: &DeploySnapshot) -> Vec<(MachineId, SlotAction)> {
+    planned_ingress(snapshot)
         .into_iter()
         .map(|repair| {
-            assert!(operations(repair.plan.preview()).iter().all(|operation| {
+            let plan = repair.plan.unwrap();
+            assert!(operations(plan.preview()).iter().all(|operation| {
                 operation.machine_id() == repair.machine_id
                     && matches!(operation, DeployOperation::RunContainer { .. })
             }));
             (repair.machine_id, repair.action)
         })
         .collect()
+}
+
+fn running() -> ContainerRuntimeObservation {
+    ContainerRuntimeObservation::Running {
+        health: HealthObservation::Healthy,
+    }
 }
 
 #[test]
@@ -434,11 +445,8 @@ fn ingress_repair_creates_a_missing_slot_and_starts_a_stopped_one() {
 }
 
 #[test]
-fn ingress_repair_never_touches_a_drifted_or_unwanted_slot() {
-    let running = ployz_core::ContainerRuntimeObservation::Running {
-        health: ployz_core::HealthObservation::Healthy,
-    };
-    let exited = ployz_core::ContainerRuntimeObservation::Exited { code: 0 };
+fn ingress_repair_starts_a_stopped_older_proxy_and_leaves_active_or_unwanted_ones() {
+    let exited = ContainerRuntimeObservation::Exited { code: 0 };
     let mut no_ingress = machine('3', "no-ingress");
     no_ingress.machine.accepts_ingress = false;
     let snapshot = DeploySnapshot {
@@ -446,15 +454,82 @@ fn ingress_repair_never_touches_a_drifted_or_unwanted_slot() {
             machine('1', "older"),
             machine('2', "older-stopped"),
             no_ingress,
+            machine('4', "restarting"),
+            machine('5', "paused"),
         ],
         containers: vec![
-            ingress_container('a', '1', "caddy:old", running.clone()),
-            ingress_container('b', '2', "caddy:old", exited),
-            ingress_container('c', '3', "caddy:test", running),
+            ingress_container('a', '1', "caddy:old", running()),
+            ingress_container('b', '2', "caddy:old", exited.clone()),
+            ingress_container('c', '3', "caddy:test", running()),
+            ingress_container(
+                'd',
+                '4',
+                "caddy:test",
+                ContainerRuntimeObservation::Restarting,
+            ),
+            ingress_container('e', '5', "caddy:test", ContainerRuntimeObservation::Paused),
+            ingress_container('f', '5', "caddy:test", exited),
         ],
         ..Default::default()
     };
-    assert_eq!(ingress_repairs(&snapshot), []);
+    let repairs = planned_ingress(&snapshot);
+    assert_eq!(
+        ingress_repairs(&snapshot),
+        [(machine_id('2'), SlotAction::Start)]
+    );
+    assert!(matches!(
+        operations(repairs.first().unwrap().plan.as_ref().unwrap().preview()).as_slice(),
+        [DeployOperation::RunContainer { spec, .. }] if spec.container.image == "caddy:old"
+    ));
+}
+
+#[test]
+fn ingress_repair_that_cannot_admit_on_one_server_still_plans_the_other() {
+    let snapshot = DeploySnapshot {
+        machines: vec![machine('1', "full"), machine('2', "free")],
+        capacity: capacity([('1', 0), ('2', 5)]),
+        ..Default::default()
+    };
+    let repairs = planned_ingress(&snapshot);
+    assert_eq!(
+        repairs
+            .iter()
+            .map(|repair| (repair.machine_id, repair.action, repair.plan.is_ok()))
+            .collect::<Vec<_>>(),
+        [
+            (machine_id('1'), SlotAction::Create, false),
+            (machine_id('2'), SlotAction::Create, true)
+        ]
+    );
+    assert!(matches!(
+        operations(repairs.get(1).unwrap().plan.as_ref().unwrap().preview()).as_slice(),
+        [DeployOperation::RunContainer { machine_id: on, .. }, ..] if *on == machine_id('2')
+    ));
+}
+
+#[test]
+fn a_server_whose_containers_went_unobserved_gets_no_ingress_repair() {
+    let mut unlisted = machine('1', "unlisted");
+    unlisted.machine.public_ip = Some(std::net::IpAddr::from([192, 0, 2, 1]));
+    let snapshot = DeploySnapshot {
+        machines: vec![unlisted, machine('2', "omitted"), machine('3', "missing")],
+        container_failures: vec![MachineFailure {
+            machine_id: machine_id('1'),
+            error: RpcError {
+                code: RpcErrorCode::Unavailable,
+                message: "container listing failed".into(),
+                details: Default::default(),
+                cause: Vec::new(),
+            },
+        }],
+        container_omissions: vec![machine_id('2')],
+        ..Default::default()
+    };
+    assert_eq!(
+        ingress_repairs(&snapshot),
+        [(machine_id('3'), SlotAction::Create)]
+    );
+    assert_eq!(snapshot.ingress_returning(), [None]);
 }
 
 #[test]
@@ -670,12 +745,14 @@ fn an_ingress_server_without_a_running_proxy_is_one_whose_ingress_returns() {
     };
     let mut no_web = at('4', "no-web", 4);
     no_web.machine.accepts_ingress = false;
+    let unrecorded = machine('5', "unrecorded");
     let snapshot = DeploySnapshot {
         machines: vec![
             at('1', "serving", 1),
             at('2', "missing", 2),
             at('3', "stopped", 3),
             no_web,
+            unrecorded,
         ],
         containers: vec![
             ingress_container('a', '1', "caddy:test", running),
@@ -686,8 +763,9 @@ fn an_ingress_server_without_a_running_proxy_is_one_whose_ingress_returns() {
     assert_eq!(
         snapshot.ingress_returning(),
         [
-            std::net::IpAddr::from([192, 0, 2, 2]),
-            std::net::IpAddr::from([192, 0, 2, 3])
+            Some(std::net::IpAddr::from([192, 0, 2, 2])),
+            Some(std::net::IpAddr::from([192, 0, 2, 3])),
+            None
         ]
     );
 }

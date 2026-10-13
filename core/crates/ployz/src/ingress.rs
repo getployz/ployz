@@ -12,7 +12,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     connect::Client,
-    deploy::{DeployIntent, Outcome, SlotAction, SlotRepair},
+    deploy::{DeployIntent, DeployPlan, Outcome, SlotAction},
     failure::Failure,
 };
 
@@ -84,16 +84,18 @@ pub(crate) async fn fill_slots(
 ) -> Result<Vec<IngressRepair>, Failure> {
     let repairs = slot_repairs(client).await?;
     let client = &*client;
-    Ok(
-        join_all(repairs.into_iter().map(|(shown, repair)| async move {
-            let outcome = client.confirm(&repair.plan, cancel, None).await;
-            IngressRepair {
-                failure: failure(&outcome),
-                ..shown
-            }
-        }))
-        .await,
-    )
+    Ok(join_all(repairs.into_iter().map(|repair| async move {
+        let (shown, plan) = repair?;
+        let outcome = client.confirm(&plan, cancel, None).await;
+        Ok::<_, IngressRepair>(IngressRepair {
+            failure: failure(&outcome),
+            ..shown
+        })
+    }))
+    .await
+    .into_iter()
+    .map(|repair| repair.unwrap_or_else(|unplanned| unplanned))
+    .collect())
 }
 
 /// The repairs [`fill_slots`] would run, by Server; runs nothing.
@@ -105,11 +107,14 @@ pub(crate) async fn planned_slots(client: &mut Client) -> Result<Vec<IngressRepa
     Ok(slot_repairs(client)
         .await?
         .into_iter()
-        .map(|(shown, _)| shown)
+        .map(|repair| repair.map_or_else(|unplanned| unplanned, |(shown, _)| shown))
         .collect())
 }
 
-async fn slot_repairs(client: &mut Client) -> Result<Vec<(IngressRepair, SlotRepair)>, Failure> {
+/// Each Server's repair with its plan, or with the failure that kept it from planning.
+async fn slot_repairs(
+    client: &mut Client,
+) -> Result<Vec<Result<(IngressRepair, DeployPlan), IngressRepair>>, Failure> {
     let (machines, Some(requested)) = wanted(client, IngressImage::Keep).await? else {
         return Ok(Vec::new());
     };
@@ -118,7 +123,7 @@ async fn slot_repairs(client: &mut Client) -> Result<Vec<(IngressRepair, SlotRep
         requested,
         crate::deploy::plan_options(false, false),
     );
-    let repairs = client.plan_slot_repairs(intent).await?;
+    let repairs = client.plan_ingress_repairs(intent).await?;
     Ok(repairs
         .into_iter()
         .map(|repair| {
@@ -138,7 +143,15 @@ async fn slot_repairs(client: &mut Client) -> Result<Vec<(IngressRepair, SlotRep
                 },
                 failure: None,
             };
-            (shown, repair)
+            match repair.plan {
+                Ok(plan) => Ok((shown, plan)),
+                Err(error) => Err(IngressRepair {
+                    failure: Some(IngressFailure::Failed {
+                        cause: error.to_string(),
+                    }),
+                    ..shown
+                }),
+            }
         })
         .collect())
 }

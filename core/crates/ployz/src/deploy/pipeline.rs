@@ -57,19 +57,19 @@ impl Client {
         preview_gathered(snapshot, &intent).await
     }
 
-    /// Plan the Machines where `intent` would only create or start a container,
-    /// one confirmable plan each. See [`planning::plan_slot_repairs`].
+    /// Plan bringing back the Ingress Proxy, one confirmable plan per Server. See
+    /// [`planning::plan_ingress_repairs`].
     ///
     /// # Errors
     ///
-    /// Returns when snapshot gathering or planning fails.
-    pub async fn plan_slot_repairs(
+    /// Returns when snapshot gathering fails.
+    pub async fn plan_ingress_repairs(
         &mut self,
         intent: DeployIntent,
     ) -> Result<Vec<super::SlotRepair>, DeployError> {
         let machines = self.machines().await?;
         let snapshot = gather_deploy_snapshot(self, machines, &intent).await?;
-        Ok(planning::plan_slot_repairs(&intent, &snapshot)?)
+        Ok(planning::plan_ingress_repairs(&intent, &snapshot))
     }
 
     /// Calculate a Namespace-removal preview. Confirming executes these operations.

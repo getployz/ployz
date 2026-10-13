@@ -29,7 +29,7 @@ pub(crate) use pipeline::plan_options;
 pub(crate) use planning::capacity::endpoint_capacity_error;
 pub use planning::{
     DeployPlan, SlotAction, SlotRepair, VolumeFate, data_loss_from_plan, plan_deploy,
-    plan_namespace_removal, plan_slot_repairs, preview_deploy,
+    plan_ingress_repairs, plan_namespace_removal, preview_deploy,
 };
 pub use ployz_core::{
     DeployEvent, DeployIntent, DeployOperation, DeployOutcome, DeployPreview, DeployWarning,
@@ -39,6 +39,15 @@ pub use ployz_core::{
 };
 
 pub(crate) use progress::pending_rows;
+
+fn is_at_rest(runtime: &ContainerRuntimeObservation) -> bool {
+    matches!(
+        runtime,
+        ContainerRuntimeObservation::Created
+            | ContainerRuntimeObservation::Exited { .. }
+            | ContainerRuntimeObservation::Dead
+    )
+}
 
 fn is_active_runtime(runtime: &ContainerRuntimeObservation) -> bool {
     matches!(
@@ -269,6 +278,15 @@ impl VolumeSnapshot {
     }
 }
 
+/// An ingress Server with no active Ingress Proxy.
+#[derive(Clone, Copy, Debug)]
+pub struct EmptyIngress<'snapshot> {
+    pub machine: &'snapshot MachineObservation,
+    /// The newest Ingress Proxy at rest there, which starts again with its own spec.
+    /// `None`: there is none, so one is created.
+    pub stopped: Option<&'snapshot ContainerObservation>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct DeploySnapshot {
     pub machines: Vec<MachineObservation>,
@@ -287,25 +305,81 @@ pub struct DeploySnapshot {
 }
 
 impl DeploySnapshot {
-    /// Public addresses of ingress Servers with no running Ingress Proxy. A Deploy
-    /// brings it back after the plan runs, so they cannot answer port 80 yet.
+    /// The ingress Servers whose Ingress Proxy a Deploy brings back: eligible for the
+    /// Ingress Proxy's placement, observed in full, and holding no active one.
     #[must_use]
-    pub fn ingress_returning(&self) -> Vec<std::net::IpAddr> {
+    pub fn empty_ingress(&self) -> Vec<EmptyIngress<'_>> {
+        let placement = self
+            .services_in(&Namespace::system())
+            .iter()
+            .find(|service| service.identity == QualifiedService::system_ingress())
+            .and_then(ServiceObservation::observed_global_slot_spec)
+            .map(|spec| spec.placement.clone())
+            .unwrap_or_default();
+        let unobserved: BTreeSet<MachineId> = self
+            .container_failures
+            .iter()
+            .map(|failure| failure.machine_id)
+            .chain(self.container_omissions.iter().copied())
+            .collect();
         self.machines
             .iter()
-            .filter(|machine| machine.machine.accepts_ingress)
             .filter(|machine| {
-                !self.containers.iter().any(|container| {
-                    container.machine_id == machine.machine.id
-                        && crate::ingress::is_system_ingress(container)
-                        && matches!(
-                            container.runtime,
-                            ployz_core::ContainerRuntimeObservation::Running { .. }
-                        )
-                })
+                machine.invites_rpc()
+                    && machine.machine.accepts_ingress
+                    && ployz_core::machine_matches_placement(&machine.machine, &placement)
+                    && !unobserved.contains(&machine.machine.id)
             })
-            .filter_map(|machine| machine.machine.public_ip)
+            .filter_map(|machine| {
+                let held: Vec<_> = self
+                    .containers
+                    .iter()
+                    .filter(|container| {
+                        container.machine_id == machine.machine.id
+                            && crate::ingress::is_system_ingress(container)
+                    })
+                    .collect();
+                if !held.iter().all(|container| is_at_rest(&container.runtime)) {
+                    return None;
+                }
+                let stopped = held.into_iter().max_by_key(|container| {
+                    (
+                        container.created_at_unix_nanos,
+                        container.container_id.as_str(),
+                    )
+                });
+                Some(EmptyIngress { machine, stopped })
+            })
             .collect()
+    }
+
+    /// One entry per Server in [`Self::empty_ingress`]: its public address, or `None`
+    /// when it has none recorded. They cannot answer port 80 until the Deploy ends.
+    #[must_use]
+    pub fn ingress_returning(&self) -> Vec<Option<std::net::IpAddr>> {
+        self.empty_ingress()
+            .into_iter()
+            .map(|empty| empty.machine.machine.public_ip)
+            .collect()
+    }
+
+    /// This snapshot as seen from `machine` alone, so planning there cannot fail on
+    /// another Machine.
+    fn only(&self, machine: &MachineObservation) -> Self {
+        Self {
+            machines: vec![machine.clone()],
+            storage_capacity: self.storage_capacity.clone(),
+            containers: self
+                .containers
+                .iter()
+                .filter(|container| container.machine_id == machine.machine.id)
+                .cloned()
+                .collect(),
+            volume_snapshot: self.volume_snapshot.clone(),
+            container_failures: Vec::new(),
+            container_omissions: Vec::new(),
+            capacity: self.capacity.clone(),
+        }
     }
 
     /// Observer-derived Services owned by `namespace`. Other Namespaces are excluded.
