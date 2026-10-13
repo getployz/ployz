@@ -432,15 +432,28 @@ class Cluster:
                     break
         return evidence
 
+    def next_run(self, volume, kind, earlier, limit=180):
+        """The first `kind` run on `volume` created after the row `earlier`, as soon as it shows."""
+        deadline = time.monotonic() + limit
+        while time.monotonic() < deadline:
+            _, data = self.cli("volume", "runs", volume)
+            later = [row for row in run_rows(data) if row.get("kind") == kind and row.get("id") != earlier.get("id")
+                     and row.get("created_at", "") > earlier.get("created_at", "")]
+            if later:
+                return min(later, key=lambda row: row["created_at"])
+            time.sleep(4)
+        return None
+
     def stop_move(self, volume, phys, source, target):
-        """Hold a Move to `target` in its MirrorToWriter step, then cancel it with the runner down."""
-        self.fault(target, "delay-rpc:SetVolumeCopy.MirrorToWriter:90")
+        """Hold a Move to `target` in its last pull after the cut, before it commits, then cancel it with the
+        runner down. The Move ends warm, so Cloud starts a release back to `source`."""
+        self.fault(target, "delay-rpc:SetVolumeCopy.MirrorToMirror:25")
         since = time.time()
         code, row, data = self.start_run("volume", "move", volume, "--to", target)
         if row is None:
             self.fault(target, None)
             raise CheckError(f"move refused: {say(data)[:600]}")
-        held = self.wait_held(volume, row, phys, source, target, "MirrorToWriter", since)
+        held = self.wait_held(volume, row, phys, source, target, "MirrorToMirror", since)
         self.runner("kill")
         try:
             cancelled = self.cancel(row["id"])
@@ -906,6 +919,20 @@ def deploy_refused_mid_move(vc):
 
 # Release after a stopped Move
 
+def settled(row):
+    return row is not None and row.get("state") in TERMINAL
+
+
+def release_after_cancel(vc, volume, move, limit=1500):
+    """Wait for the release a cancelled Move starts, then run `volume release`, which takes that release over
+    while it runs or meets it ended. Answers the cancel's release once ended, and the CLI's exit and row."""
+    auto = vc.next_run(volume, "release", move)
+    code, released, data = vc.run_volume("volume", "release", volume, volume=volume, limit=limit)
+    if auto is not None:
+        auto = vc.wait_run(volume, auto["id"], limit=limit)
+    return auto, code, released, data
+
+
 def release_after_stopped_move(vc):
     phys = vc.physical("bravo")
     vc.psql(A, phys, "create table if not exists marks (note text); insert into marks values ('pre-05')")
@@ -913,17 +940,20 @@ def release_after_stopped_move(vc):
     if stopped["run"].get("state") not in STOPPED or not stopped["held"]:
         raise CheckError(f"the Move did not stop after the cut: {say(stopped)[:1200]}")
     a_copy = vc.inspect(A, phys)
-    _, released, data = vc.run_volume("volume", "release", "bravo", volume="bravo")
+    auto, code, released, data = release_after_cancel(vc, "bravo", stopped["run"])
     ready = vc.ready(A, phys)
     marks = vc.psql(A, phys, "select note from marks", required=False) if ready else "no db"
     writable = vc.writable(phys)
     judged(vc, "release_after_stopped_move", {
-        "release done": done(released),
+        "the cancel starts a release": auto is not None,
+        "no release left running": settled(auto) and (released is None or settled(released)),
+        "a release ends done, the cancel's or the one run after it": done(auto) or done(released),
         f"db runs on {A} with the row from before the Move": ready and "pre-05" in marks,
         f"{A} root writable": vc.prop(A, root(phys), "readonly") == "off",
         f"{B} keeps no slot": not vc.exists(B, slot(phys)),
         f"exactly one writable copy, on {A}": writable == [f"{A}:{root(phys)}"],
-    }, f"stopped {say(stopped)[:800]}; {A} copy when stopped {say(a_copy)[:300]}; release {text_of(released, data)[:500]}; "
+    }, f"stopped {say(stopped)[:800]}; {A} copy when stopped {say(a_copy)[:300]}; "
+       f"cancel's release {say(auto)[:500]}; release exit {code} {text_of(released, data)[:500]}; "
        f"marks {marks!r}; running {vc.live(phys)}; writable {writable}")
 
 
@@ -931,17 +961,17 @@ def thaw_takes_15_seconds(vc):
     phys = vc.physical("bravo")
     source = B if vc.containers(B, phys) else A
     target = other(source)
-    stopped = vc.stop_move("bravo", phys, source, target)
-    if stopped["run"].get("state") not in STOPPED or not stopped["held"]:
-        raise CheckError(f"the Move did not stop after the cut: {say(stopped)[:1200]}")
     vc.slow_runc(source, "thaw", phys, 15)
     try:
         with Recorder(vc, "thaw", phys) as recorder:
-            _, released, data = vc.run_volume("volume", "release", "bravo", volume="bravo", limit=900)
-            first = dict(run=released, delay=vc.start_log(source, "thaw"))
+            stopped = vc.stop_move("bravo", phys, source, target)
+            if stopped["run"].get("state") not in STOPPED or not stopped["held"]:
+                raise CheckError(f"the Move did not stop after the cut: {say(stopped)[:1200]}")
+            auto, code, released, data = release_after_cancel(vc, "bravo", stopped["run"], limit=900)
+            first = dict(auto=auto, exit=code, run=released, delay=vc.start_log(source, "thaw"))
             vc.plain_runc(source, "thaw")
-            retried = released
-            if not done(released):
+            retried = None
+            if not (done(auto) or done(released)):
                 _, retried, data = vc.run_volume("volume", "release", "bravo", volume="bravo", limit=900)
             ready = vc.ready(source, phys)
             worst = recorder.timeline()
@@ -949,11 +979,13 @@ def thaw_takes_15_seconds(vc):
         vc.plain_runc(source, "thaw")
     single = worst["writable"][0] <= 1 and worst["running"][0] <= 1
     vc.verdict("thaw_takes_15_seconds",
-               done(released) and "begin" in first["delay"] and ready
+               (done(auto) or done(released)) and "begin" in first["delay"] and ready
                and vc.prop(source, root(phys), "readonly") == "off" and single,
-               f"source {source}; first release {say(first)[:1200]}; ready={ready}; max {worst}")
-    vc.verdict("slow_thaw_retry_safe", done(retried) and ready and single and not vc.containers(target, phys),
-               f"release {text_of(retried, data)[:500]}; running {vc.live(phys)}; max {worst}")
+               f"source {source}; first releases {say(first)[:1500]}; ready={ready}; max {worst}")
+    vc.verdict("slow_thaw_retry_safe",
+               (done(auto) or done(released) or done(retried)) and settled(auto) and ready and single
+               and not vc.containers(target, phys),
+               f"retry {text_of(retried, data)[:500]}; running {vc.live(phys)}; max {worst}")
 
 
 # Mirror reuse and failing starts
@@ -990,19 +1022,25 @@ def start_fails_then_move_again(vc):
         with Recorder(vc, "golf", phys) as recorder:
             _, first, data = vc.move("golf", target, limit=1200)
             failed_log = vc.start_log(target, "golf")
+            forward = vc.next_run("golf", "release", first) if first else None
             vc.sh(target, "rm -f /tmp/golf-fail-start")
-            _, again, data_again = vc.move("golf", target, limit=900)
+            if forward is not None:
+                forward = vc.wait_run("golf", forward["id"], limit=900)
             ready = vc.ready(target, phys)
             worst = recorder.timeline()
     finally:
         vc.plain_runc(target, "golf")
         vc.sh(target, "rm -f /tmp/golf-fail-start", required=False)
     live = vc.live(phys)
-    ok = ("fail " in failed_log and (first or {}).get("state") == "failed" and done(again) and ready
-          and worst["writable"][0] <= 1 and worst["running"][0] <= 1 and len(live[target]) == 1 and not live[source])
-    vc.verdict("start_fails_then_move_again", ok,
-               f"first {text_of(first, data)[:700]}; again {text_of(again, data_again)[:500]}; "
-               f"start log {vc.start_log(target, 'golf')!r}; max {worst}; running {live}")
+    judged(vc, "start_fails_then_move_again", {
+        f"the start on {target} failed": "fail " in failed_log,
+        "the Move ends failed": (first or {}).get("state") == "failed",
+        f"the release it starts ends done once {target} starts": done(forward),
+        f"db ready on {target}": ready,
+        f"one container on {target}, none on {source}": len(live[target]) == 1 and not live[source],
+        "at most one writable copy and one running writer": worst["writable"][0] <= 1 and worst["running"][0] <= 1,
+    }, f"first {text_of(first, data)[:700]}; release {say(forward)[:500]}; "
+       f"start log {vc.start_log(target, 'golf')!r}; max {worst}; running {live}")
 
 
 def start_takes_15_seconds(vc):
