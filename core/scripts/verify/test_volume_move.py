@@ -494,7 +494,7 @@ class VolumeMoveTests(unittest.TestCase):
         self.assertTrue(summary["passed"], summary)
         self.assertEqual([wait["holder"] for wait in summary["volume_busy_waits"]], ["sync-1"])
 
-    def test_a_holder_that_outlasts_the_heal_skips_its_ops_and_the_next_case_runs(self):
+    def test_a_holder_that_outlasts_the_heal_skips_its_ops_and_stops_the_run(self):
         checks, model = self.checks("two-writers")
         model.mirror = "machine-2"
         model.hold(volume_move.BUSY_LIMIT * 3 + 60)
@@ -504,8 +504,54 @@ class VolumeMoveTests(unittest.TestCase):
         self.assertTrue(skipped["skipped"], skipped)
         self.assertEqual([attempt["op"] for attempt in skipped["heal"]["attempts"]], ["move", "release"])
         self.assertTrue(all(attempt.get("skipped") for attempt in skipped["heal"]["attempts"]), skipped["heal"])
-        self.assertEqual(summary["cases"][1]["run"], "done")
+        self.assertEqual([case["name"] for case in summary["cases"]], [volume_move.KILLS[0]["name"]])
+        self.assertIn("the run stopped after this case: the heal left writable", skipped["failures"][-1])
         self.assertTrue((self.root / "out" / "summary.json").exists())
+
+    def test_a_failed_case_the_heal_cannot_fix_stops_the_run_and_keeps_its_own_failures(self):
+        checks, model = self.checks("two-writers")
+        cli = model.cli
+        def held_after_the_move(args):
+            reply = cli(args)
+            if args[:2] == ["volume", "move"] and not model.holds:
+                model.hold(volume_move.BUSY_LIMIT * 3 + 60)
+            return reply
+        model.cli = held_after_the_move
+        with redirect_stdout(io.StringIO()):
+            summary = checks.run_all([volume_move.CASES[0], volume_move.KILLS[0]])
+        self.assertEqual([case["name"] for case in summary["cases"]], [volume_move.CASES[0]["name"]])
+        failures = summary["cases"][0]["failures"]
+        self.assertGreater(len(failures), 1, failures)
+        self.assertIn("the run stopped after this case: the heal left writable", failures[-1])
+        case = json.loads((self.root / "out" / f"{volume_move.CASES[0]['name']}.json").read_text())
+        self.assertIn("states", case)
+
+    def test_a_runs_list_that_fails_while_arming_skips_the_case(self):
+        for armed in (False, True):
+            with self.subTest(armed=armed):
+                checks, model = self.checks()
+                cli, guest = model.cli, model.guest
+                def failing(args):
+                    if (args[:2] == ["volume", "runs"] and checks.case_name == volume_move.KILLS[0]["name"]
+                            and (any(model.fault.values()) or not armed)):
+                        return 1, "Cloud did not answer"
+                    return cli(args)
+                def arming(machine, script):
+                    if "echo" in script and "PLOYZD_FAULT" in script and not model.holds:
+                        model.hold(5, "cron-sync")
+                        reply = guest(machine, script)
+                        model.clock.now += 10
+                        return reply
+                    return guest(machine, script)
+                model.cli, model.guest = failing, arming
+                with redirect_stdout(io.StringIO()):
+                    summary = checks.run_all([volume_move.KILLS[0], volume_move.CASES[0]])
+                skipped, clean = summary["cases"]
+                self.assertIn("could not list the Volume's runs", skipped.get("skipped") or "", skipped)
+                self.assertFalse(skipped["passed"])
+                self.assertEqual(model.tripped, "cron-sync" if armed else None)
+                self.assertEqual(model.fault, {"machine-1": None, "machine-2": None})
+                self.assertTrue(clean["passed"], clean)
 
     def test_a_skip_names_the_run_that_refused_last(self):
         checks, model = self.checks()

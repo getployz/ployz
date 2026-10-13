@@ -505,6 +505,13 @@ class VolumeMove:
         _, data = self.cli("volume", "runs", VOLUME, check=False)
         return run_rows(data)
 
+    def arming_runs(self, op):
+        code, data = self.cli("volume", "runs", VOLUME, check=False)
+        if code:
+            # An unread list would hide a run that crossed the armed fault.
+            raise Skipped(f"could not list the Volume's runs while arming the fault on {op}")
+        return run_rows(data)
+
     def start_op(self, op, destination, arm=None):
         args = dict(move=["volume", "move", VOLUME, "--to", destination],
                     mirror=["volume", "mirror", VOLUME, "--to", destination],
@@ -520,7 +527,7 @@ class VolumeMove:
                 if self.clock() >= deadline:
                     skip = f"VolumeBusy past {BUSY_LIMIT}s before the fault was armed on {op}"
                     break
-                settled = {row["id"] for row in self.runs() if row.get("state") in TERMINAL}
+                settled = {row["id"] for row in self.arming_runs(op) if row.get("state") in TERMINAL}
                 arm()
                 armed = True
             code, data = self.cli(*args[op], check=False)
@@ -542,7 +549,7 @@ class VolumeMove:
             self.started_runs |= accepted
             # A run that started and ended while arm() restarted the daemon may have fired the fault, and
             # wait_trigger would credit its fault line to this op.
-            others = [row for row in self.runs() if row["id"] not in settled | accepted]
+            others = [row for row in self.arming_runs(op) if row["id"] not in settled | accepted]
             if others:
                 holder = others[0]
                 skip = f"a run took the Volume while the fault was armed on {op}"
@@ -735,7 +742,8 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
             except Skipped as skip:
                 attempts.append(dict(op=op, skipped=str(skip)))
         machine = self.healthy()
-        return dict(attempts=attempts, healthy_on=machine)
+        copies = writable_copies(self.states())
+        return dict(attempts=attempts, healthy_on=machine, writable=copies, healed=bool(machine) and len(copies) == 1)
 
     def run_all(self, cases):
         self.out.mkdir(parents=True, exist_ok=True)
@@ -745,25 +753,27 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
         try:
             for case in cases:
                 try:
-                    results.append(self.run_case(case))
+                    result = self.run_case(case)
                 except (AssertionError, RuntimeError, subprocess.TimeoutExpired) as error:
                     result = dict(case, passed=False, failures=[f"{type(error).__name__}: {error}"[:2000]])
                     if isinstance(error, Skipped):
                         result["skipped"] = str(error)
-                    stopped = False
                     try:
                         armed = self.fault(None, check=False) if case["fault"] else []
                         if armed:
                             raise RuntimeError(f"the fault stayed armed on {', '.join(armed)}")
                         result["heal"] = self.heal(self.other(self.writer()))
                     except (AssertionError, RuntimeError, subprocess.TimeoutExpired) as cleanup:
-                        # A later case would run on a Machine left armed or unhealed and could pass on what this one left.
-                        result["failures"].append(f"the run stopped after this case: {cleanup}"[:2000])
-                        stopped = True
-                    (self.out / f"{case['name']}.json").write_text(json.dumps(result, indent=2) + "\n")
-                    results.append(result)
-                    if stopped:
-                        break
+                        result["heal"] = dict(healed=False, error=f"{type(cleanup).__name__}: {cleanup}")
+                heal = result.get("heal", dict(healed=True))
+                if not heal["healed"]:
+                    # A later case would run on a Machine left armed or unhealed and could pass on what this one left.
+                    reason = heal.get("error") or f"the heal left writable {heal['writable']} with the database on {heal['healthy_on']}"
+                    result["failures"].append(f"the run stopped after this case: {reason}"[:2000])
+                (self.out / f"{case['name']}.json").write_text(json.dumps(result, indent=2) + "\n")
+                results.append(result)
+                if not heal["healed"]:
+                    break
         finally:
             report = self.stop_probe()
         acks = read_acks(self.probe_log)
