@@ -811,6 +811,13 @@ impl ConnectError {
                 | Self::AllFailed { .. }
         ) || matches!(self, Self::Rpc(error) if error.is_unavailable())
     }
+
+    /// The target sent no reply: it never connected, timed out, or dropped the call.
+    /// A daemon's error reply is an answer.
+    pub(crate) fn is_unanswered(&self) -> bool {
+        self.is_unreachable()
+            || matches!(self, Self::Rpc(error) if error.is_retryable() || error.unanswered)
+    }
 }
 
 /// A gRPC transport failure. Display is the status message, not Status Debug.

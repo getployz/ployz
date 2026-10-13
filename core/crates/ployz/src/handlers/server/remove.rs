@@ -8,8 +8,10 @@ use super::{ConnectionOptions, target};
 use crate::approval::{self, Verb};
 use crate::cloud_account::{self, Credential, Release};
 use crate::cloud_login::{CredentialStore, LoginError};
-use crate::cluster::{CloudHold, LeftNotForgotten, copies_left_behind, refuse_last_managed};
-use crate::connect::Remover;
+use crate::cluster::{
+    CloudHold, HeldCopies, LeftNotForgotten, copies_left_behind, refuse_last_managed,
+};
+use crate::connect::{Remover, TARGET_RPC_TIMEOUT};
 use crate::context::ConnectionSource;
 use crate::drain::{replicated_services_on, services_on};
 use crate::handlers::{
@@ -20,7 +22,6 @@ use crate::handlers::{
 use ployz_core::{DataLoss, DockerVolumeName, EnvironmentValues};
 use ployz_store::{EnvironmentRef, NamespacesQuery, VolumesQuery, docker_volume};
 use serde_json::json;
-use std::collections::BTreeSet;
 
 use crate::ui::Hint;
 
@@ -31,32 +32,32 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
     let no_reset = matches.get_flag("no-reset");
     let runtime = runtime()?;
     // Before anything is listed or confirmed: a removal that can't happen asks nothing.
-    let (mut client, machines, selected, answers, current, hold, held) =
-        runtime.block_on(async {
-            let mut client = super::connect(matches, options.context()).await?;
-            let machines = client.machines().await?;
-            let observation =
-                crate::cluster::visible_machine(&MachineTarget::parse(&selector)?, &machines)?;
-            let selected = observation.machine.clone();
-            let answers = observation.invites_rpc();
-            let current = client
-                .call::<op::DescribeContract>(DescribeContractRequest {}, None)
-                .await?
-                .machine_id;
-            if selected.id == current && machines.len() > 1 {
-                return Err(Error::conflict(
-                    "the current entry Server cannot be removed while another Server is visible",
-                ));
-            }
-            let hold = refuse_last_managed(&client, &machines, selected.id).await?;
-            let held = if no_reset {
-                client.held_copies(observation).await?
-            } else {
-                BTreeSet::new()
-            };
-            Ok::<_, Error>((client, machines, selected, answers, current, hold, held))
-        })?;
-    if !held.is_empty() {
+    let (mut client, machines, selected, current, hold, held) = runtime.block_on(async {
+        let mut client = super::connect(matches, options.context()).await?;
+        let machines = client.machines().await?;
+        let observation =
+            crate::cluster::visible_machine(&MachineTarget::parse(&selector)?, &machines)?;
+        let selected = observation.machine.clone();
+        let current = client
+            .call::<op::DescribeContract>(DescribeContractRequest {}, None)
+            .await?
+            .machine_id;
+        if selected.id == current && machines.len() > 1 {
+            return Err(Error::conflict(
+                "the current entry Server cannot be removed while another Server is visible",
+            ));
+        }
+        let hold = refuse_last_managed(&client, &machines, selected.id).await?;
+        let held = if no_reset {
+            Some(client.held_copies(observation).await?)
+        } else {
+            None
+        };
+        Ok::<_, Error>((client, machines, selected, current, hold, held))
+    })?;
+    if let Some(HeldCopies::Answered(held)) = &held
+        && !held.is_empty()
+    {
         let docker = held
             .iter()
             .map(DockerVolumeName::as_str)
@@ -147,7 +148,15 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
             .map(DataLoss::name)
             .collect::<Vec<_>>(),
     );
-    let dead = no_reset && !answers;
+    let dead = matches!(held, Some(HeldCopies::Unanswered));
+    let unanswered = format!(
+        "Server {} did not answer in {}s. Removing it without a reset leaves any Volume copies on it behind",
+        selected.name,
+        TARGET_RPC_TIMEOUT.as_secs()
+    );
+    if dead && crate::ui::can_prompt() {
+        crate::ui::warn(format!("{unanswered}."));
+    }
     let (confirmation, accepting) = super::super::data_loss::confirm_removal(
         root,
         &client,
@@ -171,10 +180,7 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
             Error::detailed(
                 RpcErrorCode::ConfirmationRequired,
                 if dead {
-                    format!(
-                        "Server {} does not answer; removing it without a reset needs dead typed. No changes made.",
-                        selected.name
-                    )
+                    format!("{unanswered} and needs dead typed. No changes made.")
                 } else {
                     format!(
                         "Removing Server {} needs its name typed. No changes made.",
@@ -185,6 +191,7 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
                     "server": { "id": selected.id, "name": selected.name },
                     "services": services,
                     "data_loss": observed.data_loss,
+                    "answered": !dead,
                 }),
             )
             .hint(Hint::Retry(retry))

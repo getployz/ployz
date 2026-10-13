@@ -250,12 +250,19 @@ impl Client {
         request: T::Request,
         target: &MachineTarget,
     ) -> Result<T::Response, RpcError> {
+        self.try_read::<T>(request, target).await.map_err(rpc_error)
+    }
+
+    async fn try_read<T: Rpc>(
+        &mut self,
+        request: T::Request,
+        target: &MachineTarget,
+    ) -> Result<T::Response, ConnectError> {
         let payload = T::into_request(request)
             .encode()
-            .map_err(|error| rpc_error(ConnectError::Codec(error)))?;
+            .map_err(ConnectError::Codec)?;
         self.call_retried::<T>(payload, Some(target), Some(TARGET_RPC_TIMEOUT))
             .await
-            .map_err(rpc_error)
     }
 
     async fn call_retried<T: Rpc>(
@@ -497,7 +504,7 @@ impl Client {
         let mut requests = Vec::new();
         let mut omissions = Vec::new();
         for machine in machines {
-            if !machine.membership.invites_rpc() {
+            if !machine.invites_rpc() {
                 omissions.push(machine.machine.id);
                 continue;
             }
@@ -729,7 +736,7 @@ impl Client {
     /// Refused before membership mutation when this is the last Machine and any
     /// Management Client holds a key: Cloud lets go of its last Machine only by resetting it.
     /// Also refused while the Machine answers with a copy of any Volume, which only its
-    /// reset demotes, or answers without its storage; a Machine that does not answer goes.
+    /// reset demotes, or replies with an error; a Machine that sends no reply goes.
     ///
     /// Sending it again is the retry: every guard runs again while the Machine is listed,
     /// and a Machine ID the list no longer holds was already forgotten.
@@ -738,7 +745,7 @@ impl Client {
     ///
     /// Returns a generated [`RpcError`] when the Machine is not visible, when
     /// it is the last Machine and a Management Client holds a key or its holders
-    /// can't be read, when it answers holding a Volume copy or its storage can't be read,
+    /// can't be read, when it answers holding a Volume copy or replies with an error,
     /// or when shared-row removal fails.
     pub async fn remove_machine_membership(
         &mut self,
@@ -752,7 +759,10 @@ impl Client {
         if refuse_last_managed(self, &machines, selected).await? == CloudHold::Last {
             return Err(cloud_holds_last(selected));
         }
-        let held = self.held_copies(observation).await?;
+        let held = match self.held_copies(observation).await? {
+            HeldCopies::Unanswered => BTreeSet::new(),
+            HeldCopies::Answered(held) => held,
+        };
         if !held.is_empty() {
             return Err(copies_left_behind(
                 &observation.machine.name,
@@ -763,36 +773,44 @@ impl Client {
         forget(self, selected).await
     }
 
-    /// The Docker Volumes `machine` answers holding a copy of, as writer or any other
-    /// role: a removal without a reset would leave each behind. Empty when it doesn't answer.
+    /// What `machine` answers when asked for its storage: the Docker Volumes it holds a
+    /// copy of, as writer or any other role, which a removal without a reset leaves behind.
     ///
     /// # Errors
     ///
-    /// Returns a generated [`RpcError`] when `machine` is asked and its storage can't be read.
+    /// Returns a generated [`RpcError`] when `machine` replies with an error.
     pub(crate) async fn held_copies(
         &self,
         machine: &MachineObservation,
-    ) -> Result<BTreeSet<DockerVolumeName>, RpcError> {
-        let inspected = self.inspect_storage(std::slice::from_ref(machine)).await;
-        if let Some(failure) = inspected.failures.into_iter().next() {
-            return Err(RpcError {
-                code: RpcErrorCode::Unavailable,
-                message: format!(
-                    "Cannot read the Volume copies Server {} holds. No changes made.",
-                    machine.machine.name
-                ),
-                details: Value::Null,
-                cause: std::iter::once(failure.error.message)
-                    .chain(failure.error.cause)
-                    .collect(),
-            });
+    ) -> Result<HeldCopies, RpcError> {
+        if !machine.invites_rpc() {
+            return Ok(HeldCopies::Unanswered);
         }
-        Ok(inspected
-            .successes
-            .iter()
-            .flat_map(|success| success.value.roles())
-            .map(|(name, _)| name.clone())
-            .collect())
+        let mut client = self.clone();
+        match client
+            .try_read::<op::InspectStorage>(
+                InspectStorageRequest {},
+                &MachineTarget::from(&machine.machine.id),
+            )
+            .await
+        {
+            Ok(storage) => Ok(HeldCopies::Answered(
+                storage.roles().map(|(name, _)| name.clone()).collect(),
+            )),
+            Err(error) if error.is_unanswered() => Ok(HeldCopies::Unanswered),
+            Err(error) => {
+                let error = rpc_error(error);
+                Err(RpcError {
+                    code: RpcErrorCode::Unavailable,
+                    message: format!(
+                        "Cannot read the Volume copies Server {} holds. No changes made.",
+                        machine.machine.name
+                    ),
+                    details: Value::Null,
+                    cause: std::iter::once(error.message).chain(error.cause).collect(),
+                })
+            }
+        }
     }
 
     /// List images on each target Machine with independent bounded retries.
@@ -1120,6 +1138,14 @@ async fn remove_volumes_on(
         VolumeRemoval { id, outcome }
     }))
     .await
+}
+
+/// Whether a Server answered the storage read a removal without a reset asks it.
+#[derive(Debug)]
+pub(crate) enum HeldCopies {
+    /// It sends no reply, or its membership invites no call.
+    Unanswered,
+    Answered(BTreeSet<DockerVolumeName>),
 }
 
 /// Whether Cloud holds the last Machine. Cloud lets go of it by removing it itself:

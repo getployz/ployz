@@ -229,7 +229,7 @@ cluster until it reboots or you remove it.
    CLI-only for now:
 
    ```sh
-   ployz server rm web-2 --no-reset --confirm web-2
+   ployz server rm web-2 --no-reset --confirm dead
    ```
 
    See [When a server goes down](../services/scaling.md#when-a-server-goes-down) for which
