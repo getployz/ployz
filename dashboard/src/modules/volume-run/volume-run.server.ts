@@ -140,7 +140,8 @@ export const finishesThere = (volumeName: string, server: string) => `${volumeNa
 /** A lane past its point of no return: a Move that committed, or a restore, which commits from its first step. */
 export const pastReturn = (lane: Pick<VolumeRunRow, "phase" | "kind">) => lane.phase === "committed" || lane.kind === "restore";
 type LaneEnd = "cancelled" | "yielded";
-const keepsLane = (lane: VolumeRunRow, end: LaneEnd) => pastReturn(lane) || (lane.kind === "deploy" && end === "cancelled");
+// A seed's copy into the new Volume runs on without its row, so a release could only stop watching it.
+const keepsLane = (lane: VolumeRunRow, end: LaneEnd) => pastReturn(lane) || ((lane.kind === "deploy" || lane.kind === "seed") && end === "cancelled");
 
 // SAFETY: the row's kind and args were written together from one VolumeRunInput.
 const laneInput = (lane: Pick<VolumeRunRow, "kind" | "args">) => ({ kind: lane.kind, args: lane.args }) as VolumeRunInput;
@@ -170,6 +171,11 @@ const activeLane = Effect.fn("VolumeRun.activeLane")(function* (volumeId: string
 const laneRefusal = Effect.fn("VolumeRun.laneRefusal")(function* (lane: VolumeRunRow, kind: VolumeRunKind) {
   const run = volumeRunView(lane);
   if (lane.kind === "deploy") return { code: "conflict", message: `${lane.volumeName} is deploying; the Deploy ends its run`, details: { run } } satisfies StoreRefusal;
+  const input = laneInput(lane);
+  if (input.kind === "seed") {
+    const copying = `${lane.volumeName} is being copied into ${input.args.into.name}; it finishes on its own`;
+    return { code: "conflict", message: kind === "release" ? copying : `VolumeBusy: ${copying}`, details: { run } } satisfies StoreRefusal;
+  }
   if (!pastReturn(lane)) return { code: "conflict", message: volumeBusyMessage(lane), details: { run } } satisfies StoreRefusal;
   const target = yield* laneTarget(lane);
   const finishes = finishesThere(lane.volumeName, target ?? "its new Server");

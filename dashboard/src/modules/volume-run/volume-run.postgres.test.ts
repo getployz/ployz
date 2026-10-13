@@ -662,6 +662,24 @@ describe("volume runs", () => {
       });
     });
 
+    it("a release on a running seed refuses, saying the copy finishes on its own, and the seed keeps running", async () => {
+      const [seeding] = (await harness.pool.query(
+        `insert into volume_run (organization_id, environment_id, volume_id, volume_name, docker_volume, kind, args, state, inngest_run_id)
+         values ($1, 'env-1', $2, 'data', $3, 'seed', $4, 'running', 'run-seed') returning id`,
+        [organizationId, volumeId, dockerVolume, JSON.stringify({ into: { volumeId: "vol2", dockerVolume: "shop-production_vol-vol2", name: "data-copy" } })])).rows as Array<{ id: string }>;
+
+      expect(await release()).toEqual({
+        ok: false,
+        refusal: { code: "conflict", message: "data is being copied into data-copy; it finishes on its own", details: { run: expect.objectContaining({ id: seeding?.id }) } },
+        busy: expect.objectContaining({ id: seeding?.id, kind: "seed" }),
+      });
+      expect(await request({ kind: "sync", args: { full: false } })).toMatchObject({
+        ok: false, refusal: { message: "VolumeBusy: data is being copied into data-copy; it finishes on its own" },
+      });
+      expect(await lanes()).toMatchObject([{ id: seeding?.id, state: "running" }]);
+      expect(send).not.toHaveBeenCalled();
+    });
+
     it("a release on a Deploy's lane refuses, so the Deploy ends it, and a Deploy yields it", async () => {
       const [deployed] = (await harness.pool.query(
         `insert into volume_run (organization_id, environment_id, volume_id, volume_name, docker_volume, kind, args, state, inngest_run_id)
