@@ -239,7 +239,7 @@ function planRestore(name: string, from: string, answered: readonly AnsweredMemb
  * epoch is old. Only a writable root can be the writer, so a read-only one is old beside any writable one. Writable
  * roots whose epochs tie leave no way to tell, so neither is old.
  */
-function oldCopy(roots: readonly AnsweredMember[]): { readonly old: AnsweredMember; readonly writer: AnsweredMember } | null {
+export function oldCopy(roots: readonly AnsweredMember[]): { readonly old: AnsweredMember; readonly writer: AnsweredMember } | null {
   const writable = (root: AnsweredMember) => roleOf(root) === "writer";
   const above = (a: AnsweredMember, b: AnsweredMember) => Number(writable(a)) - Number(writable(b)) || epochOf(a) - epochOf(b);
   const [writer, next] = [...roots].sort((a, b) => above(b, a));

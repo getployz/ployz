@@ -2291,6 +2291,26 @@ describe("volume runs", () => {
       expect(await lanes()).toMatchObject([{ id: syncing.id, state: "yielded" }, { kind: "deploy", state: "done" }]);
     });
 
+    it("with a sync lane and two roots: the Deploy floors the newer-epoch root, the one the sync's demote keeps", async () => {
+      machines = [{ name: "fsn-1", pool: true, copy: writerCopy(base, 1) }, { name: "fsn-2", pool: true, copy: writerCopy(base, 3) }];
+      await requested({ kind: "sync", args: { full: false } });
+
+      const [placed] = await place();
+
+      expect(await fence(placed)).toEqual({ on: "fsn-2" });
+      expect(verbs).toEqual(["floor@fsn-2"]);
+    });
+
+    it("with a sync lane and two roots at one epoch: the fence fails naming both, and floors neither", async () => {
+      machines = [{ name: "fsn-1", pool: true, copy: writerCopy(base, 2) }, { name: "fsn-2", pool: true, copy: writerCopy(base, 2) }];
+      await requested({ kind: "sync", args: { full: false } });
+
+      const [placed] = await place();
+
+      await expect(fence(placed)).rejects.toThrow("data has two writers, data-fsn-1 and data-fsn-2");
+      expect(verbs).toEqual([]);
+    });
+
     it("the Deploy function floors, promotes, then runs the deployment, and ends its lane after", async () => {
       afterCut();
       const taken = await moving();

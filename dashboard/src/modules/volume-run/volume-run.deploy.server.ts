@@ -3,9 +3,9 @@ import type { MachineName } from "@ployz/sdk";
 import { and, eq, inArray } from "drizzle-orm";
 import { Effect } from "effect";
 import { NonRetriableError } from "inngest";
-import { expectOf, observedEpoch } from "#/modules/volume-run/plan";
+import { expectOf, observedEpoch, oldCopy } from "#/modules/volume-run/plan";
 import { volumeRun } from "#/modules/volume-run/tables";
-import { ACTIVE_VOLUME_RUN_STATES, type AnsweredMember, type Member, type VolumeRunArgs, type VolumeRunKind } from "#/modules/volume-run/volume-run";
+import { ACTIVE_VOLUME_RUN_STATES, type AnsweredMember, copyName, type Member, type VolumeRunArgs, type VolumeRunKind } from "#/modules/volume-run/volume-run";
 import {
   contextOf,
   ended,
@@ -88,9 +88,21 @@ const answered = (members: readonly Member[]) => members.filter((member): member
 // SAFETY: a took lane is the Deploy's own row, written from a VolumeRunArgs["deploy"].
 const observeMembers = (run: RunContext) => observeVolumeMembers(run.organizationId, run.dockerVolume, { kind: "deploy", args: run.args as VolumeRunArgs["deploy"] });
 
-/** The writer, or the slot a cut left keeping the stopped Service, with that Service's Container. */
+/**
+ * The writer, or the slot a cut left keeping the stopped Service, with that Service's Container. Of two roots it is the
+ * one a sync's demote keeps, so the Deploy never writes on the root the next sync cuts.
+ */
 const writerOf = Effect.fn("VolumeRun.writerOf")(function* (run: RunContext, members: readonly AnsweredMember[]) {
-  const root = members.find((member) => member.view.copy?.kind === "root");
+  const roots = members.filter((member) => member.view.copy?.kind === "root");
+  if (roots.length > 1) {
+    const writer = oldCopy(roots)?.writer;
+    if (writer === undefined) {
+      const named = roots.map((member) => copyName(run.volumeName, member.machine.name)).join(" and ");
+      return yield* Effect.fail(new NonRetriableError(`${run.volumeName} has two writers, ${named}`));
+    }
+    return { member: writer, kept: null };
+  }
+  const [root] = roots;
   if (root !== undefined) return { member: root, kept: null };
   const slots = members.filter((member) => member.view.copy?.kind === "slot");
   const kept = yield* keptOn(run.organizationId, run.dockerVolume, slots.map((member) => member.machine));
