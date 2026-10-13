@@ -86,7 +86,10 @@ def build(run, commands, *, daemon=True):
     started = time.monotonic()
     compiled = commands(["cargo", "build", "--locked", "--message-format=json-render-diagnostics",
                          "-p", "ployz", *(["-p", "ployzd"] if daemon else []),
-                         *shlex.split(os.environ.get("PLOYZ_VERIFY_CARGO_ARGS", ""))], cwd=CORE, timeout=1800)
+                         *shlex.split(os.environ.get("PLOYZ_VERIFY_CARGO_ARGS", ""))], cwd=CORE, timeout=1800,
+                        # The binaries are stripped below, so DWARF is wasted work: a third of an edit rebuild.
+                        # CI builds with the same setting.
+                        env={**os.environ, "CARGO_PROFILE_DEV_DEBUG": "0"})
     fresh = {event["target"]["name"] for line in compiled.stdout.splitlines()
              if (event := json.loads(line)).get("reason") == "compiler-artifact"
              and event["fresh"] and event.get("executable")}
