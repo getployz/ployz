@@ -158,6 +158,12 @@ pub fn typescript_declarations() -> String {
     declarations.add::<ployz_core::ListVolumeSnapshotsRequest>();
     declarations.add::<ployz_core::VolumeSnapshots>();
     declarations.add::<ployz_core::SetVolumeSnapshotRefused>();
+    declarations.add::<ployz_core::SetVolumeOffsiteRequest>();
+    declarations.add::<ployz_core::SetVolumeOffsiteReply>();
+    declarations.add::<ployz_core::InspectVolumeOffsiteRequest>();
+    declarations.add::<ployz_core::VolumeOffsiteView>();
+    declarations.add::<ployz_core::CheckOffsiteRequest>();
+    declarations.add::<ployz_core::OffsiteChecked>();
     declarations.add::<ployz_store::tools::ToolDef>();
     declarations.add::<ployz_store::tools::Place>();
     declarations.add::<ployz_store::tools::Step>();

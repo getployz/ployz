@@ -9,6 +9,9 @@ export const requirements = {
   volumeMove: { capability: "ployz.volume.mirror.declare.v1", feature: "Volume move" },
   snapshots: { capability: "ployz.volume.snapshot.v1", feature: "Snapshots", plural: true },
   snapshotList: { capability: "ployz.volume.snapshot.list.v1", feature: "Snapshots", plural: true },
+  offsiteSet: { capability: "ployz.volume.offsite.set.v1", feature: "Offsite" },
+  offsiteInspect: { capability: "ployz.volume.offsite.inspect.v1", feature: "Offsite" },
+  offsiteCheck: { capability: "ployz.volume.offsite.check.v1", feature: "Offsite" },
 } as const satisfies Record<string, Requirement>;
 
 export function requirementFor(capability: string): Requirement | null {

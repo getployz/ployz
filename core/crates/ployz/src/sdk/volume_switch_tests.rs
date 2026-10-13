@@ -37,6 +37,7 @@ fn every_volume_run_verb_is_sent_on_its_own_path() {
     let handed = json!({ "switch": switch(), "name": "data", "guid": "7" });
     let source = json!({ "switch": switch(), "name": "data", "container_id": "a".repeat(64) });
     let service = json!({ "switch": switch(), "name": "data", "namespace": "app-prod", "resolved_spec": resolved_spec() });
+    let bucket = json!({ "endpoint": "https://s3.example.com", "region": "auto", "bucket": "backups", "prefix": "org", "access_key": "a", "secret_key": "s" });
     let cases = [
         (
             "inspect_volume_copy",
@@ -84,6 +85,17 @@ fn every_volume_run_verb_is_sent_on_its_own_path() {
         ("close", leased.clone(), "Close"),
         ("clear_final", leased, "ClearFinal"),
         ("restore", service, "Restore"),
+        (
+            "set_volume_offsite",
+            json!({ "name": "data", "bucket": bucket.clone(), "backup": "b1", "want": { "kind": "gone" } }),
+            "SetVolumeOffsite",
+        ),
+        (
+            "inspect_volume_offsite",
+            json!({ "name": "data", "bucket": bucket.clone() }),
+            "InspectVolumeOffsite",
+        ),
+        ("check_offsite", json!({ "bucket": bucket }), "CheckOffsite"),
     ];
     for (command, payload, route) in cases {
         let path = volume_switch_path(&body(command, payload))

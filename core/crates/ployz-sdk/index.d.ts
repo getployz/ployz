@@ -62,23 +62,29 @@ import type {
 export * from "./generated/payloads";
 export type { CapabilityName } from "./generated/capabilities";
 import type {
+  CheckOffsiteRequest,
   CommitRequest,
   CopyObservation,
   DeclareMirrorRequest,
   HandOverRequest,
   InspectReceiveRequest,
   InspectVolumeCopyRequest,
+  InspectVolumeOffsiteRequest,
   ListVolumeSnapshotsRequest,
+  OffsiteChecked,
   MirrorRequest,
   ReceiveView,
   SeedVolumeRequest,
   ServiceVolumeRequest,
+  SetVolumeOffsiteReply,
+  SetVolumeOffsiteRequest,
   SetVolumeSnapshotRequest,
   SnapshotGuid,
   SourceContainerRequest,
   SwitchReply,
   Switch,
   VolumeCopyView,
+  VolumeOffsiteView,
   VolumeSnapshots,
   WarmRequest,
 } from "./generated/payloads";
@@ -119,13 +125,19 @@ export type VolumeSwitchRequest =
   | { command: "restore"; payload: ServiceVolumeRequest }
   | { command: "seed_volume"; payload: SeedVolumeRequest }
   | { command: "set_volume_snapshot"; payload: SetVolumeSnapshotRequest }
-  | { command: "list_volume_snapshots"; payload: ListVolumeSnapshotsRequest };
+  | { command: "list_volume_snapshots"; payload: ListVolumeSnapshotsRequest }
+  | { command: "set_volume_offsite"; payload: SetVolumeOffsiteRequest }
+  | { command: "inspect_volume_offsite"; payload: InspectVolumeOffsiteRequest }
+  | { command: "check_offsite"; payload: CheckOffsiteRequest };
 
 /** The reply payload of one Volume run verb. */
 export type VolumeSwitchReply<C extends VolumeSwitchRequest["command"]> =
   C extends "inspect_volume_copy" ? VolumeCopyView
   : C extends "inspect_receive" ? ReceiveView
   : C extends "set_volume_snapshot" | "list_volume_snapshots" ? VolumeSnapshots
+  : C extends "set_volume_offsite" ? SetVolumeOffsiteReply
+  : C extends "inspect_volume_offsite" ? VolumeOffsiteView
+  : C extends "check_offsite" ? OffsiteChecked
   : SwitchReply;
 
 /** Same serialized descriptors as CLI contexts. Backend only: Management is an admin capability. */

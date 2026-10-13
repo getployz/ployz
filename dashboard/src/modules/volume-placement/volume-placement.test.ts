@@ -702,4 +702,29 @@ describe("snapshot restore", () => {
     const withMirror: PlacementRow = { ...placement, staged: { primary: id("web-1"), mirrors: [id("web-3")], deletes: [], restore: restore(1.2e9) } };
     expect(undoPlacement(volume, members, withMirror, restoreOf(withMirror))).toEqual({ primary: id("web-1"), mirrors: [id("web-3")], deletes: [] });
   });
+
+  describe("from offsite", () => {
+    const offsite = (mirrors: string[]): PlacementRow => ({
+      ...row(mirrors),
+      staged: { primary: id("web-1"), mirrors: mirrors.map(id), deletes: [], restore: { ...restore(0), from: "off-1", offsite: { bucket: "bk", bytes: 2e9 } } },
+    });
+
+    it("downloads first, then saves, swaps and reseeds the mirrors", () => {
+      const stepsOf = (members: Member[], placement: PlacementRow) => placementGroup(volume, changes(members, placement), at).rows.map((line) => line.steps);
+      expect(stepsOf([member("web-1", "writer"), member("web-2", "mirror")], offsite(["web-2"])))
+        .toEqual([["Download", "Save current", "Stop", "Swap", "Start", "Seed"]]);
+    });
+
+    it("sends the bucket id with the run, never a key", () => {
+      expect(steps([member("web-1", "writer")], offsite([]))).toEqual([
+        { kind: "restore_snapshot", args: { from: "off-1", save: "b1", expect: 4, note: "#7", mirror: null, offsite: { bucket: "bk" } } },
+      ]);
+    });
+
+    it("always asks for the typed confirm, counting the time since the backup", () => {
+      const lost = placementLoss(changes([member("web-1", "writer")], offsite([])));
+      expect(lost.losesWrites).toBe(true);
+      expect(lost.items).toEqual([{ kind: "volume", name: "pg-data", detail: expect.stringMatching(/^back to .+ · \d+ (hours|days) of writes$/) }]);
+    });
+  });
 });

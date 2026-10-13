@@ -150,7 +150,10 @@ fn volume_switch_path(body: &RpcRequestBody) -> Result<&'static str, RpcError> {
         | Body::SeedVolume(_)
         | Body::Restore(_)
         | Body::SetVolumeSnapshot(_)
-        | Body::ListVolumeSnapshots(_) => body
+        | Body::ListVolumeSnapshots(_)
+        | Body::SetVolumeOffsite(_)
+        | Body::InspectVolumeOffsite(_)
+        | Body::CheckOffsite(_) => body
             .unary_path()
             .ok_or_else(|| invalid_argument(format!("{} is not a unary RPC", body.command()))),
         _ => Err(invalid_argument(format!(

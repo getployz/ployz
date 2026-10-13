@@ -136,6 +136,32 @@ hour or deploy. It never fails the deploy.
 Snapshots live on the same server as the volume. They don't survive that server. Keep a copy
 elsewhere too.
 
+## Offsite
+
+An offsite copy keeps daily backups of a volume in an S3 bucket, so the data survives losing every
+server. It needs Ployz Cloud and a recent Ployz on the server that writes the volume. Until then
+**Offsite** doesn't show.
+
+Open the volume, click **Add copy** under **Copies**, and pick **Offsite**. Pick a bucket your
+project already uses, or **New bucket** and type its endpoint, bucket name, access key and secret
+key. The server that writes the volume checks the bucket before Ployz saves it. When the check
+fails, the reason shows under the fields. Adding runs at once, not on deploy, and starts the first
+upload.
+
+Ployz saves a bucket once per project, so the project's other volumes can pick it. The secret key
+is stored encrypted and never shown again. The dialog shows it as **Sealed**. Typing the same
+bucket again replaces its keys.
+
+Ployz uploads each volume's newest snapshot every day at 00:00 UTC and keeps the last 7 backups.
+Past that, the oldest go first. A server that is busy or not answering skips the day. Click the
+offsite copy to see its bucket, its last upload and its **Backups**. **Upload now** sends the
+newest snapshot at once. It stays off until the volume has a snapshot.
+
+**Restore** on a backup works like restoring a snapshot. The dialog also says how much the restore
+**Downloads**. At your next deploy, Ployz downloads the backup, saves the current data as a kept
+**Before restore** snapshot, stops the services that mount the volume, swaps in the backup and
+starts them again. A mirror starts over from the restored data.
+
 ## Move a volume
 
 With Ployz Cloud, **Make primary** on a mirror or `ployz volume move data --to web-2` moves a

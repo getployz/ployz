@@ -22,13 +22,17 @@ export type VolumeRunArgs = {
     readonly guid: string;
     readonly name: string;
   };
-  /** Puts snapshot `from` back on the writer, saved first as `save`; `expect` is the writer epoch it was listed under. */
+  /**
+   * Puts snapshot `from` back on the writer, saved first as `save`; `expect` is the writer epoch it was listed under.
+   * With `offsite`, `from` is a backup in that project bucket, downloaded first.
+   */
   restore_snapshot: {
     readonly from: string;
     readonly save: string;
     readonly expect: number;
     readonly note: string;
     readonly mirror: MachineName | null;
+    readonly offsite?: { readonly bucket: string };
   };
 };
 export type AnyVolumeRunArgs = VolumeRunArgs[VolumeRunKind];

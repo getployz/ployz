@@ -1,5 +1,5 @@
 import { type ReactNode, useState } from "react";
-import { ArrowLeftRightIcon, CameraIcon, CheckIcon, ChevronLeftIcon, LockIcon, MoreHorizontalIcon, Trash2Icon } from "lucide-react";
+import { ArrowLeftRightIcon, CameraIcon, CheckIcon, ChevronLeftIcon, DownloadIcon, LockIcon, MoreHorizontalIcon, Trash2Icon, UploadIcon } from "lucide-react";
 import type { MachineId } from "@ployz/sdk";
 import { ConfirmDialog } from "#/components/confirm-dialog";
 import { Badge } from "#/components/ui/badge";
@@ -12,7 +12,8 @@ import { cn } from "#/lib/utils";
 import { scheduleWords } from "#/modules/volume-copies/snapshot-schedule";
 import type { Snapshot } from "#/modules/volume-copies/volume-copies";
 import type { SnapshotList } from "#/modules/volume-copies/volume-snapshots.hooks";
-import { lossWords, type SnapshotClock, SNAPSHOT_WORDS, sizeWords } from "#/modules/volume-copies/volume-snapshots";
+import type { Backup } from "#/modules/volume-copies/volume-offsite";
+import { lossWords, type SnapshotClock, SNAPSHOT_WORDS, sizeWords, spanWords } from "#/modules/volume-copies/volume-snapshots";
 import type { Placement, SnapshotRestore } from "#/modules/volume-placement/volume-placement";
 import { useScheduleEditor, type VolumeScheduleData } from "./StoreVolumeSchedule";
 
@@ -29,6 +30,15 @@ export const stagedSnapshot = ({ target, applied }: RestoreTarget, snapshot: Sna
   return [{ ...target, restore }, applied] as const;
 };
 
+/** The staged swap that downloads `backup` from the bucket and brings it back on the next Deploy. */
+export const stagedBackup = ({ target, applied }: RestoreTarget, backup: Backup, bucket: string, epoch: number) => {
+  const restore: SnapshotRestore = {
+    from: backup.id, at: Math.floor(backup.at.getTime() / 1000), losesBytes: 0, save: crypto.randomUUID(), expect: epoch,
+    offsite: { bucket, bytes: backup.bytes },
+  };
+  return [{ ...target, restore }, applied] as const;
+};
+
 export type VolumeSnapshotsData = {
   readonly list: SnapshotList | null;
   readonly pending: boolean;
@@ -41,7 +51,7 @@ export type VolumeSnapshotsData = {
  * One Volume's snapshots, by day. Take, Keep and Delete run now on the writer; Restore stages a swap for the next Deploy.
  * `restoreTo` is the placement a restore stages onto, or null where a restore can't be staged now.
  */
-export function SnapshotsView({ volume, services, live, snapshots, schedule, clock, staged, restoreTo, stage, onBack, now = new Date() }: {
+export function SnapshotsView({ volume, services, live, snapshots, schedule, clock, staged, restoreTo, offsite = false, stage, onBack, now = new Date() }: {
   volume: string;
   services: string;
   live: string;
@@ -50,6 +60,8 @@ export function SnapshotsView({ volume, services, live, snapshots, schedule, clo
   clock: SnapshotClock;
   staged: string | null;
   restoreTo: RestoreTarget | null;
+  /** The Volume has an offsite copy, so each snapshot offers Copy offsite. */
+  offsite?: boolean;
   stage: (staged: Placement, mirrors: readonly MachineId[]) => void;
   onBack: () => void;
   now?: Date;
@@ -79,12 +91,12 @@ export function SnapshotsView({ volume, services, live, snapshots, schedule, clo
         <h3 className="text-xs font-medium text-muted-foreground">{day.day}</h3>
         <ItemGroup role="list" aria-label={day.day} className="gap-1">
           {day.snapshots.map((snapshot) => <SnapshotRow key={snapshot.id} snapshot={snapshot} clock={clock}
-            staged={staged === snapshot.id} restorable={restoreTo !== null && epoch !== null} disabled={snapshots.pending}
+            staged={staged === snapshot.id} restorable={restoreTo !== null && epoch !== null} disabled={snapshots.pending} offsite={offsite}
             onRestore={() => setRestoring(snapshot)} onKeep={() => snapshots.keep(snapshot.id, !snapshot.kept)} onDelete={() => setDeleting(snapshot)} />)}
         </ItemGroup>
       </section>)}
     {editor.dialog}
-    <RestoreDialog volume={volume} services={services} live={live} snapshot={restoring} label={restoring ? label(restoring) : ""} now={now}
+    <RestoreDialog volume={volume} services={services} live={live} point={restoring} label={restoring ? label(restoring) : ""} now={now}
       onOpenChange={(open) => { if (!open) setRestoring(null); }}
       onRestore={(snapshot) => {
         if (restoreTo !== null && epoch !== null) stage(...stagedSnapshot(restoreTo, snapshot, epoch));
@@ -100,12 +112,13 @@ export function SnapshotsView({ volume, services, live, snapshots, schedule, clo
   </div>;
 }
 
-function SnapshotRow({ snapshot, clock, staged, restorable, disabled, onRestore, onKeep, onDelete }: {
+function SnapshotRow({ snapshot, clock, staged, restorable, disabled, offsite, onRestore, onKeep, onDelete }: {
   snapshot: Snapshot;
   clock: SnapshotClock;
   staged: boolean;
   restorable: boolean;
   disabled: boolean;
+  offsite: boolean;
   onRestore: () => void;
   onKeep: () => void;
   onDelete: () => void;
@@ -130,6 +143,7 @@ function SnapshotRow({ snapshot, clock, staged, restorable, disabled, onRestore,
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-auto">
           <DropdownMenuItem onClick={onKeep}>{snapshot.kept ? <CheckIcon /> : <LockIcon />}Keep</DropdownMenuItem>
+          {offsite ? <DropdownMenuItem disabled><UploadIcon />Copy offsite</DropdownMenuItem> : null}
           <DropdownMenuItem variant="destructive" onClick={onDelete}><Trash2Icon />Delete</DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
@@ -137,21 +151,27 @@ function SnapshotRow({ snapshot, clock, staged, restorable, disabled, onRestore,
   </Item>;
 }
 
-export function RestoreDialog({ volume, services, live, snapshot, label, now, onOpenChange, onRestore }: {
+/** A snapshot restores instantly; a backup names what it `downloads` first, and only dates the writes it loses. */
+export function RestoreDialog<P extends Pick<Snapshot, "at" | "losesBytes">>({ volume, services, live, point, label, downloads = null, now, onOpenChange, onRestore }: {
   volume: string;
   services: string;
   live: string;
-  snapshot: Snapshot | null;
+  point: P | null;
   label: string;
+  downloads?: number | null;
   now: Date;
   onOpenChange: (open: boolean) => void;
-  onRestore: (snapshot: Snapshot) => void;
+  onRestore: (point: P) => void;
 }) {
-  const loses = snapshot === null ? null : lossWords(snapshot, now);
-  return <Dialog open={snapshot !== null} onOpenChange={onOpenChange}>
+  const loses = point === null ? null
+    : downloads === null ? lossWords(point, now) : `${spanWords(now.getTime() - point.at.getTime())} of writes`;
+  return <Dialog open={point !== null} onOpenChange={onOpenChange}>
     <DialogContent>
       <DialogHeader>
-        <DialogTitle className="flex items-center gap-2">Restore {volume}<Badge variant="success">Instant</Badge></DialogTitle>
+        <DialogTitle className="flex items-center gap-2">Restore {volume}
+          {downloads === null ? <Badge variant="success">Instant</Badge>
+            : <Badge variant="info"><DownloadIcon data-icon="inline-start" />Downloads {sizeWords(downloads)}</Badge>}
+        </DialogTitle>
       </DialogHeader>
       <div className="flex flex-col gap-3">
         <Line title="From">{label}</Line>
@@ -165,7 +185,7 @@ export function RestoreDialog({ volume, services, live, snapshot, label, now, on
       </div>
       <DialogFooter>
         <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-        <Button onClick={() => { if (snapshot) onRestore(snapshot); }}>Restore</Button>
+        <Button onClick={() => { if (point) onRestore(point); }}>Restore</Button>
       </DialogFooter>
     </DialogContent>
   </Dialog>;

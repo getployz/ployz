@@ -4,7 +4,9 @@ import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import type { VolumeCopies } from "#/modules/volume-copies/volume-copies";
 import { copiesFromPlacement } from "#/modules/volume-copies/volume-copies.placement";
 import { lastMirrorRefreshQueryOptions } from "#/modules/volume-copies/volume-copies.queries";
-import { mirroredVolumes, type PlacementVolume } from "#/modules/volume-placement/volume-placement";
+import { offsiteCopyOf, offsiteServed } from "#/modules/volume-copies/volume-offsite";
+import { useOffsiteCopies } from "#/modules/volume-copies/volume-offsite.queries";
+import { mirroredVolumes, observePlacement, type PlacementVolume } from "#/modules/volume-placement/volume-placement";
 import { useVolumePlacements } from "#/modules/volume-placement/volume-placement.queries";
 import { useActiveVolumeRuns, volumeMembersQueryOptions } from "#/modules/volume-run/volume-run.queries";
 
@@ -12,17 +14,22 @@ import { useActiveVolumeRuns, volumeMembersQueryOptions } from "#/modules/volume
 export function useCanvasCopies(
   organizationSlug: string, environment: EnvironmentRef, environmentId: string, volumes: readonly PlacementVolume[],
 ): ReadonlyMap<string, VolumeCopies> {
+  const lens = useRuntimeLens(organizationSlug);
   const rows = useVolumePlacements(organizationSlug).data ?? [];
   const runs = useActiveVolumeRuns(organizationSlug).data ?? [];
-  const placed = mirroredVolumes(volumes.map((volume) => volume.id), rows, environmentId, useRuntimeLens(organizationSlug).volumeCopies);
+  const offsite = useOffsiteCopies(organizationSlug, environment);
+  const placed = mirroredVolumes(volumes.map((volume) => volume.id), rows, environmentId, lens.volumeCopies);
   const running = volumes.flatMap((volume) => runs.some((run) => run.volume_id === volume.id) ? [volume.id] : []);
-  const ids = [...new Set([...placed, ...running])];
+  const backedUp = volumes.flatMap((volume) => offsite.some((copy) => copy.volumeId === volume.id) ? [volume.id] : []);
+  const ids = [...new Set([...placed, ...running, ...backedUp])];
   const members = useQueries({ queries: ids.map((id) => volumeMembersQueryOptions(organizationSlug, environment, id)) });
   const synced = useQueries({ queries: ids.map((id) => lastMirrorRefreshQueryOptions(organizationSlug, id)) });
   return new Map(ids.flatMap((id, index) => {
     const volume = volumes.find((entry) => entry.id === id);
     const answered = members[index]?.data;
     if (volume === undefined || answered === undefined) return [];
+    const stored = offsite.find((copy) => copy.volumeId === id);
+    const served = offsiteServed(lens.machines, observePlacement(answered).primary?.id ?? null);
     const copies = copiesFromPlacement({
       volume,
       members: answered,
@@ -30,6 +37,7 @@ export function useCanvasCopies(
       active: runs.find((run) => run.volume_id === id) ?? null,
       lastSync: synced[index]?.data?.ended ?? null,
       lastDone: synced[index]?.data?.done ?? null,
+      offsite: stored !== undefined && served ? offsiteCopyOf(stored, null) : null,
     });
     return copies === null ? [] : [[id, copies] as const];
   }));
