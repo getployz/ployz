@@ -152,7 +152,9 @@ Catch-up rejects partial Live Observations before planning, reads fresh target
 storage evidence, reports unknown eligibility or
 incomplete placement, and stops; it does not leave work for a background loop.
 Deleted slots, later eligibility changes, and transient failures require an
-explicit redeploy.
+explicit redeploy. A Deploy of any Project also fills the Ingress Proxy's
+missing or stopped slots on every ingress Server. It creates or starts them, and
+never replaces, upgrades or removes one.
 
 **Why.** Imperative errors surface predictably at the caller that can act on them.
 Declarative reconciliation decouples components but multiplies edge cases and
