@@ -88,6 +88,10 @@ describe("placementChanges", () => {
     expect(changes([member("web-1", "writer")], row(["web-2"], { primary: "web-1" }))).toEqual([]);
   });
 
+  it("plans nothing for a staged mirror on a Server that left the cluster", () => {
+    expect(changes([member("web-1", "writer")], row(["web-2"], { primary: "web-1", mirrors: ["web-2"] }))).toEqual([]);
+  });
+
   it("makes a move one change, even when it consumes the mirror it promotes", () => {
     const members = [member("web-1", "writer"), member("web-2", "mirror"), pooled("web-3")];
     const staged = changes(members, row(["web-2"], { primary: "web-2" }));
@@ -206,6 +210,8 @@ describe("placementForm", () => {
 
   it("drops a mirror on a Server that left the cluster", () => {
     expect(form([member("web-1", "writer")], row(["web-2"]))).toEqual({ primary: "web-1:none", mirrors: [], detached: [] });
+    expect(form([member("web-1", "writer")], row(["web-2"], { primary: "web-1", mirrors: ["web-2"] })))
+      .toEqual({ primary: "web-1:none", mirrors: [], detached: [] });
   });
 });
 
