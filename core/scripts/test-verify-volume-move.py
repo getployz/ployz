@@ -459,14 +459,14 @@ class VolumeMove:
             return None
         return sorted(acked - {int(line) for line in result.stdout.split() if line.isdigit()})
 
-    def fault(self, value, machine=None):
+    def fault(self, value, machine=None, check=True):
         script = "touch /etc/default/ployz; sed -i '/^PLOYZD_FAULT=/d' /etc/default/ployz; "
         if value:
             script += f"echo {shlex.quote('PLOYZD_FAULT=' + value)} >> /etc/default/ployz; "
         script += ("systemctl restart ployz.service; systemctl stop ployz-volume-plugin.service || true; "
                    "for i in $(seq 60); do systemctl is-active --quiet ployz.service && break; sleep 1; done")
         for target in [machine] if machine else self.machines:
-            self.sh(target, script)
+            self.sh(target, script, check=check)
 
     def fired(self, since):
         for machine in self.machines:
@@ -728,7 +728,7 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
                     if isinstance(error, Skipped):
                         result["skipped"] = str(error)
                     if case["fault"]:
-                        self.fault(None)
+                        self.fault(None, check=False)
                     result["heal"] = self.heal(self.other(self.writer()))
                     (self.out / f"{case['name']}.json").write_text(json.dumps(result, indent=2) + "\n")
                     results.append(result)

@@ -68,6 +68,7 @@ class ClusterModel:
         self.clock = None
         self.holds = []
         self.tripped = None
+        self.disarm_fails = False
         self.calls = 0
 
     def other(self, machine):
@@ -139,6 +140,8 @@ class ClusterModel:
     def guest(self, machine, script):
         if "PLOYZD_FAULT" in script:
             value = script.split("PLOYZD_FAULT=", 2)[-1].split("'", 1)[0] if "echo" in script else None
+            if value is None and self.disarm_fails:
+                return 255, ""
             held = self.holder() if self.clock else None
             if value and held:
                 # The holder crosses the armed point, so the fault fires inside it and not in the case's run.
@@ -503,6 +506,15 @@ class VolumeMoveTests(unittest.TestCase):
         with redirect_stdout(io.StringIO()), self.assertRaisesRegex(volume_move.Skipped, "sync-b"):
             checks.start_op("move", "machine-2")
         self.assertEqual([wait["holder"] for wait in checks.busy_waits], ["sync-b"])
+
+    def test_a_failed_disarm_after_a_case_error_still_writes_the_summary(self):
+        checks, model = self.checks()
+        model.disarm_fails = True
+        with redirect_stdout(io.StringIO()):
+            summary = checks.run_all([volume_move.KILLS[0], volume_move.CASES[0]])
+        self.assertEqual([case["name"] for case in summary["cases"]], [volume_move.KILLS[0]["name"], "clean"])
+        self.assertTrue(summary["cases"][1]["passed"], summary["cases"][1])
+        self.assertTrue((self.root / "out" / "summary.json").exists())
 
     def test_each_planted_defect_fails_the_run(self):
         for mutation in ("two-writers", "stopped", "snapshots", "lost"):
