@@ -134,6 +134,15 @@ and each server's page then show the newest release on that channel.
 Switching back to Stable never downgrades a server. A server on a beta ahead of Stable reads as
 current and waits until Stable catches up.
 
+The same two settings from the CLI, when you're signed in:
+
+```sh
+ployz server upgrade-policy show
+ployz server upgrade-policy set --channel beta --automatic true
+```
+
+Pass only the setting you're changing; the other stays as it is.
+
 ### New major lines
 
 Upgrades stay on your servers' release line (`0.x`). When a new line like 1.0 is published, the top

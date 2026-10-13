@@ -30,7 +30,7 @@ impl Credential {
         }
     }
 
-    fn bearer(&self) -> &str {
+    pub(crate) fn bearer(&self) -> &str {
         match self {
             Self::Device(signed_in) => signed_in.token().expose(),
             Self::Token { token, .. } => token.expose(),
@@ -38,8 +38,8 @@ impl Credential {
     }
 }
 
-/// `PLOYZ_TOKEN` (at `cloud`, else the stored sign-in's Cloud, else the default)
-/// wins over the stored sign-in. Never waits for a browser.
+/// `PLOYZ_TOKEN` (at [`named_cloud`], else the default) wins over the stored sign-in.
+/// Never waits for a browser.
 ///
 /// # Errors
 ///
@@ -52,14 +52,31 @@ pub(crate) async fn credential(
     let Some(token) = token.filter(|token| !token.is_empty()) else {
         return cloud_login::signed_in(store).await.map(Credential::Device);
     };
-    let cloud = match cloud {
-        Some(cloud) => cloud,
-        None => store.cloud()?.unwrap_or_else(|| DEFAULT_CLOUD.to_owned()),
-    };
     Ok(Credential::Token {
-        cloud: cloud_origin(&cloud),
+        cloud: named_cloud(store, true, cloud)?.unwrap_or_else(|| cloud_origin(DEFAULT_CLOUD)),
         token: Secret::new(token),
     })
+}
+
+/// The Cloud [`credential`] acts in, when anything names one: with a token, `cloud`
+/// else the stored sign-in's; without, the stored sign-in's (a device acts only where
+/// it signed in) else `cloud`. Whatever else talks to "the Cloud" reads this too, so
+/// it never names a different one than the credential.
+///
+/// # Errors
+///
+/// Returns a credential store that cannot be read, when it is consulted.
+pub(crate) fn named_cloud(
+    store: &CredentialStore,
+    token: bool,
+    cloud: Option<String>,
+) -> Result<Option<String>, LoginError> {
+    let cloud = cloud.filter(|cloud| !cloud.trim().is_empty());
+    let named = match cloud {
+        Some(cloud) if token => Some(cloud),
+        cloud => store.cloud()?.or(cloud),
+    };
+    Ok(named.map(|cloud| cloud_origin(&cloud)))
 }
 
 /// [`credential`] from `PLOYZ_TOKEN` and `PLOYZ_CLOUD_URL`: the one way commands
@@ -328,7 +345,7 @@ pub(crate) async fn config_store<T: DeserializeOwned>(
 ) -> Result<T, StoreCallError> {
     let body = serde_json::to_value(body).map_err(|error| LoginError::Reply(error.to_string()))?;
     let url = format!("{}/api/config/{operation}", credential.cloud());
-    let response = send_approved(credential, Method::POST, &url, &body, approval).await?;
+    let response = send_approved(credential, Method::POST, &url, &body, approval, None).await?;
     store_answer(credential, response).await
 }
 
@@ -338,10 +355,14 @@ async fn send_approved(
     url: &str,
     body: &serde_json::Value,
     approval: Option<&str>,
+    request_key: Option<&str>,
 ) -> Result<reqwest::Response, LoginError> {
     let mut request = request(credential, method, url, Some(body))?;
     if let Some(approval) = approval {
         request = request.header("x-ployz-approval", approval);
+    }
+    if let Some(key) = request_key {
+        request = request.header("x-ployz-request-key", key);
     }
     request
         .send()
@@ -382,9 +403,46 @@ pub(crate) async fn approved_answer<T: DeserializeOwned>(
     body: &serde_json::Value,
     approval: Option<&str>,
 ) -> Result<T, StoreCallError> {
+    keyed_answer(credential, method, path, body, approval, None).await
+}
+
+/// [`approved_answer`] with `x-ployz-request-key`, so a retried call of a Cloud
+/// command runs once.
+///
+/// # Errors
+///
+/// Returns Cloud's refusal, or a Cloud failure.
+pub(crate) async fn keyed_answer<T: DeserializeOwned>(
+    credential: &Credential,
+    method: Method,
+    path: &str,
+    body: &serde_json::Value,
+    approval: Option<&str>,
+    request_key: Option<&str>,
+) -> Result<T, StoreCallError> {
+    keyed_reply(credential, method, path, body, approval, request_key)
+        .await
+        .0
+}
+
+/// [`keyed_answer`] with the manifest revision the reply named, for a caller that
+/// holds its own copy of the published commands rather than reading [`revision_seen`].
+pub(crate) async fn keyed_reply<T: DeserializeOwned>(
+    credential: &Credential,
+    method: Method,
+    path: &str,
+    body: &serde_json::Value,
+    approval: Option<&str>,
+    request_key: Option<&str>,
+) -> (Result<T, StoreCallError>, Option<String>) {
     let url = format!("{}/api/cli/{path}", credential.cloud());
-    let response = send_approved(credential, method, &url, body, approval).await?;
-    store_answer(credential, response).await
+    let response = match send_approved(credential, method, &url, body, approval, request_key).await
+    {
+        Ok(response) => response,
+        Err(error) => return (Err(error.into()), None),
+    };
+    let revision = revision_of(response.headers());
+    (store_answer(credential, response).await, revision)
 }
 
 /// Read the Cloud run at `/api/cli/<path>` every second until its `state` is neither
@@ -502,6 +560,7 @@ async fn store_answer<T: DeserializeOwned>(
         PublicError { code: String, message: String },
     }
     let status = response.status();
+    notice_revision(&response);
     let bytes = response
         .bytes()
         .await
@@ -780,6 +839,7 @@ pub(crate) async fn call<T: DeserializeOwned>(
     let url = format!("{}/api/cli/{path}", credential.cloud());
     let response = send(credential, method, &url, body).await?;
     let status = response.status();
+    notice_revision(&response);
     let body = response
         .bytes()
         .await
@@ -788,6 +848,43 @@ pub(crate) async fn call<T: DeserializeOwned>(
         return Err(LoginError::Unsupported(credential.cloud().to_owned()));
     }
     answer(credential, status, &body)
+}
+
+/// The manifest revision each Cloud named on its latest `/api/cli` reply, by origin.
+static REVISION: std::sync::Mutex<std::collections::BTreeMap<String, String>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+pub(crate) const REVISION_HEADER: &str = "x-ployz-manifest";
+
+/// Keep the revision a reply names, so a command can refresh the published
+/// commands after it prints when Cloud moved on.
+pub(crate) fn notice_revision(response: &reqwest::Response) {
+    if let Some(revision) = revision_of(response.headers()) {
+        REVISION
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(response.url().origin().ascii_serialization(), revision);
+    }
+}
+
+fn revision_of(headers: &reqwest::header::HeaderMap) -> Option<String> {
+    headers
+        .get(REVISION_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(ToOwned::to_owned)
+}
+
+/// The revision `cloud`'s latest `/api/cli` reply named, if one did.
+pub(crate) fn revision_seen(cloud: &str) -> Option<String> {
+    let origin = reqwest::Url::parse(cloud)
+        .ok()?
+        .origin()
+        .ascii_serialization();
+    REVISION
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(&origin)
+        .cloned()
 }
 
 /// Cloud's refusal of a call, as it sent it.
@@ -885,6 +982,26 @@ mod tests {
             cloud: cloud.to_owned(),
             token: Secret::new("ployz_secret".to_owned()),
         }
+    }
+
+    #[test]
+    fn a_device_acts_where_it_signed_in_and_a_token_where_the_cloud_url_says() {
+        let (dir, store) = signed_in_store("http://signed-in.test");
+        let other = || Some("http://other.test".to_owned());
+        assert_eq!(
+            named_cloud(&store, false, other()).unwrap().as_deref(),
+            Some("http://signed-in.test")
+        );
+        assert_eq!(
+            named_cloud(&store, true, other()).unwrap().as_deref(),
+            Some("http://other.test")
+        );
+        let empty = CredentialStore::beside(&dir.path().join("elsewhere/config.yaml"));
+        assert_eq!(
+            named_cloud(&empty, false, other()).unwrap().as_deref(),
+            Some("http://other.test"),
+            "signed out, the Cloud URL still names where commands are read"
+        );
     }
 
     #[tokio::test]

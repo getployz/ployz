@@ -46,12 +46,80 @@ pub fn run() -> Result<(), Error> {
     let args = std::env::args_os().skip(1).collect::<Vec<_>>();
     let before_parse = crate::ui::Mode::resolve(crate::ui::Surroundings::of_process(false));
     crate::ui::Color::requested(&command, &args).apply(before_parse);
-    let matches = command.clone().try_get_matches().map_err(usage_failure)?;
+    let matches = match command.clone().try_get_matches() {
+        Ok(matches) => matches,
+        Err(error) => {
+            // A word the tree lacks may be a command Cloud published since the
+            // cache was written, or one never cached: one refresh, then parse again.
+            let Some(published) = published_after_miss(&error, &command, &args) else {
+                return Err(usage_failure(error));
+            };
+            command = crate::published::attach(crate::cli::compiled(), &published);
+            command.clone().try_get_matches().map_err(usage_failure)?
+        }
+    };
     let color = matches
         .get_one::<String>("color")
         .map_or("", String::as_str);
     crate::ui::init(matches.get_flag("json"), crate::ui::Color::named(color));
-    dispatch(&matches, &mut command)
+    let result = dispatch(&matches, &mut command);
+    follow_cloud_revision();
+    result
+}
+
+/// Every `/api/cli` reply names Cloud's manifest revision. One the cache lacks means
+/// the next `--help` would be stale, so fetch it now, after the command's own output.
+fn follow_cloud_revision() {
+    let setup = crate::published::Setup::from_env();
+    let Some(seen) = crate::cloud_account::revision_seen(&setup.cloud) else {
+        return;
+    };
+    if setup
+        .cached()
+        .is_some_and(|published| published.revision == seen)
+    {
+        return;
+    }
+    let _ = setup.refresh_now();
+}
+
+/// A word no command has may be one Cloud published since; a flag a published command
+/// lacks may be one Cloud added since. A flag a compiled command lacks is a typo, and
+/// costs no round trip.
+fn published_after_miss(
+    error: &clap::Error,
+    tree: &Command,
+    args: &[std::ffi::OsString],
+) -> Option<crate::published::Published> {
+    use clap::error::ErrorKind;
+    let setup = crate::published::Setup::from_env();
+    if !setup.configured {
+        return None;
+    }
+    let stale = error.kind() == ErrorKind::InvalidSubcommand
+        || error.kind() == ErrorKind::UnknownArgument
+            && setup
+                .cached()
+                .is_some_and(|published| published.find(&reached(tree, args)).is_some());
+    stale.then(|| setup.refresh_now().ok()).flatten()
+}
+
+/// The subcommand path `args` reach in `tree`, `server ls`: the command that rejected
+/// whatever followed.
+fn reached(tree: &Command, args: &[std::ffi::OsString]) -> String {
+    let mut command = tree;
+    let mut path = Vec::new();
+    for word in args
+        .iter()
+        .take_while(|arg| *arg != "--")
+        .filter_map(|arg| arg.to_str())
+    {
+        if let Some(child) = command.find_subcommand(word) {
+            path.push(child.get_name());
+            command = child;
+        }
+    }
+    path.join(" ")
 }
 
 /// Report a rejected command line: clap's own rendering, or one JSON error under `--json`.
@@ -93,9 +161,21 @@ fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
         return Ok(());
     }
     let path = command_path(matches);
-    // Every leaf has a handler, so a missing one means a group without its
-    // subcommand: its help, as a bare `ployz` shows the top level's.
+    // Every compiled leaf has a handler, so a missing one is a published leaf or a
+    // group without its subcommand: its help, as a bare `ployz` shows the top level's.
     let Some(runnable) = handler_for(&path) else {
+        let setup = crate::published::Setup::beside(
+            &config_path(leaf_matches(matches))?,
+            std::env::var(crate::cli::env::CLOUD_URL).ok(),
+        );
+        if let Some(cached) = setup.cached()
+            && let Some(published) = cached.find(&path)
+        {
+            if context_above_leaf(matches) {
+                return Err(Error::usage(format!("ployz {path} doesn't use a context")));
+            }
+            return crate::published::run(matches, published, &setup);
+        }
         if matches.get_flag("json") {
             return Err(Error::usage(format!("ployz {path} requires a subcommand")));
         }
@@ -902,7 +982,7 @@ mod tests {
 
     #[test]
     fn every_leaf_has_a_handler_and_every_visible_handler_is_in_the_catalog() {
-        let mut command = command();
+        let mut command = crate::cli::compiled();
         command.build();
         let mut leaves = BTreeSet::new();
         let mut runnable = BTreeSet::new();

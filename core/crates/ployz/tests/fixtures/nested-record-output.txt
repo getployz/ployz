@@ -1,0 +1,9 @@
+Service = <service>
+Url = <url>
+Status = pending
+Checking = yes
+Uptime = <uptime>
+Regions = region <region>, latest (region <region>, at <at>, kind routine, verdict pass, answer <answer>, ms 12), last error (at <at>, error <error>)
+Regions = region <region>
+Incidents = opened at <opened_at>, closed at <closed_at>, cause <cause>, observations (region <region>, at <at>, verdict pass, answer <answer>; region <region>, at <at>, verdict pass, answer <answer>)
+Incidents = opened at <opened_at>, cause <cause>, observations (region <region>, at <at>, verdict pass, answer <answer>; region <region>, at <at>, verdict pass, answer <answer>)

@@ -2,7 +2,7 @@
 //! answering its reads and its one write from the Config Store and Ployz Cloud.
 
 use std::collections::hash_map::Entry;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -12,7 +12,8 @@ use clap::{ArgMatches, Command};
 use futures_util::future::join_all;
 use ployz_core::{RpcError, RpcErrorCode};
 use ployz_store::tools::{
-    self, Act, Action, Ask, Gate, INSTRUCTIONS, Place, State, Step, StoreAt, ToolResult, Write,
+    self, Act, Action, Ask, Gate, INSTRUCTIONS, Place, RequestKey, State, Step, StoreAt,
+    ToolResult, Write,
 };
 use ployz_store::{Actor, ConfigStore, OrganizationId};
 use reqwest::Method;
@@ -39,6 +40,7 @@ use crate::approval::{self, Asked, Subject, Verb};
 use crate::cloud_account::{self, Credential, StoreCallError};
 use crate::cloud_login::{CredentialStore, LoginError};
 use crate::failure::Failure;
+use crate::published::{self, Effect, Published, PublishedCommand, Setup};
 
 pub(crate) fn command() -> Command {
     Command::new("mcp").about("Serve the agent tools to a coding agent as MCP tools over stdio")
@@ -59,6 +61,9 @@ pub(super) fn serve(root: &ArgMatches) -> Result<(), Error> {
         Some(store::Backend::Local(store, who)) => Store::Local(store, who),
         _ => Store::Cloud,
     };
+    let cloud = std::env::var(crate::cli::env::CLOUD_URL).ok();
+    // Only Cloud runs a published command, so a local Store lists none.
+    let setup = matches!(store, Store::Cloud).then(|| Setup::beside(&config, cloud.clone()));
     let linked = config.clone();
     // Like each CLI command, each call reads the link, so `ployz link` or
     // `ployz org use` takes effect on the next call.
@@ -74,13 +79,17 @@ pub(super) fn serve(root: &ArgMatches) -> Result<(), Error> {
         Account {
             config,
             token: std::env::var(crate::cli::env::TOKEN).ok(),
-            cloud: std::env::var(crate::cli::env::CLOUD_URL).ok(),
+            cloud,
             organization: OnceCell::new(),
         },
         store,
         place,
     );
     let runtime = super::runtime()?;
+    let server = match setup {
+        Some(setup) => runtime.block_on(server.publishing(setup)),
+        None => server,
+    };
     let served = runtime.block_on(async {
         let mut terminate = signal(SignalKind::terminate())?;
         let mut interrupt = signal(SignalKind::interrupt())?;
@@ -332,6 +341,15 @@ struct Server {
     tools: Vec<Tool>,
     gates: HashMap<&'static str, Gate>,
     waiting: Waiting,
+    /// The Cloud whose published commands are listed, when the Store is Cloud.
+    setup: Option<Setup>,
+    /// The published commands as last read, replaced when a reply names a newer revision.
+    published: Mutex<Option<Published>>,
+    /// Revisions whose reread failed, so later calls that name one don't try again.
+    unread: Mutex<BTreeSet<String>>,
+    /// Held while the published commands are reread, so calls that see a new revision
+    /// together read it once.
+    rereading: tokio::sync::Mutex<()>,
 }
 
 #[derive(Default)]
@@ -357,7 +375,175 @@ impl Server {
             tools: catalog.into_iter().map(tool).collect(),
             gates,
             waiting: Waiting::default(),
+            setup: None,
+            published: Mutex::new(None),
+            unread: Mutex::new(BTreeSet::new()),
+            rereading: tokio::sync::Mutex::new(()),
         }
+    }
+
+    /// List `setup`'s published commands: fetched now within the refresh budget, else
+    /// as last cached, else none.
+    async fn publishing(mut self, setup: Setup) -> Self {
+        let published = self.refreshed(&setup).await.or_else(|| setup.cached());
+        self.setup = Some(setup);
+        self.published = Mutex::new(published);
+        self
+    }
+
+    async fn refreshed(&self, setup: &Setup) -> Option<Published> {
+        let credential = async {
+            match self.backend().await {
+                Ok(Backend::Cloud(credential)) => Some(credential),
+                Ok(Backend::Local(..)) | Err(_) => None,
+            }
+        };
+        setup.refresh(credential).await.ok()
+    }
+
+    fn held(&self) -> std::sync::MutexGuard<'_, Option<Published>> {
+        self.published
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The compiled tools, then each agent-facing published command.
+    fn tools(&self) -> Vec<Tool> {
+        let mut tools = self.tools.clone();
+        if let Some(published) = self.held().as_ref() {
+            tools.extend(
+                published
+                    .commands
+                    .iter()
+                    .filter(|command| command.agents)
+                    .map(published_tool),
+            );
+        }
+        tools
+    }
+
+    fn published_named(&self, name: &str) -> Option<PublishedCommand> {
+        self.held()
+            .as_ref()?
+            .commands
+            .iter()
+            .find(|command| command.agents && command.name == name)
+            .cloned()
+    }
+
+    /// Reread the published commands when `revision` is not the one held, and tell the
+    /// host the list changed. A revision the reread failed or did not reach is tried once.
+    async fn follow(&self, revision: Option<String>, context: &RequestContext<RoleServer>) {
+        let (Some(revision), Some(setup)) = (revision, &self.setup) else {
+            return;
+        };
+        let unread = || {
+            self.unread
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        };
+        let settled = || {
+            self.held()
+                .as_ref()
+                .is_some_and(|published| published.revision == revision)
+                || unread().contains(&revision)
+        };
+        if settled() {
+            return;
+        }
+        let _rereading = self.rereading.lock().await;
+        if settled() {
+            return;
+        }
+        let Some(refreshed) = self.refreshed(setup).await else {
+            unread().insert(revision);
+            return;
+        };
+        if refreshed.revision != revision {
+            unread().insert(revision);
+        }
+        *self.held() = Some(refreshed);
+        let _ = context.peer.notify_tool_list_changed().await;
+    }
+
+    /// Cloud no longer has the command: drop it here and from the cache, and tell the host.
+    async fn forget(&self, name: &str, context: &RequestContext<RoleServer>) {
+        if let Some(published) = self.held().as_mut() {
+            published.commands.retain(|command| command.name != name);
+        }
+        if let Some(setup) = &self.setup {
+            setup.evict(name);
+        }
+        let _ = context.peer.notify_tool_list_changed().await;
+    }
+
+    async fn call_published(
+        &self,
+        tool: &str,
+        arguments: Option<JsonObject>,
+        context: &RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, McpError> {
+        let command = self
+            .published_named(tool)
+            .ok_or_else(|| McpError::invalid_params(format!("no tool named {tool}"), None))?;
+        let mut input = arguments.unwrap_or_default();
+        let approval = match (command.asks(), input.remove(APPROVAL)) {
+            (false, Some(given)) => {
+                input.insert(APPROVAL.to_owned(), given);
+                None
+            }
+            (_, None | Some(Value::Null)) => None,
+            (true, Some(Value::String(id))) => Some(id),
+            (true, Some(_)) => {
+                return Err(McpError::invalid_params(
+                    format!("`{APPROVAL}` takes one string"),
+                    None,
+                ));
+            }
+        };
+        let credential = match self.backend().await {
+            Ok(Backend::Cloud(credential)) => credential,
+            Ok(Backend::Local(..)) => return Ok(refused(not_here().message).into()),
+            Err(text) => return Ok(refused(text).into()),
+        };
+        if let Some(setup) = &self.setup
+            && let Err(error) = setup.acts_with(&credential)
+        {
+            return Ok(refused(error.to_string()).into());
+        }
+        if command.typed.is_some() {
+            return Ok(refused(format!(
+                "`{tool}` asks a human to type the Organization's name first; run `ployz {}` \
+                 on a terminal instead.",
+                command.path()
+            ))
+            .into());
+        }
+        let key = RequestKey::effective(None, &(self.keys)(&self.session, &context.id, tool));
+        let (ran, revision) = tokio::select! {
+            biased;
+            ran = published::run_on(&credential, tool, Value::Object(input), approval.as_deref(), key.as_str()) => ran,
+            () = context.ct.cancelled() => {
+                return Err(McpError::internal_error("the call was cancelled", None));
+            }
+            () = tokio::time::sleep(self.deadline) => {
+                return Ok(CallToolResult::error(vec![ContentBlock::text(overdue(tool, self.deadline))]).into());
+            }
+        };
+        let result = match ran {
+            Ok(published::Ran { output, .. }) => CallToolResult::structured(output),
+            Err(StoreCallError::Refused(error)) => {
+                if error.code.as_str() == published::UNKNOWN_COMMAND {
+                    self.forget(tool, context).await;
+                }
+                CallToolResult::structured_error(json!(error))
+            }
+            Err(error @ (StoreCallError::Cloud(_) | StoreCallError::Stopped(_))) => {
+                refused(Error::from(error).to_string())
+            }
+        };
+        self.follow(revision, context).await;
+        Ok(result.into())
     }
 
     async fn backend(&self) -> Result<Backend<'_>, String> {
@@ -414,13 +600,7 @@ fn tool(def: tools::ToolDef) -> Tool {
     if def.gate != Gate::Never
         && let Some(Value::Object(properties)) = input.get_mut("properties")
     {
-        properties.insert(
-            APPROVAL.to_owned(),
-            json!({
-                "type": "string",
-                "description": "The approval id a refusal named, once a human approved it in Ployz Cloud.",
-            }),
-        );
+        properties.insert(APPROVAL.to_owned(), approval_property());
     }
     let mut tool = Tool::new(def.name, def.description, Arc::new(input)).annotate(
         ToolAnnotations::new()
@@ -429,6 +609,32 @@ fn tool(def: tools::ToolDef) -> Tool {
     );
     tool.output_schema = Some(Arc::new(object(def.output_schema)));
     tool
+}
+
+/// A published command as the host sees it: its input schema as published, plus
+/// `approval` when Cloud may ask for one.
+fn published_tool(command: &PublishedCommand) -> Tool {
+    let mut input = object(command.input.clone());
+    if command.asks()
+        && let Some(Value::Object(properties)) = input.get_mut("properties")
+    {
+        properties.insert(APPROVAL.to_owned(), approval_property());
+    }
+    let mut tool = Tool::new(command.name.clone(), command.about.clone(), Arc::new(input))
+        .annotate(
+            ToolAnnotations::new()
+                .read_only(command.effect == Effect::Read)
+                .destructive(command.asks()),
+        );
+    tool.output_schema = Some(Arc::new(object(command.output.clone())));
+    tool
+}
+
+fn approval_property() -> Value {
+    json!({
+        "type": "string",
+        "description": "The approval id a refusal named, once a human approved it in Ployz Cloud.",
+    })
 }
 
 fn object(schema: Value) -> JsonObject {
@@ -441,13 +647,18 @@ fn object(schema: Value) -> JsonObject {
 
 impl ServerHandler for Server {
     fn get_info(&self) -> ServerConfig {
-        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::new("ployz", env!("CARGO_PKG_VERSION")))
-            .with_instructions(format!(
-                "{INSTRUCTIONS} A call still running after {} is stopped; its error names the \
+        ServerConfig::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_tool_list_changed()
+                .build(),
+        )
+        .with_server_info(Implementation::new("ployz", env!("CARGO_PKG_VERSION")))
+        .with_instructions(format!(
+            "{INSTRUCTIONS} A call still running after {} is stopped; its error names the \
                  tool that shows what it left running.",
-                span(self.deadline)
-            ))
+            span(self.deadline)
+        ))
     }
 
     async fn list_tools(
@@ -455,11 +666,11 @@ impl ServerHandler for Server {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
-        Ok(ListToolsResult::with_all_items(self.tools.clone()))
+        Ok(ListToolsResult::with_all_items(self.tools()))
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
-        self.tools.iter().find(|tool| tool.name == name).cloned()
+        self.tools().into_iter().find(|tool| tool.name == name)
     }
 
     async fn call_tool(
@@ -468,10 +679,26 @@ impl ServerHandler for Server {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
         let tool: &str = &request.name;
-        let gate = *self
-            .gates
-            .get(tool)
-            .ok_or_else(|| McpError::invalid_params(format!("no tool named {tool}"), None))?;
+        let Some(gate) = self.gates.get(tool).copied() else {
+            return self.call_published(tool, request.arguments, &context).await;
+        };
+        let result = self.call_compiled(gate, request, &context).await;
+        // A compiled tool that reached Cloud kept the revision Cloud named.
+        let revision =
+            (self.setup.as_ref()).and_then(|setup| cloud_account::revision_seen(&setup.cloud));
+        self.follow(revision, &context).await;
+        result
+    }
+}
+
+impl Server {
+    async fn call_compiled(
+        &self,
+        gate: Gate,
+        request: CallToolRequestParams,
+        context: &RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, McpError> {
+        let tool: &str = &request.name;
         let mut input = request.arguments.unwrap_or_default();
         let approval = match (gate, input.remove(APPROVAL)) {
             (Gate::Never, Some(given)) => {
@@ -526,7 +753,7 @@ impl ServerHandler for Server {
         tokio::select! {
             // A write past the deadline settles to its refusal before the arm below fires.
             biased;
-            result = self.settle(&call, step, state, approval, answered, &context) => result,
+            result = self.settle(&call, step, state, approval, answered, context) => result,
             () = context.ct.cancelled() => {
                 Err(McpError::internal_error("the call was cancelled", None))
             }

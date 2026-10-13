@@ -107,6 +107,14 @@ pub(crate) const fn internal(approval: Approval, run: Handler) -> Runnable {
     }
 }
 
+/// Who owns a command: this binary, or the Ployz Cloud it is signed in to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Origin {
+    Compiled,
+    Cloud,
+}
+
 /// One runnable command, read from the command tree itself.
 #[derive(Serialize)]
 pub(crate) struct CommandEntry {
@@ -116,6 +124,7 @@ pub(crate) struct CommandEntry {
     pub json: bool,
     pub approval: Approval,
     pub surface: Surface,
+    pub origin: Origin,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub keeps_running: bool,
     pub args: Vec<ArgEntry>,
@@ -192,33 +201,15 @@ pub(crate) enum ArgType {
     String,
 }
 
-/// Every visible command with a handler, in path order, with its own arguments; the
-/// root's global connection flags every command shares are left out.
+/// Every visible command with a handler, compiled or published by the Cloud whose
+/// manifest is cached, in path order, with its own arguments; the root's global
+/// connection flags every command shares are left out.
 pub(crate) fn commands() -> Vec<CommandEntry> {
-    fn walk(command: &Command, parent: &str, shared: &[&str], out: &mut Vec<CommandEntry>) {
-        for child in command
-            .get_subcommands()
-            .filter(|child| !child.is_hide_set() && child.get_name() != "help")
-        {
-            let path = format!("{parent}{}", child.get_name());
-            if let Some(runnable) = super::handler_for(&path) {
-                out.push(CommandEntry {
-                    json: !super::json_refused(&path),
-                    about: child
-                        .get_about()
-                        .map(ToString::to_string)
-                        .unwrap_or_default(),
-                    approval: runnable.approval,
-                    surface: runnable.surface,
-                    keeps_running: KEEPS_RUNNING_COMMANDS.contains(&path.as_str()),
-                    args: args(&path, child, shared),
-                    command: path.clone(),
-                });
-            }
-            walk(child, &format!("{path} "), shared, out);
-        }
+    let published = crate::published::Setup::from_env().cached();
+    let mut root = crate::cli::compiled();
+    if let Some(published) = &published {
+        root = crate::published::attach(root, published);
     }
-    let mut root = crate::cli::command();
     root.build();
     let shared: Vec<&str> = root
         .get_arguments()
@@ -226,9 +217,53 @@ pub(crate) fn commands() -> Vec<CommandEntry> {
         .map(|arg| arg.get_id().as_str())
         .collect();
     let mut out = Vec::new();
-    walk(&root, "", &shared, &mut out);
+    walk(&root, "", &shared, published.as_ref(), &mut out);
     out.sort_by(|a, b| a.command.cmp(&b.command));
     out
+}
+
+fn walk(
+    command: &Command,
+    parent: &str,
+    shared: &[&str],
+    published: Option<&crate::published::Published>,
+    out: &mut Vec<CommandEntry>,
+) {
+    for child in command
+        .get_subcommands()
+        .filter(|child| !child.is_hide_set() && child.get_name() != "help")
+    {
+        let path = format!("{parent}{}", child.get_name());
+        let classified = match super::handler_for(&path) {
+            Some(runnable) => Some((runnable.approval, runnable.surface, Origin::Compiled)),
+            None => published
+                .and_then(|published| published.find(&path))
+                .map(|entry| {
+                    let approval = if entry.asks() {
+                        Approval::Always
+                    } else {
+                        Approval::Never
+                    };
+                    (approval, Surface::Cloud, Origin::Cloud)
+                }),
+        };
+        if let Some((approval, surface, origin)) = classified {
+            out.push(CommandEntry {
+                json: !super::json_refused(&path),
+                about: child
+                    .get_about()
+                    .map(ToString::to_string)
+                    .unwrap_or_default(),
+                approval,
+                surface,
+                origin,
+                keeps_running: KEEPS_RUNNING_COMMANDS.contains(&path.as_str()),
+                args: args(&path, child, shared),
+                command: path.clone(),
+            });
+        }
+        walk(child, &format!("{path} "), shared, published, out);
+    }
 }
 
 fn args(path: &str, command: &Command, shared: &[&str]) -> Vec<ArgEntry> {
