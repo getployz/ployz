@@ -78,7 +78,7 @@ class ClusterModel:
     def hold(self, seconds, run_id="sync-1", listed=True):
         """Another run holds the Volume for seconds after the previous hold ends, as a cron sync would."""
         start = self.holds[-1]["until"] if self.holds else self.clock()
-        self.holds.append(dict(id=run_id, until=start + seconds, listed=listed))
+        self.holds.append(dict(id=run_id, start=start, until=start + seconds, listed=listed))
 
     def holder(self):
         return next((hold for hold in self.holds if self.clock() < hold["until"]), None)
@@ -107,8 +107,10 @@ class ClusterModel:
             return 0, json.dumps(dict(id="1", environment=dict(project="verify", name="production")))
         held = self.holder() if self.clock else None
         if args[:2] == ["volume", "runs"]:
-            holder = [dict(id=held["id"], kind="sync", state="running")] if held and held["listed"] else []
-            return 0, json.dumps(dict(runs=holder + list(reversed(self.runs))))
+            # Cloud lists ended runs too, newest first.
+            holds = [dict(id=hold["id"], kind="sync", state="running" if hold is held else "done")
+                     for hold in reversed(self.holds) if hold["listed"] and hold["start"] <= self.clock()]
+            return 0, json.dumps(dict(runs=holds + list(reversed(self.runs))))
         if held and args[:2] in (["volume", "move"], ["volume", "mirror"], ["volume", "release"]):
             run = dict(id=held["id"], kind="sync", state="running")
             message = f"VolumeBusy: run {held['id']} (sync) is running"
@@ -530,6 +532,28 @@ class VolumeMoveTests(unittest.TestCase):
         self.assertIn("while the fault was armed", case["skipped"] or "", case)
         self.assertFalse(case["passed"])
         self.assertEqual(model.fault, {"machine-1": None, "machine-2": None})
+        self.assertEqual([wait["holder"] for wait in summary["volume_busy_waits"]], ["cron-sync"])
+
+    def test_a_sync_that_fires_the_armed_fault_and_ends_before_the_op_skips_the_case(self):
+        checks, model = self.checks()
+        guest = model.guest
+
+        def arming(machine, script):
+            if "echo" in script and "PLOYZD_FAULT" in script and not model.holds:
+                model.hold(5, "cron-sync")
+                reply = guest(machine, script)
+                model.clock.now += 10
+                return reply
+            return guest(machine, script)
+        model.guest = arming
+        with redirect_stdout(io.StringIO()):
+            summary = checks.run_all([volume_move.KILLS[0], volume_move.CASES[0]])
+        skipped, clean = summary["cases"]
+        self.assertEqual(model.tripped, "cron-sync")
+        self.assertIn("while the fault was armed", skipped.get("skipped") or "", skipped)
+        self.assertFalse(skipped["passed"])
+        self.assertEqual(model.fault, {"machine-1": None, "machine-2": None})
+        self.assertTrue(clean["passed"], clean)
         self.assertEqual([wait["holder"] for wait in summary["volume_busy_waits"]], ["cron-sync"])
 
     def test_a_holder_that_ends_just_before_the_limit_skips_a_fault_case_without_starting_its_op(self):
