@@ -9,6 +9,10 @@ type Action = "deploy" | "publish";
 const NO_PLACEMENT_LOSS: PlacementLoss = { items: [], losesWrites: false, accept: [], version: (version) => version };
 /** A Deploy's own words: what it ships (optional; the Store trims it). */
 type Message = string | null;
+/** What a Deploy or Save would delete, waiting on the user. */
+type Loss = { action: Action; check: VolumeLossCheck; message: Message };
+/** How a Deploy or Save went: done, failed (the writer toasted why), or asking first. */
+type Outcome = { status: "done" } | { status: "failed" } | { status: "asks"; loss: Loss };
 
 /**
  * The bottom bar's actions over the Config Store: Deploy, Save without deploying (publish), Discard and Never sync,
@@ -27,13 +31,15 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
   const lossOf = useVolumeLossCheck(organizationSlug);
   // What the user types to confirm: where the data goes from.
   const place = `${environment.project ?? ""}/${environment.environment ?? ""}`;
-  const [loss, setLoss] = useState<{ action: Action; check: VolumeLossCheck; message: Message } | null>(null);
+  const [loss, setLoss] = useState<Loss | null>(null);
+  // Settles the Save waiting on the dialog: true once it saves, false when the dialog closes first.
+  const savePending = useRef<((saved: boolean) => void) | null>(null);
   // One admission at a time: a double click must not admit two Deployments.
   const [admitting, setAdmitting] = useState(false);
   const inFlight = useRef(false);
 
-  /** Deploys or publishes; resolves with what it would delete when the Store asks first, else null. */
-  async function run(action: Action, { accept, version }: { accept: readonly string[]; version: string }, message: Message = null) {
+  /** Deploys or publishes; resolves with how it went, holding what it would delete when the Store asks first. */
+  async function run(action: Action, { accept, version }: { accept: readonly string[]; version: string }, message: Message = null): Promise<Outcome> {
     const id = crypto.randomUUID();
     const words = message?.trim() || null;
     try {
@@ -41,12 +47,29 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
         ? { command: "admit", admit: "deploy", id, environment, services: [], version, accept_volume_loss: [...accept], message: words }
         : { command: "publish", environment, version, accept_volume_loss: [...accept], message: words }, ["confirmation_required"]).isPersisted.promise;
       if (action === "deploy") onAdmitted(id);
-      return null;
+      return { status: "done" };
     } catch (error) {
       const check = error instanceof StoreRefused ? lossOf(error) : null;
       // Anything else the writer toasted.
-      return check && { action, check, message };
+      return check ? { status: "asks", loss: { action, check, message } } : { status: "failed" };
     }
+  }
+
+  function ask(outcome: Outcome) {
+    if (outcome.status === "asks") setLoss(outcome.loss);
+    return outcome;
+  }
+
+  /** Saves without deploying; resolves true once saved, false when refused, failed or cancelled. */
+  async function publish(message: Message): Promise<boolean> {
+    const outcome = ask(await run("publish", { accept: [], version }, message));
+    if (outcome.status !== "asks") return outcome.status === "done";
+    return new Promise((resolve) => { savePending.current = resolve; });
+  }
+
+  function settleSave(saved: boolean) {
+    savePending.current?.(saved);
+    savePending.current = null;
   }
 
   function deploy(message: Message) {
@@ -57,7 +80,7 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
     }
     inFlight.current = true;
     setAdmitting(true);
-    void run("deploy", { accept: [], version }, message).then(setLoss).finally(() => {
+    void run("deploy", { accept: [], version }, message).then(ask).finally(() => {
       inFlight.current = false;
       setAdmitting(false);
     });
@@ -78,13 +101,17 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
   return {
     deploy,
     admitting,
-    publish: (message: Message) => void run("publish", { accept: [], version }, message).then(setLoss),
+    publish,
     discard,
     neverSync,
     dialog: (
       <DeletionDialog
         open={loss !== null}
-        onOpenChange={(open) => { if (!open) setLoss(null); }}
+        onOpenChange={(open) => {
+          if (open) return;
+          setLoss(null);
+          settleSave(false);
+        }}
         title={loss?.action === "publish" ? "Saving deletes data on the next deploy" : loss?.check.losesWrites ? "Data loss" : "Deletes data"}
         place={place}
         confirmLabel={loss?.action === "publish" ? "Save" : "Deploy"}
@@ -92,7 +119,13 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
         callbacks={{
           load: () => Promise.resolve(loss?.check ?? { items: [], evidence: { accept: [], version: "" }, losesWrites: false }),
           // Servers holding more by now: the Store asks again, and so does the dialog.
-          confirm: async (evidence) => loss ? (await run(loss.action, evidence, loss.message))?.check : undefined,
+          confirm: async (evidence) => {
+            if (!loss) return undefined;
+            const outcome = await run(loss.action, evidence, loss.message);
+            if (outcome.status === "asks") return outcome.loss.check;
+            if (outcome.status === "done") settleSave(true);
+            return undefined;
+          },
         }}
       />
     ),

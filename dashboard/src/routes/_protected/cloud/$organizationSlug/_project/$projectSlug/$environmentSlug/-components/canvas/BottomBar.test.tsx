@@ -242,7 +242,8 @@ it("hides while nothing is staged or running, and while the only Deployment's pa
 });
 
 
-it("preserves the Change message while a Save can still refuse or fail", async () => {
+it("preserves the Change message when a Save is refused or fails", async () => {
+  onPublish.mockResolvedValue(false);
   open(canvasUrl, [replicas], 1, true);
   fireEvent.click((await bar()).getByRole("button", { name: "Details" }));
   fireEvent.change(screen.getByRole("textbox", { name: "Change message" }), { target: { value: "Explain this change" } });
@@ -250,6 +251,16 @@ it("preserves the Change message while a Save can still refuse or fail", async (
   expect(onPublish).toHaveBeenCalledWith("Explain this change");
   expect(screen.getByRole("textbox", { name: "Change message" })).toHaveProperty("value", "Explain this change");
   expect(screen.getByRole("dialog", { name: "Environment changes" })).toBeTruthy();
+});
+
+it("clears the Change message once a Save succeeds", async () => {
+  onPublish.mockResolvedValue(true);
+  open(canvasUrl, [replicas], 1, true);
+  fireEvent.click((await bar()).getByRole("button", { name: "Details" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Change message" }), { target: { value: "Explain this change" } });
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Save" })); });
+  expect(onPublish).toHaveBeenCalledWith("Explain this change");
+  expect(screen.getByRole("textbox", { name: "Change message" })).toHaveProperty("value", "");
 });
 
 it("clears the Change message once History stages other changes", async () => {
