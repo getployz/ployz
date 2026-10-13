@@ -9,6 +9,7 @@ import { asTestDouble } from "#/lib/test-double";
 import { failStoreDeploymentUnrun } from "#/modules/config-store/store-deployment.server";
 import { CloudStore, cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import { volumePlacement } from "#/modules/volume-placement/tables";
+import { volumeRun } from "#/modules/volume-run/tables";
 import { lossTime, type PlacementRow } from "#/modules/volume-placement/volume-placement";
 import { advancePlacement, type MemberInspector, type PlacementAdvance } from "#/modules/volume-placement/volume-placement.deploy.server";
 import {
@@ -85,6 +86,21 @@ it.live("stages a restore as one Store write and a seeded row, and discards both
 
   expect(yield* discardPlacement(ORGANIZATION, null, id, shop).pipe(Effect.provide(services))).toEqual({ ok: true, placement: null });
   expect(yield* volumes()).toEqual([{ name: "data", mounts: [{ service: "web", path: "/data" }], change: null }]);
+  expect(yield* listPlacements(ORGANIZATION).pipe(Effect.provide(services))).toEqual([]);
+}));
+
+it.live("refuses a restore from a point on an old copy being deleted, and stages nothing", () => Effect.gen(function* () {
+  const { services } = yield* deployedShop();
+  yield* Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    yield* drizzle.insert(volumeRun).values({
+      organizationId: ORGANIZATION, environmentId: "env", volumeId: SOURCE, volumeName: "data", dockerVolume: "data",
+      kind: "delete_mirror", args: { slot: "web-3", confirmed_name: null }, state: "running",
+    });
+  }).pipe(Effect.provide(services));
+  const members = [member("web-1", "writer"), member("web-3", "behind")];
+  expect(yield* stageRestore(ORGANIZATION, null, { volumeId: SOURCE, environment: shop, ...point, guid: "10" }, () => Effect.succeed(members))
+    .pipe(Effect.provide(services))).toMatchObject({ ok: false, refusal: { message: "This copy is being deleted." } });
   expect(yield* listPlacements(ORGANIZATION).pipe(Effect.provide(services))).toEqual([]);
 }));
 
