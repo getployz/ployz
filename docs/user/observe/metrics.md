@@ -44,7 +44,9 @@ The [Ployz agent](../account/agent-sidebar.md) and `ployz mcp` read the same num
 `service_metrics` and `server_metrics` tools, with each OOM kill, exit and restart in the range
 and the server it happened on. Give `service_metrics` a deployment number and the range starts
 when that deployment did, so the agent can tell an OOM kill from an app that exited with an
-error. Both tools need Ployz Cloud.
+error. Both tools need Ployz Cloud. When a deployment failed, `deployment_show` names
+`service_logs` and `service_metrics` for the failed service and that deployment, so the agent
+reads both without picking a range.
 
 ## See older metrics
 

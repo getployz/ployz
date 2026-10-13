@@ -184,3 +184,18 @@ fn a_domain_key_is_no_setting() {
     assert_eq!(not_setting("image"), None);
     assert!(not_setting_sentence("domain_add").contains("domain_update"));
 }
+
+#[test]
+fn an_unnamed_project_refusal_names_the_field_and_each_project() {
+    let refusal = from_store(
+        store_error(
+            RpcErrorCode::Ambiguous,
+            "Name a Project: this Organization has more than one",
+            json!({ "projects": ["eval-exit", "eval-oom"] }),
+        ),
+        &Call::new("deployment_show", json!({ "environment": "production" })),
+        Writes::None,
+    );
+    assert_eq!(refusal.field.as_deref(), Some("project"));
+    assert_eq!(refusal.valid, ["eval-exit", "eval-oom"]);
+}

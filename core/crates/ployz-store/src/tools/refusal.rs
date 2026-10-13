@@ -221,8 +221,12 @@ pub(crate) fn from_store(error: RpcError, call: &Call, writes: Writes) -> Refusa
         .get("did_you_mean")
         .and_then(Value::as_str)
         .map(str::to_owned);
-    refusal.valid = details
-        .get("valid_children")
+    let projects = details.get("projects");
+    if projects.is_some() {
+        refusal.field = Some("project".into());
+    }
+    refusal.valid = projects
+        .or_else(|| details.get("valid_children"))
         .and_then(Value::as_array)
         .map(|valid| {
             valid
