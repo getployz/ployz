@@ -291,13 +291,15 @@ A node answers two questions in two places, and neither ever stands in for the o
 
 ### Agent sidebar
 
-The agent sidebar is a chat with Ployz Cloud that runs the same commands as `ployz mcp`. It sits on the right, outside the rail, and belongs to the Organization rather than a place, so navigating never remounts it.
+The agent sidebar is a chat with Ployz Cloud that runs the same commands as `ployz mcp`. It sits on the right, under the top bar and beside the page, and belongs to the Organization rather than a place, so navigating never remounts it.
 
-- **Amends the canvas-room bet.** Wherever the canvas shows, the sidebar starts collapsed to a thin strip over the canvas edge and the canvas keeps its width. Opening it overlays the canvas; it never pushes the canvas narrower. Elsewhere it opens beside the page.
+- **Amends the canvas-room bet.** The agent never covers the canvas or a page: covering the graph hid the very Services the agent was talking about. Open, it is a column beside the page, and the canvas narrows and refits to show the whole graph. Closed, it takes no room at all.
+- **The Agent button is its only toggle.** The top bar spans the whole window, rail aside, so the button at its right end never moves when the agent opens or closes. There is no close button and no scope line: the crumbs already say where you are. The column's header names the chat and holds chat history and New chat. On phones the agent fills the screen under the top bar and the tab bar stays.
+- **Open, the agent hosts the bottom bar.** The bottom bar leaves the canvas and docks in the agent column above the composer, so your staged changes and the agent's Approval sit in one place. Closed, the bar is back on the canvas. Pages without a bottom bar, like Servers, dock nothing.
 - **It asks whenever a plan destroys something, and no setting turns that off.** A destructive Publish or Deploy, an Environment or Project removal, a server removal, a cleanup, a drain that loses the last copy, or a Volume Run that deletes data pauses on an **Approval card** in the thread. For the root of real data the card holds the typed field from Destructive actions. A shutdown asks only when it deletes Volume data. A Service restart, start or stop never asks. The card shows the destructive lines first, in the destructive color, the rest folded to a count. Approve and Deny sit on the card; Deny takes an optional reason that the agent hears. The card never uses Intent Pink, which stays staged intent.
 - The card is drawn from Cloud's Approval, read fresh each time it shows, so a reload, a second browser or a `ployz` CLI waiting on the same Approval all see one card, and a superseded Approval says the plan changed.
 - After Approve, or when nothing needed approving, the card becomes a **Run card** that follows the Deployment in the Deployments place's words and statuses and opens its Deployment Page. A run on Servers or Volumes shows as a Run card with the run's name and the state Cloud admitted it in.
-- While an Approval waits, the collapsed strip carries a badge.
+- While an Approval waits, the closed Agent button reads how many wait, like "1 waiting", and shows just the count on phones.
 - Its commands are the compiled agent tools plus the Cloud-published commands marked `agents: true`, read from the one registry Cloud also serves to `ployz`. A command marked `agents: false` never reaches an agent, in the sidebar or in `ployz mcp`.
 
 **The Soon rule.** An option that isn't built yet appears only inside a flow that works, greyed out with a Soon tag. It is never a page, tab or button that does nothing.
