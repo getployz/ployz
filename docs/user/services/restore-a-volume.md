@@ -32,6 +32,7 @@ not mounted. Delete it from its **Settings** tab when you no longer need it.
   copied them. A database may need to recover on first start, as after a power cut. For a clean
   dump, see [Back up a database](databases.md#back-up-a-database).
 - **One restore per volume at a time.** Restore is greyed out while the volume's placement deploys.
+- **A copy being deleted has no point to restore.** Restore on it says "This copy is being deleted."
 - **The new volume needs its own room.** It has the original's size limit. When the original's
   server cannot fit a second copy, the deploy fails and says how much space is missing.
 - **The original's server must answer** for the copy to run. If the point's mirror is gone by then,
