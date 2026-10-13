@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Prove Warm Move end to end on real Machines paired with Cloud: Restore, removal, demotion, deletion,
-stale SetVolumeCopy replays, deploys held mid-Move, Release, mirror reuse and slow or failing starts.
+stale SetVolumeCopy replays, deploys mid-Move, Release, mirror reuse and slow or failing starts.
 
   python3 scripts/test-verify-warm-move.py --list
   python3 scripts/test-verify-warm-move.py [--manifest M] [check ...]
@@ -24,6 +24,7 @@ import re
 import shlex
 import subprocess
 import sys
+import threading
 import time
 import traceback
 import urllib.error
@@ -38,7 +39,7 @@ FAULT_BUILD = "--features ployz/verify-faults,ployzd/verify-faults"
 A, B = "machine-1", "machine-2"
 POOL = "ployz"
 IMAGE = "postgres:16-alpine"
-TERMINAL = {"done", "failed", "cancelled", "lost", "not_started"}
+TERMINAL = {"done", "failed", "cancelled", "lost", "not_started", "yielded"}
 STOPPED = {"cancelled", "lost"}
 DOOMED = "doomed"
 
@@ -899,51 +900,89 @@ def stale_replay_refused(vc):
                f"running {live}; writable {writable}")
 
 
-# A plain deploy is refused while a Move holds the Volume
+# A deploy mid-Move takes the Move over or follows it, and never leaves two containers on the Volume
 
-def deploy_refused_mid_move(vc):
+def sample_running(vc, phys, samples, stop):
+    while not stop.is_set():
+        try:
+            samples.append((round(time.time(), 1), vc.live(phys)))
+        except CheckError as error:
+            samples.append((round(time.time(), 1), str(error)[:200]))
+        stop.wait(1)
+
+
+def overlaps(samples):
+    return [(at, live) for at, live in samples if isinstance(live, dict) and sum(map(len, live.values())) > 1]
+
+
+def requeued_move(vc, volume, original, limit=120):
+    deadline = time.monotonic() + limit
+    while time.monotonic() < deadline:
+        _, data = vc.cli("volume", "runs", volume)
+        later = [row for row in run_rows(data) if row.get("kind") == "move" and row.get("id") != original["id"]
+                 and row.get("created_at", "") > original.get("created_at", "")]
+        if later:
+            return min(later, key=lambda row: row["created_at"])
+        time.sleep(4)
+    return None
+
+
+def deploy_mid_move(vc):
     phys = vc.physical("charlie")
     plan = [(A, B, "delay-rpc:SetVolumeCopy.MirrorToMirror:20", "MirrorToMirror"),
             (B, A, "delay-rpc:SetVolumeCopy.MirrorToWriter:20", "MirrorToWriter"),
             (A, B, None, "start")]
-    holds = []
+    legs = []
     for source, target, value, cell in plan:
         if value:
             vc.fault(target, value)
         else:
             vc.slow_runc(target, "charlie", phys, 30)
         since = time.time()
+        samples, stop = [], threading.Event()
+        sampler = threading.Thread(target=sample_running, args=(vc, phys, samples, stop), daemon=True)
+        requeued = None
         try:
             _, row, data = vc.start_run("volume", "move", "charlie", "--to", target)
             if row is None:
                 raise CheckError(f"move refused: {say(data)[:600]}")
             held = (vc.wait_held("charlie", row, phys, source, target, cell, since) if value
                     else vc.wait_start_log(target, "charlie"))
-            before = vc.containers(target, phys, every=True)
-            code_d, deployed = vc.plain_deploy("charliedb")
-            time.sleep(5)
-            after = vc.containers(target, phys, every=True)
-            final = vc.wait_run("charlie", row["id"])
+            sampler.start()
+            code_d, _ = vc.plain_deploy("charliedb")
+            original = {**row, **vc.wait_run("charlie", row["id"])}
+            if original.get("state") == "yielded":
+                found = requeued_move(vc, "charlie", original)
+                requeued = vc.wait_run("charlie", found["id"]) if found else {"state": "no requeued move run"}
         finally:
+            stop.set()
+            if sampler.is_alive():
+                sampler.join()
             if value:
                 vc.fault(target, None)
             else:
                 vc.plain_runc(target, "charlie")
-        ready = vc.ready(target, phys)
-        outcome = deployed.get("outcome") if isinstance(deployed, dict) else None
-        reason = str(outcome["reason"]) if isinstance(outcome, dict) and outcome.get("reason") else say(deployed)[:400]
-        holds.append(dict(hold=cell, to=target, held=held, deploy_exit=code_d, reason=reason, target_before=before,
-                          target_after=after, move=final.get("state"), message=final.get("message"), ready=ready,
-                          running=vc.live(phys)))
-    ok = all(h["held"] and h["deploy_exit"] != 0 and h["target_before"] == h["target_after"] and h["move"] == "done"
-             and h["ready"] for h in holds) and sum(len(v) for v in holds[-1]["running"].values()) == 1
-    vc.verdict("deploy_refused_mid_move", ok,
+        final = requeued or original
+        to = (final.get("args") or {}).get("to", target)
+        ready = vc.ready(to, phys)
+        running = vc.live(phys)
+        counted = [sum(map(len, live.values())) for _, live in samples if isinstance(live, dict)]
+        legs.append(dict(hold=cell, to=target, held=held, deploy_exit=code_d, original=row["id"],
+                         original_state=original.get("state"), original_message=original.get("message"),
+                         requeued=requeued and requeued.get("id"), requeued_state=requeued and requeued.get("state"),
+                         waited=[row["id"]] + ([requeued["id"]] if requeued and requeued.get("id") else []),
+                         samples=len(samples), max_running=max(counted, default=0), overlaps=overlaps(samples),
+                         final_to=to, running=running, ready=ready))
+    ok = all(leg["held"] and leg["deploy_exit"] == 0 and leg["samples"] and not leg["overlaps"]
+             and (leg["original_state"] == "done"
+                  or (leg["original_state"] == "yielded" and leg["requeued_state"] == "done"))
+             and sum(map(len, leg["running"].values())) == 1 and len(leg["running"][leg["final_to"]]) == 1
+             and leg["ready"] for leg in legs)
+    vc.verdict("deploy_mid_move", ok,
                "MirrorToMirror and MirrorToWriter held 20 s by delay-rpc on the target after the cut, the target's "
-               f"runc create held 30 s; {say(holds)}")
-    reasons = [h["reason"] for h in holds]
-    vc.verdict("refusal_names_authored_volume",
-               all("Volume charlie" in r for r in reasons) and not any("_vol-" in r for r in reasons),
-               f"refusal reasons {say(reasons)}")
+               "runc create held 30 s; each deploy exits 0, no once-a-second sample shows more than one running "
+               "container across both Machines, the move ends done or yielded with a requeued move that ends done, "
+               f"and one ready container runs on the final target; {say(legs)}")
 
 
 # Release after a stopped Move
@@ -1150,7 +1189,7 @@ CHECKS = [
     ("delete_mirrored_volume", 2, [("hotel", None)], delete_mirrored_volume),
     ("delete_mirrored_environment", 2, [("foxtrot", DOOMED)], delete_mirrored_environment),
     ("stale_set_volume_copy_refused", 2, [("delta", None)], stale_replay_refused),
-    ("deploy_refused_mid_move", 2, [("charlie", None)], deploy_refused_mid_move),
+    ("deploy_mid_move", 2, [("charlie", None)], deploy_mid_move),
     ("release_after_stopped_move", 2, [("bravo", None)], release_after_stopped_move),
     ("thaw_takes_15_seconds", 2, [("bravo", None)], thaw_takes_15_seconds),
     ("move_twice_reuses_mirror", 2, [("golf", None)], move_twice_reuses_mirror),
