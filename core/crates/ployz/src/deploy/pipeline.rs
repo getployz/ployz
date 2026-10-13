@@ -356,7 +356,7 @@ async fn preview_gathered(
     intent: &DeployIntent,
 ) -> Result<DeployPlan, DeployError> {
     let mut preview = plan_deploy(intent, &snapshot)?;
-    let warnings = hostname_warnings(&preview, &snapshot.machines).await;
+    let warnings = hostname_warnings(&preview, &snapshot).await;
     preview.prepend_warnings(warnings);
     Ok(preview)
 }
@@ -411,13 +411,15 @@ async fn gather_deploy_snapshot(
 
 async fn hostname_warnings(
     preview: &DeployPreview,
-    machines: &[MachineObservation],
+    snapshot: &DeploySnapshot,
 ) -> Vec<DeployWarning> {
+    let machines = &snapshot.machines;
     let machine_ids: Vec<_> = machines.iter().map(|machine| machine.machine.id).collect();
     resolve_ingress_dns_warnings_for_ports(
         preview_ports(preview),
         &machine_ids,
         &machine_public_addresses(machines),
+        &snapshot.ingress_returning(),
     )
     .await
     .into_iter()

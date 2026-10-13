@@ -10,7 +10,7 @@ use std::{
 use futures_util::future::join_all;
 use ployz_core::{
     HOSTNAME_VERIFY_PATH, HostnameVerdict, HttpProtocol, IngressHost, MachineId, PortPublication,
-    RequestedServiceSpec, VerifyAnswer, hostname_verdict, refusal_reason,
+    Refusal, RequestedServiceSpec, VerifyAnswer, hostname_verdict, refusal_reason,
 };
 use reqwest::{Client, redirect::Policy};
 
@@ -127,21 +127,41 @@ async fn probe_ingress_hostname(
     hostname: &IngressHost,
     machine_ids: &[MachineId],
     cluster_addresses: &[IpAddr],
-) -> HostnameVerdict {
+    ingress_returning: &[IpAddr],
+) -> Option<HostnameVerdict> {
     let addresses = resolve_ingress_addresses(hostname).await;
     let answers = join_all(addresses.into_iter().map(|address| async move {
         let answer = verify_answer(client, hostname, SocketAddr::new(address, 80)).await;
         (address, answer)
     }))
     .await;
-    hostname_verdict(&answers, machine_ids, cluster_addresses)
+    judge_answers(&answers, machine_ids, cluster_addresses, ingress_returning)
+}
+
+/// The hostname's verdict, or none when it only went unanswered on Servers whose
+/// Ingress Proxy this Deploy brings back: their silence says nothing until it runs.
+fn judge_answers(
+    answers: &[(IpAddr, VerifyAnswer)],
+    machine_ids: &[MachineId],
+    cluster_addresses: &[IpAddr],
+    ingress_returning: &[IpAddr],
+) -> Option<HostnameVerdict> {
+    let verdict = hostname_verdict(answers, machine_ids, cluster_addresses);
+    let awaiting_ingress = verdict == HostnameVerdict::Refused(Refusal::Unreachable)
+        && answers
+            .iter()
+            .filter(|(_, answer)| *answer == VerifyAnswer::NoAnswer)
+            .all(|(address, _)| ingress_returning.contains(address));
+    (!awaiting_ingress).then_some(verdict)
 }
 
 /// Probe Ingress Hostnames from planned ports and warn when they do not reach this Cluster.
+/// `ingress_returning` holds the Servers whose Ingress Proxy this Deploy brings back.
 pub async fn resolve_ingress_dns_warnings_for_ports<'a>(
     ports: impl IntoIterator<Item = &'a PortPublication>,
     machine_ids: &[MachineId],
     cluster_addresses: &[IpAddr],
+    ingress_returning: &[IpAddr],
 ) -> Vec<IngressDnsWarning> {
     let targets = ingress_targets_from_ports(ports);
     let Ok(client) = Client::builder()
@@ -154,9 +174,17 @@ pub async fn resolve_ingress_dns_warnings_for_ports<'a>(
     };
     let mut verdicts = Vec::with_capacity(targets.len());
     for (hostname, mentions_certificates) in targets {
-        let verdict =
-            probe_ingress_hostname(&client, hostname, machine_ids, cluster_addresses).await;
-        verdicts.push((hostname, mentions_certificates, verdict));
+        let verdict = probe_ingress_hostname(
+            &client,
+            hostname,
+            machine_ids,
+            cluster_addresses,
+            ingress_returning,
+        )
+        .await;
+        if let Some(verdict) = verdict {
+            verdicts.push((hostname, mentions_certificates, verdict));
+        }
     }
     warnings_from_targets(verdicts, cluster_addresses)
 }
@@ -166,11 +194,11 @@ mod tests {
     use std::num::NonZeroU16;
 
     use ployz_core::{
-        ClusterRoute, HostnameVerdict, HttpProtocol, IngressHost, PortPublication, Refusal,
-        RequestedServiceSpec,
+        ClusterRoute, HostnameVerdict, HttpProtocol, IngressHost, MachineId, PortPublication,
+        Refusal, RequestedServiceSpec, VerifyAnswer,
     };
 
-    use super::{ingress_dns_warnings, resolve_ingress_addresses};
+    use super::{ingress_dns_warnings, judge_answers, resolve_ingress_addresses};
 
     fn requested(ports: Vec<PortPublication>) -> RequestedServiceSpec {
         serde_json::from_value(serde_json::json!({
@@ -228,6 +256,38 @@ mod tests {
                 "mix.example.com does not resolve. Add a DNS record pointing at 192.0.2.1. A certificate cannot be issued until then.",
                 "plain.example.com answers from another server. Point it at 192.0.2.1.",
             ]
+        );
+    }
+
+    #[test]
+    fn silence_where_this_deploy_brings_ingress_back_is_not_refused_yet() {
+        let ([repairing, other], machines) = (
+            ["192.0.2.1".parse().unwrap(), "192.0.2.2".parse().unwrap()],
+            [MachineId::parse("a".repeat(32)).unwrap()],
+        );
+        let silent = |addresses: &[std::net::IpAddr]| {
+            addresses
+                .iter()
+                .map(|address| (*address, VerifyAnswer::NoAnswer))
+                .collect::<Vec<_>>()
+        };
+        let cluster = [repairing, other];
+        assert_eq!(
+            judge_answers(&silent(&[repairing]), &machines, &cluster, &[repairing]),
+            None
+        );
+        assert_eq!(
+            judge_answers(&silent(&[repairing]), &machines, &cluster, &[]),
+            Some(HostnameVerdict::Refused(Refusal::Unreachable))
+        );
+        assert_eq!(
+            judge_answers(
+                &silent(&[repairing, other]),
+                &machines,
+                &cluster,
+                &[repairing]
+            ),
+            Some(HostnameVerdict::Refused(Refusal::Unreachable))
         );
     }
 

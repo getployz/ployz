@@ -287,6 +287,27 @@ pub struct DeploySnapshot {
 }
 
 impl DeploySnapshot {
+    /// Public addresses of ingress Servers with no running Ingress Proxy. A Deploy
+    /// brings it back after the plan runs, so they cannot answer port 80 yet.
+    #[must_use]
+    pub fn ingress_returning(&self) -> Vec<std::net::IpAddr> {
+        self.machines
+            .iter()
+            .filter(|machine| machine.machine.accepts_ingress)
+            .filter(|machine| {
+                !self.containers.iter().any(|container| {
+                    container.machine_id == machine.machine.id
+                        && crate::ingress::is_system_ingress(container)
+                        && matches!(
+                            container.runtime,
+                            ployz_core::ContainerRuntimeObservation::Running { .. }
+                        )
+                })
+            })
+            .filter_map(|machine| machine.machine.public_ip)
+            .collect()
+    }
+
     /// Observer-derived Services owned by `namespace`. Other Namespaces are excluded.
     #[must_use]
     pub fn services_in(&self, namespace: &Namespace) -> Vec<ServiceObservation> {

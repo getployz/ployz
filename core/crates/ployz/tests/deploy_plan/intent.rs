@@ -656,3 +656,38 @@ fn cloud_lowering_orders_dependency_before_migration_and_container() {
         DeployOperation::RunContainer { spec: web, .. },
     ] if db.name.as_str() == "db" && hook.name.as_str() == "web" && web.name.as_str() == "web"));
 }
+
+#[test]
+fn an_ingress_server_without_a_running_proxy_is_one_whose_ingress_returns() {
+    let running = ployz_core::ContainerRuntimeObservation::Running {
+        health: ployz_core::HealthObservation::Healthy,
+    };
+    let exited = ployz_core::ContainerRuntimeObservation::Exited { code: 0 };
+    let at = |hex: char, name: &str, last: u8| {
+        let mut observed = machine(hex, name);
+        observed.machine.public_ip = Some(std::net::IpAddr::from([192, 0, 2, last]));
+        observed
+    };
+    let mut no_web = at('4', "no-web", 4);
+    no_web.machine.accepts_ingress = false;
+    let snapshot = DeploySnapshot {
+        machines: vec![
+            at('1', "serving", 1),
+            at('2', "missing", 2),
+            at('3', "stopped", 3),
+            no_web,
+        ],
+        containers: vec![
+            ingress_container('a', '1', "caddy:test", running),
+            ingress_container('c', '3', "caddy:test", exited),
+        ],
+        ..Default::default()
+    };
+    assert_eq!(
+        snapshot.ingress_returning(),
+        [
+            std::net::IpAddr::from([192, 0, 2, 2]),
+            std::net::IpAddr::from([192, 0, 2, 3])
+        ]
+    );
+}
