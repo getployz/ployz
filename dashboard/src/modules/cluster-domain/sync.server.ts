@@ -6,7 +6,7 @@ import { and, eq } from "drizzle-orm";
 import { Data, Effect } from "effect";
 import { loadClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
 import { type IngressAnswer, probeIngress } from "#/modules/cluster-domain/ingress-probe.server";
-import { ingressRunningOn } from "#/modules/cluster-domain/ingress-running";
+import { ingressAwakeOn } from "#/modules/cluster-domain/ingress-running";
 import {
   HostedDnsError,
   type HostedDomainTarget,
@@ -93,7 +93,7 @@ export const probeIngressServers = Effect.fn("ClusterDomain.probeIngressServers"
       ? [{ machineId: machine.id, address: machine.public_ip, name: machine.name }]
       : []);
   if (servers.length === 0) return { kind: "no_servers" } satisfies IngressProbe;
-  const running = ingressRunningOn(frame);
+  const awake = ingressAwakeOn(frame);
   const unobserved = new Set<string>(frame.incomplete_ids.machines);
   // An incomplete container row carries no Machine id, so it could be the Ingress Proxy on any Server.
   const containersUnobserved = frame.incomplete_ids.containers.length > 0;
@@ -102,7 +102,7 @@ export const probeIngressServers = Effect.fn("ClusterDomain.probeIngressServers"
       .pipe(Effect.map((answer) => ({ server, answer }))), { concurrency: "unbounded" });
   const answering = (wanted: IngressAnswer) => probed.flatMap(({ server, answer }) => answer === wanted ? [server] : []);
   const isDown = ({ machineId }: IngressServerAddress) =>
-    !containersUnobserved && !running.has(machineId) && !unobserved.has(machineId);
+    !containersUnobserved && !awake.has(machineId) && !unobserved.has(machineId);
   const closed = answering("closed");
   return {
     kind: "probed",

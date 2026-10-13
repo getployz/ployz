@@ -1,6 +1,6 @@
 import { testConfigEnvironment } from "#/test/config-environment";
 import { createPrivateKey, X509Certificate } from "node:crypto";
-import type { ContainerId, MachineId, PublishCertificateMaterialRequest, RuntimeWatchView, ServiceId } from "@ployz/sdk";
+import type { ContainerId, ContainerObservation, MachineId, PublishCertificateMaterialRequest, RuntimeWatchView, ServiceId } from "@ployz/sdk";
 import { InngestTestEngine } from "@inngest/test";
 import { ConfigProvider, Effect, Layer } from "effect";
 import { Inngest } from "inngest";
@@ -315,6 +315,28 @@ describe("sync-cluster-domain", () => {
         kind: "probed",
         unreachable: [{ machineId: idOf("c"), address: "203.0.113.3" }],
         down: [{ machineId: idOf("b"), address: "203.0.113.2", name: "b" }],
+      },
+    });
+  });
+
+  it("calls a Server closed rather than down while its Ingress Proxy is paused or restarting", async () => {
+    const at = (id: string, runtime: ContainerObservation["runtime"]) =>
+      ({ ...runtimeWatchContainerFixture(idOf(id), `ingress-${id}`), runtime });
+    frame = runtimeWatchFrameFixture({
+      machines: [machine("a", "203.0.113.1"), machine("b", "203.0.113.2"), machine("c", "203.0.113.3")],
+      services: [{
+        ...ingressRunningOn(),
+        containers: [at("a", { state: "paused" }), at("b", { state: "restarting" }), at("c", { state: "exited", code: 0 })],
+      }],
+    });
+
+    await sync();
+
+    expect(await row()).toMatchObject({
+      traffic: {
+        kind: "probed",
+        unreachable: [{ machineId: idOf("a"), address: "203.0.113.1" }, { machineId: idOf("b"), address: "203.0.113.2" }],
+        down: [{ machineId: idOf("c"), address: "203.0.113.3", name: "c" }],
       },
     });
   });
