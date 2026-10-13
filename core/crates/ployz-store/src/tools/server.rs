@@ -1,10 +1,10 @@
-//! Tools on Servers: show them, read their own logs, drain, upgrade, clean a leftover,
-//! remove or forget one.
+//! Tools on Servers: show them, read their own logs, set their policy, drain, upgrade, clean a
+//! leftover, remove or forget one.
 
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use ployz_core::{MachineLogService, Namespace};
+use ployz_core::{BuildConcurrency, BuildConcurrencyUpdate, MachineLogService, Namespace};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -22,6 +22,7 @@ use crate::error::did_you_mean;
 use crate::{NamespacesQuery, NamespacesView, OwnedNamespace};
 
 const REQUEST_KEY: &str = "^[A-Za-z0-9_-]{8,64}$";
+const BUILDS: &str = "^(auto|[0-9]+)$";
 
 /// Every Namespace the Servers run with the Environment that owns it, if one does.
 fn owners(view: &NamespacesView) -> BTreeMap<&Namespace, &OwnedNamespace> {
@@ -117,7 +118,7 @@ impl Tool for ServerShow {
 fn on_server(
     cx: &mut Cx<'_>,
     name: &ServerName,
-    action: fn(super::step::ServerRef) -> Action,
+    action: impl FnOnce(super::step::ServerRef) -> Action,
     key: Option<RequestKey>,
     wait_seconds: u32,
 ) -> Result<Value, Stop> {
@@ -238,6 +239,70 @@ impl Tool for ServerDrain {
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
         let drain = |server| Action::Drain { server };
         on_server(cx, &self.server, drain, self.request_key, self.wait_seconds)
+    }
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ServerSet {
+    #[schemars(with = "String", pattern(NODE_NAME))]
+    server: ServerName,
+    #[serde(default)]
+    accepts_builds: Option<bool>,
+    /// false: server_drain moves what runs.
+    #[serde(default)]
+    accepts_services: Option<bool>,
+    #[serde(default)]
+    accepts_ingress: Option<bool>,
+    #[serde(default)]
+    #[schemars(with = "Option<String>", pattern(BUILDS))]
+    build_concurrency: Option<String>,
+}
+
+impl Tool for ServerSet {
+    const NAME: &'static str = "server_set";
+    const DESCRIPTION: &'static str = "Set what a server takes: builds, services, web traffic.";
+    const READ_ONLY: bool = false;
+
+    fn example() -> Value {
+        json!({ "server": "db-1", "accepts_ingress": false })
+    }
+
+    fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
+        if self.accepts_ingress == Some(true) {
+            return Err(Refusal::invalid(
+                format!(
+                    "Turning web traffic on also starts the Ingress Proxy, which only the \
+                     terminal does: `ployz server set {} --accepts-ingress=true`",
+                    self.server
+                ),
+                "accepts_ingress",
+            )
+            .into());
+        }
+        let build_concurrency = match self.build_concurrency.as_deref() {
+            None => BuildConcurrencyUpdate::Keep,
+            Some("auto") => BuildConcurrencyUpdate::Automatic,
+            Some(builds) => BuildConcurrencyUpdate::Set(
+                BuildConcurrency::parse(builds)
+                    .map_err(|error| Refusal::invalid(error.to_string(), "build_concurrency"))?,
+            ),
+        };
+        if self.accepts_builds.is_none()
+            && self.accepts_services.is_none()
+            && self.accepts_ingress.is_none()
+            && build_concurrency == BuildConcurrencyUpdate::Keep
+        {
+            return Err(Refusal::invalid("Set at least one value", "accepts_builds").into());
+        }
+        let set = |server| Action::SetServer {
+            server,
+            accepts_builds: self.accepts_builds,
+            accepts_services: self.accepts_services,
+            accepts_ingress: self.accepts_ingress,
+            build_concurrency,
+        };
+        on_server(cx, &self.server, set, None, 0)
     }
 }
 

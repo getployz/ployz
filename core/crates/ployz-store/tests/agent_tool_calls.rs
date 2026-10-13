@@ -8,7 +8,9 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use ployz_core::{DeployOutcome, DeployPreview, MachineLogService, ServiceName};
+use ployz_core::{
+    BuildConcurrencyUpdate, DeployOutcome, DeployPreview, MachineLogService, ServiceName,
+};
 use ployz_core::{RpcError, RpcErrorCode};
 use ployz_store::tools::{
     Act, Action, Ask, Call, CloudQuery, Fix, Gate, INSTRUCTIONS, MetricsQuery, MetricsSince,
@@ -249,6 +251,7 @@ fn the_catalog_has_the_agreed_tools() {
             "service_restart",
             "service_start",
             "service_stop",
+            "server_set",
             "server_drain",
             "server_upgrade",
             "server_clean",
@@ -790,7 +793,7 @@ fn two_organizations_create_with_the_same_key() {
 }
 
 /// The tools that need Ployz Cloud's view of the Servers.
-const CLOUD_TOOLS: [&str; 20] = [
+const CLOUD_TOOLS: [&str; 21] = [
     "server_show",
     "server_logs",
     "server_metrics",
@@ -801,6 +804,7 @@ const CLOUD_TOOLS: [&str; 20] = [
     "service_restart",
     "service_start",
     "service_stop",
+    "server_set",
     "server_drain",
     "server_upgrade",
     "server_clean",
@@ -1047,6 +1051,66 @@ fn a_server_that_does_not_answer_is_forgotten_without_a_reset() {
         panic!("forget acts once, as a forget: {acted:?}");
     };
     assert_eq!(server.name.as_str(), "web-2");
+}
+
+#[test]
+fn server_set_sends_only_the_values_it_was_given() {
+    let store = shop();
+    let mut acted = Vec::new();
+    let mut cloud = |cloud: Cloud| match cloud {
+        Cloud::Ask(CloudQuery::Servers { .. }) => Ok(servers(&[("db-1", 'a')])),
+        Cloud::Ask(query) => panic!("unexpected read: {query:?}"),
+        Cloud::Act(act) => {
+            acted.push(act.action.clone());
+            Ok(operation(&act, "accepted"))
+        }
+    };
+
+    let set = drive(
+        &store,
+        in_org(),
+        "server_set",
+        json!({ "server": "db-1", "accepts_ingress": false, "build_concurrency": "auto" }),
+        "set-1",
+        &mut cloud,
+    )
+    .ok();
+
+    assert_eq!(set["state"], "accepted");
+    let [
+        Action::SetServer {
+            server,
+            accepts_builds: None,
+            accepts_services: None,
+            accepts_ingress: Some(false),
+            build_concurrency: BuildConcurrencyUpdate::Automatic,
+        },
+    ] = acted.as_slice()
+    else {
+        panic!("set acts once, with the given values: {acted:?}");
+    };
+    assert_eq!(server.name.as_str(), "db-1");
+}
+
+#[test]
+fn server_set_leaves_turning_web_traffic_on_to_the_terminal() {
+    let store = shop();
+    let mut cloud = |_: Cloud| -> Result<Value, RpcError> { panic!("refused before Cloud") };
+    for (input, field) in [
+        (
+            json!({ "server": "db-1", "accepts_ingress": true }),
+            "accepts_ingress",
+        ),
+        (json!({ "server": "db-1" }), "accepts_builds"),
+        (
+            json!({ "server": "db-1", "build_concurrency": "300" }),
+            "build_concurrency",
+        ),
+    ] {
+        let refusal = drive(&store, in_org(), "server_set", input, "set-1", &mut cloud).refused();
+        assert_eq!(refusal.code.as_str(), "invalid_argument");
+        assert_eq!(refusal.field.as_deref(), Some(field));
+    }
 }
 
 #[test]

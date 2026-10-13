@@ -37,6 +37,9 @@ replied. It can:
 - Restart, start or stop a service (**service restart**, **service start**, **service stop**).
 - Drain, upgrade, clean up after or remove a server (**server drain**, **server upgrade**,
   **server clean**, **server remove**).
+- Change what a server takes: builds, services and web traffic, and how many builds it runs at
+  once (**server set**). It can turn web traffic off but not on; that takes
+  `ployz server set web-1 --accepts-ingress=true` in your terminal.
 - Mirror a volume to another server, refresh that mirror, move a volume, release it, remove a
   mirror, or restore a volume from a server's copy (**volume mirror**, **volume move**,
   **volume release**, **volume mirror remove**, **volume restore**). To refresh a mirror, ask for a
@@ -111,9 +114,10 @@ server, like **Remove fra-1**.
   "publish, accepting the volume loss", and only in the same project and environment.
 - **Only removals ask.** Deploys that roll out a new image, change variables or scale a service
   go ahead without a card. Under such a deploy you'll see **Didn't ask. Nothing destroyed.**
-  Restarting, starting or stopping a service never asks, and neither does upgrading a server.
-  Redeploying a deployment doesn't ask either, because it ships exactly what that deployment did
-  and you already approved anything it removes. Starting a queued one doesn't ask.
+  Restarting, starting or stopping a service never asks, and neither does upgrading a server or
+  changing what it takes. Redeploying a deployment doesn't ask either, because it ships exactly
+  what that deployment did and you already approved anything it removes. Starting a queued one
+  doesn't ask.
 - **One at a time.** The agent runs at most one command that might ask per reply, so you never
   get two cards for one message.
 - **You approve one plan.** If the change moves on before you answer, the card says the plan

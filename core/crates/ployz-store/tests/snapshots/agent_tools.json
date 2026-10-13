@@ -2168,6 +2168,42 @@
       "read_only": false
     },
     {
+      "description": "Set what a server takes: builds, services, web traffic. Never asks a human to approve.",
+      "gate": "never",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "accepts_builds": {
+            "type": "boolean"
+          },
+          "accepts_ingress": {
+            "type": "boolean"
+          },
+          "accepts_services": {
+            "description": "false: server_drain moves what runs.",
+            "type": "boolean"
+          },
+          "build_concurrency": {
+            "pattern": "^(auto|[0-9]+)$",
+            "type": "string"
+          },
+          "server": {
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "server"
+        ],
+        "type": "object"
+      },
+      "name": "server_set",
+      "output_schema": {
+        "type": "object"
+      },
+      "read_only": false
+    },
+    {
       "description": "Move Services off a server and place none there; the result says what stayed because its data is there. It may stop to ask a human to approve; call it alone, never alongside another tool.",
       "gate": "cloud",
       "input_schema": {

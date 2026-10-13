@@ -1,7 +1,8 @@
 import { it } from "@effect/vitest";
 import type { Act, CloudQuery, LogsAnswer, MachineId } from "@ployz/sdk";
 import { Effect, Layer } from "effect";
-import { describe, expect } from "vitest";
+import { Inngest } from "inngest";
+import { describe, expect, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { callCloud } from "#/modules/agent/call-cloud.server";
 import type { Caller } from "#/modules/identity/actor";
@@ -139,5 +140,32 @@ describe("callCloud", () => {
       };
       const heard = yield* callCloud(member, { act }).pipe(runtime(reading, []), Effect.provide(services));
       expect(heard).toEqual({ ok: false, refusal: { code: "unavailable", message: "Cloud couldn't answer this. Try again.", details: null } });
+    }));
+
+  // Catches a policy change sending values the agent left alone, or answering as a run already done.
+  it.live("queues a Server policy change with only the values the agent set, and answers it accepted", () =>
+    Effect.gen(function* () {
+      const inngest = new Inngest({ id: "call-cloud-test" });
+      const send = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
+      const services = yield* Layer.build(yield* storeTestCloud({ inngest }));
+      const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
+      const caller: Caller = { ...member, userId };
+      const act: Act = {
+        attempt: "c".repeat(32),
+        digest: "d".repeat(64),
+        action: {
+          action: "set_server",
+          server: { machine: MACHINE, name: "web-2" },
+          accepts_builds: null,
+          accepts_services: false,
+          accepts_ingress: false,
+          build_concurrency: { action: "set", value: 2 },
+        },
+      };
+      const heard = yield* callCloud(caller, { act }).pipe(Effect.provide(services));
+      expect(heard).toEqual({ ok: true, value: expect.objectContaining({ run: "set web-2", state: "accepted" }) });
+      expect(send.mock.calls).toEqual([[expect.objectContaining({
+        data: { organizationId: ORGANIZATION, machineId: MACHINE, change: { acceptsServices: false, acceptsIngress: false, buildConcurrency: 2 } },
+      })]]);
     }));
 });

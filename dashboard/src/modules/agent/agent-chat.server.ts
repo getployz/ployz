@@ -74,6 +74,7 @@ const ACTS = {
   service: "Service act",
   drain: "drain",
   upgrade: "upgrade",
+  set_server: "server policy change",
   clean: "cleanup",
   remove_server: "server removal",
   forget_server: "server forget",

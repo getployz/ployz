@@ -8,6 +8,8 @@ import { githubBranches, githubConnection, GithubRepositories } from "#/modules/
 import type { Caller } from "#/modules/identity/actor";
 import { loadOrganizationConnections } from "#/modules/machines/connections.server";
 import { UNREACHABLE_MESSAGE } from "#/modules/machines/server-operations.server";
+import type { ServerPolicyChange } from "#/modules/machines/server-policy";
+import { requestServerPolicyChange } from "#/modules/machines/server-policy.server";
 import type { Admission } from "#/modules/operations/keyed.server";
 import { dashedAttempt, operationsOn, serverNames } from "#/modules/operations/operation-history.server";
 import {
@@ -162,6 +164,14 @@ const volumeRunInput = (run: VolumeRun, name: string): VolumeRunInput => {
 const lossOf = (action: Act["action"]): AcceptedLoss | null | undefined =>
   "loss" in action ? action.loss : action.action === "volume" && "loss" in action.run ? action.run.loss : undefined;
 
+const policyChangeOf = (set: Extract<Act["action"], { action: "set_server" }>): ServerPolicyChange => ({
+  ...(set.accepts_builds !== null && { acceptsBuilds: set.accepts_builds }),
+  ...(set.accepts_services !== null && { acceptsServices: set.accepts_services }),
+  ...(set.accepts_ingress === false && { acceptsIngress: false }),
+  ...(set.build_concurrency.action === "automatic" && { buildConcurrency: "automatic" }),
+  ...(set.build_concurrency.action === "set" && { buildConcurrency: set.build_concurrency.value }),
+});
+
 const act = Effect.fn("CallCloud.act")(function* (caller: Caller, { attempt, digest, action }: Act, approvalId: string | null) {
   const organizationId = caller.organization.id;
   const call: OperationCall = { key: attempt, approvalId, loss: lossOf(action) };
@@ -189,6 +199,16 @@ const act = Effect.fn("CallCloud.act")(function* (caller: Caller, { attempt, dig
         { kind: "server", machine: action.server.machine },
         "Server",
       );
+    case "set_server": {
+      if (action.accepts_ingress === true) return refusal("invalid_argument", "Only the terminal turns web traffic on.");
+      yield* requestServerPolicyChange(caller, {
+        organizationSlug: caller.organization.slug, machineId: action.server.machine, change: policyChangeOf(action),
+      });
+      return answer<Operation>({
+        attempt: dashedAttempt(attempt), run: `set ${action.server.name}`, state: "accepted", requested_at: Math.floor(Date.now() / 1000),
+        ended_at: null, reason: null, servers: [], kept: [], unanswered: [],
+      });
+    }
     case "clean":
       return yield* admitted(yield* cleanNamespace(caller, action.leftover, call), { kind: "leftover", namespace: action.leftover }, "leftover");
     case "remove_server": {

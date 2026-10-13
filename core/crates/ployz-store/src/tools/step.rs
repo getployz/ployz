@@ -6,7 +6,10 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use ployz_core::{MachineId, MachineLogService, MachineName, Namespace, RpcError, ServiceName};
+use ployz_core::{
+    BuildConcurrencyUpdate, MachineId, MachineLogService, MachineName, Namespace, RpcError,
+    ServiceName,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ts_rs::TS;
@@ -236,6 +239,13 @@ pub enum Action {
     },
     Upgrade {
         server: ServerRef,
+    },
+    SetServer {
+        server: ServerRef,
+        accepts_builds: Option<bool>,
+        accepts_services: Option<bool>,
+        accepts_ingress: Option<bool>,
+        build_concurrency: BuildConcurrencyUpdate,
     },
     Clean {
         leftover: Namespace,
