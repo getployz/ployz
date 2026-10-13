@@ -489,7 +489,28 @@ impl ContainerRuntime {
         signal: Option<&str>,
         grace_period_seconds: Option<i32>,
     ) -> Result<(), Error> {
-        self.ensure_managed(container_id).await?;
+        self.stop_if(container_id, signal, grace_period_seconds, async {
+            Ok::<_, Error>(true)
+        })
+        .await
+        .map(drop)
+    }
+
+    /// Stop the Container only if `still_wanted` holds after it is inspected, so
+    /// nothing is awaited between that answer and the stop request. A refusal wins
+    /// over a failed inspect.
+    pub async fn stop_if<E: From<Error>>(
+        &self,
+        container_id: &ContainerId,
+        signal: Option<&str>,
+        grace_period_seconds: Option<i32>,
+        still_wanted: impl std::future::Future<Output = Result<bool, E>>,
+    ) -> Result<bool, E> {
+        let managed = self.ensure_managed(container_id).await;
+        if !still_wanted.await? {
+            return Ok(false);
+        }
+        managed?;
         let gate = {
             let mut stranded = self.stranded().await;
             stranded.held.insert(*container_id);
@@ -512,7 +533,8 @@ impl ContainerRuntime {
             .await;
         // Stopped, it is no longer routed; still running after a failed stop, it should be again.
         self.clear_stopping(container_id);
-        idempotent_lifecycle_result(container_id, result)
+        idempotent_lifecycle_result(container_id, result)?;
+        Ok(true)
     }
 
     pub async fn remove(

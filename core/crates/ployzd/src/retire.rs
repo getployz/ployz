@@ -29,7 +29,8 @@ const DEBOUNCE: Duration = Duration::from_millis(200);
 const DEBOUNCE_LIMIT: Duration = Duration::from_secs(2);
 const MEMBERSHIP_SAMPLE_TIMEOUT: Duration = Duration::from_secs(1);
 const LIST_TIMEOUT: Duration = Duration::from_secs(10);
-const DRAIN_RECHECK: Duration = Duration::from_millis(100);
+/// Bounds the pointer read made while holding the exclusive admission turn.
+const UNDER_TURN_READ_TIMEOUT: Duration = Duration::from_secs(1);
 
 pub(crate) trait RetireHost: Clone + Send + Sync + 'static {
     fn local_containers(&self) -> impl Future<Output = io::Result<BTreeSet<ContainerId>>> + Send;
@@ -481,10 +482,12 @@ pub(crate) enum Outcome {
 }
 
 /// Reads the Service pointer before taking the Container out of ingress, so a
-/// repoint during the round never drains it; every `DRAIN_RECHECK` of the drain,
-/// so a repoint that names it again routes it back before the drain ends; and
-/// under the admission turn that stops and removes it, so a repoint any time
-/// before the stop keeps it.
+/// repoint during the round never drains it, and under the admission turn right
+/// before the stop request, so a repoint any time before the stop keeps it. A
+/// repoint during the drain routes the Container again only once it is kept,
+/// while the serving rule routes the retiring Containers whenever no pointed
+/// one may serve. The read under the turn fails closed after
+/// `UNDER_TURN_READ_TIMEOUT`.
 async fn retire<H: RetireHost>(
     host: &H,
     replicated: &ReplicatedStore,
@@ -500,22 +503,18 @@ async fn retire<H: RetireHost>(
         host,
         container: candidate.container,
     };
-    let drain = host.drain();
-    tokio::pin!(drain);
-    loop {
-        tokio::select! {
-            () = &mut drain => break,
-            () = tokio::time::sleep(DRAIN_RECHECK) => {
-                if let Ok(false) = still_retired(replicated.clone(), candidate.clone()).await {
-                    return Outcome::Kept;
-                }
-            }
-        }
-    }
-    host.remove(
-        candidate.container,
-        still_retired(replicated.clone(), candidate.clone()),
-    )
+    host.drain().await;
+    let read = still_retired(replicated.clone(), candidate.clone());
+    host.remove(candidate.container, async move {
+        tokio::time::timeout(UNDER_TURN_READ_TIMEOUT, read)
+            .await
+            .unwrap_or_else(|_| {
+                Err(CorrosionError::Io(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "serving pointer read under the admission turn timed out",
+                )))
+            })
+    })
     .await
 }
 
@@ -1192,7 +1191,6 @@ mod tests {
         remove_fails: bool,
         on_membership: Hook,
         on_drain: Hook,
-        drain_holds: bool,
     }
 
     impl FakeHost {
@@ -1209,7 +1207,6 @@ mod tests {
                 remove_fails: false,
                 on_membership: Arc::default(),
                 on_drain: Arc::default(),
-                drain_holds: false,
             }
         }
     }
@@ -1249,9 +1246,6 @@ mod tests {
 
         async fn drain(&self) {
             run_hook(&self.on_drain);
-            if self.drain_holds {
-                std::future::pending::<()>().await;
-            }
         }
 
         async fn remove(
@@ -1452,6 +1446,16 @@ mod tests {
     }
 
     fn roll_back_to_a(cluster: &Arc<FakeCluster>) -> Hook {
+        point_at_a(cluster, vec![id("b")])
+    }
+
+    /// Points `d3` at A while A stays in the retiring list, as a pointer row that
+    /// names a Container in both lists would.
+    fn point_at_a_still_retiring_it(cluster: &Arc<FakeCluster>) -> Hook {
+        point_at_a(cluster, vec![id("a"), id("b")])
+    }
+
+    fn point_at_a(cluster: &Arc<FakeCluster>, retiring: Vec<ContainerId>) -> Hook {
         let cluster = cluster.clone();
         hook(move || {
             cluster.write_serving_pointer(
@@ -1460,7 +1464,7 @@ mod tests {
                     deploy: deploy("d3"),
                     containers: vec![id("a")],
                     previous: Some(deploy("d2")),
-                    retiring: vec![id("b")],
+                    retiring,
                 })
                 .unwrap(),
             );
@@ -1509,6 +1513,7 @@ mod tests {
         host: MachineHost,
         named: Arc<Mutex<BTreeMap<String, serde_json::Value>>>,
         requests: Arc<Mutex<Vec<(axum::http::Method, String)>>>,
+        inspect_hold: Arc<Mutex<Option<Arc<tokio::sync::Barrier>>>>,
         data_dir: std::path::PathBuf,
         a: ContainerId,
         b: ContainerId,
@@ -1604,6 +1609,7 @@ mod tests {
                 },
                 named,
                 requests: fake.requests.clone(),
+                inspect_hold: fake.inspect_hold.clone(),
                 data_dir,
                 a,
                 b,
@@ -1695,6 +1701,58 @@ mod tests {
         assert!(machine.host.containers.stopping_ids_for_test().is_empty());
     }
 
+    /// Repoints `d3` at A while the inspect right before A's stop is in flight.
+    async fn repoint_during_the_last_inspect_before_the_stop(retiring_a: bool) {
+        let cluster = FakeCluster::start();
+        let store = cluster.store();
+        let machine = RealMachine::start(&cluster).await;
+        let hold = Arc::new(tokio::sync::Barrier::new(2));
+        *machine.inspect_hold.lock().unwrap() = Some(hold.clone());
+        let mut stopping = JoinSet::new();
+        round(
+            &machine.host,
+            &store,
+            &mut Retirer::default(),
+            &mut stopping,
+        )
+        .await;
+        assert_eq!(stopping.len(), 1);
+        hold.wait().await;
+
+        let retiring = if retiring_a {
+            vec![machine.a, machine.b]
+        } else {
+            vec![machine.b]
+        };
+        cluster.write_serving_pointer(
+            &ServingPointer::key(&service()),
+            &serde_json::to_string(&ServingPointer {
+                deploy: deploy("d3"),
+                containers: vec![machine.a],
+                previous: Some(deploy("d2")),
+                retiring,
+            })
+            .unwrap(),
+        );
+        hold.wait().await;
+
+        assert!(matches!(next_outcome(&mut stopping).await, Outcome::Kept));
+        assert!(!machine.stopped(machine.a), "d3 serves A");
+        assert!(machine.exists(machine.a), "d3 serves A");
+        assert!(machine.host.containers.stopping_ids_for_test().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_repoint_during_the_last_inspect_before_the_stop_keeps_the_container() {
+        repoint_during_the_last_inspect_before_the_stop(false).await;
+    }
+
+    #[tokio::test]
+    async fn a_pointer_naming_the_container_during_the_last_inspect_keeps_it_while_still_retiring_it()
+     {
+        repoint_during_the_last_inspect_before_the_stop(true).await;
+    }
+
     #[tokio::test]
     async fn retiring_an_exited_container_clears_its_stopping_mark() {
         let cluster = FakeCluster::start();
@@ -1757,26 +1815,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_repoint_naming_the_container_mid_drain_routes_it_again_before_the_drain_ends() {
+    async fn a_pointer_naming_the_container_keeps_it_even_while_it_still_retires_it() {
         let local = machine("local", 1);
         let (cluster, store) = acked_cluster(&[&local]).await;
         let host = FakeHost {
-            drain_holds: true,
+            on_drain: point_at_a_still_retiring_it(&cluster),
             ..FakeHost::new(&[id("a"), id("b")], ackers(&[&local]))
         };
         let mut stopping = JoinSet::new();
         round(&host, &store, &mut Retirer::default(), &mut stopping).await;
-        while host.marked.lock().unwrap().is_empty() {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        run_hook(&roll_back_to_a(&cluster));
+        while stopping.join_next().await.is_some() {}
 
-        let (_, _, outcome) = tokio::time::timeout(Duration::from_secs(2), stopping.join_next())
-            .await
-            .expect("the drain must end once the pointer names the Container")
-            .unwrap()
-            .unwrap();
-        assert!(matches!(outcome, Outcome::Kept));
+        assert_eq!(*host.marked.lock().unwrap(), vec![id("a")]);
         assert_eq!(*host.unmarked.lock().unwrap(), vec![id("a")]);
         assert_eq!(*host.removals.lock().unwrap(), 0);
     }

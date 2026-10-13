@@ -39,6 +39,12 @@ impl<'serving> ServingContainer<'serving> {
 /// Serving Containers for this observer: may serve, addressed, and selected per
 /// Qualified Service by its Serving Pointer, or by the newest traffic-eligible
 /// Serving Shape when `pointer_for` has none.
+///
+/// With a pointer, the pointed Containers serve alone while every pointed id is
+/// visible and one of them may serve. Otherwise the retiring Containers and the
+/// previous deploy's Containers serve beside them, so an identity routes nothing
+/// only when none of those may serve. A Container stopped on purpose is marked
+/// Stopping first and never may serve.
 #[must_use]
 pub fn serving_containers<'serving, 'pointer>(
     containers: impl IntoIterator<Item = &'serving ServiceContainer>,
@@ -54,7 +60,7 @@ pub fn serving_containers<'serving, 'pointer>(
     let mut serving = Vec::new();
     for (identity, members) in by_identity {
         let selected = match pointer_for(&identity) {
-            Some(pointer) => pointed_or_previous(members, pointer),
+            Some(pointer) => pointed_or_fallback(members, pointer),
             None => newest_shape(members),
         };
         serving.extend(selected.into_iter().filter_map(|container| {
@@ -95,7 +101,7 @@ fn newest_shape(members: Vec<&ServiceContainer>) -> Vec<&ServiceContainer> {
         .collect()
 }
 
-fn pointed_or_previous<'serving>(
+fn pointed_or_fallback<'serving>(
     members: Vec<&'serving ServiceContainer>,
     pointer: &ServingPointer,
 ) -> Vec<&'serving ServiceContainer> {
@@ -104,24 +110,29 @@ fn pointed_or_previous<'serving>(
             .iter()
             .any(|container| container.as_observation().container_id == *id)
     });
-    let previous = pointer
-        .previous
-        .as_ref()
-        .filter(|_| !all_visible)
-        .map(DeploymentLogId::as_str);
-    members
-        .into_iter()
-        .filter(|container| {
-            let observation = container.as_observation();
-            pointer.containers.contains(&observation.container_id)
-                || previous.is_some_and(|previous| {
-                    observation
-                        .labels
-                        .get(DEPLOYMENT_ID_LABEL)
-                        .is_some_and(|deploy| deploy == previous)
-                })
-        })
-        .collect()
+    let (pointed, others): (Vec<_>, Vec<_>) = members.into_iter().partition(|container| {
+        pointer
+            .containers
+            .contains(&container.as_observation().container_id)
+    });
+    let any_pointed_routable = pointed
+        .iter()
+        .any(|container| container.traffic_address().is_some());
+    if all_visible && any_pointed_routable {
+        return pointed;
+    }
+    let previous = pointer.previous.as_ref().map(DeploymentLogId::as_str);
+    let fallback = others.into_iter().filter(|container| {
+        let observation = container.as_observation();
+        pointer.retiring.contains(&observation.container_id)
+            || previous.is_some_and(|previous| {
+                observation
+                    .labels
+                    .get(DEPLOYMENT_ID_LABEL)
+                    .is_some_and(|deploy| deploy == previous)
+            })
+    });
+    pointed.into_iter().chain(fallback).collect()
 }
 
 /// Machine-local occupancy of one wanted Serving Shape.
@@ -565,17 +576,7 @@ mod tests {
     }
 
     fn visibility_pointer(retiring: &[char]) -> ServingPointer {
-        let ids = |ids: &[char]| {
-            ids.iter()
-                .map(|id| ContainerId::parse(id.to_string().repeat(64)).unwrap())
-                .collect()
-        };
-        ServingPointer {
-            deploy: DeploymentLogId::parse("d2").unwrap(),
-            containers: ids(&['a', 'b']),
-            previous: Some(DeploymentLogId::parse("d1").unwrap()),
-            retiring: ids(retiring),
-        }
+        pointer_of("d2", &['a', 'b'], Some("d1"), retiring)
     }
 
     fn visibility_containers(case: &VisibilityCase) -> Vec<ServiceContainer> {
@@ -632,7 +633,7 @@ mod tests {
     }
 
     #[test]
-    fn serving_containers_ignore_the_retiring_list() {
+    fn serving_containers_ignore_the_retiring_list_while_a_pointed_container_routes() {
         let without = visibility_pointer(&[]);
         let with = visibility_pointer(&['1', '2', '3']);
         for case in visibility_cases() {
@@ -643,6 +644,90 @@ mod tests {
                 case.name
             );
         }
+    }
+
+    const STOPPING: ContainerRuntimeObservation = ContainerRuntimeObservation::Running {
+        health: HealthObservation::Stopping,
+    };
+
+    fn pointer_routes(
+        rows: &[(char, u8, ContainerRuntimeObservation)],
+        pointer: &ServingPointer,
+    ) -> Vec<char> {
+        let containers = service_containers(
+            rows.iter()
+                .map(|(id, deploy, runtime)| visibility_row(*id, *deploy, runtime.clone())),
+        );
+        let mut routed: Vec<char> = serving_containers(&containers, |_| Some(pointer))
+            .into_iter()
+            .map(|serving| id_char(serving.as_container()))
+            .collect();
+        routed.sort_unstable();
+        routed
+    }
+
+    fn pointer_of(
+        deploy: &str,
+        containers: &[char],
+        previous: Option<&str>,
+        retiring: &[char],
+    ) -> ServingPointer {
+        let ids = |ids: &[char]| {
+            ids.iter()
+                .map(|id| ContainerId::parse(id.to_string().repeat(64)).unwrap())
+                .collect()
+        };
+        ServingPointer {
+            deploy: DeploymentLogId::parse(deploy).unwrap(),
+            containers: ids(containers),
+            previous: previous.map(|previous| DeploymentLogId::parse(previous).unwrap()),
+            retiring: ids(retiring),
+        }
+    }
+
+    #[test]
+    fn a_rollback_to_a_stopping_container_routes_the_running_one_it_retires() {
+        let rows = [('a', 1, STOPPING), ('b', 2, HEALTHY)];
+        assert_eq!(
+            pointer_routes(&rows, &pointer_of("d3", &['a'], Some("d2"), &['b'])),
+            vec!['b']
+        );
+        assert_eq!(
+            pointer_routes(&rows, &pointer_of("d3", &['a'], None, &['b'])),
+            vec!['b'],
+            "the retiring list alone names B"
+        );
+    }
+
+    #[test]
+    fn routable_pointed_containers_exclude_retiring_and_previous_ones() {
+        let rows = [
+            ('a', 2, HEALTHY),
+            ('b', 2, STOPPING),
+            ('1', 1, HEALTHY),
+            ('0', 0, HEALTHY),
+        ];
+        assert_eq!(
+            pointer_routes(
+                &rows,
+                &pointer_of("d2", &['a', 'b'], Some("d1"), &['0', '1'])
+            ),
+            vec!['a']
+        );
+    }
+
+    #[test]
+    fn nothing_routable_routes_nothing() {
+        let rows = [
+            ('a', 3, STOPPING),
+            ('b', 2, STOPPING),
+            ('1', 1, ContainerRuntimeObservation::Exited { code: 0 }),
+            ('c', 4, HEALTHY),
+        ];
+        assert_eq!(
+            pointer_routes(&rows, &pointer_of("d3", &['a'], Some("d1"), &['b'])),
+            Vec::<char>::new()
+        );
     }
 
     #[test]

@@ -272,9 +272,10 @@ impl LocalMachine {
     }
 
     /// Stop and remove one managed Container, already drained, under one exclusive
-    /// admission turn. `still_wanted` runs first under that turn, so nothing that
-    /// changes its answer while the turn is awaited reaches Docker. Answers whether
-    /// the Container was removed; false means `still_wanted` refused it.
+    /// admission turn. `still_wanted` runs under that turn after the Container is
+    /// inspected and right before the stop request, so nothing that changes its
+    /// answer while the turn or the inspect is awaited reaches Docker. Answers
+    /// whether the Container was removed; false means `still_wanted` refused it.
     pub(crate) async fn remove_drained_if<W>(
         &self,
         container: ContainerId,
@@ -285,17 +286,15 @@ impl LocalMachine {
     {
         let local = self.clone();
         self.finish_mutation(async move {
-            if !still_wanted.await? {
-                return Ok(false);
-            }
             let containers = local.containers.as_ref().ok_or(Error::DockerUnavailable)?;
-            let machine_id = local.record().id();
-            match containers.inspect_managed(&container, &machine_id).await {
-                Ok(observed) if is_running(&observed) => {
-                    containers.stop(&container, None, None).await?;
-                }
-                Ok(_) | Err(crate::docker::Error::ContainerNotFound(_)) => {}
-                Err(error) => return Err(error.into()),
+            let still_wanted = async { Ok::<_, Error>(still_wanted.await?) };
+            match containers
+                .stop_if(&container, None, None, still_wanted)
+                .await
+            {
+                Ok(true) | Err(Error::Docker(crate::docker::Error::ContainerNotFound(_))) => {}
+                Ok(false) => return Ok(false),
+                Err(error) => return Err(error),
             }
             let remove_volumes = AnonymousVolumes::default() == AnonymousVolumes::Remove;
             match containers.remove(&container, remove_volumes, false).await {

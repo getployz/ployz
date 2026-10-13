@@ -38,6 +38,9 @@ pub(crate) struct FakeDocker {
     pub(crate) create_barrier: Option<Arc<tokio::sync::Barrier>>,
     /// A start waits here twice: once to announce it began, once to be released.
     pub(crate) start_barrier: Option<Arc<tokio::sync::Barrier>>,
+    /// The next Container inspect waits here twice: once to announce it began, once
+    /// to be released.
+    pub(crate) inspect_hold: Arc<Mutex<Option<Arc<tokio::sync::Barrier>>>>,
     pub(crate) reject_list: Arc<AtomicBool>,
     /// Named mode: every stop fails and leaves the Container as it was.
     pub(crate) refuse_stop: Arc<AtomicBool>,
@@ -66,6 +69,17 @@ async fn fake_docker(
             path.clone(),
             serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null),
         ));
+    }
+    let inspect = method == Method::GET
+        && path.contains("/containers/")
+        && path.ends_with("/json")
+        && !path.ends_with("/containers/json");
+    let hold = inspect
+        .then(|| fake.inspect_hold.lock().unwrap().take())
+        .flatten();
+    if let Some(hold) = hold {
+        hold.wait().await;
+        hold.wait().await;
     }
     if let Some(containers) = &fake.named_containers {
         let mut containers = containers.lock().unwrap();
