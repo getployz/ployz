@@ -746,6 +746,27 @@ mod set_volume_copy {
             .unwrap_or_else(|error| panic!("{error}: {response:?}"))
     }
 
+    async fn inspect(service: &MachineService) -> ployz_core::VolumeCopyView {
+        let request = ployz_core::InspectVolumeCopyRequest {
+            name: VOLUME.parse().unwrap(),
+        };
+        let response = service
+            .inspect_volume_copy(Request::new(
+                op::InspectVolumeCopy::into_request(request)
+                    .encode()
+                    .unwrap(),
+            ))
+            .await
+            .unwrap()
+            .into_inner()
+            .decode_response()
+            .unwrap();
+        response
+            .clone()
+            .decode::<op::InspectVolumeCopy>()
+            .unwrap_or_else(|error| panic!("{error}: {response:?}"))
+    }
+
     fn refusal(response: &RpcResponse) -> RpcError {
         let RpcResponseBody::Error(error) = &response.body else {
             panic!("expected a refusal, got {response:?}");
@@ -1451,6 +1472,41 @@ mod set_volume_copy {
             json!({"copy": slot(Some(snapshot("f-1", 7)))["Ok"]})
         );
         assert_eq!(reply(&cut), reply(&during));
+        server.abort();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    /// A Deploy, a release and a requeued move observe the Volume first, so an inspect
+    /// that waited on a cut's drain would time out and fail them.
+    #[tokio::test]
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    async fn an_inspect_answers_the_root_while_a_cut_drains() {
+        let (data_dir, _store, service, fake) =
+            fake_docker_service("ployzd-copy-inspect-drain").await;
+        let plugin = cutting_plugin();
+        plugin.reply(
+            "Volume.Inspect",
+            json!({"Ok": {"copy": writer_root(0, None)["Ok"]}}),
+        );
+        let (socket, server) = plugin.serve(&data_dir);
+        let service = service.with_volume_plugin(socket);
+        running_holder(&service, &fake).await;
+
+        let (cut, during) = tokio::join!(set_copy(&service, at_gen(draining_cut(400), 1)), async {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            tokio::time::timeout(std::time::Duration::from_millis(200), inspect(&service))
+                .await
+                .expect("the inspect waited on the draining cut")
+        });
+        assert_eq!(
+            serde_json::to_value(during).unwrap(),
+            json!({"copy": writer_root(0, None)["Ok"]})
+        );
+        assert_eq!(
+            serde_json::to_value(reply(&cut)).unwrap(),
+            json!({"copy": slot(Some(snapshot("f-1", 7)))["Ok"]})
+        );
+        assert_eq!(holder_status(&fake), vec![json!("exited")]);
         server.abort();
         std::fs::remove_dir_all(data_dir).unwrap();
     }
