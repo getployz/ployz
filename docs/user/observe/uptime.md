@@ -14,7 +14,7 @@ reaches it. When the check can't get through, the service shows a red ⚠ and an
 The status line reads **Up**, **Unreachable** or **Checking**, with the share of checks that
 passed. **Response time** and the history strip cover the last hour. Pick a quick range from
 5 minutes to 30 days, or type a **From** and **Until**. Click an incident to see what each
-check got back.
+check got back. Below them come the service's [metrics](metrics.md), on the same time axis.
 
 <!-- screenshot: the Monitoring tab of web, Up with its response time chart -->
 
@@ -58,8 +58,8 @@ answers `not_checked`.
 - **What gets checked.** The service's generated domain, or its first custom domain when it has
   none, at its [health check](../deploy/deployments.md#deploy-without-downtime) path, or `/`
   without one. At the path, any answer below 400 counts as up. At `/`, any answer below 500
-  counts, so a 404 still shows the service is up. A service with no public address shows
-  **Not checked** and **Add domain**.
+  counts, so a 404 still shows the service is up. A service with no public address isn't
+  checked, so its **Monitoring** tab starts at its metrics.
 - **A 4xx points at the path.** If the check has never passed and your app answers its health
   check path with a 4xx, the **Monitoring** tab shows the **Healthcheck path** field with what
   the app answered. Change it there, then deploy. The check uses the new path from then on.

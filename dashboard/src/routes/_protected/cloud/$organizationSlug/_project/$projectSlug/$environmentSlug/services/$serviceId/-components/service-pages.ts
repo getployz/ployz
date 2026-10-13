@@ -1,6 +1,5 @@
 import { Effect, Option, Schema, SchemaGetter } from "effect";
 import { RangeEdge } from "#/modules/uptime/uptime-range";
-import type { MonitoringSection } from "./monitoring/monitoring-sections";
 
 export const SERVICE_PAGES = [
   { id: "deployments", label: "Deployments" },
@@ -11,10 +10,6 @@ export const SERVICE_PAGES = [
 ] as const;
 
 export type ServicePage = (typeof SERVICE_PAGES)[number]["id"];
-
-/** The drawer's tabs: Monitoring only with a section to show. */
-export const servicePages = (monitoring: readonly MonitoringSection[]) =>
-  SERVICE_PAGES.filter((page) => page.id !== "monitoring" || monitoring.length > 0);
 
 export const servicePageSchema = Schema.Literals(SERVICE_PAGES.map((page) => page.id));
 

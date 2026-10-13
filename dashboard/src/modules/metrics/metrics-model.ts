@@ -6,7 +6,8 @@ import type { MetricRead, MetricWindow } from "./metrics";
 // The SDK exports `RpcError` as its error class; the payload type is only reachable through a reply.
 type RpcError = MetricHistory["unanswered"][number]["error"];
 
-export type ServerRef = { readonly id: string; readonly name: string };
+/** `name` is null for a Server the list doesn't name. */
+export type ServerRef = { readonly id: string; readonly name: string | null };
 /** `at` is Unix milliseconds. */
 export type Sample = { readonly at: number; readonly value: number };
 export type Gap = { readonly from: number; readonly to: number; readonly reason: "not_sampled" | "timeout" };
@@ -77,9 +78,9 @@ export type ServerMetrics = {
 type Names = ReadonlyMap<string, string>;
 
 const toMs = (nanos: number) => Math.round(nanos / 1e6);
-const serverRef = (id: string, names: Names): ServerRef => ({ id, name: names.get(id) ?? id });
-const byName = (left: { readonly name: string }, right: { readonly name: string }) =>
-  left.name.localeCompare(right.name, undefined, { numeric: true });
+const serverRef = (id: string, names: Names): ServerRef => ({ id, name: names.get(id) ?? null });
+const byName = (left: { readonly name: string | null }, right: { readonly name: string | null }) =>
+  (left.name ?? "").localeCompare(right.name ?? "", undefined, { numeric: true });
 
 const needsUpgrade: (error: RpcError) => boolean = Schema.is(Schema.Struct({
   code: Schema.Literal("unsupported"),
@@ -118,7 +119,7 @@ function answers(read: Extract<MetricRead, { type: "history" }>, names: Names) {
 
 const toGap = (gap: MetricGap): Gap => ({ from: toMs(gap.from), to: toMs(gap.to), reason: gap.reason });
 
-function mergeGaps(gaps: readonly Gap[]): Gap[] {
+export function mergeGaps(gaps: readonly Gap[]): Gap[] {
   const merged: Gap[] = [];
   for (const gap of [...gaps].sort((left, right) => left.from - right.from)) {
     const last = merged.at(-1);

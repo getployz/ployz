@@ -9,6 +9,24 @@ without installing anything.
 
 ## See a service's metrics
 
+1. Click the service on the canvas.
+2. Open its **Monitoring** tab.
+
+A service with a public address leads with its [uptime](uptime.md) and **Response time**. Then
+come **CPU**, **Memory**, **Network** and **Disk**, all on one time axis, so hovering one chart
+moves the cursor on every chart. A dashed line on **CPU** and **Memory** marks the service's
+limit. A vertical rule marks each deploy, and a marker shows each OOM kill, exit and restart. A
+service with a managed volume ends with a **Managed volume** row that names the volume and its
+size limit.
+
+The charts cover the last hour. Pick a range from 5 minutes to 30 days with the same picker as
+uptime. On a service that runs on more than one server, **By server** draws one line per server
+in place of the total.
+
+<!-- screenshot: the Monitoring tab of web, with CPU, Memory, Network and Disk -->
+
+From the CLI:
+
 ```sh
 ployz metrics web
 ```
@@ -50,7 +68,7 @@ reads both without picking a range.
 
 ## See older metrics
 
-For the last 24 hours you get every 10 second reading. After that Ployz keeps a 5 minute summary
+For the last 23 hours you get every 10 second reading. After that Ployz keeps a 5 minute summary
 for each service, deployment and server, so longer ranges show fewer, broader points. How far back the
 summaries reach depends on the disk space Ployz keeps for logs and metrics. See
 [Good to know](#good-to-know).
@@ -68,7 +86,15 @@ service, until its summaries age out.
 - **Metrics give way when disk runs low.** Readings and 5 minute summaries share the disk space
   Ployz keeps for logs. When that space fills, or the disk runs short of free space, the oldest
   hours go first. See [Logs](logs.md).
-- **A missing number shows as not measured, never as zero.** A row reads **not measured** when no
-  reading exists in the range, and **NOW** reads **-** when there's no recent reading. A server that doesn't answer is named, and the other servers' numbers still show.
+- **A missing number shows as not measured, never as zero.** A chart hatches the stretch no
+  server measured as **Not measured**, and a chart with nothing in the range reads **No
+  readings**. In the CLI, a row reads **not measured** when no reading exists in the range, and
+  **NOW** reads **-** when there's no recent reading.
+- **A server that doesn't answer is named.** The other servers' numbers still show, under a note
+  such as "web-2 didn't answer."
+- **A server on an older Ployz has no metrics to show.** The **Monitoring** tab names it, as in
+  "web-2 needs an upgrade to show its metrics." When every server running the service needs one,
+  the charts give way to **Upgrade web-2 to see its metrics** with a link to the server. See
+  [Upgrade Ployz on a server](../servers/manage-servers.md#upgrade-ployz-on-a-server).
 - **Metrics share a CPU budget with logs.** Ployz caps its helper for both at 10% of one CPU core.
   See [Logs](logs.md).

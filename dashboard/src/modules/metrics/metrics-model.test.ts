@@ -59,7 +59,7 @@ describe("serviceMetrics availability", () => {
     expect(metrics.availability).toEqual({
       type: "mixed",
       needsUpgrade: [{ id: B, name: "web-2" }],
-      unanswered: [{ id: D, name: D }],
+      unanswered: [{ id: D, name: null }],
     });
   });
 
@@ -86,7 +86,7 @@ describe("serviceMetrics availability", () => {
     });
     expect(serviceMetrics(read({ machines: [answering(A, nothing())], unanswered: [failing(B, refusal), failing(D, down)] }), names).availability).toEqual({
       type: "unanswered",
-      servers: [{ id: D, name: D }],
+      servers: [{ id: D, name: null }],
       needsUpgrade: [{ id: B, name: "web-2" }],
     });
   });
@@ -94,7 +94,7 @@ describe("serviceMetrics availability", () => {
   it("is unanswered when none answer and any did not, still listing the ones that need upgrade", () => {
     expect(serviceMetrics(read({ unanswered: [failing(B, refusal), failing(D, down)] }), names).availability).toEqual({
       type: "unanswered",
-      servers: [{ id: D, name: D }],
+      servers: [{ id: D, name: null }],
       needsUpgrade: [{ id: B, name: "web-2" }],
     });
   });

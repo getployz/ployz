@@ -1,7 +1,7 @@
 import { failureTotal, formatMs, passes, regionLabel, type UptimeStep } from "#/modules/uptime/uptime";
 import { PHASES, type Phase, type RegionNames, type UptimePoint } from "#/modules/uptime/uptime-status";
 import { useTimeZone } from "#/utils/time-zone";
-import { atFormat } from "./MetricChart";
+import { atFormat } from "#/components/metrics/metric-chart";
 
 const PHASE_LABELS = { dns: "DNS", connect: "Connect", tls: "TLS", ttfb: "First byte" } satisfies Record<Phase, string>;
 // One hue per phase so thin neighbours stay apart; First byte keeps the Check line's colour.
@@ -31,10 +31,9 @@ const phaseMeans = (point: UptimePoint) => PHASES.map((phase) => ({ phase, ms: p
 const meanTotal = (point: UptimePoint) => phaseMeans(point).reduce((sum, part) => sum + part.ms, 0);
 
 /** One step of the Response time chart, ending at `end`, region by region: how fast, where the time went, and what failed. */
-export function ResponseTooltip({ step, end, edgeMs, regions }: {
+export function ResponseTooltip({ step, end, regions }: {
   step: UptimeStep;
   end: number;
-  edgeMs: number | null;
   regions: RegionNames;
 }) {
   const timeZone = useTimeZone();
@@ -47,12 +46,6 @@ export function ResponseTooltip({ step, end, edgeMs, regions }: {
       </div>
       {step.regions.length === 0 ? <span className="text-muted-foreground">No checks</span> : null}
       {step.regions.map((point) => <RegionRow key={point.region} point={point} slowest={slowest} regions={regions} />)}
-      {edgeMs === null ? null : (
-        <div className="flex justify-between gap-3">
-          <span className="text-muted-foreground">Edge</span>
-          <span className="tabular-nums">{formatMs(edgeMs)}</span>
-        </div>
-      )}
       {slowest > 0 ? (
         <div className="flex flex-wrap gap-x-3 gap-y-1 text-muted-foreground">
           {PHASES.map((phase) => (
