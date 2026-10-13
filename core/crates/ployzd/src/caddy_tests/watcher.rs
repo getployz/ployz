@@ -10,7 +10,8 @@ use axum::{
     Router,
     body::{Body, Bytes},
     extract::State,
-    response::Response,
+    http::StatusCode,
+    response::{IntoResponse, Response},
     routing::post,
 };
 use futures_util::StreamExt;
@@ -724,6 +725,48 @@ async fn removed_service_pointer_deletes_its_ack() {
 }
 
 #[tokio::test]
+async fn committed_ack_with_a_lost_response_is_rewritten_when_the_pointer_returns() {
+    let WatcherFixture {
+        machine,
+        state,
+        address,
+        server,
+        directory,
+    } = watcher_fixture().await;
+    let first = state.api_container();
+    let key = ServingPointer::key(&first.identity());
+    state.write_pointer(&key, pointer("d1", &first));
+    let (load_tx, mut load_rx) = mpsc::unbounded_channel();
+    let admin = TestAdmin { loads: load_tx };
+    let shutdown = CancellationToken::new();
+    let watcher = tokio::spawn(watch_caddy(
+        machine.clone(),
+        ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        directory.join(CONFIG_FILE),
+        shutdown.clone(),
+        move || std::future::ready(Ok(Some(admin.clone()))),
+    ));
+    next_load(&mut load_rx).await;
+    state.wait_for_ack_transactions(1).await;
+
+    state
+        .lose_next_transaction_response
+        .store(true, Ordering::SeqCst);
+    state.write_pointer(&key, pointer("d2", &first));
+    state.wait_for_ack_transactions(2).await;
+    assert_eq!(state.last_acks(), vec![ack(&machine, "d2", &first)]);
+
+    state.write_pointer(&key, pointer("d1", &first));
+    state.wait_for_ack_transactions(3).await;
+    assert_eq!(state.last_acks(), vec![ack(&machine, "d1", &first)]);
+
+    shutdown.cancel();
+    watcher.await.unwrap().unwrap();
+    server.abort();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
 async fn ack_written_without_a_caddy_admin() {
     let WatcherFixture {
         machine,
@@ -882,6 +925,7 @@ async fn watcher_fixture() -> WatcherFixture {
         certificates: Arc::new(Mutex::new(Vec::new())),
         statements: Arc::new(Mutex::new(Vec::new())),
         transactions: Arc::new(Mutex::new(Vec::new())),
+        lose_next_transaction_response: Arc::new(AtomicBool::new(false)),
     };
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -970,6 +1014,7 @@ struct WatchState {
     certificates: Arc<Mutex<Vec<(String, String)>>>,
     statements: Arc<Mutex<Vec<(Sent, String)>>>,
     transactions: Arc<Mutex<Vec<Vec<Statement>>>>,
+    lose_next_transaction_response: Arc<AtomicBool>,
 }
 
 impl WatchState {
@@ -1195,7 +1240,7 @@ async fn subscribe(State(state): State<WatchState>, body: Bytes) -> Response {
     ))
 }
 
-async fn transact(State(state): State<WatchState>, body: Bytes) -> Bytes {
+async fn transact(State(state): State<WatchState>, body: Bytes) -> Response {
     let statements: Vec<Statement> = serde_json::from_slice(&body).unwrap();
     state.statements.lock().unwrap().extend(
         statements
@@ -1204,9 +1249,15 @@ async fn transact(State(state): State<WatchState>, body: Bytes) -> Bytes {
     );
     let results = vec![json!({"rows_affected": 1, "time": 0.0}); statements.len()];
     state.transactions.lock().unwrap().push(statements);
+    if state
+        .lose_next_transaction_response
+        .swap(false, Ordering::SeqCst)
+    {
+        return StatusCode::GATEWAY_TIMEOUT.into_response();
+    }
     serde_json::to_vec(&json!({ "results": results, "time": 0.0 }))
         .unwrap()
-        .into()
+        .into_response()
 }
 
 async fn wait_for_caddyfile(path: &Path, expected: &str) -> String {

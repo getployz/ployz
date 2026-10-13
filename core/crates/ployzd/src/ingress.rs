@@ -507,7 +507,7 @@ fn route_acks(
 async fn publish_route_acks(
     replicated: &ReplicatedStore,
     machine_id: &MachineId,
-    acked: &mut BTreeMap<QualifiedService, IngressRouteAck>,
+    acked: &mut BTreeMap<QualifiedService, Option<IngressRouteAck>>,
     acks: BTreeMap<QualifiedService, IngressRouteAck>,
 ) {
     let mut changes: BTreeMap<_, _> = acked
@@ -516,7 +516,7 @@ async fn publish_route_acks(
         .map(|service| (service.clone(), IngressRouteChange::Delete))
         .collect();
     for (service, ack) in &acks {
-        if acked.get(service) != Some(ack) {
+        if acked.get(service).and_then(Option::as_ref) != Some(ack) {
             changes.insert(service.clone(), IngressRouteChange::Upsert(ack.clone()));
         }
     }
@@ -524,11 +524,22 @@ async fn publish_route_acks(
         .publish_ingress_routes(machine_id, &changes)
         .await
     {
-        Ok(()) => *acked = acks,
-        Err(error) => tracing::warn!(
-            error = %ployz_core::error_chain::inline(&error),
-            "failed to publish ingress route acks, retrying next pass"
-        ),
+        Ok(()) => {
+            *acked = acks
+                .into_iter()
+                .map(|(service, ack)| (service, Some(ack)))
+                .collect()
+        }
+        Err(error) => {
+            // The write may have committed anyway, so the next pass rewrites or deletes these rows.
+            for service in changes.into_keys() {
+                acked.insert(service, None);
+            }
+            tracing::warn!(
+                error = %ployz_core::error_chain::inline(&error),
+                "failed to publish ingress route acks, retrying next pass"
+            );
+        }
     }
 }
 
