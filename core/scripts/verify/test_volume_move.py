@@ -462,7 +462,7 @@ class VolumeMoveTests(unittest.TestCase):
 
     def test_a_volume_held_past_the_limit_skips_the_case_disarms_its_fault_and_the_next_case_runs(self):
         # An unlisted holder looks idle, so the fault is armed and the first refusal skips the case at once.
-        for listed, seconds, reason in ((True, volume_move.BUSY_LIMIT + 20, "VolumeBusy past"),
+        for listed, seconds, reason in ((True, volume_move.BUSY_LIMIT + 20, "before the fault was armed"),
                                         (False, 20, "while the fault was armed")):
             with self.subTest(holder_listed=listed):
                 checks, model = self.checks()
@@ -526,6 +526,22 @@ class VolumeMoveTests(unittest.TestCase):
         self.assertFalse(case["passed"])
         self.assertEqual(model.fault, {"machine-1": None, "machine-2": None})
         self.assertEqual([wait["holder"] for wait in summary["volume_busy_waits"]], ["cron-sync"])
+
+    def test_a_holder_that_ends_just_before_the_limit_skips_a_fault_case_without_starting_its_op(self):
+        checks, model = self.checks()
+        model.hold(volume_move.BUSY_LIMIT - 2)
+        checks.case_name = volume_move.KILLS[0]["name"]
+        armed = []
+        with redirect_stdout(io.StringIO()), self.assertRaisesRegex(volume_move.Skipped, "before the fault"):
+            checks.start_op("move", "machine-2", arm=lambda: armed.append(True))
+        self.assertEqual((armed, model.started), ([], []))
+        self.assertEqual([wait["holder"] for wait in checks.busy_waits], ["sync-1"])
+
+        checks, model = self.checks()
+        model.hold(volume_move.BUSY_LIMIT - 2)
+        with redirect_stdout(io.StringIO()):
+            summary = checks.run_all([volume_move.KILLS[0]])
+        self.assertIn("before the fault was armed", summary["cases"][0]["skipped"] or "", summary["cases"][0])
 
     def test_a_failed_disarm_after_a_case_error_still_writes_the_summary(self):
         checks, model = self.checks()

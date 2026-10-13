@@ -516,7 +516,10 @@ class VolumeMove:
         armed = False
         while True:
             holder = self.wait_idle(deadline) or holder
-            if arm and not armed and self.clock() < deadline:
+            if arm and not armed:
+                if self.clock() >= deadline:
+                    skip = f"VolumeBusy past {BUSY_LIMIT}s before the fault was armed on {op}"
+                    break
                 arm()
                 armed = True
             code, data = self.cli(*args[op], check=False)
