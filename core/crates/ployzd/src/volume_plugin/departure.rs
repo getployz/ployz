@@ -12,7 +12,8 @@ use ployzd::machine_pool::MachinePool;
 use super::{
     Dataset, DockerVolumeName, Place, VolumeStorage,
     inspect::internal,
-    storage::{CUT_PROPERTY, slot_fs, slot_parent},
+    seed::SEED_PROPERTY,
+    storage::{CUT_PROPERTY, EPOCH_PROPERTY, PROMOTE_PROPERTY, slot_fs, slot_parent},
 };
 
 /// Prefix of the snapshot a departure takes on each root before demoting it.
@@ -130,15 +131,30 @@ impl VolumeStorage {
         })
     }
 
-    /// Whether a slot's copy was a root on this Machine: a departure or a Move's cut put it
-    /// there. A received mirror carries neither mark.
+    /// Whether this Machine wrote the slot's copy or set out to: a departure or a Move's cut
+    /// left a root there, and a restore or a seed marked it before landing it. Only this
+    /// Machine sets these marks, and a send carries no properties, so a received mirror
+    /// has none of them.
     async fn written_here(&self, fs: &str) -> super::Result<bool> {
         let departed = self.snapshot_names(fs).await?.iter().any(|snapshot| {
             snapshot
                 .split_once('@')
                 .is_some_and(|(_, name)| name.starts_with(DEPARTURE_SNAPSHOT_PREFIX))
         });
-        Ok(departed || self.property(fs, CUT_PROPERTY).await?.is_some())
+        if departed {
+            return Ok(true);
+        }
+        for mark in [
+            CUT_PROPERTY,
+            EPOCH_PROPERTY,
+            PROMOTE_PROPERTY,
+            SEED_PROPERTY,
+        ] {
+            if self.property(fs, mark).await?.is_some() {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     async fn freeze_root(
