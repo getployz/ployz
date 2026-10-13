@@ -84,12 +84,20 @@ def parallel(function, items):
         return list(workers.map(function, items))
 
 
-def build(run, commands, *, daemon=True):
-    """Put ployz, and ployzd with its uninstaller, into the run's artifacts, building only what no cache holds."""
+def build(run, commands, *, daemon):
+    """Put ployz, and for a LOCAL daemon source ployzd with its uninstaller, into the run's artifacts.
+
+    Builds only what no cache holds; a main daemon is never built.
+    """
     started = time.monotonic()
     destination = Path(run["manifest"]).parent / "artifacts"
-    names = ["ployz", *(["ployzd"] if daemon else [])]
-    artifacts.binaries(destination, names, shlex.split(os.environ.get("PLOYZ_VERIFY_CARGO_ARGS", "")), commands)
+    cargo_args = shlex.split(os.environ.get("PLOYZ_VERIFY_CARGO_ARGS", ""))
+    names = ["ployz", *(["ployzd"] if daemon == "checkout" else [])]
+    artifacts.binaries(destination, names, cargo_args, commands)
+    if daemon == "main":
+        if not artifacts.fetch_main(artifacts.key("ployzd", shlex.join(cargo_args)), destination, "--daemon checkout to build"):
+            raise RuntimeError("--daemon main: no CI build of ployzd on main near this checkout's fork point")
+        names.append("ployzd")
     if daemon:
         shutil.copy2(CORE / "scripts" / "uninstall.sh", destination / "ployz-uninstall")
         names.append("ployz-uninstall")
@@ -109,13 +117,25 @@ def checkout_version():
     return re.search(r'^version = "([^"]+)"', (CORE / "Cargo.toml").read_text(), re.M).group(1)
 
 
+# Daemon sources built from this repository, which share the run's artifacts; any other source is a release.
+LOCAL = ("checkout", "main")
+
+
+def local_daemon(daemons):
+    """The run's one LOCAL daemon source, or None."""
+    sources = {daemon["source"] for daemon in daemons if daemon["source"] in LOCAL}
+    if len(sources) > 1:
+        raise RuntimeError("--daemon checkout and --daemon main can't share a run")
+    return next(iter(sources), None)
+
+
 def daemon_binaries(run, daemon):
-    return run["binaries"] if daemon["source"] == "checkout" else daemon["binaries"]
+    return run["binaries"] if daemon["source"] in LOCAL else daemon["binaries"]
 
 
 def daemon_artifacts(run, daemon):
     directory = Path(run["manifest"]).parent / "artifacts"
-    return directory if daemon["source"] == "checkout" else directory / "runtime" / daemon["version"]
+    return directory if daemon["source"] in LOCAL else directory / "runtime" / daemon["version"]
 
 
 def select_daemons(run, commands, specs, *, default):
@@ -137,7 +157,7 @@ def select_daemons(run, commands, specs, *, default):
     versions = {}
     for node in run["machines"]:
         source = chosen[node["name"]]
-        if source == "checkout":
+        if source in LOCAL:
             node["daemon"] = {"source": source, "version": checkout_version()}
             continue
         if source not in versions:
@@ -145,6 +165,7 @@ def select_daemons(run, commands, specs, *, default):
         daemon = {"source": source, "version": versions[source]}
         daemon["binaries"] = releases.acquire(daemon["version"], commands, daemon_artifacts(run, daemon))
         node["daemon"] = daemon
+    local_daemon([node["daemon"] for node in run["machines"]])
     run["timings"]["release_artifacts"] = round(time.monotonic() - started, 3)
     save(run)
 
@@ -543,21 +564,22 @@ def up(args):
         # Cloud enrollment needs a daemon that speaks this CLI's protocol and reports its version; a release with
         # the same version string can predate the checkout's protocol. Other Machines enroll on the checkout
         # daemon and get their release afterwards.
-        checkout = {"source": "checkout", "version": checkout_version()}
+        checkout = {"source": local_daemon([node["daemon"] for node in run["machines"]]) or "checkout",
+                    "version": checkout_version()}
         head = commands(["git", "rev-parse", "HEAD"], cwd=CORE).stdout
         released = commands(["git", "rev-parse", "-q", "--verify", f"refs/tags/v{checkout['version']}^{{commit}}"],
                             cwd=CORE, check=False).stdout == head
-        boot = {node["name"]: checkout if paired and node["daemon"]["source"] != "checkout"
+        boot = {node["name"]: checkout if paired and node["daemon"]["source"] not in LOCAL
                 and not (released and node["daemon"]["version"] == checkout["version"]) else node["daemon"]
                 for node in run["machines"]}
         run["bridged"] = [name for name, daemon in boot.items() if daemon is checkout]
-        booted = {daemon["version"] if daemon["source"] != "checkout" else None for daemon in boot.values()}
+        booted = {daemon["version"] if daemon["source"] not in LOCAL else None for daemon in boot.values()}
         run["bootstrap_release"] = next(iter(booted)) if len(booted) == 1 and None not in booted else "0.2.2"
         save(run)
         # The context joins compilation and the dashboard before failure cleanup can remove resources.
         with ThreadPoolExecutor(max_workers=2) as builder:
-            binaries = builder.submit(build, run, commands, daemon=any(
-                daemon["source"] == "checkout" for daemon in [*boot.values(), *(node["daemon"] for node in run["machines"])]))
+            binaries = builder.submit(build, run, commands, daemon=local_daemon(
+                [*boot.values(), *(node["daemon"] for node in run["machines"])]))
             if paired:
                 cloud = builder.submit(pair_cloud, private, commands, owns=args.cloud)
             started = time.monotonic()
@@ -580,7 +602,7 @@ def up(args):
                 backend.push(node, private / "id_ed25519.pub", "/root/.ssh/authorized_keys")
                 backend.exec(node, ["bash", "-ec", "chmod 700 /root/.ssh; chmod 600 /root/.ssh/authorized_keys; systemctl stop ssh.service ssh.socket; rm -f /etc/ssh/ssh_host_*; ssh-keygen -A; systemctl start ssh.socket ssh.service"])
                 daemon = boot[node["name"]]
-                if daemon["source"] == "checkout" or daemon["version"] != run["bootstrap_release"]:
+                if daemon["source"] in LOCAL or daemon["version"] != run["bootstrap_release"]:
                     binaries.result()
                     install(run, backend, node, daemon)
                 else:
@@ -665,7 +687,7 @@ def main():
     launch = actions.add_parser("up", help="Boot a new disposable cluster")
     launch.add_argument("--provider", choices=["incus"], default="incus")
     launch.add_argument("--machines", type=int, choices=range(1, 9), default=1)
-    daemon_help = ("[MACHINE=]SOURCE, repeatable. SOURCE is checkout, stable, beta or an exact release version; "
+    daemon_help = ("[MACHINE=]SOURCE, repeatable. SOURCE is checkout, main (main's CI build, stale), stable, beta or an exact release version; "
                    "a bare SOURCE sets every Machine and MACHINE=SOURCE overrides one")
     launch.add_argument("--daemon", action="append", metavar="[MACHINE=]SOURCE", help=daemon_help + "; checkout by default")
     launch.add_argument("--memory", help="RAM per Machine VM as an Incus size; 2GiB by default")
@@ -788,7 +810,7 @@ def main():
             print(f"Removed cluster. Evidence: {commands.evidence}")
         else:
             select_daemons(run, commands, args.daemon or [], default="checkout")
-            build(run, commands, daemon=any(node["daemon"]["source"] == "checkout" for node in run["machines"]))
+            build(run, commands, daemon=local_daemon([node["daemon"] for node in run["machines"]]))
             started = time.monotonic()
             parallel(lambda node: install(run, backend, node, node["daemon"]), run["machines"])
             wait_ready(run, commands, backend)

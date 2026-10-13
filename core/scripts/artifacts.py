@@ -39,12 +39,15 @@ class Kind:
     recipe: str  # bump to invalidate every cached artifact of this kind
     inputs: tuple = ()  # other files under core/ the build reads
     generated: tuple = ()  # files the build writes into the tree: outputs, so not part of the key
+    surface: tuple = ()  # what callers see: while these match main's, `fetch --stale-ok` takes main's build
 
 
+SDK = "crates/ployz-sdk"
 KINDS = {
     "sdk": Kind("cloud-sdk", ("ployz-sdk", "ployz-config-wasm"), ("ployz-sdk.node", "generated/config-wasm.mjs"),
                 "sdk-v1", ("scripts/build-cloud-sdk.sh", "scripts/build-config-wasm.sh"),
-                ("crates/ployz-sdk/generated/config-wasm.mjs",)),
+                (f"{SDK}/generated/config-wasm.mjs",),
+                (f"{SDK}/src", f"{SDK}/index.d.ts", f"{SDK}/index.js", f"{SDK}/config.d.ts", f"{SDK}/generated")),
     "ployzd": Kind("ployzd", ("ployzd",), ("ployzd",), "dev-debug0-strip-v1"),
     "ployz": Kind("ployz", ("ployz",), ("ployz",), "dev-debug0-strip-v1"),
 }
@@ -56,6 +59,7 @@ class Key:
     kind: str
     value: str
     crates: dict  # crate -> digest of its sources, for naming what differs from another build
+    extra: str = ""
 
     @property
     def artifact(self):
@@ -135,7 +139,15 @@ def key(kind, extra="", rev=None):
     shared = {path: blob for path, blob in files.items() if not path.startswith("crates/")}
     recipe = [spec.recipe, kind, f"{platform.system()}-{platform.machine()}", extra, digest(shared),
               *(f"{name} {by_crate[name]}" for name in sorted(by_crate))]
-    return Key(kind, hashlib.sha256("\n".join(recipe).encode()).hexdigest()[:32], by_crate)
+    return Key(kind, hashlib.sha256("\n".join(recipe).encode()).hexdigest()[:32], by_crate, extra)
+
+
+def surface(kind, rev=None):
+    spec = KINDS[kind]
+    files = entries(spec.surface, rev)
+    for path in spec.generated:
+        files.pop(path, None)
+    return digest(files)
 
 
 def revision():
@@ -210,7 +222,7 @@ def download(found):
     return True
 
 
-def fetch(found, destination):
+def fetch(found, destination, *, announce=True):
     """Copy an artifact's files into destination, from the local cache or else from CI. Returns its metadata, or None on a miss."""
     entry = CACHE / found.kind / found.value
     downloaded = not (entry / "meta.json").exists()
@@ -218,7 +230,8 @@ def fetch(found, destination):
         return None
     meta = json.loads((entry / "meta.json").read_text())
     origin = f"github run {meta.get('run')}" if downloaded else f"local {found.value[:8]}"
-    print(f"{found.kind}: hit {origin} ({meta.get('revision', 'unknown')[:12]})", file=sys.stderr)
+    if announce:
+        print(f"{found.kind}: hit {origin} ({meta.get('revision', 'unknown')[:12]})", file=sys.stderr)
     destination.mkdir(parents=True, exist_ok=True)
     for name in KINDS[found.kind].files:
         # Replace, don't overwrite: macOS caches a code signature per inode and SIGKILLs a stale one.
@@ -227,6 +240,46 @@ def fetch(found, destination):
         shutil.copy2(entry / name, temporary)
         temporary.replace(destination / name)
     os.utime(entry)
+    return meta
+
+
+def nearest_main(found, depth=20):
+    """The newest main commit, at or before this checkout's fork point, with a build of found's kind: (commit, key)."""
+    try:
+        base = git("merge-base", "HEAD", "origin/main").decode().strip()
+    except subprocess.CalledProcessError:
+        return None
+    seen = set()
+    for rev in git("rev-list", "--first-parent", f"--max-count={depth}", base).decode().split():
+        candidate = key(found.kind, found.extra, rev)
+        if candidate.value in seen:
+            continue
+        seen.add(candidate.value)
+        if (CACHE / found.kind / candidate.value / "meta.json").exists() or lookup(candidate):
+            return rev, candidate
+    return None
+
+
+def fetch_main(found, destination, hint, *, same_surface=False):
+    """Fetch main's build in place of found and name the crates that differ. Returns its metadata, or None.
+
+    same_surface refuses main's build unless the kind's surface matches the checkout's.
+    """
+    nearest = nearest_main(found)
+    if nearest is None:
+        print(f"{found.kind}: main has no build in its last 20 commits", file=sys.stderr)
+        return None
+    rev, candidate = nearest
+    if same_surface and surface(found.kind) != surface(found.kind, rev):
+        print(f"{found.kind}: interface differs from main@{rev[:9]}, so building", file=sys.stderr)
+        return None
+    meta = fetch(candidate, destination, announce=False)
+    if meta is None:
+        return None
+    differ = sorted(name for name in found.crates.keys() | candidate.crates.keys()
+                    if found.crates.get(name) != candidate.crates.get(name))
+    what = f"{', '.join(differ)} differ{'s' if len(differ) == 1 else ''}" if differ else "workspace files differ"
+    print(f"{found.kind}: stale main@{rev[:9]} ({what}) -- {hint}", file=sys.stderr)
     return meta
 
 
@@ -280,6 +333,9 @@ def main():
             command.add_argument("directory", type=Path, help="Where the artifact's files go, or come from")
         if action == "store":
             command.add_argument("--expect", help="The key taken before the build: an edit made since skips the store")
+        if action == "fetch":
+            command.add_argument("--stale-ok", metavar="HINT",
+                                 help="On a miss, take main's build while the kind's surface matches; HINT says how to build instead")
     command = actions.add_parser("binaries", help="Fetch or build stripped dev binaries, as the verify harness runs")
     command.add_argument("directory", type=Path)
     command.add_argument("kinds", nargs="+", choices=["ployz", "ployzd"])
@@ -302,7 +358,8 @@ def main():
             print(f"{args.kind}: sources changed during the build, not caching it", file=sys.stderr)
         else:
             store(found, args.directory, revision=revision())
-    elif fetch(found, args.directory) is None:
+    elif fetch(found, args.directory) is None and not (
+            args.stale_ok and fetch_main(found, args.directory, args.stale_ok, same_surface=True)):
         return 3
     return 0
 

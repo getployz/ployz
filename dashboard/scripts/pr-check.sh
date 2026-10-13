@@ -6,7 +6,7 @@ checks=(
   "actions:actionlint ../.github/workflows/*.yml"
   "typecheck:pnpm typecheck"
   "lint:pnpm lint"
-  "sdk:bash ../core/scripts/build-cloud-sdk.sh"
+  "sdk:SDK=exact bash ../core/scripts/build-cloud-sdk.sh"
   "build:pnpm build:app"
   "test:pnpm test"
   "uptime:cd uptime && cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings && cargo nextest run --locked"

@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import sys
 import tempfile
 import tomllib
@@ -86,7 +87,9 @@ class Keys(unittest.TestCase):
             self.assertEqual(artifacts.key(kind), artifacts.key(kind, rev="HEAD"))
 
 
-class Cache(unittest.TestCase):
+class Scratch(unittest.TestCase):
+    """A scratch cache and a fake GitHub serving self.uploads."""
+
     def setUp(self):
         scratch = tempfile.TemporaryDirectory()
         self.addCleanup(scratch.cleanup)
@@ -125,6 +128,8 @@ class Cache(unittest.TestCase):
         (directory / "generated" / "config-wasm.mjs").write_bytes(content + b".mjs")
         return directory
 
+
+class Cache(Scratch):
     def test_a_stored_build_comes_back_whole(self):
         found = artifacts.Key("sdk", "a" * 32, {"ployz-sdk": "digest"})
         self.assertIsNone(artifacts.fetch(found, self.root / "out"))
@@ -202,6 +207,67 @@ class Cache(unittest.TestCase):
         os.utime(self.root / "cache" / "ployzd" / found.value, (month, month))
         artifacts.prune()
         self.assertIsNone(artifacts.fetch(found, self.root / "out"))
+
+
+class Main(Scratch):
+    """Stale builds from main, in a scratch repository whose SDK depends on ployz-core."""
+
+    def setUp(self):
+        super().setUp()
+        self.core = self.root / "core"
+        patch = mock.patch.object(artifacts, "CORE", self.core)
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.write("Cargo.toml", '[workspace]\nmembers = ["crates/ployz-sdk", "crates/ployz-config-wasm", "crates/ployz-core"]\n')
+        for name, dependencies in [("ployz-sdk", ["ployz-core"]), ("ployz-config-wasm", ["ployz-core"]), ("ployz-core", [])]:
+            self.write(f"crates/{name}/Cargo.toml", f'[package]\nname = "{name}"\n[dependencies]\n' +
+                       "".join(f'{dependency} = {{ path = "../{dependency}" }}\n' for dependency in dependencies))
+            self.write(f"crates/{name}/src/lib.rs", "// one\n")
+        self.write("crates/ployz-sdk/index.d.ts", "export {};\n")
+        artifacts.git("init", "-q", "-b", "main")
+        self.built = self.commit("built on main")
+        self.store_build(b"main")
+        self.write("crates/ployz-core/src/lib.rs", "// two\n")
+        self.commit("main without a build")
+        artifacts.git("update-ref", "refs/remotes/origin/main", "HEAD")
+
+    def write(self, path, text):
+        (self.core / path).parent.mkdir(parents=True, exist_ok=True)
+        (self.core / path).write_text(text)
+
+    def commit(self, message):
+        artifacts.git("add", "-A")
+        artifacts.git("-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-q", "-m", message)
+        return artifacts.git("rev-parse", "HEAD").decode().strip()
+
+    def store_build(self, content):
+        artifacts.store(artifacts.key("sdk"), self.build("main-build", content), revision=self.built)
+
+    def stale(self):
+        stderr = io.StringIO()
+        with mock.patch.object(sys, "stderr", stderr):
+            meta = artifacts.fetch_main(artifacts.key("sdk"), self.root / "out", "SDK=exact to build", same_surface=True)
+        return meta, stderr.getvalue().strip()
+
+    def test_an_edit_behind_an_unchanged_interface_takes_mains_newest_build_and_names_what_differs(self):
+        self.write("crates/ployz-core/src/lib.rs", "// three\n")
+        meta, said = self.stale()
+        self.assertEqual(meta["revision"], self.built)
+        self.assertEqual((self.root / "out" / "ployz-sdk.node").read_bytes(), b"main")
+        self.assertEqual(said, f"sdk: stale main@{self.built[:9]} (ployz-core differs) -- SDK=exact to build")
+
+    def test_an_interface_edit_builds(self):
+        self.write("crates/ployz-sdk/index.d.ts", "export declare function added(): void;\n")
+        meta, said = self.stale()
+        self.assertIsNone(meta)
+        self.assertFalse((self.root / "out").exists())
+        self.assertIn("interface differs from main@", said)
+
+    def test_main_without_a_build_builds(self):
+        shutil.rmtree(self.root / "cache")
+        meta, said = self.stale()
+        self.assertIsNone(meta)
+        self.assertEqual(said, "sdk: main has no build in its last 20 commits")
 
 
 if __name__ == "__main__":
