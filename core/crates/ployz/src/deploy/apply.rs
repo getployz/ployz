@@ -111,6 +111,16 @@ pub(crate) async fn apply_requested(
             }
             Err(failure.into())
         }
+        DeployOutcome::Superseded { ref service, .. } => Err(Failure::coded(
+            ployz_core::RpcErrorCode::Conflict,
+            format!("Another deploy published {service} first; nothing of this deploy serves."),
+        )
+        .into()),
+        DeployOutcome::Interrupted { .. } => Err(Failure::coded(
+            ployz_core::RpcErrorCode::Unavailable,
+            "Another runner took over this deployment.",
+        )
+        .into()),
     }
 }
 

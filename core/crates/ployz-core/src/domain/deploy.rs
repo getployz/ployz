@@ -295,6 +295,19 @@ pub enum DeployOutcome<E> {
         failed: FailedOperation<E>,
         unexecuted: Vec<DeployOperation>,
     },
+    /// Another Deploy published `service`'s Serving Pointer first. The lost
+    /// compare-and-set is never retried; this Deploy's Containers of `service`
+    /// were removed and `unexecuted` holds every operation not completed.
+    Superseded {
+        completed: Vec<DeployOperation>,
+        service: QualifiedService,
+        unexecuted: Vec<DeployOperation>,
+    },
+    /// The store handed this Deploy's environment to another runner while it ran.
+    Interrupted {
+        completed: Vec<DeployOperation>,
+        unexecuted: Vec<DeployOperation>,
+    },
 }
 
 /// Why a Deploy Operation did not complete.
