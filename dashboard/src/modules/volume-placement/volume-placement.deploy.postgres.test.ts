@@ -148,6 +148,21 @@ describe("deploying a Volume placement", () => {
     expect(placementTargets({ id: volumeId, name: "data" }, members, row, [web("web-2")]).mirror.map((server) => server.name)).toEqual(["web-2"]);
   });
 
+  it("settles a landed mirror removal while another change stays staged", async () => {
+    members = [member("web-1", "writer"), member("web-2", "mirror"), member("web-3", "empty", { pool: true })];
+    const staged = { primary: web("web-1"), mirrors: [web("web-3")], deletes: [] };
+    await run(stagePlacement(organizationId, { environment, volumeId, staged, mirrors: [web("web-2")] }));
+    await run(stampPlacements(organizationId, [volumeId], "dep-1"));
+    const started = await run(advancePlacement(organizationId, "dep-1", null, inspect, answered));
+    if (started.kind !== "wait") throw new Error("expected a run");
+    expect((await harness.pool.query(`select args ->> 'slot' as slot from volume_run where id = $1`, [started.wait.runId])).rows).toEqual([{ slot: "web-2" }]);
+
+    await endRun(started.wait.runId, "failed", "web-2 lost the reply");
+    members = [member("web-1", "writer"), member("web-2", "empty", { pool: true }), member("web-3", "empty", { pool: true })];
+    await run(advancePlacement(organizationId, "dep-1", started.wait, inspect, answered));
+    expect(await placement()).toMatchObject({ mirrors: [], staged, deploymentId: null });
+  });
+
   it("keeps a move that failed after handover reached, and marks only the Volumes the Deploy never got to", async () => {
     members = [member("web-1", "writer"), member("web-2", "mirror")];
     await stageMove("web-2", ["web-2"]);
