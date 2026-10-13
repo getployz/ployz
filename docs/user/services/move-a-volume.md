@@ -58,11 +58,14 @@ amber with a warning sign. A staged mirror shows **New** in green, a staged remo
 stay in the volume's Copies. A staged move shows on the tray, for example "Moving to web-2".
 
 Click a mirror, on the canvas or under **Elsewhere**, to open it. It shows its server, when it last
-refreshed, **Refresh now**, **Make primary** and **Remove mirror**. Refresh now runs a refresh at
-once. The mirror reads "Refreshing", then "Mirror refreshed" pops up and its age resets. If
-anything else is running on the volume, Refresh now says so instead of queueing. A mirror more than
-an hour behind says **Refresh skipped** and why. Either its server is not answering or its last
-refresh failed. It also says how much of its writes a failover would lose. A staged mirror has none
+refreshed, **Refresh now**, **Make primary** and **Remove mirror**. Refresh now hands the mirror
+what changed since its last refresh and answers at once, for example "data-web-2 is pulling
+w-3-1760340000". The mirror reads "Refreshing" while it downloads, and its age resets when the
+download lands. If a move or release is running on the volume, Refresh now says so instead of
+queueing; a move's own copy refreshes the mirror. A download that failed is reported once, with
+its server's reason, and the mirror keeps the failure until a later refresh lands. A mirror more
+than an hour behind says **Refresh skipped** and why. Either its server is not answering or its
+last refresh failed. It also says how much of its writes a failover would lose. A staged mirror has none
 of these actions, so discard it in Details.
 
 A mirror or an old copy also gives the volume restore points. See [Restore a volume](restore-a-volume.md).
@@ -77,7 +80,7 @@ one.
 
 ```
 ployz volume mirror data --to web-2     # copy data to web-2; it shows as data-web-2
-ployz volume sync data                   # send what changed since the last sync
+ployz volume sync data                   # hand the mirror what changed since its last pull
 ployz volume mirror rm data-web-2        # delete the mirror
 ployz volume runs data                   # what ran on this volume, and how it ended
 ```
@@ -88,6 +91,10 @@ finish. One run at a time per volume. A second one is refused and says how to st
 ```
 VolumeBusy: data is busy with a mirror; ployz volume release data stops it
 ```
+
+`volume sync` starts no run. It hands the mirror its pull and prints what it did, like Refresh
+now; `ployz volume show data` shows the download. `volume sync data --full` copies everything
+again as a run, and takes `--wait`.
 
 ## Move a volume to another server
 
