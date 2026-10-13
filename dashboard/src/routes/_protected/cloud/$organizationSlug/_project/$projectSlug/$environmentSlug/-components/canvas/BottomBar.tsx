@@ -224,7 +224,8 @@ export function BottomBar({
   const reviewProps = {
     environment: params.environmentSlug, groups, totalChanges, canDeploy: deployable, canPublish,
     onClose: () => setOpen(false), onDeploy: deploy, message, onMessageChange: setMessage, admitting,
-    onPublish: () => void onPublish(message).then((saved) => { if (saved) setMessage(""); }),
+    // A message edited while the Save is in flight is the next one: keep it.
+    onPublish: () => void onPublish(message).then((saved) => { if (saved) setTyped((now) => now.message === message ? { message: "", stages } : now); }),
     onDiscardAll: discardAll,
     onDiscardNode, onDiscardRow,
     ...notes,
