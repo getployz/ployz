@@ -77,6 +77,7 @@ pub struct Daemon {
     ingest: Arc<ImageIngest>,
     restart_requested: watch::Receiver<bool>,
     servers: JoinHandle<io::Result<()>>,
+    observe: Option<JoinHandle<()>>,
     _socket_lock: File,
 }
 
@@ -133,7 +134,7 @@ impl Daemon {
     /// If construction, binding, or required planes fail.
     pub async fn start(config: DaemonConfig) -> Result<Self, Error> {
         // The Observe Store outlives the daemon, so it starts before anything
-        // here can fail, and a failed start waits for it.
+        // here can fail, and the daemon does not exit before it has started.
         let observe = (config.units == UnitSupervision::Systemd).then(|| {
             let (data_dir, socket) = (config.data_dir.clone(), config.socket.clone());
             tokio::spawn(async move {
@@ -158,12 +159,18 @@ impl Daemon {
             Self::start_with_build_policy(config, socket, build_policy, run_dir).await
         }
         .await;
-        if started.is_err()
-            && let Some(observe) = observe
-        {
-            let _ = observe.await;
+        match started {
+            Ok(mut daemon) => {
+                daemon.observe = observe;
+                Ok(daemon)
+            }
+            Err(error) => {
+                if let Some(observe) = observe {
+                    let _ = observe.await;
+                }
+                Err(error)
+            }
         }
-        started
     }
 
     async fn start_with_build_policy(
@@ -438,6 +445,7 @@ impl Daemon {
             ingest,
             restart_requested,
             servers,
+            observe: None,
             _socket_lock: socket.lock,
         })
     }
@@ -546,6 +554,9 @@ impl Daemon {
             Err(_) => tracing::warn!(
                 "admitted Machine work is still running; the record stays claimed until exit"
             ),
+        }
+        if let Some(observe) = self.observe {
+            let _ = observe.await;
         }
         if errors.is_empty() {
             Ok(())
