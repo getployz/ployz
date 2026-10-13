@@ -132,19 +132,38 @@ impl Daemon {
     ///
     /// If construction, binding, or required planes fail.
     pub async fn start(config: DaemonConfig) -> Result<Self, Error> {
-        crate::faults::check_env()?;
-        let socket = MachineApiSocket::claim(&config.socket)?;
-        let run_dir = config
-            .socket
-            .parent()
-            .unwrap_or_else(|| Path::new("/run/ployz"))
-            .to_owned();
-        crate::installer::upgrade::reconcile(&config.data_dir, &run_dir)
-            .await
-            .map_err(io::Error::other)?;
-        let build_policy = ployz_build::HostPolicy::from_environment()
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-        Self::start_with_build_policy(config, socket, build_policy, run_dir).await
+        // The Observe Store outlives the daemon, so it starts before anything
+        // here can fail, and a failed start waits for it.
+        let observe = (config.units == UnitSupervision::Systemd).then(|| {
+            let (data_dir, socket) = (config.data_dir.clone(), config.socket.clone());
+            tokio::spawn(async move {
+                if let Err(error) = crate::observe::unit::converge(&data_dir, &socket).await {
+                    eprintln!("WARNING: the Observe Store did not start: {error}");
+                }
+            })
+        });
+        let started: Result<Self, Error> = async {
+            crate::faults::check_env()?;
+            let socket = MachineApiSocket::claim(&config.socket)?;
+            let run_dir = config
+                .socket
+                .parent()
+                .unwrap_or_else(|| Path::new("/run/ployz"))
+                .to_owned();
+            crate::installer::upgrade::reconcile(&config.data_dir, &run_dir)
+                .await
+                .map_err(io::Error::other)?;
+            let build_policy = ployz_build::HostPolicy::from_environment()
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+            Self::start_with_build_policy(config, socket, build_policy, run_dir).await
+        }
+        .await;
+        if started.is_err()
+            && let Some(observe) = observe
+        {
+            let _ = observe.await;
+        }
+        started
     }
 
     async fn start_with_build_policy(
@@ -154,22 +173,9 @@ impl Daemon {
         run_dir: PathBuf,
     ) -> Result<Self, Error> {
         let queued = socket.listener.try_clone()?;
-        // The Observe Store outlives the daemon, so it starts before anything
-        // that can fail on Machine state, and a failed start waits for it.
-        let observe = (config.units == UnitSupervision::Systemd).then(|| {
-            let (data_dir, socket) = (config.data_dir.clone(), config.socket.clone());
-            tokio::spawn(async move {
-                if let Err(error) = crate::observe::unit::converge(&data_dir, &socket).await {
-                    eprintln!("WARNING: the Observe Store did not start: {error}");
-                }
-            })
-        });
         let started = Self::start_planes(config, socket, build_policy, run_dir).await;
         if let Err(error) = &started {
             close_queued_if_refused(&queued, error);
-            if let Some(observe) = observe {
-                let _ = observe.await;
-            }
         }
         started
     }
