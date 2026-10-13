@@ -517,7 +517,6 @@ impl LocalMachine {
     }
 
     async fn converge_container(&self, want: ContainerWant) -> Result<EnsuredContainer, Error> {
-        let locator = want_locator(&want);
         if matches!(
             want,
             ContainerWant::Gone {
@@ -525,8 +524,20 @@ impl LocalMachine {
                 ..
             }
         ) {
-            self.wait_for_admitted_work().await;
+            // Detached so a caller that stops waiting still removes what the
+            // admitted create puts in the slot.
+            let local = self.clone();
+            return tokio::spawn(async move {
+                local.wait_for_admitted_work().await;
+                local.converge_now(want).await
+            })
+            .await?;
         }
+        self.converge_now(want).await
+    }
+
+    async fn converge_now(&self, want: ContainerWant) -> Result<EnsuredContainer, Error> {
+        let locator = want_locator(&want);
         let now = self.container_now(&locator).await?;
         let refusal = match plan_container(want, &now, &self.record().phase()) {
             ContainerStep::Done => {

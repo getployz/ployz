@@ -973,6 +973,57 @@ mod settled {
     }
 
     #[tokio::test]
+    async fn removal_by_slot_finishes_after_its_caller_stops_waiting() {
+        let Settling {
+            local,
+            fake,
+            data_dir,
+        } = settling().await;
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let held = tokio::spawn({
+            let local = local.clone();
+            let (started, release) = (Arc::clone(&started), Arc::clone(&release));
+            async move { local.hold_mutation_for_test(started, release).await }
+        });
+        started.notified().await;
+        let create = tokio::spawn({
+            let local = local.clone();
+            async move { local.ensure_container(run(new_container("started"))).await }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let new = new_container("started");
+        let gone = tokio::spawn({
+            let local = local.clone();
+            async move {
+                local
+                    .ensure_container(ContainerWant::Gone {
+                        container: ployz_core::ContainerLocator::Key(new.slot),
+                        drain: ployz_core::Drain::NONE,
+                        anonymous_volumes: ployz_core::AnonymousVolumes::Remove,
+                    })
+                    .await
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        gone.abort();
+        assert!(gone.await.unwrap_err().is_cancelled());
+
+        release.notify_one();
+        held.await.unwrap().unwrap();
+        create.await.unwrap().unwrap();
+        let named = fake.named_containers.as_ref().unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !named.lock().unwrap().is_empty() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the abandoned removal still empties the slot");
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
     async fn ensure_settled_answers_failed_when_health_fails() {
         let (reply, _) = ensure_reporting(
             settled_run(60_000),
