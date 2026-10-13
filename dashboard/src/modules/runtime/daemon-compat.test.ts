@@ -7,6 +7,8 @@ describe("serverSupports", () => {
     expect(serverSupports({ capabilities: [requirements.liveLogs.capability] }, requirements.liveLogs)).toBe(true);
     expect(serverSupports({ capabilities: [requirements.liveLogs.capability] }, requirements.volumeMove)).toBe(false);
     expect(serverSupports({ capabilities: [] }, requirements.volumeMove)).toBe("unknown");
+    expect(serverSupports({ capabilities: ["ployz.metrics.history.v1"] }, requirements.metrics)).toBe(true);
+    expect(serverSupports({ capabilities: [requirements.liveLogs.capability] }, requirements.metrics)).toBe(false);
   });
 
   it("names only the Servers whose records lack the capability, attempting those that list none", () => {
@@ -32,6 +34,7 @@ describe("serverSupports", () => {
     expect(requirementFor("ployz.logs.tail.v1")).toBe(requirements.liveLogs);
     expect(requirementFor("ployz.build.grant.inspect.v1")).toBe(requirements.buildGrantInspect);
     expect(requirementFor("ployz.image.prune.v1")).toBe(requirements.pruneImages);
+    expect(requirementFor("ployz.metrics.history.v1")).toBe(requirements.metrics);
     expect(requirementFor("ployz.something.v9")).toBeNull();
   });
 });
@@ -72,6 +75,7 @@ describe("sdkFailureMessage", () => {
     const servers = [{ id: "machine-1", name: "fsn-1" }, { id: "machine-2", name: "hel-1" }];
     expect(sdkFailureMessage(new ServerLacks({ machineId: "machine-2", capability: requirements.liveLogs.capability }), servers)).toBe("Logs need a newer Ployz on hel-1.");
     expect(sdkFailureMessage(new ServerLacks({ machineId: "machine-1", capability: requirements.volumeMove.capability }), servers)).toBe("Volume move needs a newer Ployz on fsn-1.");
+    expect(sdkFailureMessage(new ServerLacks({ machineId: "machine-2", capability: "ployz.metrics.history.v1" }), servers)).toBe("Metrics need a newer Ployz on hel-1.");
     expect(sdkFailureMessage(new ServerLacks({ machineId: "machine-9", capability: "ployz.something.v9" }))).toBe("This step needs a newer Ployz on one of your Servers.");
   });
 });
