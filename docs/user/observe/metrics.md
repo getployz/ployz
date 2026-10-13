@@ -46,6 +46,13 @@ A service's numbers add up all of its replicas, on every server that runs one.
 
 Below the table, Ployz counts the OOM kills, exits and restarts in the range. When the range holds no readings at all, as for a misspelled name or a service deployed seconds ago, Ployz prints **No readings** instead of a table.
 
+## Spot trouble on the canvas
+
+The canvas shows no numbers. When a service's replicas were OOM killed in the last hour, its card
+shows an amber **⚠ OOM**. A restart without an OOM kill shows **⚠ Restarting**. Click the ⚠ to
+open the service's Monitoring tab. A server that needs an upgrade or doesn't answer adds nothing
+to the card.
+
 ## See a server's metrics
 
 ```sh
