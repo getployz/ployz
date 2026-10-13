@@ -22,6 +22,7 @@ import type { OperationAsked } from "#/modules/approvals/approvals.server";
 import type { OperationVerb } from "#/modules/approvals/approvals";
 import { readStore } from "#/modules/config-store/config-store.server";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
+import type { JsonValue } from "#/db/tables";
 import type { InngestRunStatus } from "#/modules/inngest/client";
 import { createVolumeRunRequestedEvent, createVolumeRunTakenEvent } from "#/modules/inngest/events";
 import { enqueueEvent } from "#/modules/operations/outbox.server";
@@ -127,6 +128,7 @@ const KIND_WORDS = {
   release: "release",
   restore: "restore",
   seed: "restore",
+  deploy: "deploy",
 } satisfies Record<VolumeRunKind, string>;
 
 export const volumeBusyMessage = (lane: Pick<VolumeRunRow, "kind" | "volumeName">) =>
@@ -168,7 +170,8 @@ const laneRefusal = Effect.fn("VolumeRun.laneRefusal")(function* (lane: VolumeRu
   const target = yield* laneTarget(lane);
   const finishes = finishesThere(lane.volumeName, target ?? "its new Server");
   if (kind === "release") {
-    return { code: "conflict", message: finishes, details: target === null ? { run } : { run, move_to: target } } satisfies StoreRefusal;
+    const details: JsonValue = target === null ? { run } : { run, move_to: target };
+    return { code: "conflict", message: finishes, details } satisfies StoreRefusal;
   }
   return { code: "conflict", message: `VolumeBusy: ${finishes}`, details: { run } } satisfies StoreRefusal;
 });
@@ -285,6 +288,7 @@ const VERBS = {
   move: null,
   restore: null,
   seed: null,
+  deploy: null,
 } satisfies Record<VolumeRunKind, OperationVerb | null>;
 
 export type VolumeRunPlan =
@@ -852,7 +856,7 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
 
 /** What a run of each kind is called when a Server can't run it. */
 const RUN_FEATURES = {
-  mirror: "Volume mirror", sync: "Mirror refresh", delete_mirror: "Mirror removal", move: "Volume move", release: "Volume move", restore: "Using a mirror", seed: "Volume restore",
+  mirror: "Volume mirror", sync: "Mirror refresh", delete_mirror: "Mirror removal", move: "Volume move", release: "Volume move", restore: "Using a mirror", seed: "Volume restore", deploy: "Deploy",
 } satisfies Record<VolumeRunKind, string>;
 
 const lackSentence = Effect.fn("VolumeRun.lackSentence")(function* (
