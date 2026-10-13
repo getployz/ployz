@@ -4,6 +4,8 @@
 A key covers what the build reads: the workspace crates the artifact's crate depends on (tests, benches and
 Markdown excluded), the workspace Cargo files and the recipe. Uncommitted and untracked files count, so a dirty
 tree gets its own key and reverting an edit finds the earlier build again.
+
+CI uploads each build as the GitHub Actions artifact <name>-<key>. A miss in the local cache looks there next.
 """
 
 import argparse
@@ -20,15 +22,18 @@ import sys
 import tempfile
 import time
 import tomllib
+import zipfile
 
 CORE = Path(__file__).resolve().parents[1]
 CACHE = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "ployz" / "artifacts"
 CACHE_BYTES = int(float(os.environ.get("PLOYZ_ARTIFACT_CACHE_GB", "20")) * 2**30)
 CACHE_DAYS = 30
+REPOSITORY = os.environ.get("GITHUB_REPOSITORY", "getployz/ployz")
 
 
 @dataclass(frozen=True)
 class Kind:
+    name: str  # CI uploads the artifact as <name>-<key>
     roots: tuple  # workspace crates whose closure the artifact is built from
     files: tuple  # the artifact's files, as cached and as CI uploads them
     recipe: str  # bump to invalidate every cached artifact of this kind
@@ -37,11 +42,11 @@ class Kind:
 
 
 KINDS = {
-    "sdk": Kind(("ployz-sdk", "ployz-config-wasm"), ("ployz-sdk.node", "generated/config-wasm.mjs"), "sdk-v1",
-                ("scripts/build-cloud-sdk.sh", "scripts/build-config-wasm.sh"),
+    "sdk": Kind("cloud-sdk", ("ployz-sdk", "ployz-config-wasm"), ("ployz-sdk.node", "generated/config-wasm.mjs"),
+                "sdk-v1", ("scripts/build-cloud-sdk.sh", "scripts/build-config-wasm.sh"),
                 ("crates/ployz-sdk/generated/config-wasm.mjs",)),
-    "ployzd": Kind(("ployzd",), ("ployzd",), "dev-debug0-strip-v1"),
-    "ployz": Kind(("ployz",), ("ployz",), "dev-debug0-strip-v1"),
+    "ployzd": Kind("ployzd", ("ployzd",), ("ployzd",), "dev-debug0-strip-v1"),
+    "ployz": Kind("ployz", ("ployz",), ("ployz",), "dev-debug0-strip-v1"),
 }
 WORKSPACE = ("Cargo.toml", "Cargo.lock", ".cargo", "rust-toolchain.toml")
 
@@ -51,6 +56,10 @@ class Key:
     kind: str
     value: str
     crates: dict  # crate -> digest of its sources, for naming what differs from another build
+
+    @property
+    def artifact(self):
+        return f"{KINDS[self.kind].name}-{self.value}"
 
 
 def git(*args, **kwargs):
@@ -160,14 +169,56 @@ def binaries(destination, names, cargo_args=(), commands=run):
         print(f"{name}: built {wanted[name].value[:8]}", file=sys.stderr)
 
 
-def fetch(found, destination):
-    """Copy a cached artifact's files into destination. Returns its metadata, or None on a miss."""
-    entry = CACHE / found.kind / found.value
+def gh(*args, **kwargs):
+    return subprocess.run(["gh", "api", *args], check=True, timeout=600, **kwargs)
+
+
+def lookup(found):
+    """found's newest live CI upload from main. Any branch or fork pull request can upload under a key's name, unreviewed."""
     try:
-        meta = json.loads((entry / "meta.json").read_text())
-    except (OSError, ValueError):
+        listing = gh(f"repos/{REPOSITORY}/actions/artifacts?name={found.artifact}&per_page=100", capture_output=True)
+    except (OSError, subprocess.SubprocessError):
+        return None  # no gh, not signed in, or offline: a miss
+    for artifact in json.loads(listing.stdout)["artifacts"]:
+        run = artifact.get("workflow_run") or {}
+        if (not artifact["expired"] and run.get("head_branch") == "main"
+                and run.get("head_repository_id") == run.get("repository_id")):
+            return artifact
+    return None
+
+
+def download(found):
+    """Put found's CI upload into the local cache. Returns whether CI had one."""
+    artifact = lookup(found)
+    if artifact is None:
+        return False
+    with tempfile.TemporaryDirectory() as scratch:
+        archive = Path(scratch) / "artifact.zip"
+        try:
+            with archive.open("wb") as out:
+                gh(f"repos/{REPOSITORY}/actions/artifacts/{artifact['id']}/zip", stdout=out)
+        except subprocess.SubprocessError:
+            print(f"{found.artifact}: download failed, so it counts as a miss", file=sys.stderr)
+            return False
+        actual = "sha256:" + hashlib.sha256(archive.read_bytes()).hexdigest()
+        if artifact.get("digest", actual) != actual:
+            raise SystemExit(f"{found.artifact}: downloaded {actual}, GitHub recorded {artifact['digest']}")
+        with zipfile.ZipFile(archive) as files:
+            files.extractall(Path(scratch) / "files")
+        run = artifact["workflow_run"]
+        store(found, Path(scratch) / "files", revision=run["head_sha"], run=run["id"])
+    return True
+
+
+def fetch(found, destination):
+    """Copy an artifact's files into destination, from the local cache or else from CI. Returns its metadata, or None on a miss."""
+    entry = CACHE / found.kind / found.value
+    downloaded = not (entry / "meta.json").exists()
+    if downloaded and not download(found):
         return None
-    print(f"{found.kind}: hit local {found.value[:8]} ({meta.get('revision', 'unknown')[:12]})", file=sys.stderr)
+    meta = json.loads((entry / "meta.json").read_text())
+    origin = f"github run {meta.get('run')}" if downloaded else f"local {found.value[:8]}"
+    print(f"{found.kind}: hit {origin} ({meta.get('revision', 'unknown')[:12]})", file=sys.stderr)
     destination.mkdir(parents=True, exist_ok=True)
     for name in KINDS[found.kind].files:
         # Replace, don't overwrite: macOS caches a code signature per inode and SIGKILLs a stale one.
@@ -217,11 +268,13 @@ def prune():
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     actions = parser.add_subparsers(dest="action", required=True)
-    for action in ["key", "fetch", "store"]:
+    for action in ["key", "lookup", "fetch", "store"]:
         command = actions.add_parser(action)
         command.add_argument("kind", choices=KINDS)
         command.add_argument("--extra", default="", help="Build options that change the artifact, such as features")
-        if action == "key":
+        if action == "lookup":
+            command.description = "Print the CI artifact's name and the run that uploaded it, empty if none, as step outputs."
+        elif action == "key":
             command.add_argument("--rev", help="Key the build of this commit instead of the working tree")
         else:
             command.add_argument("directory", type=Path, help="Where the artifact's files go, or come from")
@@ -241,6 +294,9 @@ def main():
     found = key(args.kind, args.extra, getattr(args, "rev", None))
     if args.action == "key":
         print(found.value)
+    elif args.action == "lookup":
+        artifact = lookup(found)
+        print(f"name={found.artifact}\nrun-id={artifact['workflow_run']['id'] if artifact else ''}")
     elif args.action == "store":
         if args.expect and args.expect != found.value:
             print(f"{args.kind}: sources changed during the build, not caching it", file=sys.stderr)
