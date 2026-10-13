@@ -532,6 +532,13 @@ async function sweepOrphans(step: Pick<PloyzStepTools, "run">, runEffect: Effect
   return { orphanRuns };
 }
 
+/** What a run's `inngest/function.finished` event says to close its row with: the failure it ended on, or none. */
+export const finishedVolumeRun = <Input>(event: Input) => {
+  const finished = decodeInngestEnvelope(inngestFunctionFinishedEnvelopeSchema)(event);
+  const error = finished.data.error;
+  return { functionId: finished.data.function_id, runId: finished.data.run_id, end: { error: error === undefined || error === null ? null : error.message } };
+};
+
 const isRunVolume = (functionId: string) =>
   functionId === RUN_VOLUME_FUNCTION_ID || functionId.endsWith(`-${RUN_VOLUME_FUNCTION_ID}`);
 
@@ -562,12 +569,9 @@ export const createCloseFinishedVolumeRun = (inngest: PloyzInngest, runEffect: E
       }],
     },
     async ({ event, step }) => {
-      const finished = await step.run("decode-finished", () =>
-        decodeInngestEnvelope(inngestFunctionFinishedEnvelopeSchema)(event));
-      if (!isRunVolume(finished.data.function_id)) return { skipped: true };
-      const error = finished.data.error;
-      const end = { error: error === undefined || error === null ? null : error.message };
-      return { closed: await step.run("close-run", () => runEffect(closeVolumeRun(finished.data.run_id, end))) };
+      const finished = await step.run("decode-finished", () => finishedVolumeRun(event));
+      if (!isRunVolume(finished.functionId)) return { skipped: true };
+      return { closed: await step.run("close-run", () => runEffect(closeVolumeRun(finished.runId, finished.end))) };
     },
   );
 

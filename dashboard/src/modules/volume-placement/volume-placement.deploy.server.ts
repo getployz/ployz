@@ -14,13 +14,11 @@ import {
   sameChange,
 } from "#/modules/volume-placement/volume-placement";
 import { ACTIVE_VOLUME_RUN_STATES, dockerVolumeName, type VolumeRunState } from "#/modules/volume-run/volume-run";
-import {
-  type CopyObserver, getVolumeRun, inspectVolumeCopies, listActiveVolumeRuns, observeOrganizationCopies, requestVolumeRun,
-} from "#/modules/volume-run/volume-run.server";
+import { type CopyObserver, getVolumeRun, inspectVolumeCopies, observeOrganizationCopies, requestVolumeRun } from "#/modules/volume-run/volume-run.server";
 import { Database } from "#/server/database.server";
 
-/** A run the Deploy waits on. `step` is the one it started it for; null for a run the Deploy didn't start. */
-export type PlacementWait = { readonly runId: string; readonly volumeId: string; readonly step: PlacementStep | null };
+/** A run of the Deploy's own, the one it started for `step`. It never waits on a run it did not start. */
+export type PlacementWait = { readonly runId: string; readonly volumeId: string; readonly step: PlacementStep };
 
 export type PlacementAdvance =
   | { readonly kind: "wait"; readonly wait: PlacementWait }
@@ -164,7 +162,9 @@ const unseededVolume = Effect.fn("VolumePlacement.unseededVolume")(function* (
  * One step of Deploy `deploymentId`'s storage, before its Services: settle the run it waited on, then start the next run
  * the first stamped Volume needs. A Deploy that is no longer queued (cancelled, superseded) stops between runs, and its
  * Volumes stay staged. A run that fails fails the Deploy: its change is dropped, and the changes it never reached, on that
- * Volume and the others, stay staged. A failed restore is dropped once the Store records the failure.
+ * Volume and the others, stay staged. A failed restore is dropped once the Store records the failure. A warm run already
+ * on the Volume yields to the Deploy's; a run past its return keeps the Volume, and the change stays staged for the next
+ * Deploy while this one follows the run to its Server.
  */
 export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
   organizationId: string, deploymentId: string, waited: PlacementWait | null, inspect: MemberInspector = inspectVolumeCopies,
@@ -185,14 +185,14 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
   if (waited !== null) {
     const run = yield* getVolumeRun(organizationId, waited.runId);
     if (isActive(run.state)) return { kind: "wait", wait: waited } satisfies PlacementAdvance;
-    if (waited.step !== null && run.state !== "done") {
+    if (run.state !== "done") {
       const message = `${run.volume_name}: ${run.message ?? run.state}`;
       if (waited.step.change.kind === "seed") return restoreFailed(waited.volumeId, environment, message);
       const { remaining, mirrors } = yield* remainingAfterFailure(organizationId, deploymentId, environment, volumes, waited.volumeId, waited.step, inspect);
       return yield* fail(organizationId, deploymentId, waited.volumeId, remaining, message, mirrors);
     }
     // The run this Deploy started has ended, so its mirrors are what the Servers hold, whoever claims the row now.
-    if (waited.step !== null) yield* settle(waited.volumeId, { mirrors: [...waited.step.mirrors] });
+    yield* settle(waited.volumeId, { mirrors: [...waited.step.mirrors] });
   }
   const { drizzle } = yield* Database;
   const stamped = yield* drizzle.select().from(volumePlacement)
@@ -232,8 +232,6 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
     }
     // A restore's run belongs to its source, the Volume it copies from.
     const runsOn = row.staged?.seed?.sourceVolumeId ?? row.volumeId;
-    const busy = (yield* listActiveVolumeRuns(organizationId)).find((run) => run.volume_id === runsOn);
-    if (busy !== undefined) return { kind: "wait", wait: { runId: busy.id, volumeId: row.volumeId, step: null } } satisfies PlacementAdvance;
     const placement = view(row);
     const members = yield* inspect(organizationId, environment, row.volumeId);
     const step = nextPlacementStep(placementChanges(volume, members, placement), appliedMirrors(observePlacement(members), placement));
@@ -244,8 +242,12 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
     }
     // Touching the row without changing it confirms the claim right before the run starts.
     if (!(yield* settleClaimed(row.volumeId, deploymentId, {}))) return { kind: "stopped" } satisfies PlacementAdvance;
-    const requested = yield* requestVolumeRun(CLOUD(organizationId), { volumeId: runsOn, environment, ...step.run });
+    const requested = yield* requestVolumeRun(CLOUD(organizationId), { volumeId: runsOn, environment, ...step.run }, { end: "yielded" });
     if (requested.ok) return { kind: "wait", wait: { runId: requested.run.id, volumeId: row.volumeId, step } } satisfies PlacementAdvance;
+    if (requested.busy !== null) {
+      yield* settleClaimed(row.volumeId, deploymentId, { deploymentId: null });
+      continue;
+    }
     if (step.change.kind === "seed") return restoreFailed(row.volumeId, environment, `${volume.name}: ${requested.refusal.message}`);
     const remaining = dropChange(volume, members, placement, step.change);
     return yield* fail(organizationId, deploymentId, row.volumeId, remaining, `${volume.name}: ${requested.refusal.message}`);

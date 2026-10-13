@@ -379,7 +379,7 @@ export type LaneTake = { readonly run: VolumeRunView; readonly ended: VolumeRunV
 
 export type LaneTakes =
   | { readonly ok: true; readonly takes: readonly LaneTake[] }
-  | { readonly ok: false; readonly refusal: StoreRefusal; readonly busy: VolumeRunView | null };
+  | { readonly ok: false; readonly refusal: StoreRefusal; readonly busy: VolumeRunView };
 
 const endOf = (kind: VolumeRunKind): LaneEnd | null => kind === "release" ? "cancelled" : null;
 
@@ -388,8 +388,11 @@ const TAKEN_BY = {
   yielded: "a Deploy took this run over",
 } satisfies Record<LaneEnd, string>;
 
-/** `busy` is the lane that refused the take, so a caller can wait on it or step aside without a second read. */
-class LaneRefused extends Data.TaggedError("LaneRefused")<{ readonly refusal: StoreRefusal; readonly busy: VolumeRunView | null }> {}
+/** `busy` is the lane that refused the take, so a caller can step aside without a second read. */
+class LaneRefused extends Data.TaggedError("LaneRefused")<{ readonly refusal: StoreRefusal; readonly busy: VolumeRunView }> {}
+
+/** Lanes landed and ended through every round; a retry of the caller's step finds the Volume free or taken. */
+export class LaneChurn extends Data.TaggedError("LaneChurn")<{ readonly message: string }> {}
 
 type Caller = { readonly userId: string | null; readonly organizationId: string };
 
@@ -432,13 +435,9 @@ const takeLane = Effect.fn("VolumeRun.takeLane")(function* (caller: Caller, { in
       return { run: volumeRunView(inserted), ended: taken === undefined ? null : volumeRunView(taken) } satisfies LaneTake;
     }
     if (end !== null && round < TAKE_ROUNDS) continue;
-    const active = yield* activeLane(input.volumeId);
-    return yield* new LaneRefused({
-      refusal: active === undefined
-        ? { code: "conflict", message: "A run on this Volume just ended. Try again.", details: null }
-        : yield* laneRefusal(active, input.kind),
-      busy: active === undefined ? null : volumeRunView(active),
-    });
+    const active = yield* activeLane(input.volumeId, true);
+    if (active === undefined) return yield* new LaneChurn({ message: `runs on ${volume.volumeName} keep landing and ending; try again` });
+    return yield* new LaneRefused({ refusal: yield* laneRefusal(active, input.kind), busy: volumeRunView(active) });
   }
 });
 
