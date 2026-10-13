@@ -94,6 +94,9 @@ pub(crate) async fn fill_slots(
     cancel: &CancellationToken,
 ) -> Result<IngressCheck, Failure> {
     let Slots { runs, unchecked } = slot_repairs(client).await?;
+    if cancel.is_cancelled() {
+        return Ok(IngressCheck::default());
+    }
     let client = &*client;
     let repairs = join_all(runs.into_iter().map(|(shown, work)| async move {
         let failure = match work {
@@ -109,6 +112,7 @@ pub(crate) async fn fill_slots(
                         Some(TARGET_RPC_TIMEOUT),
                     ),
                     client.wait_until_ready(&shown.machine, &container_id, cancel),
+                    cancel,
                 )
                 .await
             }
@@ -203,18 +207,30 @@ async fn slot_repairs(client: &mut Client) -> Result<Slots, Failure> {
 async fn started(
     ensured: impl Future<Output = Result<ContainerNow, RpcError>>,
     ready: impl Future<Output = Result<(), HealthWaitError<RpcError>>>,
+    cancel: &CancellationToken,
 ) -> Option<IngressFailure> {
-    if let Err(error) = ensured.await {
+    let ensured = tokio::select! {
+        ensured = ensured => ensured,
+        () = cancel.cancelled() => return Some(cancelled()),
+    };
+    if let Err(error) = ensured {
         return Some(classify(error.to_string()));
     }
     match ready.await {
         Ok(()) => None,
+        Err(HealthWaitError::Health(HealthFailure::Cancelled)) => Some(cancelled()),
         Err(HealthWaitError::Health(failure)) => Some(IngressFailure::Failed {
             cause: format!("it stopped right after starting: {failure}"),
         }),
         Err(HealthWaitError::Inspect(error)) => Some(IngressFailure::Failed {
             cause: format!("it started, but checking that it stayed up failed: {error}"),
         }),
+    }
+}
+
+fn cancelled() -> IngressFailure {
+    IngressFailure::Failed {
+        cause: "the Deploy was cancelled while it started".into(),
     }
 }
 
@@ -311,7 +327,25 @@ mod tests {
 
     #[tokio::test]
     async fn a_start_that_stays_up_is_repaired() {
-        assert_eq!(started(ready(Ok(absent())), ready(Ok(()))).await, None);
+        assert_eq!(
+            started(
+                ready(Ok(absent())),
+                ready(Ok(())),
+                &CancellationToken::new()
+            )
+            .await,
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_deploy_stops_waiting_on_a_start() {
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        assert_eq!(
+            started(std::future::pending(), ready(Ok(())), &cancel).await,
+            Some(cancelled())
+        );
     }
 
     #[tokio::test]
@@ -320,8 +354,12 @@ mod tests {
             observation: ContainerRuntimeObservation::Exited { code: 1 },
             last_check: None,
         });
-        let Some(IngressFailure::Failed { cause }) =
-            started(ready(Ok(absent())), ready(Err(exited))).await
+        let Some(IngressFailure::Failed { cause }) = started(
+            ready(Ok(absent())),
+            ready(Err(exited)),
+            &CancellationToken::new(),
+        )
+        .await
         else {
             panic!("an exited start is a failed repair");
         };
