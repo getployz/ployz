@@ -128,12 +128,12 @@ fi
 
 setsid nohup node node_modules/vite/bin/vite.js dev --port "$port" --strictPort --host 127.0.0.1 > "$run/vite.log" 2>&1 < /dev/null &
 echo $! > "$run/vite.pid"
-for _ in $(seq 240); do
-  code=$(curl -s -o /dev/null -w '%{http_code}' -H "Cookie: better-auth.session_token=$cookie" "http://127.0.0.1:$port/cloud" || true)
-  [ "$code" != 000 ] && break; sleep 0.5
-done
 # Signed in: /cloud redirects into the organization, not to /auth. Also warms the SSR bundle.
-where=$(curl -s -o /dev/null -w '%{redirect_url}' -H "Cookie: better-auth.session_token=$cookie" "http://127.0.0.1:$port/cloud")
+# A cold start answers without a redirect while vite still optimizes dependencies, so wait for one.
+for _ in $(seq 240); do
+  where=$(curl -s -o /dev/null -w '%{redirect_url}' -H "Cookie: better-auth.session_token=$cookie" "http://127.0.0.1:$port/cloud" || true)
+  [ -n "$where" ] && break; sleep 0.5
+done
 case "$where" in */cloud/$org*) ;; *) echo "up.sh: session check failed: /cloud -> '$where' (see $run/vite.log)" >&2; exit 1 ;; esac
 if [ "${VERIFY_IDLE_TIMEOUT:-900}" != 0 ]; then
   setsid nohup "$dash/scripts/verify/idle.sh" "$port" > "$run/idle.log" 2>&1 < /dev/null &

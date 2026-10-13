@@ -9,6 +9,8 @@ One command gives this checkout its own Postgres, seed and `vite dev`, signed in
 
 ## Launch
 
+Pick the mode from what the change shows. UI that reads a running Server (runtime status, Logs, metrics, Monitoring, deploy progress, upgrades, Volume copies) needs `SERVERS=1`; one Server is enough unless the screen compares Servers. Without it those screens stay empty, so sample data on a page is not proof. Plain `up.sh` covers everything that reads only the Config Store.
+
 ```bash
 scripts/verify/up.sh          # free port; BILLING=1 scripts/verify/up.sh turns billing on
 SERVERS=2 scripts/verify/up.sh   # also real Servers paired through Cloud; DAEMON=stable (default), beta, checkout or a version
