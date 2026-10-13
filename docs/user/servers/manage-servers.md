@@ -44,9 +44,10 @@ Click a server. Its page shows its status and public IP address, then:
 
   ![A server's Resources: CPU, memory and disk meters over CPU, memory and network charts](../images/server-resources.png)
 
-- **Running here**: the server's services, with the CPU and memory each uses on this server now.
-  Past five, **All 12 services** opens the full list, with a filter. While the server is offline, each one says whether
-  it's **Still on** another server or **Down**. A service with no readings on this server shows **–**.
+- **Running here**: the server's services, with the CPU and memory each uses on this server now. A
+  service with no readings on this server shows **–**. Past five, **All 12 services** opens the
+  full list, with a filter. While the server is offline, each one says whether it's **Still on**
+  another server or **Down**.
 - **Services**: **Run services here** and **Drain**. See
   [Change what a server does](#change-what-a-server-does).
 - **Builds**: **Run builds here** and **Builds at once**. See
