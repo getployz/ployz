@@ -1,12 +1,27 @@
-import { useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useStillHere } from "#/hooks/use-still-here";
-import { Trash2Icon } from "lucide-react";
+import { Trash2Icon, UnplugIcon } from "lucide-react";
 import { toast } from "sonner";
+import { approvalOptions } from "#/components/agent-sidebar/approvals.queries";
 import { DeletionDialog, type DeletionItem } from "#/components/deletion-dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "#/components/ui/alert-dialog";
 import { Button } from "#/components/ui/button";
+import { Spinner } from "#/components/ui/spinner";
+import { toErrorMessage } from "#/lib/error-message";
 import {
   enqueueMachineRemoveServerFn,
+  forgetServerServerFn,
   getMachineRemoveAttemptServerFn,
   loadMachineDataLossServerFn,
 } from "#/modules/machines/machine-removal.functions";
@@ -58,10 +73,11 @@ const volumes = (rust: DataLossList["rust"]) =>
 /**
  * Removing a Server resets it and takes it out of the cluster; its volumes stay on its disk, unused. The `last` one takes
  * everything running with it, and Cloud lets go of the cluster: Deploy asks for a server until one is added. It waits on
- * the runtime, and once the Server is gone the page returns to Servers.
+ * the runtime, and once the Server is gone the page returns to Servers. An `offline` Server can't be reset, so it can
+ * also be forgotten.
  */
-export function RemoveServerSection({ machine, organizationSlug, last, hint }: {
-  machine: RuntimeMachineRecord; organizationSlug: string; last: boolean;
+export function RemoveServerSection({ machine, organizationSlug, last, offline, hint }: {
+  machine: RuntimeMachineRecord; organizationSlug: string; last: boolean; offline: boolean;
   /** What still runs here, and the Drain button that would move it. */
   hint: ReactNode;
 }) {
@@ -92,6 +108,7 @@ export function RemoveServerSection({ machine, organizationSlug, last, hint }: {
       >
         {hint}
       </DangerRow>
+      {offline ? <ForgetServerRow machine={machine} organizationSlug={organizationSlug} /> : null}
     </SettingsSection>
       <DeletionDialog
         open={open}
@@ -137,6 +154,79 @@ export function RemoveServerSection({ machine, organizationSlug, last, hint }: {
         }}
       />
   </>
+  );
+}
+
+/**
+ * Forgetting takes a Server that is gone for good out of the cluster without resetting it. It asks for approval in the
+ * sidebar when volumes go with it, sends the same request again once a human approves, then waits on the removal.
+ */
+function ForgetServerRow({ machine, organizationSlug }: { machine: RuntimeMachineRecord; organizationSlug: string }) {
+  const navigate = useNavigate();
+  const markHere = useStillHere();
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [asking, setAsking] = useState<{ readonly requestId: string; readonly approvalId: string } | null>(null);
+  const { data: approval } = useQuery({ ...approvalOptions(organizationSlug, asking?.approvalId ?? ""), enabled: asking !== null });
+  const decided = asking !== null && approval?.id === asking.approvalId ? approval.status : null;
+
+  const send = async (requestId: string, approvalId: string | null) => {
+    setBusy(true);
+    const stillHere = markHere();
+    try {
+      const answer = await forgetServerServerFn({ data: { organizationSlug, machineId: machine.id, requestId, approvalId } });
+      if (answer.asking !== undefined) {
+        setAsking({ requestId, approvalId: answer.asking.approvalId });
+        toast.info(`Forgetting ${machine.name} waits for approval in the sidebar.`);
+        return;
+      }
+      const result = await waitForMachineRemoveAttempt(organizationSlug, answer.id, () => !stillHere());
+      if (result === "aborted") return;
+      if ("missing" in result) throw new Error(`${machine.name} changed while it was being forgotten. Try again.`);
+      toast(`${machine.name} forgotten`);
+      void navigate({ to: "/cloud/$organizationSlug/~/servers", params: { organizationSlug } });
+    } catch (error) {
+      toast.error(toErrorMessage(error, `Could not forget ${machine.name}`));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    if (asking === null || decided === null || decided === "pending") return;
+    setAsking(null);
+    if (decided === "approved") void send(asking.requestId, asking.approvalId);
+    else toast.info(decided === "denied" ? `Forgetting ${machine.name} was denied.` : `${machine.name} changed before it was approved. Forget it again.`);
+  }, [decided]);
+
+  return (
+    <>
+      <DangerRow
+        title={`Forget ${machine.name}`}
+        description="It's gone. Ployz stops waiting for it; its volumes can't be recovered."
+        action={
+          <Button variant="destructive" disabled={busy || asking !== null} onClick={() => setOpen(true)}>
+            {busy ? <Spinner data-icon="inline-start" /> : <UnplugIcon data-icon="inline-start" />}
+            Forget server
+          </Button>
+        }
+      />
+      <AlertDialog open={open} onOpenChange={setOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Forget {machine.name}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Ployz takes it out of the cluster without reaching it. Its volumes{" "}
+              <span className="text-destructive">can't be recovered</span>.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction variant="destructive" onClick={() => { setOpen(false); void send(crypto.randomUUID(), null); }}>Forget</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
   );
 }
 
