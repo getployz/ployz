@@ -1646,6 +1646,204 @@ fn a_later_save_scrubs_what_sealing_left_behind() {
     assert!(!history_text(&store, &who).contains("plain-private"));
 }
 
+fn create_service(store: &ConfigStore, who: &Actor, at: EnvironmentRef, n: u8, name: &str) {
+    store
+        .write(
+            who,
+            &CreateService {
+                id: ServiceLineageId::parse(format!("00000000-0000-4000-8000-0000000000{n:02}"))
+                    .unwrap(),
+                environment: at,
+                name: ServiceName::parse(name).unwrap(),
+                image: Some("nginx:1".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+}
+
+fn route(store: &ConfigStore, who: &Actor, at: EnvironmentRef, service: &str, hostname: &str) {
+    store
+        .write_trusted(
+            who,
+            &AddDomain {
+                environment: at,
+                service: ServiceName::parse(service).unwrap(),
+                hostname: Some(Hostname::parse(hostname).unwrap()),
+                prefix: None,
+                port: None,
+            },
+            &Trusted::default(),
+        )
+        .unwrap();
+}
+
+fn unroute(store: &ConfigStore, who: &Actor, hostname: &str) {
+    store
+        .write_trusted(
+            who,
+            &RemoveDomain {
+                environment: EnvironmentRef::default(),
+                domain: hostname.into(),
+            },
+            &Trusted::default(),
+        )
+        .unwrap();
+}
+
+fn create_volume(store: &ConfigStore, who: &Actor, n: u8) {
+    store
+        .write(
+            who,
+            &CreateVolume {
+                shared_writes: false,
+                storage_locked: false,
+                storage: ployz_core::config::VolumeKind::Docker {},
+                id: VolumeId::parse(format!("00000000-0000-4000-8000-0000000000{n:02}")).unwrap(),
+                environment: EnvironmentRef::default(),
+                name: VolumeName::parse("data").unwrap(),
+                mounts: Vec::new(),
+            },
+        )
+        .unwrap();
+}
+
+fn refused_undo(store: &ConfigStore, who: &Actor, revision: u64) -> String {
+    let error =
+        history_preview(store, who, revision, ployz_store::HistoryAction::Undo).unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::Conflict, "{error:?}");
+    error.message
+}
+
+#[test]
+fn history_refuses_a_service_name_taken_since() {
+    let (store, who) = shop();
+    publish(&store, &who, None).unwrap();
+    remove_service(&store, &who, "api");
+    publish(&store, &who, None).unwrap();
+    create_service(&store, &who, EnvironmentRef::default(), 31, "api");
+    publish(&store, &who, None).unwrap();
+    assert_eq!(
+        refused_undo(&store, &who, 2),
+        "Environment production already has a Service named api"
+    );
+}
+
+#[test]
+fn history_refuses_a_volume_name_taken_since() {
+    let (store, who) = shop();
+    create_volume(&store, &who, 31);
+    publish(&store, &who, None).unwrap();
+    store
+        .write(
+            &who,
+            &RemoveVolume {
+                environment: EnvironmentRef::default(),
+                volume: VolumeName::parse("data").unwrap(),
+            },
+        )
+        .unwrap();
+    publish(&store, &who, None).unwrap();
+    create_volume(&store, &who, 32);
+    publish(&store, &who, None).unwrap();
+    assert_eq!(
+        refused_undo(&store, &who, 2),
+        "Environment production already has a Volume named data"
+    );
+}
+
+#[test]
+fn history_refuses_a_hostname_another_service_of_the_environment_took_since() {
+    let (store, who) = shop();
+    route(
+        &store,
+        &who,
+        EnvironmentRef::default(),
+        "web",
+        "a.example.com",
+    );
+    publish(&store, &who, None).unwrap();
+    unroute(&store, &who, "a.example.com");
+    publish(&store, &who, None).unwrap();
+    route(
+        &store,
+        &who,
+        EnvironmentRef::default(),
+        "api",
+        "a.example.com",
+    );
+    publish(&store, &who, None).unwrap();
+    assert_eq!(
+        refused_undo(&store, &who, 2),
+        "Another Service already has a.example.com"
+    );
+}
+
+#[test]
+fn history_refuses_a_generated_domain_another_service_took_since() {
+    let (store, who) = shop();
+    let generate = |service: &str| {
+        store
+            .write_trusted(
+                &who,
+                &AddDomain {
+                    environment: EnvironmentRef::default(),
+                    service: ServiceName::parse(service).unwrap(),
+                    hostname: None,
+                    prefix: Some(ployz_core::DomainPrefix::parse("shop").unwrap()),
+                    port: None,
+                },
+                &Trusted::default(),
+            )
+            .unwrap();
+    };
+    generate("web");
+    publish(&store, &who, None).unwrap();
+    unroute(&store, &who, "shop");
+    publish(&store, &who, None).unwrap();
+    generate("api");
+    publish(&store, &who, None).unwrap();
+    assert_eq!(
+        refused_undo(&store, &who, 2),
+        "Another generated domain of this Organization is shop"
+    );
+}
+
+#[test]
+fn history_refuses_a_hostname_another_environment_took_since() {
+    let (store, who) = shop();
+    route(
+        &store,
+        &who,
+        EnvironmentRef::default(),
+        "web",
+        "a.example.com",
+    );
+    publish(&store, &who, None).unwrap();
+    unroute(&store, &who, "a.example.com");
+    publish(&store, &who, None).unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::CreateEnvironment {
+                id: EnvironmentId::parse("00000000-0000-4000-8000-000000000030").unwrap(),
+                project: None,
+                name: ployz_store::EnvironmentName::parse("staging").unwrap(),
+            },
+        )
+        .unwrap();
+    let staging = || EnvironmentRef {
+        project: None,
+        environment: Some(ployz_store::EnvironmentName::parse("staging").unwrap()),
+    };
+    create_service(&store, &who, staging(), 31, "web");
+    route(&store, &who, staging(), "web", "a.example.com");
+    assert_eq!(
+        refused_undo(&store, &who, 2),
+        "Another Service already has a.example.com"
+    );
+}
+
 #[test]
 fn history_never_brings_back_plain_text_of_a_key_sealed_only_between_saves() {
     let (store, who) = shop();

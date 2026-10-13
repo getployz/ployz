@@ -17,6 +17,7 @@ mod error;
 mod git;
 mod github;
 mod id;
+mod names;
 mod policy;
 mod project;
 mod pull_request;

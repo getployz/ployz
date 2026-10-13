@@ -2208,6 +2208,7 @@ pub(super) fn prepare_history(
         selected.clone()
     };
     keep_sealed(tx, environment, &mut target)?;
+    crate::names::refuse_new_taken(tx, environment, &target)?;
     Prepared::from_target(tx, environment, saved, target, selected)
 }
 /// History never changes a sealed value: a key sealed now keeps its value, a

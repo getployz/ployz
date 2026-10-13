@@ -363,14 +363,6 @@ pub(crate) fn add_domain(
         ));
     }
     let mut environment = scope::lock(tx, who, &add.environment)?;
-    // Hostnames are unique across the Organization: all its Environments share the
-    // Servers' ingress and one Cluster Domain.
-    let everywhere = other_environments(tx, who, &environment)?
-        .into_iter()
-        .chain(std::iter::once(environment.working.clone()))
-        .flat_map(|intent| intent.services)
-        .map(|service| (service.id, service.config))
-        .collect::<Vec<_>>();
     // Hostnames under the Cluster Domain are Ployz's to hand out, never custom.
     let cluster = cluster_of(tx, &environment, trusted)?;
     let own = environment.service(&add.service)?;
@@ -397,23 +389,18 @@ pub(crate) fn add_domain(
             ));
         }
     }
+    if let Some(hostname) = &add.hostname {
+        crate::names::refuse_taken(
+            tx,
+            &environment,
+            crate::names::Name::Hostname(hostname.as_str()),
+            Some(&own),
+        )?;
+    }
     let service = environment.service_mut(&add.service)?;
     let mut free = None;
     let (name, port, added, changed) = match &add.hostname {
         Some(hostname) => {
-            let elsewhere = everywhere.iter().any(|(id, config)| {
-                *id != service.id
-                    && config
-                        .routes
-                        .iter()
-                        .any(|route| route.hostname == hostname.as_str())
-            });
-            if elsewhere {
-                return Err(error::conflict(
-                    "Another Service already has this domain",
-                    json!({}),
-                ));
-            }
             let routes = &mut service.config.routes;
             let existing = routes
                 .iter_mut()
@@ -624,7 +611,7 @@ fn taken_prefixes<'t>(
     (trusted, cluster): (&'t Trusted, Option<&Hostname>),
 ) -> Result<Vec<(String, Option<&'t PublishedHostname>)>, RpcError> {
     let mut taken: Vec<(String, Option<&PublishedHostname>)> =
-        other_environments(tx, who, environment)?
+        crate::names::other_environments(tx, environment)?
             .iter()
             .chain(std::iter::once(&environment.working))
             .flat_map(|intent| &intent.services)
@@ -960,23 +947,4 @@ fn no_domain(environment: &Environment, trusted: &Trusted) -> RpcError {
         format!("No such domain in Environment {}", environment.summary.name),
         json!({ "valid_children": names }),
     )
-}
-
-/// Working State of every other Environment of the Organization: hostnames are
-/// unique across all of them.
-fn other_environments(
-    tx: &mut dyn Tx,
-    who: &Actor,
-    environment: &Environment,
-) -> Result<Vec<SavedEnvironmentIntent>, RpcError> {
-    tx.query(
-        "SELECT working FROM config_environment WHERE organization_id = ?1 AND id <> ?2",
-        &[
-            who.organization.as_str().into(),
-            environment.summary.id.as_str().into(),
-        ],
-    )?
-    .iter()
-    .map(|row| row.intent(0, "Working State"))
-    .collect()
 }
