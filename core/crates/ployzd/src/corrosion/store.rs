@@ -17,6 +17,7 @@ use ployz_core::{
     CERTIFICATE_POLICY_CLUSTER_KEY, CertificateHost, ClusterRoute, ContainerId,
     ContainerObservation, DeploymentLogId, DockerVolume, DockerVolumeId, DockerVolumeName,
     IngressHost, IssuanceClock, Machine, MachineId, QualifiedService, ServingPointer,
+    ServingPointerPublication,
 };
 use serde_json::json;
 
@@ -697,6 +698,72 @@ impl ReplicatedStore {
         Ok(pointers)
     }
 
+    pub(crate) async fn serving_pointer(
+        &self,
+        service: &QualifiedService,
+    ) -> Result<Option<ServingPointer>, Error> {
+        let Some(raw) = self.raw_serving_pointer(service).await? else {
+            return Ok(None);
+        };
+        decode_serving_pointer(&raw).map(Some)
+    }
+
+    /// Writes `pointer` only if the row still holds `read`, in one transaction.
+    ///
+    /// `read: None` inserts only when no row exists. A loss answers the row as it stands.
+    pub(crate) async fn compare_and_set_serving_pointer(
+        &self,
+        service: &QualifiedService,
+        read: Option<&ServingPointer>,
+        pointer: &ServingPointer,
+    ) -> Result<ServingPointerPublication, Error> {
+        let key = ServingPointer::key(service);
+        let encoded = serde_json::to_string(pointer)
+            .map_err(|error| Error::Protocol(ployz_core::error_chain::inline(&error)))?;
+        let raw = self.raw_serving_pointer(service).await?;
+        let current = raw.as_deref().map(decode_serving_pointer).transpose()?;
+        if current.as_ref() != read {
+            return Ok(ServingPointerPublication::Superseded { current });
+        }
+        // The guard compares the exact text just read, so a semantically equal row in
+        // another JSON spelling still matches.
+        let statement = match raw {
+            None => Statement::new(
+                "INSERT INTO cluster (key, value) VALUES (?, ?) ON CONFLICT (key) DO NOTHING",
+                [json!(key), json!(encoded)],
+            ),
+            Some(raw) => Statement::new(
+                "UPDATE cluster SET value = ? WHERE key = ? AND value = ?",
+                [json!(encoded), json!(key), json!(raw)],
+            ),
+        };
+        let written = self.api.execute_counted([statement]).await?;
+        if written.first().copied().unwrap_or(0) > 0 {
+            return Ok(ServingPointerPublication::Published);
+        }
+        Ok(ServingPointerPublication::Superseded {
+            current: self.serving_pointer(service).await?,
+        })
+    }
+
+    async fn raw_serving_pointer(
+        &self,
+        service: &QualifiedService,
+    ) -> Result<Option<String>, Error> {
+        let query = self
+            .api
+            .query(Statement::new(
+                "SELECT value FROM cluster WHERE key = ?",
+                [json!(ServingPointer::key(service))],
+            ))
+            .await?;
+        let rows = query.rows(["value"])?;
+        let Some([value]) = rows.first() else {
+            return Ok(None);
+        };
+        Ok(Some(text(value, "Serving Pointer")?.to_owned()))
+    }
+
     pub(crate) async fn subscribe_serving_pointer_changes(&self) -> Result<Subscription, Error> {
         self.api
             .subscribe(Statement::new(SERVING_POINTERS, []))
@@ -1024,6 +1091,15 @@ fn volume_incomplete(machine_id: &MachineId, name: &DockerVolumeName) -> Stateme
             json!(INCOMPLETE_JSON_DOCUMENT),
         ],
     )
+}
+
+fn decode_serving_pointer(raw: &str) -> Result<ServingPointer, Error> {
+    serde_json::from_str(raw).map_err(|error| {
+        Error::Protocol(format!(
+            "invalid Serving Pointer: {error}",
+            error = ployz_core::error_chain::inline(&error),
+        ))
+    })
 }
 
 const SERVING_POINTERS: &str =

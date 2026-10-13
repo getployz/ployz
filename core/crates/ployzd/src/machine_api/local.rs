@@ -6,7 +6,8 @@ use ployz_core::{
     CapabilityAdvertisement, CertificateMaterialChange, CertificateMaterialPublished,
     ContainerList, ContainerObservation, ContractDescription, EnvironmentValues, LiveLogTarget,
     LocalMachinePhase, LogMetadata, LogOrigin, MachineLogService, MachineRpc, OpaquePayload,
-    PROTOCOL_MAJOR, Rpc, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, op,
+    PROTOCOL_MAJOR, Rpc, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, ServingPointerRead,
+    op,
 };
 use serde_json::Value;
 use tonic::{Request, Response, Status};
@@ -621,6 +622,43 @@ impl MachineRpc for MachineService {
         };
         match result {
             Ok(()) => respond(CertificateMaterialPublished {}),
+            Err(error) => respond(cluster_store_error(error)),
+        }
+    }
+
+    async fn publish_serving_pointer(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::PublishServingPointer>(request)?;
+        let replicated = match self.ready_replicated() {
+            Ok(replicated) => replicated,
+            Err(error) => return respond(error),
+        };
+        match replicated
+            .compare_and_set_serving_pointer(
+                &request.service,
+                request.read.as_ref(),
+                &request.pointer,
+            )
+            .await
+        {
+            Ok(publication) => respond(publication),
+            Err(error) => respond(cluster_store_error(error)),
+        }
+    }
+
+    async fn read_serving_pointer(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::ReadServingPointer>(request)?;
+        let replicated = match self.ready_replicated() {
+            Ok(replicated) => replicated,
+            Err(error) => return respond(error),
+        };
+        match replicated.serving_pointer(&request.service).await {
+            Ok(pointer) => respond(ServingPointerRead { pointer }),
             Err(error) => respond(cluster_store_error(error)),
         }
     }

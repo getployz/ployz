@@ -77,6 +77,14 @@ impl ApiClient {
         &self,
         statements: impl IntoIterator<Item = Statement>,
     ) -> Result<(), Error> {
+        self.execute_counted(statements).await.map(drop)
+    }
+
+    /// Runs `statements` in one transaction and answers each statement's affected row count.
+    pub(crate) async fn execute_counted(
+        &self,
+        statements: impl IntoIterator<Item = Statement>,
+    ) -> Result<Vec<usize>, Error> {
         let statements = statements.into_iter().collect::<Vec<_>>();
         // ponytail: finite query responses are buffered; stream events if store size makes this measurable.
         let (status, body) = super::within_io_timeout(async {
@@ -109,17 +117,16 @@ impl ApiClient {
                     Error::Api,
                 ));
         }
-        let decoded = decoded?;
-        let errors = decoded
-            .results
-            .into_iter()
-            .filter_map(|result| match result {
-                ExecResult::Error { error } => Some(error),
-                ExecResult::Executed { .. } => None,
-            });
-        let errors = errors.collect::<Vec<_>>();
+        let mut counts = Vec::new();
+        let mut errors = Vec::new();
+        for result in decoded?.results {
+            match result {
+                ExecResult::Executed { rows_affected, .. } => counts.push(rows_affected),
+                ExecResult::Error { error } => errors.push(error),
+            }
+        }
         if errors.is_empty() {
-            Ok(())
+            Ok(counts)
         } else {
             Err(Error::Api(errors.join("; ")))
         }
@@ -295,8 +302,7 @@ struct ExecResponse {
 #[serde(deny_unknown_fields, untagged)]
 enum ExecResult {
     Executed {
-        #[serde(rename = "rows_affected")]
-        _rows_affected: usize,
+        rows_affected: usize,
         #[serde(rename = "time")]
         _time: f64,
     },

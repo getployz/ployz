@@ -25,7 +25,7 @@ use crate::{
     AdvertisedEndpoint, CapabilityName, CertificateHost, ContainerId, ContainerKind,
     ContainerObservation, Machine, MachineId, MachineLogService, MachineName, MachineObservation,
     MachineRuntime, MachineUpdate, ManagementCapability, ManagementClientLabel, Namespace,
-    ResolvedServiceSpec, StorageChoice, WireGuardPublicKey,
+    QualifiedService, ResolvedServiceSpec, ServingPointer, StorageChoice, WireGuardPublicKey,
 };
 
 mod docker;
@@ -1159,6 +1159,37 @@ pub struct DiskSpace {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct CertificateMaterialPublished {}
 
+/// Write one Service's Serving Pointer only if its row still holds `read`.
+///
+/// `read: None` is a first publish and writes only when no row exists.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PublishServingPointerRequest {
+    pub service: QualifiedService,
+    pub read: Option<ServingPointer>,
+    pub pointer: ServingPointer,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum ServingPointerPublication {
+    Published,
+    /// The row no longer held the value the writer read; nothing was written.
+    Superseded {
+        current: Option<ServingPointer>,
+    },
+}
+
+/// Read one Service's Serving Pointer from the target Machine's replicated store.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ReadServingPointerRequest {
+    pub service: QualifiedService,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ServingPointerRead {
+    pub pointer: Option<ServingPointer>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct MachineUpdated {
     pub machine: Machine,
@@ -1262,6 +1293,8 @@ define_responses! {
     BuildGrantMinted(BuildGrantMinted) => "build_grant_minted";
     BuildGrantInspected(BuildGrantInspected) => "build_grant_inspected";
     CertificateMaterialPublished(CertificateMaterialPublished) => "certificate_material_published";
+    ServingPointerPublication(ServingPointerPublication) => "serving_pointer_publication";
+    ServingPointerRead(ServingPointerRead) => "serving_pointer_read";
     MachineUpdated(MachineUpdated) => "machine_updated";
     MachineUpgradeAttempt(MachineUpgradeAttempt) => "machine_upgrade_attempt";
     Left(Left) => "left";

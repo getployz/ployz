@@ -1811,3 +1811,93 @@ mod ensure_container {
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 }
+
+#[tokio::test]
+async fn serving_pointer_publish_answers_published_then_superseded_with_the_current_row() {
+    use crate::corrosion::{
+        AdminClient,
+        store_tests::{corrosion_db, identity_store},
+    };
+    use ployz_core::{
+        DeploymentLogId, PublishServingPointerRequest, QualifiedService, ReadServingPointerRequest,
+        ServingPointer, ServingPointerPublication,
+    };
+
+    let data_dir =
+        std::env::temp_dir().join(format!("ployzd-serving-publish-{}", MachineId::random()));
+    let mut local = LocalMachineStore::open(&data_dir).unwrap();
+    local
+        .enroll(ployz_core::EnrollRequest {
+            role: ployz_core::EnrollAs::Founder {
+                initial_policy: Default::default(),
+                name: ployz_core::MachineName::parse("local").unwrap(),
+                cluster_network: "10.210.0.0/16".parse().unwrap(),
+                public_ip: None,
+                advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(
+                    "192.0.2.1:51820".parse().unwrap(),
+                )],
+            },
+            wireguard_mtu: None,
+        })
+        .unwrap();
+    let (replicated, task) = identity_store(corrosion_db()).await;
+    let service = MachineService::with_cluster(
+        RecordOwner::spawn(local).unwrap(),
+        Some((replicated, AdminClient::new("/no/such/admin.sock"))),
+    );
+    let api = QualifiedService::parse("app/api").unwrap();
+    let pointer = |deploy: &str, container: &str| ServingPointer {
+        deploy: DeploymentLogId::parse(deploy).unwrap(),
+        containers: vec![ContainerId::parse(container.repeat(64)).unwrap()],
+        previous: None,
+        retiring: Vec::new(),
+    };
+    let publish = |read: Option<ServingPointer>, pointer: ServingPointer| {
+        let request = op::PublishServingPointer::into_request(PublishServingPointerRequest {
+            service: api.clone(),
+            read,
+            pointer,
+        });
+        let service = &service;
+        async move {
+            service
+                .publish_serving_pointer(Request::new(request.encode().unwrap()))
+                .await
+                .unwrap()
+                .into_inner()
+                .decode_response()
+                .unwrap()
+                .decode::<op::PublishServingPointer>()
+                .unwrap()
+        }
+    };
+
+    assert_eq!(
+        publish(None, pointer("d1", "a")).await,
+        ServingPointerPublication::Published
+    );
+    assert_eq!(
+        publish(None, pointer("d2", "b")).await,
+        ServingPointerPublication::Superseded {
+            current: Some(pointer("d1", "a"))
+        }
+    );
+    let read = service
+        .read_serving_pointer(Request::new(
+            op::ReadServingPointer::into_request(ReadServingPointerRequest {
+                service: api.clone(),
+            })
+            .encode()
+            .unwrap(),
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+        .decode_response()
+        .unwrap()
+        .decode::<op::ReadServingPointer>()
+        .unwrap();
+    assert_eq!(read.pointer, Some(pointer("d1", "a")));
+    task.abort();
+    std::fs::remove_dir_all(data_dir).ok();
+}
