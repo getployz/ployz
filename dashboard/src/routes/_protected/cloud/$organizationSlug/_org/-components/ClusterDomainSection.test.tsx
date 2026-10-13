@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { createMemoryHistory, createRootRoute, createRouter, RouterProvider } from "@tanstack/react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ClusterDomainRow } from "#/modules/cluster-domain/cluster-domain";
 import { ClusterDomainSection } from "./ClusterDomainSection";
@@ -57,6 +58,15 @@ describe("ClusterDomainSection", () => {
     expect(screen.getByText("Needs attention")).toBeTruthy();
     expect(screen.getByText("Something else answers on port 80 of 203.0.113.1. Free the port for Ployz.")).toBeTruthy();
     expect(screen.getByText("Check again")).toBeTruthy();
+  });
+
+  it("says no Server is online rather than asking for a new one", async () => {
+    const domain = { ...ready, traffic: { kind: "no_servers" } } as const;
+    const component = () => <ClusterDomainSection organizationSlug="acme" domain={domain} onCheck={vi.fn()} />;
+    render(<RouterProvider router={createRouter({ routeTree: createRootRoute({ component }), history: createMemoryHistory() })} />);
+
+    expect(await screen.findByText("No server is online.")).toBeTruthy();
+    expect(screen.getByText("Needs attention")).toBeTruthy();
   });
 
   it("stays ready when one Server answers, and names the ones traffic skips", () => {
