@@ -281,7 +281,8 @@ any `ployz` command on the server starts Ployz again through it. Your services, 
 the private network and the server's place in the cluster keep running until the server reboots or
 you remove it.
 
-`ployz server rm` and `ployz server forget` always wait for an approval (see
+When Ployz Cloud manages the server and taking it out would destroy something, `ployz server rm`
+and `ployz server forget` wait for an approval (see
 [Destructive actions ask first](../account/organizations.md#destructive-actions-ask-first))
 before they take the server out. One approval removes the server once, and approving a forget
 doesn't approve a removal that resets the server.
@@ -318,8 +319,9 @@ A forgotten server doesn't know it was removed. If it comes back, its services m
 running on its copy of a volume. When you've restored that volume on another server, the next
 move, mirror, sync or release of that volume marks the returning copy old, makes it read-only and
 stops there; run it again. If a service on the returning server still has the copy open, the copy
-turns read-only but the run fails; run it again once that service stops. Anything written to the old copy in between is lost. Reset a server you don't mean to keep:
-`ployz server rm web-2 --confirm web-2` once it answers.
+turns read-only but the run fails; run it again once that service stops. Anything written to the old copy in between is lost. Ployz no longer lists a forgotten server, so
+`ployz server rm` can't reach it: run `sudo ployz-uninstall` on a server you don't mean to keep. It
+stops the services Ployz runs there; Docker, your images and your volume data stay on the disk.
 
 ## Clean up after a deleted environment
 
