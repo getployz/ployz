@@ -529,8 +529,8 @@ class VolumeMoveTests(unittest.TestCase):
     def test_every_fault_names_a_point_the_daemon_defines(self):
         source = (volume_move.CORE / "crates/ployzd/src/machine_api/local_volume_copy.rs").read_text()
         points = set(re.findall(r'"SetVolumeCopy\.(\w+)"', source))
-        # CELLS lists the cells a case kills, and no case kills the Writer raise.
-        self.assertEqual(points, {cell.replace(">", "To") for cell in volume_move.CELLS} | {"WriterToWriter"})
+        # CELLS lists the cells a case kills; no case kills the Writer raise or a restore seed's forget.
+        self.assertEqual(points, {cell.replace(">", "To") for cell in volume_move.CELLS} | {"WriterToWriter", "SeedToForget"})
         point = "SetVolumeCopy\\.(" + "|".join(sorted(points)) + ")"
         for row in volume_move.CASES + volume_move.soak_cases():
             with self.subTest(row["name"]):
