@@ -87,7 +87,12 @@ function VolumeDrawer({ params, environment, volume, volumes, services, settings
   const nameSchema = Schema.String.check(Schema.makeFilter<string>((name) => dnsLabelError(name)
     ?? (volumes.some((other) => other.id !== volume.id && other.name === name) ? `A volume here is already named ${name}.` : undefined)));
   const managed = volume.deployed && volume.storage.kind === "provisioned" && !removing;
-  const mount = volume.mounts[0];
+  const paths = new Set(volume.mounts.map((entry) => entry.path));
+  const mounted = paths.size > 1
+    ? volume.mounts.map((entry) => `${entry.service}:${entry.path}`).join(", ")
+    : volume.mounts.length > 0 ? `${[...new Set(volume.mounts.map((entry) => entry.service))].join(", ")} · ${[...paths][0]}` : "Not mounted";
+  // A mirror shows only in Copies, whatever tab the address carried in.
+  const page = copy !== null || !Schema.is(volumePageSchema)(tab) ? "copies" : tab;
   const open = (next: MachineId | null) => void navigate({
     params: { ...params, resourceId: next === null ? volume.id : mirrorResourceId(volume.id, next) },
     search: (prev) => ({ ...prev, tab: "copies" as const }),
@@ -103,14 +108,17 @@ function VolumeDrawer({ params, environment, volume, volumes, services, settings
             onRename={(name) => writer.commit({ command: "rename_volume", environment, volume: volume.name, name })} />
         )}
         <p className="truncate text-sm text-muted-foreground">
-          {mount ? `${[...new Set(volume.mounts.map((entry) => entry.service))].join(", ")} · ${mount.path}` : "Not mounted"}
+          {mounted}
         </p>
         {managed && data.copies ? <SafetyLine copies={data.copies} /> : null}
       </CanvasInspectorHeader>
       <div className="flex min-h-0 flex-1 flex-col px-4 pb-4">
-        <Tabs value={Schema.is(volumePageSchema)(tab) ? tab : "copies"}
+        <Tabs value={page}
           onValueChange={(value) => {
-            if (Schema.is(volumePageSchema)(value)) void navigate({ search: (prev) => ({ ...prev, tab: value }), replace: true });
+            if (!Schema.is(volumePageSchema)(value)) return;
+            // Leaving Copies closes the mirror open there.
+            if (copy !== null) void navigate({ params: { ...params, resourceId: volume.id }, search: (prev) => ({ ...prev, tab: value }) });
+            else void navigate({ search: (prev) => ({ ...prev, tab: value }), replace: true });
           }}
           className="flex min-h-0 flex-1 flex-col overflow-visible sm:overflow-clip">
           <TabsList variant="line" className="-mx-4 max-w-none shrink-0 overflow-x-auto sm:mx-0 sm:max-w-full">
