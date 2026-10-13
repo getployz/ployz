@@ -93,7 +93,7 @@ impl Tool for Review {
 }
 
 /// One node's change as plain lines: the node, then each Setting.
-fn lines(change: &NodeChange) -> Vec<String> {
+pub(crate) fn lines(change: &NodeChange) -> Vec<String> {
     let kind = match change.node.node_type {
         EnvironmentNodeType::Service => "service",
         EnvironmentNodeType::Volume => "volume",

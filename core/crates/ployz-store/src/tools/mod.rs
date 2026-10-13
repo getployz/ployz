@@ -9,6 +9,7 @@ mod deployment;
 mod domain;
 mod environment;
 mod github;
+mod history;
 pub mod logs;
 mod machine;
 mod metrics;
@@ -57,6 +58,8 @@ pub(crate) const TOOLS: &[Entry] = &[
     entry::<config::ConfigRemove>(),
     entry::<release::Review>(),
     entry::<release::DiscardInput>(),
+    entry::<history::HistoryRestore>(),
+    entry::<history::HistoryUndo>(),
     entry::<release::PublishInput>(),
     entry::<release::DeployInput>(),
     entry::<deployment::DeploymentList>(),
