@@ -134,6 +134,8 @@ class ClusterModel:
         if args[:2] == ["volume", "mirror"]:
             row = dict(id=f"run-{len(self.runs)}", kind="mirror", state="done")
             self.runs.append(row)
+            # The armed kill lands inside the effect and the resumed run finishes it.
+            self.fired = self.fired or any(self.fault.values())
             if args[2] == "rm":
                 self.mirror = None
             else:
@@ -922,6 +924,35 @@ class VolumeMoveTests(unittest.TestCase):
             self.assertEqual(result["final_writer"], "machine-1", result)
             self.assertNotIn("the Volume ended on", " ".join(result["failures"]), result)
         self.assertEqual(summary["cases"][-1]["recovery"], ["done"])
+
+    def test_a_mirror_case_passes_only_when_the_mirror_ends_present_and_a_mirror_rm_case_only_when_it_ends_gone(self):
+        expected = {"mirror": "the mirror on machine-2 ended absent, not present",
+                    "mirror-rm": "the mirror on machine-2 ended present, not absent"}
+        for case in [case for case in volume_move.KILLS if case["op"] != "move"]:
+            for path in ("changed nothing", "did its work"):
+                with self.subTest(case=case["name"], path=path):
+                    checks, model = self.checks()
+                    cli = model.cli
+
+                    def unchanged(args, model=model, cli=cli):
+                        # Only the case's own op runs with the fault armed; prepare's mirror still works.
+                        if args[:2] == ["volume", "mirror"] and any(model.fault.values()):
+                            model.fired = True
+                            row = dict(id=f"run-{len(model.runs)}", kind="mirror", state="done")
+                            model.runs.append(row)
+                            return 0, json.dumps(row)
+                        return cli(args)
+                    if path == "changed nothing":
+                        model.cli = unchanged
+                    with redirect_stdout(io.StringIO()):
+                        result = checks.run_all([case])["cases"][0]
+                    self.assertEqual(result["run"], "done", result)
+                    if path == "changed nothing":
+                        self.assertFalse(result["passed"], result)
+                        self.assertEqual(result["failures"], [expected[case["op"]]])
+                    else:
+                        self.assertTrue(result["passed"], result)
+                        self.assertEqual(model.mirror, "machine-2" if case["op"] == "mirror" else None)
 
     def test_a_release_approval_cloud_rejects_fails_the_case_and_names_the_status(self):
         undo = next(case for case in volume_move.CASES if case["name"] == "undo-after-cut")
