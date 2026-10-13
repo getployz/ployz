@@ -1,7 +1,8 @@
-import type { DomainRow, RowId, ServiceListing } from "@ployz/sdk";
+import type { DomainRow, NodeOutcome, RowId, ServiceListing } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
 import type { RuntimeContainerRecord } from "#/modules/runtime/runtime.collection";
-import { deployChip, nodeIssues, publicDomain, runtimeLine, stagedSurface, type RuntimeLens } from "./node-status";
+import { asTestDouble } from "#/lib/test-double";
+import { deployChip, nodeIssues, publicDomain, restartedServices, runtimeLine, stagedSurface, type RuntimeLens } from "./node-status";
 
 const service: ServiceListing = { source: "image", change: null, template: null, id: "web", row: "web:node" as RowId, name: "web", private_dns: "web" };
 const container = (state: string, health?: string): RuntimeContainerRecord =>
@@ -143,6 +144,24 @@ describe("deployChip", () => {
     expect(deployChip({ ...service, change: "update" }, 3, [])).toEqual({ kind: "staged", label: "3 changes", variant: "info" });
     expect(deployChip({ ...service, change: "update" }, 0, [])).toEqual({ kind: "staged", label: "Changed", variant: "info" });
     expect(deployChip({ ...service, change: "delete" }, 0, [])).toEqual({ kind: "staged", label: "Removing", variant: "destructive" });
+  });
+
+  it("shows Deploying only on a Service the running Deploy restarts, once its plan is known", () => {
+    const running = [deployment("running", [])];
+    expect(deployChip(service, 0, running, new Set(["web"]))).toEqual({ kind: "deploying", since: 100 });
+    expect(deployChip(service, 0, running, new Set(["api"]))).toBeNull();
+    expect(deployChip({ ...service, change: "update" }, 1, running, new Set())).toEqual({ kind: "staged", label: "1 change", variant: "info" });
+    expect(deployChip(service, 0, [...running, deployment("queued", ["web"])], new Set())).toEqual({ kind: "queued" });
+    expect(deployChip(service, 0, running, null)).toEqual({ kind: "deploying", since: 100 });
+  });
+});
+
+describe("restartedServices", () => {
+  const node = (type: string, name: string, outcome: string) => asTestDouble<NodeOutcome>()({ type, id: name, name, outcome, rows: [] });
+
+  it("names the Service nodes the Deploy starts or stops, not the unchanged ones or other kinds", () => {
+    const nodes = [node("service", "web", "pending"), node("service", "api", "unchanged"), node("service", "worker", "deployed"), node("volume", "data", "pending")];
+    expect([...restartedServices({ nodes })]).toEqual(["web", "worker"]);
   });
 });
 

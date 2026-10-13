@@ -28,6 +28,8 @@ const SPINNER = /<Spinner\b|Loader2Icon|animate-spin/;
 const SPINNER_FILES = {
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/resources/$resourceId/-components/StoreVolumePlacement.tsx": "a Volume run under way",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/new-branch/StoreNewBranchPanel.tsx": "creating a Branch in the Config Store",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/MirrorNode.tsx": "a copy being made or refreshed",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/VolumeTray.tsx": "a Volume run under way",
   "components/ui/spinner.tsx": "the primitive",
   "components/agent-sidebar/agent-panel.tsx": "the agent starting its reply",
   "components/ui/sonner.tsx": "promise toasts for writes",
