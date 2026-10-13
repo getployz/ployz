@@ -79,7 +79,8 @@ class ClusterModel:
         if args[0] == "volume" and args[1] in self.asks and "--approval" not in args:
             details = dict(approval=f"{args[1]}:digest", approval_id="approval-1")
             return 1, json.dumps(dict(error=dict(code="approval_required", details=details)))
-        self.started.append(args)
+        if args[:2] != ["volume", "runs"]:
+            self.started.append(args)
         if args[:2] == ["volume", "inspect"]:
             return 0, json.dumps(dict(id="1", environment=dict(project="verify", name="production")))
         if args[:2] == ["volume", "runs"]:
@@ -353,6 +354,19 @@ class VolumeMoveTests(unittest.TestCase):
         self.assertTrue(volume_move.nth_after(lines, 150.0, 1).endswith("fault: final"))
         self.assertIsNone(volume_move.nth_after(lines, 200.5, 2))
         self.assertIsNone(volume_move.nth_after(lines, 300.0, 1))
+
+    def test_busy_names_the_run_a_volume_busy_refusal_holds_and_nothing_else(self):
+        run = dict(id="run-9", kind="sync", state="running")
+        refusal = dict(error=dict(code="conflict", message="VolumeBusy: run run-9 (sync) is running; volume runs "
+                                  "run-9 shows it", details=dict(run=run)))
+        self.assertEqual(volume_move.busy(refusal), run)
+        for name, reply in [("other error", dict(error=dict(code="conflict", message="A run on this Volume just "
+                                                             "ended. Try again.", details=None))),
+                            ("approval", dict(error=dict(code="approval_required", details=dict(approval="x")))),
+                            ("success", dict(id="run-1", kind="move", state="requested")),
+                            ("raw", dict(raw="VolumeBusy")), ("none", None)]:
+            with self.subTest(name):
+                self.assertIsNone(volume_move.busy(reply))
 
     def test_kill_passes_on_rc_0_or_an_auxiliary_refusal_after_the_main_process_died(self):
         moved = dict(before="41", after="77", invocation="a", invocation_after="b")

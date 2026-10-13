@@ -133,6 +133,7 @@ def nth_after(lines, moment, nth):
 
 TERMINAL = {"done", "failed", "cancelled", "lost", "not_started"}
 AUXILIARY = "Failed to send signal SIGKILL to auxiliary processes"
+BUSY_LIMIT = 180
 SNAPSHOT_BOUND = 8
 SERVICE = "db"
 VOLUME = "data"
@@ -198,6 +199,17 @@ def run_rows(data):
                 walk(value)
     walk(data)
     return rows
+
+
+class Skipped(RuntimeError):
+    pass
+
+
+def busy(reply):
+    error = reply.get("error") if isinstance(reply, dict) else None
+    if not error or not str(error.get("message", "")).startswith("VolumeBusy"):
+        return None
+    return (error.get("details") or {}).get("run") or dict(id="unknown")
 
 
 def check_kill(fields):
@@ -303,6 +315,9 @@ class VolumeMove:
         self.physical = None
         self.probe = None
         self.probe_log = None
+        self.case_name = None
+        self.started_runs = set()
+        self.busy_waits = []
 
     def command(self, *args, check=True, timeout=600):
         command = [str(HELPER), *map(str, args)]
@@ -485,13 +500,37 @@ class VolumeMove:
                     mirror=["volume", "mirror", VOLUME, "--to", destination],
                     release=["volume", "release", VOLUME])
         args["mirror-rm"] = ["volume", "mirror", "rm", f"{VOLUME}-{destination}"]
+        deadline = self.clock() + BUSY_LIMIT
+        self.wait_idle(op, deadline)
         code, data = self.cli(*args[op], check=False)
+        while (holder := busy(data)) and self.clock() < deadline:
+            self.wait_idle(op, deadline, holder)
+            code, data = self.cli(*args[op], check=False)
+        if holder:
+            raise Skipped(f"VolumeBusy past {BUSY_LIMIT}s on {op}: run {holder.get('id')} ({holder.get('kind')})")
         approval = self.approve(data) if op == "release" else None
         if approval:
             code, data = self.cli(*args[op], "--approval", approval, check=False)
         rows = run_rows(data) if code == 0 else []
         row = rows[0] if rows else dict(state="refused", reply=data)
+        if row.get("id"):
+            self.started_runs.add(row["id"])
         return dict(row, approved=approval) if approval else row
+
+    def wait_idle(self, op, deadline, holder=None):
+        """A cron sync or a run left from an earlier case holds the Volume; wait it out until the deadline."""
+        began = self.clock()
+        while active := [row for row in self.runs() if row.get("state") not in TERMINAL]:
+            holder = holder or active[0]
+            if self.clock() >= deadline:
+                break
+            self.sleep(4)
+        if holder:
+            record = dict(case=self.case_name, op=op, holder=holder.get("id"), kind=holder.get("kind"),
+                          waited_seconds=round(self.clock() - began, 1),
+                          started_by_harness=holder.get("id") in self.started_runs)
+            self.busy_waits.append(record)
+            print(json.dumps(dict(volume_busy_wait=record)), flush=True)
 
     def approve(self, reply):
         """Approve as the operator would in Cloud. A Release after the cut forgets the new copy, so Cloud asks."""
@@ -603,6 +642,7 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
             (self.out / f"{name}-{machine}.zfs").write_text(listing)
 
     def run_case(self, case):
+        self.case_name = case["name"]
         writer = self.writer()
         other = self.other(writer)
         side = dict(writer=writer, other=other)
@@ -663,6 +703,11 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
             for case in cases:
                 try:
                     results.append(self.run_case(case))
+                except Skipped as skip:
+                    result = dict(case, passed=False, skipped=str(skip), failures=[f"skipped: {skip}"])
+                    (self.out / f"{case['name']}.json").write_text(json.dumps(result, indent=2) + "\n")
+                    print(json.dumps(dict(case=case["name"], skipped=str(skip))), flush=True)
+                    results.append(result)
                 except (AssertionError, RuntimeError, subprocess.TimeoutExpired) as error:
                     result = dict(case, passed=False, failures=[f"{type(error).__name__}: {error}"[:2000]])
                     result["heal"] = self.heal(self.other(self.writer()))
@@ -682,11 +727,13 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
             physical=self.physical, size_gb=self.size_gb, probe=report, downtime=downtime(results),
             passed=all(result["passed"] for result in results) and bool(report) and not report.get("lost"),
             cases=[dict(name=result["name"], cell=result.get("cell"), step=result.get("step"),
-                        passed=result["passed"], final_writer=result.get("final_writer"),
+                        passed=result["passed"], skipped=result.get("skipped"),
+                        final_writer=result.get("final_writer"),
                         run=result.get("run", {}).get("state"),
                         recovery=[row.get("state") for row in result.get("recovery", [])],
                         gap=result.get("probe", {}).get("longest_gap_seconds"), failures=result["failures"])
-                   for result in results])
+                   for result in results],
+            volume_busy_waits=self.busy_waits)
         (self.out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
         return summary
 
