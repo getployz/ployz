@@ -527,9 +527,20 @@ class VolumeMove:
                 if self.clock() >= deadline:
                     skip = f"VolumeBusy past {BUSY_LIMIT}s before the fault was armed on {op}"
                     break
-                settled = {row["id"] for row in self.arming_runs(op) if row.get("state") in TERMINAL}
+                listed = self.arming_runs(op)
+                if active := [row for row in listed if row.get("state") not in TERMINAL]:
+                    holder = active[0]
+                    self.sleep(4)
+                    continue
+                settled = {row["id"] for row in listed}
                 arm()
                 armed = True
+                # A run that started and ended while arm() restarted the daemon may have fired the fault, and
+                # wait_trigger would credit its fault line to this op.
+                if others := [row for row in self.arming_runs(op) if row["id"] not in settled]:
+                    holder = others[0]
+                    skip = f"a run took the Volume while the fault was armed on {op}"
+                    break
             code, data = self.cli(*args[op], check=False)
             refused = busy(data)
             if refused and not (refused["id"] == "ended" and holder):
@@ -547,8 +558,6 @@ class VolumeMove:
         if armed and not skip:
             accepted = {row["id"] for row in run_rows(data)} if code == 0 else set()
             self.started_runs |= accepted
-            # A run that started and ended while arm() restarted the daemon may have fired the fault, and
-            # wait_trigger would credit its fault line to this op.
             others = [row for row in self.arming_runs(op) if row["id"] not in settled | accepted]
             if others:
                 holder = others[0]

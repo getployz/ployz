@@ -582,7 +582,7 @@ class VolumeMoveTests(unittest.TestCase):
 
     def test_a_sync_that_fires_the_armed_fault_and_ends_before_the_op_skips_the_case(self):
         checks, model = self.checks()
-        guest = model.guest
+        cli, guest, armed_ops = model.cli, model.guest, []
 
         def arming(machine, script):
             if "echo" in script and "PLOYZD_FAULT" in script and not model.holds:
@@ -591,15 +591,35 @@ class VolumeMoveTests(unittest.TestCase):
                 model.clock.now += 10
                 return reply
             return guest(machine, script)
-        model.guest = arming
+        def submitted(args):
+            if args[0] == "volume" and args[1] in ("move", "mirror", "release") and any(model.fault.values()):
+                armed_ops.append(args)
+            return cli(args)
+        model.cli, model.guest = submitted, arming
         with redirect_stdout(io.StringIO()):
             summary = checks.run_all([volume_move.KILLS[0], volume_move.CASES[0]])
         skipped, clean = summary["cases"]
         self.assertEqual(model.tripped, "cron-sync")
         self.assertIn("while the fault was armed", skipped.get("skipped") or "", skipped)
         self.assertFalse(skipped["passed"])
+        self.assertEqual(armed_ops, [])
         self.assertEqual(model.fault, {"machine-1": None, "machine-2": None})
         self.assertTrue(clean["passed"], clean)
+        self.assertEqual([wait["holder"] for wait in summary["volume_busy_waits"]], ["cron-sync"])
+
+    def test_a_sync_running_when_the_fault_would_be_armed_is_waited_out_before_arming(self):
+        checks, model = self.checks()
+        arming_runs = checks.arming_runs
+
+        def a_sync_starts(op):
+            if not model.holds:
+                model.hold(5, "cron-sync")
+            return arming_runs(op)
+        checks.arming_runs = a_sync_starts
+        with redirect_stdout(io.StringIO()):
+            summary = checks.run_all([volume_move.KILLS[0]])
+        self.assertIsNone(model.tripped)
+        self.assertTrue(summary["passed"], summary)
         self.assertEqual([wait["holder"] for wait in summary["volume_busy_waits"]], ["cron-sync"])
 
     def test_a_holder_that_ends_just_before_the_limit_skips_a_fault_case_without_starting_its_op(self):
