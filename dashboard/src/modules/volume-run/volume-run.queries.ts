@@ -37,7 +37,7 @@ const ended = (run: VolumeRunView | undefined) => run !== undefined && !ACTIVE_V
 
 /**
  * Polls the run `watch` names until it ends, then hands it to `onEnd` once and refreshes every run read.
- * `onEnd` gets null when the run can no longer be read.
+ * `onEnd` gets null when the run still cannot be read after two retries.
  */
 export function useWatchVolumeRun(organizationSlug: string, onEnd: (run: VolumeRunView | null) => void) {
   const queryClient = useQueryClient();
@@ -47,7 +47,8 @@ export function useWatchVolumeRun(organizationSlug: string, onEnd: (run: VolumeR
     queryFn: () => getVolumeRunServerFn({ data: { organizationSlug, id: id ?? "" } }),
     enabled: id !== null,
     staleTime: 0,
-    retry: false,
+    retry: 2,
+    retryDelay: 1_000,
     refetchInterval: (query) => (ended(query.state.data) ? false : 3_000),
   });
   const end = useEffectEvent(onEnd);
