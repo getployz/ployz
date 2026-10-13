@@ -151,7 +151,8 @@ ingress on its own within a minute. You don't need to remove and re-add the serv
 
 You'll see **Ingress isn't running on web-1**, under **Domain** in **Organization → General**
 or on a deployment. The web server Ployz runs on web-1 is missing or stopped, so web-1 takes
-no web traffic. Deploy any project to bring it back:
+no web traffic. When your other servers still take the traffic, your domains stay live and only
+**Domain** in **Organization → General** says so. Deploy any project to bring it back:
 
 ```sh
 ployz deploy
