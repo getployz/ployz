@@ -53,6 +53,10 @@ impl EverSealed {
         Ok(ever)
     }
 
+    pub(crate) fn is_empty(&self) -> bool {
+        self.ids.is_empty()
+    }
+
     pub(crate) fn holds(&self, service: &str, variable: &SavedVariableIntent) -> bool {
         self.ids
             .contains(&(service.to_owned(), variable.id.clone()))

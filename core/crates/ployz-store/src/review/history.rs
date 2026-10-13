@@ -121,6 +121,7 @@ pub(crate) fn history(
     query: &HistoryQuery,
 ) -> Result<HistoryView, RpcError> {
     let mut environment = scope::environment(tx, who, &query.environment)?;
+    let scrub = review::Scrub::load(tx, &environment.summary.id)?;
     let limit = query.limit.unwrap_or(HISTORY_PAGE).max(1);
     // One extra row is the oldest shown revision's predecessor, and says more exist.
     let mut rows = tx.query(
@@ -138,7 +139,8 @@ pub(crate) fn history(
     let mut previous = None;
     for (index, row) in rows.iter().enumerate() {
         let revision = Revision(row.number(0, "revision")?);
-        let intent = row.intent(1, "Saved State")?;
+        let mut intent = row.intent(1, "Saved State")?;
+        scrub.apply(revision, &mut intent);
         if index >= first {
             environment.working = intent.clone();
             let changes = previous
@@ -227,9 +229,11 @@ pub(crate) fn stage(
     })
 }
 
+/// The version saved at `revision`, as History shows it.
 fn snapshot(
     tx: &mut dyn Tx,
     environment: &Environment,
+    scrub: &review::Scrub,
     revision: Revision,
 ) -> Result<SavedEnvironmentIntent, RpcError> {
     let rows = tx.query(
@@ -239,14 +243,17 @@ fn snapshot(
             revision_param(revision)?.into(),
         ],
     )?;
-    rows.first()
+    let mut intent = rows
+        .first()
         .ok_or_else(|| {
             error::not_found(
                 "No saved version has this revision",
                 json!({ "revision": revision }),
             )
         })?
-        .intent(0, "Saved State")
+        .intent(0, "Saved State")?;
+    scrub.apply(revision, &mut intent);
+    Ok(intent)
 }
 
 fn prepare(
@@ -263,21 +270,24 @@ fn prepare(
             json!({ "revision": revision }),
         ));
     }
-    let selected = snapshot(tx, environment, revision)?;
+    let scrub = review::Scrub::load(tx, &environment.summary.id)?;
+    let selected = snapshot(tx, environment, &scrub, revision)?;
     let previous = match action {
         HistoryAction::Restore => None,
         HistoryAction::Undo => {
-            let rows = tx.query("SELECT revision, intent FROM config_saved WHERE environment_id = ?1 AND revision < ?2 ORDER BY revision DESC LIMIT 1", &[environment.summary.id.as_str().into(), revision_param(revision)?.into()])?;
-            Some(
-                rows.first()
-                    .ok_or_else(|| {
-                        error::conflict(
-                            "This saved version has no recorded predecessor to undo",
-                            json!({ "revision": revision }),
-                        )
-                    })?
-                    .intent(1, "Saved State")?,
-            )
+            let rows = tx.query("SELECT revision FROM config_saved WHERE environment_id = ?1 AND revision < ?2 ORDER BY revision DESC LIMIT 1", &[environment.summary.id.as_str().into(), revision_param(revision)?.into()])?;
+            let predecessor = rows.first().ok_or_else(|| {
+                error::conflict(
+                    "This saved version has no recorded predecessor to undo",
+                    json!({ "revision": revision }),
+                )
+            })?;
+            Some(snapshot(
+                tx,
+                environment,
+                &scrub,
+                Revision(predecessor.number(0, "revision")?),
+            )?)
         }
     };
     super::authored::prepare_history(

@@ -18,8 +18,8 @@ use ployz_core::RpcError;
 use ployz_core::config::{
     At, ChangeKind, ChangeSetInput, EnvironmentNodeType, ReviewComparisonRole, ReviewLifecycleKind,
     ReviewNodeIdentity, ReviewNodeProjection, ReviewStateProjection, RowId, SavedEnvironmentIntent,
-    SavedServiceIntent, SavedVolumeIntent, ServiceSettingChange, canonicalize_environment_intent,
-    compile_environment_intent, project_environment_changes,
+    SavedServiceIntent, SavedVariableValue, SavedVolumeIntent, ServiceSettingChange,
+    canonicalize_environment_intent, compile_environment_intent, project_environment_changes,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -612,7 +612,128 @@ pub(crate) fn publish(
             crate::deployment::now().into(),
         ],
     )?;
+    scrub_sealed(tx, environment)?;
     Ok((revision, true))
+}
+
+/// Sealing a value removes every earlier copy of it from History: plain text
+/// and older ciphertexts both become the sealed value, matched by stable ID so
+/// a rename keeps it, and plain text of a value sealed then deleted becomes
+/// sealed without a value. A revision a deployment still runs keeps its copy
+/// until that deployment leaves flight, because it records what it applied
+/// from that revision when it finishes.
+pub(crate) struct Scrub {
+    latest: Option<Saved>,
+    ever: sealed::EverSealed,
+    running: BTreeSet<Revision>,
+}
+
+impl Scrub {
+    pub(crate) fn load(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<Self, RpcError> {
+        let ever = sealed::EverSealed::load(tx, environment.as_str())?;
+        if ever.is_empty() {
+            return Ok(Self {
+                latest: None,
+                ever,
+                running: BTreeSet::new(),
+            });
+        }
+        let running = tx
+            .query(
+                &format!(
+                    "SELECT saved_revision FROM config_deployment WHERE environment_id = ?1 AND {}",
+                    crate::deployment::in_flight_sql()
+                ),
+                &[environment.as_str().into()],
+            )?
+            .iter()
+            .map(|row| row.number(0, "Deployment revision").map(Revision))
+            .collect::<Result<BTreeSet<_>, _>>()?;
+        Ok(Self {
+            latest: latest_saved(tx, environment)?,
+            ever,
+            running,
+        })
+    }
+
+    /// Remove from `saved`, the version saved at `revision`, what sealing took
+    /// out of History; whether anything changed.
+    pub(crate) fn apply(&self, revision: Revision, saved: &mut SavedEnvironmentIntent) -> bool {
+        let Some(latest) = &self.latest else {
+            return false;
+        };
+        if revision >= latest.revision || self.running.contains(&revision) {
+            return false;
+        }
+        let mut scrubbed = false;
+        for service in &mut saved.services {
+            let now = latest
+                .intent
+                .services
+                .iter()
+                .find(|now| now.id == service.id)
+                .map(|now| &now.variables);
+            for was in &mut service.variables {
+                if was.value == SavedVariableValue::SecretWithoutValue {
+                    continue;
+                }
+                let now = now.and_then(|now| {
+                    now.iter()
+                        .find(|now| now.id == was.id)
+                        .or_else(|| now.iter().find(|now| now.key == was.key))
+                });
+                let (value, fingerprint) = match now {
+                    Some(now) if sealed::sealed(&now.value) => {
+                        (&now.value, now.value_fingerprint.as_str())
+                    }
+                    None if !sealed::sealed(&was.value) && self.ever.holds(&service.id, was) => {
+                        (&SavedVariableValue::SecretWithoutValue, "")
+                    }
+                    Some(_) | None => continue,
+                };
+                if was.value != *value {
+                    was.value = value.clone();
+                    fingerprint.clone_into(&mut was.value_fingerprint);
+                    scrubbed = true;
+                }
+            }
+        }
+        scrubbed
+    }
+}
+
+/// Write [`Scrub`] into every earlier saved version, so storage holds no copy
+/// History hides.
+pub(crate) fn scrub_sealed(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<(), RpcError> {
+    let scrub = Scrub::load(tx, environment)?;
+    let Some(latest) = &scrub.latest else {
+        return Ok(());
+    };
+    let rows = tx.query(
+        "SELECT revision, intent FROM config_saved WHERE environment_id = ?1 AND revision < ?2",
+        &[
+            environment.as_str().into(),
+            revision_param(latest.revision)?.into(),
+        ],
+    )?;
+    for row in rows {
+        let earlier = Revision(row.number(0, "revision")?);
+        let mut saved = row.intent(1, "Saved State")?;
+        if scrub.apply(earlier, &mut saved) {
+            tx.execute(
+                "UPDATE config_saved SET intent = ?3 WHERE environment_id = ?1 AND revision = ?2",
+                &[
+                    environment.as_str().into(),
+                    revision_param(earlier)?.into(),
+                    serde_json::to_string(&saved)
+                        .expect("Saved State is JSON")
+                        .as_str()
+                        .into(),
+                ],
+            )?;
+        }
+    }
+    Ok(())
 }
 
 /// Every node as first created in this Environment, as one document.

@@ -1416,7 +1416,8 @@ fn history_keeps_a_sealed_key_added_since() {
 fn history_never_brings_back_plain_text_of_a_key_once_sealed() {
     let (store, who) = shop();
     set(&store, &who, "web.env.TOKEN", json!("plain-value"));
-    publish(&store, &who, None).unwrap();
+    // A queued deployment keeps its revision's plain text from the scrub.
+    backend::admit(&store, &who, "production", 1);
     set(
         &store,
         &who,
@@ -1430,6 +1431,219 @@ fn history_never_brings_back_plain_text_of_a_key_once_sealed() {
     assert_eq!(error.code, RpcErrorCode::Conflict);
     assert_eq!(error.message, "TOKEN was sealed. Set it again.");
     assert_eq!(value(&store, &who, "web.env.TOKEN"), None);
+}
+
+/// The value each History card shows for `path`, oldest first.
+fn history_values(store: &ConfigStore, who: &Actor, path: &str) -> Vec<Option<Value>> {
+    let mut history = store
+        .read(who, &ployz_store::HistoryQuery::default())
+        .unwrap()
+        .revisions;
+    history.reverse();
+    history
+        .iter()
+        .map(|revision| {
+            revision
+                .changes
+                .iter()
+                .flat_map(|change| &change.settings)
+                .find(|setting| setting.path == path)
+                .map(|setting| setting.after.clone())
+        })
+        .collect()
+}
+
+#[test]
+fn sealing_a_value_removes_its_earlier_plain_text_from_history() {
+    let (store, who) = shop();
+    publish(&store, &who, None).unwrap();
+    set(&store, &who, "web.env.TOKEN", json!("plain-one"));
+    publish(&store, &who, None).unwrap();
+    set(&store, &who, "web.env.TOKEN", json!("plain-two"));
+    publish(&store, &who, None).unwrap();
+    set(&store, &who, "web.env.OTHER", json!("kept-plain"));
+    publish(&store, &who, None).unwrap();
+    set(
+        &store,
+        &who,
+        "web.env.TOKEN",
+        json!({ "secret": "private-value" }),
+    );
+    publish(&store, &who, None).unwrap();
+    assert_eq!(
+        history_values(&store, &who, "web.env.TOKEN"),
+        vec![None, Some(json!({ "secret": true })), None, None, None]
+    );
+    let history = serde_json::to_string(
+        &store
+            .read(&who, &ployz_store::HistoryQuery::default())
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(!history.contains("plain-one"));
+    assert!(!history.contains("plain-two"));
+    assert!(history.contains("kept-plain"));
+}
+
+#[test]
+fn rotating_a_sealed_value_removes_the_older_ciphertext_from_history() {
+    let (store, who) = shop();
+    publish(&store, &who, None).unwrap();
+    set(
+        &store,
+        &who,
+        "web.env.TOKEN",
+        json!({ "secret": "old-private" }),
+    );
+    publish(&store, &who, None).unwrap();
+    set(
+        &store,
+        &who,
+        "web.env.TOKEN",
+        json!({ "secret": "new-private" }),
+    );
+    publish(&store, &who, None).unwrap();
+    assert_eq!(
+        history_values(&store, &who, "web.env.TOKEN"),
+        vec![None, Some(json!({ "secret": true })), None]
+    );
+}
+
+#[test]
+fn sealing_leaves_the_revision_a_queued_deployment_runs() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "web.env.TOKEN",
+        json!({ "secret": "old-private" }),
+    );
+    let queued = backend::admit(&store, &who, "production", 1);
+    set(
+        &store,
+        &who,
+        "web.env.TOKEN",
+        json!({ "secret": "new-private" }),
+    );
+    publish(&store, &who, None).unwrap();
+    let deployed = backend::run(&store, &queued);
+    assert!(deployed.to_string().contains("old-private"));
+}
+
+fn history_text(store: &ConfigStore, who: &Actor) -> String {
+    serde_json::to_string(
+        &store
+            .read(who, &ployz_store::HistoryQuery::default())
+            .unwrap(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn sealing_scrubs_a_deployed_revision_once_its_deployment_ends() {
+    let (store, who) = shop();
+    set(&store, &who, "web.env.TOKEN", json!("plain-private"));
+    let queued = backend::admit(&store, &who, "production", 1);
+    set(&store, &who, "web.env.TOKEN", json!({ "secret": "sealed" }));
+    publish(&store, &who, None).unwrap();
+    assert!(history_text(&store, &who).contains("plain-private"));
+    backend::run(&store, &queued);
+    assert!(!history_text(&store, &who).contains("plain-private"));
+}
+
+#[test]
+fn sealing_scrubs_the_revision_of_a_queued_deployment_another_supersedes() {
+    let (store, who) = shop();
+    set(&store, &who, "web.env.TOKEN", json!("plain-private"));
+    backend::admit(&store, &who, "production", 1);
+    set(&store, &who, "web.env.TOKEN", json!({ "secret": "sealed" }));
+    publish(&store, &who, None).unwrap();
+    assert!(history_text(&store, &who).contains("plain-private"));
+    backend::admit(&store, &who, "production", 2);
+    assert!(!history_text(&store, &who).contains("plain-private"));
+}
+
+#[test]
+fn sealing_a_renamed_value_scrubs_its_plain_text_under_the_old_name() {
+    let (store, who) = shop();
+    set(&store, &who, "web.env.OLD", json!("plain-private"));
+    publish(&store, &who, None).unwrap();
+    rename_variable(&store, &who, "web.env.OLD", "NEW");
+    publish(&store, &who, None).unwrap();
+    set(&store, &who, "web.env.NEW", json!({ "secret": "sealed" }));
+    publish(&store, &who, None).unwrap();
+    assert!(!history_text(&store, &who).contains("plain-private"));
+}
+
+#[test]
+fn sealing_scrubs_plain_text_of_a_value_deleted_since() {
+    let (store, who) = shop();
+    set(&store, &who, "web.env.TOKEN", json!("plain-private"));
+    let queued = backend::admit(&store, &who, "production", 1);
+    set(&store, &who, "web.env.TOKEN", json!({ "secret": "sealed" }));
+    publish(&store, &who, None).unwrap();
+    unset(&store, &who, "web.env.TOKEN");
+    publish(&store, &who, None).unwrap();
+    assert!(history_text(&store, &who).contains("plain-private"));
+    backend::run(&store, &queued);
+    assert!(!history_text(&store, &who).contains("plain-private"));
+}
+
+#[test]
+fn sealing_between_saves_scrubs_plain_text_of_a_value_deleted_since() {
+    let (store, who) = shop();
+    set(&store, &who, "web.env.TOKEN", json!("plain-private"));
+    publish(&store, &who, None).unwrap();
+    set(&store, &who, "web.env.TOKEN", json!({ "secret": "sealed" }));
+    unset(&store, &who, "web.env.TOKEN");
+    publish(&store, &who, None).unwrap();
+    assert!(!history_text(&store, &who).contains("plain-private"));
+}
+
+#[test]
+fn sealing_scrubs_the_revision_of_a_deployment_whose_runner_is_gone() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
+    set(&store, &who, "web.env.TOKEN", json!("plain-private"));
+    let claimed = backend::admit(&store, &who, "production", 1);
+    store
+        .claim(&claimed, &ployz_store::RunnerId::parse("runner").unwrap())
+        .unwrap();
+    execute(&url, "UPDATE config_deployment SET lease = 0");
+    set(&store, &who, "web.env.TOKEN", json!({ "secret": "sealed" }));
+    publish(&store, &who, None).unwrap();
+    assert!(!history_text(&store, &who).contains("plain-private"));
+}
+
+/// Run `sql` on the database at `url`, beside the Store.
+fn execute(url: &str, sql: &str) -> usize {
+    match url.strip_prefix("sqlite:") {
+        Some(path) => rusqlite::Connection::open(path)
+            .unwrap()
+            .execute(sql, [])
+            .unwrap(),
+        None => usize::try_from(
+            postgres::Client::connect(url, postgres::NoTls)
+                .unwrap()
+                .execute(sql, &[])
+                .unwrap(),
+        )
+        .unwrap(),
+    }
+}
+
+#[test]
+fn a_later_save_scrubs_what_sealing_left_behind() {
+    let (store, who) = shop();
+    set(&store, &who, "web.env.TOKEN", json!("plain-private"));
+    backend::admit(&store, &who, "production", 1);
+    set(&store, &who, "web.env.TOKEN", json!({ "secret": "sealed" }));
+    publish(&store, &who, None).unwrap();
+    backend::admit(&store, &who, "production", 2);
+    set(&store, &who, "api.replicas", json!(2));
+    publish(&store, &who, None).unwrap();
+    assert!(!history_text(&store, &who).contains("plain-private"));
 }
 
 #[test]
@@ -1456,12 +1670,22 @@ fn history_never_brings_back_plain_text_of_a_key_sealed_only_between_saves() {
             },
             change: change.map(Into::into),
         };
-        let error = store.read(&who, &query).unwrap_err();
-        assert_eq!(error.code, RpcErrorCode::Conflict, "{change:?}");
-        assert_eq!(
-            error.message, "TOKEN was sealed. Set it again.",
-            "{change:?}"
-        );
+        // Refused, or with the plain text scrubbed: never brought back.
+        match store.read(&who, &query) {
+            Err(error) => {
+                assert_eq!(error.code, RpcErrorCode::Conflict, "{change:?}");
+                assert_eq!(
+                    error.message, "TOKEN was sealed. Set it again.",
+                    "{change:?}"
+                );
+            }
+            Ok(preview) => assert!(
+                !serde_json::to_string(&preview)
+                    .unwrap()
+                    .contains("plain-value"),
+                "{change:?}"
+            ),
+        }
     }
     assert_eq!(value(&store, &who, "web.env.TOKEN"), None);
 }
@@ -3307,4 +3531,78 @@ fn history_undo_of_a_volume_mount_takes_back_the_config_file_added_at_its_path()
     )
     .unwrap();
     assert!(!files.contains("\"a\""), "{files}");
+}
+
+#[test]
+fn sealing_scrubs_the_revision_of_a_running_deployment_the_next_claim_takes_over() {
+    let (store, who) = shop();
+    set(&store, &who, "web.env.TOKEN", json!("plain-private"));
+    let first = backend::admit(&store, &who, "production", 1);
+    store
+        .claim(&first, &ployz_store::RunnerId::parse("one").unwrap())
+        .unwrap();
+    set(&store, &who, "web.env.TOKEN", json!({ "secret": "sealed" }));
+    publish(&store, &who, None).unwrap();
+    assert!(history_text(&store, &who).contains("plain-private"));
+    let second = backend::admit(&store, &who, "production", 2);
+    store
+        .claim(&second, &ployz_store::RunnerId::parse("two").unwrap())
+        .unwrap();
+    assert!(!history_text(&store, &who).contains("plain-private"));
+}
+
+#[test]
+fn history_hides_the_plain_text_a_lapsed_deployment_protected() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
+    set(&store, &who, "web.env.TOKEN", json!("plain-private"));
+    let claimed = backend::admit(&store, &who, "production", 1);
+    store
+        .claim(&claimed, &ployz_store::RunnerId::parse("runner").unwrap())
+        .unwrap();
+    set(&store, &who, "web.env.TOKEN", json!({ "secret": "sealed" }));
+    publish(&store, &who, None).unwrap();
+    unset(&store, &who, "web.env.TOKEN");
+    publish(&store, &who, None).unwrap();
+    assert!(history_text(&store, &who).contains("plain-private"));
+    execute(&url, "UPDATE config_deployment SET lease = 0");
+    assert!(!history_text(&store, &who).contains("plain-private"));
+    for action in [
+        ployz_store::HistoryAction::Restore,
+        ployz_store::HistoryAction::Undo,
+    ] {
+        let query = ployz_store::HistoryPreviewQuery {
+            environment: EnvironmentRef::default(),
+            revision: Revision(2),
+            action,
+            change: None,
+        };
+        if let Ok(preview) = store.read(&who, &query) {
+            assert!(
+                !serde_json::to_string(&preview)
+                    .unwrap()
+                    .contains("plain-private")
+            );
+            let version = preview.version;
+            store
+                .write(
+                    &who,
+                    &ployz_store::StageHistory {
+                        environment: EnvironmentRef::default(),
+                        revision: query.revision,
+                        action,
+                        change: None,
+                        version,
+                        accept_overwrite: true,
+                    },
+                )
+                .unwrap();
+            assert_ne!(
+                value(&store, &who, "web.env.TOKEN"),
+                Some(json!("plain-private"))
+            );
+            discard_to_saved(&store, &who);
+        }
+    }
 }
