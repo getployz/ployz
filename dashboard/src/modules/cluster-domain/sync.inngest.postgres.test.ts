@@ -29,8 +29,11 @@ import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret
 const organizationId = "00000000-0000-4000-8000-000000000b01";
 const otherOrganizationId = "00000000-0000-4000-8000-000000000b02";
 const encryption = makeSecretEncryption("cluster-domain-sync-test-encryption-secret");
-const machine = (id: string, public_ip: string | null, accepts_ingress = true) =>
-  runtimeWatchMachineObservationFixture({ machine: runtimeWatchMachineFixture(id.repeat(32).slice(0, 32), id, { public_ip, accepts_ingress }) });
+const machine = (id: string, public_ip: string | null, accepts_ingress = true, membership = "up") =>
+  runtimeWatchMachineObservationFixture({
+    machine: runtimeWatchMachineFixture(id.repeat(32).slice(0, 32), id, { public_ip, accepts_ingress }),
+    membership,
+  });
 const idOf = (id: string) => id.repeat(32).slice(0, 32) as MachineId;
 const inngest = new Inngest({ id: "cluster-domain-sync-test" });
 vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
@@ -195,6 +198,32 @@ describe("sync-cluster-domain", () => {
     expect(output.result).toMatchObject({ observed: true, recordsPut: false });
     expect(calls()).toEqual(["POST /domains/acme.ployz.test/lease", "POST /domains/acme.ployz.test/certificate"]);
     expect(await row()).toMatchObject({ records_synced_at: null, traffic: { kind }, checked_at: expect.any(Date) });
+  });
+
+  it("leaves a down ingress Server out of the probe and the finding", async () => {
+    frame = runtimeWatchFrameFixture({
+      machines: [machine("a", "203.0.113.1"), machine("b", "203.0.113.2", true, "down"), machine("c", "203.0.113.3", true, "suspect")],
+    });
+    verify.set("203.0.113.1", idOf("a"));
+    verify.set("203.0.113.2", idOf("b"));
+
+    const output = await sync();
+
+    expect(output.result).toMatchObject({ observed: true, recordsPut: true });
+    expect(hostedDns.requests[0]).toMatchObject({ body: { a: ["203.0.113.1"], aaaa: [] } });
+    expect(await row()).toMatchObject({
+      traffic: { kind: "probed", unreachable: [{ machineId: idOf("c"), address: "203.0.113.3" }], taken: [] },
+    });
+  });
+
+  it("reads every ingress Server down as no Servers", async () => {
+    frame = runtimeWatchFrameFixture({ machines: [machine("a", "203.0.113.1", true, "down"), machine("b", null)] });
+    verify.set("203.0.113.1", idOf("a"));
+
+    const output = await sync();
+
+    expect(output.result).toMatchObject({ observed: true, recordsPut: false });
+    expect(await row()).toMatchObject({ traffic: { kind: "no_servers" } });
   });
 
   it("clears the last finding while the Cluster is offline, and still records the check", async () => {
