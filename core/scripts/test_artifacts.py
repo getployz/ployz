@@ -50,6 +50,7 @@ class Keys(unittest.TestCase):
     def test_a_crate_edit_moves_the_artifacts_built_from_it(self):
         self.assertEqual(self.changed_by("crates/ployzd/src/zz_probe.rs"), {"ployzd"})
         self.assertEqual(self.changed_by("crates/ployz/src/zz_probe.rs"), {"ployz", "sdk"})
+        self.assertEqual(self.changed_by("crates/ployz-sdk/src/zz_probe.rs"), {"sdk"})
         self.assertEqual(self.changed_by("crates/ployz-config-wasm/src/zz_probe.rs"), {"sdk", "config-wasm"})
         self.assertEqual(self.changed_by("crates/ployz-core/src/zz_probe.rs"), set(KINDS))
 

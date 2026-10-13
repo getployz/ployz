@@ -21,15 +21,33 @@ if [ "${SDK:-}" = stale ]; then
 fi
 
 if [ -z "$key" ] || ! python3 scripts/artifacts.py fetch sdk --extra "features=$features" ${stale:+--stale-ok "$stale"} crates/ployz-sdk; then
-  cargo build -p ployz-sdk --release --locked ${features:+--features "$features"}
+  # CI and images ship this SDK, so they build release. A local build only serves the dev loop, so it
+  # skips release's optimizations.
+  if [ -n "$key" ] && [ -z "${CI:-}" ]; then
+    CARGO_PROFILE_DEV_DEBUG=0 cargo build -p ployz-sdk --locked ${features:+--features "$features"}
+    profile_dir=debug
+  else
+    cargo build -p ployz-sdk --release --locked ${features:+--features "$features"}
+    profile_dir=release
+  fi
   case "$(uname -s)" in
-    Darwin) binding=${CARGO_TARGET_DIR:-target}/release/libployz_sdk.dylib ;;
-    Linux) binding=${CARGO_TARGET_DIR:-target}/release/libployz_sdk.so ;;
+    Darwin) binding=${CARGO_TARGET_DIR:-target}/$profile_dir/libployz_sdk.dylib ;;
+    Linux) binding=${CARGO_TARGET_DIR:-target}/$profile_dir/libployz_sdk.so ;;
     *) echo 'Cloud SDK build requires Linux or macOS' >&2; exit 1 ;;
   esac
   # Replace, don't overwrite: macOS caches the code signature per inode and SIGKILLs a stale one.
   rm -f "$node_out" && cp "$binding" "$node_out"
-  bash scripts/build-config-wasm.sh
+  # The config WASM depends on fewer crates than the addon, so an addon edit often leaves it current.
+  wasm_key=
+  if [ -n "$key" ]; then
+    wasm_key=$(python3 scripts/artifacts.py key config-wasm)
+  fi
+  if [ -z "$wasm_key" ] || ! python3 scripts/artifacts.py fetch config-wasm crates/ployz-sdk; then
+    bash scripts/build-config-wasm.sh
+    if [ -n "$wasm_key" ]; then
+      python3 scripts/artifacts.py store config-wasm --expect "$wasm_key" crates/ployz-sdk
+    fi
+  fi
   if [ -n "$key" ]; then
     python3 scripts/artifacts.py store sdk --extra "features=$features" --expect "$key" crates/ployz-sdk
   fi
