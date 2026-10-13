@@ -7,8 +7,7 @@ use std::{
 
 use ployz_core::{
     AnonymousVolumes, ContainerId, ContainerLocator, ContainerWant, DeploymentLogId, Drain,
-    Machine, MachineId, MachineName, ManagementAddress, MembershipEvidence, MembershipObservation,
-    QualifiedService, synthesize_membership,
+    Machine, MachineId, MachineName, ManagementAddress, MembershipEvidence, QualifiedService,
 };
 use tokio::{task::JoinSet, time::Instant};
 use tokio_util::sync::CancellationToken;
@@ -34,7 +33,7 @@ const RETIRE_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub(crate) trait RetireHost: Clone + Send + Sync + 'static {
     fn local_containers(&self) -> impl Future<Output = io::Result<BTreeSet<ContainerId>>> + Send;
-    fn ackers(&self) -> impl Future<Output = BTreeMap<MachineId, MachineName>> + Send;
+    fn ackers(&self) -> impl Future<Output = Ackers> + Send;
     fn retire(&self, container: ContainerId) -> impl Future<Output = io::Result<()>> + Send;
 }
 
@@ -57,9 +56,9 @@ impl RetireHost for DaemonHost {
         Ok(listed.into_iter().collect())
     }
 
-    async fn ackers(&self) -> BTreeMap<MachineId, MachineName> {
+    async fn ackers(&self) -> Ackers {
         let Some(machines) = self.machines.current() else {
-            return BTreeMap::new();
+            return Ackers::Unread;
         };
         let states =
             match tokio::time::timeout(MEMBERSHIP_SAMPLE_TIMEOUT, self.admin.membership_states())
@@ -90,26 +89,70 @@ impl RetireHost for DaemonHost {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum Ackers {
+    Known(BTreeMap<MachineId, MachineName>),
+    Incomplete {
+        named: BTreeMap<MachineId, MachineName>,
+        unnamed: Vec<MachineId>,
+    },
+    Unread,
+}
+
+impl Ackers {
+    fn unacked(&self, acked: impl Fn(&MachineId) -> bool) -> Vec<String> {
+        let unacked_names = |machines: &BTreeMap<MachineId, MachineName>| {
+            machines
+                .iter()
+                .filter(|(machine, _)| !acked(machine))
+                .map(|(_, name)| name.to_string())
+                .collect::<Vec<_>>()
+        };
+        match self {
+            Self::Known(machines) => unacked_names(machines),
+            Self::Incomplete { named, unnamed } => {
+                let mut unacked = unacked_names(named);
+                unacked.extend(
+                    unnamed
+                        .iter()
+                        .filter(|machine| !acked(machine))
+                        .map(|machine| machine.as_str().to_owned()),
+                );
+                unacked
+            }
+            Self::Unread => vec!["unknown, the Machine list was never read".to_owned()],
+        }
+    }
+}
+
 fn required_ackers(
     machines: ReplicatedObservations<Machine, MachineId>,
     local: &MachineId,
     states: Option<&BTreeMap<ManagementAddress, MembershipEvidence>>,
-) -> BTreeMap<MachineId, MachineName> {
-    if !machines.incomplete_ids.is_empty() {
-        return BTreeMap::new();
-    }
-    let machines = machines.observations;
-    let Some(states) = states else {
-        return machines
-            .into_iter()
-            .map(|machine| (machine.id, machine.name))
-            .collect();
-    };
-    synthesize_membership(machines, local, states)
+) -> Ackers {
+    let named = machines
+        .observations
         .into_iter()
-        .filter(|observation| observation.membership != MembershipObservation::Down)
-        .map(|observation| (observation.machine.id, observation.machine.name))
-        .collect()
+        .filter(|machine| &machine.id == local || !reported_down(machine, states))
+        .map(|machine| (machine.id, machine.name))
+        .collect();
+    if machines.incomplete_ids.is_empty() {
+        Ackers::Known(named)
+    } else {
+        Ackers::Incomplete {
+            named,
+            unnamed: machines.incomplete_ids,
+        }
+    }
+}
+
+fn reported_down(
+    machine: &Machine,
+    states: Option<&BTreeMap<ManagementAddress, MembershipEvidence>>,
+) -> bool {
+    states.is_some_and(|states| {
+        states.get(&machine.management_address()) == Some(&MembershipEvidence::Down)
+    })
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -122,7 +165,7 @@ struct Candidate {
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum Verdict {
     Acked { machines: usize },
-    Forced { unacked: Vec<MachineName> },
+    Forced { unacked: Vec<String> },
 }
 
 #[derive(Default)]
@@ -182,7 +225,7 @@ impl Retirer {
         &mut self,
         candidates: Vec<Candidate>,
         acks: &BTreeMap<(MachineId, QualifiedService), IngressRouteAck>,
-        ackers: &BTreeMap<MachineId, MachineName>,
+        ackers: &Ackers,
         now: Instant,
     ) -> Vec<(Candidate, Verdict)> {
         let mut decided = Vec::new();
@@ -191,22 +234,21 @@ impl Retirer {
             if self.in_flight.contains(&candidate.container) {
                 continue;
             }
-            let unacked: Vec<MachineName> = ackers
-                .iter()
-                .filter(|(machine, _)| {
-                    !acks
-                        .get(&(**machine, candidate.service.clone()))
-                        .is_some_and(|ack| {
-                            ack.deploy == candidate.deploy
-                                && !ack.containers.contains(&candidate.container)
-                        })
-                })
-                .map(|(_, name)| name.clone())
-                .collect();
-            let verdict = if !ackers.is_empty() && unacked.is_empty() {
-                Verdict::Acked {
-                    machines: ackers.len(),
+            let unacked = ackers.unacked(|machine| {
+                acks.get(&(*machine, candidate.service.clone()))
+                    .is_some_and(|ack| {
+                        ack.deploy == candidate.deploy
+                            && !ack.containers.contains(&candidate.container)
+                    })
+            });
+            let acked_by = match ackers {
+                Ackers::Known(machines) => {
+                    (!machines.is_empty() && unacked.is_empty()).then_some(machines.len())
                 }
+                Ackers::Incomplete { .. } | Ackers::Unread => None,
+            };
+            let verdict = if let Some(machines) = acked_by {
+                Verdict::Acked { machines }
             } else if now.duration_since(first_seen) >= FORCE_AFTER {
                 Verdict::Forced { unacked }
             } else {
@@ -422,13 +464,16 @@ mod tests {
         AdvertisedEndpoint, ContainerId, DeploymentLogId, Machine, MachineId, MachineName,
         MachineRuntime, MembershipEvidence, QualifiedService, ServingPointer, WireGuardPublicKey,
     };
-    use tokio::time::Instant;
+    use tokio::{task::JoinSet, time::Instant};
     use tokio_util::sync::CancellationToken;
 
-    use super::{Candidate, FORCE_AFTER, RetireHost, Retirer, Verdict, required_ackers, run};
+    use super::{
+        Ackers, Candidate, FORCE_AFTER, RetireHost, Retirer, Verdict, required_ackers, round, run,
+    };
     use crate::corrosion::{
         IngressRouteAck, IngressRouteChange, ReplicatedObservations, ServingPointers,
         fake_cluster::FakeCluster,
+        store_tests::{corrosion_db, identity_store},
     };
 
     type Acks = BTreeMap<(MachineId, QualifiedService), IngressRouteAck>;
@@ -483,11 +528,15 @@ mod tests {
         }
     }
 
-    fn ackers(machines: &[&Machine]) -> BTreeMap<MachineId, MachineName> {
+    fn named(machines: &[&Machine]) -> BTreeMap<MachineId, MachineName> {
         machines
             .iter()
             .map(|machine| (machine.id, machine.name.clone()))
             .collect()
+    }
+
+    fn ackers(machines: &[&Machine]) -> Ackers {
+        Ackers::Known(named(machines))
     }
 
     fn acked_away(machines: &[&Machine]) -> Acks {
@@ -508,7 +557,7 @@ mod tests {
         retirer: &mut Retirer,
         pointers: &ServingPointers,
         acks: &Acks,
-        ackers: &BTreeMap<MachineId, MachineName>,
+        ackers: &Ackers,
         local: &[ContainerId],
     ) -> Vec<(Candidate, Verdict)> {
         retirer.note_local(pointers, &local.iter().copied().collect());
@@ -589,7 +638,10 @@ mod tests {
             machine("down", 2),
             machine("suspect", 3),
         );
-        let states = BTreeMap::from([(suspect.management_address(), MembershipEvidence::Suspect)]);
+        let states = BTreeMap::from([
+            (down.management_address(), MembershipEvidence::Down),
+            (suspect.management_address(), MembershipEvidence::Suspect),
+        ]);
         let required = required_ackers(
             complete(vec![local.clone(), down.clone(), suspect.clone()]),
             &local.id,
@@ -638,6 +690,75 @@ mod tests {
         assert!(decided.is_empty());
     }
 
+    #[test]
+    fn a_machine_the_membership_sample_omits_must_ack() {
+        let (local, fresh) = (machine("local", 1), machine("fresh", 2));
+        let required = required_ackers(
+            complete(vec![local.clone(), fresh.clone()]),
+            &local.id,
+            Some(&BTreeMap::new()),
+        );
+        assert_eq!(required, ackers(&[&local, &fresh]));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_cap_names_never_acked_machines_while_rows_are_incomplete() {
+        let (local, slow, partial) = (
+            machine("local", 1),
+            machine("slow", 2),
+            machine("partial", 3),
+        );
+        let required = required_ackers(
+            ReplicatedObservations {
+                observations: vec![local.clone(), slow.clone()],
+                incomplete_ids: vec![partial.id],
+            },
+            &local.id,
+            Some(&BTreeMap::new()),
+        );
+        let mut retirer = Retirer::default();
+        let acks = acked_away(&[&local]);
+        assert!(decide_now(&mut retirer, &pointers(), &acks, &required, &[id("a")]).is_empty());
+        tokio::time::advance(FORCE_AFTER).await;
+        let decided = decide_now(&mut retirer, &pointers(), &acks, &required, &[id("a")]);
+        assert_eq!(
+            decided
+                .into_iter()
+                .map(|(_, verdict)| verdict)
+                .collect::<Vec<_>>(),
+            vec![Verdict::Forced {
+                unacked: vec![slow.name.to_string(), partial.id.as_str().to_owned()]
+            }]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_cap_says_the_machine_list_was_never_read() {
+        let mut retirer = Retirer::default();
+        assert!(
+            decide_now(
+                &mut retirer,
+                &pointers(),
+                &Acks::new(),
+                &Ackers::Unread,
+                &[id("a")]
+            )
+            .is_empty()
+        );
+        tokio::time::advance(FORCE_AFTER).await;
+        let decided = decide_now(
+            &mut retirer,
+            &pointers(),
+            &Acks::new(),
+            &Ackers::Unread,
+            &[id("a")],
+        );
+        let [(_, Verdict::Forced { unacked })] = decided.as_slice() else {
+            panic!("expected one forced retirement, got {decided:?}");
+        };
+        assert!(!unacked.is_empty());
+    }
+
     #[tokio::test(start_paused = true)]
     async fn forces_the_stop_at_the_cap_and_names_the_machines_that_never_acked() {
         let (one, two) = (machine("one", 1), machine("two", 2));
@@ -655,7 +776,7 @@ mod tests {
                 .map(|(_, verdict)| verdict)
                 .collect::<Vec<_>>(),
             vec![Verdict::Forced {
-                unacked: vec![two.name.clone()]
+                unacked: vec![two.name.to_string()]
             }]
         );
     }
@@ -681,7 +802,7 @@ mod tests {
                 .map(|(_, verdict)| verdict)
                 .collect::<Vec<_>>(),
             vec![Verdict::Forced {
-                unacked: vec![two.name.clone()]
+                unacked: vec![two.name.to_string()]
             }]
         );
     }
@@ -737,7 +858,7 @@ mod tests {
     #[derive(Clone)]
     struct FakeHost {
         local: Arc<Mutex<BTreeSet<ContainerId>>>,
-        ackers: BTreeMap<MachineId, MachineName>,
+        ackers: Ackers,
         retired: Arc<Mutex<Vec<ContainerId>>>,
         listings: Arc<Mutex<usize>>,
     }
@@ -748,7 +869,7 @@ mod tests {
             Ok(self.local.lock().unwrap().clone())
         }
 
-        async fn ackers(&self) -> BTreeMap<MachineId, MachineName> {
+        async fn ackers(&self) -> Ackers {
             self.ackers.clone()
         }
 
@@ -822,5 +943,42 @@ mod tests {
         assert_eq!(*host.listings.lock().unwrap(), listings);
         shutdown.cancel();
         task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_round_reads_pointers_and_acks_through_corrosion_column_names() {
+        let db = corrosion_db();
+        let local = machine("local", 1);
+        db.execute(
+            "INSERT INTO cluster (key, value) VALUES (?, ?)",
+            rusqlite::params![
+                ServingPointer::key(&service()),
+                serde_json::to_string(&pointers().get(&service()).unwrap()).unwrap()
+            ],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO ingress_routes (machine_id, service_id, deploy, containers) VALUES (?, ?, ?, ?)",
+            rusqlite::params![
+                local.id.as_str(),
+                service().to_string(),
+                "d2",
+                serde_json::to_string(&[id("b")]).unwrap()
+            ],
+        )
+        .unwrap();
+        let (store, server) = identity_store(db).await;
+        let host = FakeHost {
+            local: Arc::new(Mutex::new(BTreeSet::from([id("a"), id("b")]))),
+            ackers: ackers(&[&local]),
+            retired: Arc::default(),
+            listings: Arc::default(),
+        };
+        let mut stopping = JoinSet::new();
+        round(&host, &store, &mut Retirer::default(), &mut stopping).await;
+        while stopping.join_next().await.is_some() {}
+
+        assert_eq!(*host.retired.lock().unwrap(), vec![id("a")]);
+        server.abort();
     }
 }

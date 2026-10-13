@@ -412,7 +412,7 @@ async fn catch_up_waits_for_pending_target_transactions() {
 }
 
 // Exercise the store API against real SQL rows, including corrupt imported documents.
-async fn identity_store(
+pub(crate) async fn identity_store(
     db: rusqlite::Connection,
 ) -> (ReplicatedStore, tokio::task::JoinHandle<()>) {
     use axum::{Router, body::Bytes, extract::State, routing::post};
@@ -502,7 +502,7 @@ async fn identity_store(
 /// Corrosion re-renders schema.sql before creating its tables, which declares
 /// the SQLite keyword column `key` as `KEY`; an unaliased `SELECT key` then
 /// reports `KEY`.
-fn corrosion_db() -> rusqlite::Connection {
+pub(crate) fn corrosion_db() -> rusqlite::Connection {
     let schema = include_str!("schema.sql").replacen("    key  ", "    KEY  ", 1);
     assert_ne!(schema, include_str!("schema.sql"));
     let db = rusqlite::Connection::open_in_memory().unwrap();

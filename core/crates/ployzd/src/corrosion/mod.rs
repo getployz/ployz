@@ -13,7 +13,7 @@ pub(crate) mod fake_cluster;
 #[cfg(test)]
 mod integration_tests;
 #[cfg(test)]
-mod store_tests;
+pub(crate) mod store_tests;
 
 pub(crate) use admin::membership_states_by_address;
 pub use admin::{AdminClient, MembershipState};
