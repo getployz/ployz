@@ -750,12 +750,13 @@ class VolumeMoveTests(unittest.TestCase):
         undo = next(case for case in volume_move.CASES if case["name"] == "undo-after-cut")
         complete = dict(approval="release:digest", approval_id="approval-1")
         for name, error, token, missing in (
-                ("no details", dict(code="approval_required"), True, "details"),
+                ("no details", dict(code="approval_required"), True, " without details:"),
                 ("no approval id", dict(code="approval_required", details=dict(approval="release:digest")), True,
-                 "approval_id"),
+                 " without approval_id:"),
                 ("no approval", dict(code="approval_required", details=dict(approval_id="approval-1")), True,
-                 "approval"),
-                ("no token file", dict(code="approval_required", details=complete), False, "cloud-token")):
+                 " without approval:"),
+                ("no token file", dict(code="approval_required", details=complete), False,
+                 f", but there is no Cloud token at {self.root / 'private' / 'cloud-token'}")):
             with self.subTest(name):
                 shutil.rmtree(self.root / "out", ignore_errors=True)
                 shutil.rmtree(self.root / "private", ignore_errors=True)
@@ -778,9 +779,21 @@ class VolumeMoveTests(unittest.TestCase):
                 clean, failed = written["cases"]
                 self.assertTrue(clean["passed"], clean)
                 self.assertFalse(failed["passed"])
-                self.assertRegex(failed["failures"][0], f"^RuntimeError: .*{missing}", failed)
+                self.assertTrue(failed["failures"][0].startswith(f"RuntimeError: Cloud asked to approve the release{missing}"),
+                                failed)
                 self.assertTrue((self.root / "out" / "undo-after-cut.json").exists())
                 self.assertFalse(summary["passed"])
+
+    def test_an_error_that_escapes_the_case_loop_fails_the_summary_names_the_error_and_re_raises(self):
+        broken = {key: value for key, value in volume_move.CASES[0].items() if key != "trigger"}
+        broken["name"] = "broken"
+        checks, _ = self.checks()
+        with redirect_stdout(io.StringIO()), self.assertRaises(KeyError):
+            checks.run_all([volume_move.CASES[0], broken])
+        written = json.loads((self.root / "out" / "summary.json").read_text())
+        self.assertEqual([(case["name"], case["passed"]) for case in written["cases"]], [("clean", True)])
+        self.assertEqual(written["error"], "KeyError: 'trigger'")
+        self.assertFalse(written["passed"])
 
     def test_a_helper_that_fails_to_start_fails_its_case_names_the_command_and_still_writes_the_summary(self):
         kill = volume_move.KILLS[0]

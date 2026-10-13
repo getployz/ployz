@@ -601,8 +601,9 @@ class VolumeMove:
         if not error or error.get("code") != "approval_required":
             return None
         details = error.get("details") or {}
-        if not (details.get("approval_id") and details.get("approval")):
-            raise RuntimeError(f"Cloud asked to approve the release without details, approval_id and approval: {reply}")
+        missing = ["details"] if not details else [field for field in ("approval_id", "approval") if not details.get(field)]
+        if missing:
+            raise RuntimeError(f"Cloud asked to approve the release without {' or '.join(missing)}: {reply}")
         token_file = self.manifest.parent / "private" / "cloud-token"
         if not token_file.exists():
             raise RuntimeError(f"Cloud asked to approve the release, but there is no Cloud token at {token_file}")
