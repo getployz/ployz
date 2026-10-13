@@ -814,7 +814,7 @@ def delete_mirrored_environment(vc):
     deletion_verdicts(vc, "delete_mirrored_environment", phys, vc.wait_gone(phys))
 
 
-# A stale SetVolumeCopy replay changes nothing
+# A stale SetVolumeCopy replay changes nothing. It carries an old gen, so the floor refuses it
 
 def stale_replay_refused(vc):
     phys = vc.physical("delta")
@@ -831,13 +831,13 @@ def stale_replay_refused(vc):
                f"run {text_of(back, data)[:400]}; {A} copy {say(a_copy)[:400]}; {B} copy {say(b_copy)[:400]}")
     first_newest = after_first.get("newest") or {}
     replays = [
-        ("cut replayed on the first writer", A, "mismatch",
+        ("cut replayed on the first writer", A, "stale",
          dict(expect=dict(kind="writer", epoch=e0),
               want=dict(kind="mirror", **{"from": None}, target=first_newest.get("name"), drain=0))),
-        ("promote replayed on the first target", B, "mismatch",
+        ("promote replayed on the first target", B, "stale",
          dict(expect=dict(kind="mirror", newest=first_newest.get("guid"), slot=b_copy.get("slot")),
               want=dict(kind="writer", at=first_newest.get("guid"), epoch=after_first.get("epoch"), start=None))),
-        ("older epoch on the writer", A, "no_transition",
+        ("older epoch on the writer", A, "stale",
          dict(expect=dict(kind="writer", epoch=a_copy.get("epoch")),
               want=dict(kind="writer", at=(a_copy.get("newest") or {}).get("guid"), epoch=after_first.get("epoch"),
                         start=None))),
