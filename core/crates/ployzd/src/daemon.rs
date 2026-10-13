@@ -206,11 +206,13 @@ impl Daemon {
             &local_record,
         )
         .await?;
-        if config.units == UnitSupervision::Systemd
-            && let Err(error) =
-                crate::observe::unit::converge(&config.data_dir, &config.socket).await
-        {
-            eprintln!("WARNING: the Observe Store did not start: {error}");
+        if config.units == UnitSupervision::Systemd {
+            let (data_dir, socket) = (config.data_dir.clone(), config.socket.clone());
+            tokio::spawn(async move {
+                if let Err(error) = crate::observe::unit::converge(&data_dir, &socket).await {
+                    eprintln!("WARNING: the Observe Store did not start: {error}");
+                }
+            });
         }
         let mut network = NetworkPlane::start(&local_record).await?;
         let machine_api_listener = match config

@@ -117,7 +117,7 @@ fi"#;
     /// The daemon on a Machine whose install never wrote the observe unit, as a Cloud upgrade
     /// from 0.2.0 leaves it, and on one whose observer still runs the replaced binary.
     #[test]
-    fn daemon_start_converges_the_observe_unit() {
+    fn converge_writes_starts_and_moves_the_observe_unit() {
         if let Ok(case) = env::var(CASE) {
             let root = PathBuf::from(env::var_os(ROOT).unwrap());
             let exe = InstalledExe::current().unwrap();
@@ -161,7 +161,7 @@ fi"#;
             let output = Command::new(env::current_exe().unwrap())
                 .args([
                     "--exact",
-                    "observe::unit::tests::daemon_start_converges_the_observe_unit",
+                    "observe::unit::tests::converge_writes_starts_and_moves_the_observe_unit",
                     "--nocapture",
                 ])
                 .env("PATH", root.join("commands"))
