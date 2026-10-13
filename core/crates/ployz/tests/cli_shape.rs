@@ -767,6 +767,46 @@ fn message(json: &serde_json::Value) -> &str {
 
 #[cfg(unix)]
 #[test]
+fn a_daemon_that_hangs_up_is_one_json_error_on_piped_stdout() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for connection in listener.incoming() {
+            drop(connection);
+        }
+    });
+    let home = tempfile::tempdir().unwrap();
+    let config = home.path().join("config.yaml");
+    let connect = format!("tcp://127.0.0.1:{port}");
+    let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
+        .args(["--json", "server", "ls", "--connect", &connect])
+        .args(["--ployz-config", config.to_str().unwrap()])
+        .env("HOME", home.path())
+        .env_remove("PLOYZ_CONTEXT")
+        .env_remove("PLOYZ_CONNECT")
+        .env_remove("PLOYZ_TOKEN")
+        .env("PLOYZ_CLOUD_URL", "http://127.0.0.1:9")
+        .env_remove("PLOYZ_STORE")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let values = serde_json::Deserializer::from_slice(&output.stdout)
+        .into_iter::<serde_json::Value>()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let [value] = values.as_slice() else {
+        panic!("stdout is not one JSON value: {values:?}");
+    };
+    assert_eq!(
+        value.pointer("/error/code"),
+        Some(&serde_json::json!("internal")),
+        "{value}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn piped_output_exits_on_sigpipe_when_the_reader_is_gone() {
     use std::os::unix::process::ExitStatusExt;
 
