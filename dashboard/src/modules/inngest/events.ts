@@ -81,6 +81,10 @@ export type VolumeRunRequestedEventData = {
   volumeId: string;
   runId: string;
 };
+/** Another lane took the Volume from the run on row `runId`; that run stops where it is. */
+export const volumeRunTakenEvent = "volume/run.taken";
+
+export type VolumeRunTakenEventData = { runId: string };
 export const serverDrainRequestedEvent = "server/drain.requested";
 export const namespaceCleanupRequestedEvent = "namespace/cleanup.requested";
 export const serviceActRequestedEvent = "service/act.requested";
@@ -271,6 +275,10 @@ export const serviceActRequestedEventType = eventType(
 export const volumeRunRequestedEventType = eventType(
   volumeRunRequestedEvent,
   { schema: staticSchema<VolumeRunRequestedEventData>() },
+);
+export const volumeRunTakenEventType = eventType(
+  volumeRunTakenEvent,
+  { schema: staticSchema<VolumeRunTakenEventData>() },
 );
 export const inngestFunctionFinishedEventType = eventType(
   "inngest/function.finished",

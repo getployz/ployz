@@ -8,6 +8,7 @@ import {
   inngestFunctionFinishedEnvelopeSchema,
   inngestFunctionFinishedEventType,
   volumeRunRequestedEventType,
+  volumeRunTakenEventType,
 } from "#/modules/inngest/events";
 import { alreadyOn, epochOf, expectOf, observedEpoch, type PlanInput, type Planned, planFromCopies } from "#/modules/volume-run/plan";
 import { type AnsweredMember, copyName, type Member, type VolumeRunArgs } from "#/modules/volume-run/volume-run";
@@ -584,7 +585,7 @@ const lifecycle = attemptLifecycle({
   run: {
     id: RUN_VOLUME_FUNCTION_ID,
     triggers: [{ event: volumeRunRequestedEventType }],
-    singleton: { key: "event.data.volumeId", mode: "skip" },
+    cancelOn: [{ event: volumeRunTakenEventType, match: "data.runId" }],
     handler: runVolume,
   },
   cancelId: "cancel-volume-run",
