@@ -978,7 +978,7 @@ impl MachineRpc for JoinDaemon {
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
+        rpc_ok(ployz_core::ServingPointerRead { pointer: None })
     }
     async fn prune_images(
         &self,
