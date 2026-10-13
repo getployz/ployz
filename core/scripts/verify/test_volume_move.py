@@ -355,6 +355,14 @@ class VolumeMoveTests(unittest.TestCase):
         self.assertIsNone(volume_move.nth_after(lines, 200.5, 2))
         self.assertIsNone(volume_move.nth_after(lines, 300.0, 1))
 
+    def test_case_selection_keeps_named_cases_in_table_order_and_refuses_unknown_names(self):
+        names = [row["name"] for row in volume_move.CASES]
+        self.assertEqual(volume_move.select_cases(volume_move.CASES, []), volume_move.CASES)
+        picked = volume_move.select_cases(volume_move.CASES, ["kill-cut", "clean"])
+        self.assertEqual([row["name"] for row in picked], [name for name in names if name in {"clean", "kill-cut"}])
+        with self.assertRaises(RuntimeError):
+            volume_move.select_cases(volume_move.CASES, ["clean", "kill-nothing"])
+
     def test_busy_names_the_run_a_volume_busy_refusal_holds_and_nothing_else(self):
         run = dict(id="run-9", kind="sync", state="running")
         refusal = dict(error=dict(code="conflict", message="VolumeBusy: run run-9 (sync) is running; volume runs "

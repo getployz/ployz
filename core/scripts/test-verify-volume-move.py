@@ -201,6 +201,13 @@ def run_rows(data):
     return rows
 
 
+def select_cases(cases, names):
+    unknown = sorted(set(names) - {case["name"] for case in cases})
+    if unknown:
+        raise RuntimeError(f"Unknown cases: {unknown}")
+    return [case for case in cases if not names or case["name"] in names]
+
+
 class Skipped(RuntimeError):
     pass
 
@@ -760,6 +767,7 @@ def main():
     run.add_argument("manifest", type=Path)
     run.add_argument("--soak", action="store_true")
     run.add_argument("--size-gb", type=int, default=8, help="Postgres data for --soak, in GB")
+    run.add_argument("--case", action="append", default=[], help="Run only this case; repeatable")
     args = parser.parse_args()
     if args.action == "catalog":
         diff = catalog_diff(CATALOG.read_text())
@@ -771,12 +779,13 @@ def main():
             print(f"{hit['path']}:{hit['line']}: [{hit['pattern']}] {hit['text']}")
         print(json.dumps(dict(hits=len(hits))))
         return 1 if hits else 0
+    cases = select_cases(soak_cases() if args.soak else CASES, args.case)
     manifest = json.loads(args.manifest.read_text())
     if manifest["provider"] != "incus" or manifest["state"] != "ready" or len(manifest["machines"]) != 2 \
             or "cloud" not in manifest:
         raise RuntimeError("Use a ready two-Machine Incus vc started with --cloud")
     checks = VolumeMove(args.manifest, size_gb=args.size_gb if args.soak else None)
-    summary = checks.run_all(soak_cases() if args.soak else CASES)
+    summary = checks.run_all(cases)
     print(json.dumps(dict(summary=str(checks.out / "summary.json"), passed=summary["passed"],
                           downtime=summary["downtime"])), flush=True)
     return 0 if summary["passed"] else 1
