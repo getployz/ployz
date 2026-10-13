@@ -292,7 +292,9 @@ export const writeAdmitted = <R>(
     const { drizzle } = yield* Database;
     yield* drizzle.execute(sql`select pg_advisory_xact_lock_shared(${environmentLock(environment.id)})`);
     const rows = yield* drizzle.select().from(volumePlacement)
-      .where(and(eq(volumePlacement.organizationId, organizationId), eq(volumePlacement.environmentId, environment.id), isNotNull(volumePlacement.staged)))
+      .where(and(eq(volumePlacement.organizationId, organizationId), eq(volumePlacement.environmentId, environment.id), isNotNull(volumePlacement.staged),
+        // A Deploy admitted alongside, under the shared lock, keeps what it stamped; this one waits on those rows, then skips them.
+        isNull(volumePlacement.deploymentId)))
       .orderBy(volumePlacement.volumeId)
       .for("update");
     // Read under the lock: a restore staged before it has landed or never will, so a seeded Volume missing is gone.
@@ -336,7 +338,7 @@ export const writeAdmitted = <R>(
   );
 }).pipe(Effect.withSpan("VolumePlacement.writeAdmitted"));
 
-/** Deploy `deploymentId` takes the placements staged on `volumeIds`. */
+/** Deploy `deploymentId` takes the placements staged on `volumeIds` that no other Deploy holds. */
 export const stampPlacements = Effect.fn("VolumePlacement.stamp")(function* (organizationId: string, volumeIds: readonly string[], deploymentId: string) {
   if (volumeIds.length === 0) return;
   const { drizzle } = yield* Database;
@@ -346,6 +348,7 @@ export const stampPlacements = Effect.fn("VolumePlacement.stamp")(function* (org
       eq(volumePlacement.organizationId, organizationId),
       inArray(volumePlacement.volumeId, [...volumeIds]),
       isNotNull(volumePlacement.staged),
+      isNull(volumePlacement.deploymentId),
     ));
 });
 
