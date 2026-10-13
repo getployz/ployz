@@ -20,6 +20,11 @@ list, a summary reads **All 3 online**, or puts problems first, like **1 offline
 | **Offline** | Your other servers can't reach it. See [A server shows Offline](../troubleshooting/servers.md#a-server-shows-offline). |
 | **Unknown** | Ployz can't tell whether it's up. Check it as you would an offline one. |
 
+On a wide window, each row also shows how much of the server's CPU, memory and disk is in use
+right now. A server that didn't reply in time reads **Didn't answer**. A server on a release
+without metrics reads **Upgrade to see metrics**. A dash means the server sent no recent reading
+for that meter, and **No readings** means it sent none for any of them.
+
 **Managed volumes available** means the server can hold [managed volumes](../services/volumes.md).
 **Docker only** means it was added with **Start without it** and holds plain Docker volumes only.
 

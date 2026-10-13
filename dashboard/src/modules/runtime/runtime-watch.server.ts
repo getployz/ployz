@@ -33,6 +33,10 @@ export const openRuntimeWatch = Effect.fn("Runtime.openWatch")(function* (input:
 export const openRuntimeWatchForOrganization = Effect.fn(
   "Runtime.openWatchForOrganization",
 )(function* (input: { request: Request; organizationId: string }) {
+  if (import.meta.env.DEV && process.env["PLOYZ_VERIFY_RUNTIME"] === "1") {
+    const { verifyRuntimeFrameHeldOpen } = yield* Effect.promise(() => import("./runtime-watch.verify-fixture"));
+    return { status: "connected" as const, frames: verifyRuntimeFrameHeldOpen(input.request.signal), close: Effect.void } satisfies OpenedRuntimeWatch;
+  }
   const scope = yield* Scope.make();
   const close = Scope.close(scope, Exit.void);
   const runtime = yield* OrganizationRuntime;
