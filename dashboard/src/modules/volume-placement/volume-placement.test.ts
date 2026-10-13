@@ -27,7 +27,9 @@ import {
   lossByVolume,
   lossVersion,
   type PlacementLost,
+  restoreLabel,
   restorePoints,
+  type SnapshotRestore,
   stagedOffServer,
   storageStep,
   targetPlacement,
@@ -633,5 +635,56 @@ describe("mergeRestoreGroups", () => {
 
   it("keeps a restore the Store has not listed yet", () => {
     expect(mergeRestoreGroups([], [group("placement", "new", "create", 1)]).map(({ nodeId }) => nodeId)).toEqual(["new"]);
+  });
+});
+
+describe("snapshot restore", () => {
+  const restore = (losesBytes: number): SnapshotRestore => ({ from: "s1", at: at.getTime() / 1000 - 3 * 3600, losesBytes, save: "b1", expect: 4 });
+  const restoring = (mirrors: string[], losesBytes = 1.2e9): PlacementRow =>
+    ({ ...row(mirrors), staged: { primary: id("web-1"), mirrors: mirrors.map(id), deletes: [], restore: restore(losesBytes) } });
+
+  it("goes first, on the writer, and leaves the mirrors it will reseed", () => {
+    const members = [member("web-1", "writer"), member("web-2", "mirror")];
+    expect(changes(members, restoring(["web-2"])).map((change) => change.kind === "restore_snapshot" && change.mirrors.map((m) => m.name)))
+      .toEqual([["web-2"]]);
+  });
+
+  it("shows Save current, Stop, Swap and Start, and seeds a mirror over again after", () => {
+    const stepsOf = (members: Member[], placement: PlacementRow) => placementGroup(volume, changes(members, placement), at).rows.map((line) => line.steps);
+    expect(stepsOf([member("web-1", "writer")], restoring([]))).toEqual([["Save current", "Stop", "Swap", "Start"]]);
+    expect(stepsOf([member("web-1", "writer"), member("web-2", "mirror")], restoring(["web-2"]))).toEqual([["Save current", "Stop", "Swap", "Start", "Seed"]]);
+  });
+
+  it("has no run yet, so a Deploy can't start one", () => {
+    expect(steps([member("web-1", "writer")], restoring([]))).toEqual([]);
+  });
+
+  it("asks for the typed confirm for every restore, since writes go on after staging, and says they are saved first", () => {
+    const members = [member("web-1", "writer")];
+    const lost = placementLoss(changes(members, restoring([])));
+    expect(lost.losesWrites).toBe(true);
+    expect(lost.savesFirst).toBe(true);
+    expect(lost.items).toEqual([{ kind: "volume", name: "pg-data", detail: expect.stringMatching(/^back to .+ · 1\.2 GB · \d+ (hours|days) of writes$/) }]);
+    const { version: _, ...always } = placementLoss(changes(members, restoring([], 0)));
+    expect(always).toEqual({
+      items: [{ kind: "volume", name: "pg-data", detail: expect.stringMatching(/^back to /) }], losesWrites: true, accept: ["pg-data"], savesFirst: true,
+    });
+  });
+
+  it("reads Restore with the snapshot time in Details, and Undo drops only the restore", () => {
+    const members = [member("web-1", "writer"), pooled("web-3")];
+    const placement = restoring([]);
+    expect(review(members, placement)).toEqual([{
+      kind: "update", name: "Restore", currentValue: "", newValue: restoreLabel(restore(0), at),
+      detail: "Current data saved as Before restore", loss: expect.stringMatching(/^Changes after .+ lost$/),
+    }]);
+    const restoreOf = (staged: PlacementRow) => {
+      const change = changes(members, staged).find((entry) => entry.kind === "restore_snapshot");
+      if (change === undefined) throw new Error("no restore change");
+      return change;
+    };
+    expect(undoPlacement(volume, members, placement, restoreOf(placement))).toBeNull();
+    const withMirror: PlacementRow = { ...placement, staged: { primary: id("web-1"), mirrors: [id("web-3")], deletes: [], restore: restore(1.2e9) } };
+    expect(undoPlacement(volume, members, withMirror, restoreOf(withMirror))).toEqual({ primary: id("web-1"), mirrors: [id("web-3")], deletes: [] });
   });
 });

@@ -90,6 +90,26 @@ A restore, or discarding one, is refused with "A Deploy or restore is starting. 
 a deploy in the same environment is starting. Once a deploy has taken a restore, you can't discard
 the restore until that deploy ends.
 
+## Snapshots
+
+With Ployz Cloud, a volume on a server that runs a recent Ployz has snapshots. A snapshot is the
+volume's data at one moment, kept on the server that writes it. Open the volume and pick
+**Snapshots** under **Copies**. The list groups them by day, with each one's time, kind and size.
+The top line counts them next to the copies, as in "1 copy · 3 snapshots".
+
+**Take snapshot** takes one now. **Keep** marks a snapshot so Ployz never prunes it, and
+**Delete** removes it after you confirm. These run at once, not on deploy.
+
+**Restore** puts a snapshot back in place at your next deploy. The dialog says how much data
+the restore loses, which is everything written since that snapshot. Before the swap, Ployz saves
+the current data as a kept **Before restore** snapshot, so you can go back. The deploy stops the
+services that mount the volume, swaps in the snapshot, and starts them again. A mirror starts
+over from the restored data. When the restore drops writes, the deploy asks you to type where you
+deploy first. Discard a staged restore from **Details**.
+
+Snapshots live on the same server as the volume. They don't survive that server. Keep a copy
+elsewhere too.
+
 ## Move a volume
 
 With Ployz Cloud, **Make primary** on a mirror or `ployz volume move data --to web-2` moves a

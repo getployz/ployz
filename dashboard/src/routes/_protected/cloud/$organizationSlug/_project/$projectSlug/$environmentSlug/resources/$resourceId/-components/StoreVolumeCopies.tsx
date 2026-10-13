@@ -1,5 +1,5 @@
 import { type ReactNode, useState } from "react";
-import { ChevronLeftIcon, ChevronRightIcon, PlusIcon, RefreshCwIcon, Trash2Icon, TriangleAlertIcon, XIcon } from "lucide-react";
+import { CameraIcon, ChevronLeftIcon, ChevronRightIcon, PlusIcon, RefreshCwIcon, Trash2Icon, TriangleAlertIcon, XIcon } from "lucide-react";
 import type { EnvironmentRef, MachineId, MachineName } from "@ployz/sdk";
 import { ConfirmDialog } from "#/components/confirm-dialog";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "#/components/ui/alert";
@@ -19,6 +19,8 @@ import {
 } from "#/modules/volume-copies/volume-copies";
 import { useRefreshMirror } from "#/modules/volume-copies/volume-copies.hooks";
 import { copiesFromPlacement } from "#/modules/volume-copies/volume-copies.placement";
+import { relWords, type SnapshotClock, snapshotClock, snapshotsServed } from "#/modules/volume-copies/volume-snapshots";
+import { useVolumeSnapshots } from "#/modules/volume-copies/volume-snapshots.hooks";
 import { MIRROR_ROUND_MINUTES, mirrorLast, skippedWords } from "#/modules/volume-copies/volume-copies.refresh";
 import { placementLacking, placementServers, placementUnknown, restoreOpen } from "#/modules/volume-placement/daemon-release";
 import {
@@ -29,6 +31,8 @@ import { useDeleteCopy, useStagePlacement, useStageRestore } from "#/modules/vol
 import { useVolumePlacements } from "#/modules/volume-placement/volume-placement.queries";
 import type { Member, VolumeRunView } from "#/modules/volume-run/volume-run";
 import { useActiveVolumeRuns, useVolumeMembers } from "#/modules/volume-run/volume-run.queries";
+import { useTimeZone } from "#/utils/time-zone";
+import { SnapshotsView, type VolumeSnapshotsData } from "./StoreVolumeSnapshots";
 
 /** A Volume as the Copies tab shows it: who mounts it names who its Primary runs. */
 export type CopiesVolume = PlacementVolume & { readonly mounts: readonly { readonly service: string }[] };
@@ -48,9 +52,13 @@ export function useVolumeCopies(organizationSlug: string, environment: Environme
   const deleteCopy = useDeleteCopy(organizationSlug, environment, volume);
   const inFlight = useInFlightDeployments(organizationSlug, environment);
   const mirror = useRefreshMirror(organizationSlug, environment, volume.id);
+  const clock = snapshotClock(useTimeZone());
+  const writer = members === undefined ? null : observePlacement(members).primary?.id ?? null;
+  const snapshots = useVolumeSnapshots(organizationSlug, environment, volume.id, snapshotsServed(lens.machines, writer));
   const row = rows.find((entry) => entry.volumeId === volume.id) ?? null;
-  const copies = members === undefined ? null
-    : copiesFromPlacement({ volume, members, row, active: running, lastSync: mirror.lastSync, lastDone: mirror.lastDone });
+  const copies = members === undefined ? null : copiesFromPlacement({
+    volume, members, row, active: running, lastSync: mirror.lastSync, lastDone: mirror.lastDone, snapshots: snapshots.list?.snapshots ?? null,
+  });
   const accepting = placementServers(lens.machines);
   return {
     volume,
@@ -70,6 +78,8 @@ export function useVolumeCopies(organizationSlug: string, environment: Environme
     deleteCopy,
     refresh: mirror.refresh,
     refreshing: mirror.pending,
+    snapshots,
+    snapshotClock: clock,
   };
 }
 
@@ -97,6 +107,8 @@ export type CopiesPanelProps = {
   refresh: () => void;
   /** From the Refresh now click until its round ends. */
   refreshing: boolean;
+  snapshots: VolumeSnapshotsData;
+  snapshotClock: SnapshotClock;
   open: MachineId | null;
   onOpen: (copy: MachineId | null) => void;
   now?: Date;
@@ -114,19 +126,35 @@ export function SafetyLine({ copies, now = new Date() }: { copies: VolumeCopies;
 /** A Volume's copies: the live one, and every place it survives if that Server dies. A mirror opens in detail. */
 export function VolumeCopiesPanel(props: CopiesPanelProps) {
   const { volume, members, rows, copies, open, onOpen } = props;
+  const [snapshotsOpen, setSnapshotsOpen] = useState(false);
   if (members === undefined) return <Empty variant="placeholder"><EmptyDescription>Waiting for your servers.</EmptyDescription></Empty>;
   const row = rows.find((entry) => entry.volumeId === volume.id) ?? null;
   const target = targetPlacement(observePlacement(members), row);
   if (copies === null || target === null) return <Empty variant="placeholder"><EmptyDescription>No server reports a copy.</EmptyDescription></Empty>;
   const mirror = copies.elsewhere.find((copy): copy is MirrorCopy => copy.kind === "mirror" && copy.id === open);
   if (mirror !== undefined) return <CopyView {...props} members={members} row={row} copies={copies} copy={mirror} onBack={() => onOpen(null)} />;
-  return <CopiesView {...props} members={members} row={row} copies={copies} target={target} />;
+  if (snapshotsOpen && copies.live.snapshots !== null) {
+    return <SnapshotsView volume={volume.name} services={services(volume)} live={copies.live.server?.name ?? "its server"} snapshots={props.snapshots}
+      clock={props.snapshotClock} staged={row?.staged?.restore?.from ?? null} restoreTo={restoreTo({ ...props, members, row, target })}
+      stage={props.stage} onBack={() => setSnapshotsOpen(false)} now={props.now} />;
+  }
+  return <CopiesView {...props} members={members} row={row} copies={copies} target={target} onSnapshots={() => setSnapshotsOpen(true)} />;
 }
 
 type Resolved = CopiesPanelProps & { members: readonly Member[]; row: PlacementRow | null; copies: VolumeCopies };
 
-function CopiesView({ volume, members, row, rows, copies, target, servers, accepting, upgrade, unknown, seeds, disabled, deploying, stage, restore, deleteCopy, onOpen, now = new Date() }:
-  Resolved & { target: Placement }) {
+const services = (volume: CopiesVolume) => [...new Set(volume.mounts.map((mount) => mount.service))].join(", ") || volume.name;
+
+/** A snapshot restores onto the writer as it stands: not while a move, a seed or a Deploy has the Volume. */
+function restoreTo({ members, row, target, upgrade, unknown, disabled, deploying }: CopiesPanelProps & { members: readonly Member[]; row: PlacementRow | null; target: Placement }) {
+  const observed = observePlacement(members);
+  const free = !disabled && !deploying && upgrade.length === 0 && unknown.length === 0;
+  if (!free || target.seed !== undefined || observed.primary?.id !== target.primary) return null;
+  return { target, applied: appliedMirrors(observed, row) };
+}
+
+function CopiesView({ volume, members, row, rows, copies, target, servers, accepting, upgrade, unknown, seeds, disabled, deploying, stage, restore, deleteCopy,
+  onOpen, onSnapshots, now = new Date() }: Resolved & { target: Placement; onSnapshots: () => void }) {
   const [adding, setAdding] = useState(false);
   const [deleting, setDeleting] = useState<OldCopy | null>(null);
   const observed = observePlacement(members);
@@ -164,6 +192,16 @@ function CopiesView({ volume, members, row, rows, copies, target, servers, accep
           <ItemDescription>{live.restore.label} · on deploy</ItemDescription>
         </ItemContent>
       </Item> : null}
+      {live.snapshots !== null ? <div role="listitem">
+        <Item variant="outline" size="sm" render={<button type="button" onClick={onSnapshots} />} className="cursor-pointer text-left hover:bg-muted">
+          <CameraIcon className="size-4 shrink-0 text-muted-foreground" />
+          <ItemContent>
+            <ItemTitle>Snapshots<Badge variant="secondary">{live.snapshots.length}</Badge></ItemTitle>
+            <ItemDescription>{live.snapshots[0] ? relWords(live.snapshots[0].at, now) : "None yet"}</ItemDescription>
+          </ItemContent>
+          <ItemActions><ChevronRightIcon className="size-4 text-muted-foreground" /></ItemActions>
+        </Item>
+      </div> : null}
     </Group>
     <Group label="Elsewhere">
       {copies.elsewhere.length === 0
@@ -325,7 +363,7 @@ function CopyView({ volume, members, row, rows, copies, copy, accepting, upgrade
   const remove = offered === null ? null : editPlacement(offered, { kind: "remove_mirror", server: copy.server.id });
   const locked = disabled || deploying;
   const live = copies.live.server?.name ?? "the live server";
-  const services = [...new Set(volume.mounts.map((mount) => mount.service))].join(", ") || volume.name;
+  const mounted = services(volume);
   const stale = isStale(copy, now);
   const shown = refreshing && copy.busy === null ? { ...copy, busy: "Refreshing" } : copy;
   const last = mirrorLast(shown, now);
@@ -364,8 +402,8 @@ function CopyView({ volume, members, row, rows, copies, copy, accepting, upgrade
     </div>
     {promote ? <p className="text-sm text-muted-foreground">
       {stale
-        ? `Make primary moves ${services} to ${copy.server.name} on deploy. The deploy catches up first, then pauses writes for the final sync. If ${copy.server.name} can't catch up, the deploy fails and ${live} keeps serving.`
-        : `Make primary moves ${services} to ${copy.server.name} on deploy. Writes pause for the final sync.`}
+        ? `Make primary moves ${mounted} to ${copy.server.name} on deploy. The deploy catches up first, then pauses writes for the final sync. If ${copy.server.name} can't catch up, the deploy fails and ${live} keeps serving.`
+        : `Make primary moves ${mounted} to ${copy.server.name} on deploy. Writes pause for the final sync.`}
     </p> : null}
     {remove ? <section className="flex flex-col gap-2 border-t pt-4">
       <h3 className="text-sm font-medium text-destructive">Remove</h3>

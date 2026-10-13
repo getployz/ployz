@@ -238,7 +238,13 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
     if (busy !== undefined) return { kind: "wait", wait: { runId: busy.id, volumeId: row.volumeId, step: null } } satisfies PlacementAdvance;
     const placement = view(row);
     const members = yield* inspect(organizationId, environment, row.volumeId);
-    const step = nextPlacementStep(placementChanges(volume, members, placement), appliedMirrors(observePlacement(members), placement));
+    const changes = placementChanges(volume, members, placement);
+    const restoring = changes.find((change) => change.kind === "restore_snapshot");
+    if (restoring !== undefined) {
+      const remaining = dropChange(volume, members, placement, changeKey(restoring));
+      return yield* fail(organizationId, deploymentId, row.volumeId, remaining, `${volume.name}: restoring a snapshot is not wired into deploys yet`);
+    }
+    const step = nextPlacementStep(changes, appliedMirrors(observePlacement(members), placement));
     if (step === null) {
       // Nothing left to run, so the Servers hold what was staged.
       yield* settleClaimed(row.volumeId, deploymentId, { mirrors: [...(row.staged?.mirrors ?? [])], staged: null, deploymentId: null });

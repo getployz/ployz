@@ -2,7 +2,9 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { MachineId } from "@ployz/sdk";
+import type { Snapshot } from "#/modules/volume-copies/volume-copies";
 import { copiesFromPlacement } from "#/modules/volume-copies/volume-copies.placement";
+import { snapshotClock } from "#/modules/volume-copies/volume-snapshots";
 import type { PlacementRow } from "#/modules/volume-placement/volume-placement";
 import type { Member, VolumeRunView } from "#/modules/volume-run/volume-run";
 import { COPIES, member, run } from "#/modules/volume-run/volume-run.test-fixture";
@@ -28,20 +30,23 @@ const mirrorAsOf = (server: string, when: Date): Member => {
 const server = (name: string, storage: CopyServer["storage"] = "pool"): CopyServer => ({ id: id(name), name, storage });
 
 function panel(members: Member[], placement: PlacementRow | null, options: {
-  open?: string; upgrade?: string[]; servers?: CopyServer[]; lastDone?: VolumeRunView; refreshing?: boolean; deploying?: boolean;
+  open?: string; upgrade?: string[]; servers?: CopyServer[]; lastDone?: VolumeRunView; refreshing?: boolean; deploying?: boolean; snapshots?: Snapshot[];
 } = {}) {
   const stage = vi.fn();
   const refresh = vi.fn();
   const deleteCopy = vi.fn(() => Promise.resolve());
   const restore = vi.fn();
   const onOpen = vi.fn();
-  const copies = copiesFromPlacement({ volume, members, row: placement, active: null, lastSync: null, lastDone: options.lastDone ?? null });
+  const snapshots = { list: options.snapshots ? { epoch: 7, snapshots: options.snapshots } : null, pending: false, take: vi.fn(), keep: vi.fn(), remove: vi.fn() };
+  const copies = copiesFromPlacement({
+    volume, members, row: placement, active: null, lastSync: null, lastDone: options.lastDone ?? null, snapshots: options.snapshots ?? null,
+  });
   render(<VolumeCopiesPanel volume={volume} members={members} rows={placement ? [placement] : []} running={null} copies={copies}
     servers={options.servers ?? members.map((entry) => server(entry.machine.name))} accepting={members.map((entry) => entry.machine.id)}
     upgrade={options.upgrade ?? []} unknown={[]} seeds disabled={false} deploying={options.deploying ?? false} stage={stage} restore={restore}
     deleteCopy={deleteCopy} refresh={refresh} refreshing={options.refreshing ?? false}
-    open={options.open ? id(options.open) : null} onOpen={onOpen} now={NOW} />);
-  return { stage, deleteCopy, restore, onOpen, refresh };
+    snapshots={snapshots} snapshotClock={snapshotClock("UTC")} open={options.open ? id(options.open) : null} onOpen={onOpen} now={NOW} />);
+  return { stage, deleteCopy, restore, onOpen, refresh, snapshots };
 }
 const group = (label: string) => within(screen.getByRole("list", { name: label }));
 const rows = (label: string) => group(label).queryAllByRole("listitem").map((item) => item.textContent);
@@ -191,6 +196,75 @@ describe("mirror detail", () => {
   it("falls back to the list when the copy is gone", () => {
     panel(fresh(), row(["web-2"]), { open: "web-9" });
     expect(screen.getByRole("list", { name: "Live" })).toBeTruthy();
+  });
+});
+
+const snap = (id: string, iso: string, extra: Partial<Snapshot> = {}): Snapshot =>
+  ({ id, at: new Date(iso), kind: "manual", note: null, kept: false, bytes: 20e6, losesBytes: 0, ...extra });
+const SNAPS = [snap("s2", "2026-10-12T10:00:00Z", { losesBytes: 1.2e9 }), snap("s1", "2026-10-11T09:30:00Z", { kind: "daily", kept: true })];
+
+describe("Snapshots", () => {
+  afterEach(cleanup);
+
+  it("stays out of the Live group where the writer can't list snapshots", () => {
+    panel([member("web-1", "writer")], row([]));
+    expect(rows("Live")).toEqual(["web-1PrimaryLive"]);
+  });
+
+  it("opens from the Live group and lists snapshots by day", () => {
+    panel([member("web-1", "writer")], row([]), { snapshots: SNAPS });
+    fireEvent.click(screen.getByRole("button", { name: /^Snapshots/ }));
+    expect(rows("Today")).toEqual(["10:00Manual20 MBRestore"]);
+    expect(rows("Yesterday")).toEqual(["09:30Daily20 MBRestore"]);
+    expect(screen.getByLabelText("Kept")).toBeTruthy();
+  });
+
+  it("names what a restore loses and stages it on the writer", async () => {
+    const { stage } = panel([member("web-1", "writer")], row([]), { snapshots: SNAPS });
+    fireEvent.click(screen.getByRole("button", { name: /^Snapshots/ }));
+    fireEvent.click(group("Today").getByRole("button", { name: "Restore" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("Loses").closest("[data-slot=field]")?.textContent).toBe("Loses1.2 GB · 2 hours of writes");
+    expect(within(dialog).getByText("Manual · 10:00 swaps in")).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Restore" }));
+    expect(stage).toHaveBeenCalledWith(
+      expect.objectContaining({ primary: id("web-1"), restore: expect.objectContaining({ from: "s2", at: 1_791_799_200, losesBytes: 1.2e9, expect: 7 }) }),
+      [],
+    );
+  });
+
+  it("says nothing is lost when nothing was written since", async () => {
+    panel([member("web-1", "writer")], row([]), { snapshots: SNAPS });
+    fireEvent.click(screen.getByRole("button", { name: /^Snapshots/ }));
+    fireEvent.click(group("Yesterday").getByRole("button", { name: "Restore" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("Loses").closest("[data-slot=field]")?.textContent).toBe("LosesNothing");
+  });
+
+  it("marks the staged snapshot pink and shows the restore on the Live group", () => {
+    const staged: PlacementRow = { ...row([]), staged: {
+      primary: id("web-1"), mirrors: [], deletes: [], restore: { from: "s2", at: 1_791_799_200, losesBytes: 0, save: "x", expect: 7 },
+    } };
+    panel([member("web-1", "writer")], staged, { snapshots: SNAPS });
+    expect(rows("Live")[1]).toMatch(/^Restore.* · on deploy$/);
+    fireEvent.click(screen.getByRole("button", { name: /^Snapshots/ }));
+    const item = group("Today").getByRole("listitem");
+    expect(item.getAttribute("data-staged")).toBe("restore");
+    expect(within(item).getByText("Staged")).toBeTruthy();
+    expect(within(item).queryByRole("button", { name: "Restore" })).toBeNull();
+  });
+
+  it("offers no restore while a move is staged", () => {
+    panel([member("web-1", "writer"), pooled("web-2")], row([], { primary: "web-2" }), { snapshots: SNAPS });
+    fireEvent.click(screen.getByRole("button", { name: /^Snapshots/ }));
+    expect(screen.queryByRole("button", { name: "Restore" })).toBeNull();
+  });
+
+  it("takes a snapshot now", () => {
+    const { snapshots } = panel([member("web-1", "writer")], row([]), { snapshots: SNAPS });
+    fireEvent.click(screen.getByRole("button", { name: /^Snapshots/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Take snapshot" }));
+    expect(snapshots.take).toHaveBeenCalledOnce();
   });
 });
 

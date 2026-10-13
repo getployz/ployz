@@ -327,6 +327,7 @@ void describeDrain;
 declare const switchArgs: import("../generated/payloads").Switch;
 client.volumeSwitch("one" as MachineTarget, { command: "inspect_volume_copy", payload: { name: "data" } }) satisfies Promise<import("../generated/payloads").VolumeCopyView>;
 client.volumeSwitch("one" as MachineTarget, { command: "begin_round", payload: { switch: switchArgs, name: "data" } }) satisfies Promise<import("../generated/payloads").SwitchReply>;
+client.volumeSwitch("one" as MachineTarget, { command: "list_volume_snapshots", payload: { name: "data" } }) satisfies Promise<import("../generated/payloads").VolumeSnapshots>;
 // @ts-expect-error hand_over is not a Volume switch command
 client.volumeSwitch("one" as MachineTarget, { command: "hand_over", payload: { switch: switchArgs, name: "data" } });
 import("../index").then((sdk) => sdk.observeCopies([]) satisfies Promise<import("../generated/payloads").CopyObservation>);

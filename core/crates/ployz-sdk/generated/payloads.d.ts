@@ -2115,6 +2115,8 @@ export type Leg = { server: MachineName, stopped: Receipt | null, started: Recei
 
 export type LineCap = number;
 
+export type ListVolumeSnapshotsRequest = { name: DockerVolumeName, };
+
 export type LiveLineageUse = { lineageId: string, keys: Array<string>, };
 
 export type LiveNode = {
@@ -3976,6 +3978,10 @@ volume: VolumeName,
  */
 shared_writes: boolean, };
 
+export type SetVolumeSnapshotRefused = { reason: SnapshotRefusal, };
+
+export type SetVolumeSnapshotRequest = { name: DockerVolumeName, expect: WriterEpoch, want: WantedSnapshot, };
+
 export type SetVolumeStorage = {
 /**
  * The Environment containing the Volume.
@@ -4044,7 +4050,17 @@ export type Snapshot = { name: SnapshotName, guid: SnapshotGuid, created_unix_se
 
 export type SnapshotGuid = string;
 
+export type SnapshotId = string;
+
+export type SnapshotKind = "manual" | "hourly" | "daily" | "before_deploy" | "after_deploy" | "before_restore";
+
+export type SnapshotLabel = { kind: SnapshotKind, note: SnapshotNote, };
+
 export type SnapshotName = string;
+
+export type SnapshotNote = string;
+
+export type SnapshotRefusal = "mismatch" | "no_writer" | "busy" | "not_found";
 
 export type Source = "server" | "cloud_cache";
 
@@ -4416,6 +4432,22 @@ base: UploadBase | null,
  */
 uploader?: Principal | null, };
 
+export type UserSnapshot = { id: SnapshotId, label: SnapshotLabel, kept: boolean, created_unix_seconds: number,
+/**
+ * Bytes written between the snapshot before this one and this one.
+ */
+written_bytes: number,
+/**
+ * Bytes of data this snapshot refers to.
+ */
+referenced_bytes: number,
+/**
+ * Bytes written to the live Volume since this snapshot: what a restore to it
+ * replaces. For a snapshot taken after the live data's last restore point, the
+ * bytes written since that restore, a lower bound.
+ */
+loses_bytes: number, };
+
 export type ValuePart = { "kind": "text", value: string, } | { "kind": "ref", owner: ValuePartOwner, key: string, };
 
 export type ValuePartOwner = { "scope": "self" } | { "scope": "service", lineageId: string, };
@@ -4507,6 +4539,8 @@ export type VolumeRemoval = { id: DockerVolumeId, outcome: VolumeRemovalOutcome,
 export type VolumeRemovalOutcome = { "status": "removed" } | { "status": "failed", error: RpcError, } | { "status": "omitted" };
 
 export type VolumeRun = { "run": "mirror", to: ServerRef, full: boolean, } | { "run": "sync", full: boolean, } | { "run": "move", to: ServerRef, } | { "run": "release", loss: AcceptedLoss | null, } | { "run": "remove_mirror", loss: AcceptedLoss | null, };
+
+export type VolumeSnapshots = { epoch: WriterEpoch | null, snapshots: Array<UserSnapshot>, };
 
 export type VolumeSource = { "kind": "bind", machine_path: MachinePath, create_machine_path: boolean, propagation: BindPropagation | null, recursive: BindRecursive | null, } | { "kind": "external", name: DockerVolumeName, } | { "kind": "ordinary", name: DockerVolumeName, driver: VolumeDriver, labels: { [key in string]: string }, } | { "kind": "provisioned",
 /**
@@ -4633,6 +4667,8 @@ volumes: Array<VolumeListing>, };
 
 export type Waiting = { server: string, why: string, fix: Fix, };
 
+export type WantedSnapshot = { "kind": "taken", id: SnapshotId, label: SnapshotLabel, kept: boolean, } | { "kind": "kept", id: SnapshotId, kept: boolean, } | { "kind": "deleted", id: SnapshotId, } | { "kind": "restored", from: SnapshotId, save: SnapshotId, label: SnapshotLabel, };
+
 export type WarmRequest = { switch: Switch, name: DockerVolumeName, };
 
 export type WireGuardPublicKey = Array<number>;
@@ -4640,6 +4676,8 @@ export type WireGuardPublicKey = Array<number>;
 export type Withheld = "no_secret_context" | "unanswered";
 
 export type Write = { "at": "store", "write": ConfigCommand } | { "at": "act", "write": Act };
+
+export type WriterEpoch = number;
 
 export type WriterMarker = { "phase": "idle" } | { "phase": "stopping" } | { "phase": "frozen", guid: SnapshotGuid, } | { "phase": "thawing" } | { "phase": "handed", guid: SnapshotGuid, };
 

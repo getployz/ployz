@@ -77,6 +77,7 @@ const ON_DEMAND_READS = {
   githubBranchesQueryOptions: "depends on the repository the user just picked",
   githubBuildRepositoriesQueryOptions: "calls GitHub per repository; Organization Settings › Builds fills it in after hydration",
   volumeMembersQueryOptions: "asks every Server for its copy live, so a slow Server would hold the drawer open; the Placement section waits on it instead",
+  volumeSnapshotsQueryOptions: "asks the writer for its snapshots live, only once the writer serves them; the Snapshots row waits on it instead",
   strayNamespacesQueryOptions: "asks about the Namespaces the Servers report live, known only once the Runtime Watch answers",
   pendingApprovalsOptions: "polled by the agent sidebar, which every Organization page mounts; no page owns it",
   approvalOptions: "named by an agent conversation's interrupt, known only once the chat hydrates",

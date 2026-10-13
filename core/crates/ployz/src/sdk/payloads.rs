@@ -153,6 +153,11 @@ pub fn typescript_declarations() -> String {
     declarations.add::<ployz_core::ReceiveView>();
     declarations.add::<ployz_core::SwitchReply>();
     declarations.add::<ployz_core::SwitchError>();
+    declarations.add::<ployz_core::WriterEpoch>();
+    declarations.add::<ployz_core::SetVolumeSnapshotRequest>();
+    declarations.add::<ployz_core::ListVolumeSnapshotsRequest>();
+    declarations.add::<ployz_core::VolumeSnapshots>();
+    declarations.add::<ployz_core::SetVolumeSnapshotRefused>();
     declarations.add::<ployz_store::tools::ToolDef>();
     declarations.add::<ployz_store::tools::Place>();
     declarations.add::<ployz_store::tools::Step>();
