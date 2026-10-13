@@ -103,8 +103,12 @@ stop to the start on `web-2`. A service that takes a while to stop or start does
 move. Ployz waits for Docker, up to ten minutes for each stop or start.
 
 The old server keeps a read-only copy, shown as `data-web-1`. Moving back sends only what
-changed since. If the volume already has a mirror on `web-2`, the move starts from it. From the
-moment the service stops until the move ends, deploys of it are refused.
+changed since. If the volume already has a mirror on `web-2`, the move starts from it.
+
+A deploy never waits for a move. Until `web-2` is told to start your service, a deploy takes the
+move over: the run ends with "a Deploy took this run over", your service deploys on the old
+server, and the move is requested again once the deploy ends. From the moment `web-2` is told to
+start your service, a deploy follows the move and starts your service on `web-2`.
 
 ## When a move stops
 
