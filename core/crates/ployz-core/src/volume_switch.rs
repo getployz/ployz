@@ -171,6 +171,10 @@ pub enum VolumeCopy {
         /// The run of writes this root belongs to; 0 until `SetVolumeCopy` numbers it.
         #[serde(default)]
         epoch: WriterEpoch,
+        /// A root `Volume.Seed` landed that Docker has not adopted yet: it carries both
+        /// `ployz:seed` and `ployz:promote`. Older daemons never report it.
+        #[serde(default)]
+        seed: bool,
     },
     /// `<pool>/ployz-mirror/<name>`: a read-only copy Docker never sees. `newest` is of
     /// its `fs` child; `resume_token` is set while a receive into `fs` is interrupted.
@@ -429,6 +433,7 @@ mod tests {
             readonly,
             newest: None,
             epoch: WriterEpoch::default(),
+            seed: false,
         };
         let slot = VolumeCopy::Slot {
             slot: SlotId::new(1),

@@ -842,6 +842,7 @@ impl Fleet {
                             readonly: false,
                             newest: None,
                             epoch: WriterEpoch::default(),
+                            seed: false,
                         },
                     });
                 unary(VolumeCopyView { copy }.into())

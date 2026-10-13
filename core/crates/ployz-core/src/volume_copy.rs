@@ -274,6 +274,8 @@ pub enum CopyTransition {
     WriterToMirror,
     WriterToSnapshot,
     WriterToForget,
+    /// Destroy a root `Volume.Seed` landed that Docker never adopted.
+    SeedToForget,
     /// Promote the slot to a writable root at the wanted epoch, then start.
     MirrorToWriter,
     /// Pull `target` from `from`.
@@ -312,7 +314,7 @@ pub fn plan(
 ) -> CopyPlan {
     use CopyPlan::{AtWant, Refuse, Transition};
     use CopyTransition::{
-        MirrorToForget, MirrorToMirror, MirrorToWriter, NoneToMirror, WriterToForget,
+        MirrorToForget, MirrorToMirror, MirrorToWriter, NoneToMirror, SeedToForget, WriterToForget,
         WriterToMirror, WriterToSnapshot, WriterToWriter,
     };
     let expected = |transition| {
@@ -365,6 +367,7 @@ pub fn plan(
             }
             expected(WriterToSnapshot)
         }
+        (Some(VolumeCopy::Root { seed: true, .. }), WantedCopy::Forget) => expected(SeedToForget),
         (Some(VolumeCopy::Root { newest, .. }), WantedCopy::Forget) => {
             if newest.is_none() {
                 return AtWant;
@@ -459,6 +462,16 @@ mod tests {
             readonly,
             newest,
             epoch: WriterEpoch::new(epoch),
+            seed: false,
+        }
+    }
+
+    fn seed_root() -> VolumeCopy {
+        VolumeCopy::Root {
+            readonly: false,
+            newest: None,
+            epoch: WriterEpoch::default(),
+            seed: true,
         }
     }
 
@@ -852,6 +865,24 @@ mod tests {
                 Refuse(Mismatch),
             ),
             (
+                "destroy an unadopted seed root",
+                Some(seed_root()),
+                false,
+                ExpectedCopy::Writer {
+                    epoch: WriterEpoch::default(),
+                },
+                WantedCopy::Forget,
+                Transition(SeedToForget),
+            ),
+            (
+                "destroy an unadopted seed root mismatch",
+                Some(seed_root()),
+                false,
+                ExpectedCopy::None,
+                WantedCopy::Forget,
+                Refuse(Mismatch),
+            ),
+            (
                 "destroy the slot",
                 Some(slot(Some(g.clone()), None)),
                 false,
@@ -935,6 +966,25 @@ mod tests {
                 "{copy:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_root_from_an_older_daemon_reads_as_no_seed() {
+        let old: VolumeCopy =
+            serde_json::from_str(r#"{"kind":"root","readonly":false,"newest":null,"epoch":0}"#)
+                .unwrap();
+        assert_eq!(old, root(0, false, None));
+        assert_eq!(
+            plan(
+                Some(&old),
+                false,
+                &ExpectedCopy::Writer {
+                    epoch: WriterEpoch::default()
+                },
+                &WantedCopy::Forget
+            ),
+            CopyPlan::AtWant
+        );
     }
 
     #[test]

@@ -804,13 +804,22 @@ impl VolumeStorage {
             .map_err(|error| internal(format!("GET {url} answered {body:?}: {error}").into()))
     }
 
-    /// Mirror to Forget: the slot and its copy destroyed.
     async fn copy_destroy(&self, name: &WireName) -> Result<Copy, RpcError> {
         let Some(scope) = self.scope(name).await? else {
             return Ok(None);
         };
         let name = &scope.name;
-        if scope.root()?.is_some() {
+        if let Some(root) = scope.root()? {
+            if self.unadopted_seed(&root.name).await.map_err(internal)? {
+                ployzd::faults::kill_inside("SetVolumeCopy.SeedToForget");
+                self.z(&["destroy", "-r", &root.name]).await?;
+                if scope.slot().is_some() && !self.receives.running(name) {
+                    self.z(&["destroy", "-r", &slot_parent(&scope.pool, name)])
+                        .await?;
+                    self.receives.forget(name);
+                }
+                return self.copy_now(&scope).await;
+            }
             return Err(self
                 .refuse_found(
                     &scope,
