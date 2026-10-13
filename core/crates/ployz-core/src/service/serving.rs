@@ -3,8 +3,8 @@
 use std::collections::BTreeMap;
 
 use crate::{
-    ContainerAddress, ContainerObservation, ContainerRuntimeObservation, QualifiedService,
-    ServiceContainer, ServingShape,
+    ContainerAddress, ContainerObservation, ContainerRuntimeObservation, DEPLOYMENT_ID_LABEL,
+    DeploymentLogId, QualifiedService, ServiceContainer, ServingPointer, ServingShape,
 };
 
 /// Proof that a Service Container may serve, is addressed, and is of a selected Serving Shape.
@@ -36,11 +36,13 @@ impl<'serving> ServingContainer<'serving> {
     }
 }
 
-/// Serving Containers for this observer: may serve, addressed, and of the newest
-/// traffic-eligible Serving Shape per Qualified Service.
+/// Serving Containers for this observer: may serve, addressed, and selected per
+/// Qualified Service by its Serving Pointer, or by the newest traffic-eligible
+/// Serving Shape when `pointer_for` has none.
 #[must_use]
-pub fn serving_containers<'serving>(
+pub fn serving_containers<'serving, 'pointer>(
     containers: impl IntoIterator<Item = &'serving ServiceContainer>,
+    pointer_for: impl Fn(&QualifiedService) -> Option<&'pointer ServingPointer>,
 ) -> Vec<ServingContainer<'serving>> {
     let mut by_identity = BTreeMap::<QualifiedService, Vec<&'serving ServiceContainer>>::new();
     for container in containers {
@@ -50,39 +52,76 @@ pub fn serving_containers<'serving>(
             .push(container);
     }
     let mut serving = Vec::new();
-    for members in by_identity.into_values() {
-        let Some(newest) = members
-            .iter()
-            .filter(|container| container.traffic_address().is_some())
-            .max_by_key(|container| {
-                let observation = container.as_observation();
-                (
-                    observation.created_at_unix_nanos,
-                    observation.container_id.as_str(),
-                )
-            })
-        else {
-            continue;
+    for (identity, members) in by_identity {
+        let selected = match pointer_for(&identity) {
+            Some(pointer) => pointed_or_previous(members, pointer),
+            None => newest_shape(members),
         };
-        let selected = newest
-            .as_observation()
-            .resolved_spec
-            .published_serving_shape();
-        for container in members {
-            let Some(address) = container.traffic_address() else {
-                continue;
-            };
-            if container
+        serving.extend(selected.into_iter().filter_map(|container| {
+            let address = container.traffic_address()?;
+            Some(ServingContainer { container, address })
+        }));
+    }
+    serving
+}
+
+fn newest_shape(members: Vec<&ServiceContainer>) -> Vec<&ServiceContainer> {
+    let Some(newest) = members
+        .iter()
+        .filter(|container| container.traffic_address().is_some())
+        .max_by_key(|container| {
+            let observation = container.as_observation();
+            (
+                observation.created_at_unix_nanos,
+                observation.container_id.as_str(),
+            )
+        })
+    else {
+        return Vec::new();
+    };
+    let selected = newest
+        .as_observation()
+        .resolved_spec
+        .published_serving_shape();
+    members
+        .into_iter()
+        .filter(|container| {
+            container
                 .as_observation()
                 .resolved_spec
                 .published_serving_shape()
                 == selected
-            {
-                serving.push(ServingContainer { container, address });
-            }
-        }
-    }
-    serving
+        })
+        .collect()
+}
+
+fn pointed_or_previous<'serving>(
+    members: Vec<&'serving ServiceContainer>,
+    pointer: &ServingPointer,
+) -> Vec<&'serving ServiceContainer> {
+    let all_visible = pointer.containers.iter().all(|id| {
+        members
+            .iter()
+            .any(|container| container.as_observation().container_id == *id)
+    });
+    let previous = pointer
+        .previous
+        .as_ref()
+        .filter(|_| !all_visible)
+        .map(DeploymentLogId::as_str);
+    members
+        .into_iter()
+        .filter(|container| {
+            let observation = container.as_observation();
+            pointer.containers.contains(&observation.container_id)
+                || previous.is_some_and(|previous| {
+                    observation
+                        .labels
+                        .get(DEPLOYMENT_ID_LABEL)
+                        .is_some_and(|deploy| deploy == previous)
+                })
+        })
+        .collect()
 }
 
 /// Machine-local occupancy of one wanted Serving Shape.
@@ -133,8 +172,9 @@ mod tests {
     use super::{SlotOccupancy, serving_containers};
     use crate::service::tests::observation;
     use crate::{
-        ContainerAddress, ContainerKind, ContainerObservation, ContainerRuntimeObservation,
-        HealthObservation, ResolvedServiceSpec, ServiceId, service_containers,
+        ContainerAddress, ContainerId, ContainerKind, ContainerObservation,
+        ContainerRuntimeObservation, DEPLOYMENT_ID_LABEL, DeploymentLogId, HealthObservation,
+        ResolvedServiceSpec, ServiceContainer, ServiceId, ServingPointer, service_containers,
     };
 
     #[test]
@@ -221,7 +261,7 @@ mod tests {
             no_address,
             exited,
         ]);
-        let serving = serving_containers(&containers);
+        let serving = serving_containers(&containers, |_| None);
 
         assert_eq!(
             serving
@@ -280,7 +320,7 @@ mod tests {
             .unwrap();
 
         let mixed = service_containers([v3.clone(), v4.clone()]);
-        let serving = serving_containers(&mixed);
+        let serving = serving_containers(&mixed, |_| None);
         assert_eq!(
             serving
                 .into_iter()
@@ -303,7 +343,7 @@ mod tests {
                 .unwrap();
             let unready_newest = service_containers([v3.clone(), unready_v4.clone()]);
             assert_eq!(
-                serving_containers(&unready_newest)
+                serving_containers(&unready_newest, |_| None)
                     .into_iter()
                     .map(super::ServingContainer::as_observation)
                     .collect::<Vec<_>>(),
@@ -320,7 +360,7 @@ mod tests {
             .unwrap();
         let unaddressed_newest = service_containers([v3.clone(), unready_v4]);
         assert_eq!(
-            serving_containers(&unaddressed_newest)
+            serving_containers(&unaddressed_newest, |_| None)
                 .into_iter()
                 .map(super::ServingContainer::as_observation)
                 .collect::<Vec<_>>(),
@@ -363,7 +403,7 @@ mod tests {
 
         let containers = service_containers([v3, failing_v4.clone()]);
         assert_eq!(
-            serving_containers(&containers)
+            serving_containers(&containers, |_| None)
                 .into_iter()
                 .map(super::ServingContainer::as_observation)
                 .collect::<Vec<_>>(),
@@ -420,12 +460,189 @@ mod tests {
         let containers = service_containers([trunk_row.clone(), head_row.clone()]);
 
         assert_eq!(
-            serving_containers(&containers)
+            serving_containers(&containers, |_| None)
                 .into_iter()
                 .map(super::ServingContainer::as_observation)
                 .collect::<Vec<_>>(),
             vec![&trunk_row, &head_row]
         );
+    }
+
+    const HEALTHY: ContainerRuntimeObservation = ContainerRuntimeObservation::Running {
+        health: HealthObservation::Healthy,
+    };
+
+    struct VisibilityCase {
+        name: &'static str,
+        rows: Vec<(char, u8, ContainerRuntimeObservation)>,
+        pointer: bool,
+        routed: &'static [char],
+    }
+
+    fn visibility_cases() -> Vec<VisibilityCase> {
+        let exited = ContainerRuntimeObservation::Exited { code: 0 };
+        let booting = (
+            'c',
+            2,
+            ContainerRuntimeObservation::Running {
+                health: HealthObservation::Starting,
+            },
+        );
+        let old = || {
+            vec![
+                ('1', 1, HEALTHY),
+                ('2', 1, HEALTHY),
+                ('3', 1, exited.clone()),
+            ]
+        };
+        let mut cases = vec![
+            VisibilityCase {
+                name: "pointed all present",
+                rows: [old(), vec![('a', 2, HEALTHY), ('b', 2, HEALTHY)]].concat(),
+                pointer: true,
+                routed: &['a', 'b'],
+            },
+            VisibilityCase {
+                name: "one pointed row missing",
+                rows: [old(), vec![('a', 2, HEALTHY)]].concat(),
+                pointer: true,
+                routed: &['1', '2', 'a'],
+            },
+            VisibilityCase {
+                name: "pointed Container crashed but present",
+                rows: [old(), vec![('a', 2, HEALTHY), ('b', 2, exited.clone())]].concat(),
+                pointer: true,
+                routed: &['a'],
+            },
+            VisibilityCase {
+                name: "pointed row removed after old retire",
+                rows: vec![('a', 2, HEALTHY)],
+                pointer: true,
+                routed: &['a'],
+            },
+            VisibilityCase {
+                name: "previous deploy fully gone",
+                rows: vec![('a', 2, HEALTHY), ('b', 2, HEALTHY)],
+                pointer: true,
+                routed: &['a', 'b'],
+            },
+            VisibilityCase {
+                name: "no pointer",
+                rows: [old(), vec![('a', 2, HEALTHY), ('b', 2, HEALTHY)]].concat(),
+                pointer: false,
+                routed: &['a', 'b'],
+            },
+        ];
+        for case in &mut cases {
+            case.rows.push(booting.clone());
+        }
+        cases
+    }
+
+    fn visibility_row(
+        id: char,
+        deploy: u8,
+        runtime: ContainerRuntimeObservation,
+    ) -> ContainerObservation {
+        let service_id = ServiceId::parse("a".repeat(32)).unwrap();
+        let octet = u8::try_from(id.to_digit(16).unwrap()).unwrap();
+        let mut row = serving_observation(
+            id,
+            &service_id,
+            ContainerKind::ServiceContainer,
+            runtime,
+            Some([10, 210, 1, octet]),
+        );
+        row.try_update(|parts| {
+            parts.created_at_unix_nanos = i64::from(deploy);
+            parts.resolved_spec.container.image = format!("api:{deploy}");
+            parts
+                .labels
+                .insert(DEPLOYMENT_ID_LABEL.into(), format!("d{deploy}"));
+        })
+        .unwrap();
+        row
+    }
+
+    fn visibility_pointer(retiring: &[char]) -> ServingPointer {
+        let ids = |ids: &[char]| {
+            ids.iter()
+                .map(|id| ContainerId::parse(id.to_string().repeat(64)).unwrap())
+                .collect()
+        };
+        ServingPointer {
+            deploy: DeploymentLogId::parse("d2").unwrap(),
+            containers: ids(&['a', 'b']),
+            previous: Some(DeploymentLogId::parse("d1").unwrap()),
+            retiring: ids(retiring),
+        }
+    }
+
+    fn visibility_containers(case: &VisibilityCase) -> Vec<ServiceContainer> {
+        service_containers(
+            case.rows
+                .iter()
+                .map(|(id, deploy, runtime)| visibility_row(*id, *deploy, runtime.clone())),
+        )
+    }
+
+    fn id_char(container: &ServiceContainer) -> char {
+        container
+            .as_observation()
+            .container_id
+            .as_str()
+            .chars()
+            .next()
+            .unwrap()
+    }
+
+    fn routed_ids(case: &VisibilityCase, pointer: &ServingPointer) -> Vec<char> {
+        let containers = visibility_containers(case);
+        let pointer = case.pointer.then_some(pointer);
+        let mut routed: Vec<char> = serving_containers(&containers, |_| pointer)
+            .into_iter()
+            .map(|serving| id_char(serving.as_container()))
+            .collect();
+        routed.sort_unstable();
+        routed
+    }
+
+    #[test]
+    fn serving_containers_follow_the_union_rule_per_visibility_case() {
+        let pointer = visibility_pointer(&[]);
+        for case in visibility_cases() {
+            assert_eq!(routed_ids(&case, &pointer), case.routed, "{}", case.name);
+        }
+    }
+
+    #[test]
+    fn serving_containers_never_route_an_unaddressed_container() {
+        let pointer = visibility_pointer(&[]);
+        for case in visibility_cases() {
+            let unaddressed: Vec<char> = visibility_containers(&case)
+                .iter()
+                .filter(|container| container.traffic_address().is_none())
+                .map(id_char)
+                .collect();
+            assert!(!unaddressed.is_empty(), "{}", case.name);
+            for id in routed_ids(&case, &pointer) {
+                assert!(!unaddressed.contains(&id), "{}: routed {id}", case.name);
+            }
+        }
+    }
+
+    #[test]
+    fn serving_containers_ignore_the_retiring_list() {
+        let without = visibility_pointer(&[]);
+        let with = visibility_pointer(&['1', '2', '3']);
+        for case in visibility_cases() {
+            assert_eq!(
+                routed_ids(&case, &without),
+                routed_ids(&case, &with),
+                "{}",
+                case.name
+            );
+        }
     }
 
     #[test]

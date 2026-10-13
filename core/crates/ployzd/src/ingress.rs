@@ -219,7 +219,7 @@ impl IngressProjection {
             }
         }
 
-        let mut serving = serving_containers(&containers);
+        let mut serving = serving_containers(&containers, |_| None);
         serving.sort_by_key(|serving| container_order(&machine.id, serving.as_container()));
         for serving in &serving {
             let observation = serving.as_observation();
