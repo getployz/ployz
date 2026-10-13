@@ -83,9 +83,12 @@ export const probeIngressServers = Effect.fn("ClusterDomain.probeIngressServers"
   if (session.status !== "connected") return { kind: "unknown" } satisfies IngressProbe;
   const frame = yield* session.connected.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS);
   if (frame.machines.length === 0) return { kind: "no_servers" } satisfies IngressProbe;
-  const servers = frame.machines.flatMap(({ machine }): IngressServerAddress[] =>
-    machine.accepts_ingress && machine.public_ip !== null ? [{ machineId: machine.id, address: machine.public_ip }] : []);
-  if (servers.length === 0) return { kind: "no_public_ip" } satisfies IngressProbe;
+  const ingress = frame.machines.filter(({ machine }) => machine.accepts_ingress && machine.public_ip !== null);
+  if (ingress.length === 0) return { kind: "no_public_ip" } satisfies IngressProbe;
+  // A down Server reads Offline on the Servers page, where the user fixes it; probing it would only time out.
+  const servers = ingress.flatMap(({ machine, membership }): IngressServerAddress[] =>
+    membership !== "down" && machine.public_ip !== null ? [{ machineId: machine.id, address: machine.public_ip }] : []);
+  if (servers.length === 0) return { kind: "no_servers" } satisfies IngressProbe;
   const probed = yield* Effect.forEach(servers, (server) =>
     probeIngress(`http://${isIPv6(server.address) ? `[${server.address}]` : server.address}`, server.machineId)
       .pipe(Effect.map((answer) => ({ server, answer }))), { concurrency: "unbounded" });
