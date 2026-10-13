@@ -1518,6 +1518,56 @@ describe("volume runs", () => {
       expect(named("fsn-2")).toMatchObject({ stopped: false, copy: { kind: "root", readonly: false, newest: at("f-1") } });
     });
 
+    const landLatePullBeforeEachAsk = (times: number) => {
+      let landed = 0;
+      const land = () => {
+        landed += 1;
+        named("fsn-2").copy = slotCopy(newSnap(`w-0-${landed}`));
+        if (landed < times) beforeSet.set("pull@fsn-2", land);
+      };
+      beforeSet.set("pull@fsn-2", land);
+    };
+
+    it("a pull whose mirror moved since the run observed it asks again from the newest B holds, and the Move lands", async () => {
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
+      landLatePullBeforeEachAsk(1);
+      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
+
+      const output = await execute(run.id);
+
+      expect(output.result).toEqual({ runId: run.id, moved: "fsn-2" });
+      expect(sent.filter((payload) => payload.want.kind === "mirror" && payload.expect.kind === "mirror").slice(0, 2).map((payload) => payload.expect)).toEqual([
+        { kind: "mirror", newest: base.guid, slot: "1" },
+        { kind: "mirror", newest: at("w-0-1").guid, slot: "1" },
+      ]);
+      expect(named("fsn-2").copy).toMatchObject({ kind: "root", readonly: false, epoch: 1, newest: at("f-1") });
+      expect(await rows()).toMatchObject([{ state: "done" }]);
+    });
+
+    it("a pull whose mirror keeps moving fails the Move with B's refusal", async () => {
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
+      landLatePullBeforeEachAsk(10);
+      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
+
+      const output = await execute(run.id);
+
+      expect(output.error).toBeDefined();
+      expect(verbs.filter((verb) => verb.startsWith("pull@"))).toHaveLength(4);
+      expect(await rows()).toMatchObject([{ kind: "move", state: "failed", message: "data's copy on fsn-2 changed under this run" }, { kind: "release" }]);
+    });
+
+    it("a pull refused by a B that became a root fails the Move with B's refusal, asking once", async () => {
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
+      failNext.set("pull@fsn-2", new RawFault({ code: "failed_precondition", message: "mismatch", details: { reason: "mismatch", copy: writerCopy(base, 5) } }));
+      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
+
+      const output = await execute(run.id);
+
+      expect(output.error).toBeDefined();
+      expect(verbs.filter((verb) => verb.startsWith("pull@"))).toEqual(["pull@fsn-2(f-1)"]);
+      expect(await rows()).toMatchObject([{ kind: "move", state: "failed", message: "data's copy on fsn-2 changed under this run" }, { kind: "release" }]);
+    });
+
     it("again after the cut continues from the final pull", async () => {
       cut(newSnap("f-1"));
       machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };

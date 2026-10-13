@@ -191,6 +191,18 @@ const slotAt = (copy: VolumeCopy | null): SlotAt | null =>
 const pulled = (copy: VolumeCopy | null, target: Snapshot) =>
   copy?.kind === "slot" && copy.pull === null && copy.newest?.guid === target.guid;
 
+const MAX_DRIFTS = 3;
+
+async function askPullFollowingDrift(steps: RunSteps, id: string, B: MachineRef, copy: VolumeCopy | null, want: WantedCopy, still: string) {
+  let expect = expectOf(copy);
+  for (let drift = 0; ; drift += 1) {
+    const answer = await setCopy(steps, drift === 0 ? id : `${id}-drift-${drift}`, B, expect, want, still);
+    if (answer.ok) return answer.copy;
+    if (answer.reason !== "mismatch" || answer.copy?.kind !== "slot" || drift === MAX_DRIFTS) throw new NonRetriableError(answer.message);
+    expect = expectOf(answer.copy);
+  }
+}
+
 /**
  * B pulls `target` from A and the run asks again until the pull lands. Every check resends the same request: it finishes
  * a landed pull, leaves a running one alone, and resumes one a restart of B stopped.
@@ -201,7 +213,7 @@ async function pull(steps: RunSteps, prefix: string, ctx: { readonly B: MachineR
   const slot = copyName(run.volumeName, B.name);
   const want: WantedCopy = { kind: "mirror", from: ctx.from, target: target.name, drain: DRAIN_MS };
   const still = `${slot} is still busy`;
-  let copy = await mustSet(steps, `${prefix}-pull`, B, expectOf(ctx.copy), want, still);
+  let copy = await askPullFollowingDrift(steps, `${prefix}-pull`, B, ctx.copy, want, still);
   for (let poll = 0; poll < MAX_POLLS; poll += 1) {
     if (pulled(copy, target)) return copy;
     const failure = copy?.kind === "slot" ? copy.pull?.failure ?? null : null;
@@ -209,7 +221,7 @@ async function pull(steps: RunSteps, prefix: string, ctx: { readonly B: MachineR
     // A landed pull still verifying keeps `pull` set, so only an idle copy skips the wait.
     const idle = copy?.kind === "slot" && copy.pull === null;
     if (!idle) await step.sleep(`${prefix}-wait-${poll}`, POLL_INTERVAL);
-    copy = await mustSet(steps, `${prefix}-repull-${poll}`, B, expectOf(copy), want, still);
+    copy = await askPullFollowingDrift(steps, `${prefix}-repull-${poll}`, B, copy, want, still);
   }
   throw new NonRetriableError(`${slot} is still receiving ${target.name} after ${MAX_POLLS} checks`);
 }
