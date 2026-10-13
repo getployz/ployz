@@ -753,6 +753,16 @@ mod set_volume_copy {
         error.clone()
     }
 
+    /// The lines the cut logged once every holder stopped, as the journal shows them.
+    fn cut_lines(capture: &crate::diag::test_support::Capture) -> Vec<String> {
+        capture
+            .text()
+            .lines()
+            .filter(|line| line.contains("cut: holders stopped"))
+            .map(str::to_owned)
+            .collect()
+    }
+
     fn cut(expect: Value) -> Value {
         json!({"name":VOLUME, "expect":expect,
             "want":{"kind":"mirror", "from":null, "target":"f-1", "drain":0}})
@@ -1002,6 +1012,7 @@ mod set_volume_copy {
         let service = service.with_volume_plugin(socket);
         running_holder(&service, &fake).await;
 
+        let (capture, _logging) = crate::diag::test_support::capture();
         let first = reply(&set_copy(&service, cut(json!({"kind":"writer", "epoch":0}))).await);
         assert_eq!(
             serde_json::to_value(&first).unwrap(),
@@ -1018,6 +1029,10 @@ mod set_volume_copy {
         assert_eq!(
             plugin.routes_called(),
             vec![INSPECT_ROUTE, CUT_ROUTE, INSPECT_ROUTE, INSPECT_ROUTE]
+        );
+        assert_eq!(
+            cut_lines(&capture),
+            vec![" INFO cut: holders stopped volume=app_data target=f-1"]
         );
         server.abort();
         std::fs::remove_dir_all(data_dir).unwrap();
@@ -1122,6 +1137,7 @@ mod set_volume_copy {
         let service = service.with_volume_plugin(socket);
         running_holder(&service, &fake).await;
 
+        let (capture, _logging) = crate::diag::test_support::capture();
         let error = refusal(&set_copy(&service, cut(json!({"kind":"writer", "epoch":0}))).await);
         assert_eq!(error.code, RpcErrorCode::Internal, "{error:?}");
         assert!(
@@ -1133,6 +1149,7 @@ mod set_volume_copy {
         );
         assert_eq!(holder_status(&fake), vec![json!("running")]);
         assert_eq!(plugin.routes_called(), vec![INSPECT_ROUTE]);
+        assert_eq!(cut_lines(&capture), Vec::<String>::new());
         server.abort();
         std::fs::remove_dir_all(data_dir).unwrap();
     }
@@ -1149,12 +1166,14 @@ mod set_volume_copy {
         let service = service.with_volume_plugin(socket);
         running_holder(&service, &fake).await;
 
+        let (capture, _logging) = crate::diag::test_support::capture();
         let error = refusal(&set_copy(&service, cut(json!({"kind":"writer", "epoch":0}))).await);
         assert_eq!(error.code, RpcErrorCode::Conflict, "{error:?}");
         assert_eq!(error.details["reason"], json!("busy"));
         assert_eq!(error.details["copy"], writer_root(0, None)["Ok"]);
         assert_eq!(holder_status(&fake), vec![json!("running")]);
         assert_eq!(plugin.routes_called(), vec![INSPECT_ROUTE, INSPECT_ROUTE]);
+        assert_eq!(cut_lines(&capture), Vec::<String>::new());
         server.abort();
         std::fs::remove_dir_all(data_dir).unwrap();
     }

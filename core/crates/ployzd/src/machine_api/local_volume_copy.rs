@@ -130,6 +130,14 @@ impl MachineService {
                 let cut = self
                     .local
                     .cut_volume_copy(name.clone(), drain, move || async move {
+                        // This closure runs only past the Busy re-check, so the line means every
+                        // holder is stopped, whoever signalled it. The verify harness times that
+                        // moment from it.
+                        tracing::info!(
+                            volume = %request.name,
+                            target = %request.target,
+                            "cut: holders stopped"
+                        );
                         plugin
                             .call::<Copy>(CUT_ROUTE, &request)
                             .await
