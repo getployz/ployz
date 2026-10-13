@@ -167,8 +167,10 @@ class ClusterModel:
             lines += [f"ro ployz/ployz/{PHYSICAL} {root}", f"ro ployz/ployz-mirror/{PHYSICAL}/fs {fs}"]
             snapshots = 12 if self.mutation == "snapshots" else 2
             lines += [f"snap ployz/ployz/{PHYSICAL}@s{i}" for i in range(snapshots)]
-            if machine == self.writer:
+            if machine == self.writer and self.mutation != "elsewhere":
                 lines.append("ct abc running db-1")
+            elif machine != self.writer and self.mutation in ("elsewhere", "two-running"):
+                lines.append("ct xyz running db-2")
             elif self.mutation == "stopped" and machine == self.mirror:
                 lines.append("ct def exited db-old")
             return 0, "\n".join(lines) + "\n"
@@ -505,7 +507,7 @@ class VolumeMoveTests(unittest.TestCase):
         self.assertEqual([attempt["op"] for attempt in skipped["heal"]["attempts"]], ["move", "release"])
         self.assertTrue(all(attempt.get("skipped") for attempt in skipped["heal"]["attempts"]), skipped["heal"])
         self.assertEqual([case["name"] for case in summary["cases"]], [volume_move.KILLS[0]["name"]])
-        self.assertIn("the run stopped after this case: the heal left writable", skipped["failures"][-1])
+        self.assertIn("the run stopped after this case: after the heal, ", skipped["failures"][-1])
         self.assertTrue((self.root / "out" / "summary.json").exists())
 
     def test_a_failed_case_the_heal_cannot_fix_stops_the_run_and_keeps_its_own_failures(self):
@@ -522,9 +524,26 @@ class VolumeMoveTests(unittest.TestCase):
         self.assertEqual([case["name"] for case in summary["cases"]], [volume_move.CASES[0]["name"]])
         failures = summary["cases"][0]["failures"]
         self.assertGreater(len(failures), 1, failures)
-        self.assertIn("the run stopped after this case: the heal left writable", failures[-1])
+        self.assertIn("the run stopped after this case: after the heal, ", failures[-1])
         case = json.loads((self.root / "out" / f"{volume_move.CASES[0]['name']}.json").read_text())
         self.assertIn("states", case)
+
+    def test_a_heal_that_leaves_the_database_off_the_writable_copy_stops_the_run(self):
+        for mutation, left in (("elsewhere", "but the writable copy is"), ("two-running", "2 running db Containers")):
+            with self.subTest(mutation):
+                checks, model = self.checks()
+                setup = checks.setup
+                def placed_wrong():
+                    setup()
+                    model.mutation = mutation
+                checks.setup = placed_wrong
+                with redirect_stdout(io.StringIO()):
+                    summary = checks.run_all([volume_move.CASES[0], volume_move.KILLS[0]])
+                self.assertEqual([case["name"] for case in summary["cases"]], [volume_move.CASES[0]["name"]])
+                failures = summary["cases"][0]["failures"]
+                self.assertIn("the run stopped after this case: after the heal, ", failures[-1])
+                self.assertIn(left, failures[-1])
+                self.assertTrue((self.root / "out" / "summary.json").exists())
 
     def test_a_runs_list_that_fails_while_arming_skips_the_case(self):
         for armed in (False, True):

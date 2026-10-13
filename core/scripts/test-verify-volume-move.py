@@ -256,25 +256,28 @@ def final_writer(states):
     return copies[0].split(":", 1)[0] if len(copies) == 1 else None
 
 
-def assess(states, lost, *, bound=SNAPSHOT_BOUND):
-    failures = []
+def placement(states):
     copies = writable_copies(states)
-    if len(copies) != 1:
-        failures.append(f"{len(copies)} writable copies: {copies}")
-    if lost is None:
-        failures.append("acknowledged ids could not be read back from the writer")
-    elif lost:
-        failures.append(f"{len(lost)} acknowledged ids lost, first {lost[:10]}")
     containers = [(machine, container) for machine, state in states.items() for container in state["containers"]]
-    stopped = [f"{machine}:{container['name']}:{container['state']}" for machine, container in containers
-               if container["state"] != "running"]
-    if stopped:
-        failures.append(f"stopped db Containers: {stopped}")
     running = [machine for machine, container in containers if container["state"] == "running"]
+    failures = [] if len(copies) == 1 else [f"{len(copies)} writable copies: {copies}"]
     if len(running) != 1:
         failures.append(f"{len(running)} running db Containers: {running}")
     elif copies and running[0] != copies[0].split(":", 1)[0]:
         failures.append(f"db runs on {running[0]} but the writable copy is {copies}")
+    return failures
+
+
+def assess(states, lost, *, bound=SNAPSHOT_BOUND):
+    failures = placement(states)
+    if lost is None:
+        failures.append("acknowledged ids could not be read back from the writer")
+    elif lost:
+        failures.append(f"{len(lost)} acknowledged ids lost, first {lost[:10]}")
+    stopped = [f"{machine}:{container['name']}:{container['state']}" for machine, state in states.items()
+               for container in state["containers"] if container["state"] != "running"]
+    if stopped:
+        failures.append(f"stopped db Containers: {stopped}")
     for machine, state in states.items():
         if len(state["snapshots"]) > bound:
             failures.append(f"{machine} holds {len(state['snapshots'])} snapshots, over {bound}")
@@ -744,15 +747,17 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
     def heal(self, destination):
         attempts = []
         for op in ("move", "release"):
-            if self.healthy(limit=5) and len(writable_copies(self.states())) == 1:
+            if self.healthy(limit=5) and not placement(self.states()):
                 break
             try:
                 attempts.append(dict(op=op, run=self.wait_run(self.start_op(op, destination))))
             except Skipped as skip:
                 attempts.append(dict(op=op, skipped=str(skip)))
         machine = self.healthy()
-        copies = writable_copies(self.states())
-        return dict(attempts=attempts, healthy_on=machine, writable=copies, healed=bool(machine) and len(copies) == 1)
+        states = self.states()
+        unhealed = placement(states) + ([] if machine else ["no database answers"])
+        return dict(attempts=attempts, healthy_on=machine, writable=writable_copies(states), unhealed=unhealed,
+                    healed=not unhealed)
 
     def run_all(self, cases):
         self.out.mkdir(parents=True, exist_ok=True)
@@ -777,7 +782,7 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
                 heal = result.get("heal", dict(healed=True))
                 if not heal["healed"]:
                     # A later case would run on a Machine left armed or unhealed and could pass on what this one left.
-                    reason = heal.get("error") or f"the heal left writable {heal['writable']} with the database on {heal['healthy_on']}"
+                    reason = heal.get("error") or f"after the heal, {'; '.join(heal['unhealed'])}"
                     result["failures"].append(f"the run stopped after this case: {reason}"[:2000])
                 (self.out / f"{case['name']}.json").write_text(json.dumps(result, indent=2) + "\n")
                 results.append(result)
