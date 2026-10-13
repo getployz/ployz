@@ -23,6 +23,11 @@ CORE = Path(__file__).resolve().parents[1]
 DASHBOARD = CORE.parent / "dashboard"
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(CORE / "scripts" / "verify"))
+import host  # noqa: E402
+
+
+class Infrastructure(RuntimeError):
+    """A Machine the command needed is not running: the host failed, not the product."""
 
 
 def save(run):
@@ -250,7 +255,35 @@ systemctl enable --now ployz.socket ployz-volume-plugin.socket ployz.service plo
 """, "install", *run["binaries"]])
 
 
+def require_running(run, backend, nodes):
+    """Raise when a Machine in `nodes` is not running: Infrastructure unless `power off` stopped it."""
+    lines, deliberate = [], True
+    for node in nodes:
+        state = backend.state(node)
+        if state == "RUNNING":
+            continue
+        if node["name"] in run.get("powered_off", []):
+            reason = "; `power off` stopped it"
+        else:
+            deliberate = False
+            cause = backend.stop_cause(node) if state else None
+            reason = ((f"; QEMU was terminated by {cause}" if cause else "; its QEMU log records no host kill") +
+                      ("; see sudo journalctl -u earlyoom" if cause and "earlyoom" in cause else ""))
+        lines.append(f"{node['name']} is {state.lower() or 'gone'}{reason}. "
+                     f"Restart it: scripts/verify-cluster power on {run['manifest']} {node['name']}")
+    if lines and deliberate:
+        raise RuntimeError("\n".join(lines))
+    if lines:
+        raise Infrastructure("infrastructure failure, not a product result:\n" + "\n".join(lines))
+
+
+def unintended(run):
+    """Machines that should be running: every one `power off` did not stop."""
+    return [node for node in run["machines"] if node["name"] not in run.get("powered_off", [])]
+
+
 def doctor(run, commands, backend):
+    require_running(run, backend, run["machines"])
     expected = run["binaries"]["ployzd"]
     def inspect(node):
         names = [name for name in run["binaries"] if name != "ployzd"]
@@ -366,14 +399,97 @@ def teardown(run, commands, backend):
     save(run)
 
 
+def age(seconds):
+    seconds = int(seconds)
+    return f"{seconds // 86400}d{seconds % 86400 // 3600}h" if seconds >= 86400 else f"{seconds // 3600}h{seconds % 3600 // 60:02d}m"
+
+
+def describe(run, now):
+    """One host run as a row: what it holds and who answers for it."""
+    record = run["owner"]
+    running = [machine for machine in run["machines"] if machine["status"] == "Running"]
+    live = {True: "live", False: "exited", None: "unknown"}[host.owner_live(record)]
+    checkout = record.get("checkout", "unrecorded")
+    return dict(run=run["id"], age="?" if run["created"] is None else age(now - run["created"]),
+                machines=f"{len(running)}/{len(run['machines'])} running",
+                ram=host.gib(sum(machine["memory"] for machine in running)),
+                owner=f"{live} {record.get('session') or 'pid ' + record['pid'].partition(':')[0]}" if record else "unrecorded",
+                checkout=checkout + ("" if checkout == "unrecorded" or Path(checkout).is_dir() else " (gone)"))
+
+
+def table(rows, columns):
+    widths = {column: max([len(column), *(len(str(row[column])) for row in rows)]) for column in columns}
+    return "\n".join("  ".join(str(row[column]).ljust(widths[column]) for column in columns).rstrip()
+                     for row in [{column: column.upper() for column in columns}, *rows])
+
+
+def preflight(args):
+    """Refuse a launch the shared host cannot hold, naming the runs that hold it."""
+    module = importlib.import_module(args.provider)
+    memory = host.size(args.memory or module.DEFAULT_SIZES["memory"])
+    meminfo = {line.split(":")[0]: int(line.split()[1]) * 1024 for line in Path("/proc/meminfo").read_text().splitlines()}
+    try:
+        free, total = module.capacity(os.environ.get("PLOYZ_VERIFY_INCUS_POOL", "ployz-verify"))
+    except subprocess.CalledProcessError:
+        # The pool does not exist yet; its first run creates it on the root filesystem.
+        usage = shutil.disk_usage("/")
+        free, total = usage.free, usage.total
+    runs = module.runs()
+    reserve = {name: host.size(os.environ[variable]) for name, variable in
+               [("memory_reserve", "PLOYZ_VERIFY_MEMORY_RESERVE"), ("disk_reserve", "PLOYZ_VERIFY_DISK_RESERVE")] if os.environ.get(variable)}
+    problems = host.shortfalls(args.machines, memory, meminfo["MemAvailable"], meminfo["MemTotal"],
+                               [machine for run in runs for machine in run["machines"]], free, total, **reserve)
+    if problems:
+        now = time.time()
+        raise RuntimeError("This host cannot fit the run now.\n" + "\n".join(problems) + "\nVerify runs on this host:\n" +
+                           table([describe(run, now) for run in runs], ["run", "age", "machines", "ram", "owner", "checkout"]) +
+                           "\nDown your own finished runs; `scripts/verify-cluster reap` lists orphans it would remove.")
+
+
+def reap(args):
+    module = importlib.import_module("incus")
+    now, rows = time.time(), []
+    for found in module.runs():
+        if args.runs and found["id"] not in args.runs:
+            continue
+        remove, reason = host.verdict(found, now, int(args.older_than * 3600), args.force)
+        rows.append({**describe(found, now), "action": ("remove" if remove else "keep"), "reason": reason})
+        if not (remove and args.yes):
+            continue
+        manifest = Path(found["owner"].get("manifest", ""))
+        if manifest.is_file() and json.loads(manifest.read_text()).get("id") == found["id"]:
+            run = json.loads(manifest.read_text())
+            try:
+                with locked(run):
+                    commands = Commands(run)
+                    teardown(run, commands, provider(run, commands))
+            except RuntimeError as error:
+                rows[-1].update(action="failed", reason=str(error).splitlines()[0])
+                continue
+        else:
+            # The manifest is gone, so evidence goes to the host cache.
+            directory = Path.home() / ".cache" / "ployz" / "verify" / "reaped" / found["id"]
+            directory.mkdir(parents=True, exist_ok=True)
+            run = dict(id=found["id"], manifest=str(directory / "cluster.json"), provider="incus", provider_state={},
+                       machines=[dict(name=machine["name"]) for machine in found["machines"]])
+            commands = Commands(run)
+            provider(run, commands).destroy()
+        rows[-1]["action"] = "removed"
+    print(table(rows, ["run", "action", "reason", "age", "machines", "ram", "owner", "checkout"]))
+    if not args.yes and any(row["action"] == "remove" for row in rows):
+        print("Dry run; pass --yes to remove the runs marked remove.", file=sys.stderr)
+
+
 def up(args):
     total_started = time.monotonic()
+    preflight(args)
     directory = CORE / ".verify" / (time.strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:10])
     directory.mkdir(parents=True, mode=0o700)
     private = directory / "private"
     (private / "bin").mkdir(parents=True, mode=0o700)
     (directory / "workspace").mkdir()
     run = dict(manifest=str(directory / "cluster.json"), root=str(CORE),
+               owner=host.owner(CORE.parent, directory / "cluster.json"),
                id=directory.name.rsplit("-", 1)[1], provider=args.provider,
                provider_state={resource: size for resource, size in [("memory", args.memory), ("disk", args.disk)] if size}, state="starting", daemon={"source": args.daemon},
                timings={}, machines=[dict(name=f"machine-{index}") for index in range(1, args.machines + 1)])
@@ -496,6 +612,13 @@ def main():
                          help="Start this checkout's dashboard verify instance and enroll through it; down stops it")
     # dashboard/scripts/verify/up.sh started the dashboard and owns it.
     pairing.add_argument("--cloud-attach", action="store_true", help=argparse.SUPPRESS)
+    listing = actions.add_parser("ls", help="List every verify run on this host, from any checkout")
+    listing.add_argument("--json", action="store_true")
+    reaping = actions.add_parser("reap", help="Remove runs whose checkout or manifest is gone or that are old; a dry run without --yes")
+    reaping.add_argument("runs", nargs="*", metavar="RUN", help="Only consider these run ids")
+    reaping.add_argument("--older-than", type=float, default=24, metavar="HOURS", help="Age that makes a run removable; 24 by default")
+    reaping.add_argument("--force", action="store_true", help="Also remove runs whose owner process is still alive")
+    reaping.add_argument("--yes", action="store_true", help="Remove the runs marked remove")
     for action in ["doctor", "update", "down", "exec", "cli", "power", "partition", "runner", "probe", "dns-soak"]:
         command = actions.add_parser(action)
         if action in ["power", "partition"]:
@@ -529,6 +652,14 @@ def main():
     if args.action == "up":
         up(args)
         return 0
+    if args.action == "ls":
+        now = time.time()
+        rows = [describe(found, now) for found in importlib.import_module("incus").runs()]
+        print(json.dumps({"runs": rows}) if args.json else table(rows, ["run", "age", "machines", "ram", "owner", "checkout"]))
+        return 0
+    if args.action == "reap":
+        reap(args)
+        return 0
     run = json.loads(args.manifest.read_text())
     if run["root"] != str(CORE) or Path(run["manifest"]).resolve() != args.manifest.resolve():
         raise RuntimeError("Use this run's originating checkout and manifest path")
@@ -544,6 +675,9 @@ def main():
         raise RuntimeError(f"Unknown Machine: {args.machine}")
     if args.action == "power":
         power(backend, machine, args.state == "on")
+        # A Machine this run cut is down by intent, so its failures stay product results.
+        run["powered_off"] = sorted(set(run.get("powered_off", [])) - {machine["name"]} | ({machine["name"]} if args.state == "off" else set()))
+        save(run)
         return 0
     if args.action == "partition":
         partition(run, backend, machine, args.state == "on")
@@ -562,6 +696,8 @@ def main():
             ployz, environment, workspace, commands.evidence, service=args.service,
             user=args.user, database=args.database, rate=args.rate, stall=args.stall)
         print(json.dumps(result))
+        if result["lost"]:
+            require_running(run, backend, unintended(run))
         return 1 if result["lost"] else 0
     if args.action in ["exec", "cli"]:
         command = args.command[1:] if args.command[:1] == ["--"] else args.command
@@ -573,6 +709,10 @@ def main():
             result = backend.exec(machine, command, check=False, timeout=args.timeout)
         sys.stdout.buffer.write(result.stdout)
         sys.stderr.buffer.write(result.stderr)
+        if result.returncode:
+            sys.stdout.flush()
+            sys.stderr.flush()
+            require_running(run, backend, [machine] if machine else unintended(run))
         return result.returncode
     if args.action == "doctor":
         print(json.dumps(doctor(run, commands, backend), indent=2))
@@ -598,6 +738,9 @@ def main():
 if __name__ == "__main__":
     try:
         sys.exit(main())
+    except Infrastructure as error:
+        print(f"verify-cluster: {error}", file=sys.stderr)
+        sys.exit(host.INFRASTRUCTURE)
     except (RuntimeError, subprocess.TimeoutExpired, OSError) as error:
         print(f"verify-cluster: {error}", file=sys.stderr)
         sys.exit(1)

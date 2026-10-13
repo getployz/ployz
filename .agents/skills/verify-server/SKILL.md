@@ -95,6 +95,21 @@ Run cleanup after failed attempts as well as successful verification. It collect
 
 The Incus host needs KVM, passwordless sudo, Python 3, Rust, `strip`, OpenSSH, Incus and QEMU/OVMF. The backend uses the shared `ployz-verify` directory pool here. Set `PLOYZ_VERIFY_INCUS_POOL` before launch to use another existing Incus pool; the manifest binds subsequent commands to that pool. A copy-on-write pool cuts disk cloning time, but measure total startup on the actual host: loop-backed ZFS made complete VM startup slower on this VM. Prepared images and the first pool import are shared cache costs. Agents may install missing development dependencies under this VM's environment instructions. Docker's host forwarding rules can block guest networking; the Incus backend adds and removes rules scoped to this run's bridge. The lab enrolls standalone by default.
 
+## Shared host
+
+`up` refuses to launch when the host cannot hold the new Machines. It counts each running guest's memory limit as promised, because guests grow to their limit and earlyoom then kills QEMU. The refusal lists every run with its owner. It does not wait; retry after runs end, or down your own. `PLOYZ_VERIFY_MEMORY_RESERVE` and `PLOYZ_VERIFY_DISK_RESERVE` override the headroom kept free (a tenth of RAM, a twentieth of the pool).
+
+```bash
+scripts/verify-cluster ls                      # every run on the host: owner, age, Machines, RAM, checkout
+scripts/verify-cluster reap                    # dry run: what would be removed and why
+scripts/verify-cluster reap --yes              # remove the runs marked remove
+scripts/verify-cluster reap <run-id> ...       # consider only these runs
+```
+
+Each run records its checkout, manifest, creation time, agent session and owner process in the manifest and on its Incus project. `reap` removes runs whose checkout or manifest is gone or that are older than `--older-than` hours (24). It keeps a run whose owner process still lives unless `--force`. To remove one of your own runs whose manifest you lost, pass `<run-id> --older-than 0 --force --yes`.
+
+When `cli`, `exec`, `probe` or `doctor` finds a Machine stopped that `power off` did not stop, it exits 75 and prints an infrastructure failure, not a product result. The message names the killer QEMU logged (usually earlyoom; `sudo journalctl -u earlyoom` shows why) and the `power on` line that restarts the Machine. Rerun the check after restarting; do not report it as a feature failure. A Machine that `power off` stopped is not an infrastructure failure: `cli` and `probe` return the product's result, and `doctor` or `exec` on that Machine exit 1 with the same restart line.
+
 ## Cloud pairing
 
 ```bash
