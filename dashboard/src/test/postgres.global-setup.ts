@@ -53,7 +53,7 @@ async function removeOrphanedServers() {
     const pid = Number(/^ployz-test-(\d+)-/.exec(name)?.[1]);
     return pid > 0 && !isRunning(pid);
   });
-  if (orphans.length > 0) await docker("rm", "--force", ...orphans);
+  if (orphans.length > 0) await docker("rm", "--force", ...orphans).catch(() => undefined);
 }
 
 /** Starts a throwaway PostgreSQL server with a migrated `ployz_cloud` database. */
