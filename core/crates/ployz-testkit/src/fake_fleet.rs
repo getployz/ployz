@@ -943,6 +943,7 @@ impl Fleet {
             .ok_or_else(|| Status::internal("the changed Container vanished"))?;
         Ok(EnsuredContainer::Ensured {
             now: ContainerNow::Present(machine.observe(observed)?),
+            health: None,
         }
         .into())
     }

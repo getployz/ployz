@@ -24,6 +24,40 @@ fn unspecified_stop_timeout_has_no_rpc_deadline() {
 }
 
 #[test]
+fn an_unanswered_call_names_the_machine_in_its_deepest_line() {
+    let machine = machine_id('a');
+    let lost = TransportError::from(tonic::Status::unavailable("deadline has elapsed"));
+
+    let error = answered_by(&machine, ConnectError::Rpc(lost));
+
+    assert_eq!(error.code, RpcErrorCode::Unavailable);
+    assert_eq!(
+        error.message,
+        format!("Machine {machine} did not answer: deadline has elapsed")
+    );
+    assert!(error.cause.is_empty(), "{:?}", error.cause);
+    let row = ployz_store::Failure::from(&crate::deploy::ExecutionError::Machine {
+        action: ployz_core::MachineAction::CreateContainer,
+        error,
+    });
+    assert_eq!(
+        row.cause.last(),
+        Some(&format!(
+            "Machine {machine} did not answer: deadline has elapsed"
+        ))
+    );
+}
+
+#[test]
+fn a_machine_answer_keeps_its_own_words() {
+    let answered = unavailable("Docker Volume was created but could not be verified");
+
+    let error = answered_by(&machine_id('a'), ConnectError::Remote(answered.clone()));
+
+    assert_eq!(error, answered);
+}
+
+#[test]
 fn deploy_snapshot_keeps_successful_observations_and_query_gaps() {
     let machines = vec![machine('a'), machine('b')];
     let container = observation('1', 'a');

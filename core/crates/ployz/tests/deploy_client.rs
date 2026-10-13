@@ -711,7 +711,7 @@ async fn abort_during_health_wait_settles_a_cancelled_outcome() {
                         matches!(
                             &row.status,
                             OperationStatus::Running {
-                                phase: OperationPhase::WaitingForHealth { .. },
+                                phase: OperationPhase::CreatingContainer,
                             }
                         )
                     })
@@ -726,7 +726,7 @@ async fn abort_during_health_wait_settles_a_cancelled_outcome() {
                 assert!(matches!(
                     failed,
                     FailedOperation::Operation {
-                        error: ExecutionError::Cancelled | ExecutionError::Health { .. },
+                        error: ExecutionError::Cancelled,
                         ..
                     }
                 ));
@@ -734,58 +734,6 @@ async fn abort_during_health_wait_settles_a_cancelled_outcome() {
             }
         }
     }
-    server.abort();
-}
-
-#[tokio::test]
-async fn wait_phases_carry_elapsed_and_deadline_clocks() {
-    let machine = machine('a', "one");
-    let service = DeployService::new(machine).hold_health();
-    let (mut client, server) = connected(service).await;
-    let mut options = skip_health();
-    options.skip_health_monitor = false;
-    let preview = client
-        .preview(DeployIntent::apply_one(
-            Namespace::parse("app").unwrap(),
-            health_spec("web"),
-            options,
-        ))
-        .await
-        .unwrap();
-    let cancel = CancellationToken::new();
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    let running = client.confirm(&preview, &cancel, Some(tx));
-    tokio::pin!(running);
-    let mut saw_clocks = false;
-    loop {
-        tokio::select! {
-            event = rx.recv() => {
-                let Some(event) = event else { break };
-                if let DeployEvent::Progress { rows, .. } = &event {
-                    saw_clocks |= rows.iter().any(|row| matches!(
-                        &row.status,
-                        OperationStatus::Running {
-                            phase: OperationPhase::WaitingForHealth {
-                                deadline_ms,
-                                ..
-                            },
-                        } if *deadline_ms > 0
-                    ));
-                    if saw_clocks {
-                        cancel.cancel();
-                    }
-                }
-            }
-            outcome = &mut running => {
-                let _ = outcome;
-                break;
-            }
-        }
-    }
-    assert!(
-        saw_clocks,
-        "wait phases must include elapsed_ms/deadline_ms"
-    );
     server.abort();
 }
 

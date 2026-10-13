@@ -115,7 +115,11 @@ fn deploy_failures_keep_runtime_exit_and_secondary_stop_causes() {
     );
     assert_eq!(HealthFailure::Cancelled.to_string(), "cancelled");
     assert_eq!(
-        HealthFailure::TimedOut { last_check: None }.to_string(),
+        HealthFailure::TimedOut {
+            deadline_millis: None,
+            last_check: None,
+        }
+        .to_string(),
         "timed out"
     );
     assert_eq!(
@@ -225,6 +229,7 @@ fn unconstrained_names_and_health_failures_escape_controls() {
         }
         .to_string(),
         HealthFailure::TimedOut {
+            deadline_millis: None,
             last_check: Some(LastHealthCheck::Exited {
                 code: 1,
                 output: raw.into(),
@@ -265,15 +270,24 @@ fn health_failures_quote_the_last_check() {
     for (failure, expected) in [
         (
             HealthFailure::TimedOut {
+                deadline_millis: None,
                 last_check: Some(LastHealthCheck::exited(127, "sh: pg_isready: not found\n")),
             },
             "timed out; last check exited 127: sh: pg_isready: not found",
         ),
         (
             HealthFailure::TimedOut {
+                deadline_millis: None,
                 last_check: Some(LastHealthCheck::exited(1, "")),
             },
             "timed out; last check exited 1",
+        ),
+        (
+            HealthFailure::TimedOut {
+                deadline_millis: Some(60_000),
+                last_check: Some(LastHealthCheck::HttpStatus { status: 404 }),
+            },
+            "did not become healthy within 60s; last check: HTTP 404",
         ),
         (
             HealthFailure::Runtime {
@@ -293,6 +307,7 @@ fn health_failures_quote_the_last_check() {
         ),
         (
             HealthFailure::TimedOut {
+                deadline_millis: None,
                 last_check: Some(LastHealthCheck::HttpUnreachable {
                     error: HttpCheckError::TimedOut,
                 }),
@@ -301,6 +316,7 @@ fn health_failures_quote_the_last_check() {
         ),
         (
             HealthFailure::TimedOut {
+                deadline_millis: None,
                 last_check: Some(LastHealthCheck::HttpUnreachable {
                     error: HttpCheckError::Other,
                 }),
@@ -339,7 +355,10 @@ fn a_last_check_keeps_the_first_line_of_output_cut_short() {
 fn health_failures_recorded_without_a_last_check_still_decode() {
     assert_eq!(
         serde_json::from_value::<HealthFailure>(json!({ "type": "timed_out" })).unwrap(),
-        HealthFailure::TimedOut { last_check: None }
+        HealthFailure::TimedOut {
+            deadline_millis: None,
+            last_check: None,
+        }
     );
     let runtime = json!({
         "type": "runtime",

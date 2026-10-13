@@ -588,6 +588,25 @@ fn other_statuses_and_unknown_routes_stay_unnamed() {
     assert_eq!(unknown_route.to_rpc_error().details, Value::Null);
 }
 
+#[tokio::test]
+async fn the_transport_child_leaves_the_terminal_process_group() {
+    use tokio::io::AsyncReadExt as _;
+    let mut child = spawn_child(
+        Path::new("sh"),
+        &["-c".to_owned(), "ps -o pid=,pgid= -p $$".to_owned()],
+    )
+    .unwrap();
+    let mut out = String::new();
+    child.read_to_string(&mut out).await.unwrap();
+    let ids: Vec<&str> = out.split_whitespace().collect();
+    assert_eq!(ids.len(), 2, "pid and process group: {out:?}");
+    assert_eq!(
+        ids.first(),
+        ids.last(),
+        "the child leads its own process group"
+    );
+}
+
 #[test]
 fn only_a_target_reply_outlasts_a_later_silence() {
     let silent = || {

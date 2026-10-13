@@ -44,10 +44,7 @@ use crate::{
 mod capacity;
 mod container_health;
 
-pub(crate) use container_health::{
-    DEFAULT_HEALTH_MONITOR, HealthExpectation, HealthPoll, HealthWaitError, HealthWaitTick,
-    POLL_INTERVAL, classify_health, health_deadline_for, observed_health, wait_until_ready,
-};
+pub(crate) use container_health::HealthWaitError;
 
 const STORAGE_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(3);
 /// Reply timeout for mutations on a live Machine, which may be mid-Deploy and
@@ -1022,13 +1019,28 @@ impl Client {
         want: ContainerWant,
         timeout: Option<Duration>,
     ) -> Result<ContainerNow, RpcError> {
-        self.invoke::<op::EnsureContainer>(
-            EnsureContainerRequest { want },
-            &MachineTarget::from(machine_id),
-            timeout,
-        )
+        self.ensure_settled(machine_id, want, timeout)
+            .await
+            .map(|(now, _)| now)
+    }
+
+    pub(crate) async fn ensure_settled(
+        &self,
+        machine_id: &MachineId,
+        want: ContainerWant,
+        timeout: Option<Duration>,
+    ) -> Result<(ContainerNow, Option<ployz_core::HealthVerdict>), RpcError> {
+        let payload = op::EnsureContainer::into_request(EnsureContainerRequest { want })
+            .encode()
+            .map_err(|error| rpc_error(ConnectError::Codec(error)))?;
+        let target = MachineTarget::from(machine_id);
+        apply_timeout(timeout, async {
+            self.call_once::<op::EnsureContainer>(payload, Some(&target))
+                .await
+                .map_err(|error| ConnectError::Remote(answered_by(machine_id, error)))
+        })
         .await?
-        .into_result()
+        .into_settled()
     }
 
     pub async fn change_observed_service(
@@ -1116,6 +1128,28 @@ impl Client {
 
 /// Only a gRPC status can mean an old daemon lacks the route. An error body
 /// is the daemon's own answer, so it keeps the daemon's sentence.
+/// A Machine's own answer keeps its words. An unavailable call it never answered
+/// names the Machine in the deepest line, which is the one progress shows.
+fn answered_by(machine_id: &MachineId, error: ConnectError) -> RpcError {
+    if let ConnectError::Remote(answered) = error {
+        return answered;
+    }
+    let error = rpc_error(error);
+    if error.code != RpcErrorCode::Unavailable {
+        return error;
+    }
+    let transport = std::iter::once(error.message)
+        .chain(error.cause)
+        .collect::<Vec<_>>()
+        .join(": ");
+    RpcError {
+        code: RpcErrorCode::Unavailable,
+        message: format!("Machine {machine_id} did not answer: {transport}"),
+        details: Value::Null,
+        cause: Vec::new(),
+    }
+}
+
 fn refused(status: tonic::Status, path: &str, target: Option<&MachineTarget>) -> ConnectError {
     let error = TransportError::from(status);
     ConnectError::Rpc(match target {

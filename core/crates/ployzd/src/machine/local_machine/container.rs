@@ -10,6 +10,10 @@ use ployz_core::{
     Namespace, NewContainer, PruneImagesRequest, PullImageFromMachineRequest, ResolvedServiceSpec,
     RunTarget, StopOptions, VolumeRemoved,
 };
+use ployz_core::{
+    AnswerWhen, HEALTH_POLL_INTERVAL, HealthFailure, HealthPoll, HealthVerdict, HealthcheckSpec,
+    health_monitor, ready_poll,
+};
 
 use super::super::ingress::admit_ingress_service;
 use super::{Error, LocalMachine};
@@ -431,10 +435,117 @@ impl LocalMachine {
         &self,
         want: ContainerWant,
     ) -> Result<EnsuredContainer, Error> {
+        let settled_spec = if let ContainerWant::Running {
+            container: RunTarget::New(new),
+        } = &want
+            && new.answer == AnswerWhen::Settled
+        {
+            Some(new.resolved_spec.clone())
+        } else {
+            None
+        };
+        let ensured = self.converge_container(want).await?;
+        let Some(spec) = settled_spec else {
+            return Ok(ensured);
+        };
+        let EnsuredContainer::Ensured {
+            now: ContainerNow::Present(observed),
+            health: None,
+        } = ensured
+        else {
+            return Ok(ensured);
+        };
+        let health = self.settle_health(&observed.container_id, &spec).await?;
+        Ok(EnsuredContainer::Ensured {
+            now: ContainerNow::Present(observed),
+            health: Some(health),
+        })
+    }
+
+    async fn settle_health(
+        &self,
+        container_id: &ContainerId,
+        spec: &ResolvedServiceSpec,
+    ) -> Result<HealthVerdict, Error> {
+        let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+        let machine_id = self.record().id();
+        let healthcheck = spec.container.healthcheck.as_ref();
+        let checked = matches!(
+            healthcheck,
+            Some(HealthcheckSpec::Configured(_) | HealthcheckSpec::Http(_))
+        );
+        let monitor = health_monitor(spec);
+        let started = tokio::time::Instant::now();
+        loop {
+            let details = containers
+                .inspect_managed_details(container_id, &machine_id)
+                .await?;
+            let elapsed = started.elapsed();
+            let wake = match ready_poll(healthcheck, monitor, &details, elapsed).0 {
+                HealthPoll::Complete if checked || elapsed >= monitor => {
+                    return Ok(HealthVerdict::Healthy);
+                }
+                HealthPoll::Complete => monitor,
+                HealthPoll::PendingUntil(wake) => wake,
+                HealthPoll::Failed(HealthFailure::Runtime {
+                    observation,
+                    last_check,
+                }) => {
+                    return Ok(HealthVerdict::Failed {
+                        observation,
+                        last_check,
+                    });
+                }
+                HealthPoll::Failed(HealthFailure::TimedOut {
+                    deadline_millis,
+                    last_check,
+                }) => {
+                    return Ok(HealthVerdict::TimedOut {
+                        deadline_millis,
+                        last_check,
+                    });
+                }
+                HealthPoll::Failed(HealthFailure::Cancelled) => {
+                    return Ok(HealthVerdict::TimedOut {
+                        deadline_millis: None,
+                        last_check: None,
+                    });
+                }
+            };
+            tokio::time::sleep_until(started + (elapsed + HEALTH_POLL_INTERVAL).min(wake)).await;
+        }
+    }
+
+    async fn converge_container(&self, want: ContainerWant) -> Result<EnsuredContainer, Error> {
+        if matches!(
+            want,
+            ContainerWant::Gone {
+                container: ContainerLocator::Key(_),
+                ..
+            }
+        ) {
+            // Detached so a caller that stops waiting still removes what the
+            // admitted create puts in the slot.
+            let local = self.clone();
+            return tokio::spawn(async move {
+                local.wait_for_admitted_work().await;
+                local.converge_now(want).await
+            })
+            .await?;
+        }
+        self.converge_now(want).await
+    }
+
+    async fn converge_now(&self, want: ContainerWant) -> Result<EnsuredContainer, Error> {
         let locator = want_locator(&want);
         let now = self.container_now(&locator).await?;
         let refusal = match plan_container(want, &now, &self.record().phase()) {
-            ContainerStep::Done => return Ok(EnsuredContainer::Ensured { now: redacted(now) }),
+            ContainerStep::Done => {
+                return Ok(EnsuredContainer::Ensured {
+                    now: redacted(now),
+                    health: None,
+                });
+            }
             ContainerStep::Refuse(refusal) => {
                 return Ok(EnsuredContainer::Refused {
                     now: redacted(now),
@@ -508,9 +619,13 @@ impl LocalMachine {
         };
         let now = redacted(self.container_now(&locator).await?);
         Ok(match refusal {
-            None => EnsuredContainer::Ensured { now },
+            None => EnsuredContainer::Ensured { now, health: None },
             Some(refusal) => EnsuredContainer::Refused { now, refusal },
         })
+    }
+
+    async fn wait_for_admitted_work(&self) {
+        drop(self.owner.admission_lock().write_owned().await);
     }
 
     async fn container_now(&self, locator: &ContainerLocator) -> Result<ContainerNow, Error> {

@@ -32,6 +32,8 @@ export type AnonymousVolumes = "remove" | "keep";
 
 export type Answer = { "value": JsonValue } | { "error": RpcError };
 
+export type AnswerWhen = "started" | "settled";
+
 export type AppliedVolume = { project: ProjectName, environment: EnvironmentName, volume: VolumeName, };
 
 export type Apply = "staged" | "immediate";
@@ -1649,7 +1651,11 @@ target_versions: { [key in string]: number }, };
 
 export type EnsureContainerRequest = { want: ContainerWant, };
 
-export type EnsuredContainer = { "status": "ensured", now: ContainerNow, } | { "status": "refused", now: ContainerNow, refusal: ContainerRefusal, };
+export type EnsuredContainer = { "status": "ensured", now: ContainerNow,
+/**
+ * How the started Container's health settled, when the want asked to wait for it.
+ */
+health?: HealthVerdict, } | { "status": "refused", now: ContainerNow, refusal: ContainerRefusal, };
 
 export type EnvironmentCreated = {
 /**
@@ -1936,9 +1942,15 @@ truncated: boolean, };
 
 export type Health = "starting" | "healthy" | "unhealthy";
 
-export type HealthFailure = { "type": "cancelled" } | { "type": "timed_out", last_check?: LastHealthCheck, } | { "type": "runtime", observation: ContainerRuntimeObservation, last_check?: LastHealthCheck, };
+export type HealthFailure = { "type": "cancelled" } | { "type": "timed_out",
+/**
+ * The wait the Container had to pass its first check in.
+ */
+deadline_millis?: number, last_check?: LastHealthCheck, } | { "type": "runtime", observation: ContainerRuntimeObservation, last_check?: LastHealthCheck, };
 
 export type HealthObservation = "not_configured" | "starting" | "healthy" | "unhealthy" | "failing" | "stopping" | string;
+
+export type HealthVerdict = { "verdict": "healthy" } | { "verdict": "failed", observation: ContainerRuntimeObservation, last_check?: LastHealthCheck, } | { "verdict": "timed_out", deadline_millis?: number, last_check?: LastHealthCheck, };
 
 export type HealthcheckCommand = [string, ...string[]];
 
@@ -2694,7 +2706,7 @@ deployment_id?: DeploymentLogId | null,
 /**
  * Credentials for pulling the image; used for this pull only, never stored.
  */
-registry_auth?: RegistryAuth | null, };
+registry_auth?: RegistryAuth | null, answer?: AnswerWhen, };
 
 export type NodeChange = {
 /**

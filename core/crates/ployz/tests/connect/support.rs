@@ -987,7 +987,7 @@ impl MachineRpc for DiscoveryService {
             }
         };
         Ok(Response::new(
-            RpcResponse::from(ployz_core::EnsuredContainer::Ensured { now })
+            RpcResponse::from(ployz_core::EnsuredContainer::Ensured { now, health: None })
                 .encode()
                 .unwrap(),
         ))

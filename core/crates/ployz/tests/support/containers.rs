@@ -30,6 +30,7 @@ pub async fn run(
                 resolved_spec,
                 deployment_id: None,
                 registry_auth: None,
+                answer: ployz_core::AnswerWhen::Started,
             }),
         },
     )

@@ -239,6 +239,7 @@ async fn connect_ssh(
     let output = Command::new(program)
         .args(&probe_args)
         .stdin(Stdio::null())
+        .process_group(0)
         .kill_on_drop(true)
         .output()
         .await
@@ -328,11 +329,14 @@ pub(crate) fn control_path() -> Option<PathBuf> {
 }
 
 fn spawn_child(program: &Path, args: &[String]) -> io::Result<ChildIo> {
+    // A terminal Ctrl-C signals the whole foreground process group. The transport
+    // stays out of it so a cancelled command can still clean up over it.
     let mut child = Command::new(program)
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
+        .process_group(0)
         .kill_on_drop(true)
         .spawn()?;
     let reader = child

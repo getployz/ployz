@@ -17,11 +17,12 @@ fn new_container(key: &str, resolved_spec: ployz_core::ResolvedServiceSpec) -> N
         resolved_spec,
         deployment_id: None,
         registry_auth: None,
+        answer: ployz_core::AnswerWhen::Started,
     }
 }
 
 fn ensured(now: ContainerNow) -> RpcResponse {
-    RpcResponse::from(EnsuredContainer::Ensured { now })
+    RpcResponse::from(EnsuredContainer::Ensured { now, health: None })
 }
 
 fn present_on(target: &Machine, spec: ployz_core::ResolvedServiceSpec, hex: char) -> RpcResponse {

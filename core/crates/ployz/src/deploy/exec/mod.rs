@@ -1,19 +1,19 @@
 use std::{future::Future, time::Duration};
 
 use ployz_core::{
-    AnonymousVolumes, ContainerDetails, ContainerId, ContainerKind, ContainerLocator, ContainerNow,
-    ContainerObservation, ContainerRuntimeObservation, ContainerWant, CreationKey, DeployEvent,
-    DockerVolumeId, Drain, ExecutionError, FailedOperation, HookFailure, InspectContainerRequest,
-    ListContainersRequest, MachineAction, MachineId, MachineTarget, MembershipObservation,
-    Namespace, NewContainer, OperationPhase, QualifiedService, RemoveVolumeRequest,
-    ResolvedServiceSpec, RpcError, RpcErrorCode, RunTarget, SlotKey, StopOptions, UpdateOrder, op,
+    AnonymousVolumes, AnswerWhen, ContainerDetails, ContainerId, ContainerKind, ContainerLocator,
+    ContainerNow, ContainerObservation, ContainerRuntimeObservation, ContainerWant, CreationKey,
+    DeployEvent, DockerVolumeId, Drain, ExecutionError, FailedOperation, HEALTH_POLL_INTERVAL,
+    HealthFailure, HealthVerdict, HookFailure, InspectContainerRequest, ListContainersRequest,
+    MachineAction, MachineId, MachineTarget, MembershipObservation, Namespace, NewContainer,
+    OperationPhase, QualifiedService, RemoveVolumeRequest, ResolvedServiceSpec, RpcError,
+    RpcErrorCode, RunTarget, SlotKey, StopOptions, UpdateOrder, op,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use crate::cluster::POLL_INTERVAL;
 use crate::connect::{Client, TARGET_RPC_TIMEOUT, stop_rpc_timeout};
 use ployz_core::EnvironmentValues;
 
@@ -25,7 +25,7 @@ use super::{
 pub(super) use super::progress::Progress;
 
 mod health;
-use health::{monitor_container, wait_healthy};
+use health::wait_healthy;
 
 const DEFAULT_HOOK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const RESTART_WAIT: Duration = Duration::from_secs(60);
@@ -80,18 +80,25 @@ pub(super) trait MachineOperations {
         &self,
         service: &QualifiedService,
     ) -> Result<Vec<ContainerObservation>, RpcError>;
-    /// Converge one Container to `want` and answer what the Machine then observes.
     async fn ensure_container(
         &self,
         machine_id: &MachineId,
         want: ContainerWant,
-    ) -> Result<ContainerNow, RpcError>;
+    ) -> Result<(ContainerNow, Option<HealthVerdict>), RpcError>;
     async fn inspect_container(
         &self,
         machine_id: &MachineId,
         container_id: &ContainerId,
     ) -> Result<ContainerDetails, RpcError>;
     async fn remove_volume(&self, id: &DockerVolumeId) -> Result<(), RpcError>;
+    /// Whether `machine_id` already runs a Container of this Global spec, which a
+    /// start into `slot` adopts instead of creating.
+    async fn runs_global(
+        &self,
+        machine_id: &MachineId,
+        slot: &SlotKey,
+        spec: &ResolvedServiceSpec,
+    ) -> Result<bool, RpcError>;
 }
 
 impl MachineOperations for Client {
@@ -155,12 +162,15 @@ impl MachineOperations for Client {
         &self,
         machine_id: &MachineId,
         mut want: ContainerWant,
-    ) -> Result<ContainerNow, RpcError> {
+    ) -> Result<(ContainerNow, Option<HealthVerdict>), RpcError> {
         let timeout = match &mut want {
             ContainerWant::Running {
                 container: RunTarget::New(new),
             } => {
-                if let Some(key) = self.retained_global_key(machine_id, new).await? {
+                if let Some(key) = self
+                    .retained_global_key(machine_id, &new.slot, &new.resolved_spec)
+                    .await?
+                {
                     new.slot.creation_key = key;
                 }
                 new.deployment_id.clone_from(&self.deployment_id);
@@ -178,7 +188,7 @@ impl MachineOperations for Client {
             ContainerWant::Stopped { stop, .. } => stop_rpc_timeout(stop.grace_period_seconds, 1),
             ContainerWant::Gone { .. } => None,
         };
-        Client::ensure_container(self, machine_id, want, timeout).await
+        Client::ensure_settled(self, machine_id, want, timeout).await
     }
 
     async fn inspect_container(
@@ -207,6 +217,18 @@ impl MachineOperations for Client {
         )
         .await
         .map(|_| ())
+    }
+
+    async fn runs_global(
+        &self,
+        machine_id: &MachineId,
+        slot: &SlotKey,
+        spec: &ResolvedServiceSpec,
+    ) -> Result<bool, RpcError> {
+        Ok(self
+            .retained_global_key(machine_id, slot, spec)
+            .await?
+            .is_some())
     }
 }
 
@@ -248,12 +270,12 @@ impl Client {
     async fn retained_global_key(
         &self,
         machine_id: &MachineId,
-        new: &NewContainer,
+        slot: &SlotKey,
+        spec: &ResolvedServiceSpec,
     ) -> Result<Option<CreationKey>, RpcError> {
-        let spec = &new.resolved_spec;
-        if new.slot.kind != ContainerKind::ServiceContainer
+        if slot.kind != ContainerKind::ServiceContainer
             || spec.mode != ployz_core::ServiceMode::Global
-            || new.slot.creation_key.as_str() != crate::cluster::global_creation_key(spec)
+            || slot.creation_key.as_str() != crate::cluster::global_creation_key(spec)
         {
             return Ok(None);
         }
@@ -270,8 +292,8 @@ impl Client {
             .into_iter()
             .find_map(|container| {
                 (container.machine_id == *machine_id
-                    && container.kind == new.slot.kind
-                    && container.namespace == new.slot.namespace
+                    && container.kind == slot.kind
+                    && container.namespace == slot.namespace
                     && container.resolved_spec == *spec)
                     .then(|| container.labels.get("ployz.creation.key").cloned())
                     .flatten()
@@ -300,7 +322,7 @@ impl<C: MachineOperations> MachineOperations for RestartTolerant<'_, C> {
         &self,
         machine_id: &MachineId,
         want: ContainerWant,
-    ) -> Result<ContainerNow, RpcError> {
+    ) -> Result<(ContainerNow, Option<HealthVerdict>), RpcError> {
         wait_out_restart(self.cancellation, || {
             self.inner.ensure_container(machine_id, want.clone())
         })
@@ -320,6 +342,18 @@ impl<C: MachineOperations> MachineOperations for RestartTolerant<'_, C> {
 
     async fn remove_volume(&self, id: &DockerVolumeId) -> Result<(), RpcError> {
         wait_out_restart(self.cancellation, || self.inner.remove_volume(id)).await
+    }
+
+    async fn runs_global(
+        &self,
+        machine_id: &MachineId,
+        slot: &SlotKey,
+        spec: &ResolvedServiceSpec,
+    ) -> Result<bool, RpcError> {
+        wait_out_restart(self.cancellation, || {
+            self.inner.runs_global(machine_id, slot, spec)
+        })
+        .await
     }
 }
 
@@ -708,36 +742,24 @@ pub(in crate::deploy) async fn move_container<C: MachineOperations>(
         format!("move:{old}")
     };
     let slot = slot_key(namespace, ContainerKind::ServiceContainer, key);
+    let adopts = global && adopts_running(&client, to, &slot, spec).await;
     let mut progress = Progress::new(Vec::new(), None);
-    let started = run_new(&client, 0, &mut progress, to, slot.clone(), spec).await;
-    let served = match started_container(started, cancellation) {
-        Ok(new) => serve(
-            &client,
-            0,
-            &mut progress,
-            to,
-            &new,
-            spec,
-            false,
-            cancellation,
-        )
-        .await
-        .map(|()| new),
-        Err(error) => Err(error),
-    };
-    let new = match served {
+    let started = run_new(
+        &client,
+        0,
+        &mut progress,
+        to,
+        slot.clone(),
+        spec,
+        AnswerWhen::Settled,
+        cancellation,
+    )
+    .await;
+    let new = match started_container(started, cancellation) {
         Ok(new) => new,
         Err(error) => {
-            let replacement_removed = !global
-                && gone(
-                    &client,
-                    to,
-                    ContainerLocator::Key(slot),
-                    Drain::NONE,
-                    AnonymousVolumes::Remove,
-                )
-                .await
-                .is_ok();
+            let keep = adopts || (global && !cancellation.is_cancelled());
+            let replacement_removed = !keep && discard_attempt(&client, to, slot).await;
             return Err(MoveContainerError::NotServing {
                 error,
                 replacement_removed,
@@ -760,8 +782,10 @@ pub(in crate::deploy) async fn move_container<C: MachineOperations>(
     Ok(new)
 }
 
-/// Create and start the Container of `slot`. A failure that may have left one
-/// there removes it again, unless a Global key could name an earlier attempt's.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "progress row plus slot travel together through execute"
+)]
 async fn start<C: MachineOperations>(
     client: &C,
     index: usize,
@@ -769,29 +793,72 @@ async fn start<C: MachineOperations>(
     machine_id: &MachineId,
     slot: SlotKey,
     spec: &ResolvedServiceSpec,
+    answer: AnswerWhen,
     cancellation: &CancellationToken,
 ) -> Result<ContainerId, ExecutionError> {
     let keyed_by_spec = slot.kind == ContainerKind::ServiceContainer
         && spec.mode == ployz_core::ServiceMode::Global;
-    let started = run_new(client, index, progress, machine_id, slot.clone(), spec).await;
+    let adopts = keyed_by_spec && adopts_running(client, machine_id, &slot, spec).await;
+    let started = run_new(
+        client,
+        index,
+        progress,
+        machine_id,
+        slot.clone(),
+        spec,
+        answer,
+        cancellation,
+    )
+    .await;
     let cleanup = match &started {
         Ok(_) => cancellation.is_cancelled(),
         // A slot held by another spec never held this attempt's Container.
         Err(error) => error.code != RpcErrorCode::Conflict,
     };
-    if cleanup && !keyed_by_spec {
-        let _ = gone(
-            client,
-            machine_id,
-            ContainerLocator::Key(slot),
-            Drain::NONE,
-            AnonymousVolumes::Remove,
-        )
-        .await;
+    let keep = adopts || (keyed_by_spec && !cancellation.is_cancelled());
+    if cleanup && !keep {
+        discard_attempt(client, machine_id, slot).await;
     }
     started_container(started, cancellation)
 }
 
+/// A Global start adopts a running Container of its spec, which a cancel must keep.
+/// An unanswered check keeps it too.
+async fn adopts_running<C: MachineOperations>(
+    client: &C,
+    machine_id: &MachineId,
+    slot: &SlotKey,
+    spec: &ResolvedServiceSpec,
+) -> bool {
+    client
+        .runs_global(machine_id, slot, spec)
+        .await
+        .unwrap_or(true)
+}
+
+/// Remove what a failed creation left in `slot`, giving up if the Machine stays silent.
+async fn discard_attempt<C: MachineOperations>(
+    client: &C,
+    machine_id: &MachineId,
+    slot: SlotKey,
+) -> bool {
+    let discarded = gone(
+        client,
+        machine_id,
+        ContainerLocator::Key(slot),
+        Drain::NONE,
+        AnonymousVolumes::Remove,
+    );
+    matches!(
+        tokio::time::timeout(TARGET_RPC_TIMEOUT, discarded).await,
+        Ok(Ok(_))
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "progress row plus slot travel together through execute"
+)]
 async fn run_new<C: MachineOperations>(
     client: &C,
     index: usize,
@@ -799,7 +866,9 @@ async fn run_new<C: MachineOperations>(
     machine_id: &MachineId,
     slot: SlotKey,
     spec: &ResolvedServiceSpec,
-) -> Result<ContainerId, RpcError> {
+    answer: AnswerWhen,
+    cancellation: &CancellationToken,
+) -> Result<(ContainerId, Option<HealthVerdict>), RpcError> {
     progress.set_running(index, OperationPhase::CreatingContainer);
     let want = ContainerWant::Running {
         container: RunTarget::New(NewContainer {
@@ -807,14 +876,27 @@ async fn run_new<C: MachineOperations>(
             resolved_spec: spec.clone(),
             deployment_id: None,
             registry_auth: None,
+            answer,
         }),
     };
-    match client.ensure_container(machine_id, want).await? {
-        ContainerNow::Present(observed) => {
+    let ensured = client.ensure_container(machine_id, want);
+    let ensured = match answer {
+        AnswerWhen::Started => ensured.await,
+        // A cancel abandons the Machine's health wait; the caller then discards
+        // whatever the slot holds.
+        AnswerWhen::Settled => tokio::select! {
+            answered = ensured => answered,
+            () = cancellation.cancelled() => return Err(unavailable(format!(
+                "the Deploy was cancelled while Machine {machine_id} waited on health"
+            ))),
+        },
+    }?;
+    match ensured {
+        (ContainerNow::Present(observed), health) => {
             progress.set_display_name(index, observed.display_name.clone());
-            Ok(observed.container_id)
+            Ok((observed.container_id, health))
         }
-        ContainerNow::Absent { .. } => Err(RpcError {
+        (ContainerNow::Absent { .. }, _) => Err(RpcError {
             code: RpcErrorCode::Internal,
             message: format!(
                 "the Machine started no Container for slot {}",
@@ -826,18 +908,39 @@ async fn run_new<C: MachineOperations>(
     }
 }
 
+fn unavailable(message: String) -> RpcError {
+    RpcError {
+        code: RpcErrorCode::Unavailable,
+        message,
+        details: serde_json::Value::Null,
+        cause: Vec::new(),
+    }
+}
+
 #[expect(
     clippy::result_large_err,
     reason = "ExecutionError is the Deploy's wire failure value; every step in this file returns it unboxed"
 )]
 fn started_container(
-    started: Result<ContainerId, RpcError>,
+    started: Result<(ContainerId, Option<HealthVerdict>), RpcError>,
     cancellation: &CancellationToken,
 ) -> Result<ContainerId, ExecutionError> {
     if cancellation.is_cancelled() {
         return Err(ExecutionError::Cancelled);
     }
-    started.map_err(|error| machine_error(MachineAction::CreateContainer, error))
+    let (container_id, health) =
+        started.map_err(|error| machine_error(MachineAction::CreateContainer, error))?;
+    match health.and_then(HealthVerdict::into_failure) {
+        None => Ok(container_id),
+        Some(failure) => Err(health_error(container_id, failure)),
+    }
+}
+
+fn health_error(container_id: ContainerId, failure: HealthFailure) -> ExecutionError {
+    ExecutionError::Health {
+        container_id,
+        failure,
+    }
 }
 
 #[expect(
@@ -854,57 +957,25 @@ async fn run_container<C: MachineOperations>(
     skip_health_monitor: bool,
     cancellation: &CancellationToken,
 ) -> Result<ContainerId, ExecutionError> {
-    let container_id = start(
+    start(
         client,
         index,
         progress,
         machine_id,
         slot,
         spec,
-        cancellation,
-    )
-    .await?;
-    serve(
-        client,
-        index,
-        progress,
-        machine_id,
-        &container_id,
-        spec,
-        skip_health_monitor,
-        cancellation,
-    )
-    .await?;
-    Ok(container_id)
-}
-
-#[expect(
-    clippy::too_many_arguments,
-    reason = "progress row plus health spec travel together through execute"
-)]
-async fn serve<C: MachineOperations>(
-    client: &C,
-    index: usize,
-    progress: &mut Progress,
-    machine_id: &MachineId,
-    container_id: &ContainerId,
-    spec: &ResolvedServiceSpec,
-    skip_health_monitor: bool,
-    cancellation: &CancellationToken,
-) -> Result<(), ExecutionError> {
-    if skip_health_monitor {
-        return Ok(());
-    }
-    monitor_container(
-        client,
-        index,
-        progress,
-        machine_id,
-        container_id,
-        spec,
+        answer_when(skip_health_monitor),
         cancellation,
     )
     .await
+}
+
+fn answer_when(skip_health_monitor: bool) -> AnswerWhen {
+    if skip_health_monitor {
+        AnswerWhen::Started
+    } else {
+        AnswerWhen::Settled
+    }
 }
 
 async fn replace_container<C: MachineOperations>(
@@ -963,33 +1034,23 @@ async fn replace_container<C: MachineOperations>(
         false
     };
 
-    // A started new container travels with the failure so compensation can remove it.
-    let started = match start(
+    let started = start(
         client,
         index,
         progress,
         &operation.machine_id,
         slot,
         &operation.spec,
+        answer_when(operation.skip_health_monitor),
         cancellation,
     )
-    .await
-    {
-        Ok(container_id) => serve(
-            client,
-            index,
-            progress,
-            &operation.machine_id,
-            &container_id,
-            &operation.spec,
-            operation.skip_health_monitor,
-            cancellation,
-        )
-        .await
-        .map_err(|error| (Some(container_id), error)),
-        Err(error) => Err((None, error)),
-    };
-    if let Err((new_container, error)) = started {
+    .await;
+    if let Err(error) = started {
+        let new_container = if let ExecutionError::Health { container_id, .. } = &error {
+            Some(*container_id)
+        } else {
+            None
+        };
         return Err(compensate(
             client,
             index,
@@ -1094,6 +1155,7 @@ async fn run_hook<C: MachineOperations>(
         machine_id,
         slot,
         spec,
+        AnswerWhen::Started,
         cancellation,
     )
     .await?;
@@ -1151,7 +1213,7 @@ async fn run_hook<C: MachineOperations>(
             | ContainerRuntimeObservation::Dead
             | ContainerRuntimeObservation::Unknown { .. } => {}
         }
-        let wake = std::cmp::min(Instant::now() + POLL_INTERVAL, deadline);
+        let wake = std::cmp::min(Instant::now() + HEALTH_POLL_INTERVAL, deadline);
         tokio::select! {
             biased;
             () = cancellation.cancelled() => {

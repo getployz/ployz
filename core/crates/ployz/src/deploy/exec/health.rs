@@ -1,20 +1,13 @@
-//! Health-monitor wait for a started container.
-
-use std::time::Duration;
-
 use ployz_core::{
-    ContainerId, ContainerRuntimeObservation, DependencyHealthFailure, ExecutionError,
-    HealthFailure, HealthObservation, HealthcheckSpec, MachineId, OperationPhase, QualifiedService,
-    ResolvedServiceSpec, healthcheck_deadline,
+    ContainerRuntimeObservation, DEFAULT_HEALTH_MONITOR, DependencyHealthFailure, ExecutionError,
+    HEALTH_POLL_INTERVAL, HealthExpectation, HealthObservation, HealthPoll, HealthcheckSpec,
+    OperationPhase, QualifiedService, classify_health, health_deadline_for, healthcheck_deadline,
+    observed_health,
 };
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use super::{MachineOperations, Progress, inspect};
-use crate::cluster::{
-    DEFAULT_HEALTH_MONITOR, HealthExpectation, HealthPoll, HealthWaitError, HealthWaitTick,
-    POLL_INTERVAL, classify_health, health_deadline_for, observed_health, wait_until_ready,
-};
+use super::{MachineOperations, Progress};
 
 pub(super) async fn wait_healthy<C: MachineOperations>(
     client: &C,
@@ -24,7 +17,6 @@ pub(super) async fn wait_healthy<C: MachineOperations>(
     cancellation: &CancellationToken,
 ) -> Result<(), ExecutionError> {
     let started = Instant::now();
-    let monitor_deadline = started + DEFAULT_HEALTH_MONITOR;
     loop {
         if cancellation.is_cancelled() {
             return Err(dependency_health_error(
@@ -50,13 +42,12 @@ pub(super) async fn wait_healthy<C: MachineOperations>(
             ));
         }
 
-        let now = Instant::now();
+        let elapsed = started.elapsed();
         let mut pending = None;
         for observed in &containers {
             let health_deadline = health_deadline_for(
                 observed.resolved_spec.container.healthcheck.as_ref(),
                 observed,
-                started,
             )
             .or_else(|| {
                 matches!(
@@ -67,19 +58,19 @@ pub(super) async fn wait_healthy<C: MachineOperations>(
                             | HealthObservation::Unrecognized(_),
                     }
                 )
-                .then(|| started + healthcheck_deadline(None))
+                .then(|| healthcheck_deadline(None))
             });
             let deadline = match classify_health(
                 &observed.runtime,
                 None,
-                now,
+                elapsed,
                 if matches!(
                     observed.resolved_spec.container.healthcheck,
                     Some(HealthcheckSpec::Http(_))
                 ) {
-                    health_deadline.unwrap_or(monitor_deadline)
+                    health_deadline.unwrap_or(DEFAULT_HEALTH_MONITOR)
                 } else {
-                    monitor_deadline
+                    DEFAULT_HEALTH_MONITOR
                 },
                 health_deadline,
                 HealthExpectation::Healthy,
@@ -112,9 +103,8 @@ pub(super) async fn wait_healthy<C: MachineOperations>(
             OperationPhase::WaitingForHealth {
                 container_id,
                 health,
-                elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-                deadline_ms: u64::try_from(deadline.saturating_duration_since(started).as_millis())
-                    .unwrap_or(u64::MAX),
+                elapsed_ms: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
+                deadline_ms: u64::try_from(deadline.as_millis()).unwrap_or(u64::MAX),
             },
         );
         tokio::select! {
@@ -124,102 +114,8 @@ pub(super) async fn wait_healthy<C: MachineOperations>(
                     DependencyHealthFailure::Cancelled,
                 ));
             }
-            () = tokio::time::sleep_until(std::cmp::min(now + POLL_INTERVAL, deadline)) => {}
+            () = tokio::time::sleep_until(started + std::cmp::min(elapsed + HEALTH_POLL_INTERVAL, deadline)) => {}
         }
-    }
-}
-
-pub(super) async fn monitor_container<C: MachineOperations>(
-    client: &C,
-    index: usize,
-    progress: &mut Progress,
-    machine_id: &MachineId,
-    container_id: &ContainerId,
-    spec: &ResolvedServiceSpec,
-    cancellation: &CancellationToken,
-) -> Result<(), ExecutionError> {
-    let monitor = spec
-        .update
-        .monitor_millis
-        .map_or(DEFAULT_HEALTH_MONITOR, Duration::from_millis);
-    let started = Instant::now();
-    let deadline_ms = spec
-        .container
-        .healthcheck
-        .as_ref()
-        .and_then(HealthcheckSpec::deadline)
-        .unwrap_or_else(|| healthcheck_deadline(None))
-        .as_millis() as u64;
-    progress.set_running(
-        index,
-        OperationPhase::WaitingForHealth {
-            container_id: *container_id,
-            health: None,
-            elapsed_ms: 0,
-            deadline_ms,
-        },
-    );
-
-    if !matches!(
-        spec.container.healthcheck,
-        Some(HealthcheckSpec::Configured(_) | HealthcheckSpec::Http(_))
-    ) && !monitor.is_zero()
-    {
-        let deadline = started + monitor;
-        loop {
-            tokio::select! {
-                () = cancellation.cancelled() => {
-                    return Err(health_error(container_id, HealthFailure::Cancelled));
-                }
-                () = tokio::time::sleep_until(std::cmp::min(Instant::now() + POLL_INTERVAL, deadline)) => {}
-            }
-            progress.set_running(
-                index,
-                OperationPhase::WaitingForHealth {
-                    container_id: *container_id,
-                    health: None,
-                    elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-                    deadline_ms,
-                },
-            );
-            if Instant::now() >= deadline {
-                break;
-            }
-        }
-    }
-
-    wait_until_ready(
-        spec.container.healthcheck.as_ref(),
-        monitor,
-        started,
-        cancellation,
-        || inspect(client, machine_id, container_id),
-        |HealthWaitTick { health, deadline }| {
-            progress.set_running(
-                index,
-                OperationPhase::WaitingForHealth {
-                    container_id: *container_id,
-                    health,
-                    elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-                    deadline_ms: u64::try_from(
-                        deadline.saturating_duration_since(started).as_millis(),
-                    )
-                    .unwrap_or(u64::MAX),
-                },
-            );
-        },
-    )
-    .await
-    .map_err(|error| match error {
-        HealthWaitError::Inspect(error) => error,
-        HealthWaitError::Health(failure) => health_error(container_id, failure),
-    })
-}
-
-fn health_error(container_id: &ContainerId, failure: HealthFailure) -> ExecutionError {
-    ExecutionError::Health {
-        container_id: *container_id,
-        failure,
     }
 }
 

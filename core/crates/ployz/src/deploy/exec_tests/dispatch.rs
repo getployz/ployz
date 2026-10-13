@@ -314,12 +314,14 @@ fn new_want(kind: ContainerKind, spec: &ResolvedServiceSpec, key: &str) -> Conta
             resolved_spec: spec.clone(),
             deployment_id: None,
             registry_auth: None,
+            answer: ployz_core::AnswerWhen::Started,
         }),
     }
 }
 
 fn ensured(machine_id: &MachineId, id: &ContainerId) -> ployz_core::RpcResponse {
     ployz_core::RpcResponse::from(ployz_core::EnsuredContainer::Ensured {
+        health: None,
         now: ContainerNow::Present(observation(machine_id, id, running())),
     })
 }
@@ -408,6 +410,7 @@ async fn removal_sent(purpose: ployz_core::RemoveContainerPurpose) -> Vec<Contai
                 requests.lock().unwrap().push(request);
                 Ok(Response::new(
                     ployz_core::RpcResponse::from(EnsuredContainer::Ensured {
+                        health: None,
                         now: ContainerNow::Absent {
                             of: ContainerLocator::Id(container('a')),
                         },
@@ -678,6 +681,7 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
                                 })
                                 .unwrap();
                             RpcResponse::from(EnsuredContainer::Ensured {
+                                health: None,
                                 now: ContainerNow::Present(stopped.clone()),
                             })
                         }
@@ -703,6 +707,7 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
                                     })
                                     .unwrap();
                                 RpcResponse::from(EnsuredContainer::Ensured {
+                                    health: None,
                                     now: ContainerNow::Present(existing.clone()),
                                 })
                             } else {
@@ -781,12 +786,13 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
                 resolved_spec: spec.clone(),
                 deployment_id: None,
                 registry_auth: None,
+                answer: ployz_core::AnswerWhen::Started,
             }),
         },
     )
     .await
     .unwrap();
-    assert_eq!(replay.present().map(|c| c.container_id), Some(new_id));
+    assert_eq!(replay.0.present().map(|c| c.container_id), Some(new_id));
     let captured = keys.lock().unwrap();
     let [first_key, retry_key] = captured.as_slice() else {
         panic!("expected create and replay");
