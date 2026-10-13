@@ -653,6 +653,24 @@ async fn remove_machine_membership_removes_a_server_that_does_not_answer() {
     server.abort();
 }
 
+#[tokio::test]
+async fn remove_machine_membership_forgets_an_up_server_that_never_replies() {
+    let (_description, peer, mut service) = cluster_with_a_held_peer(MembershipObservation::Up);
+    service.storage_hangs = true;
+    let (mut client, server, _) = connected_client(service.clone()).await;
+
+    client
+        .remove_machine_membership(&ployz_core::MachineTarget::from(&peer.machine.id))
+        .await
+        .unwrap();
+    assert!(service.reset_machines.lock().unwrap().is_empty());
+    assert_eq!(
+        service.removed_machines.lock().unwrap().as_slice(),
+        &[peer.machine.id]
+    );
+    server.abort();
+}
+
 /// An entry Machine and a peer `membership` reports, whose storage holds Volume `data`'s
 /// writer and a slot of Volume `logs`.
 fn cluster_with_a_held_peer(

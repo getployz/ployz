@@ -153,6 +153,8 @@ pub(super) struct DiscoveryService {
     pub(super) inspect_calls: Arc<AtomicUsize>,
     pub(super) storage: MachineStorageObservation,
     pub(super) storage_capacity: Option<ployz_core::StorageCapacity>,
+    /// InspectStorage never replies, as from a hung daemon whose membership stays Up.
+    pub(super) storage_hangs: bool,
     pub(super) recover_volume_on_storage_inspect: Option<DockerVolume>,
     pub(super) container_list_calls: Arc<Mutex<BTreeMap<MachineId, usize>>>,
     pub(super) container_list_outcomes: Arc<Mutex<ContainerListOutcomes>>,
@@ -217,6 +219,7 @@ impl DiscoveryService {
             inspect_calls: Arc::new(AtomicUsize::new(0)),
             storage: MachineStorageObservation::Ready,
             storage_capacity: None,
+            storage_hangs: false,
             recover_volume_on_storage_inspect: None,
             container_list_calls: Arc::new(Mutex::new(BTreeMap::new())),
             container_list_outcomes: Arc::new(Mutex::new(BTreeMap::new())),
@@ -775,6 +778,9 @@ impl MachineRpc for DiscoveryService {
         &self,
         _request: tonic::Request<ployz_core::OpaquePayload>,
     ) -> Result<tonic::Response<ployz_core::OpaquePayload>, tonic::Status> {
+        if self.storage_hangs {
+            return std::future::pending().await;
+        }
         let capacity = self.storage_capacity.as_ref().ok_or_else(|| {
             Status::unimplemented("storage capacity not supplied by this fixture")
         })?;
