@@ -1,7 +1,8 @@
 import { Fragment, useState, type ReactNode } from "react";
 import { ENVIRONMENT_NEW_BRANCH_ROUTE_TO } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/environment-route-paths";
+import { CreateEnvironmentDialog } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/create-environment-dialog";
 import { Link, useLocation, useNavigate } from "@tanstack/react-router";
-import { ChevronsUpDownIcon, GitBranchIcon, GitBranchPlusIcon, LayoutGridIcon, MoreHorizontalIcon, Settings2Icon } from "lucide-react";
+import { ChevronsUpDownIcon, GitBranchIcon, GitBranchPlusIcon, LayoutGridIcon, MoreHorizontalIcon, PlusIcon } from "lucide-react";
 import {
   getDashboardDestination,
   getDashboardSectionLabel,
@@ -157,6 +158,7 @@ function EnvironmentCrumb({ scope }: { scope: EnvironmentScope }) {
   const navigate = useNavigate();
   const section = useDashboardSection();
   const [open, setOpen] = useState(false);
+  const [creating, setCreating] = useState(false);
   const current = environments.find((row) => row.name === scope.environmentSlug);
   const { organizationSlug, projectSlug, environmentSlug } = scope;
   const go = (to: () => Promise<void>) => { setOpen(false); void to(); };
@@ -188,15 +190,15 @@ function EnvironmentCrumb({ scope }: { scope: EnvironmentScope }) {
                   params: { organizationSlug, projectSlug, environmentSlug } }))}>
                   <GitBranchPlusIcon />New branch of {current.name}
                 </CommandItem>}
-                <CommandItem value="manage-environments" onSelect={() => go(() => navigate({ to: "/cloud/$organizationSlug/$projectSlug/$environmentSlug/settings",
-                  params: { organizationSlug, projectSlug, environmentSlug }, search: { scope: "project" } }))}>
-                  <Settings2Icon />Manage environments
+                <CommandItem value="new-environment" onSelect={() => { setOpen(false); setCreating(true); }}>
+                  <PlusIcon />New environment
                 </CommandItem>
               </CommandGroup>
             </CommandList>
           </Command>
         </SwitcherLoading>
       </PopoverContent>
+      {creating && <CreateEnvironmentDialog onOpenChange={setCreating} organizationSlug={organizationSlug} projectSlug={projectSlug} />}
     </Popover>
   );
 }
