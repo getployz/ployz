@@ -67,8 +67,10 @@ export const placeDeployVolumes = Effect.fn("VolumeRun.placeDeploy")(function* (
         placed.push({ kind: "follow", run: contextOf(lane), to, epoch: lane.epoch });
         continue;
       }
-      // SAFETY: a move row's args are a Destination.
-      const resume = lane.kind === "move" ? (lane.args as VolumeRunArgs["move"]) : null;
+      // SAFETY: a move row's args are a Destination; a deploy row's were written from a VolumeRunArgs["deploy"].
+      const resume = lane.kind === "move"
+        ? (lane.args as VolumeRunArgs["move"])
+        : lane.kind === "deploy" ? (lane.args as VolumeRunArgs["deploy"]).resume : null;
       const { run } = yield* takeDeployLane(CLOUD(organizationId), {
         input: { volumeId: lane.volumeId, kind: "deploy", args: { deployment: deploymentId, resume } },
         volume: { environmentId, volumeName: lane.volumeName, dockerVolume: lane.dockerVolume, refquotaBytes: lane.refquotaBytes },

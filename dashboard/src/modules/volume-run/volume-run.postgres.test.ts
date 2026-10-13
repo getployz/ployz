@@ -2278,6 +2278,23 @@ describe("volume runs", () => {
       expect(send).toHaveBeenCalledTimes(1);
     });
 
+    it("a second Deploy taking over the first's running row carries the move it took, so the move is still requested again once", async () => {
+      const taken = await moving();
+      await place();
+
+      const placed = await runEffect(placeDeployVolumes(organizationId, "env-1", "d-2", "deploy-2"));
+
+      expect(placed).toMatchObject([{ kind: "took", resume: { to: "fsn-2" } }]);
+      expect(await lanes()).toMatchObject([
+        { id: taken.id, state: "yielded" },
+        { kind: "deploy", state: "yielded", inngest_run_id: DEPLOY },
+        { kind: "deploy", state: "running", inngest_run_id: "deploy-2", args: { deployment: "d-2", resume: { to: "fsn-2" } } },
+      ]);
+      expect(await finish()).toEqual({ ended: 0, requeued: [], refused: [] });
+      expect(await runEffect(finishDeployVolumes("deploy-2", "done"))).toEqual({ ended: 1, requeued: [expect.any(String)], refused: [] });
+      expect((await lanes()).filter((lane) => lane.kind === "move")).toMatchObject([{ id: taken.id }, { state: "requested", args: { to: "fsn-2" } }]);
+    });
+
     describe("a lane landing while the Deploy places", () => {
       const landings = {
         sync: '{"full":false}',
