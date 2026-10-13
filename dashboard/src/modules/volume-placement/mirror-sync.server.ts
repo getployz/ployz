@@ -166,6 +166,8 @@ export const syncMirrors = Effect.fn("MirrorSync.sync")(function* (
     reported.push({ mirror: copyName(volume.name, member.machine.name), target: pull.target, failure: pull.failure });
   }
 
+  // Read before the lane check, so a lane opened after that check carries a higher gen and fences this sync.
+  const gen = yield* newestGen(volume.volumeId);
   const [lane] = yield* drizzle.select({ id: volumeRun.id, kind: volumeRun.kind }).from(volumeRun)
     .where(and(eq(volumeRun.volumeId, volume.volumeId), inArray(volumeRun.state, [...ACTIVE_VOLUME_RUN_STATES]))).limit(1);
   if (lane !== undefined) return yield* answer(reported, { kind: "covered", run: lane });
@@ -188,7 +190,6 @@ export const syncMirrors = Effect.fn("MirrorSync.sync")(function* (
   if (roleOf(writer) === "cutting") return yield* answer(reported, { kind: "cutting", server: writer.machine.name });
   const epoch = writer.view.copy.epoch;
 
-  const gen = yield* newestGen(volume.volumeId);
   const asker = { organizationId, dockerVolume: volume.dockerVolume, volumeName: volume.name, gen };
   const steps: MirrorStep[] = [];
   const named = (member: Member) => copyName(volume.name, member.machine.name);

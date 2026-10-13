@@ -28,6 +28,8 @@ describe("the mirror sync", () => {
   let members: Member[];
   let asked: string[];
   let mirrorAnswer: CopyAnswer;
+  let gens: number[];
+  let onDeployment: () => Promise<void>;
 
   const run = <A, E>(operation: Effect.Effect<A, E, Database | SecretEncryption | CloudStore | InngestClient | OrganizationRuntime>) => harness.runEffect(operation.pipe(
     Effect.provideService(InngestClient, inngest),
@@ -35,6 +37,10 @@ describe("the mirror sync", () => {
     Effect.provideService(CloudStore, {
       open: Effect.succeed(asTestDouble<ConfigStore>()({
         read: async (_: string, query: { query: string }) => {
+          if (query.query === "deployment") {
+            await onDeployment();
+            return { in_flight: false };
+          }
           if (query.query === "namespaces") return { namespaces: [{ namespace: "shop-production", project: "shop", environment: "production" }] };
           return {
             environment: { id: "env-1", project: "shop", name: "production", revision: 1 },
@@ -44,8 +50,9 @@ describe("the mirror sync", () => {
       })),
     }),
   ));
-  const ask: CopyAsk = (_asker, machine, _expect, want: WantedCopy) => {
+  const ask: CopyAsk = (asker, machine, _expect, want: WantedCopy) => {
     asked.push(`${want.kind} ${machine.name}`);
+    gens.push(asker.gen);
     return Effect.succeed<CopyAnswer>(want.kind === "snapshot" ? { ok: true, copy: { ...COPIES.writer, newest: NEWEST } } : mirrorAnswer);
   };
   const sync = () => run(syncMirrors(organizationId, volume, () => Effect.succeed(members), ask));
@@ -56,6 +63,8 @@ describe("the mirror sync", () => {
   afterAll(async () => { await harness?.stop(); });
   beforeEach(async () => {
     asked = [];
+    gens = [];
+    onDeployment = async () => {};
     members = [member("web-1", "writer"), member("web-2", "mirror")];
     mirrorAnswer = { ok: true, copy: COPIES.pulling };
     await harness.pool.query(`
@@ -96,6 +105,19 @@ describe("the mirror sync", () => {
     members = [member("web-1", "writer"), member("web-2", "pulling")];
     expect((await sync()).lines).toEqual(["still pulling w-1-4 on db-web-2"]);
     expect(asked).toEqual([]);
+  });
+
+  it("carries a gen below any lane opened after its lane check", async () => {
+    await harness.pool.query(`update volume_placement set deployment_id = 'dep-1'`);
+    let moveGen = 0;
+    onDeployment = async () => {
+      const move = await run(requestVolumeRun({ userId: null, organizationId }, { volumeId, environment, kind: "move", args: { to: "web-2" } }));
+      if (!move.ok) throw new Error(move.refusal.message);
+      moveGen = (await harness.pool.query(`select gen from volume_run where id = $1`, [move.run.id])).rows[0].gen;
+    };
+    await sync();
+    expect(gens.length).toBeGreaterThan(0);
+    expect(gens.every((gen) => gen < Number(moveGen))).toBe(true);
   });
 
   it("keeps an older failure when a newer pull lands", async () => {
