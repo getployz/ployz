@@ -1,4 +1,4 @@
-import type { ConfigStore, CopyObservation, MachineId, VolumeKind } from "@ployz/sdk";
+import type { ConfigCommand, ConfigCommitted, ConfigStore, CopyObservation, MachineId, VolumeKind } from "@ployz/sdk";
 import { Effect } from "effect";
 import { Inngest } from "inngest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -8,7 +8,7 @@ import { InngestClient } from "#/modules/inngest/client";
 import {
   advancePlacement, type MemberInspector, refreshMirrors, releasePlacementClaims, stageOffServer, unlessPlacementRefused,
 } from "#/modules/volume-placement/volume-placement.deploy.server";
-import { listPlacements, stagePlacement, stampPlacements } from "#/modules/volume-placement/volume-placement.server";
+import { listPlacements, stagePlacement, stampPlacements, writeAdmitted } from "#/modules/volume-placement/volume-placement.server";
 import { placementTargets } from "#/modules/volume-placement/volume-placement";
 import type { Member } from "#/modules/volume-run/volume-run";
 import { member } from "#/modules/volume-run/volume-run.test-fixture";
@@ -29,6 +29,8 @@ const answered = () => Effect.succeed([]);
 describe("deploying a Volume placement", () => {
   let harness: PostgresTestHarness;
   let status: string;
+  /** A Deployment's own status, where it differs from `status`. */
+  const statuses = new Map<string, string>();
   let members: Member[];
   let restoredStorage: VolumeKind;
   const inspect: MemberInspector = () => Effect.succeed(members);
@@ -38,9 +40,12 @@ describe("deploying a Volume placement", () => {
     Effect.provideService(OrganizationRuntime, { cancel: () => Effect.void, open: () => Effect.succeed({ status: "no_connection" as const }) }),
     Effect.provideService(CloudStore, {
       open: Effect.succeed(asTestDouble<ConfigStore>()({
-        read: async (_: string, query: { query: string }) => {
+        read: async (_: string, query: { query: string; id?: string }) => {
           if (query.query === "namespaces") return { namespaces: [{ namespace: "shop-production", project: "shop", environment: "production" }] };
-          if (query.query === "deployment") return { status, in_flight: status === "queued", environment: { id: "env-1", project: "shop", name: "production" }, nodes: [] };
+          if (query.query === "deployment") {
+            const state = statuses.get(query.id ?? "") ?? status;
+            return { status: state, in_flight: state === "queued", environment: { id: "env-1", project: "shop", name: "production" }, nodes: [] };
+          }
           return {
             environment: { id: "env-1", project: "shop", name: "production", revision: 1 },
             volumes: [{ id: volumeId, name: "data", storage: { kind: "provisioned", maximumBytes: 1 } }, { id: "vol2", name: "data-1430", storage: restoredStorage }],
@@ -73,6 +78,7 @@ describe("deploying a Volume placement", () => {
   afterAll(async () => { await harness?.stop(); });
   beforeEach(async () => {
     status = "queued";
+    statuses.clear();
     restoredStorage = { kind: "provisioned", maximumBytes: 1 };
     send.mockClear();
     await harness.pool.query(`
@@ -197,6 +203,31 @@ describe("deploying a Volume placement", () => {
       .toEqual({ kind: "failed", message: "data: no space left", restore: { volumeId: "vol2", environment } });
     expect((await run(listPlacements(organizationId))).map(({ volumeId: id, deploymentId }) => ({ id, deploymentId })))
       .toEqual(expect.arrayContaining([{ id: volumeId, deploymentId: "dep-1" }, { id: "vol2", deploymentId: "dep-1" }]));
+  });
+
+  it("takes over a restore a superseded Deploy stamped, and runs it", async () => {
+    const source = [member("web-1", "writer"), member("web-2", "mirror")];
+    const byVolume: MemberInspector = (_, _environment, id) => Effect.succeed(id === "vol2" ? [] : source);
+    await run(stagePlacement(organizationId, { environment, volumeId: "vol2", mirrors: [], staged: {
+      primary: web("web-1"), mirrors: [], deletes: [],
+      seed: { sourceVolumeId: volumeId, sourceName: "data", dockerVolume: "shop-production_vol-vol2", point: { guid: "11", name: "ployz-1", at: 1_790_000_000 } },
+    } }));
+    await run(stampPlacements(organizationId, ["vol2"], "dep-1"));
+    statuses.set("dep-1", "superseded");
+
+    const admit = (accept: string[], version: string): ConfigCommand =>
+      ({ command: "admit", admit: "deploy", id: "dep-2", environment, services: [], version, accept_volume_loss: accept });
+    const write = () => Effect.succeed(asTestDouble<ConfigCommitted>()({ written: "deployment", id: "dep-2", environment_id: "env-1", status: "admitted", checks: [] }));
+    const refused = await run(writeAdmitted(organizationId, admit([], "v1"), write, byVolume).pipe(
+      Effect.flatMap(() => Effect.die("expected a refusal")),
+      Effect.catchTag("StoreRefused", (error) => Effect.succeed(error.refusal)),
+    ));
+    const { accept, version } = refused.details as { accept: string[]; version: string };
+    await run(writeAdmitted(organizationId, admit(accept, version), write, byVolume));
+    expect((await run(listPlacements(organizationId))).find((row) => row.volumeId === "vol2")?.deploymentId).toBe("dep-2");
+
+    const seeding = await run(advancePlacement(organizationId, "dep-2", null, byVolume, answered));
+    expect(seeding).toMatchObject({ kind: "wait", wait: { volumeId: "vol2", step: { change: { kind: "seed" } } } });
   });
 
   it("stops between runs once the Deploy is cancelled, leaving the Volume staged", async () => {

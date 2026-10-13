@@ -1,9 +1,10 @@
 import "@tanstack/react-start/server-only";
 import { randomUUID } from "node:crypto";
 import type { BatchCommand, ConfigCommand, ConfigCommitted, EnvironmentRef, MachineId } from "@ployz/sdk";
-import { and, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { Deferred, Effect, Fiber, Option, Semaphore } from "effect";
 import { callStore, readStore } from "#/modules/config-store/config-store.server";
+import { refusedWith } from "#/modules/config-store/store-sdk.server";
 import { StoreRefused, type StoreRefusal } from "#/modules/config-store/store.contract";
 import { MAX_NAME, uniqueName } from "#/modules/config-store/store-services";
 import { mountChange } from "#/modules/config-store/store-volumes";
@@ -300,12 +301,19 @@ export const writeAdmitted = <R>(
   return yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
     yield* drizzle.execute(sql`select pg_advisory_xact_lock_shared(${environmentLock(environment.id)})`);
-    const rows = yield* drizzle.select().from(volumePlacement)
-      .where(and(eq(volumePlacement.organizationId, organizationId), eq(volumePlacement.environmentId, environment.id), isNotNull(volumePlacement.staged),
-        // A Deploy admitted alongside, under the shared lock, keeps what it stamped; this one waits on those rows, then skips them.
-        isNull(volumePlacement.deploymentId)))
+    const locked = yield* drizzle.select().from(volumePlacement)
+      .where(and(eq(volumePlacement.organizationId, organizationId), eq(volumePlacement.environmentId, environment.id), isNotNull(volumePlacement.staged)))
       .orderBy(volumePlacement.volumeId)
       .for("update");
+    // A Deploy admitted alongside, under the shared lock, keeps what it stamped while the Store still runs it. One the Store
+    // superseded or ended never runs its rows again, so this one takes them over. The rows stay locked while the Store answers.
+    const holders = [...new Set(locked.flatMap((row) => row.deploymentId ?? []))];
+    const ended = (yield* Effect.forEach(holders, (id) => readStore(organizationId, { query: "deployment", id }).pipe(
+      Effect.map((deployment) => deployment.in_flight ? [] : [id]),
+      Effect.catchIf(refusedWith("not_found"), () => Effect.succeed([id])),
+      Effect.catchTag("StoreRefused", () => Effect.succeed([])),
+    ))).flat();
+    const rows = locked.filter((row) => row.deploymentId === null || ended.includes(row.deploymentId));
     // Read under the lock: a restore staged before it has landed or never will, so a seeded Volume missing is gone.
     const { volumes } = rows.length === 0 ? { volumes: [] } : yield* readStore(organizationId, { query: "volumes", environment: command.environment });
     const listed = rows.flatMap((row) => {
@@ -336,7 +344,7 @@ export const writeAdmitted = <R>(
     }
     const deleted = (name: string) => volumes.some((volume) => volume.name === name && volume.change === "delete");
     written = yield* write({ ...command, version: store, accept_volume_loss: accepted.filter((name) => !names.includes(name) || deleted(name)) });
-    if (written.written === "deployment" && written.status !== "applied") yield* stampPlacements(organizationId, taken, written.id);
+    if (written.written === "deployment" && written.status !== "applied") yield* stampPlacements(organizationId, taken, written.id, ended);
     return written;
   })).pipe(
     // The Store write committed: nothing after it may answer as its refusal. The rows stay staged for the next Deploy.
@@ -347,8 +355,10 @@ export const writeAdmitted = <R>(
   );
 }).pipe(Effect.withSpan("VolumePlacement.writeAdmitted"));
 
-/** Deploy `deploymentId` takes the placements staged on `volumeIds` that no other Deploy holds. */
-export const stampPlacements = Effect.fn("VolumePlacement.stamp")(function* (organizationId: string, volumeIds: readonly string[], deploymentId: string) {
+/** Deploy `deploymentId` takes the placements staged on `volumeIds` that no other Deploy holds, or one of `ended` held. */
+export const stampPlacements = Effect.fn("VolumePlacement.stamp")(function* (
+  organizationId: string, volumeIds: readonly string[], deploymentId: string, ended: readonly string[] = [],
+) {
   if (volumeIds.length === 0) return;
   const { drizzle } = yield* Database;
   yield* drizzle.update(volumePlacement)
@@ -357,7 +367,7 @@ export const stampPlacements = Effect.fn("VolumePlacement.stamp")(function* (org
       eq(volumePlacement.organizationId, organizationId),
       inArray(volumePlacement.volumeId, [...volumeIds]),
       isNotNull(volumePlacement.staged),
-      isNull(volumePlacement.deploymentId),
+      or(isNull(volumePlacement.deploymentId), inArray(volumePlacement.deploymentId, [...ended])),
     ));
 });
 
