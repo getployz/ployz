@@ -241,6 +241,47 @@ fn deadline_exceeded_is_retryable_not_unreachable() {
     assert!(!error.is_unreachable());
 }
 
+#[test]
+fn only_a_spent_budget_or_the_router_reports_the_target_unanswered() {
+    let dropped = io::Error::new(io::ErrorKind::BrokenPipe, "connection closed");
+    for (error, unanswered) in [
+        (
+            ConnectError::Rpc(TransportError::budget_expired(
+                "target Machine RPC timed out",
+            )),
+            true,
+        ),
+        (
+            ConnectError::from(ployz_core::rpc::target_unanswered_status(&io::Error::new(
+                io::ErrorKind::TimedOut,
+                "operation timed out",
+            ))),
+            true,
+        ),
+        // A daemon sent these: something answered.
+        (
+            ConnectError::from(tonic::Status::deadline_exceeded("timed out")),
+            false,
+        ),
+        (
+            ConnectError::from(tonic::Status::unavailable("Machine is not participating")),
+            false,
+        ),
+        // The client made this status: the entry dropped, not the target.
+        (
+            ConnectError::from(tonic::Status::from_error(Box::new(dropped))),
+            false,
+        ),
+        (
+            ConnectError::Io(io::Error::new(io::ErrorKind::ConnectionRefused, "refused")),
+            false,
+        ),
+        (ConnectError::EntryNotReady, false),
+    ] {
+        assert_eq!(error.target_unanswered(), unanswered, "{error}");
+    }
+}
+
 #[tokio::test]
 async fn cancelling_ssh_establishment_returns_without_waiting_for_ssh() {
     let root = std::env::temp_dir().join(format!("ployz-ssh-cancel-{}", std::process::id()));
@@ -545,4 +586,28 @@ fn other_statuses_and_unknown_routes_stay_unnamed() {
     let unknown_route = TransportError::from(tonic::Status::unimplemented(""))
         .name_refusal("/other.Service/Inspect", &target);
     assert_eq!(unknown_route.to_rpc_error().details, Value::Null);
+}
+
+#[test]
+fn only_a_target_reply_outlasts_a_later_silence() {
+    let silent = || {
+        ConnectError::Rpc(TransportError::budget_expired(
+            "target Machine RPC timed out",
+        ))
+    };
+    let dropped = || ConnectError::Io(io::Error::new(io::ErrorKind::BrokenPipe, "closed"));
+
+    // The entry dropped, then the target stayed silent: that is silence.
+    let mut reply = None;
+    let error = keep_target_reply(&mut reply, dropped());
+    assert!(!error.target_replied());
+    assert!(keep_target_reply(&mut reply, silent()).target_unanswered());
+
+    // The target replied, the entry dropped, then silence: the reply stands.
+    let mut reply = Some(ConnectError::from(tonic::Status::unavailable(
+        "Machine is not participating",
+    )));
+    assert!(!keep_target_reply(&mut reply, dropped()).target_unanswered());
+    let error = keep_target_reply(&mut reply, silent());
+    assert!(error.target_replied(), "{error}");
 }

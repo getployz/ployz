@@ -138,6 +138,7 @@ async fn server_removal_without_the_typed_name_names_what_goes_and_the_retry() {
     let at = |pointer: &str| error.pointer(pointer).unwrap().clone();
     assert_eq!(at("/error/code"), "confirmation_required", "{error}");
     assert_eq!(at("/error/details/server/name"), "one", "{error}");
+    assert_eq!(at("/error/details/answered"), true, "{error}");
     assert_eq!(at("/error/details/data_loss/0/id/name"), "data", "{error}");
     let next = at("/error/details/retry");
     let next = next.as_str().unwrap();
@@ -677,7 +678,12 @@ async fn a_server_that_does_not_answer_leaves_without_a_reset_only_when_dead_is_
     );
     assert_eq!(
         error.pointer("/error/message").unwrap(),
-        "Server two does not answer; removing it without a reset needs dead typed. No changes made.",
+        DEAD_REFUSAL,
+        "{error}"
+    );
+    assert_eq!(
+        error.pointer("/error/details/answered").unwrap(),
+        false,
         "{error}"
     );
     let retry = error
@@ -721,6 +727,98 @@ async fn a_server_that_does_not_answer_leaves_without_a_reset_only_when_dead_is_
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     assert_eq!(*removals.lock().unwrap(), [machine_id('b')]);
     assert!(resets.lock().unwrap().is_empty());
+    server.abort();
+}
+
+const DEAD_REFUSAL: &str = "Server two did not answer in 10s. Removing it without a reset leaves any Volume copies on it behind and needs dead typed. No changes made.";
+
+#[tokio::test]
+async fn a_server_listed_up_that_never_replies_leaves_without_a_reset_when_dead_is_typed() {
+    let mut service = DiscoveryService::new(test_description());
+    service.machines.push(machine('b', "two"));
+    service.storage_hangs_after = Some(0);
+    let removals = service.removed_machines.clone();
+    let (address, server) = serve_discovery(service).await;
+    let connect = format!("tcp://{address}");
+    let run = |extra: &'static [&'static str]| {
+        let connect = connect.clone();
+        async move {
+            tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+                .args(["--json", "--connect", &connect, "server", "rm", "two"])
+                .args(["--no-reset"])
+                .args(extra)
+                .output()
+                .await
+                .unwrap()
+        }
+    };
+
+    let output = run(&[]).await;
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let error: Value =
+        serde_json::from_slice(&output.stdout).unwrap_or_else(|_| panic!("{output:?}"));
+    assert_eq!(
+        error.pointer("/error/code").unwrap(),
+        "confirmation_required",
+        "{error}"
+    );
+    assert_eq!(
+        error.pointer("/error/message").unwrap(),
+        DEAD_REFUSAL,
+        "{error}"
+    );
+    assert_eq!(
+        error.pointer("/error/details/answered").unwrap(),
+        false,
+        "{error}"
+    );
+    assert!(removals.lock().unwrap().is_empty());
+
+    let output = run(&["--confirm", "dead"]).await;
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(*removals.lock().unwrap(), [machine_id('b')]);
+    server.abort();
+}
+
+#[tokio::test]
+async fn a_server_that_stops_answering_after_its_name_is_typed_is_kept() {
+    let mut service = DiscoveryService::new(test_description());
+    service.machines.push(machine('b', "two"));
+    service.storage_capacity = Some(empty_storage());
+    service.storage_hangs_after = Some(1);
+    let removals = service.removed_machines.clone();
+    let (address, server) = serve_discovery(service).await;
+
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .args(["--json", "--connect", &format!("tcp://{address}")])
+        .args(["server", "rm", "two", "--no-reset", "--confirm", "two"])
+        .output()
+        .await
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let error: Value =
+        serde_json::from_slice(&output.stdout).unwrap_or_else(|_| panic!("{output:?}"));
+    assert_eq!(
+        error.pointer("/error/code").unwrap(),
+        "confirmation_required",
+        "{error}"
+    );
+    assert_eq!(
+        error.pointer("/error/details/answered").unwrap(),
+        false,
+        "{error}"
+    );
+    let retry = error
+        .pointer("/error/details/retry")
+        .unwrap()
+        .as_str()
+        .unwrap();
+    assert!(
+        retry.starts_with("ployz server rm two --no-reset"),
+        "{retry}"
+    );
+    assert!(retry.ends_with("--confirm dead"), "{retry}");
+    assert!(removals.lock().unwrap().is_empty());
     server.abort();
 }
 

@@ -272,8 +272,9 @@ servers, except for services whose volume was on it (see
 server stops everything; your projects and settings stay, and the bottom bar shows **Add a server**
 until you [add one](add-a-server.md).
 
-If the server is unreachable, remove it without resetting it. This is CLI-only for now. Type
-`dead` instead of the server's name to confirm it is gone:
+If the server is unreachable, remove it without resetting it. This is CLI-only for now. When the
+server doesn't answer within 10 seconds, even if it still shows as up, type `dead` instead of its
+name to confirm it is gone:
 
 ```sh
 ployz server rm web-2 --no-reset --confirm dead
