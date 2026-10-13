@@ -839,8 +839,7 @@ async fn run_new<C: MachineOperations>(
                 "the Deploy was cancelled while Machine {machine_id} waited on health"
             ))),
         },
-    }
-    .map_err(|error| did_not_answer(machine_id, error))?;
+    }?;
     match ensured {
         (ContainerNow::Present(observed), health) => {
             progress.set_display_name(index, observed.display_name.clone());
@@ -855,18 +854,6 @@ async fn run_new<C: MachineOperations>(
             details: serde_json::Value::Null,
             cause: Vec::new(),
         }),
-    }
-}
-
-fn did_not_answer(machine_id: &MachineId, error: RpcError) -> RpcError {
-    if error.code != RpcErrorCode::Unavailable {
-        return error;
-    }
-    let mut cause = vec![error.message];
-    cause.extend(error.cause);
-    RpcError {
-        cause,
-        ..unavailable(format!("Machine {machine_id} did not answer"))
     }
 }
 

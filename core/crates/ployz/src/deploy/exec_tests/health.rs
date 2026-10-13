@@ -23,7 +23,7 @@ async fn a_settled_start_waits_out_a_slow_pull() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_machine_that_stops_answering_fails_the_start_naming_the_machine() {
+async fn a_machine_that_stops_answering_fails_the_start_and_discards_the_slot() {
     let machine = machine('1');
     let plan = vec![run(
         &machine,
@@ -33,7 +33,7 @@ async fn a_machine_that_stops_answering_fails_the_start_naming_the_machine() {
     let lost = || {
         failed_unavailable(
             Call::Run(machine, ContainerKind::ServiceContainer),
-            "deadline has elapsed",
+            &format!("Machine {machine} did not answer"),
         )
     };
     let attempts =
@@ -58,7 +58,6 @@ async fn a_machine_that_stops_answering_fails_the_start_naming_the_machine() {
     };
     assert_eq!(error.code, RpcErrorCode::Unavailable);
     assert_eq!(error.message, format!("Machine {machine} did not answer"));
-    assert_eq!(error.cause, vec!["deadline has elapsed".to_owned()]);
     client.assert_done();
 }
 

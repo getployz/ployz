@@ -967,11 +967,15 @@ impl Client {
         want: ContainerWant,
         timeout: Option<Duration>,
     ) -> Result<(ContainerNow, Option<ployz_core::HealthVerdict>), RpcError> {
-        self.invoke::<op::EnsureContainer>(
-            EnsureContainerRequest { want },
-            &MachineTarget::from(machine_id),
-            timeout,
-        )
+        let payload = op::EnsureContainer::into_request(EnsureContainerRequest { want })
+            .encode()
+            .map_err(|error| rpc_error(ConnectError::Codec(error)))?;
+        let target = MachineTarget::from(machine_id);
+        apply_timeout(timeout, async {
+            self.call_once::<op::EnsureContainer>(payload, Some(&target))
+                .await
+                .map_err(|error| ConnectError::Remote(answered_by(machine_id, error)))
+        })
         .await?
         .into_settled()
     }
@@ -1061,6 +1065,26 @@ impl Client {
 
 /// Only a gRPC status can mean an old daemon lacks the route. An error body
 /// is the daemon's own answer, so it keeps the daemon's sentence.
+/// A Machine's own answer keeps its words. An unavailable call it never answered
+/// names the Machine, with the transport's words as the cause.
+fn answered_by(machine_id: &MachineId, error: ConnectError) -> RpcError {
+    if let ConnectError::Remote(answered) = error {
+        return answered;
+    }
+    let error = rpc_error(error);
+    if error.code != RpcErrorCode::Unavailable {
+        return error;
+    }
+    let mut cause = vec![error.message];
+    cause.extend(error.cause);
+    RpcError {
+        code: RpcErrorCode::Unavailable,
+        message: format!("Machine {machine_id} did not answer"),
+        details: Value::Null,
+        cause,
+    }
+}
+
 fn refused(status: tonic::Status, path: &str, target: Option<&MachineTarget>) -> ConnectError {
     let error = TransportError::from(status);
     ConnectError::Rpc(match target {
