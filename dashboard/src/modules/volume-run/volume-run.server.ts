@@ -30,7 +30,7 @@ import { organizationMachine } from "#/modules/machines/tables";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { type Requirement, requirementFor, requirements } from "#/modules/runtime/daemon-compat";
 import { observeVolumeCopies, type PloyzSdkError, sdkFailureMessage } from "#/modules/runtime/ployz.server";
-import { alreadyOn, newestGuid, type Planned, planFromCopies, type Refusal, type RefusalCode } from "#/modules/volume-run/plan";
+import { alreadyOn, isUnadoptedSeed, newestGuid, type Planned, planFromCopies, type Refusal, type RefusalCode } from "#/modules/volume-run/plan";
 import { isBehind, isCurrent, releaseLine } from "#/modules/server-upgrade/server-upgrade";
 import { channelRelease, organizationReleaseChannel } from "#/modules/server-upgrade/server-upgrade.server";
 import { volumeRun } from "#/modules/volume-run/tables";
@@ -784,21 +784,42 @@ export const observeOrganizationCopies: CopyObserver = (organizationId) =>
     return (yield* observeVolumeCopies(loaded.connections)).copies;
   });
 
-export const findOrphanSlots = Effect.fn("VolumeRun.findOrphanSlots")(function* (
+/** Names no config entry holds whose root some Machine holds: each may be a seed root Docker never adopted. */
+function unheldRootNames(copies: CopyObservation["copies"], configNames: ReadonlySet<string>): string[] {
+  const roots = copies.filter((copy) => copy.role !== "slot" && !configNames.has(copy.name));
+  return [...new Set(roots.map((copy) => copy.name))].sort();
+}
+
+export type NameInspector = (organizationId: string, dockerVolume: string) => ReturnType<typeof observeVolumeMembers>;
+
+const onlyUnadoptedSeeds = (members: readonly Member[]) => {
+  const roots = members.filter((member) => member.answered && member.view.copy?.kind === "root");
+  return roots.length > 0 && roots.every(isUnadoptedSeed);
+};
+
+/** Slots no config entry holds, and seed roots a restore left behind that Docker never adopted. */
+export const findOrphans = Effect.fn("VolumeRun.findOrphans")(function* (
   organizationId: string,
-  observe: CopyObserver = observeOrganizationCopies,
+  observe: CopyObserver,
+  inspect: NameInspector,
 ) {
   const copies = yield* observe(organizationId);
   if (copies.length === 0) return [];
-  return orphanSlotNames(copies, yield* configVolumeNames(organizationId));
+  const config = yield* configVolumeNames(organizationId);
+  const seeds = yield* Effect.forEach(unheldRootNames(copies, config), (name) => inspect(organizationId, name).pipe(
+    Effect.map((members) => (onlyUnadoptedSeeds(members) ? [name] : [])),
+    Effect.orElseSucceed(() => []),
+  ), { concurrency: 4 });
+  return [...orphanSlotNames(copies, config), ...seeds.flat()].sort();
 });
 
 export const startOrphanDeletes = Effect.fn("VolumeRun.startOrphanDeletes")(function* (
   organizationId: string,
   observe: CopyObserver = observeOrganizationCopies,
+  inspect: NameInspector = observeVolumeMembers,
 ) {
   const database = yield* Database;
-  const names = yield* findOrphanSlots(organizationId, observe);
+  const names = yield* findOrphans(organizationId, observe, inspect);
   const started: string[] = [];
   for (const name of names) {
     const parsed = parseDockerVolumeName(name);
@@ -827,9 +848,9 @@ export const startOrphanDeletes = Effect.fn("VolumeRun.startOrphanDeletes")(func
 
 const NO_RUNS: readonly string[] = [];
 
-export const cleanOrphanSlots = (organizationId: string) =>
+export const cleanOrphans = (organizationId: string) =>
   startOrphanDeletes(organizationId).pipe(
-    Effect.catch((error) => Effect.logWarning("Orphan slot cleanup failed.", { organizationId, error }).pipe(Effect.as(NO_RUNS))),
+    Effect.catch((error) => Effect.logWarning("Orphan cleanup failed.", { organizationId, error }).pipe(Effect.as(NO_RUNS))),
   );
 
 export const organizationsWithMachines = Effect.fn("VolumeRun.organizationsWithMachines")(function* () {

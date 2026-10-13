@@ -121,6 +121,9 @@ describe("plan_from_copies_table", () => {
     ["orphan delete ignores an unanswered Server", orphan, [member("b", "mirror"), member("c", "unanswered")], "delete b forget none"],
     ["orphan delete of a name with a writer", orphan, [member("a", "writer"), member("b", "mirror")], "refuse invalid"],
     ["orphan delete of a name with a cut root", orphan, [member("a", "cut"), member("b", "mirror")], "refuse invalid"],
+    ["orphan delete destroys an unadopted seed root and its slots", orphan, [member("a", "seed"), member("b", "mirror")], "delete a,b forget none"],
+    ["orphan delete of a name with a seed root beside a writer", orphan, [member("a", "seed"), member("b", "writer")], "refuse invalid"],
+    ["orphan delete of a root an older daemon reports", orphan, [member("a", "old")], "refuse invalid"],
     ["orphan delete with no slot left", orphan, [member("b", "empty")], "refuse no_mirror"],
 
     ["move from a writer onto an empty Server runs rounds", move("b"), [member("a", "writer"), member("b", "empty", { pool: true })], "move a->b at rounds"],

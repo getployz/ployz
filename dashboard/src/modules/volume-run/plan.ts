@@ -57,6 +57,10 @@ export function roleOf(member: Member): Role {
   return copy.readonly ? "cutting" : "writer";
 }
 
+/** A root a restore seeded that Docker never adopted. A daemon too old to say reads as a writer. */
+export const isUnadoptedSeed = (member: Member) =>
+  member.answered && member.view.copy?.kind === "root" && member.view.copy.seed;
+
 export const epochOf = (member: AnsweredMember) => (member.view.copy?.kind === "root" ? member.view.copy.epoch : 0);
 
 export const newestGuid = (copy: VolumeCopy | null): SnapshotGuid | null => copy?.newest?.guid ?? null;
@@ -105,9 +109,11 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
 
   if (input.kind === "delete_mirror") {
     if (input.orphan) {
-      if (roots.length > 0) return refuse("invalid", `${name} still has a writer on ${roots.map(named).join(", ")}`);
-      if (mirrors.length === 0) return refuse("no_mirror", `${name} has no mirror`);
-      return { ok: true, phase: { kind: "delete_mirror", destroy: mirrors, forget: null } };
+      const writers = roots.filter((member) => !isUnadoptedSeed(member));
+      if (writers.length > 0) return refuse("invalid", `${name} still has a writer on ${writers.map(named).join(", ")}`);
+      const destroy = [...roots, ...mirrors];
+      if (destroy.length === 0) return refuse("no_mirror", `${name} has no mirror`);
+      return { ok: true, phase: { kind: "delete_mirror", destroy, forget: null } };
     }
     if (unanswered !== undefined) return unknown(unanswered);
     const writers = withRole("writer");
