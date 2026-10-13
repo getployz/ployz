@@ -547,8 +547,8 @@ class VolumeMoveTests(unittest.TestCase):
         lines = volume_move.stamped("100.5 m-2 ployzd[1]: fault: round\n200.0 m-2 ployzd[1]: fault: final\n"
                                     "-- No entries --\n201.5 m-2 ployzd[1]: fault: writer\n")
         self.assertEqual([at for at, _ in lines], [100.5, 200.0, 201.5])
-        self.assertTrue(volume_move.nth_after(lines, 150.0, 2).endswith("fault: writer"))
-        self.assertTrue(volume_move.nth_after(lines, 150.0, 1).endswith("fault: final"))
+        self.assertTrue(volume_move.nth_after(lines, 150.0, 2)[1].endswith("fault: writer"))
+        self.assertTrue(volume_move.nth_after(lines, 150.0, 1)[1].endswith("fault: final"))
         self.assertIsNone(volume_move.nth_after(lines, 200.5, 2))
         self.assertIsNone(volume_move.nth_after(lines, 300.0, 1))
 
@@ -1304,7 +1304,8 @@ class VolumeMoveTests(unittest.TestCase):
                 if plant == "stale worker pid":
                     model.workers = {7}
                 # The model has no Container stop clock, so the trigger fires as the cut would.
-                checks.wait_trigger = lambda case, row, since, side: "machine-2: fault: delaying MirrorToWriter"
+                checks.wait_trigger = lambda case, row, since, side, model=model: dict(
+                    seen="machine-2: fault: delaying MirrorToWriter", latest=model.clock())
                 with redirect_stdout(io.StringIO()):
                     result = checks.run_all([cases[name]])["cases"][0]
                 self.assertEqual(result["final_writer"], "machine-2", result)
