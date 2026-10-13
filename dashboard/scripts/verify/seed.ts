@@ -15,10 +15,10 @@
 //   #144        retargeted to dev and merged there
 //   #146        open: its On merge list lands API_URL and CACHE_TTL (over production's own change since), excludes
 //               LOG_LEVEL, and lands TOKEN Not set
-// A fake Server is paired so the Store admits Deploys; nothing answers it, so production's Deploy stays queued and the seed
-// writes its Services into Applied State, as a finished one would. VERIFY_REAL_SERVERS=1 leaves pairing to the
-// real Servers that enroll next, so the queued Deploy and blog's pull requests are skipped: the Store admits none, and
-// opens no PR Environment, before a Server joins.
+// A fake Server is paired so the Store admits Deploys; nothing answers it, so production's Deploy stays queued and the
+// seed writes its nodes into Applied State, as a finished one would. VERIFY_REAL_SERVERS=1 leaves pairing to the real
+// Servers that enroll next, so the queued Deploy and blog's pull requests are skipped: the Store admits none, and opens
+// no PR Environment, before a Server joins.
 import { createHash, createHmac, randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { Effect } from "effect";
@@ -122,15 +122,19 @@ const seed = Effect.gen(function* () {
       command: "admit", admit: "deploy", id: deployment, environment: at("production"),
       services: [], version: null, accept_volume_loss: [], message: "Ship everything",
     });
-    // Nothing runs the Deploy, so its Services land in Applied State here, as the Store's advance writes them for a
-    // finished one: without it every Service reads as undeployed. No Store command records an outcome without a
-    // Server answering, hence the statement.
+    // Nothing runs the Deploy, so its nodes land in Applied State here as the Store's advance writes them for a finished
+    // one: each target node frozen at admission, as its Saved Service, Volume or Config. Without it every Service reads
+    // as undeployed. No Store command records an outcome without a Server answering, hence the statement.
     yield* drizzle.execute(sql`
       insert into config_applied (environment_id, node_id, organization_id, deployment_id, node_type, node)
-      select d.environment_id, service->>'id', d.organization_id, d.id, 'service', service::text
+      select d.environment_id, target->>'id', d.organization_id, d.id, target->>'type', saved.node::text
       from config_deployment d
       join config_saved s on s.environment_id = d.environment_id and s.revision = d.saved_revision
-      cross join jsonb_array_elements(s.intent::jsonb->'services') service
+      cross join jsonb_array_elements(d.nodes::jsonb) target
+      cross join lateral (
+        select node from jsonb_array_elements(s.intent::jsonb->(target->>'type' || 's')) node
+        where node->>(case target->>'type' when 'service' then 'id' else 'resourceId' end) = target->>'id'
+      ) saved
       where d.id = ${deployment}`);
   }
 
