@@ -303,14 +303,9 @@ async fn founder_tail_recovers_lost_replies_without_replaying_mutations() {
     let events = EventLog::default();
     let pairing = json!({ "secret": PAIRING });
     let enroll = EnrollListen::script_recording(
-        [
-            json!({
-                "kind": "initialize", "resumed": false, "storage": "none", "pairing": pairing,
-            }),
-            json!({
-                "kind": "initialize", "resumed": true, "storage": "none", "pairing": pairing,
-            }),
-        ],
+        [json!({
+            "kind": "initialize", "resumed": false, "storage": "none", "pairing": pairing,
+        })],
         events.clone(),
     )
     .await;
@@ -326,54 +321,30 @@ async fn founder_tail_recovers_lost_replies_without_replaying_mutations() {
     let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let proxy = format!("http://{}", closed.local_addr().unwrap());
     drop(closed);
-    let command = || {
-        let mut command = super::harness::cli();
-        command
-            .args([
-                "--connect",
-                &format!("ssh://root@{machine_addr}"),
-                "server",
-                "add",
-                "--token",
-                TOKEN,
-                "--cloud-url",
-                &enroll.url,
-                "--name",
-                "founder",
-                "--ingress-image",
-                "caddy:2.10.0",
-                "--yes",
-            ])
-            .env("HTTPS_PROXY", &proxy)
-            .env("https_proxy", &proxy)
-            .env("NO_PROXY", "127.0.0.1,localhost")
-            .env("no_proxy", "127.0.0.1,localhost");
-        command
-    };
-    let first = command().arg("--reset").output().await.unwrap();
-    assert!(!first.status.success());
-    assert!(
-        String::from_utf8_lossy(&first.stderr).contains("without --reset"),
-        "{}",
-        String::from_utf8_lossy(&first.stderr)
-    );
-    assert!(
-        String::from_utf8_lossy(&first.stderr).contains("lost Ingress container creation reply")
-    );
-    assert_eq!(daemon.founder_tail_attempts(), [1, 0]);
-    assert_eq!(
-        daemon.initialize_requests().len(),
-        1,
-        "lost Initialize reply must be recovered by Inspect"
-    );
-    assert_eq!(daemon.reset_count(), 0);
-    assert_eq!(
-        daemon.containers().len(),
-        1,
-        "lost create reply must not cause an automatic second Create"
-    );
-
-    let output = command().output().await.unwrap();
+    let output = super::harness::cli()
+        .args([
+            "--connect",
+            &format!("ssh://root@{machine_addr}"),
+            "server",
+            "add",
+            "--token",
+            TOKEN,
+            "--cloud-url",
+            &enroll.url,
+            "--name",
+            "founder",
+            "--ingress-image",
+            "caddy:2.10.0",
+            "--yes",
+            "--reset",
+        ])
+        .env("HTTPS_PROXY", &proxy)
+        .env("https_proxy", &proxy)
+        .env("NO_PROXY", "127.0.0.1,localhost")
+        .env("no_proxy", "127.0.0.1,localhost")
+        .output()
+        .await
+        .unwrap();
 
     assert!(
         output.status.success(),
@@ -381,10 +352,19 @@ async fn founder_tail_recovers_lost_replies_without_replaying_mutations() {
         String::from_utf8_lossy(&output.stderr),
         String::from_utf8_lossy(&output.stdout)
     );
-    assert_eq!(daemon.reset_count(), 0, "resume must omit --reset");
+    assert_eq!(
+        daemon.initialize_requests().len(),
+        1,
+        "lost Initialize reply must be recovered by Inspect"
+    );
+    assert_eq!(daemon.reset_count(), 0);
     assert_eq!(daemon.founder_tail_attempts(), [2, 2]);
     let containers = daemon.containers();
-    assert_eq!(containers.len(), 1);
+    assert_eq!(
+        containers.len(),
+        1,
+        "a resent create must land on the same slot"
+    );
     assert_eq!(
         containers.first().unwrap().service_name().as_str(),
         "ingress"
@@ -399,8 +379,7 @@ async fn founder_tail_recovers_lost_replies_without_replaying_mutations() {
             "callback",
         ]
     );
-    assert_eq!(daemon.reset_count(), 0);
-    assert_eq!(enroll.posts().len(), 2);
+    assert_eq!(enroll.posts().len(), 1);
     assert_eq!(enroll.callbacks().len(), 1);
 }
 

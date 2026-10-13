@@ -281,7 +281,6 @@ impl Daemon {
                     .map(|running| (running.store().clone(), running.admin_client())),
             )
             .with_optional_containers(containers.clone())
-            .with_ingress_data_dir(config.data_dir.clone())
             .with_observe_socket(observe_socket)
             .with_image_ingest(Arc::clone(&ingest))
             .build();

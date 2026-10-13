@@ -3,12 +3,15 @@ use std::{
     time::Duration,
 };
 
+#[path = "support/containers.rs"]
+mod containers;
+
 use ployz::deploy::plan_deploy;
 use ployz_core::{
-    CORROSION_API_PORT, ContainerAction, ContainerId, ContainerKind, GetIngressProxyConfigRequest,
-    HOSTNAME_VERIFY_PATH, INGRESS_VERIFY_PATH, ListMachinesRequest, Machine, MachineId,
-    MachineTarget, MembershipObservation, Namespace, RequestedServiceSpec, ResolvedServiceSpec,
-    ServiceId, StartContainerRequest, StopContainerRequest, op,
+    CORROSION_API_PORT, ContainerAction, ContainerId, ContainerKind, ContainerLocator,
+    ContainerWant, Drain, HOSTNAME_VERIFY_PATH, INGRESS_VERIFY_PATH, ListMachinesRequest, Machine,
+    MachineId, MembershipObservation, Namespace, RequestedServiceSpec, ResolvedServiceSpec,
+    ServiceId, StopOptions, op,
 };
 use ployz_testkit::{Cluster, ClusterPlan};
 use tokio_util::sync::CancellationToken;
@@ -28,8 +31,8 @@ async fn caddy_projects_and_loads_cluster_services_on_three_machines() {
     .await
     .unwrap();
 
-    for machine in &machines {
-        wait_config(&mut client, machine, |config| {
+    for index in 0..machines.len() {
+        wait_config(&cluster, index, |config| {
             config.contains(INGRESS_VERIFY_PATH)
         })
         .await;
@@ -69,7 +72,7 @@ async fn caddy_projects_and_loads_cluster_services_on_three_machines() {
     }
     let observations = wait_running(&mut client, &api_id, 3).await;
     for (index, machine) in machines.iter().enumerate() {
-        wait_config(&mut client, machine, |config| {
+        wait_config(&cluster, index, |config| {
             config.contains("http://example.test")
                 && observations.iter().all(|container| {
                     config.contains(&format!("{}:8080", container.address.unwrap().0))
@@ -130,10 +133,17 @@ async fn caddy_projects_and_loads_cluster_services_on_three_machines() {
     let logs = [logs.stdout, logs.stderr].concat();
     assert!(String::from_utf8(logs).unwrap().contains(" ingress/"));
 
-    assert_health_transition(&mut client, &machines, &api_containers, &observations).await;
+    assert_health_transition(
+        &cluster,
+        &mut client,
+        &machines,
+        &api_containers,
+        &observations,
+    )
+    .await;
 
     assert_start_first_gap(&cluster, &mut client, &machines).await;
-    assert_membership_blind(&cluster, &mut client, &machines, &observations).await;
+    assert_membership_blind(&cluster, &machines, &observations).await;
 }
 
 #[tokio::test]
@@ -190,10 +200,7 @@ async fn certificate_material_in_cluster_state_is_served_without_restart() {
     let service_id = api.service_id;
     create_and_start(&mut client, &first, api).await;
     wait_running(&mut client, &service_id, 1).await;
-    let before = wait_config(&mut client, &first, |config| {
-        config.contains("auto_https off")
-    })
-    .await;
+    let before = wait_config(&cluster, 0, |config| config.contains("auto_https off")).await;
     assert!(
         !before.contains("tls /config/caddy/certs/secure.example.test"),
         "{before}"
@@ -201,7 +208,7 @@ async fn certificate_material_in_cluster_state_is_served_without_restart() {
 
     let (first_cert, first_key) = self_signed_material("secure.example.test", "first");
     publish_certificate_row(&cluster, 0, "secure.example.test", &first_cert, &first_key);
-    wait_config(&mut client, &first, |config| {
+    wait_config(&cluster, 0, |config| {
         config.contains("tls /config/caddy/certs/secure.example.test-")
     })
     .await;
@@ -229,7 +236,7 @@ async fn certificate_material_in_cluster_state_is_served_without_restart() {
 
     let second = cluster.add_machine(0, 1, "machine-2").await.unwrap();
     cli(&direct, &ingress_role(&second));
-    wait_config(&mut client, &second, |config| {
+    wait_config(&cluster, 1, |config| {
         config.contains("tls /config/caddy/certs/secure.example.test-")
     })
     .await;
@@ -289,7 +296,7 @@ async fn turning_ingress_off_keeps_the_proxy_serving() {
         .unwrap()
         .address
         .unwrap();
-    wait_config(&mut client, &web2, |config| {
+    wait_config(&cluster, 1, |config| {
         config.contains(&format!("{}:8080", address.0))
     })
     .await;
@@ -312,6 +319,7 @@ async fn turning_ingress_off_keeps_the_proxy_serving() {
 }
 
 async fn assert_health_transition(
+    cluster: &Cluster,
     client: &mut ployz::connect::Client,
     machines: &[Machine; 3],
     containers: &[ployz_core::ContainerId],
@@ -332,7 +340,7 @@ async fn assert_health_transition(
             (action == ContainerAction::Stop).then_some(0),
         )
         .await;
-        wait_config(client, &machines[0], |config| {
+        wait_config(cluster, 0, |config| {
             config.contains(&format!("{}:8080", removed_address.0))
                 == (action == ContainerAction::Start)
         })
@@ -342,7 +350,6 @@ async fn assert_health_transition(
 
 async fn assert_membership_blind(
     cluster: &Cluster,
-    client: &mut ployz::connect::Client,
     machines: &[Machine; 3],
     observations: &[ployz_core::ContainerObservation],
 ) {
@@ -354,18 +361,8 @@ async fn assert_membership_blind(
         .unwrap();
     cluster.stop(2).unwrap();
     wait_down(cluster, &machines[2]).await;
-    let retained = client
-        .call::<op::GetIngressProxyConfig>(
-            GetIngressProxyConfigRequest {},
-            Some(&MachineTarget::from(&machines[0].id)),
-        )
-        .await
-        .unwrap();
-    assert!(
-        retained
-            .config()
-            .contains(&format!("{}:8080", retained_address.0))
-    );
+    let retained = cluster.ingress_proxy_config(0).unwrap();
+    assert!(retained.contains(&format!("{}:8080", retained_address.0)));
 }
 
 /// Give `server` the ingress role; the Ingress Proxy follows it with the preloaded Caddy image.
@@ -460,7 +457,7 @@ async fn assert_start_first_gap(
         .unwrap()
         .address
         .unwrap();
-    wait_config(client, &machines[2], |config| {
+    wait_config(cluster, 2, |config| {
         config.contains(&format!("{}:8081", old_address.0))
     })
     .await;
@@ -495,7 +492,7 @@ async fn assert_start_first_gap(
         .unwrap()
         .address
         .unwrap();
-    wait_config(client, &machines[2], |config| {
+    wait_config(cluster, 2, |config| {
         config.contains(&format!("{}:8081", new_address.0))
             && !config.contains(&format!("{}:8081", old_address.0))
     })
@@ -534,7 +531,7 @@ async fn assert_start_first_gap(
     cluster
         .machine_shell(2, "kill -CONT $(cat /run/ployzd.pid)")
         .unwrap();
-    wait_config(client, &machines[2], |config| {
+    wait_config(cluster, 2, |config| {
         config.contains(&format!("{}:8081", final_address.0))
             && !config.contains(&format!("{}:8081", new_address.0))
     })
@@ -629,18 +626,15 @@ async fn create_and_start(
     machine: &Machine,
     spec: ResolvedServiceSpec,
 ) -> ployz_core::ContainerId {
-    let created = client
-        .create_container(
-            machine.id,
-            ContainerKind::ServiceContainer,
-            Namespace::parse("app").unwrap(),
-            spec,
-            None,
-        )
-        .await
-        .unwrap();
-    start_container(client, machine.id, created.container_id).await;
-    created.container_id
+    containers::run(
+        client,
+        machine.id,
+        ContainerKind::ServiceContainer,
+        Namespace::parse("app").unwrap(),
+        spec,
+    )
+    .await
+    .unwrap()
 }
 
 async fn start_container(
@@ -648,11 +642,7 @@ async fn start_container(
     machine_id: MachineId,
     container_id: ContainerId,
 ) {
-    client
-        .call::<op::StartContainer>(
-            StartContainerRequest { container_id },
-            Some(&MachineTarget::from(&machine_id)),
-        )
+    containers::start(client, machine_id, container_id)
         .await
         .unwrap();
 }
@@ -662,22 +652,25 @@ async fn change_container(
     machine_id: MachineId,
     container_id: ContainerId,
     action: ContainerAction,
-    grace_period_seconds: Option<i32>,
+    grace_period_seconds: Option<u16>,
 ) {
     match action {
         ContainerAction::Start => start_container(client, machine_id, container_id).await,
         ContainerAction::Stop => {
-            client
-                .call::<op::StopContainer>(
-                    StopContainerRequest {
-                        container_id,
+            containers::ensure(
+                client,
+                machine_id,
+                ContainerWant::Stopped {
+                    container: ContainerLocator::Id(container_id),
+                    drain: Drain::DEFAULT,
+                    stop: StopOptions {
                         signal: None,
                         grace_period_seconds,
                     },
-                    Some(&MachineTarget::from(&machine_id)),
-                )
-                .await
-                .unwrap();
+                },
+            )
+            .await
+            .unwrap();
         }
         ContainerAction::Remove => unreachable!("health transition only starts and stops"),
     }
@@ -725,26 +718,13 @@ async fn wait_running(
     }
 }
 
-async fn wait_config(
-    client: &mut ployz::connect::Client,
-    machine: &Machine,
-    expected: impl Fn(&str) -> bool,
-) -> String {
+async fn wait_config(cluster: &Cluster, index: usize, expected: impl Fn(&str) -> bool) -> String {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
     loop {
-        match client
-            .call::<op::GetIngressProxyConfig>(
-                GetIngressProxyConfigRequest {},
-                Some(&MachineTarget::from(&machine.id)),
-            )
-            .await
-        {
-            Ok(config) if expected(config.config()) => return config.config().to_owned(),
+        match cluster.ingress_proxy_config(index) {
+            Ok(config) if expected(&config) => return config,
             Ok(config) if tokio::time::Instant::now() >= deadline => {
-                panic!(
-                    "Ingress Proxy configuration did not converge:\n{}",
-                    config.config()
-                )
+                panic!("Ingress Proxy configuration did not converge:\n{config}")
             }
             Err(error) if tokio::time::Instant::now() >= deadline => {
                 panic!("Ingress Proxy configuration was unavailable: {error}")

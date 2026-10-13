@@ -1,10 +1,11 @@
-import type { ServiceVerb } from "@ployz/sdk";
+import type { RuntimeWatchView, ServiceVerb } from "@ployz/sdk";
 import { InngestTestEngine, mockCtx } from "@inngest/test";
 import { Effect } from "effect";
 import { Inngest } from "inngest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { InngestClient } from "#/modules/inngest/client";
+import { ServerLacks } from "#/modules/runtime/daemon-compat";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { PloyzProviderError, type PloyzSdkError, type PloyzSession, type ServiceCopies } from "#/modules/runtime/ployz.server";
 import type { ServiceActLeg } from "#/modules/service-act/service-act";
@@ -25,6 +26,7 @@ describe("act-service", () => {
   let harness: PostgresTestHarness;
   let copies: ServiceCopies;
   let calls: string[];
+  let capabilities = ensureEverywhere();
   let answer: (call: string) => Effect.Effect<"serving" | "unconfirmed" | "unhealthy", PloyzSdkError>;
 
   const runEffect = makeInngestEffectRunner(<A, E>(operation: Effect.Effect<A, E, Database | OrganizationRuntime | InngestClient>) =>
@@ -34,6 +36,9 @@ describe("act-service", () => {
         cancel: () => Effect.void,
         open: () => Effect.succeed({ status: "connected" as const, connected: asTestDouble<PloyzSession>()({
           observeService: () => Effect.succeed(copies),
+          watchFirstFrame: () => Effect.succeed(asTestDouble<RuntimeWatchView>()({
+            machines: Object.entries(capabilities).map(([id, list]) => ({ machine: { id, runtime: { capabilities: list } } })),
+          })),
           stopContainer: (_machine: string, container: string) => { calls.push(`stop ${container}`); return answer(`stop ${container}`).pipe(Effect.asVoid); },
           startContainer: (_machine: string, container: string) => { calls.push(`start ${container}`); return answer(`start ${container}`); },
         }) }),
@@ -63,6 +68,7 @@ describe("act-service", () => {
       unanswered: [],
     };
     calls = [];
+    capabilities = ensureEverywhere();
     answer = () => Effect.succeed("serving");
     send.mockReset();
     send.mockResolvedValue({ ids: [] });
@@ -229,8 +235,8 @@ describe("act-service", () => {
     expect(calls).toEqual(["start web-a", "start web-b"]);
   });
 
-  it("never asks again for a stop a crashed step already sent", async () => {
-    const admitted = await request("stop");
+  it("sends a stop again when a step crashed after marking it sent, and records the answer", async () => {
+    const admitted = await request("restart");
     if (!admitted.ok) throw new Error("refused");
     const sent: ServiceActLeg[] = [
       { server: "alpha", machine: "m-alpha", container: "web-a", hook: false, stop: "sent", start: null, reason: null },
@@ -239,10 +245,27 @@ describe("act-service", () => {
       `update service_act set state = 'running', inngest_run_id = 'run-1', started_at = now(), before = $2, legs = $3 where id = $1`,
       [admitted.id, JSON.stringify(copies), JSON.stringify(sent)],
     );
+    const leg = (side: "stop" | "start") => runEffect(actOnContainer({ actId: admitted.id, organizationId }, "run-1", "web-a", side));
 
-    expect(await runEffect(actOnContainer({ actId: admitted.id, organizationId }, "run-1", "web-a", "stop")))
-      .toEqual([{ ...sent[0], stop: "unknown", reason: "alpha didn't answer." }]);
-    expect(calls).toEqual([]);
+    expect(await leg("stop")).toEqual([{ ...sent[0], stop: "done" }]);
+    expect(await leg("start")).toEqual([{ ...sent[0], stop: "done", start: "done" }]);
+    expect(calls).toEqual(["stop web-a", "start web-a"]);
+  });
+
+  it("names the upgrade when a Server refuses the want as too old", async () => {
+    answer = (call) => call === "stop web-b"
+      ? Effect.fail(new ServerLacks({ machineId: "m-beta", capability: "ployz.container.ensure.v1" }))
+      : Effect.succeed("serving");
+    const admitted = await request("stop");
+    if (!admitted.ok) throw new Error("refused");
+
+    await act(admitted.id);
+    expect(await operation(admitted.id)).toMatchObject({
+      servers: [
+        { server: "alpha", stopped: "yes" },
+        { server: "beta", stopped: "no", reason: "beta needs a newer Ployz to stop it." },
+      ],
+    });
   });
 
   it("leaves a Container that isn't running where it is on stop", async () => {
@@ -254,4 +277,23 @@ describe("act-service", () => {
     expect(calls).toEqual(["stop web-a"]);
     expect((await operation(admitted.id))?.servers.map(({ stopped }) => stopped)).toEqual(["yes", "yes"]);
   });
+
+  it("fails a Server whose Ployz can't ensure Containers without asking it", async () => {
+    capabilities["m-beta"] = ["ployz.logs.tail.v1"];
+    const admitted = await request("stop");
+    if (!admitted.ok) throw new Error("refused");
+
+    await act(admitted.id);
+    expect(calls).toEqual(["stop web-a"]);
+    expect(await operation(admitted.id)).toMatchObject({
+      servers: [
+        { server: "alpha", stopped: "yes" },
+        { server: "beta", stopped: "no", reason: "beta needs a newer Ployz to stop it." },
+      ],
+    });
+  });
 });
+
+function ensureEverywhere() {
+  return { "m-alpha": ["ployz.container.ensure.v1"], "m-beta": ["ployz.container.ensure.v1"] };
+}

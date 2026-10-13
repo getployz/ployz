@@ -5,7 +5,8 @@ import { Data, Effect } from "effect";
 import { createServiceActRequestedEvent, type ServiceActRequestedEventData } from "#/modules/inngest/events";
 import type { Admission } from "#/modules/operations/keyed.server";
 import { enqueueEvent } from "#/modules/operations/outbox.server";
-import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
+import { requirements, ServerLacks, serverSupports } from "#/modules/runtime/daemon-compat";
+import { firstRuntimeFrame, OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { type PloyzSdkError, rpcErrorCode } from "#/modules/runtime/ployz.server";
 import {
   type ActiveServiceActState,
@@ -139,6 +140,15 @@ const STARTED = {
   unhealthy: (leg: ServiceActLeg) => ["failed", `${leg.server} started it, but it isn't healthy.`] as const,
 } satisfies Record<"serving" | "unconfirmed" | "unhealthy", (leg: ServiceActLeg) => readonly [LegStep, string | null]>;
 
+/** Whether each Server's record says it runs EnsureContainer. A Server Cloud can't read is attempted. */
+const ensureSupport = (organizationId: string) => firstRuntimeFrame(organizationId).pipe(
+  Effect.map((frame) => new Map<string, boolean | "unknown">((frame?.machines ?? []).map(({ machine }) => [
+    machine.id,
+    serverSupports({ capabilities: machine.runtime.capabilities ?? [] }, requirements.ensureContainer),
+  ]))),
+  Effect.orElseSucceed(() => new Map<string, boolean | "unknown">()),
+);
+
 const writeLegs = (request: ActRequest, runId: string, legs: ServiceActLeg[]) =>
   Effect.flatMap(Database, ({ drizzle }) =>
     drizzle.update(serviceAct).set({ legs }).where(and(owned(request, runId), eq(serviceAct.state, "running"))).returning({ id: serviceAct.id }))
@@ -161,18 +171,20 @@ export const actOnContainer = Effect.fn("ServiceAct.leg")(function* (
       return writeLegs(request, runId, legs);
     });
   const session = yield* (yield* OrganizationRuntime).open(request.organizationId);
+  const support = yield* ensureSupport(request.organizationId);
   for (const leg of legs) {
+    // A `sent` leg is a step that crashed around its call: the want is safe to send again.
     if (leg.container !== container || !takes(leg, side) || leg[side] !== null && leg[side] !== "sent") continue;
-    if (leg[side] === "sent") {
-      if (!(yield* write(leg, "unknown", `${leg.server} didn't answer.`))) return legs;
-      continue;
-    }
     if (alreadyThere(row.verb, side, states.get(leg.container))) {
       if (!(yield* write(leg, "already_there"))) return legs;
       continue;
     }
     if (session.status !== "connected") {
       if (!(yield* write(leg, "failed", `Cloud couldn't reach ${leg.server}.`))) return legs;
+      continue;
+    }
+    if (support.get(leg.machine) === false) {
+      if (!(yield* write(leg, "failed", `${leg.server} needs a newer Ployz to ${side} it.`))) return legs;
       continue;
     }
     if (!(yield* write(leg, "sent"))) return legs;
@@ -182,9 +194,13 @@ export const actOnContainer = Effect.fn("ServiceAct.leg")(function* (
         Effect.map((started) => STARTED[started](leg)),
       );
     const [step, reason] = yield* sent.pipe(
-      Effect.catch((error) => Effect.succeed(rpcErrorCode(error) === "unavailable"
-        ? ["unknown", `${leg.server} didn't answer.`] as const
-        : ["failed", `${leg.server} couldn't ${side} it.`] as const)),
+      Effect.catch((error) => Effect.succeed(
+        error instanceof ServerLacks
+          ? ["failed", `${leg.server} needs a newer Ployz to ${side} it.`] as const
+          : rpcErrorCode(error) === "unavailable"
+          ? ["unknown", `${leg.server} didn't answer.`] as const
+          : ["failed", `${leg.server} couldn't ${side} it.`] as const,
+      )),
     );
     if (!(yield* write(leg, step, reason))) return legs;
   }

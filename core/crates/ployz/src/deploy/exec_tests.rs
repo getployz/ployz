@@ -32,6 +32,7 @@ async fn execute_with<C: MachineOperations>(
 ) -> DeployOutcome<ExecutionError> {
     super::execute_operation_sequence(
         &crate::deploy::DeployPlan::for_execution_test(plan.to_vec(), test_namespace()),
+        "run",
         client,
         cancellation,
         None,
@@ -42,14 +43,24 @@ async fn execute_with<C: MachineOperations>(
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum Call {
     Prepare(MachineId),
-    Wait(Vec<ContainerId>, ContainerObservationCondition),
     List(QualifiedService),
-    Create(MachineId, ContainerKind),
-    Start(MachineId, ContainerId),
+    /// Running a new Container of this kind.
+    Run(MachineId, ContainerKind),
+    /// Running an existing Container.
+    Restart(MachineId, ContainerId),
     Inspect(MachineId, ContainerId),
+    /// Stopped behind the default drain.
     Stop(MachineId, ContainerId),
-    StopWithGrace(MachineId, ContainerId, i32),
+    /// Stopped with no drain.
+    StopNow(MachineId, ContainerId),
+    /// Stopped with no drain and no grace.
+    Kill(MachineId, ContainerId),
+    /// Gone behind the default drain.
     Remove(MachineId, ContainerId),
+    /// Gone with no drain.
+    Discard(MachineId, ContainerId),
+    /// Gone with no drain, by the slot of a new Container of this kind.
+    DiscardSlot(MachineId, ContainerKind),
     RemoveVolume(DockerVolumeId),
 }
 
@@ -74,7 +85,7 @@ struct Step(Call, Reply);
 struct Scripted {
     steps: Mutex<VecDeque<Step>>,
     observations: Option<Vec<ContainerObservation>>,
-    replacing: Mutex<Vec<Option<ContainerId>>>,
+    slots: Mutex<Vec<SlotKey>>,
     cancel_on_prepare: Option<CancellationToken>,
 }
 
@@ -83,7 +94,7 @@ impl Scripted {
         Self {
             steps: Mutex::new(steps.into()),
             observations: None,
-            replacing: Mutex::new(Vec::new()),
+            slots: Mutex::new(Vec::new()),
             cancel_on_prepare: None,
         }
     }
@@ -116,15 +127,6 @@ impl MachineOperations for Scripted {
         }
         Ok(ployz_core::PreparedVolumes { names: Vec::new() })
     }
-    async fn wait_for_container_observations(
-        &self,
-        container_ids: &[ContainerId],
-        condition: ContainerObservationCondition,
-        _cancellation: &CancellationToken,
-    ) -> Result<(), RpcError> {
-        unit(self.next(Call::Wait(container_ids.to_vec(), condition)))
-    }
-
     async fn service_containers(
         &self,
         service: &QualifiedService,
@@ -146,41 +148,72 @@ impl MachineOperations for Scripted {
         }
     }
 
-    async fn create_container(
+    async fn ensure_container(
         &self,
         machine_id: &MachineId,
-        kind: ContainerKind,
-        _namespace: &Namespace,
-        _spec: &ResolvedServiceSpec,
-        replacing: Option<ContainerId>,
-    ) -> Result<ContainerCreated, RpcError> {
-        self.replacing.lock().unwrap().push(replacing);
-        match self.next(Call::Create(*machine_id, kind)) {
-            Reply::Created(container_id) => Ok(ContainerCreated {
-                display_name: container_id.to_string(),
-                container_id,
-            }),
+        want: ContainerWant,
+    ) -> Result<ContainerNow, RpcError> {
+        let machine = *machine_id;
+        let (call, of) = match want {
+            ContainerWant::Running {
+                container: RunTarget::New(new),
+            } => {
+                let call = Call::Run(machine, new.slot.kind);
+                self.slots.lock().unwrap().push(new.slot.clone());
+                (call, ContainerLocator::Key(new.slot))
+            }
+            ContainerWant::Running {
+                container: RunTarget::Existing(locator),
+            } => (Call::Restart(machine, id_of(&locator)), locator),
+            ContainerWant::Stopped {
+                container,
+                drain,
+                stop,
+            } => {
+                let id = id_of(&container);
+                let call = match (drain, stop.grace_period_seconds) {
+                    (Drain::DEFAULT, None) => Call::Stop(machine, id),
+                    (Drain::NONE, None) => Call::StopNow(machine, id),
+                    (Drain::NONE, Some(0)) => Call::Kill(machine, id),
+                    other => panic!("unscripted stop {other:?}"),
+                };
+                (call, container)
+            }
+            ContainerWant::Gone {
+                container, drain, ..
+            } => {
+                let call = match (&container, drain) {
+                    (ContainerLocator::Id(id), Drain::DEFAULT) => Call::Remove(machine, *id),
+                    (ContainerLocator::Id(id), Drain::NONE) => Call::Discard(machine, *id),
+                    (ContainerLocator::Key(slot), Drain::NONE) => {
+                        Call::DiscardSlot(machine, slot.kind)
+                    }
+                    other => panic!("unscripted removal {other:?}"),
+                };
+                (call, container)
+            }
+        };
+        match self.next(call) {
+            Reply::Created(container_id) => Ok(ContainerNow::Present(observation(
+                machine_id,
+                &container_id,
+                running(),
+            ))),
             Reply::CreatedLater(container_id) => {
                 tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-                Ok(ContainerCreated {
-                    display_name: container_id.to_string(),
-                    container_id,
-                })
+                Ok(ContainerNow::Present(observation(
+                    machine_id,
+                    &container_id,
+                    running(),
+                )))
             }
+            Reply::Ok => Ok(ContainerNow::Absent { of }),
             Reply::Error(error) => Err(error),
             Reply::Pending => std::future::pending().await,
-            Reply::Ok | Reply::Listed(_) | Reply::Observed(..) | Reply::ObservedIngress(_) => {
-                panic!("scripted create requires Created or Error")
+            Reply::Listed(_) | Reply::Observed(..) | Reply::ObservedIngress(_) => {
+                panic!("scripted ensure requires Created, Ok or Error")
             }
         }
-    }
-
-    async fn start_container(
-        &self,
-        machine_id: &MachineId,
-        container_id: &ContainerId,
-    ) -> Result<(), RpcError> {
-        unit(self.next(Call::Start(*machine_id, *container_id)))
     }
 
     async fn inspect_container(
@@ -224,28 +257,6 @@ impl MachineOperations for Scripted {
         }
     }
 
-    async fn stop_container(
-        &self,
-        machine_id: &MachineId,
-        container_id: &ContainerId,
-        grace_period_seconds: Option<i32>,
-    ) -> Result<(), RpcError> {
-        let call = grace_period_seconds.map_or_else(
-            || Call::Stop(*machine_id, *container_id),
-            |grace| Call::StopWithGrace(*machine_id, *container_id, grace),
-        );
-        unit(self.next(call))
-    }
-
-    async fn remove_container(
-        &self,
-        machine_id: &MachineId,
-        container_id: &ContainerId,
-        _purpose: ployz_core::RemoveContainerPurpose,
-    ) -> Result<(), RpcError> {
-        unit(self.next(Call::Remove(*machine_id, *container_id)))
-    }
-
     async fn remove_volume(&self, id: &DockerVolumeId) -> Result<(), RpcError> {
         unit(self.next(Call::RemoveVolume(id.clone())))
     }
@@ -266,18 +277,11 @@ fn unit(reply: Reply) -> Result<(), RpcError> {
     }
 }
 
-fn serving(container_id: ContainerId) -> Step {
-    ok(Call::Wait(
-        vec![container_id],
-        ContainerObservationCondition::Serving,
-    ))
-}
-
-fn dropped(container_id: ContainerId) -> Step {
-    ok(Call::Wait(
-        vec![container_id],
-        ContainerObservationCondition::Dropped,
-    ))
+fn id_of(locator: &ContainerLocator) -> ContainerId {
+    match locator {
+        ContainerLocator::Id(id) => *id,
+        ContainerLocator::Key(slot) => panic!("unscripted slot {slot:?}"),
+    }
 }
 
 #[path = "exec_tests/dispatch.rs"]
@@ -610,9 +614,13 @@ async fn application_failure_and_cancellation_retain_prepared_storage() {
         let mut steps = vec![ok(Call::Prepare(target))];
         if !cancel_after_prepare {
             steps.push(Step(
-                Call::Create(target, ContainerKind::ServiceContainer),
+                Call::Run(target, ContainerKind::ServiceContainer),
                 Reply::Error(error("image failed")),
             ));
+            steps.push(ok(Call::DiscardSlot(
+                target,
+                ContainerKind::ServiceContainer,
+            )));
         }
         let mut client = Scripted::new(steps);
         client.cancel_on_prepare = cancel_after_prepare.then(|| cancellation.clone());

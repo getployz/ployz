@@ -15,10 +15,10 @@ use ployz::{
     context::{Connection, ConnectionSource, SelectedConnections},
 };
 use ployz_core::{
-    AdvertisedEndpoint, ContainerCreated, ContainerId, ContainerList, ContractDescription,
-    CreateVolumeRequest, DataLoss, DataLossConfirmation, DockerVolume, DockerVolumeId,
-    DockerVolumeName, DockerVolumeStorageObservation, ForgetRequest, Forgotten, Left, LeftPhase,
-    LocalMachinePhase, MANAGED_LABEL, Machine, MachineDetails, MachineId, MachineList, MachineName,
+    AdvertisedEndpoint, ContainerId, ContainerList, ContractDescription, CreateVolumeRequest,
+    DataLoss, DataLossConfirmation, DockerVolume, DockerVolumeId, DockerVolumeName,
+    DockerVolumeStorageObservation, ForgetRequest, Forgotten, Left, LeftPhase, LocalMachinePhase,
+    MANAGED_LABEL, Machine, MachineDetails, MachineId, MachineList, MachineName,
     MachineObservation, MachinePath, MachineRpc, MachineRpcServer, MachineStorageObservation,
     MembershipObservation, NAMESPACE_LABEL, ObservedDataLoss, OpaquePayload, PROTOCOL_MAJOR,
     RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, Registered, RpcError, RpcErrorCode, RpcRequestBody,
@@ -176,7 +176,7 @@ pub(super) struct DiscoveryService {
     pub(super) create_container_error: Option<RpcError>,
     pub(super) create_container_blocked: Option<Arc<tokio::sync::Notify>>,
     pub(super) list_machines_blocked: Option<Arc<tokio::sync::Notify>>,
-    pub(super) created_containers: Arc<Mutex<Vec<ployz_core::CreateContainerRequest>>>,
+    pub(super) created_containers: Arc<Mutex<Vec<ployz_core::NewContainer>>>,
     pub(super) removed_volumes: Arc<Mutex<Vec<DockerVolumeId>>>,
     pub(super) reset_warning: Arc<Mutex<Option<String>>>,
     pub(super) reset_machines: Arc<Mutex<Vec<MachineId>>>,
@@ -771,13 +771,6 @@ impl MachineRpc for DiscoveryService {
         Ok(Response::new(RpcResponse::from(details).encode().unwrap()))
     }
 
-    async fn get_container_observations(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
-    }
-
     async fn inspect_storage(
         &self,
         _request: tonic::Request<ployz_core::OpaquePayload>,
@@ -860,47 +853,6 @@ impl MachineRpc for DiscoveryService {
         Ok(Response::new(response.encode().unwrap()))
     }
 
-    async fn create_container(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let request = request.into_inner().decode_request().unwrap();
-        let RpcRequestBody::CreateContainer(create) = request.body else {
-            return Err(Status::invalid_argument("expected create_container"));
-        };
-        self.created_containers.lock().unwrap().push(create);
-        if let Some(builds) = &self.builds
-            && builds.retain_images
-        {
-            assert!(
-                builds.retained.load(Ordering::SeqCst),
-                "image owner lost before execution"
-            );
-            assert!(
-                builds.delivered.load(Ordering::SeqCst),
-                "execution preceded image delivery"
-            );
-            builds.created.store(true, Ordering::SeqCst);
-        }
-        if let Some(received) = &self.create_container_blocked {
-            received.notify_one();
-            std::future::pending::<()>().await;
-        }
-        if let Some(error) = &self.create_container_error {
-            return Ok(Response::new(
-                RpcResponse::from(error.clone()).encode().unwrap(),
-            ));
-        }
-        Ok(Response::new(
-            RpcResponse::from(ContainerCreated {
-                container_id: created_container_id(),
-                display_name: "web-1".into(),
-            })
-            .encode()
-            .unwrap(),
-        ))
-    }
-
     async fn inspect_volume_copy(
         &self,
         _request: Request<OpaquePayload>,
@@ -971,45 +923,57 @@ impl MachineRpc for DiscoveryService {
         Ok(Response::new(response.encode().unwrap()))
     }
 
-    async fn start_container(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        Ok(Response::new(
-            RpcResponse::from(ployz_core::ContainerChanged {
-                container_id: created_container_id(),
-            })
-            .encode()
-            .unwrap(),
-        ))
-    }
-
-    async fn mark_container_stopping(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
-    }
-
-    async fn stop_container(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
-    }
-
-    async fn remove_container(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
-    }
-
     async fn ensure_container(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
+        let request = request.into_inner().decode_request().unwrap();
+        let RpcRequestBody::EnsureContainer(ensure) = request.body else {
+            return Err(Status::invalid_argument("expected ensure_container"));
+        };
+        let now = match ensure.want {
+            ployz_core::ContainerWant::Running {
+                container: ployz_core::RunTarget::New(new),
+            } => {
+                let resolved_spec = new.resolved_spec.clone();
+                self.created_containers.lock().unwrap().push(new);
+                if let Some(builds) = &self.builds
+                    && builds.retain_images
+                {
+                    assert!(
+                        builds.retained.load(Ordering::SeqCst),
+                        "image owner lost before execution"
+                    );
+                    assert!(
+                        builds.delivered.load(Ordering::SeqCst),
+                        "execution preceded image delivery"
+                    );
+                    builds.created.store(true, Ordering::SeqCst);
+                }
+                if let Some(received) = &self.create_container_blocked {
+                    received.notify_one();
+                    std::future::pending::<()>().await;
+                }
+                if let Some(error) = &self.create_container_error {
+                    return Ok(Response::new(
+                        RpcResponse::from(error.clone()).encode().unwrap(),
+                    ));
+                }
+                ployz_core::ContainerNow::Present(created_container(resolved_spec))
+            }
+            ployz_core::ContainerWant::Gone { container, .. } => {
+                ployz_core::ContainerNow::Absent { of: container }
+            }
+            ployz_core::ContainerWant::Running { .. }
+            | ployz_core::ContainerWant::Stopped { .. } => {
+                return Err(Status::unimplemented("unused"));
+            }
+        };
+        Ok(Response::new(
+            RpcResponse::from(ployz_core::EnsuredContainer::Ensured { now })
+                .encode()
+                .unwrap(),
+        ))
     }
 
     #[expect(clippy::result_large_err)] // tonic fixes the public RPC error type.
@@ -1212,13 +1176,6 @@ impl MachineRpc for DiscoveryService {
         ))
     }
 
-    async fn get_ingress_proxy_config(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
-    }
-
     async fn publish_certificate_material(
         &self,
         _request: Request<OpaquePayload>,
@@ -1349,8 +1306,25 @@ pub(super) fn created_volume(machine_id: MachineId, create: CreateVolumeRequest)
     }
 }
 
-fn created_container_id() -> ContainerId {
-    ContainerId::parse("1".repeat(64)).unwrap()
+fn created_container(
+    resolved_spec: ployz_core::ResolvedServiceSpec,
+) -> ployz_core::ContainerObservation {
+    ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
+        container_id: ContainerId::parse("1".repeat(64)).unwrap(),
+        display_name: "web-1".into(),
+        created_at_unix_nanos: 1,
+        machine_id: MachineId::random(),
+        namespace: ployz_core::Namespace::parse("app").unwrap(),
+        kind: ployz_core::ContainerKind::ServiceContainer,
+        runtime: ployz_core::ContainerRuntimeObservation::Running {
+            health: ployz_core::HealthObservation::Healthy,
+        },
+        effective_healthcheck: None,
+        resolved_spec,
+        address: None,
+        labels: BTreeMap::new(),
+    })
+    .unwrap()
 }
 
 /// A Machine's storage holding no Volume copies.

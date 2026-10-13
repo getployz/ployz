@@ -1,19 +1,22 @@
 //! Fake enroll HTTP and Machine RPC for membership join tests.
 
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+use std::{
+    collections::BTreeMap,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
 };
 
 use ployz_core::{
-    AdvertisedEndpoint, ContainerChanged, ContainerCreated, ContainerDetails, ContainerId,
-    ContainerKind, ContainerList, ContainerObservation, ContainerRuntimeObservation,
-    ContractDescription, CreateContainerRequest, DESCRIBE_CONTRACT_CAPABILITY, EnrollAs,
-    EnrollRequest, Enrolled, HealthObservation, Left, LeftPhase, LocalMachinePhase, Machine,
-    MachineDetails, MachineId, MachineImages, MachineList, MachineName, MachineNow,
-    MachineObservation, MachineRpc, MachineToken, MembershipObservation, OpaquePayload,
-    PROTOCOL_MAJOR, Registered, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
-    SetManagementClientResponse, VolumeInventory, WireGuardPublicKey,
+    AdvertisedEndpoint, ContainerDetails, ContainerId, ContainerKind, ContainerList,
+    ContainerLocator, ContainerNow, ContainerObservation, ContainerRuntimeObservation,
+    ContainerWant, ContractDescription, CreationKey, DESCRIBE_CONTRACT_CAPABILITY, EnrollAs,
+    EnrollRequest, Enrolled, EnsuredContainer, HealthObservation, Left, LeftPhase,
+    LocalMachinePhase, Machine, MachineDetails, MachineId, MachineImages, MachineList, MachineName,
+    MachineNow, MachineObservation, MachineRpc, MachineToken, MembershipObservation, NewContainer,
+    OpaquePayload, PROTOCOL_MAJOR, Registered, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
+    RunTarget, SetManagementClientResponse, VolumeInventory, WireGuardPublicKey,
 };
 
 /// The Management Capability the fake daemon mints for any Management Client Set.
@@ -93,7 +96,8 @@ struct JoinInner {
     containers: Mutex<Vec<ContainerObservation>>,
     create_attempts: AtomicUsize,
     transient_create_failures: AtomicUsize,
-    ensure_requests: Mutex<Vec<CreateContainerRequest>>,
+    ensure_requests: Mutex<Vec<NewContainer>>,
+    keys: Mutex<BTreeMap<CreationKey, ContainerId>>,
     ensure_attempts: AtomicUsize,
     transient_ensure_failures: AtomicUsize,
     target_inspect_attempts: AtomicUsize,
@@ -132,6 +136,7 @@ impl JoinDaemon {
                 create_attempts: AtomicUsize::new(0),
                 transient_create_failures: AtomicUsize::new(0),
                 ensure_requests: Mutex::new(Vec::new()),
+                keys: Mutex::new(BTreeMap::new()),
                 ensure_attempts: AtomicUsize::new(0),
                 transient_ensure_failures: AtomicUsize::new(0),
                 target_inspect_attempts: AtomicUsize::new(0),
@@ -284,7 +289,7 @@ impl JoinDaemon {
         self
     }
 
-    pub fn ensure_requests(&self) -> Vec<CreateContainerRequest> {
+    pub fn ensure_requests(&self) -> Vec<NewContainer> {
         self.inner.ensure_requests.lock().unwrap().clone()
     }
 
@@ -296,6 +301,124 @@ impl JoinDaemon {
     pub fn target_inspect_attempts(&self) -> usize {
         self.inner.target_inspect_attempts.load(Ordering::SeqCst)
     }
+
+    /// Run a new Container once per creation key; a resend of the same key gets the first one.
+    /// Only Global slots, whose keys start `global:`, count as ensures.
+    #[expect(
+        clippy::result_large_err,
+        reason = "MachineRpc uses tonic::Status as the error type"
+    )]
+    fn run_new(&self, new: NewContainer) -> Result<Response<OpaquePayload>, Status> {
+        self.inner.create_attempts.fetch_add(1, Ordering::SeqCst);
+        if new.slot.creation_key.as_str().starts_with("global:") {
+            self.inner.ensure_attempts.fetch_add(1, Ordering::SeqCst);
+            if consume_transient_failure(&self.inner.transient_ensure_failures) {
+                return Err(Status::unavailable("transient ensure failure"));
+            }
+            if self.inner.fail_ensure.load(Ordering::SeqCst) {
+                return rpc_ok(RpcError {
+                    code: RpcErrorCode::Unavailable,
+                    message: "ensure failed".into(),
+                    details: serde_json::Value::Null,
+                    cause: Vec::new(),
+                });
+            }
+            self.inner.ensure_requests.lock().unwrap().push(new.clone());
+            let machine = self.inner.current_machine.lock().unwrap().clone();
+            let eligibility = new.resolved_spec.placement_eligibility_in_namespace(
+                &new.slot.namespace,
+                &machine,
+                None,
+            );
+            if eligibility != ployz_core::ServicePlacementEligibility::Eligible {
+                return rpc_ok(RpcError {
+                    code: RpcErrorCode::Conflict,
+                    message: "target Global slot is ineligible or unknown".into(),
+                    details: serde_json::Value::Null,
+                    cause: Vec::new(),
+                });
+            }
+        }
+        let existing = self
+            .inner
+            .keys
+            .lock()
+            .unwrap()
+            .get(&new.slot.creation_key)
+            .copied();
+        let container = match existing {
+            Some(container_id) => self.set_running(container_id)?,
+            None => {
+                let mut containers = self.inner.containers.lock().unwrap();
+                let n = containers.len() + 1;
+                let container_id = ContainerId::parse(format!("{n:064x}")).unwrap();
+                let container =
+                    ContainerObservation::try_from(ployz_core::ContainerObservationParts {
+                        container_id,
+                        display_name: format!("{}-{n}", new.resolved_spec.name),
+                        created_at_unix_nanos: n as i64,
+                        machine_id: self.inner.registration.assigned_machine.id,
+                        namespace: new.slot.namespace,
+                        kind: new.slot.kind,
+                        runtime: ContainerRuntimeObservation::Running {
+                            health: HealthObservation::Healthy,
+                        },
+                        effective_healthcheck: None,
+                        resolved_spec: new.resolved_spec,
+                        address: None,
+                        labels: Default::default(),
+                    })
+                    .unwrap();
+                containers.push(container.clone());
+                drop(containers);
+                self.inner
+                    .keys
+                    .lock()
+                    .unwrap()
+                    .insert(new.slot.creation_key, container_id);
+                self.record("deploy_ingress");
+                container
+            }
+        };
+        if consume_transient_failure(&self.inner.transient_create_failures) {
+            return Err(Status::unavailable("lost Ingress container creation reply"));
+        }
+        ensured(ContainerNow::Present(container))
+    }
+
+    #[expect(
+        clippy::result_large_err,
+        reason = "MachineRpc uses tonic::Status as the error type"
+    )]
+    fn set_running(&self, container_id: ContainerId) -> Result<ContainerObservation, Status> {
+        let mut containers = self.inner.containers.lock().unwrap();
+        let container = containers
+            .iter_mut()
+            .find(|container| container.container_id == container_id)
+            .ok_or_else(|| Status::not_found("container not found"))?;
+        if !matches!(
+            container.runtime,
+            ContainerRuntimeObservation::Running { .. }
+        ) {
+            container
+                .try_update(|parts| {
+                    parts.runtime = ContainerRuntimeObservation::Running {
+                        health: HealthObservation::Healthy,
+                    }
+                })
+                .unwrap();
+            self.record("deploy_ingress");
+        }
+        Ok(container.clone())
+    }
+}
+
+#[expect(
+    clippy::result_large_err,
+    reason = "MachineRpc uses tonic::Status as the error type"
+)]
+fn ensured(now: ContainerNow) -> Result<Response<OpaquePayload>, Status> {
+    rpc_ok(EnsuredContainer::Ensured { now })
 }
 
 #[expect(
@@ -725,12 +848,6 @@ impl MachineRpc for JoinDaemon {
             last_check: None,
         })
     }
-    async fn get_container_observations(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
-    }
     async fn inspect_storage(
         &self,
         _request: tonic::Request<ployz_core::OpaquePayload>,
@@ -753,104 +870,6 @@ impl MachineRpc for JoinDaemon {
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         rpc_ok(VolumeInventory::default())
-    }
-    async fn create_container(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        self.inner.create_attempts.fetch_add(1, Ordering::SeqCst);
-        let decoded = request
-            .into_inner()
-            .decode_request()
-            .map_err(|error| Status::invalid_argument(error.to_string()))?;
-        let RpcRequestBody::CreateContainer(create) = decoded.body else {
-            return Err(Status::invalid_argument("expected CreateContainer"));
-        };
-        if create.creation_key.is_some() {
-            self.inner.ensure_attempts.fetch_add(1, Ordering::SeqCst);
-            if consume_transient_failure(&self.inner.transient_ensure_failures) {
-                return Err(Status::unavailable("transient ensure failure"));
-            }
-            if self.inner.fail_ensure.load(Ordering::SeqCst) {
-                return rpc_ok(RpcError {
-                    code: RpcErrorCode::Unavailable,
-                    message: "ensure failed".into(),
-                    details: serde_json::Value::Null,
-                    cause: Vec::new(),
-                });
-            }
-            self.inner
-                .ensure_requests
-                .lock()
-                .unwrap()
-                .push(create.clone());
-            let machine = self.inner.current_machine.lock().unwrap().clone();
-            let eligibility = create.resolved_spec.placement_eligibility_in_namespace(
-                &create.namespace,
-                &machine,
-                None,
-            );
-            if eligibility != ployz_core::ServicePlacementEligibility::Eligible {
-                return rpc_ok(RpcError {
-                    code: RpcErrorCode::Conflict,
-                    message: "target Global slot is ineligible or unknown".into(),
-                    details: serde_json::Value::Null,
-                    cause: Vec::new(),
-                });
-            }
-            let n = self.inner.containers.lock().unwrap().len() + 1;
-            let container_id = ContainerId::parse(format!("{n:064x}")).unwrap();
-            let machine_id = self.inner.registration.assigned_machine.id;
-            self.inner.containers.lock().unwrap().push(
-                ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
-                    container_id,
-                    display_name: format!("{}-slot", create.resolved_spec.name),
-                    created_at_unix_nanos: n as i64,
-                    machine_id,
-                    namespace: create.namespace,
-                    kind: ContainerKind::ServiceContainer,
-                    runtime: ContainerRuntimeObservation::Created,
-                    effective_healthcheck: None,
-                    resolved_spec: create.resolved_spec,
-                    address: None,
-                    labels: Default::default(),
-                })
-                .unwrap(),
-            );
-            if consume_transient_failure(&self.inner.transient_create_failures) {
-                return Err(Status::unavailable("lost Ingress container creation reply"));
-            }
-            return rpc_ok(ContainerCreated {
-                container_id,
-                display_name: format!("slot-{n}"),
-            });
-        }
-        let n = self.inner.containers.lock().unwrap().len() + 1;
-        let container_id = ContainerId::parse(format!("{n:064x}")).unwrap();
-        let display_name = format!("{}-{n}", create.resolved_spec.name);
-        self.inner.containers.lock().unwrap().push(
-            ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
-                container_id,
-                display_name: display_name.clone(),
-                created_at_unix_nanos: n as i64,
-                machine_id: self.inner.registration.assigned_machine.id,
-                namespace: create.namespace,
-                kind: create.kind,
-                runtime: ContainerRuntimeObservation::Created,
-                effective_healthcheck: None,
-                resolved_spec: create.resolved_spec,
-                address: None,
-                labels: Default::default(),
-            })
-            .unwrap(),
-        );
-        if consume_transient_failure(&self.inner.transient_create_failures) {
-            return Err(Status::unavailable("lost Ingress container creation reply"));
-        }
-        rpc_ok(ContainerCreated {
-            container_id,
-            display_name,
-        })
     }
     async fn inspect_volume_copy(
         &self,
@@ -876,7 +895,8 @@ impl MachineRpc for JoinDaemon {
     ) -> Result<Response<OpaquePayload>, Status> {
         unused()
     }
-    async fn start_container(
+
+    async fn ensure_container(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
@@ -884,68 +904,41 @@ impl MachineRpc for JoinDaemon {
             .into_inner()
             .decode_request()
             .map_err(|error| Status::invalid_argument(error.to_string()))?;
-        let RpcRequestBody::StartContainer(start) = decoded.body else {
-            return Err(Status::invalid_argument("expected StartContainer"));
+        let RpcRequestBody::EnsureContainer(ensure) = decoded.body else {
+            return Err(Status::invalid_argument("expected EnsureContainer"));
         };
-        let mut containers = self.inner.containers.lock().unwrap();
-        let container = containers
-            .iter_mut()
-            .find(|container| container.container_id == start.container_id)
-            .ok_or_else(|| Status::not_found("container not found"))?;
-        container
-            .try_update(|parts| {
-                parts.runtime = ContainerRuntimeObservation::Running {
-                    health: HealthObservation::Healthy,
-                }
-            })
-            .unwrap();
-        drop(containers);
-        self.record("deploy_ingress");
-        rpc_ok(ContainerChanged {
-            container_id: start.container_id,
-        })
-    }
-    async fn mark_container_stopping(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
-    }
-    async fn stop_container(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let decoded = request.into_inner().decode_request().unwrap();
-        let RpcRequestBody::StopContainer(stop) = decoded.body else {
-            return unused();
-        };
-        rpc_ok(ContainerChanged {
-            container_id: stop.container_id,
-        })
-    }
-    async fn remove_container(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let decoded = request.into_inner().decode_request().unwrap();
-        let RpcRequestBody::RemoveContainer(remove) = decoded.body else {
-            return unused();
-        };
-        self.inner
-            .containers
-            .lock()
-            .unwrap()
-            .retain(|container| container.container_id != remove.container_id);
-        rpc_ok(ContainerChanged {
-            container_id: remove.container_id,
-        })
-    }
-
-    async fn ensure_container(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
+        match ensure.want {
+            ContainerWant::Running {
+                container: RunTarget::New(new),
+            } => self.run_new(new),
+            ContainerWant::Running {
+                container: RunTarget::Existing(ContainerLocator::Id(container_id)),
+            } => {
+                let container = self.set_running(container_id)?;
+                ensured(ContainerNow::Present(container))
+            }
+            ContainerWant::Gone {
+                container: ContainerLocator::Id(container_id),
+                ..
+            } => {
+                self.inner
+                    .containers
+                    .lock()
+                    .unwrap()
+                    .retain(|container| container.container_id != container_id);
+                ensured(ContainerNow::Absent {
+                    of: ContainerLocator::Id(container_id),
+                })
+            }
+            ContainerWant::Running {
+                container: RunTarget::Existing(ContainerLocator::Key(_)),
+            }
+            | ContainerWant::Gone {
+                container: ContainerLocator::Key(_),
+                ..
+            }
+            | ContainerWant::Stopped { .. } => unused(),
+        }
     }
     async fn list_images(
         &self,
@@ -982,12 +975,6 @@ impl MachineRpc for JoinDaemon {
         unused()
     }
     async fn pull_image_from_machine(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
-    }
-    async fn get_ingress_proxy_config(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {

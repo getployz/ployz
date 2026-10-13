@@ -1,21 +1,21 @@
 use std::{future::Future, time::Duration};
 
 use ployz_core::{
-    ContainerCreated, ContainerDetails, ContainerId, ContainerKind, ContainerObservation,
-    ContainerRuntimeObservation, CreateContainerRequest, DeployEvent, DockerVolumeId,
-    ExecutionError, FailedOperation, HookFailure, InspectContainerRequest, MachineAction,
-    MachineId, MachineTarget, MembershipObservation, Namespace, OperationPhase, QualifiedService,
-    RemoveContainerPurpose, RemoveContainerRequest, RemoveVolumeRequest, ResolvedServiceSpec,
-    RpcError, RpcErrorCode, StartContainerRequest, StopContainerPurpose, StopContainerRequest,
-    UpdateOrder, op,
+    AnonymousVolumes, ContainerDetails, ContainerId, ContainerKind, ContainerLocator, ContainerNow,
+    ContainerObservation, ContainerRuntimeObservation, ContainerWant, CreationKey, DeployEvent,
+    DockerVolumeId, Drain, ExecutionError, FailedOperation, HookFailure, InspectContainerRequest,
+    ListContainersRequest, MachineAction, MachineId, MachineTarget, MembershipObservation,
+    Namespace, NewContainer, OperationPhase, QualifiedService, RemoveVolumeRequest,
+    ResolvedServiceSpec, RpcError, RpcErrorCode, RunTarget, SlotKey, StopOptions, UpdateOrder, op,
 };
+use sha2::{Digest, Sha256};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use crate::cluster::{ContainerObservationCondition, POLL_INTERVAL};
+use crate::cluster::POLL_INTERVAL;
 use crate::connect::{Client, TARGET_RPC_TIMEOUT, stop_rpc_timeout};
-use ployz_core::{EnvironmentValues, ListContainersRequest};
+use ployz_core::EnvironmentValues;
 
 use super::{
     DeployOperation, DeployOutcome, ReplacementCompensation, ReplacementOperation, RestartAttempt,
@@ -76,46 +76,21 @@ pub(super) trait MachineOperations {
         machine_id: &MachineId,
         specs: &[ployz_core::ServiceStorageSpec],
     ) -> Result<ployz_core::PreparedVolumes, RpcError>;
-    async fn wait_for_container_observations(
-        &self,
-        container_ids: &[ContainerId],
-        condition: ContainerObservationCondition,
-        cancellation: &CancellationToken,
-    ) -> Result<(), RpcError>;
     async fn service_containers(
         &self,
         service: &QualifiedService,
     ) -> Result<Vec<ContainerObservation>, RpcError>;
-    async fn create_container(
+    /// Converge one Container to `want` and answer what the Machine then observes.
+    async fn ensure_container(
         &self,
         machine_id: &MachineId,
-        kind: ContainerKind,
-        namespace: &Namespace,
-        spec: &ResolvedServiceSpec,
-        replacing: Option<ContainerId>,
-    ) -> Result<ContainerCreated, RpcError>;
-    async fn start_container(
-        &self,
-        machine_id: &MachineId,
-        container_id: &ContainerId,
-    ) -> Result<(), RpcError>;
+        want: ContainerWant,
+    ) -> Result<ContainerNow, RpcError>;
     async fn inspect_container(
         &self,
         machine_id: &MachineId,
         container_id: &ContainerId,
     ) -> Result<ContainerDetails, RpcError>;
-    async fn stop_container(
-        &self,
-        machine_id: &MachineId,
-        container_id: &ContainerId,
-        grace_period_seconds: Option<i32>,
-    ) -> Result<(), RpcError>;
-    async fn remove_container(
-        &self,
-        machine_id: &MachineId,
-        container_id: &ContainerId,
-        purpose: RemoveContainerPurpose,
-    ) -> Result<(), RpcError>;
     async fn remove_volume(&self, id: &DockerVolumeId) -> Result<(), RpcError>;
 }
 
@@ -133,14 +108,6 @@ impl MachineOperations for Client {
             Some(Duration::from_secs(120)),
         )
         .await
-    }
-    async fn wait_for_container_observations(
-        &self,
-        container_ids: &[ContainerId],
-        condition: ContainerObservationCondition,
-        cancellation: &CancellationToken,
-    ) -> Result<(), RpcError> {
-        Client::wait_for_container_observations(self, container_ids, condition, cancellation).await
     }
 
     async fn service_containers(
@@ -184,89 +151,34 @@ impl MachineOperations for Client {
             .collect())
     }
 
-    async fn create_container(
+    async fn ensure_container(
         &self,
         machine_id: &MachineId,
-        kind: ContainerKind,
-        namespace: &Namespace,
-        spec: &ResolvedServiceSpec,
-        replacing: Option<ContainerId>,
-    ) -> Result<ContainerCreated, RpcError> {
-        // Replanning a retained replacement as Run must keep its persisted creation identity.
-        let replay_key = if kind == ContainerKind::ServiceContainer
-            && spec.mode == ployz_core::ServiceMode::Global
-            && replacing.is_none()
-        {
-            self.clone()
-                .read::<op::ListContainers>(
-                    ListContainersRequest {
-                        environment: EnvironmentValues::Included,
-                    },
-                    &MachineTarget::from(machine_id),
+        mut want: ContainerWant,
+    ) -> Result<ContainerNow, RpcError> {
+        let timeout = match &mut want {
+            ContainerWant::Running {
+                container: RunTarget::New(new),
+            } => {
+                if let Some(key) = self.retained_global_key(machine_id, new).await? {
+                    new.slot.creation_key = key;
+                }
+                new.deployment_id.clone_from(&self.deployment_id);
+                new.registry_auth = self.registry_auth.get(&new.resolved_spec.name).cloned();
+                crate::image::ensure_cluster_image(
+                    self,
+                    machine_id,
+                    &new.resolved_spec.container.image,
+                    new.resolved_spec.container.pull_policy,
                 )
-                .await?
-                .containers
-                .into_iter()
-                .find_map(|container| {
-                    (container.machine_id == *machine_id
-                        && container.kind == kind
-                        && container.namespace == *namespace
-                        && container.resolved_spec == *spec)
-                        .then(|| container.labels.get("ployz.creation.key").cloned())
-                        .flatten()
-                })
-        } else {
-            None
+                .await?;
+                None
+            }
+            ContainerWant::Running { .. } => Some(TARGET_RPC_TIMEOUT),
+            ContainerWant::Stopped { stop, .. } => stop_rpc_timeout(stop.grace_period_seconds, 1),
+            ContainerWant::Gone { .. } => None,
         };
-        if replay_key.is_none() {
-            crate::image::ensure_cluster_image(
-                self,
-                machine_id,
-                &spec.container.image,
-                spec.container.pull_policy,
-            )
-            .await?;
-        }
-        self.invoke::<op::CreateContainer>(
-            CreateContainerRequest {
-                deployment_id: self.deployment_id.clone(),
-                creation_key: replay_key.or_else(|| {
-                    (kind == ContainerKind::ServiceContainer
-                        && spec.mode == ployz_core::ServiceMode::Global)
-                        .then(|| {
-                            let key = crate::cluster::global_creation_key(spec);
-                            // Explicit replacement can overlap even an identical spec.
-                            match replacing {
-                                Some(old) => format!("{key}:replace:{old}"),
-                                None => key,
-                            }
-                        })
-                }),
-                kind,
-                namespace: namespace.clone(),
-                resolved_spec: spec.clone(),
-                registry_auth: self.registry_auth.get(&spec.name).cloned(),
-            },
-            &MachineTarget::from(machine_id),
-            None,
-        )
-        .await
-    }
-
-    async fn start_container(
-        &self,
-        machine_id: &MachineId,
-        container_id: &ContainerId,
-    ) -> Result<(), RpcError> {
-        self.invoke::<op::StartContainer>(
-            StartContainerRequest {
-                container_id: *container_id,
-            },
-            &MachineTarget::from(machine_id),
-            Some(TARGET_RPC_TIMEOUT),
-        )
-        .await
-        .map(|_| ())
+        Client::ensure_container(self, machine_id, want, timeout).await
     }
 
     async fn inspect_container(
@@ -282,44 +194,6 @@ impl MachineOperations for Client {
             Some(TARGET_RPC_TIMEOUT),
         )
         .await
-    }
-
-    async fn stop_container(
-        &self,
-        machine_id: &MachineId,
-        container_id: &ContainerId,
-        grace_period_seconds: Option<i32>,
-    ) -> Result<(), RpcError> {
-        crate::ingress::stop_container(
-            self,
-            machine_id,
-            StopContainerRequest {
-                container_id: *container_id,
-                signal: None,
-                grace_period_seconds,
-            },
-            stop_rpc_timeout(grace_period_seconds, 1),
-        )
-        .await
-    }
-
-    async fn remove_container(
-        &self,
-        machine_id: &MachineId,
-        container_id: &ContainerId,
-        purpose: RemoveContainerPurpose,
-    ) -> Result<(), RpcError> {
-        self.invoke::<op::RemoveContainer>(
-            RemoveContainerRequest {
-                container_id: *container_id,
-                remove_volumes: purpose == RemoveContainerPurpose::Rollout,
-                force: false,
-            },
-            &MachineTarget::from(machine_id),
-            Some(TARGET_RPC_TIMEOUT),
-        )
-        .await
-        .map(|_| ())
     }
 
     async fn remove_volume(&self, id: &DockerVolumeId) -> Result<(), RpcError> {
@@ -360,12 +234,50 @@ impl From<ExecutionError> for OperationFailure {
     }
 }
 
-// Wait out a target daemon restart on the same Machine. Create stays
-// one-shot — a dropped create response must not mint a second container.
+// Wait out a target daemon restart on the same Machine. A new Container's
+// creation key makes a resent Running find the Container the lost reply made.
 // Do not walk to another connection; that is a different command-entry problem.
 struct RestartTolerant<'a, C> {
     inner: &'a C,
     cancellation: &'a CancellationToken,
+}
+
+impl Client {
+    /// The creation key of a retained Global replacement that a retry replans as a run,
+    /// so the run starts that Container rather than making a second one.
+    async fn retained_global_key(
+        &self,
+        machine_id: &MachineId,
+        new: &NewContainer,
+    ) -> Result<Option<CreationKey>, RpcError> {
+        let spec = &new.resolved_spec;
+        if new.slot.kind != ContainerKind::ServiceContainer
+            || spec.mode != ployz_core::ServiceMode::Global
+            || new.slot.creation_key.as_str() != crate::cluster::global_creation_key(spec)
+        {
+            return Ok(None);
+        }
+        Ok(self
+            .clone()
+            .read::<op::ListContainers>(
+                ListContainersRequest {
+                    environment: EnvironmentValues::Included,
+                },
+                &MachineTarget::from(machine_id),
+            )
+            .await?
+            .containers
+            .into_iter()
+            .find_map(|container| {
+                (container.machine_id == *machine_id
+                    && container.kind == new.slot.kind
+                    && container.namespace == new.slot.namespace
+                    && container.resolved_spec == *spec)
+                    .then(|| container.labels.get("ployz.creation.key").cloned())
+                    .flatten()
+            })
+            .and_then(|key| CreationKey::try_from(key).ok()))
+    }
 }
 
 impl<C: MachineOperations> MachineOperations for RestartTolerant<'_, C> {
@@ -376,16 +288,6 @@ impl<C: MachineOperations> MachineOperations for RestartTolerant<'_, C> {
     ) -> Result<ployz_core::PreparedVolumes, RpcError> {
         self.inner.prepare_volumes(machine_id, specs).await
     }
-    async fn wait_for_container_observations(
-        &self,
-        container_ids: &[ContainerId],
-        condition: ContainerObservationCondition,
-        cancellation: &CancellationToken,
-    ) -> Result<(), RpcError> {
-        self.inner
-            .wait_for_container_observations(container_ids, condition, cancellation)
-            .await
-    }
 
     async fn service_containers(
         &self,
@@ -394,26 +296,13 @@ impl<C: MachineOperations> MachineOperations for RestartTolerant<'_, C> {
         wait_out_restart(self.cancellation, || self.inner.service_containers(service)).await
     }
 
-    async fn create_container(
+    async fn ensure_container(
         &self,
         machine_id: &MachineId,
-        kind: ContainerKind,
-        namespace: &Namespace,
-        spec: &ResolvedServiceSpec,
-        replacing: Option<ContainerId>,
-    ) -> Result<ContainerCreated, RpcError> {
-        self.inner
-            .create_container(machine_id, kind, namespace, spec, replacing)
-            .await
-    }
-
-    async fn start_container(
-        &self,
-        machine_id: &MachineId,
-        container_id: &ContainerId,
-    ) -> Result<(), RpcError> {
+        want: ContainerWant,
+    ) -> Result<ContainerNow, RpcError> {
         wait_out_restart(self.cancellation, || {
-            self.inner.start_container(machine_id, container_id)
+            self.inner.ensure_container(machine_id, want.clone())
         })
         .await
     }
@@ -429,32 +318,6 @@ impl<C: MachineOperations> MachineOperations for RestartTolerant<'_, C> {
         .await
     }
 
-    async fn stop_container(
-        &self,
-        machine_id: &MachineId,
-        container_id: &ContainerId,
-        grace_period_seconds: Option<i32>,
-    ) -> Result<(), RpcError> {
-        wait_out_restart(self.cancellation, || {
-            self.inner
-                .stop_container(machine_id, container_id, grace_period_seconds)
-        })
-        .await
-    }
-
-    async fn remove_container(
-        &self,
-        machine_id: &MachineId,
-        container_id: &ContainerId,
-        purpose: RemoveContainerPurpose,
-    ) -> Result<(), RpcError> {
-        wait_out_restart(self.cancellation, || {
-            self.inner
-                .remove_container(machine_id, container_id, purpose)
-        })
-        .await
-    }
-
     async fn remove_volume(&self, id: &DockerVolumeId) -> Result<(), RpcError> {
         wait_out_restart(self.cancellation, || self.inner.remove_volume(id)).await
     }
@@ -464,8 +327,6 @@ fn is_unavailable(error: &RpcError) -> bool {
     error.code == RpcErrorCode::Unavailable
 }
 
-// Start that loses its transport leaves the container Created; retrying
-// start is idempotent and finishes it once the daemon is back.
 async fn wait_out_restart<T, Fut>(
     cancellation: &CancellationToken,
     mut op: impl FnMut() -> Fut,
@@ -492,15 +353,72 @@ where
     }
 }
 
+/// Names the slot each new Container of one Deploy lands on. A resend of the same
+/// operation of the same run names the same slot, so a lost reply never doubles a
+/// Container; another run or another plan names another slot.
+pub(super) struct Slots<'a> {
+    plan: String,
+    namespace: &'a Namespace,
+}
+
+impl<'a> Slots<'a> {
+    /// `run` names the attempt: Cloud's deployment id, or a fresh id per CLI run.
+    pub(super) fn new(run: &str, namespace: &'a Namespace, operations: &[DeployOperation]) -> Self {
+        let digest = Sha256::digest(
+            serde_json::to_vec(operations).expect("a Deploy Plan serializes to JSON"),
+        );
+        let digest = digest
+            .iter()
+            .take(8)
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        Self {
+            plan: format!("{run}:{digest}"),
+            namespace,
+        }
+    }
+
+    fn slot(
+        &self,
+        kind: ContainerKind,
+        spec: &ResolvedServiceSpec,
+        index: usize,
+        replacing: Option<ContainerId>,
+    ) -> SlotKey {
+        let key = if kind == ContainerKind::ServiceContainer
+            && spec.mode == ployz_core::ServiceMode::Global
+        {
+            let key = crate::cluster::global_creation_key(spec);
+            // Explicit replacement can overlap even an identical spec.
+            match replacing {
+                Some(old) => format!("{key}:replace:{old}"),
+                None => key,
+            }
+        } else {
+            format!("{}:{index}", self.plan)
+        };
+        slot_key(self.namespace, kind, key)
+    }
+}
+
+fn slot_key(namespace: &Namespace, kind: ContainerKind, key: String) -> SlotKey {
+    SlotKey {
+        namespace: namespace.clone(),
+        kind,
+        creation_key: CreationKey::try_from(key).expect("creation keys stay within 512 bytes"),
+    }
+}
+
 pub(super) async fn execute_operation_sequence<C: MachineOperations>(
     plan: &super::DeployPlan,
+    run: &str,
     client: &C,
     cancellation: &CancellationToken,
     tx: Option<UnboundedSender<DeployEvent>>,
 ) -> DeployOutcome<ExecutionError> {
     // TODO: there is deliberately no persisted "already run" guard at this boundary.
     let operations = plan.operations();
-    let namespace = &plan.namespace;
+    let slots = Slots::new(run, &plan.namespace, operations);
     let mut progress = Progress::new(plan.pending_rows(), tx);
     progress.emit();
     let client = RestartTolerant {
@@ -521,7 +439,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
             &mut progress,
             &client,
             cancellation,
-            namespace,
+            &slots,
         )
         .await
         {
@@ -561,7 +479,7 @@ async fn execute_operation<C: MachineOperations>(
     progress: &mut Progress,
     client: &C,
     cancellation: &CancellationToken,
-    namespace: &Namespace,
+    slots: &Slots<'_>,
 ) -> Result<(), OperationFailure> {
     progress.set_running(index, OperationPhase::Starting);
     match operation {
@@ -589,104 +507,155 @@ async fn execute_operation<C: MachineOperations>(
             machine_id,
             spec,
             skip_health_monitor,
-        } => run_container(
-            client,
-            index,
-            progress,
-            machine_id,
-            namespace,
-            spec,
-            *skip_health_monitor,
-            cancellation,
-        )
-        .await
-        .map(|_| ())
-        .map_err(Into::into),
+        } => {
+            let slot = slots.slot(ContainerKind::ServiceContainer, spec, index, None);
+            run_container(
+                client,
+                index,
+                progress,
+                machine_id,
+                slot,
+                spec,
+                *skip_health_monitor,
+                cancellation,
+            )
+            .await
+            .map(|_| ())
+            .map_err(Into::into)
+        }
         DeployOperation::StopContainer {
             machine_id,
             container_id,
-            purpose,
+            ..
         } => {
             progress.set_running(index, OperationPhase::StoppingContainer);
-            ignore_not_found(client.stop_container(machine_id, container_id, None).await)
-                .map_err(|error| machine_error(MachineAction::StopContainer, error))?;
-            if *purpose == StopContainerPurpose::Lifecycle {
-                client
-                    .wait_for_container_observations(
-                        &[*container_id],
-                        ContainerObservationCondition::Dropped,
-                        cancellation,
-                    )
-                    .await
-                    .map_err(|error| machine_error(MachineAction::InspectContainer, error))?;
-            }
-            Ok(())
+            stop(client, machine_id, container_id, Drain::DEFAULT, None)
+                .await
+                .map_err(Into::into)
         }
         DeployOperation::RemoveContainer {
             machine_id,
             container_id,
             purpose,
         } => {
-            progress.set_running(index, OperationPhase::StoppingContainer);
-            ignore_not_found(client.stop_container(machine_id, container_id, None).await)
-                .map_err(|error| machine_error(MachineAction::StopContainer, error))?;
             progress.set_running(index, OperationPhase::RemovingContainer);
-            ignore_not_found(
-                client
-                    .remove_container(machine_id, container_id, *purpose)
-                    .await,
-            )
-            .map_err(|error| machine_error(MachineAction::RemoveContainer, error))?;
-            client
-                .wait_for_container_observations(
-                    &[*container_id],
-                    ContainerObservationCondition::Dropped,
-                    cancellation,
-                )
-                .await
-                .map_err(|error| machine_error(MachineAction::InspectContainer, error).into())
-        }
-        DeployOperation::ReplaceContainer(replacement) => {
-            replace_container(
+            gone(
                 client,
-                index,
-                progress,
-                replacement,
-                namespace,
-                cancellation,
+                machine_id,
+                ContainerLocator::Id(*container_id),
+                Drain::DEFAULT,
+                (*purpose).into(),
             )
             .await
+            .map_err(Into::into)
+        }
+        DeployOperation::ReplaceContainer(replacement) => {
+            let slot = slots.slot(
+                ContainerKind::ServiceContainer,
+                &replacement.spec,
+                index,
+                Some(replacement.old_container_id),
+            );
+            replace_container(client, index, progress, replacement, slot, cancellation).await
         }
         DeployOperation::StopHook {
             machine_id,
             container_id,
         } => {
             progress.set_running(index, OperationPhase::StoppingContainer);
-            ignore_not_found(client.stop_container(machine_id, container_id, None).await)
-                .map_err(|error| machine_error(MachineAction::StopContainer, error).into())
+            stop(client, machine_id, container_id, Drain::NONE, None)
+                .await
+                .map_err(Into::into)
         }
         DeployOperation::RunHook {
             machine_id,
             spec,
             old_hook_containers,
-        } => run_hook(
-            client,
-            index,
-            progress,
-            machine_id,
-            namespace,
-            spec,
-            old_hook_containers,
-            cancellation,
-        )
-        .await
-        .map_err(Into::into),
+        } => {
+            let slot = slots.slot(ContainerKind::PreDeployHook, spec, index, None);
+            run_hook(
+                client,
+                index,
+                progress,
+                machine_id,
+                slot,
+                spec,
+                old_hook_containers,
+                cancellation,
+            )
+            .await
+            .map_err(Into::into)
+        }
         DeployOperation::RemoveVolume { id } => {
             progress.set_running(index, OperationPhase::RemovingVolume);
             ignore_not_found(client.remove_volume(id).await)
                 .map_err(|error| machine_error(MachineAction::RemoveVolume, error).into())
         }
     }
+}
+
+/// Stop a Container; one already gone counts as stopped.
+async fn stop<C: MachineOperations>(
+    client: &C,
+    machine_id: &MachineId,
+    container_id: &ContainerId,
+    drain: Drain,
+    grace_period_seconds: Option<u16>,
+) -> Result<(), ExecutionError> {
+    ignore_not_found(
+        client
+            .ensure_container(
+                machine_id,
+                ContainerWant::Stopped {
+                    container: ContainerLocator::Id(*container_id),
+                    drain,
+                    stop: StopOptions {
+                        signal: None,
+                        grace_period_seconds,
+                    },
+                },
+            )
+            .await
+            .map(|_| ()),
+    )
+    .map_err(|error| machine_error(MachineAction::StopContainer, error))
+}
+
+async fn remove<C: MachineOperations>(
+    client: &C,
+    machine_id: &MachineId,
+    container_id: &ContainerId,
+    drain: Drain,
+) -> Result<(), ExecutionError> {
+    gone(
+        client,
+        machine_id,
+        ContainerLocator::Id(*container_id),
+        drain,
+        AnonymousVolumes::Remove,
+    )
+    .await
+}
+
+async fn gone<C: MachineOperations>(
+    client: &C,
+    machine_id: &MachineId,
+    container: ContainerLocator,
+    drain: Drain,
+    anonymous_volumes: AnonymousVolumes,
+) -> Result<(), ExecutionError> {
+    client
+        .ensure_container(
+            machine_id,
+            ContainerWant::Gone {
+                container,
+                drain,
+                anonymous_volumes,
+            },
+        )
+        .await
+        .map(|_| ())
+        .map_err(|error| machine_error(MachineAction::RemoveContainer, error))
 }
 
 /// Why a Placement convergence move did not complete. Each case leaves a different set of
@@ -703,8 +672,7 @@ pub(in crate::deploy) enum MoveContainerError {
         error: ExecutionError,
         replacement_removed: bool,
     },
-    /// The new Container serves on `to`, but `old` could not be stopped (both serve) or,
-    /// once stopped, removed.
+    /// The new Container serves on `to`, but `old` could not be removed.
     #[error("The old Container was not removed.")]
     OldNotRemoved {
         #[source]
@@ -713,10 +681,9 @@ pub(in crate::deploy) enum MoveContainerError {
     },
 }
 
-/// Placement convergence's one move: start `spec` on `to`, wait until it serves, then
-/// remove `old` from `from`. A new Container that never serves is removed again, so
-/// `old` keeps serving. No hooks run. Once `old` is removed the move is done, even if
-/// waiting for observations to drop it fails or is cancelled.
+/// Placement convergence's one move: start `spec` on `to`, wait until it is healthy,
+/// then remove `old` from `from`. A new Container that never gets healthy is removed
+/// again, so `old` keeps serving. No hooks run.
 ///
 /// # Errors
 ///
@@ -734,168 +701,166 @@ pub(in crate::deploy) async fn move_container<C: MachineOperations>(
         inner: client,
         cancellation,
     };
-    let new = match client
-        .create_container(to, ContainerKind::ServiceContainer, namespace, spec, None)
+    let global = spec.mode == ployz_core::ServiceMode::Global;
+    let key = if global {
+        crate::cluster::global_creation_key(spec)
+    } else {
+        format!("move:{old}")
+    };
+    let slot = slot_key(namespace, ContainerKind::ServiceContainer, key);
+    let mut progress = Progress::new(Vec::new(), None);
+    let started = run_new(&client, 0, &mut progress, to, slot.clone(), spec).await;
+    let served = match started_container(started, cancellation) {
+        Ok(new) => serve(
+            &client,
+            0,
+            &mut progress,
+            to,
+            &new,
+            spec,
+            false,
+            cancellation,
+        )
         .await
-    {
-        Ok(created) => created.container_id,
+        .map(|()| new),
+        Err(error) => Err(error),
+    };
+    let new = match served {
+        Ok(new) => new,
         Err(error) => {
-            // A create whose reply never arrived may still have made the Container.
-            let replacement_removed = !is_unavailable(&error);
-            let error = if cancellation.is_cancelled() {
-                ExecutionError::Cancelled
-            } else {
-                machine_error(MachineAction::CreateContainer, error)
-            };
+            let replacement_removed = !global
+                && gone(
+                    &client,
+                    to,
+                    ContainerLocator::Key(slot),
+                    Drain::NONE,
+                    AnonymousVolumes::Remove,
+                )
+                .await
+                .is_ok();
             return Err(MoveContainerError::NotServing {
                 error,
                 replacement_removed,
             });
         }
     };
-    let served = if cancellation.is_cancelled() {
-        Err(ExecutionError::Cancelled)
-    } else {
-        match client.start_container(to, &new).await {
-            Ok(()) => {
-                let mut progress = Progress::new(Vec::new(), None);
-                serve(
-                    &client,
-                    0,
-                    &mut progress,
-                    to,
-                    &new,
-                    spec,
-                    false,
-                    cancellation,
-                )
-                .await
-            }
-            Err(error) => Err(machine_error(MachineAction::StartContainer, error)),
-        }
-    };
-    if let Err(error) = served {
-        let _ = client.stop_container(to, &new, None).await;
-        let replacement_removed = ignore_not_found(
-            client
-                .remove_container(to, &new, RemoveContainerPurpose::Rollout)
-                .await,
-        )
-        .is_ok();
-        return Err(MoveContainerError::NotServing {
+    // Stopped first, so a failed removal can say whether the old Container still serves.
+    stop(&client, from, old, Drain::DEFAULT, None)
+        .await
+        .map_err(|error| MoveContainerError::OldNotRemoved {
             error,
-            replacement_removed,
-        });
-    }
-    ignore_not_found(client.stop_container(from, old, None).await).map_err(|error| {
-        MoveContainerError::OldNotRemoved {
-            error: machine_error(MachineAction::StopContainer, error),
             old_stopped: false,
-        }
-    })?;
-    ignore_not_found(
-        client
-            .remove_container(from, old, RemoveContainerPurpose::Rollout)
-            .await,
-    )
-    .map_err(|error| MoveContainerError::OldNotRemoved {
-        error: machine_error(MachineAction::RemoveContainer, error),
-        old_stopped: true,
-    })?;
-    // Waiting keeps the next snapshot from still counting `old`; the move is done either way.
-    let _ = client
-        .wait_for_container_observations(
-            &[*old],
-            ContainerObservationCondition::Dropped,
-            cancellation,
-        )
-        .await;
+        })?;
+    remove(&client, from, old, Drain::NONE)
+        .await
+        .map_err(|error| MoveContainerError::OldNotRemoved {
+            error,
+            old_stopped: true,
+        })?;
     Ok(new)
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "progress row plus Namespace label travel together through execute"
-)]
-async fn create_and_start<C: MachineOperations>(
+/// Create and start the Container of `slot`. A failure that may have left one
+/// there removes it again, unless a Global key could name an earlier attempt's.
+async fn start<C: MachineOperations>(
     client: &C,
     index: usize,
     progress: &mut Progress,
     machine_id: &MachineId,
-    kind: ContainerKind,
-    namespace: &Namespace,
+    slot: SlotKey,
     spec: &ResolvedServiceSpec,
-    replacing: Option<ContainerId>,
     cancellation: &CancellationToken,
-) -> Result<ContainerCreated, ExecutionError> {
-    progress.set_running(index, OperationPhase::CreatingContainer);
-    let created = match client
-        .create_container(machine_id, kind, namespace, spec, replacing)
-        .await
-    {
-        Ok(created) => created,
-        Err(_) if cancellation.is_cancelled() => return Err(ExecutionError::Cancelled),
-        Err(error) => {
-            return Err(machine_error(MachineAction::CreateContainer, error));
-        }
+) -> Result<ContainerId, ExecutionError> {
+    let keyed_by_spec = slot.kind == ContainerKind::ServiceContainer
+        && spec.mode == ployz_core::ServiceMode::Global;
+    let started = run_new(client, index, progress, machine_id, slot.clone(), spec).await;
+    let cleanup = match &started {
+        Ok(_) => cancellation.is_cancelled(),
+        // A slot held by another spec never held this attempt's Container.
+        Err(error) => error.code != RpcErrorCode::Conflict,
     };
-    if cancellation.is_cancelled() {
-        // A keyed create can return a Container owned by an earlier attempt.
-        if kind != ContainerKind::ServiceContainer || spec.mode != ployz_core::ServiceMode::Global {
-            let _ = client
-                .remove_container(
-                    machine_id,
-                    &created.container_id,
-                    RemoveContainerPurpose::Rollout,
-                )
-                .await;
+    if cleanup && !keyed_by_spec {
+        let _ = gone(
+            client,
+            machine_id,
+            ContainerLocator::Key(slot),
+            Drain::NONE,
+            AnonymousVolumes::Remove,
+        )
+        .await;
+    }
+    started_container(started, cancellation)
+}
+
+async fn run_new<C: MachineOperations>(
+    client: &C,
+    index: usize,
+    progress: &mut Progress,
+    machine_id: &MachineId,
+    slot: SlotKey,
+    spec: &ResolvedServiceSpec,
+) -> Result<ContainerId, RpcError> {
+    progress.set_running(index, OperationPhase::CreatingContainer);
+    let want = ContainerWant::Running {
+        container: RunTarget::New(NewContainer {
+            slot: slot.clone(),
+            resolved_spec: spec.clone(),
+            deployment_id: None,
+            registry_auth: None,
+        }),
+    };
+    match client.ensure_container(machine_id, want).await? {
+        ContainerNow::Present(observed) => {
+            progress.set_display_name(index, observed.display_name.clone());
+            Ok(observed.container_id)
         }
+        ContainerNow::Absent { .. } => Err(RpcError {
+            code: RpcErrorCode::Internal,
+            message: format!(
+                "the Machine started no Container for slot {}",
+                slot.creation_key.as_str()
+            ),
+            details: serde_json::Value::Null,
+            cause: Vec::new(),
+        }),
+    }
+}
+
+#[expect(
+    clippy::result_large_err,
+    reason = "ExecutionError is the Deploy's wire failure value; every step in this file returns it unboxed"
+)]
+fn started_container(
+    started: Result<ContainerId, RpcError>,
+    cancellation: &CancellationToken,
+) -> Result<ContainerId, ExecutionError> {
+    if cancellation.is_cancelled() {
         return Err(ExecutionError::Cancelled);
     }
-    progress.set_display_name(index, created.display_name.clone());
-    progress.set_running(index, OperationPhase::StartingContainer);
-    if let Err(error) = client
-        .start_container(machine_id, &created.container_id)
-        .await
-    {
-        // A keyed create can return a Container owned by an earlier attempt.
-        if kind != ContainerKind::ServiceContainer || spec.mode != ployz_core::ServiceMode::Global {
-            let _ = client
-                .remove_container(
-                    machine_id,
-                    &created.container_id,
-                    RemoveContainerPurpose::Rollout,
-                )
-                .await;
-        }
-        return Err(machine_error(MachineAction::StartContainer, error));
-    }
-    Ok(created)
+    started.map_err(|error| machine_error(MachineAction::CreateContainer, error))
 }
 
 #[expect(
     clippy::too_many_arguments,
-    reason = "progress row plus Namespace label travel together through execute"
+    reason = "progress row plus slot travel together through execute"
 )]
 async fn run_container<C: MachineOperations>(
     client: &C,
     index: usize,
     progress: &mut Progress,
     machine_id: &MachineId,
-    namespace: &Namespace,
+    slot: SlotKey,
     spec: &ResolvedServiceSpec,
     skip_health_monitor: bool,
     cancellation: &CancellationToken,
 ) -> Result<ContainerId, ExecutionError> {
-    let created = create_and_start(
+    let container_id = start(
         client,
         index,
         progress,
         machine_id,
-        ContainerKind::ServiceContainer,
-        namespace,
+        slot,
         spec,
-        None,
         cancellation,
     )
     .await?;
@@ -904,16 +869,15 @@ async fn run_container<C: MachineOperations>(
         index,
         progress,
         machine_id,
-        &created.container_id,
+        &container_id,
         spec,
         skip_health_monitor,
         cancellation,
     )
     .await?;
-    Ok(created.container_id)
+    Ok(container_id)
 }
 
-// A new Service Container succeeds once it serves, not merely once it is healthy.
 #[expect(
     clippy::too_many_arguments,
     reason = "progress row plus health spec travel together through execute"
@@ -928,34 +892,19 @@ async fn serve<C: MachineOperations>(
     skip_health_monitor: bool,
     cancellation: &CancellationToken,
 ) -> Result<(), ExecutionError> {
-    if !skip_health_monitor {
-        monitor_container(
-            client,
-            index,
-            progress,
-            machine_id,
-            container_id,
-            spec,
-            cancellation,
-        )
-        .await?;
+    if skip_health_monitor {
+        return Ok(());
     }
-    wait_serving(client, *container_id, cancellation).await
-}
-
-async fn wait_serving<C: MachineOperations>(
-    client: &C,
-    container_id: ContainerId,
-    cancellation: &CancellationToken,
-) -> Result<(), ExecutionError> {
-    client
-        .wait_for_container_observations(
-            &[container_id],
-            ContainerObservationCondition::Serving,
-            cancellation,
-        )
-        .await
-        .map_err(|error| machine_error(MachineAction::InspectContainer, error))
+    monitor_container(
+        client,
+        index,
+        progress,
+        machine_id,
+        container_id,
+        spec,
+        cancellation,
+    )
+    .await
 }
 
 async fn replace_container<C: MachineOperations>(
@@ -963,10 +912,12 @@ async fn replace_container<C: MachineOperations>(
     index: usize,
     progress: &mut Progress,
     operation: &ReplacementOperation,
-    namespace: &Namespace,
+    slot: SlotKey,
     cancellation: &CancellationToken,
 ) -> Result<(), OperationFailure> {
     let stop_first = operation.spec.update.order == UpdateOrder::StopFirst;
+    // StopFirst stops, not removes, the old Container first, so a failed new one can
+    // hand the slot back to it.
     let old_stopped = if stop_first {
         let old = match client
             .inspect_container(&operation.machine_id, &operation.old_container_id)
@@ -983,30 +934,27 @@ async fn replace_container<C: MachineOperations>(
             // ingress whose start failed unless a request stopped it.
             Some(old) => {
                 progress.set_running(index, OperationPhase::StoppingContainer);
-                match client
-                    .stop_container(&operation.machine_id, &operation.old_container_id, None)
-                    .await
-                {
-                    // An ingress at rest is handed back by a start, which lifts the
-                    // hold even when the start fails again. That includes one a user
-                    // stopped. Any other container at rest stays down, and one in a
-                    // runtime this client does not recognize is handed back.
-                    Ok(()) => match old.runtime {
-                        ContainerRuntimeObservation::Created
-                        | ContainerRuntimeObservation::Exited { .. }
-                        | ContainerRuntimeObservation::Dead => {
-                            crate::ingress::is_system_ingress(&old)
-                        }
-                        ContainerRuntimeObservation::Removing => false,
-                        ContainerRuntimeObservation::Running { .. }
-                        | ContainerRuntimeObservation::Paused
-                        | ContainerRuntimeObservation::Restarting
-                        | ContainerRuntimeObservation::Unknown { .. } => true,
-                    },
-                    Err(error) if error.code == RpcErrorCode::NotFound => false,
-                    Err(error) => {
-                        return Err(machine_error(MachineAction::StopContainer, error).into());
-                    }
+                stop(
+                    client,
+                    &operation.machine_id,
+                    &operation.old_container_id,
+                    Drain::DEFAULT,
+                    None,
+                )
+                .await?;
+                // An ingress at rest is handed back by a start, which lifts the
+                // hold even when the start fails again. That includes one a user
+                // stopped. Any other container at rest stays down, and one in a
+                // runtime this client does not recognize is handed back.
+                match old.runtime {
+                    ContainerRuntimeObservation::Created
+                    | ContainerRuntimeObservation::Exited { .. }
+                    | ContainerRuntimeObservation::Dead => crate::ingress::is_system_ingress(&old),
+                    ContainerRuntimeObservation::Removing => false,
+                    ContainerRuntimeObservation::Running { .. }
+                    | ContainerRuntimeObservation::Paused
+                    | ContainerRuntimeObservation::Restarting
+                    | ContainerRuntimeObservation::Unknown { .. } => true,
                 }
             }
             None => false,
@@ -1015,32 +963,30 @@ async fn replace_container<C: MachineOperations>(
         false
     };
 
-    // A started new container travels with the failure so compensation can stop it.
-    let started = match create_and_start(
+    // A started new container travels with the failure so compensation can remove it.
+    let started = match start(
         client,
         index,
         progress,
         &operation.machine_id,
-        ContainerKind::ServiceContainer,
-        namespace,
+        slot,
         &operation.spec,
-        Some(operation.old_container_id),
         cancellation,
     )
     .await
     {
-        Ok(created) => serve(
+        Ok(container_id) => serve(
             client,
             index,
             progress,
             &operation.machine_id,
-            &created.container_id,
+            &container_id,
             &operation.spec,
             operation.skip_health_monitor,
             cancellation,
         )
         .await
-        .map_err(|error| (Some(created.container_id), error)),
+        .map_err(|error| (Some(container_id), error)),
         Err(error) => Err((None, error)),
     };
     if let Err((new_container, error)) = started {
@@ -1056,38 +1002,19 @@ async fn replace_container<C: MachineOperations>(
         .await);
     }
 
-    if !stop_first {
-        progress.set_running(index, OperationPhase::StoppingContainer);
-        ignore_not_found(
-            client
-                .stop_container(&operation.machine_id, &operation.old_container_id, None)
-                .await,
-        )
-        .map_err(|error| machine_error(MachineAction::StopContainer, error))?;
-    }
     progress.set_running(index, OperationPhase::RemovingContainer);
-    ignore_not_found(
-        client
-            .remove_container(
-                &operation.machine_id,
-                &operation.old_container_id,
-                RemoveContainerPurpose::Rollout,
-            )
-            .await,
+    remove(
+        client,
+        &operation.machine_id,
+        &operation.old_container_id,
+        Drain::DEFAULT,
     )
-    .map_err(|error| machine_error(MachineAction::RemoveContainer, error))?;
-    client
-        .wait_for_container_observations(
-            &[operation.old_container_id],
-            ContainerObservationCondition::Dropped,
-            cancellation,
-        )
-        .await
-        .map_err(|error| machine_error(MachineAction::InspectContainer, error).into())
+    .await
+    .map_err(Into::into)
 }
 
 // A failure after the old container stopped restores it; otherwise only a health
-// failure is compensated, by stopping the new container.
+// failure is compensated, by removing the new container.
 async fn compensate<C: MachineOperations>(
     client: &C,
     index: usize,
@@ -1103,7 +1030,7 @@ async fn compensate<C: MachineOperations>(
     progress.set_running(index, OperationPhase::Compensating);
     let stop_new_container = match new_container {
         Some(container_id) => Some(StopAttempt::from(
-            stop_and_remove(client, operation, &container_id).await,
+            remove(client, &operation.machine_id, &container_id, Drain::NONE).await,
         )),
         None => None,
     };
@@ -1124,98 +1051,52 @@ async fn compensate<C: MachineOperations>(
     }
 }
 
-/// The Log Store already holds the failed container's output and exit, so it
-/// is removed once stopped. A removal that fails leaves it stopped, as before.
-async fn stop_and_remove<C: MachineOperations>(
-    client: &C,
-    operation: &ReplacementOperation,
-    container_id: &ContainerId,
-) -> Result<(), ExecutionError> {
-    match client
-        .stop_container(
-            &operation.machine_id,
-            container_id,
-            Some(stop_grace_period(&operation.spec).unwrap_or(0)),
-        )
-        .await
-    {
-        Err(error) if error.code == RpcErrorCode::NotFound => return Ok(()),
-        result => result.map_err(|error| machine_error(MachineAction::StopContainer, error))?,
-    }
-    let _ = client
-        .remove_container(
-            &operation.machine_id,
-            container_id,
-            RemoveContainerPurpose::Rollout,
-        )
-        .await;
-    Ok(())
-}
-
-// Cancelling the Deploy does not abandon the container it stopped. The wait stays
-// bounded because `wait_for_container_observations` gives up after its own
-// `BARRIER_TIMEOUT` (cluster/container_observations.rs).
 async fn restore_old_container<C: MachineOperations>(
     client: &C,
     operation: &ReplacementOperation,
 ) -> RestartAttempt<ExecutionError> {
-    let restored = async {
-        client
-            .start_container(&operation.machine_id, &operation.old_container_id)
-            .await
-            .map_err(|error| machine_error(MachineAction::StartContainer, error))?;
-        wait_serving(
-            client,
-            operation.old_container_id,
-            &CancellationToken::new(),
+    let restored = client
+        .ensure_container(
+            &operation.machine_id,
+            ContainerWant::Running {
+                container: RunTarget::Existing(ContainerLocator::Id(operation.old_container_id)),
+            },
         )
         .await
-    }
-    .await;
+        .map(|_| ())
+        .map_err(|error| machine_error(MachineAction::StartContainer, error));
     RestartAttempt::from(restored)
 }
 
 #[expect(
     clippy::too_many_arguments,
-    reason = "progress row plus Namespace label travel together through execute"
+    reason = "progress row plus slot travel together through execute"
 )]
 async fn run_hook<C: MachineOperations>(
     client: &C,
     index: usize,
     progress: &mut Progress,
     machine_id: &MachineId,
-    namespace: &Namespace,
+    slot: SlotKey,
     spec: &ResolvedServiceSpec,
     old_hook_containers: &[(MachineId, ContainerId)],
     cancellation: &CancellationToken,
 ) -> Result<(), ExecutionError> {
     progress.set_running(index, OperationPhase::RemovingContainer);
     for (old_machine_id, old_container_id) in old_hook_containers {
-        ignore_not_found(
-            client
-                .remove_container(
-                    old_machine_id,
-                    old_container_id,
-                    RemoveContainerPurpose::Rollout,
-                )
-                .await,
-        )
-        .map_err(|error| machine_error(MachineAction::RemoveContainer, error))?;
+        remove(client, old_machine_id, old_container_id, Drain::NONE).await?;
     }
 
-    let created = create_and_start(
+    let container_id = start(
         client,
         index,
         progress,
         machine_id,
-        ContainerKind::PreDeployHook,
-        namespace,
+        slot,
         spec,
-        None,
         cancellation,
     )
     .await?;
-    let container_id = created.container_id;
 
     let timeout = spec
         .pre_deploy
@@ -1301,7 +1182,17 @@ async fn interrupt_hook<C: MachineOperations>(
     interruption: HookInterruption,
 ) -> ExecutionError {
     let stop_error = client
-        .stop_container(machine_id, container_id, Some(0))
+        .ensure_container(
+            machine_id,
+            ContainerWant::Stopped {
+                container: ContainerLocator::Id(*container_id),
+                drain: Drain::NONE,
+                stop: StopOptions {
+                    signal: None,
+                    grace_period_seconds: Some(0),
+                },
+            },
+        )
         .await
         .err();
     let failure = match interruption {
@@ -1334,12 +1225,6 @@ fn ignore_not_found(result: Result<(), RpcError>) -> Result<(), RpcError> {
         Err(error) if error.code == RpcErrorCode::NotFound => Ok(()),
         result => result,
     }
-}
-
-fn stop_grace_period(spec: &ResolvedServiceSpec) -> Option<i32> {
-    spec.container
-        .stop_timeout_secs
-        .map(|secs| i32::try_from(secs).unwrap_or(i32::MAX))
 }
 
 #[cfg(test)]

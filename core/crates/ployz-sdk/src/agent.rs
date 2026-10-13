@@ -123,8 +123,8 @@ impl Client {
             .map_err(rpc_to_napi)
     }
 
-    /// Remove stopped Container `container` from `machine`, keeping its Volumes. A
-    /// Container the Machine no longer has answers Ok.
+    /// Remove Container `container` from `machine` with its anonymous Volumes, keeping its
+    /// named Volumes. A Container the Machine no longer has answers Ok.
     ///
     /// # Errors
     /// Returns the Machine's refusal, or the transport's error when it did not answer.
@@ -136,9 +136,10 @@ impl Client {
             .map_err(rpc_to_napi)
     }
 
-    /// Start Container `container` on `machine` and wait for it the way a Deploy does.
-    /// Answers `serving`, `unconfirmed` when it started but was not seen serving, or
-    /// `unhealthy` when it failed its healthcheck or did not pass it in time.
+    /// Start Container `container` on `machine` and wait for its healthcheck the way a
+    /// Deploy does. Answers `serving` when it passed or there is none, `unconfirmed` when
+    /// its health could not be read, or `unhealthy` when it failed its healthcheck or did
+    /// not pass it in time.
     ///
     /// # Errors
     /// Returns the Machine's refusal, or the transport's error when it did not answer.

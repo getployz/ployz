@@ -50,7 +50,7 @@ use http_health::probe as http_health_probe;
 use observe::ObservationSink;
 
 pub(crate) use create::container_log_config;
-pub(crate) use lifecycle::{ContainerRequest, require_eligible, same_creation};
+pub(crate) use lifecycle::{ContainerCreated, ContainerRequest, require_eligible, same_creation};
 pub(crate) use managed_service::{DesiredContainer, Ensure, ManagedService};
 pub(crate) use peer_pull::pull_from_ingest;
 pub use spec_store::{Error as SpecStoreError, MachineSpecStore};

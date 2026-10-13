@@ -8,11 +8,11 @@ use crate::{
     },
 };
 use ployz_core::{
-    ContainerId, ContainerKind, ContainerObservation, ContainerPath, ContainerRuntimeObservation,
-    DockerVolumeName, InspectContainerRequest, Machine, MachineId, MachineTarget, Namespace,
-    RemoveContainerRequest, ResolvedServiceSpec, ServiceId, ServiceMount, ServiceVolume,
-    ServiceVolumeGraph, ServiceVolumeReference, StartContainerRequest, StopContainerRequest,
-    UpdateOrder, op,
+    ContainerId, ContainerKind, ContainerLocator, ContainerObservation, ContainerPath,
+    ContainerRuntimeObservation, ContainerWant, CreationKey, DockerVolumeName, Drain,
+    EnsureContainerRequest, InspectContainerRequest, Machine, MachineId, MachineTarget, Namespace,
+    NewContainer, ResolvedServiceSpec, RunTarget, ServiceId, ServiceMount, ServiceVolume,
+    ServiceVolumeGraph, ServiceVolumeReference, SlotKey, UpdateOrder, op,
 };
 use ployz_testkit::{Cluster, ClusterPlan};
 use tokio_util::sync::CancellationToken;
@@ -231,18 +231,8 @@ async fn assert_replacement_health_compensation(
     for order in [UpdateOrder::StartFirst, UpdateOrder::StopFirst] {
         let service_id = ServiceId::random();
         let old_spec = service_spec(&service_id, "replace-health");
-        let old = client
-            .create_container(
-                machine.id,
-                ContainerKind::ServiceContainer,
-                Namespace::parse("app").unwrap(),
-                old_spec.clone(),
-                None,
-            )
-            .await
-            .unwrap();
-        start_container(client, machine.id, old.container_id).await;
-        wait_running(client, machine, &old.container_id).await;
+        let old = run_container(client, machine.id, old_spec.clone()).await;
+        wait_running(client, machine, &old).await;
 
         let mut failing = old_spec;
         failing.container.healthcheck = Some(healthcheck("false", 1));
@@ -252,7 +242,7 @@ async fn assert_replacement_health_compensation(
         let operations = vec![
             DeployOperation::ReplaceContainer(ReplacementOperation {
                 machine_id: machine.id,
-                old_container_id: old.container_id,
+                old_container_id: old,
                 spec: failing,
                 skip_health_monitor: false,
             }),
@@ -296,7 +286,7 @@ async fn assert_replacement_health_compensation(
         });
         assert_eq!(unexecuted, operations.get(1..).unwrap());
         let failed_new = *container_id;
-        assert!(docker_running(cluster, 0, &old.container_id));
+        assert!(docker_running(cluster, 0, &old));
         assert!(!docker_running(cluster, 0, &failed_new));
         assert!(
             cluster
@@ -307,7 +297,7 @@ async fn assert_replacement_health_compensation(
         assert!(
             retained
                 .iter()
-                .any(|container| container.container_id == old.container_id)
+                .any(|container| container.container_id == old)
         );
         assert!(
             retained
@@ -393,17 +383,7 @@ async fn assert_unhealthy_service_is_not_repaired(
     let mut spec = service_spec(&service_id, "no-repair");
     spec.container.healthcheck = Some(healthcheck("false", 1));
     // Started directly: a Deploy would refuse to finish on an unhealthy Container.
-    let created = client
-        .create_container(
-            machines[0].id,
-            ContainerKind::ServiceContainer,
-            Namespace::parse("app").unwrap(),
-            spec,
-            None,
-        )
-        .await
-        .unwrap();
-    start_container(client, machines[0].id, created.container_id).await;
+    run_container(client, machines[0].id, spec).await;
     let before = wait_for_service(client, &service_id, 1).await;
     let id = before.first().unwrap().container_id;
     tokio::time::sleep(Duration::from_secs(3)).await;
@@ -583,14 +563,48 @@ async fn remove_all(client: &mut Client, containers: Vec<ContainerObservation>) 
     }
 }
 
-async fn start_container(client: &mut Client, machine_id: MachineId, container_id: ContainerId) {
+async fn run_container(
+    client: &mut Client,
+    machine_id: MachineId,
+    resolved_spec: ResolvedServiceSpec,
+) -> ContainerId {
+    let slot = SlotKey {
+        namespace: Namespace::parse("app").unwrap(),
+        kind: ContainerKind::ServiceContainer,
+        creation_key: CreationKey::try_from(uuid::Uuid::new_v4().to_string()).unwrap(),
+    };
+    ensure(
+        client,
+        machine_id,
+        ContainerWant::Running {
+            container: RunTarget::New(NewContainer {
+                slot,
+                resolved_spec,
+                deployment_id: None,
+                registry_auth: None,
+            }),
+        },
+    )
+    .await
+    .present()
+    .unwrap()
+    .container_id
+}
+
+async fn ensure(
+    client: &mut Client,
+    machine_id: MachineId,
+    want: ContainerWant,
+) -> ployz_core::ContainerNow {
     client
-        .call::<op::StartContainer>(
-            StartContainerRequest { container_id },
+        .call::<op::EnsureContainer>(
+            EnsureContainerRequest { want },
             Some(&MachineTarget::from(&machine_id)),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .into_result()
+        .unwrap()
 }
 
 async fn inspect_container(
@@ -608,28 +622,16 @@ async fn inspect_container(
 }
 
 async fn remove_container(client: &mut Client, machine_id: MachineId, container_id: ContainerId) {
-    let target = MachineTarget::from(&machine_id);
-    let _ = client
-        .call::<op::StopContainer>(
-            StopContainerRequest {
-                container_id,
-                signal: None,
-                grace_period_seconds: Some(0),
-            },
-            Some(&target),
-        )
-        .await;
-    client
-        .call::<op::RemoveContainer>(
-            RemoveContainerRequest {
-                container_id,
-                remove_volumes: true,
-                force: false,
-            },
-            Some(&target),
-        )
-        .await
-        .unwrap();
+    ensure(
+        client,
+        machine_id,
+        ContainerWant::Gone {
+            container: ContainerLocator::Id(container_id),
+            drain: Drain::NONE,
+            anonymous_volumes: ployz_core::AnonymousVolumes::Remove,
+        },
+    )
+    .await;
 }
 
 fn docker_exists(cluster: &Cluster, machine_index: usize, container_id: &ContainerId) -> bool {

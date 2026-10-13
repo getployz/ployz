@@ -4,6 +4,10 @@ mod operate;
 #[path = "deploy_client/runner_cancellation.rs"]
 mod runner_cancellation;
 #[path = "deploy_client/support.rs"]
+#[allow(
+    dead_code,
+    reason = "the SDK agent tests share this mock and use helpers this suite does not"
+)]
 mod support;
 use support::*;
 
@@ -80,7 +84,6 @@ async fn deploy_creates_containers_owned_by_the_intent_namespace() {
 async fn deploy_returns_success_for_a_completed_run() {
     let machine = machine('a', "one");
     let service = DeployService::new(machine.clone());
-    let observation_rpcs = service.observation_rpcs();
     let (mut client, server) = connected(service).await;
     let spec = spec("web");
 
@@ -105,154 +108,14 @@ async fn deploy_returns_success_for_a_completed_run() {
             skip_health_monitor: true,
         }) if *machine_id == machine.machine.id && spec.name.as_str() == "web"
     ));
-    assert_eq!(observation_rpcs.load(Ordering::SeqCst), 0);
     server.abort();
 }
 
 #[tokio::test]
-async fn deploy_waits_for_the_replicated_serving_container_after_start() {
-    let machine = machine('a', "one");
-    let service = DeployService::new(machine).with_observation_barrier();
-    let observation_rpcs = service.observation_rpcs();
-    let (mut client, server) = connected(service).await;
-
-    let outcome = client
-        .run(
-            DeployIntent::apply_one(Namespace::parse("app").unwrap(), spec("web"), skip_health()),
-            &CancellationToken::new(),
-            None,
-        )
-        .await
-        .unwrap();
-
-    assert!(matches!(outcome, DeployOutcome::Success { .. }));
-    assert_eq!(observation_rpcs.load(Ordering::SeqCst), 1);
-    server.abort();
-}
-
-#[tokio::test]
-async fn deploy_barrier_requires_every_capable_machine_and_uses_waiting_rounds() {
-    let first = machine('a', "one");
-    let second = machine('b', "two");
-    let service = DeployService::new(first.clone())
-        .with_machines(vec![first, second.clone()])
-        .with_observation_barrier()
-        .delay_observations(second.machine.id, 1);
-    let requests = service.observation_requests();
-    let (mut client, server) = connected(service).await;
-
-    let outcome = client
-        .run(
-            DeployIntent::apply_one(Namespace::parse("app").unwrap(), spec("web"), skip_health()),
-            &CancellationToken::new(),
-            None,
-        )
-        .await
-        .unwrap();
-
-    assert!(matches!(outcome, DeployOutcome::Success { .. }));
-    let requests = requests.lock().unwrap();
-    assert_eq!(requests.len(), 4);
-    for machine_id in [
-        MachineId::parse("a".repeat(32)).unwrap(),
-        MachineId::parse("b".repeat(32)).unwrap(),
-    ] {
-        let waits = requests
-            .iter()
-            .filter(|(target, _, _)| *target == machine_id)
-            .map(|(_, _, wait)| *wait)
-            .collect::<Vec<_>>();
-        let [first_wait, second_wait] = waits.as_slice() else {
-            panic!("expected two observation rounds: {waits:?}");
-        };
-        assert_eq!(*first_wait, 0);
-        assert!(*second_wait > 0);
-        assert!(
-            requests
-                .iter()
-                .filter(|(target, _, _)| *target == machine_id)
-                .all(|(_, ids, _)| ids.len() == 1)
-        );
-    }
-    server.abort();
-}
-
-#[tokio::test]
-async fn deploy_barrier_propagates_a_reached_store_error() {
-    let service = DeployService::new(machine('a', "one"))
-        .with_observation_barrier()
-        .fail_observations("cluster store failed");
-    let (mut client, server) = connected(service).await;
-
-    let outcome = client
-        .run(
-            DeployIntent::apply_one(Namespace::parse("app").unwrap(), spec("web"), skip_health()),
-            &CancellationToken::new(),
-            None,
-        )
-        .await
-        .unwrap();
-
-    assert!(matches!(
-        &outcome,
-        DeployOutcome::Failed {
-            failed: FailedOperation::Operation {
-                error: ExecutionError::Machine { error, .. },
-                ..
-            },
-            ..
-        } if error.code == ployz_core::RpcErrorCode::Internal
-            && error.message.contains("cluster store failed")
-    ));
-    server.abort();
-}
-
-#[tokio::test]
-async fn deploy_cancellation_aborts_an_in_flight_observation_wait() {
-    let service = DeployService::new(machine('a', "one"))
-        .with_observation_barrier()
-        .hold_observations();
-    let (mut client, server) = connected(service).await;
-    let cancellation = CancellationToken::new();
-    let cancel = cancellation.clone();
-    tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        cancel.cancel();
-    });
-
-    let outcome = client
-        .run(
-            DeployIntent::apply_one(Namespace::parse("app").unwrap(), spec("web"), skip_health()),
-            &cancellation,
-            None,
-        )
-        .await
-        .unwrap();
-
-    assert!(
-        matches!(
-            &outcome,
-            DeployOutcome::Failed {
-                failed: FailedOperation::Operation {
-                    error: ExecutionError::Cancelled,
-                    ..
-                },
-                ..
-            }
-        ),
-        "{outcome:?}"
-    );
-    server.abort();
-}
-
-#[tokio::test]
-async fn service_lifecycle_commands_wait_for_their_successful_service_containers() {
-    for (action, dropped) in [("start", false), ("stop", true)] {
+async fn service_lifecycle_commands_change_each_named_service_container() {
+    for action in ["start", "stop"] {
         let machine = machine('a', "one");
-        let mut service = DeployService::new(machine.clone()).with_observation_barrier();
-        if dropped {
-            service = service.with_dropped_observations();
-        }
+        let service = DeployService::new(machine.clone());
         let mut api = running_container(&machine, &spec("api"));
         api.try_update(|parts| parts.container_id = ContainerId::parse("2".repeat(64)).unwrap())
             .unwrap();
@@ -261,8 +124,7 @@ async fn service_lifecycle_commands_wait_for_their_successful_service_containers
             .lock()
             .unwrap()
             .extend([running_container(&machine, &spec("web")), api]);
-        let observation_rpcs = service.observation_rpcs();
-        let observation_requests = service.observation_requests();
+        let mutating_rpcs = service.mutating_rpcs();
         let (address, server) = listening(service).await;
 
         let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
@@ -277,17 +139,7 @@ async fn service_lifecycle_commands_wait_for_their_successful_service_containers
             "{action}: {}",
             String::from_utf8_lossy(&output.stderr)
         );
-        assert_eq!(observation_rpcs.load(Ordering::SeqCst), 1, "{action}");
-        assert_eq!(
-            observation_requests
-                .lock()
-                .unwrap()
-                .first()
-                .unwrap()
-                .1
-                .len(),
-            2
-        );
+        assert_eq!(mutating_rpcs.load(Ordering::SeqCst), 2, "{action}");
         server.abort();
     }
 }

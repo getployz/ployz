@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use ployz_core::{
-    ContainerChanged, ContainerCreated, ContainerId, ContainerKind, ContainerLocator, ContainerNow,
+    AnonymousVolumes, ContainerId, ContainerKind, ContainerLocator, ContainerNow,
     ContainerObservation, ContainerRefusal, ContainerRefusalReason, ContainerRuntimeObservation,
     ContainerWant, CopyRefusal, DockerVolumeName, Drain, EnsuredContainer, ImageIngestOpened,
     ImageIngestReason, ImagePulled, ImagesRemoved, LocalMachinePhase, MachineStorageObservation,
@@ -13,7 +13,7 @@ use ployz_core::{
 
 use super::super::ingress::admit_ingress_service;
 use super::{Error, LocalMachine};
-use crate::docker::{ContainerRequest, ImageIngest, same_creation};
+use crate::docker::{ContainerCreated, ContainerRequest, ImageIngest, same_creation};
 use crate::machine::{STORAGE_OBSERVATION_TIMEOUT, local_storage};
 
 impl LocalMachine {
@@ -186,10 +186,7 @@ impl LocalMachine {
     ///
     /// Returns when Docker is unavailable, admission is busy, or Docker cannot start the
     /// container.
-    pub(crate) async fn start_container(
-        &self,
-        container_id: ContainerId,
-    ) -> Result<ContainerChanged, Error> {
+    pub(crate) async fn start_container(&self, container_id: ContainerId) -> Result<(), Error> {
         let local = self.clone();
         self.finish_mutation(async move {
             local
@@ -198,32 +195,7 @@ impl LocalMachine {
                 .ok_or(Error::DockerUnavailable)?
                 .start(&container_id)
                 .await?;
-            Ok(ContainerChanged { container_id })
-        })
-        .await
-    }
-
-    /// Stop one local container while holding Machine mutation admission.
-    ///
-    /// # Errors
-    ///
-    /// Returns when Docker is unavailable, admission is busy, or Docker cannot stop the
-    /// container.
-    pub(crate) async fn stop_container(
-        &self,
-        container_id: ContainerId,
-        signal: Option<String>,
-        grace_period_seconds: Option<i32>,
-    ) -> Result<ContainerChanged, Error> {
-        let local = self.clone();
-        self.finish_mutation(async move {
-            local
-                .containers
-                .as_ref()
-                .ok_or(Error::DockerUnavailable)?
-                .stop(&container_id, signal.as_deref(), grace_period_seconds)
-                .await?;
-            Ok(ContainerChanged { container_id })
+            Ok(())
         })
         .await
     }
@@ -239,7 +211,7 @@ impl LocalMachine {
         container_id: ContainerId,
         remove_volumes: bool,
         force: bool,
-    ) -> Result<ContainerChanged, Error> {
+    ) -> Result<(), Error> {
         let local = self.clone();
         self.finish_mutation(async move {
             local
@@ -248,7 +220,7 @@ impl LocalMachine {
                 .ok_or(Error::DockerUnavailable)?
                 .remove(&container_id, remove_volumes, force)
                 .await?;
-            Ok(ContainerChanged { container_id })
+            Ok(())
         })
         .await
     }
@@ -485,7 +457,25 @@ impl LocalMachine {
                 .await?;
                 None
             }
-            ContainerStep::StopThenRemove { id, drain } => {
+            ContainerStep::Hold(id) => {
+                let local = self.clone();
+                self.finish_mutation(async move {
+                    local
+                        .containers
+                        .as_ref()
+                        .ok_or(Error::DockerUnavailable)?
+                        .stop(&id, None, None)
+                        .await?;
+                    Ok(())
+                })
+                .await?;
+                None
+            }
+            ContainerStep::StopThenRemove {
+                id,
+                drain,
+                anonymous_volumes,
+            } => {
                 let local = self.clone();
                 self.finish_installed(move |installation| async move {
                     local
@@ -496,7 +486,7 @@ impl LocalMachine {
                         .containers
                         .as_ref()
                         .ok_or(Error::DockerUnavailable)?
-                        .remove(&id, true, false)
+                        .remove(&id, anonymous_volumes == AnonymousVolumes::Remove, false)
                         .await;
                     drop(turn);
                     removed?;
@@ -505,8 +495,11 @@ impl LocalMachine {
                 .await?;
                 None
             }
-            ContainerStep::Remove(id) => {
-                match self.remove_container(id, true, false).await {
+            ContainerStep::Remove(id, anonymous_volumes) => {
+                match self
+                    .remove_container(id, anonymous_volumes == AnonymousVolumes::Remove, false)
+                    .await
+                {
                     Ok(_) | Err(Error::Docker(crate::docker::Error::ContainerNotFound(_))) => {}
                     Err(error) => return Err(error),
                 }
@@ -649,6 +642,9 @@ enum ContainerStep {
     Refuse(ContainerRefusal),
     CreateAndStart(NewContainer),
     Start(ContainerId),
+    /// Stops a Container already at rest, so its Server holds it there rather than
+    /// restarting a stranded ingress.
+    Hold(ContainerId),
     Stop {
         id: ContainerId,
         drain: Drain,
@@ -657,8 +653,9 @@ enum ContainerStep {
     StopThenRemove {
         id: ContainerId,
         drain: Drain,
+        anonymous_volumes: AnonymousVolumes,
     },
-    Remove(ContainerId),
+    Remove(ContainerId, AnonymousVolumes),
 }
 
 fn plan_container(
@@ -724,20 +721,25 @@ fn plan_container(
                 drain,
                 stop,
             },
-            Some(_) => ContainerStep::Done,
+            Some(observed) => ContainerStep::Hold(observed.container_id),
         },
-        ContainerWant::Gone { container, drain } => match present {
+        ContainerWant::Gone {
+            container,
+            drain,
+            anonymous_volumes,
+        } => match present {
             // The remove helper deletes a spec Docker no longer has a Container for. A slot
             // names no spec row without Docker, so an absent Key is already gone.
             None => match container {
-                ContainerLocator::Id(id) => ContainerStep::Remove(id),
+                ContainerLocator::Id(id) => ContainerStep::Remove(id, anonymous_volumes),
                 ContainerLocator::Key(_) => ContainerStep::Done,
             },
             Some(observed) if is_running(observed) => ContainerStep::StopThenRemove {
                 id: observed.container_id,
                 drain,
+                anonymous_volumes,
             },
-            Some(observed) => ContainerStep::Remove(observed.container_id),
+            Some(observed) => ContainerStep::Remove(observed.container_id, anonymous_volumes),
         },
     }
 }
@@ -751,10 +753,15 @@ fn run_step(observed: &ContainerObservation) -> ContainerStep {
 }
 
 fn not_found(locator: &ContainerLocator) -> ContainerStep {
-    ContainerStep::Refuse(refuse(
-        ContainerRefusalReason::NotFound,
-        format!("no Container at {locator:?}"),
-    ))
+    let message = match locator {
+        ContainerLocator::Id(id) => format!("Container {id} does not exist on this Machine"),
+        ContainerLocator::Key(slot) => format!(
+            "no Container of {} holds slot {}",
+            slot.namespace,
+            slot.creation_key.as_str()
+        ),
+    };
+    ContainerStep::Refuse(refuse(ContainerRefusalReason::NotFound, message))
 }
 
 fn refuse(reason: ContainerRefusalReason, message: impl Into<String>) -> ContainerRefusal {

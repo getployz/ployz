@@ -28,6 +28,8 @@ export type AdmitRemoval = { id: DeploymentId, environment: EnvironmentRef, };
 
 export type AdvertisedEndpoint = string;
 
+export type AnonymousVolumes = "remove" | "keep";
+
 export type Answer = { "value": JsonValue } | { "error": RpcError };
 
 export type AppliedVolume = { project: ProjectName, environment: EnvironmentName, volume: VolumeName, };
@@ -758,7 +760,7 @@ export type ContainerRuntimeObservation = { "state": "created" } | { "state": "r
 
 export type ContainerState = "created" | "running" | "restarting" | "paused" | "exited" | "dead";
 
-export type ContainerWant = { "state": "running", container: RunTarget, } | { "state": "stopped", container: ContainerLocator, drain: Drain, stop: StopOptions, } | { "state": "gone", container: ContainerLocator, drain: Drain, };
+export type ContainerWant = { "state": "running", container: RunTarget, } | { "state": "stopped", container: ContainerLocator, drain: Drain, stop: StopOptions, } | { "state": "gone", container: ContainerLocator, drain: Drain, anonymous_volumes: AnonymousVolumes, };
 
 export type ContainersAnswer = { containers: Array<ContainerReport>,
 /**

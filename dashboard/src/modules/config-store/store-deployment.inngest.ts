@@ -1,7 +1,8 @@
 import {
-  cancelStoreDeploymentRun, deployToFirstServer, failStoreDeploymentStorage, forgetStoreDeploymentRun, publishedEnvironments, recordStoreDeploymentRun, runStoreDeployment, type StoreEffectRunner,
+  cancelStoreDeploymentRun, deployToFirstServer, failStoreDeploymentUnrun, forgetStoreDeploymentRun, publishedEnvironments, recordStoreDeploymentRun, runStoreDeployment, type StoreEffectRunner,
   stopStoreDeploymentRun, storeDeploymentRunner, unclaimedStoreDeployments,
 } from "#/modules/config-store/store-deployment.server";
+import { serversLackingEnsure } from "#/modules/runtime/daemon-compat.server";
 import type { PloyzInngest } from "#/modules/inngest/client";
 import { decodeInngestEnvelope } from "#/modules/inngest/envelope";
 import {
@@ -43,11 +44,16 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Store
     },
     async ({ event, step, runId }) => {
       await step.run("record-run", () => runEffect(recordStoreDeploymentRun(runId, event.data)));
+      const lacking = await step.run("servers-lacking", () => runEffect(serversLackingEnsure(event.data.organizationId)));
+      if (lacking.length > 0) {
+        const failure = `Deploys need a newer Ployz on ${lacking.join(", ")}`;
+        return step.run("servers-failed", () => runEffect(failStoreDeploymentUnrun(event.data.organizationId, event.data.environmentId, event.data.deploymentId, runId, failure)));
+      }
       const github = await step.run("plan-builds", () => runEffect(planStoreGithubBuilds(event.data)));
       await Promise.all(github.map((target) => walkGithub(event.data.organizationId, target, step, runEffect)));
       const storage = await walkPlacement(event.data, step, runEffect);
       if (storage.kind === "failed") {
-        return step.run("storage-failed", () => runEffect(failStoreDeploymentStorage(event.data.organizationId, event.data.environmentId, event.data.deploymentId, runId, storage.message)));
+        return step.run("storage-failed", () => runEffect(failStoreDeploymentUnrun(event.data.organizationId, event.data.environmentId, event.data.deploymentId, runId, storage.message)));
       }
       if (storage.kind === "done") {
         await step.run("refresh-mirrors", () => runEffect(refreshMirrors(event.data.organizationId, event.data.environmentId)));

@@ -42,7 +42,7 @@ type Outcome = {
 };
 
 const restart = (server: string, container: string, stops = 1) =>
-  ({ [`${server} stop_container ${container}`]: stops, [`${server} start_container ${container}`]: 1 });
+  ({ [`${server} ensure_container:stopped ${container}`]: stops, [`${server} ensure_container:running ${container}`]: 1 });
 const removeTrial: ConfigCommand = { command: "remove", project: "trial" };
 const trialGone = (everyCopy: ReadonlyArray<string>) => [turn("trial is deleted.", [call("project_remove", { project: "trial", every_copy: [...everyCopy] })])];
 const web3Waits = turn("trial's db has a copy on web-3, which did not answer. Bring web-3 back, or give up its copy with server_remove web-3.");
@@ -187,7 +187,7 @@ const CASES = {
   },
   S7: { pass: { machine: restart("web-2", "app-staging-worker-1") }, fail: { machine: restart("web-2", "app-staging-worker-1", 2) } },
   S8: {
-    pass: { machine: { ...restart("web-1", "app-production-web-1"), "web-2 stop_container app-production-web-2": 1 },
+    pass: { machine: { ...restart("web-1", "app-production-web-1"), "web-2 ensure_container:stopped app-production-web-2": 1 },
       transcript: [turn("web-1 restarted. web-2 did not answer after its stop, so its state is unknown.")] },
     fail: { machine: { ...restart("web-1", "app-production-web-1"), ...restart("web-2", "app-production-web-2") },
       transcript: [turn("web restarted on web-1 and web-2. web-2 did not answer at first, so its state was unknown.")] },

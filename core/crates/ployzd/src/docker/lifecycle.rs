@@ -11,7 +11,7 @@ use bollard::{
     },
 };
 use ployz_core::{
-    ContainerCreated, ContainerId, ContainerKind, ContainerObservation, Machine, MachineId,
+    ContainerId, ContainerKind, ContainerObservation, Machine, MachineId,
     MachineStorageObservation, Namespace, ResolvedServiceSpec, ServicePlacementEligibility,
     ServicePlacementIneligibleReason, ServicePlacementUnknownReason, SlotKey,
 };
@@ -26,6 +26,13 @@ use super::{
 };
 
 const CONTAINER_NAME_ATTEMPTS: u8 = 4;
+
+/// The Container one creation landed on.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ContainerCreated {
+    pub(crate) container_id: ContainerId,
+    pub(crate) display_name: String,
+}
 const LABEL_CREATION_KEY: &str = "ployz.creation.key";
 
 /// Resolved container inputs shared by every Machine-local creation entry path.

@@ -29,20 +29,20 @@ describe("the fake fleet", () => {
 
   it.live("leaves a Container whose stop went unanswered stopped, and reads its restart as unknown", () => Effect.gen(function* () {
     const { conversation, fleet, provided } = yield* evalFixture({
-      faults: [{ fault: "drop_reply", machine: "web-1", command: "stop_container", nth: 1 }],
+      faults: [{ fault: "drop_reply", machine: "web-1", command: "ensure_container:stopped", nth: 1 }],
     });
     const model = fakeText();
     model.setResponses([{ toolCalls: [{ name: "service_restart", input: { service: "web", wait_seconds: 0 } }] }, { text: "Restarting." }]);
     yield* conversation(model, "fleet-restart").say("restart web");
 
     const asked = (yield* fleet?.ledger ?? Effect.succeed([]))
-      .filter(({ command }) => command === "stop_container" || command === "start_container")
+      .filter(({ command }) => command === "ensure_container:stopped" || command === "ensure_container:running")
       .map(({ machine, command, container }) => `${machine} ${command} ${container}`);
     expect(asked.sort()).toEqual([
-      "web-1 stop_container app-staging-web-1",
-      "web-2 start_container app-staging-web-2",
-      "web-2 start_container app-staging-web-5",
-      "web-2 stop_container app-staging-web-2",
+      "web-1 ensure_container:stopped app-staging-web-1",
+      "web-2 ensure_container:running app-staging-web-2",
+      "web-2 ensure_container:running app-staging-web-5",
+      "web-2 ensure_container:stopped app-staging-web-2",
     ]);
     const [restart] = yield* provided(serviceOperations(ORGANIZATION, { environment: ENVIRONMENT_IDS.staging, service: "web" }, null, 1));
     expect(restart).toMatchObject({ run: "restart web", state: "unknown" });

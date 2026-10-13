@@ -1,18 +1,16 @@
 use ployz_core::{
-    CERTIFICATE_POLICY_CAPABILITY, CREATE_CONTAINER_CAPABILITY, CapabilityAdvertisement,
-    CapabilityName, DESCRIBE_CONTRACT_CAPABILITY, ENROLL_MACHINE_CAPABILITY,
-    ENSURE_CONTAINER_CAPABILITY, ENSURE_IMAGE_INGEST_CAPABILITY, EXEC_CONTAINER_CAPABILITY,
-    FORGET_MACHINE_CAPABILITY, GET_INGRESS_PROXY_CONFIG_CAPABILITY, INSPECT_BUILD_GRANT_CAPABILITY,
-    INSPECT_CONTAINER_CAPABILITY, INSPECT_MACHINE_CAPABILITY, INSPECT_STORAGE_CAPABILITY,
-    INSPECT_VOLUME_COPY_CAPABILITY, LEAVE_MACHINE_CAPABILITY, LIST_CONTAINERS_CAPABILITY,
-    LIST_IMAGES_CAPABILITY, LIST_MACHINES_CAPABILITY, LIST_VOLUMES_CAPABILITY,
-    LOG_HISTORY_CAPABILITY, MACHINE_STORAGE_OBSERVATION_CAPABILITY,
-    MARK_CONTAINER_STOPPING_CAPABILITY, METRIC_HISTORY_CAPABILITY, MINT_BUILD_GRANT_CAPABILITY,
-    PREPARE_VOLUMES_CAPABILITY, PRUNE_IMAGES_CAPABILITY, PUBLISH_CERTIFICATE_MATERIAL_CAPABILITY,
-    PULL_IMAGE_FROM_MACHINE_CAPABILITY, REGISTER_MACHINE_CAPABILITY, REMOVE_CONTAINER_CAPABILITY,
-    REMOVE_VOLUME_CAPABILITY, REQUEST_MACHINE_UPGRADE_CAPABILITY, RUNTIME_WATCH_CAPABILITY, Rpc,
-    SEED_VOLUME_CAPABILITY, SET_MANAGEMENT_CLIENT_CAPABILITY, SET_VOLUME_COPY_CAPABILITY,
-    START_CONTAINER_CAPABILITY, STOP_CONTAINER_CAPABILITY, TAIL_LOGS_CAPABILITY,
+    CERTIFICATE_POLICY_CAPABILITY, CapabilityAdvertisement, CapabilityName,
+    DESCRIBE_CONTRACT_CAPABILITY, ENROLL_MACHINE_CAPABILITY, ENSURE_CONTAINER_CAPABILITY,
+    ENSURE_IMAGE_INGEST_CAPABILITY, EXEC_CONTAINER_CAPABILITY, FORGET_MACHINE_CAPABILITY,
+    INSPECT_BUILD_GRANT_CAPABILITY, INSPECT_CONTAINER_CAPABILITY, INSPECT_MACHINE_CAPABILITY,
+    INSPECT_STORAGE_CAPABILITY, INSPECT_VOLUME_COPY_CAPABILITY, LEAVE_MACHINE_CAPABILITY,
+    LIST_CONTAINERS_CAPABILITY, LIST_IMAGES_CAPABILITY, LIST_MACHINES_CAPABILITY,
+    LIST_VOLUMES_CAPABILITY, LOG_HISTORY_CAPABILITY, MACHINE_STORAGE_OBSERVATION_CAPABILITY,
+    METRIC_HISTORY_CAPABILITY, MINT_BUILD_GRANT_CAPABILITY, PREPARE_VOLUMES_CAPABILITY,
+    PRUNE_IMAGES_CAPABILITY, PUBLISH_CERTIFICATE_MATERIAL_CAPABILITY,
+    PULL_IMAGE_FROM_MACHINE_CAPABILITY, REGISTER_MACHINE_CAPABILITY, REMOVE_VOLUME_CAPABILITY,
+    REQUEST_MACHINE_UPGRADE_CAPABILITY, RUNTIME_WATCH_CAPABILITY, Rpc, SEED_VOLUME_CAPABILITY,
+    SET_MANAGEMENT_CLIENT_CAPABILITY, SET_VOLUME_COPY_CAPABILITY, TAIL_LOGS_CAPABILITY,
     UPDATE_MACHINE_CAPABILITY, op,
 };
 
@@ -43,14 +41,6 @@ fn catalogued_capabilities_keep_stable_spellings() {
         ),
         (LIST_CONTAINERS_CAPABILITY, "ployz.container.list.v1"),
         (INSPECT_CONTAINER_CAPABILITY, "ployz.container.inspect.v1"),
-        (CREATE_CONTAINER_CAPABILITY, "ployz.container.create.v1"),
-        (START_CONTAINER_CAPABILITY, "ployz.container.start.v1"),
-        (STOP_CONTAINER_CAPABILITY, "ployz.container.stop.v1"),
-        (
-            MARK_CONTAINER_STOPPING_CAPABILITY,
-            "ployz.container.mark-stopping.v1",
-        ),
-        (REMOVE_CONTAINER_CAPABILITY, "ployz.container.remove.v1"),
         (ENSURE_CONTAINER_CAPABILITY, "ployz.container.ensure.v1"),
         (INSPECT_STORAGE_CAPABILITY, "ployz.storage.inspect.v1"),
         (PREPARE_VOLUMES_CAPABILITY, "ployz.storage.prepare.v1"),
@@ -76,10 +66,6 @@ fn catalogued_capabilities_keep_stable_spellings() {
         (
             INSPECT_BUILD_GRANT_CAPABILITY,
             "ployz.build.grant.inspect.v1",
-        ),
-        (
-            GET_INGRESS_PROXY_CONFIG_CAPABILITY,
-            "ployz.ingress.config.v1",
         ),
         (
             PUBLISH_CERTIFICATE_MATERIAL_CAPABILITY,
@@ -128,11 +114,6 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
         [
             "ployz.container.list.v1",
             "ployz.container.inspect.v1",
-            "ployz.container.create.v1",
-            "ployz.container.start.v1",
-            "ployz.container.stop.v1",
-            "ployz.container.mark-stopping.v1",
-            "ployz.container.remove.v1",
             "ployz.container.ensure.v1",
             "ployz.storage.inspect.v1",
             "ployz.storage.prepare.v1",
@@ -155,16 +136,8 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
         ]
     );
     assert_eq!(
-        names(CapabilityAdvertisement::Ingress),
-        ["ployz.ingress.config.v1"]
-    );
-    assert_eq!(
         names(CapabilityAdvertisement::Cluster),
-        [
-            "ployz.container.observations.v1",
-            "ployz.certificates.publish.v1",
-            "ployz.runtime.watch.v1",
-        ]
+        ["ployz.certificates.publish.v1", "ployz.runtime.watch.v1",]
     );
 }
 
@@ -182,10 +155,6 @@ fn unary_grpc_paths_stay_on_the_machine_rpc_service() {
         "/ployz.rpc.v1.MachineRpc/DescribeContract"
     );
     assert_eq!(op::Leave::PATH, "/ployz.rpc.v1.MachineRpc/Leave");
-    assert_eq!(
-        op::GetIngressProxyConfig::PATH,
-        "/ployz.rpc.v1.MachineRpc/GetIngressProxyConfig"
-    );
     assert_eq!(
         op::EnsureImageIngest::PATH,
         "/ployz.rpc.v1.MachineRpc/EnsureImageIngest"

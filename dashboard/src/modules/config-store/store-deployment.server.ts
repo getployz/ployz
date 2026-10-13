@@ -127,8 +127,11 @@ const failUnclaimed = Effect.fn("StoreDeployment.failUnclaimed")(function* (
   return { failed: deploymentId };
 });
 
-/** Run `runId` could not move the Deployment's Volumes: the Store records it failed with `failure`, before it claims it. */
-export const failStoreDeploymentStorage = Effect.fn("StoreDeployment.failStorage")(function* (
+/**
+ * Run `runId` stopped before it claimed its Deployment, because its Volumes could not move or a Server can't run it:
+ * the Store records it failed with `failure`.
+ */
+export const failStoreDeploymentUnrun = Effect.fn("StoreDeployment.failUnrun")(function* (
   organizationId: string, environmentId: string, deploymentId: string, runId: string, failure: string,
 ) {
   const store = yield* cloudStore;

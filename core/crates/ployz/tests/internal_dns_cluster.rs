@@ -1,10 +1,12 @@
 use std::{collections::BTreeMap, net::Ipv4Addr, process, time::Duration};
 
+#[path = "support/containers.rs"]
+mod containers;
+
 use ployz_core::{
     ContainerId, ContainerKind, ContainerObservation, ContainerRuntimeObservation,
-    HealthObservation, Machine, MachineId, MachineTarget, MembershipObservation, Namespace,
-    ResolvedServiceSpec, ServiceId, ServiceSelector, StartContainerRequest, StopContainerRequest,
-    op, select_service,
+    HealthObservation, Machine, MachineId, MembershipObservation, Namespace, ResolvedServiceSpec,
+    ServiceId, ServiceSelector, select_service,
 };
 use ployz_testkit::{Cluster, ClusterPlan};
 
@@ -51,18 +53,16 @@ async fn internal_dns_tracks_healthy_replicated_containers() {
     .unwrap();
     let mut created = Vec::new();
     for machine in &machines {
-        let container = client
-            .create_container(
-                machine.id,
-                ContainerKind::ServiceContainer,
-                Namespace::parse("app").unwrap(),
-                spec.clone(),
-                None,
-            )
-            .await
-            .unwrap();
-        start_container(&mut client, machine.id, container.container_id).await;
-        created.push(container.container_id);
+        let container = containers::run(
+            &client,
+            machine.id,
+            ContainerKind::ServiceContainer,
+            Namespace::parse("app").unwrap(),
+            spec.clone(),
+        )
+        .await
+        .unwrap();
+        created.push(container);
     }
     let [_, second_container, third_container] = created.as_slice() else {
         panic!("expected one container per Machine")
@@ -145,18 +145,16 @@ async fn internal_dns_survives_daemon_restart() {
     .unwrap();
     let mut created = Vec::new();
     for machine in [&first_machine, &second_machine] {
-        let container = client
-            .create_container(
-                machine.id,
-                ContainerKind::ServiceContainer,
-                Namespace::parse("app").unwrap(),
-                spec.clone(),
-                None,
-            )
-            .await
-            .unwrap();
-        start_container(&mut client, machine.id, container.container_id).await;
-        created.push(container.container_id);
+        let container = containers::run(
+            &client,
+            machine.id,
+            ContainerKind::ServiceContainer,
+            Namespace::parse("app").unwrap(),
+            spec.clone(),
+        )
+        .await
+        .unwrap();
+        created.push(container);
     }
     let [first_container, second_container] = created.as_slice() else {
         panic!("expected one container per Machine")
@@ -714,11 +712,7 @@ async fn start_container(
     machine_id: MachineId,
     container_id: ContainerId,
 ) {
-    client
-        .call::<op::StartContainer>(
-            StartContainerRequest { container_id },
-            Some(&MachineTarget::from(&machine_id)),
-        )
+    containers::start(client, machine_id, container_id)
         .await
         .unwrap();
 }
@@ -728,15 +722,7 @@ async fn stop_container(
     machine_id: MachineId,
     container_id: ContainerId,
 ) {
-    client
-        .call::<op::StopContainer>(
-            StopContainerRequest {
-                container_id,
-                signal: None,
-                grace_period_seconds: None,
-            },
-            Some(&MachineTarget::from(&machine_id)),
-        )
+    containers::stop(client, machine_id, container_id)
         .await
         .unwrap();
 }

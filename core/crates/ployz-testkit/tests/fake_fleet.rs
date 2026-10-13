@@ -18,8 +18,9 @@ use ployz::{
     sdk::{self, ContainerLogInput},
 };
 use ployz_core::{
-    MachineName, MachineRelease, MachineTarget, MachineUpgradeAttemptId, MachineVersion,
-    RequestMachineUpgradeRequest, StopContainerRequest, op,
+    ContainerLocator, ContainerWant, Drain, EnsureContainerRequest, MachineName, MachineRelease,
+    MachineTarget, MachineUpgradeAttemptId, MachineVersion, RequestMachineUpgradeRequest,
+    StopOptions, op,
 };
 use ployz_testkit::fake_fleet::{
     FakeFleet, FakeFleetError, FleetFile, LedgerEntry, Scenario, container_id,
@@ -66,11 +67,13 @@ async fn client(fleet: &FakeFleet, machine: &str) -> Client {
     .unwrap()
 }
 
-fn stop(container: &str) -> StopContainerRequest {
-    StopContainerRequest {
-        container_id: container_id(container),
-        signal: None,
-        grace_period_seconds: None,
+fn stop(container: &str) -> EnsureContainerRequest {
+    EnsureContainerRequest {
+        want: ContainerWant::Stopped {
+            container: ContainerLocator::Id(container_id(container)),
+            drain: Drain::NONE,
+            stop: StopOptions::default(),
+        },
     }
 }
 
@@ -116,13 +119,13 @@ async fn online_machines_confirm_their_contract_and_offline_ones_have_no_socket(
 #[tokio::test(flavor = "multi_thread")]
 async fn a_dropped_stop_reply_is_retried_and_both_attempts_are_in_the_ledger() {
     let (fleet, _sockets) = start(scenario(json!({
-        "faults": [{"fault": "drop_reply", "machine": "web-1", "command": "stop_container", "nth": 1}]
+        "faults": [{"fault": "drop_reply", "machine": "web-1", "command": "ensure_container:stopped", "nth": 1}]
     })));
     let mut client = client(&fleet, "web-1").await;
     let before = fleet.ledger().unwrap().len();
 
     client
-        .call::<op::StopContainer>(
+        .call::<op::EnsureContainer>(
             stop("app-production-web-1"),
             Some(&MachineTarget::parse("web-1").unwrap()),
         )
@@ -133,15 +136,15 @@ async fn a_dropped_stop_reply_is_retried_and_both_attempts_are_in_the_ledger() {
     let issued = commands(after.get(before..).unwrap());
     let stops = after
         .iter()
-        .filter(|entry| entry.command == "stop_container")
+        .filter(|entry| entry.command == "ensure_container:stopped")
         .collect::<Vec<_>>();
     // The SDK sees Unavailable, redials (confirming the contract) and resends the stop.
     assert_eq!(
         issued,
         [
-            ("web-1".to_owned(), "stop_container".to_owned()),
+            ("web-1".to_owned(), "ensure_container:stopped".to_owned()),
             ("web-1".to_owned(), "describe_contract".to_owned()),
-            ("web-1".to_owned(), "stop_container".to_owned()),
+            ("web-1".to_owned(), "ensure_container:stopped".to_owned()),
         ]
     );
     assert_eq!(stops.len(), 2);
@@ -160,13 +163,13 @@ async fn a_dropped_stop_reply_is_retried_and_both_attempts_are_in_the_ledger() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_disconnect_after_a_web_2_stop_leaves_web_2_offline() {
     let (fleet, _sockets) = start(scenario(json!({
-        "faults": [{"fault": "disconnect_after", "machine": "web-2", "command": "stop_container"}]
+        "faults": [{"fault": "disconnect_after", "machine": "web-2", "command": "ensure_container:stopped"}]
     })));
     let socket = fleet.socket(&name("web-2")).unwrap();
     let mut client = client(&fleet, "web-1").await;
 
     let result = client
-        .call::<op::StopContainer>(
+        .call::<op::EnsureContainer>(
             stop("app-production-web-2"),
             Some(&MachineTarget::parse("web-2").unwrap()),
         )
@@ -184,7 +187,7 @@ async fn a_disconnect_after_a_web_2_stop_leaves_web_2_offline() {
         .ledger()
         .unwrap()
         .into_iter()
-        .filter(|entry| entry.command == "stop_container")
+        .filter(|entry| entry.command == "ensure_container:stopped")
         .count();
     assert_eq!(stops, 1, "retries to an offline Machine are not recorded");
 }
@@ -256,11 +259,13 @@ async fn an_unmodeled_command_is_recorded_and_answers_unimplemented() {
     let mut client = client(&fleet, "web-1").await;
 
     let error = client
-        .call::<op::RemoveContainer>(
-            ployz_core::RemoveContainerRequest {
-                container_id: container_id("app-staging-web-1"),
-                force: false,
-                remove_volumes: false,
+        .call::<op::EnsureContainer>(
+            EnsureContainerRequest {
+                want: ContainerWant::Gone {
+                    container: ContainerLocator::Id(container_id("app-staging-web-1")),
+                    drain: Drain::NONE,
+                    anonymous_volumes: ployz_core::AnonymousVolumes::Remove,
+                },
             },
             None,
         )
@@ -269,9 +274,9 @@ async fn an_unmodeled_command_is_recorded_and_answers_unimplemented() {
 
     let message = format!("{error:?}");
     assert!(message.contains("Unimplemented"), "{message}");
-    assert!(message.contains("remove_container"), "{message}");
+    assert!(message.contains("ensure_container"), "{message}");
     let last = fleet.ledger().unwrap().pop().unwrap();
-    assert_eq!(last.command, "remove_container");
+    assert_eq!(last.command, "ensure_container:gone");
     assert_eq!(last.container.as_deref(), Some("app-staging-web-1"));
 }
 
@@ -288,7 +293,7 @@ fn a_scenario_naming_an_unknown_machine_volume_or_command_is_refused() {
 
     assert!(matches!(
         refused(
-            json!({"faults": [{"fault": "disconnect_after", "machine": "web-9", "command": "stop_container"}]})
+            json!({"faults": [{"fault": "disconnect_after", "machine": "web-9", "command": "ensure_container:stopped"}]})
         ),
         FakeFleetError::UnknownMachine(_)
     ));

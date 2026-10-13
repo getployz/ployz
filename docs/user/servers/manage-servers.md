@@ -195,6 +195,11 @@ When a server's release can't serve a feature, the feature names that server:
   ```text
   Volume move is not in Ployz 0.2.4 on web-2 yet.
   ```
+- **Drain** in Ployz Cloud names the servers to upgrade before it changes anything:
+  "Drains need a newer Ployz on web-1".
+- **Upgrade** off Ployz 0.2.4 that stops partway while the old Ployz keeps running looks like it's
+  still going: Cloud waits until the upgrade times out, then shows its result as unknown rather
+  than interrupted. Start the upgrade again.
 
 From the CLI, `ployz logs` prints the logs from your other servers, names each server that can't
 send its own, and exits with code 3:
@@ -211,6 +216,15 @@ instead. `ployz exec` into a container on such a server exits with code 1 and na
 ```text
 Server web-2 needs a newer Ployz. It cannot serve ployz.container.exec.v1.
 ```
+
+`ployz drain` of a server on Ployz 0.2.4 turns its services off, then stops and names the server:
+
+```text
+Server web-2 needs a newer Ployz. It cannot serve ployz.container.ensure.v1.
+```
+
+Upgrade the server and run `ployz drain` again. The rerun finds services already off and carries
+on.
 
 ## Remove a server
 

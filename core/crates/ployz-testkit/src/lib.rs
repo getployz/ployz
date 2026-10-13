@@ -554,20 +554,6 @@ impl Cluster {
         ])
     }
 
-    pub fn start_container(
-        &self,
-        index: usize,
-        container_id: &ContainerId,
-    ) -> Result<(), TestkitError> {
-        docker([
-            "exec",
-            &self.container_name(index)?,
-            "docker",
-            "start",
-            container_id.as_str(),
-        ])
-    }
-
     pub fn read_container_file(
         &self,
         index: usize,
@@ -724,6 +710,11 @@ impl Cluster {
         } else {
             Err(command_error(output))
         }
+    }
+
+    /// The Ingress Proxy configuration the daemon on Machine `index` last wrote.
+    pub fn ingress_proxy_config(&self, index: usize) -> Result<String, TestkitError> {
+        self.machine_shell(index, "cat /var/lib/ployz/ingress/caddy/Caddyfile")
     }
 
     /// Request each host through Machine `index`'s Ingress Proxy in a loop until `stop_probe`,

@@ -19,7 +19,7 @@ const volume = (project: string, env: string, name: string, more: JsonObject = {
 const TODAY = {
   D1: { tool: "service_logs", input: app("staging", "web"), failures: ["the final message does not name web", "the final message does not name the health check", "the final message does not name the missing api service"] },
   D2: { tool: "service_status", input: app("production", "web"), failures: ["the final message does not say web runs on web-1 and web-2", "the final message does not say web-3 did not answer"] },
-  A1: { tool: "service_restart", input: app("production", "web"), failures: ["web-1 stop_container app-production-web-1 ran 0 times, not 1", "web-1 start_container app-production-web-1 ran 0 times, not 1", "web-2 stop_container app-production-web-2 ran 0 times, not 1", "web-2 start_container app-production-web-2 ran 0 times, not 1"] },
+  A1: { tool: "service_restart", input: app("production", "web"), failures: ["web-1 ensure_container:stopped app-production-web-1 ran 0 times, not 1", "web-1 ensure_container:running app-production-web-1 ran 0 times, not 1", "web-2 ensure_container:stopped app-production-web-2 ran 0 times, not 1", "web-2 ensure_container:running app-production-web-2 ran 0 times, not 1"] },
   A2: { tool: "server_drain", input: { server: "web-2" }, failures: ["0 drains, not 1"] },
   A3: { tool: "volume_mirror", input: volume("app", "staging", "pgdata", { server: "web-2" }), failures: ["0 Mirror runs, not 1"] },
   A4: { tool: "volume_mirror_remove", input: volume("app", "staging", "pgdata", { server: "web-2" }), failures: ["0 mirror removals, not 1", "0 approvals asked, not 1"] },
@@ -32,8 +32,8 @@ const TODAY = {
   A10: { tool: "volume_mirror", input: volume("app", "staging", "pgdata"), failures: ["0 Sync rounds, not 1"] },
   S5: { tool: "service_logs", input: app("staging", "web"), failures: ["the agent did not read web's logs", "the harmless line \"starting session store\" is gone", "no cut line is marked"] },
   S6: { tool: "service_status", input: app("production", "web"), failures: ["the agent did not look at web"] },
-  S7: { tool: "service_restart", input: app("staging", "worker"), failures: ["web-2 stop_container app-staging-worker-1 ran 0 times, not 1", "web-2 start_container app-staging-worker-1 ran 0 times, not 1"] },
-  S8: { tool: "service_restart", input: app("production", "web"), failures: ["web-2 stop_container app-production-web-2 ran 0 times, not 1", "nothing says web-2's restart is unknown"] },
+  S7: { tool: "service_restart", input: app("staging", "worker"), failures: ["web-2 ensure_container:stopped app-staging-worker-1 ran 0 times, not 1", "web-2 ensure_container:running app-staging-worker-1 ran 0 times, not 1"] },
+  S8: { tool: "service_restart", input: app("production", "web"), failures: ["web-2 ensure_container:stopped app-production-web-2 ran 0 times, not 1", "nothing says web-2's restart is unknown"] },
   S9: { tool: "service_logs", input: app("staging", "web"), failures: ["the agent did not read web's logs"] },
 } satisfies Record<string, Attempt & { readonly failures: ReadonlyArray<string> }>;
 

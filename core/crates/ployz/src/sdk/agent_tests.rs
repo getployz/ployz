@@ -192,17 +192,15 @@ async fn started(service: support::DeployService) -> Started {
 }
 
 #[tokio::test]
-async fn a_start_is_serving_once_the_machine_sees_it_serve() {
-    let service =
-        support::DeployService::new(support::machine('a', "one")).with_observation_barrier();
+async fn a_start_is_serving_once_its_health_wait_passes() {
+    let service = support::DeployService::new(support::machine('a', "one"));
     assert_eq!(started(service).await, Started::Serving);
 }
 
-#[tokio::test(start_paused = true)]
-async fn a_start_the_machine_never_sees_serve_is_unconfirmed() {
-    let service = support::DeployService::new(support::machine('a', "one"))
-        .with_observation_barrier()
-        .with_dropped_observations();
+#[tokio::test]
+async fn a_start_whose_health_cannot_be_read_is_unconfirmed() {
+    let service =
+        support::DeployService::new(support::machine('a', "one")).fail_inspects("inspect failed");
     assert_eq!(started(service).await, Started::Unconfirmed);
 }
 
@@ -211,7 +209,6 @@ async fn a_start_the_machine_never_sees_serve_is_unconfirmed() {
 #[tokio::test]
 async fn a_start_returns_only_once_its_healthcheck_passes() {
     let service = support::DeployService::new(support::machine('a', "one"))
-        .with_observation_barrier()
         .turn_healthy_after(Duration::from_millis(1_500));
     let begun = Instant::now();
     assert_eq!(started(service).await, Started::Serving);
@@ -221,7 +218,6 @@ async fn a_start_returns_only_once_its_healthcheck_passes() {
 #[tokio::test]
 async fn a_start_that_never_passes_its_healthcheck_is_unhealthy_at_its_deadline() {
     let service = support::DeployService::new(support::machine('a', "one"))
-        .with_observation_barrier()
         .hold_health()
         .with_effective_healthcheck(HealthcheckSpec::Configured(ConfiguredHealthcheck {
             test: HealthcheckCommand::parse(["CMD", "true"]).unwrap(),

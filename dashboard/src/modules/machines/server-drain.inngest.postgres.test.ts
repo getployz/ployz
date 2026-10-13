@@ -31,9 +31,14 @@ const secondTab = "00000000-0000-4000-8000-0000000000a2";
 const web1 = { id: "1".repeat(32), name: "web-1" };
 const web2 = { id: machineId, name: "web-2" };
 
-/** The cluster a Drain plans from: web-2 runs one owned Service, which moves; nothing is destroyed. */
-const frameOf = (mode: "replicated" | "global") => asTestDouble<RuntimeWatchView>()({
-  machines: [{ machine: web1 }, { machine: web2 }, { machine: { id: otherMachineId, name: "web-3" } }],
+/**
+ * The cluster a Drain plans from: web-2 runs one owned Service, which moves; nothing is destroyed. Every Server takes
+ * services and lists `capabilities` by id, none (unknown) when absent.
+ */
+const frameOf = (mode: "replicated" | "global", capabilities: Record<string, string[]> = {}) => asTestDouble<RuntimeWatchView>()({
+  machines: [web1, web2, { id: otherMachineId, name: "web-3" }].map((machine) => ({
+    machine: { ...machine, accepts_services: true, runtime: { capabilities: capabilities[machine.id] ?? [] } },
+  })),
   services: [{
     identity: "shop-production/api",
     service_id: "api",
@@ -200,6 +205,15 @@ describe("drain-server", () => {
 
     expect((await drain(requestId, machineId, "run-duplicate")).result).toEqual({ attemptId: requestId, state: "finished" });
     expect(drainCalls).toHaveLength(1);
+  });
+
+  it("refuses a Drain a move could land on a Server too old to ensure Containers, before turning anything off", async () => {
+    frame = frameOf("replicated", { [web1.id]: ["ployz.logs.tail.v1"], [machineId]: ["ployz.container.ensure.v1"] });
+    await request();
+
+    expect((await drain()).result).toEqual({ attemptId: requestId, state: "failed" });
+    expect(drainCalls).toEqual([]);
+    expect(await rows()).toMatchObject([{ end_code: "refused", refusal_message: "Drains need a newer Ployz on web-1." }]);
   });
 
   it("drains only the services a CLI request previewed, not every owned Namespace", async () => {

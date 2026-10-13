@@ -56,14 +56,9 @@ pub(crate) const CONNECT_CONFIRM_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The deadline of a stop RPC that waits behind `queued - 1` other stops on its
 /// Machine: a Machine stops its containers one at a time, each taking up to its grace.
-pub(crate) fn stop_rpc_timeout(grace_period_seconds: Option<i32>, queued: u32) -> Option<Duration> {
-    match grace_period_seconds {
-        Some(seconds) if seconds < 0 => None,
-        Some(seconds) => {
-            Some(TARGET_RPC_TIMEOUT + Duration::from_secs(seconds as u64) * queued.max(1))
-        }
-        None => None,
-    }
+pub(crate) fn stop_rpc_timeout(grace_period_seconds: Option<u16>, queued: u32) -> Option<Duration> {
+    grace_period_seconds
+        .map(|seconds| TARGET_RPC_TIMEOUT + Duration::from_secs(u64::from(seconds)) * queued.max(1))
 }
 
 pub trait ProxyStream: AsyncRead + AsyncWrite + Send + Unpin {}

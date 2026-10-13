@@ -15,16 +15,16 @@ use ployz::{
     deploy::PlanOptions,
 };
 use ployz_core::{
-    AdvertisedEndpoint, CapabilityName, ContainerAddress, ContainerCreated, ContainerDetails,
-    ContainerId, ContainerKind, ContainerList, ContainerObservationMap, ContainerPath,
-    ContainerRuntimeObservation, ContractDescription, DockerVolume, DockerVolumeName,
-    ExecResponseFrame, GET_CONTAINER_OBSERVATIONS_CAPABILITY, HealthObservation, HealthcheckSpec,
-    LocalMachinePhase, MACHINE_STORAGE_OBSERVATION_CAPABILITY, Machine, MachineDetails, MachineId,
-    MachineImages, MachineList, MachineName, MachineObservation, MachineRpc, MachineRpcServer,
-    MembershipObservation, Namespace, OpaquePayload, PROTOCOL_MAJOR, RequestedServiceSpec,
-    ResolvedServiceSpec, ResolvedUpdateConfig, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
-    ServiceId, ServiceMount, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference,
-    UpdateOrder, VolumeInventory, WireGuardPublicKey,
+    AdvertisedEndpoint, CapabilityName, ContainerDetails, ContainerId, ContainerKind,
+    ContainerList, ContainerLocator, ContainerNow, ContainerPath, ContainerRuntimeObservation,
+    ContractDescription, DockerVolume, DockerVolumeName, EnsuredContainer, ExecResponseFrame,
+    HealthObservation, HealthcheckSpec, LocalMachinePhase, MACHINE_STORAGE_OBSERVATION_CAPABILITY,
+    Machine, MachineDetails, MachineId, MachineImages, MachineList, MachineName,
+    MachineObservation, MachineRpc, MachineRpcServer, MembershipObservation, Namespace,
+    OpaquePayload, PROTOCOL_MAJOR, RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig,
+    RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RunTarget, ServiceId, ServiceMount,
+    ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, UpdateOrder, VolumeInventory,
+    WireGuardPublicKey,
 };
 use serde_json::Value;
 use tokio::net::TcpListener;
@@ -38,8 +38,6 @@ mod inspect_telemetry_fixture;
 mod build_fixture;
 pub(super) use build_fixture::BuildFixture;
 
-pub(super) type ObservationRequest = (MachineId, Vec<ContainerId>, u64);
-
 #[derive(Clone)]
 pub(super) struct DeployService {
     pub(super) builds: Option<Arc<BuildFixture>>,
@@ -51,13 +49,9 @@ pub(super) struct DeployService {
     created_specs: Arc<Mutex<Vec<ResolvedServiceSpec>>>,
     listed_containers: Arc<Mutex<Vec<ployz_core::ContainerObservation>>>,
     mutating_rpcs: Arc<AtomicUsize>,
-    observation_rpcs: Arc<AtomicUsize>,
-    observation_delays: Arc<Mutex<BTreeMap<MachineId, usize>>>,
-    observation_error: Option<RpcError>,
-    observation_requests: Arc<Mutex<Vec<ObservationRequest>>>,
-    observation_serving: bool,
-    hold_observations: bool,
-    advertise_observations: bool,
+    /// Containers created per creation key, so a resent run answers the same Container.
+    slots: Arc<Mutex<BTreeMap<String, ContainerId>>>,
+    inspect_error: Option<RpcError>,
     exec_exit: Option<i32>,
     runtime: ContainerRuntimeObservation,
     /// When a Starting Container turns healthy and starts serving.
@@ -90,13 +84,8 @@ impl DeployService {
             created_specs: Arc::new(Mutex::new(Vec::new())),
             listed_containers: Arc::new(Mutex::new(Vec::new())),
             mutating_rpcs: Arc::new(AtomicUsize::new(0)),
-            observation_rpcs: Arc::new(AtomicUsize::new(0)),
-            observation_delays: Arc::new(Mutex::new(BTreeMap::new())),
-            observation_error: None,
-            observation_requests: Arc::new(Mutex::new(Vec::new())),
-            observation_serving: true,
-            hold_observations: false,
-            advertise_observations: false,
+            slots: Arc::new(Mutex::new(BTreeMap::new())),
+            inspect_error: None,
             exec_exit: None,
             runtime: ContainerRuntimeObservation::Running {
                 health: HealthObservation::Healthy,
@@ -126,13 +115,8 @@ impl DeployService {
             created_specs: Arc::new(Mutex::new(Vec::new())),
             listed_containers: Arc::new(Mutex::new(Vec::new())),
             mutating_rpcs: Arc::new(AtomicUsize::new(0)),
-            observation_rpcs: Arc::new(AtomicUsize::new(0)),
-            observation_delays: Arc::new(Mutex::new(BTreeMap::new())),
-            observation_error: None,
-            observation_requests: Arc::new(Mutex::new(Vec::new())),
-            observation_serving: true,
-            hold_observations: false,
-            advertise_observations: false,
+            slots: Arc::new(Mutex::new(BTreeMap::new())),
+            inspect_error: None,
             exec_exit: None,
             runtime: ContainerRuntimeObservation::Running {
                 health: HealthObservation::Healthy,
@@ -153,7 +137,7 @@ impl DeployService {
 
     pub(super) fn fail_create_volume(mut self, message: &str) -> Self {
         self.create_volume_error = Some(RpcError {
-            code: RpcErrorCode::Unavailable,
+            code: RpcErrorCode::Internal,
             message: message.into(),
             details: Value::Null,
             cause: Vec::new(),
@@ -232,27 +216,14 @@ impl DeployService {
         self
     }
 
-    pub(super) fn with_observation_barrier(mut self) -> Self {
-        self.advertise_observations = true;
-        self
-    }
-
     pub(super) fn with_machines(mut self, machines: Vec<MachineObservation>) -> Self {
         self.machines = machines;
         self
     }
 
-    pub(super) fn delay_observations(self, machine_id: MachineId, rounds: usize) -> Self {
-        self.observation_delays
-            .lock()
-            .unwrap()
-            .insert(machine_id, rounds);
-        self
-    }
-
-    pub(super) fn fail_observations(mut self, message: &str) -> Self {
-        self.observation_error = Some(RpcError {
-            code: RpcErrorCode::Internal,
+    pub(super) fn fail_inspects(mut self, message: &str) -> Self {
+        self.inspect_error = Some(RpcError {
+            code: RpcErrorCode::Unavailable,
             message: message.into(),
             details: Value::Null,
             cause: Vec::new(),
@@ -260,26 +231,8 @@ impl DeployService {
         self
     }
 
-    pub(super) fn with_dropped_observations(mut self) -> Self {
-        self.observation_serving = false;
-        self
-    }
-
-    pub(super) fn hold_observations(mut self) -> Self {
-        self.hold_observations = true;
-        self
-    }
-
     pub(super) fn mutating_rpcs(&self) -> Arc<AtomicUsize> {
         self.mutating_rpcs.clone()
-    }
-
-    pub(super) fn observation_rpcs(&self) -> Arc<AtomicUsize> {
-        self.observation_rpcs.clone()
-    }
-
-    pub(super) fn observation_requests(&self) -> Arc<Mutex<Vec<ObservationRequest>>> {
-        self.observation_requests.clone()
     }
 
     pub(super) fn listed_containers(&self) -> Arc<Mutex<Vec<ployz_core::ContainerObservation>>> {
@@ -301,6 +254,56 @@ impl DeployService {
     fn record_mutation(&self) {
         self.mutating_rpcs.fetch_add(1, Ordering::SeqCst);
     }
+
+    #[expect(
+        clippy::result_large_err,
+        reason = "tonic Status is the MachineRpc error type"
+    )]
+    fn located(&self, locator: &ContainerLocator) -> Result<ContainerId, Status> {
+        match locator {
+            ContainerLocator::Id(container_id) => Ok(*container_id),
+            ContainerLocator::Key(slot) => self
+                .slots
+                .lock()
+                .unwrap()
+                .get(&slot.creation_key.as_str().to_owned())
+                .copied()
+                .ok_or_else(|| Status::not_found("no Container at that slot")),
+        }
+    }
+
+    fn observed(
+        &self,
+        machine_id: MachineId,
+        container_id: ContainerId,
+        resolved_spec: ResolvedServiceSpec,
+    ) -> ployz_core::ContainerObservation {
+        ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
+            container_id,
+            display_name: format!("{}-1", resolved_spec.name),
+            created_at_unix_nanos: 0,
+            machine_id,
+            namespace: Namespace::parse("app").unwrap(),
+            kind: ContainerKind::ServiceContainer,
+            runtime: self.current_runtime(),
+            effective_healthcheck: self.effective_healthcheck.clone(),
+            resolved_spec,
+            address: None,
+            labels: BTreeMap::new(),
+        })
+        .unwrap()
+    }
+}
+
+fn resolved(spec: RequestedServiceSpec) -> ResolvedServiceSpec {
+    spec.to_resolved(
+        ServiceId::random(),
+        ResolvedUpdateConfig {
+            order: UpdateOrder::StartFirst,
+            monitor_millis: None,
+        },
+    )
+    .expect("volume graph is scoped")
 }
 
 #[tonic::async_trait]
@@ -352,10 +355,6 @@ impl MachineRpc for DeployService {
     ) -> Result<Response<OpaquePayload>, Status> {
         let mut capabilities: BTreeSet<_> =
             [CapabilityName::parse(MACHINE_STORAGE_OBSERVATION_CAPABILITY).unwrap()].into();
-        if self.advertise_observations {
-            capabilities
-                .insert(CapabilityName::parse(GET_CONTAINER_OBSERVATIONS_CAPABILITY).unwrap());
-        }
         if self.builds.is_some() {
             capabilities.extend(
                 [
@@ -424,61 +423,6 @@ impl MachineRpc for DeployService {
         encoded(RpcResponse::from(VolumeInventory {
             volumes: self.volumes.lock().unwrap().clone(),
             failures: Vec::new(),
-        }))
-    }
-
-    async fn create_container(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        self.record_mutation();
-        let RpcRequestBody::CreateContainer(create) =
-            request.into_inner().decode_request().unwrap().body
-        else {
-            return Err(Status::invalid_argument("expected create_container"));
-        };
-        if let Some(error) = &self.create_volume_error {
-            return encoded(RpcResponse::from(error.clone()));
-        }
-        if let Some(error) = &self.create_volume_verification_error {
-            let mut error = error.clone();
-            error.message = format!(
-                "Docker Volume was created but could not be verified: {}",
-                error.message
-            );
-            return encoded(RpcResponse::from(error));
-        }
-        self.created_namespaces
-            .lock()
-            .unwrap()
-            .push(create.namespace);
-        self.created_specs
-            .lock()
-            .unwrap()
-            .push(create.resolved_spec.clone());
-        let n = self.containers.fetch_add(1, Ordering::SeqCst) + 1;
-        let container_id = ContainerId::parse(format!("{n:064x}")).unwrap();
-        encoded(RpcResponse::from(ContainerCreated {
-            container_id,
-            display_name: format!("{}-{n}", create.resolved_spec.name),
-        }))
-    }
-
-    async fn start_container(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        self.record_mutation();
-        let RpcRequestBody::StartContainer(start) =
-            request.into_inner().decode_request().unwrap().body
-        else {
-            return Err(Status::invalid_argument("expected start_container"));
-        };
-        if let Some(error) = &self.start_error {
-            return encoded(RpcResponse::from(error.clone()));
-        }
-        encoded(RpcResponse::from(ployz_core::ContainerChanged {
-            container_id: start.container_id,
         }))
     }
 
@@ -553,6 +497,9 @@ impl MachineRpc for DeployService {
         else {
             return Err(Status::invalid_argument("expected inspect_container"));
         };
+        if let Some(error) = &self.inspect_error {
+            return encoded(RpcResponse::from(error.clone()));
+        }
         if self.uninspectable.contains(&inspect.container_id) {
             return Err(Status::not_found("no such container"));
         }
@@ -594,80 +541,6 @@ impl MachineRpc for DeployService {
             .unwrap(),
         }))
     }
-    async fn get_container_observations(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        self.observation_rpcs.fetch_add(1, Ordering::SeqCst);
-        let machine_id = machine_from_metadata(&request)?;
-        let RpcRequestBody::GetContainerObservations(get) =
-            request.into_inner().decode_request().unwrap().body
-        else {
-            return Err(Status::invalid_argument(
-                "expected get_container_observations",
-            ));
-        };
-        self.observation_requests.lock().unwrap().push((
-            machine_id,
-            get.container_ids.clone(),
-            get.wait_millis,
-        ));
-        if self.hold_observations {
-            std::future::pending().await
-        }
-        if let Some(error) = &self.observation_error {
-            return encoded(RpcResponse::from(error.clone()));
-        }
-        let ready = self
-            .observation_delays
-            .lock()
-            .unwrap()
-            .get_mut(&machine_id)
-            .is_none_or(|rounds| {
-                let ready = *rounds == 0;
-                *rounds = rounds.saturating_sub(1);
-                ready
-            });
-        let spec = spec("web")
-            .to_resolved(
-                ServiceId::random(),
-                ResolvedUpdateConfig {
-                    order: UpdateOrder::StartFirst,
-                    monitor_millis: None,
-                },
-            )
-            .expect("volume graph is scoped");
-        let containers = get
-            .container_ids
-            .into_iter()
-            .map(|container_id| {
-                (
-                    container_id,
-                    self.observation_serving.then(|| {
-                        ployz_core::ContainerObservation::try_from(
-                            ployz_core::ContainerObservationParts {
-                                container_id,
-                                display_name: "web-1".into(),
-                                created_at_unix_nanos: 0,
-                                machine_id,
-                                namespace: Namespace::parse("app").unwrap(),
-                                kind: ContainerKind::ServiceContainer,
-                                runtime: ContainerRuntimeObservation::Running {
-                                    health: HealthObservation::Healthy,
-                                },
-                                effective_healthcheck: None,
-                                resolved_spec: spec.clone(),
-                                address: ready.then_some(ContainerAddress([10, 210, 1, 2].into())),
-                                labels: BTreeMap::new(),
-                            },
-                        )
-                        .unwrap()
-                    }),
-                )
-            })
-            .collect();
-        encoded(RpcResponse::from(ContainerObservationMap { containers }))
-    }
     async fn inspect_volume_copy(
         &self,
         _request: Request<OpaquePayload>,
@@ -703,47 +576,79 @@ impl MachineRpc for DeployService {
             .retain(|volume| volume.id.machine_id != machine_id || volume.id.name != remove.name);
         encoded(RpcResponse::from(ployz_core::VolumeRemoved {}))
     }
-    async fn mark_container_stopping(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
-    }
-    async fn stop_container(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        self.record_mutation();
-        let RpcRequestBody::StopContainer(stop) =
-            request.into_inner().decode_request().unwrap().body
-        else {
-            return Err(Status::invalid_argument("expected stop_container"));
-        };
-        encoded(RpcResponse::from(ployz_core::ContainerChanged {
-            container_id: stop.container_id,
-        }))
-    }
-    async fn remove_container(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        self.record_mutation();
-        let RpcRequestBody::RemoveContainer(remove) =
-            request.into_inner().decode_request().unwrap().body
-        else {
-            return Err(Status::invalid_argument("expected remove_container"));
-        };
-        self.removed.lock().unwrap().insert(remove.container_id);
-        encoded(RpcResponse::from(ployz_core::ContainerChanged {
-            container_id: remove.container_id,
-        }))
-    }
-
     async fn ensure_container(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
+        self.record_mutation();
+        let machine_id = machine_from_metadata(&request)?;
+        let RpcRequestBody::EnsureContainer(ensure) =
+            request.into_inner().decode_request().unwrap().body
+        else {
+            return Err(Status::invalid_argument("expected ensure_container"));
+        };
+        let now = match ensure.want {
+            ployz_core::ContainerWant::Running {
+                container: RunTarget::New(new),
+            } => {
+                if let Some(error) = &self.create_volume_error {
+                    return encoded(RpcResponse::from(error.clone()));
+                }
+                if let Some(error) = &self.create_volume_verification_error {
+                    let mut error = error.clone();
+                    error.message = format!(
+                        "Docker Volume was created but could not be verified: {}",
+                        error.message
+                    );
+                    return encoded(RpcResponse::from(error));
+                }
+                let key = new.slot.creation_key.as_str().to_owned();
+                let existing = self.slots.lock().unwrap().get(&key).copied();
+                let container_id = match existing {
+                    Some(container_id) => container_id,
+                    None => {
+                        self.created_namespaces
+                            .lock()
+                            .unwrap()
+                            .push(new.slot.namespace.clone());
+                        self.created_specs
+                            .lock()
+                            .unwrap()
+                            .push(new.resolved_spec.clone());
+                        let n = self.containers.fetch_add(1, Ordering::SeqCst) + 1;
+                        let container_id = ContainerId::parse(format!("{n:064x}")).unwrap();
+                        self.slots.lock().unwrap().insert(key, container_id);
+                        container_id
+                    }
+                };
+                if let Some(error) = &self.start_error {
+                    return encoded(RpcResponse::from(error.clone()));
+                }
+                ContainerNow::Present(self.observed(machine_id, container_id, new.resolved_spec))
+            }
+            ployz_core::ContainerWant::Running {
+                container: RunTarget::Existing(locator),
+            } => {
+                if let Some(error) = &self.start_error {
+                    return encoded(RpcResponse::from(error.clone()));
+                }
+                ContainerNow::Present(self.observed(
+                    machine_id,
+                    self.located(&locator)?,
+                    resolved(spec("web")),
+                ))
+            }
+            ployz_core::ContainerWant::Stopped { container, .. } => ContainerNow::Present(
+                self.observed(machine_id, self.located(&container)?, resolved(spec("web"))),
+            ),
+            ployz_core::ContainerWant::Gone { container, .. } => {
+                if let Ok(container_id) = self.located(&container) {
+                    self.removed.lock().unwrap().insert(container_id);
+                }
+                ContainerNow::Absent { of: container }
+            }
+        };
+        encoded(RpcResponse::from(EnsuredContainer::Ensured { now }))
     }
     async fn exec(
         &self,
@@ -920,12 +825,6 @@ impl MachineRpc for DeployService {
             return encoded(builds.pull(machine, pull));
         }
         self.record_mutation();
-        unused()
-    }
-    async fn get_ingress_proxy_config(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
         unused()
     }
     async fn publish_certificate_material(

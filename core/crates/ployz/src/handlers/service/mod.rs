@@ -13,7 +13,7 @@ use ployz_core::{
 use serde::Serialize;
 
 use crate::{
-    cluster::{ContainerObservationCondition, HealthWaitError},
+    cluster::HealthWaitError,
     ui::{Cell, Gaps, Table, Tone},
 };
 use ployz_core::EnvironmentValues;
@@ -218,7 +218,6 @@ fn runtime_health_rank(runtime: &ContainerRuntimeObservation) -> u8 {
 
 /// Stop, then start, the addressed Environment's Services. Every Container is started
 /// again even when stopping one failed, so a failed restart never leaves a Service down.
-/// Both steps wait for their Container Observations, each bounded by the barrier timeout.
 fn restart(root: &ArgMatches) -> Result<(), Error> {
     lifecycle(root, &[ContainerAction::Stop, ContainerAction::Start])
 }
@@ -306,8 +305,6 @@ struct ServiceActionOutcome {
     containers: Vec<ChangedContainer>,
     /// One entry per Container the action failed on.
     container_failures: Vec<ContainerFailure>,
-    /// Why the action's effect was not confirmed.
-    wait_error: Option<RpcError>,
     partial: bool,
 }
 
@@ -336,8 +333,6 @@ struct ServiceActionResult<'a> {
     failures: &'a [MachineFailure<RpcError>],
     omitted: &'a [MachineId],
     #[serde(skip_serializing_if = "Option::is_none")]
-    wait_error: Option<&'a RpcError>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     next: Option<&'a str>,
 }
 
@@ -348,7 +343,6 @@ impl ServiceActionOutcome {
             container_failures: &self.container_failures,
             failures: &live.containers.failures,
             omitted: &live.containers.omissions,
-            wait_error: self.wait_error.as_ref(),
             next: None,
         }
     }
@@ -357,7 +351,6 @@ impl ServiceActionOutcome {
     fn then(mut self, later: Self) -> Self {
         self.containers.extend(later.containers);
         self.container_failures.extend(later.container_failures);
-        self.wait_error = self.wait_error.or(later.wait_error);
         self.partial |= later.partial;
         self
     }
@@ -370,7 +363,7 @@ async fn apply_service_action(
     services: &[&ServiceObservation],
     action: ContainerAction,
     signal: Option<String>,
-    timeout: Option<i32>,
+    timeout: Option<u16>,
 ) -> Result<ServiceActionOutcome, Error> {
     let service_container_ids = services
         .iter()
@@ -423,21 +416,16 @@ async fn apply_service_action(
     let cancellation = cancellation_on_ctrl_c();
     let _parent = cancellation.clone().drop_guard();
     if action == ContainerAction::Start {
-        // A start waits for each healthcheck the way a Deploy does, so a slow boot
-        // is not cut off by the Serving wait below.
+        // A start waits for each healthcheck the way a Deploy does.
         let waits = join_all(changed.iter().map(|(machine_id, container_id)| async {
             client
                 .wait_until_ready(machine_id, container_id, &cancellation)
                 .await
         }))
         .await;
-        let mut ready = Vec::with_capacity(changed.len());
         for ((machine_id, container_id), wait) in changed.into_iter().zip(waits) {
             let error = match wait {
-                Ok(()) => {
-                    ready.push((machine_id, container_id));
-                    continue;
-                }
+                Ok(()) => continue,
                 Err(HealthWaitError::Inspect(error)) => error,
                 Err(HealthWaitError::Health(failure)) => unhealthy(&failure),
             };
@@ -455,29 +443,6 @@ async fn apply_service_action(
             });
             partial = true;
         }
-        changed = ready;
-    }
-    let changed = changed
-        .into_iter()
-        .map(|(_, container_id)| container_id)
-        .collect::<Vec<_>>();
-    // The action already committed: an unconfirmed wait is part of the result.
-    let wait_error = client
-        .wait_for_container_observations(
-            &changed,
-            match action {
-                ContainerAction::Start => ContainerObservationCondition::Serving,
-                ContainerAction::Stop | ContainerAction::Remove => {
-                    ContainerObservationCondition::Dropped
-                }
-            },
-            &cancellation,
-        )
-        .await
-        .err();
-    if let Some(error) = &wait_error {
-        crate::ui::warn_cause(format_args!("The {action} was not confirmed"), error);
-        partial = true;
     }
     if !live.containers.all_targets_succeeded() {
         partial = true;
@@ -485,7 +450,6 @@ async fn apply_service_action(
     Ok(ServiceActionOutcome {
         containers: rows,
         container_failures,
-        wait_error,
         partial,
     })
 }
@@ -530,14 +494,14 @@ fn select_services<'a>(
 fn stop_options(
     matches: &ArgMatches,
     actions: &[ContainerAction],
-) -> Result<(Option<String>, Option<i32>), Error> {
+) -> Result<(Option<String>, Option<u16>), Error> {
     if !actions.contains(&ContainerAction::Stop) {
         return Ok((None, None));
     }
     let signal = matches.get_one::<String>("signal").cloned();
     let timeout = matches
         .get_one::<String>("timeout")
-        .map(|value| value.parse::<i32>())
+        .map(|value| value.parse::<u16>())
         .transpose()?;
     Ok((signal, timeout))
 }

@@ -25,9 +25,8 @@ async fn partial_observations_reject_catch_up_before_any_placement() {
             machine_id: joiner.id,
             services: Vec::new(),
             target_services: None,
-            create_result: Ok(Some(created())),
-            create_calls: Vec::new(),
-            start_calls: Vec::new(),
+            run_result: Ok(Some(container_id('a'))),
+            run_calls: Vec::new(),
             failures: if failed {
                 vec![ployz_core::MachineFailure {
                     machine_id: peer.id,
@@ -59,7 +58,7 @@ async fn partial_observations_reject_catch_up_before_any_placement() {
             "{message}"
         );
         assert!(message.contains(peer.id.as_str()), "{message}");
-        assert!(client.create_calls.is_empty());
+        assert!(client.run_calls.is_empty());
     }
 }
 
@@ -76,9 +75,8 @@ async fn successful_ensure_is_reobserved_before_success() {
         machine_id: joiner.id,
         services: vec![service],
         target_services: None,
-        create_result: Ok(Some(created())),
-        create_calls: Vec::new(),
-        start_calls: Vec::new(),
+        run_result: Ok(Some(container_id('a'))),
+        run_calls: Vec::new(),
         failures: Vec::new(),
         omissions: Vec::new(),
     };
@@ -108,9 +106,8 @@ async fn initially_eligible_global_absent_from_target_inspection_remains_missing
         machine_id: joiner.id,
         services: vec![service],
         target_services: Some(Vec::new()),
-        create_result: Ok(Some(created())),
-        create_calls: Vec::new(),
-        start_calls: Vec::new(),
+        run_result: Ok(Some(container_id('a'))),
+        run_calls: Vec::new(),
         failures: Vec::new(),
         omissions: Vec::new(),
     };
@@ -154,9 +151,8 @@ async fn initially_eligible_global_with_only_hook_visible_remains_missing() {
         machine_id: joiner.id,
         services: vec![service],
         target_services: Some(vec![hook_only]),
-        create_result: Ok(Some(created())),
-        create_calls: Vec::new(),
-        start_calls: Vec::new(),
+        run_result: Ok(Some(container_id('a'))),
+        run_calls: Vec::new(),
         failures: Vec::new(),
         omissions: Vec::new(),
     };
@@ -193,9 +189,8 @@ async fn initially_eligible_generation_absent_from_target_inspection_remains_mis
         machine_id: joiner.id,
         services: vec![stale.clone(), current],
         target_services: Some(vec![stale]),
-        create_result: Ok(Some(created())),
-        create_calls: Vec::new(),
-        start_calls: Vec::new(),
+        run_result: Ok(Some(container_id('a'))),
+        run_calls: Vec::new(),
         failures: Vec::new(),
         omissions: Vec::new(),
     };
@@ -231,9 +226,8 @@ async fn another_namespaces_matching_shape_does_not_satisfy_catch_up() {
         machine_id: joiner.id,
         services: vec![shop.clone(), prod],
         target_services: Some(vec![shop]),
-        create_result: Ok(Some(created())),
-        create_calls: Vec::new(),
-        start_calls: Vec::new(),
+        run_result: Ok(Some(container_id('a'))),
+        run_calls: Vec::new(),
         failures: Vec::new(),
         omissions: Vec::new(),
     };
@@ -278,37 +272,30 @@ async fn interruption_settles_started_work_and_only_reports_unresolved_globals()
                 Placement::default(),
                 running_on(&joiner, 'a'),
             )]),
-            create_calls: Vec::new(),
-            start_calls: Vec::new(),
-            create_result: Ok((!excluded).then(created)),
+            run_calls: Vec::new(),
+            run_result: Ok((!excluded).then(|| container_id('a'))),
             failures: Vec::new(),
             omissions: Vec::new(),
         };
         let cancel = tokio_util::sync::CancellationToken::new();
         let mut running = Vec::new();
         let error = catch_up_globals(&mut client, &joiner, &cancel, |fact| match fact {
-            CatchUpFact::Starting(_) | CatchUpFact::Excluded(_) => cancel.cancel(),
+            CatchUpFact::Creating(_) => cancel.cancel(),
             CatchUpFact::Running(identity) => running.push(identity),
-            CatchUpFact::Identified(_) | CatchUpFact::Creating(_) | CatchUpFact::Failed(_) => {}
+            CatchUpFact::Identified(_) | CatchUpFact::Excluded(_) | CatchUpFact::Failed(_) => {}
         })
         .await
         .unwrap_err();
         assert!(error.cause.is_interrupted());
         assert_eq!(error.unresolved, [second]);
         assert_eq!(
-            client.create_calls.len(),
+            client.run_calls.len(),
             1,
             "interruption stops before the next Global"
         );
         if excluded {
-            assert!(client.start_calls.is_empty());
             assert!(running.is_empty());
         } else {
-            assert_eq!(
-                client.start_calls,
-                [created().container_id],
-                "an admitted start settles despite interruption"
-            );
             assert_eq!(
                 running,
                 [first],
@@ -322,9 +309,8 @@ struct FakeCatchUpClient {
     machine_id: MachineId,
     services: Vec<ServiceObservation>,
     target_services: Option<Vec<ServiceObservation>>,
-    create_calls: Vec<CreateContainerRequest>,
-    start_calls: Vec<ContainerId>,
-    create_result: Result<Option<ployz_core::ContainerCreated>, RpcError>,
+    run_calls: Vec<NewContainer>,
+    run_result: Result<Option<ContainerId>, RpcError>,
     failures: Vec<ployz_core::MachineFailure<RpcError>>,
     omissions: Vec<MachineId>,
 }
@@ -352,27 +338,17 @@ impl CatchUpClient for FakeCatchUpClient {
         &mut self,
         _machine_id: &MachineId,
     ) -> Result<Option<BridgeEndpointCapacity>, Failure> {
-        panic!("orchestration delegates capacity checks to create_slot")
+        panic!("orchestration delegates capacity checks to run_slot")
     }
 
-    async fn create_slot(
+    async fn run_slot(
         &mut self,
         machine_id: &MachineId,
-        request: CreateContainerRequest,
-    ) -> Result<Option<ployz_core::ContainerCreated>, RpcError> {
+        new: NewContainer,
+    ) -> Result<Option<ContainerId>, RpcError> {
         assert_eq!(machine_id, &self.machine_id);
-        self.create_calls.push(request);
-        self.create_result.clone()
-    }
-
-    async fn start_slot(
-        &mut self,
-        machine_id: &MachineId,
-        container_id: ContainerId,
-    ) -> Result<(), RpcError> {
-        assert_eq!(machine_id, &self.machine_id);
-        self.start_calls.push(container_id);
-        Ok(())
+        self.run_calls.push(new);
+        self.run_result.clone()
     }
 
     async fn target_containers(
@@ -442,9 +418,8 @@ async fn failed_placement_is_reported_even_if_final_observation_is_running() {
             running_on(&joiner, 'b'),
         )]),
 
-        create_calls: Vec::new(),
-        start_calls: Vec::new(),
-        create_result: Err(RpcError {
+        run_calls: Vec::new(),
+        run_result: Err(RpcError {
             code: ployz_core::RpcErrorCode::Conflict,
             message: "creation key conflict".into(),
             details: serde_json::Value::Null,
@@ -467,13 +442,6 @@ async fn failed_placement_is_reported_even_if_final_observation_is_running() {
         }))
         .contains("creation key conflict")
     );
-}
-
-fn created() -> ployz_core::ContainerCreated {
-    ployz_core::ContainerCreated {
-        container_id: container_id('a'),
-        display_name: "api".into(),
-    }
 }
 
 #[path = "global_catch_up_rpc_tests.rs"]

@@ -4,12 +4,14 @@ use std::{
     time::Duration,
 };
 
+#[path = "support/containers.rs"]
+mod containers;
+
 use ployz::deploy::plan_deploy;
 use ployz::drain::{DrainOutcome, Remaining, ServiceDrain};
 use ployz_core::{
-    ContainerId, ContainerKind, GetIngressProxyConfigRequest, InspectContainerRequest,
-    ListMachinesRequest, Machine, MachineId, MachineTarget, Namespace, RequestedServiceSpec,
-    ResolvedServiceSpec, ServiceId, StartContainerRequest, op,
+    ContainerId, ContainerKind, InspectContainerRequest, ListMachinesRequest, Machine, MachineId,
+    MachineTarget, Namespace, RequestedServiceSpec, ResolvedServiceSpec, ServiceId, op,
 };
 use ployz_testkit::{Cluster, ClusterPlan};
 use tokio_util::sync::CancellationToken;
@@ -69,7 +71,7 @@ async fn drain_moves_containers_off_without_a_gap_or_a_deploy() {
         2,
         "one web replica and solo start on web-2"
     );
-    wait_routed(&mut client, &web1, &before).await;
+    wait_routed(&cluster, 0, &before).await;
     let hooks = hook_containers(&mut client, &web_id).await;
     assert!(!hooks.is_empty(), "the deploy ran its pre-deploy hook");
     let images = image_ids(&mut client, &before).await;
@@ -499,25 +501,15 @@ async fn create_and_start(
     machine: &Machine,
     spec: ResolvedServiceSpec,
 ) {
-    let created = client
-        .create_container(
-            machine.id,
-            ContainerKind::ServiceContainer,
-            Namespace::parse("app").unwrap(),
-            spec,
-            None,
-        )
-        .await
-        .unwrap();
-    client
-        .call::<op::StartContainer>(
-            StartContainerRequest {
-                container_id: created.container_id,
-            },
-            Some(&MachineTarget::from(&machine.id)),
-        )
-        .await
-        .unwrap();
+    containers::run(
+        client,
+        machine.id,
+        ContainerKind::ServiceContainer,
+        Namespace::parse("app").unwrap(),
+        spec,
+    )
+    .await
+    .unwrap();
 }
 
 /// Running ServiceContainers of these Services, by Container ID.
@@ -604,22 +596,17 @@ async fn image_ids(
 
 /// web-1's Ingress Proxy routes to every one of these Containers.
 async fn wait_routed(
-    client: &mut ployz::connect::Client,
-    machine: &Machine,
+    cluster: &Cluster,
+    index: usize,
     containers: &BTreeMap<ContainerId, ployz_core::ContainerObservation>,
 ) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
     loop {
-        if let Ok(config) = client
-            .call::<op::GetIngressProxyConfig>(
-                GetIngressProxyConfigRequest {},
-                Some(&MachineTarget::from(&machine.id)),
-            )
-            .await
+        if let Ok(config) = cluster.ingress_proxy_config(index)
             && containers.values().all(|container| {
                 container
                     .address
-                    .is_some_and(|address| config.config().contains(&format!("{}:8080", address.0)))
+                    .is_some_and(|address| config.contains(&format!("{}:8080", address.0)))
             })
         {
             return;

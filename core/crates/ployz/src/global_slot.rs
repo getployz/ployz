@@ -70,28 +70,17 @@ pub(crate) async fn remove_slot(
             && container.namespace == *namespace
             && container.resolved_spec.name == *name
     }) {
-        crate::ingress::stop_container(
-            client,
-            machine_id,
-            ployz_core::StopContainerRequest {
-                container_id: container.container_id,
-                signal: None,
-                grace_period_seconds: None,
-            },
-            None,
-        )
-        .await?;
         client
-            .call::<op::RemoveContainer>(
-                ployz_core::RemoveContainerRequest {
-                    container_id: container.container_id,
-                    remove_volumes: false,
-                    force: false,
+            .ensure_container(
+                machine_id,
+                ployz_core::ContainerWant::Gone {
+                    container: ployz_core::ContainerLocator::Id(container.container_id),
+                    drain: ployz_core::Drain::DEFAULT,
+                    anonymous_volumes: ployz_core::AnonymousVolumes::Remove,
                 },
-                Some(&target),
+                None,
             )
-            .await
-            .map_err(RpcError::from)?;
+            .await?;
     }
     Ok(())
 }

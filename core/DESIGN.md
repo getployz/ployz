@@ -93,9 +93,11 @@ runs.
 Under rule 6's second branch, these Machine RPC verbs are removed within the
 major with no shim: InspectWireguard, CreateVolume, InspectVolume,
 InspectMachineUpgrade, RemoveImages, EndBuildGrant, Initialize, Join,
-MachineToken, Reset, RemoveLocalMachine, RemoveMachine. A daemon without one
-stops advertising its capability and refuses the route. A client that sends one
-names the capability from its own catalog.
+MachineToken, Reset, RemoveLocalMachine, RemoveMachine, CreateContainer,
+StartContainer, MarkContainerStopping, StopContainer, RemoveContainer,
+GetContainerObservations, GetIngressProxyConfig. A daemon without one stops
+advertising its capability and refuses the route. A client that sends one names
+the capability from its own catalog.
 
 **Red flags:** a required new field, a migration step, a reader that rejects
 unknown fields on replicated data, a daemon behaviour that depends on every

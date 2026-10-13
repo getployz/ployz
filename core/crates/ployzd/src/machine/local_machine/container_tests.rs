@@ -383,8 +383,8 @@ mod plan {
     use std::collections::BTreeMap;
 
     use ployz_core::{
-        ContainerAddress, ContainerId, ContainerKind, ContainerLocator, ContainerNow,
-        ContainerObservation, ContainerObservationParts, ContainerRefusalReason,
+        AnonymousVolumes, ContainerAddress, ContainerId, ContainerKind, ContainerLocator,
+        ContainerNow, ContainerObservation, ContainerObservationParts, ContainerRefusalReason,
         ContainerRuntimeObservation, ContainerWant, CreationKey, Drain, HealthObservation,
         LocalMachinePhase, MachineId, Namespace, NewContainer, ResolvedServiceSpec, RunTarget,
         SlotKey, StopOptions,
@@ -514,6 +514,7 @@ mod plan {
         ContainerWant::Gone {
             container: ContainerLocator::Key(slot()),
             drain: Drain::DEFAULT,
+            anonymous_volumes: AnonymousVolumes::Remove,
         }
     }
 
@@ -546,17 +547,18 @@ mod plan {
                     stop: StopOptions::default(),
                 },
             ),
-            (stopped(), exited("img"), ContainerStep::Done),
+            (stopped(), exited("img"), ContainerStep::Hold(id('a'))),
             (gone(), absent(), ContainerStep::Done),
             (
                 ContainerWant::Gone {
                     container: ContainerLocator::Id(id('a')),
                     drain: Drain::DEFAULT,
+                    anonymous_volumes: AnonymousVolumes::Keep,
                 },
                 ContainerNow::Absent {
                     of: ContainerLocator::Id(id('a')),
                 },
-                ContainerStep::Remove(id('a')),
+                ContainerStep::Remove(id('a'), AnonymousVolumes::Keep),
             ),
             (
                 gone(),
@@ -564,9 +566,14 @@ mod plan {
                 ContainerStep::StopThenRemove {
                     id: id('a'),
                     drain: Drain::DEFAULT,
+                    anonymous_volumes: AnonymousVolumes::Remove,
                 },
             ),
-            (gone(), exited("img"), ContainerStep::Remove(id('a'))),
+            (
+                gone(),
+                exited("img"),
+                ContainerStep::Remove(id('a'), AnonymousVolumes::Remove),
+            ),
             (
                 run_hook(),
                 hook(ContainerRuntimeObservation::Created),
@@ -633,7 +640,7 @@ mod plan {
             );
             assert_eq!(
                 plan_container(gone(), &exited("img"), &phase),
-                ContainerStep::Remove(id('a'))
+                ContainerStep::Remove(id('a'), AnonymousVolumes::Remove)
             );
         }
         assert_eq!(

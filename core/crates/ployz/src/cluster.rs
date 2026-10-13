@@ -6,18 +6,18 @@ use std::{
 
 use futures_util::future::join_all;
 use ployz_core::{
-    BridgeEndpointCapacity, ContainerAction, ContainerCreated, ContainerId, ContainerKind,
-    ContainerObservation, CopyRole, CreateContainerRequest, DataLoss, DataLossConfirmation,
-    DescribeContractRequest, DockerVolumeId, DockerVolumeName, EnvironmentValues, ForgetRequest,
-    Forgotten, InspectRequest, InspectStorageRequest, LeaveRequest, Left, ListContainersRequest,
-    ListImagesRequest, ListMachinesRequest, ListVolumesRequest, LiveServices, LocalMachineRemoved,
-    MACHINE_STORAGE_OBSERVATION_CAPABILITY, Machine, MachineFailure, MachineId, MachineImages,
-    MachineName, MachineObservation, MachineRpcClient, MachineStorageObservation, MachineSuccess,
-    MachineTarget, NameMatches, Namespace, ObservedDataLoss, OpaquePayload, PartialResult,
-    RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, RemoveContainerRequest, RemoveVolumeRequest,
-    RemoveVolumesRequest, ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode, RpcResponseBody,
-    StartContainerRequest, StopContainerRequest, StorageCapacity, UnconfirmedDataLoss,
-    VolumeInventory, VolumeRemoval, VolumeRemovalOutcome, derive_live_services, op,
+    BridgeEndpointCapacity, ContainerAction, ContainerId, ContainerLocator, ContainerNow,
+    ContainerObservation, ContainerWant, CopyRole, DataLoss, DataLossConfirmation,
+    DescribeContractRequest, DockerVolumeId, DockerVolumeName, Drain, EnsureContainerRequest,
+    EnvironmentValues, ForgetRequest, Forgotten, InspectRequest, InspectStorageRequest,
+    LeaveRequest, Left, ListContainersRequest, ListImagesRequest, ListMachinesRequest,
+    ListVolumesRequest, LiveServices, LocalMachineRemoved, MACHINE_STORAGE_OBSERVATION_CAPABILITY,
+    Machine, MachineFailure, MachineId, MachineImages, MachineName, MachineObservation,
+    MachineRpcClient, MachineStorageObservation, MachineSuccess, MachineTarget, NameMatches,
+    Namespace, ObservedDataLoss, OpaquePayload, PartialResult, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT,
+    RemoveVolumeRequest, RemoveVolumesRequest, ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode,
+    RpcResponseBody, RunTarget, StopOptions, StorageCapacity, UnconfirmedDataLoss, VolumeInventory,
+    VolumeRemoval, VolumeRemovalOutcome, derive_live_services, op,
     rpc::{BUILD_PATH, EXEC_PATH},
 };
 use serde::{Deserialize, Serialize};
@@ -43,13 +43,11 @@ use crate::{
 
 mod capacity;
 mod container_health;
-mod container_observations;
 
 pub(crate) use container_health::{
     DEFAULT_HEALTH_MONITOR, HealthExpectation, HealthPoll, HealthWaitError, HealthWaitTick,
     POLL_INTERVAL, classify_health, health_deadline_for, observed_health, wait_until_ready,
 };
-pub(crate) use container_observations::ContainerObservationCondition;
 
 const STORAGE_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(3);
 /// Reply timeout for mutations on a live Machine, which may be mid-Deploy and
@@ -314,8 +312,8 @@ impl Client {
         self.call_once::<T>(payload, target).await
     }
 
-    /// One-shot targeted RPC. No retry — mutating operations must not
-    /// re-issue CreateContainer after a dropped response.
+    /// One-shot targeted RPC. No retry: a mutating operation that is not keyed
+    /// must not be re-issued after a dropped response.
     pub(crate) async fn invoke<T: Rpc>(
         &self,
         request: T::Request,
@@ -953,27 +951,21 @@ impl Client {
         Ok(derive_live_services(result))
     }
 
-    pub async fn create_container(
+    /// Converge one Container on `machine_id` to `want`. A refusal answers as the error
+    /// the replaced Container verbs answered.
+    pub async fn ensure_container(
         &self,
-        machine_id: MachineId,
-        kind: ContainerKind,
-        namespace: Namespace,
-        resolved_spec: ResolvedServiceSpec,
-        creation_key: Option<String>,
-    ) -> Result<ContainerCreated, RpcError> {
-        self.invoke::<op::CreateContainer>(
-            CreateContainerRequest {
-                deployment_id: None,
-                creation_key,
-                kind,
-                namespace,
-                registry_auth: None,
-                resolved_spec,
-            },
-            &MachineTarget::from(&machine_id),
-            None,
+        machine_id: &MachineId,
+        want: ContainerWant,
+        timeout: Option<Duration>,
+    ) -> Result<ContainerNow, RpcError> {
+        self.invoke::<op::EnsureContainer>(
+            EnsureContainerRequest { want },
+            &MachineTarget::from(machine_id),
+            timeout,
         )
-        .await
+        .await?
+        .into_result()
     }
 
     pub async fn change_observed_service(
@@ -981,7 +973,7 @@ impl Client {
         service: &ployz_core::ServiceObservation,
         action: ContainerAction,
         signal: Option<String>,
-        grace_period_seconds: Option<i32>,
+        grace_period_seconds: Option<u16>,
     ) -> PartialResult<ContainerId, ContainerOperationFailure> {
         let mut tasks = JoinSet::new();
         let mut task_targets = HashMap::new();
@@ -1632,7 +1624,7 @@ async fn change_on_machine(
     container_id: ContainerId,
     action: ContainerAction,
     signal: Option<String>,
-    grace_period_seconds: Option<i32>,
+    grace_period_seconds: Option<u16>,
     queued: u32,
 ) -> Result<MachineSuccess<ContainerId>, MachineFailure<ContainerOperationFailure>> {
     match change_container_rpc(
@@ -1666,78 +1658,48 @@ async fn change_container_rpc(
     container_id: &ContainerId,
     action: ContainerAction,
     signal: Option<String>,
-    grace_period_seconds: Option<i32>,
+    grace_period_seconds: Option<u16>,
     queued: u32,
 ) -> Result<(), RpcError> {
-    let target = MachineTarget::from(machine_id);
-    if matches!(action, ContainerAction::Stop | ContainerAction::Remove) {
-        accept_stop_result(
-            action,
-            crate::ingress::stop_container(
-                client,
-                machine_id,
-                StopContainerRequest {
-                    container_id: *container_id,
+    let container = ContainerLocator::Id(*container_id);
+    let (want, timeout) = match action {
+        ContainerAction::Start => (
+            ContainerWant::Running {
+                container: RunTarget::Existing(container),
+            },
+            Some(TARGET_RPC_TIMEOUT),
+        ),
+        ContainerAction::Stop => (
+            ContainerWant::Stopped {
+                container,
+                drain: Drain::DEFAULT,
+                stop: StopOptions {
                     signal,
                     grace_period_seconds,
                 },
-                stop_rpc_timeout(grace_period_seconds, queued),
-            )
-            .await,
-        )?;
-    }
-    match action {
-        ContainerAction::Start => client
-            .invoke::<op::StartContainer>(
-                StartContainerRequest {
-                    container_id: *container_id,
-                },
-                &target,
-                Some(TARGET_RPC_TIMEOUT),
-            )
-            .await
-            .map(|_| ()),
-        ContainerAction::Stop => Ok(()),
-        ContainerAction::Remove => remove_container_rpc(client, machine_id, container_id).await,
-    }
-}
-
-async fn remove_container_rpc(
-    client: &Client,
-    machine_id: &MachineId,
-    container_id: &ContainerId,
-) -> Result<(), RpcError> {
-    client
-        .invoke::<op::RemoveContainer>(
-            RemoveContainerRequest {
-                container_id: *container_id,
-                remove_volumes: true,
-                force: false,
             },
-            &MachineTarget::from(machine_id),
-            Some(TARGET_RPC_TIMEOUT),
-        )
+            stop_rpc_timeout(grace_period_seconds, queued),
+        ),
+        ContainerAction::Remove => (
+            ContainerWant::Gone {
+                container,
+                drain: Drain::DEFAULT,
+                anonymous_volumes: ployz_core::AnonymousVolumes::Remove,
+            },
+            stop_rpc_timeout(grace_period_seconds, queued),
+        ),
+    };
+    client
+        .ensure_container(machine_id, want, timeout)
         .await
         .map(|_| ())
-}
-
-fn accept_stop_result(
-    action: ContainerAction,
-    result: Result<(), RpcError>,
-) -> Result<(), RpcError> {
-    match result {
-        Err(error) if action == ContainerAction::Remove && error.code == RpcErrorCode::NotFound => {
-            Ok(())
-        }
-        result => result,
-    }
 }
 
 #[cfg(test)]
 #[path = "cluster_tests.rs"]
 mod tests;
 
-/// One Global revision per target; Namespace and kind are scoped by CreateContainer.
+/// One Global revision per target; Namespace and kind are scoped by the SlotKey.
 pub(crate) fn global_creation_key(spec: &ResolvedServiceSpec) -> String {
     format!(
         "global:{}:{}",
