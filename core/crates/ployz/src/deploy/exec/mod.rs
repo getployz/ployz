@@ -716,6 +716,7 @@ pub(in crate::deploy) async fn move_container<C: MachineOperations>(
         slot.clone(),
         spec,
         AnswerWhen::Settled,
+        cancellation,
     )
     .await;
     let new = match started_container(started, cancellation) {
@@ -768,6 +769,7 @@ async fn start<C: MachineOperations>(
         slot.clone(),
         spec,
         answer,
+        cancellation,
     )
     .await;
     let cleanup = match &started {
@@ -803,6 +805,10 @@ async fn discard_attempt<C: MachineOperations>(
 /// How long a Settled creation may spend pulling its image before the health wait.
 const IMAGE_PULL_BUDGET: Duration = Duration::from_secs(300);
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "progress row plus slot travel together through execute"
+)]
 async fn run_new<C: MachineOperations>(
     client: &C,
     index: usize,
@@ -811,6 +817,7 @@ async fn run_new<C: MachineOperations>(
     slot: SlotKey,
     spec: &ResolvedServiceSpec,
     answer: AnswerWhen,
+    cancellation: &CancellationToken,
 ) -> Result<(ContainerId, Option<HealthVerdict>), RpcError> {
     progress.set_running(index, OperationPhase::CreatingContainer);
     let want = ContainerWant::Running {
@@ -825,19 +832,22 @@ async fn run_new<C: MachineOperations>(
     let ensured = client.ensure_container(machine_id, want);
     let ensured = match answer {
         AnswerWhen::Started => ensured.await?,
+        // A cancel abandons the Machine's health wait; the caller then discards
+        // whatever the slot holds.
         AnswerWhen::Settled => {
             let budget = IMAGE_PULL_BUDGET + settle_deadline(spec) + TARGET_RPC_TIMEOUT;
-            tokio::time::timeout(budget, ensured)
-                .await
-                .map_err(|_| RpcError {
-                    code: RpcErrorCode::Unavailable,
-                    message: format!(
-                        "Machine {machine_id} did not answer within {}s",
-                        budget.as_secs()
-                    ),
-                    details: serde_json::Value::Null,
-                    cause: Vec::new(),
-                })??
+            let answered = tokio::select! {
+                answered = tokio::time::timeout(budget, ensured) => answered.ok(),
+                () = cancellation.cancelled() => return Err(unavailable(format!(
+                    "the Deploy was cancelled while Machine {machine_id} waited on health"
+                ))),
+            };
+            answered.ok_or_else(|| {
+                unavailable(format!(
+                    "Machine {machine_id} did not answer within {}s",
+                    budget.as_secs()
+                ))
+            })??
         }
     };
     match ensured {
@@ -854,6 +864,15 @@ async fn run_new<C: MachineOperations>(
             details: serde_json::Value::Null,
             cause: Vec::new(),
         }),
+    }
+}
+
+fn unavailable(message: String) -> RpcError {
+    RpcError {
+        code: RpcErrorCode::Unavailable,
+        message,
+        details: serde_json::Value::Null,
+        cause: Vec::new(),
     }
 }
 

@@ -89,6 +89,68 @@ async fn dependency_gate_waits_for_all_service_containers_before_the_dependent()
     client.assert_done();
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_dependency_wait_reports_its_elapsed_and_deadline_clocks() {
+    let dependency = QualifiedService::parse("app/api").unwrap();
+    let mut observed = observation(&machine('1'), &container('a'), starting());
+    observed
+        .try_update(|parts| parts.resolved_spec.container.healthcheck = Some(healthcheck()))
+        .unwrap();
+    let plan = vec![DeployOperation::WaitHealthy {
+        machine_id: machine('1'),
+        dependent: QualifiedService::parse("app/web").unwrap(),
+        dependency,
+    }];
+    let client = Scripted {
+        observations: Some(vec![observed]),
+        cancel_on_prepare: None,
+        ..Scripted::new(Vec::new())
+    };
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+    super::super::execute_operation_sequence(
+        &crate::deploy::DeployPlan::for_execution_test(plan, test_namespace()),
+        "run",
+        &client,
+        &CancellationToken::new(),
+        Some(tx),
+    )
+    .await;
+
+    let mut clocks = Vec::new();
+    while let Ok(event) = rx.try_recv() {
+        let DeployEvent::Progress { rows, .. } = event else {
+            continue;
+        };
+        clocks.extend(rows.into_iter().filter_map(|row| {
+            if let ployz_core::OperationStatus::Running {
+                phase:
+                    OperationPhase::WaitingForHealth {
+                        elapsed_ms,
+                        deadline_ms,
+                        ..
+                    },
+            } = row.status
+            {
+                Some((elapsed_ms, deadline_ms))
+            } else {
+                None
+            }
+        }));
+    }
+    assert!(clocks.len() > 1, "{clocks:?}");
+    assert!(
+        clocks.iter().all(|(_, deadline_ms)| *deadline_ms > 0),
+        "{clocks:?}"
+    );
+    assert!(
+        clocks
+            .windows(2)
+            .all(|pair| matches!(pair, [(earlier, _), (later, _)] if earlier < later)),
+        "{clocks:?}"
+    );
+}
+
 #[tokio::test]
 async fn dependency_gate_rejects_zero_service_containers_and_hooks() {
     let dependency = QualifiedService::parse("app/api").unwrap();

@@ -15,16 +15,16 @@ use ployz::{
     deploy::PlanOptions,
 };
 use ployz_core::{
-    AdvertisedEndpoint, CapabilityName, ContainerDetails, ContainerId, ContainerKind,
+    AdvertisedEndpoint, AnswerWhen, CapabilityName, ContainerDetails, ContainerId, ContainerKind,
     ContainerList, ContainerLocator, ContainerNow, ContainerPath, ContainerRuntimeObservation,
     ContractDescription, DockerVolume, DockerVolumeName, EnsuredContainer, ExecResponseFrame,
-    HealthObservation, HealthcheckSpec, LocalMachinePhase, MACHINE_STORAGE_OBSERVATION_CAPABILITY,
-    Machine, MachineDetails, MachineId, MachineImages, MachineList, MachineName,
-    MachineObservation, MachineRpc, MachineRpcServer, MembershipObservation, Namespace,
-    OpaquePayload, PROTOCOL_MAJOR, RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig,
-    RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RunTarget, ServiceId, ServiceMount,
-    ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, UpdateOrder, VolumeInventory,
-    WireGuardPublicKey,
+    HealthObservation, HealthVerdict, HealthcheckSpec, LocalMachinePhase,
+    MACHINE_STORAGE_OBSERVATION_CAPABILITY, Machine, MachineDetails, MachineId, MachineImages,
+    MachineList, MachineName, MachineObservation, MachineRpc, MachineRpcServer,
+    MembershipObservation, Namespace, OpaquePayload, PROTOCOL_MAJOR, RequestedServiceSpec,
+    ResolvedServiceSpec, ResolvedUpdateConfig, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
+    RunTarget, ServiceId, ServiceMount, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference,
+    UpdateOrder, VolumeInventory, WireGuardPublicKey,
 };
 use serde_json::Value;
 use tokio::net::TcpListener;
@@ -208,6 +208,35 @@ impl DeployService {
             }
         } else {
             self.runtime.clone()
+        }
+    }
+
+    /// The verdict a Machine answers a Settled creation with; a held health wait
+    /// never answers.
+    async fn settle(&self) -> HealthVerdict {
+        if let Some(at) = self.healthy_at {
+            tokio::time::sleep_until(at).await;
+        }
+        let observation = self.current_runtime();
+        let ContainerRuntimeObservation::Running { health } = &observation else {
+            return HealthVerdict::Failed {
+                observation,
+                last_check: None,
+            };
+        };
+        if *health == HealthObservation::Starting {
+            std::future::pending::<()>().await;
+        }
+        if matches!(
+            health,
+            HealthObservation::Healthy | HealthObservation::NotConfigured
+        ) {
+            HealthVerdict::Healthy
+        } else {
+            HealthVerdict::Failed {
+                observation,
+                last_check: None,
+            }
         }
     }
 
@@ -587,6 +616,11 @@ impl MachineRpc for DeployService {
         else {
             return Err(Status::invalid_argument("expected ensure_container"));
         };
+        let settled = matches!(
+            &ensure.want,
+            ployz_core::ContainerWant::Running { container: RunTarget::New(new) }
+                if new.answer == AnswerWhen::Settled
+        );
         let now = match ensure.want {
             ployz_core::ContainerWant::Running {
                 container: RunTarget::New(new),
@@ -648,10 +682,12 @@ impl MachineRpc for DeployService {
                 ContainerNow::Absent { of: container }
             }
         };
-        encoded(RpcResponse::from(EnsuredContainer::Ensured {
-            now,
-            health: None,
-        }))
+        let health = if settled {
+            Some(self.settle().await)
+        } else {
+            None
+        };
+        encoded(RpcResponse::from(EnsuredContainer::Ensured { now, health }))
     }
     async fn exec(
         &self,
