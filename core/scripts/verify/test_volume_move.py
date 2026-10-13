@@ -19,6 +19,11 @@ volume_move = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(volume_move)
 
 PHYSICAL = "verify-production_vol-1"
+CALL_LIMIT = 3000
+
+
+class Runaway(Exception):
+    """Not one of the errors run_all catches, so a loop that never sleeps fails the test instead of hanging it."""
 
 
 def entry(name, wire):
@@ -63,11 +68,15 @@ class ClusterModel:
         self.clock = None
         self.held_until = 0
         self.holder_listed = True
+        self.calls = 0
 
     def other(self, machine):
         return "machine-2" if machine == "machine-1" else "machine-1"
 
     def __call__(self, args, **kwargs):
+        self.calls += 1
+        if self.calls > CALL_LIMIT:
+            raise Runaway(f"More than {CALL_LIMIT} helper commands; a wait loop is not sleeping")
         if args[1] == "cli":
             code, output = self.cli(args[args.index("--") + 2:])
         elif args[1] == "exec":
