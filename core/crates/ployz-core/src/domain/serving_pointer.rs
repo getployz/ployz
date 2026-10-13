@@ -1,5 +1,3 @@
-//! Serving Pointer: the cluster row that names which Containers of one Service take traffic.
-
 use serde::{Deserialize, Serialize};
 
 use crate::{ContainerId, DeploymentLogId, QualifiedService};
@@ -14,7 +12,7 @@ pub struct ServingPointer {
     pub containers: Vec<ContainerId>,
     /// Deploy that served before this pointer, routed while a pointed row is still missing.
     pub previous: Option<DeploymentLogId>,
-    /// Containers this pointer superseded. Routing ignores it; only retire reads it.
+    /// Containers this pointer superseded. Routing ignores it.
     pub retiring: Vec<ContainerId>,
 }
 

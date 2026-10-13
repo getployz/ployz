@@ -54,7 +54,7 @@ pub fn serving_containers<'serving, 'pointer>(
     let mut serving = Vec::new();
     for (identity, members) in by_identity {
         let selected = match pointer_for(&identity) {
-            Some(pointer) => pointed(members, pointer),
+            Some(pointer) => pointed_or_previous(members, pointer),
             None => newest_shape(members),
         };
         serving.extend(selected.into_iter().filter_map(|container| {
@@ -65,7 +65,6 @@ pub fn serving_containers<'serving, 'pointer>(
     serving
 }
 
-/// Every Container sharing the Serving Shape of the newest addressed one.
 fn newest_shape(members: Vec<&ServiceContainer>) -> Vec<&ServiceContainer> {
     let Some(newest) = members
         .iter()
@@ -96,9 +95,7 @@ fn newest_shape(members: Vec<&ServiceContainer>) -> Vec<&ServiceContainer> {
         .collect()
 }
 
-/// The pointed Containers, plus the previous deploy's while any pointed row is
-/// not yet visible here, so a lagging view never routes to nothing.
-fn pointed<'serving>(
+fn pointed_or_previous<'serving>(
     members: Vec<&'serving ServiceContainer>,
     pointer: &ServingPointer,
 ) -> Vec<&'serving ServiceContainer> {
@@ -475,9 +472,6 @@ mod tests {
         health: HealthObservation::Healthy,
     };
 
-    /// One visibility case from `proto/visibility/sim.mjs`. Deploy 1 is `1`, `2` and an
-    /// exited `3`; deploy 2 is `a`, `b` and an unpointed booting `c`. The pointer names
-    /// `a` and `b` with deploy 1 previous.
     struct VisibilityCase {
         name: &'static str,
         rows: Vec<(char, u8, ContainerRuntimeObservation)>,
