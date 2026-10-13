@@ -2,6 +2,7 @@ import { createRequire } from "node:module";
 import type * as PloyzSdk from "@ployz/sdk";
 import type { AgentTurn, Answer, Ask, Step, ToolResult, Write } from "@ployz/sdk";
 import { Effect } from "effect";
+import { COMMANDS } from "#/modules/commands/registry.server";
 
 // SAFETY: the package exports this named CommonJS SDK surface at runtime.
 const { agentResume, agentTools } = createRequire(import.meta.url)("@ployz/sdk") as Pick<typeof PloyzSdk, "agentResume" | "agentTools">;
@@ -11,7 +12,11 @@ export const AGENT = { source: "agent" } as const;
 
 export const CATALOG = agentTools();
 
-export const GATED = new Set(CATALOG.tools.flatMap((tool) => tool.gate === "never" ? [] : [tool.name]));
+/** Every tool whose write may wait on a human: the compiled catalog's and Cloud's published commands'. */
+export const GATED = new Set([
+  ...CATALOG.tools.flatMap((tool) => tool.gate === "never" ? [] : [tool.name]),
+  ...COMMANDS.flatMap((command) => command.gate === "never" ? [] : [command.name]),
+]);
 
 type Paused = { step: Extract<Step, { step: "write" | "done" }>; state: AgentTurn["state"] };
 

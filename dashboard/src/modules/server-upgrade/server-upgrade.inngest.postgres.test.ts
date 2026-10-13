@@ -366,23 +366,23 @@ describe("roll-out-server-upgrade", () => {
       }]);
     });
 
-    it("a plain member turns automatic upgrades off and on, and the schedule follows", async () => {
+    it("turning automatic upgrades off and on moves the schedule", async () => {
       await harness.pool.query(`
         insert into organization_pairing (organization_id, encrypted_pairing_secret, founder_claim_machine_id, founder_machine_id)
         values ('${organizationId}', '{}', '${serverId("1")}', '${serverId("1")}');
       `);
       const requested = async () => (await schedule()).result;
 
-      expect(await runEffect(setServerUpgradeSettings({ userId }, { organizationSlug: "acme", automatic: false })))
+      expect(await runEffect(setServerUpgradeSettings(organizationId, { automatic: false })))
         .toEqual({ id: organizationId, automatic: false, channel: "stable" });
       expect(await requested()).toMatchObject({ organizationCount: 0 });
-      await runEffect(setServerUpgradeSettings({ userId }, { organizationSlug: "acme", automatic: true }));
+      await runEffect(setServerUpgradeSettings(organizationId, { automatic: true }));
       expect(await requested()).toMatchObject({ organizationCount: 1 });
     });
 
     it("saving automatic upgrades on starts a rollout now, with or without a Cluster; off or a channel change sends nothing", async () => {
       const save = (settings: { automatic?: boolean; channel?: "stable" | "beta" }) =>
-        runEffect(setServerUpgradeSettings({ userId }, { organizationSlug: "acme", ...settings }));
+        runEffect(setServerUpgradeSettings(organizationId, settings));
       const automatic = { name: "server/upgrade.requested", data: { organizationId, machineId: null, trigger: "automatic", userId: null } };
       await save({ automatic: false });
       await save({ channel: "beta" });
@@ -484,7 +484,7 @@ describe("roll-out-server-upgrade", () => {
       frame = runtimeWatchFrameFixture({ machines: [
         server("1", "web-1", "3.0.0"), server("2", "web-2", "3.0.0"), server("3", "web-3", "3.0.0-beta.2", { membership: "down" }),
       ] });
-      await runEffect(setServerUpgradeSettings({ userId }, { organizationSlug: "acme", channel: "beta" }));
+      await runEffect(setServerUpgradeSettings(organizationId, { channel: "beta" }));
 
       await rollOut(null, "automatic");
 
@@ -492,7 +492,7 @@ describe("roll-out-server-upgrade", () => {
       expect((await rows()).map(({ channel, target_version: target }) => [channel, target])).toEqual(Array(2).fill(["beta", publishedBeta]));
       expect(captured.map(({ properties }) => properties?.["channel"])).toEqual(["beta", "beta"]);
 
-      expect(await runEffect(setServerUpgradeSettings({ userId }, { organizationSlug: "acme", channel: "stable" })))
+      expect(await runEffect(setServerUpgradeSettings(organizationId, { channel: "stable" })))
         .toEqual({ id: organizationId, automatic: false, channel: "stable" });
       frame = runtimeWatchFrameFixture({ machines: [
         server("1", "web-1", publishedBeta), server("2", "web-2", publishedBeta), server("3", "web-3", "3.0.0-beta.2"),

@@ -1,13 +1,10 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { Effect } from "effect";
 import { handleCliRequest } from "#/routes/api/cli/-cli.handler";
-import { publicErrorResponse } from "#/server/public-error";
-import { runAppEffect } from "#/server/run.server";
+import { serveCli } from "#/routes/api/cli/-handlers";
 
 function handle(request: Request) {
-  return runAppEffect(Effect.map(handleCliRequest(request), (body) => body instanceof Response ? body : Response.json(body)), {
-    signal: request.signal,
-  }).catch(publicErrorResponse);
+  return serveCli(request, Effect.map(handleCliRequest(request), (body) => body instanceof Response ? body : Response.json(body)));
 }
 
 export const Route = createFileRoute("/api/cli/$")({

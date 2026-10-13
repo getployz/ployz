@@ -8,9 +8,9 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "#/component
 import { Kbd } from "#/components/ui/kbd";
 import { Marker, MarkerContent } from "#/components/ui/marker";
 import { Textarea } from "#/components/ui/textarea";
-import { approvalSubject, type ApprovalDecision } from "#/modules/approvals/approvals";
+import { approvalSubject, type ApprovalDecision, destroyedLine } from "#/modules/approvals/approvals";
 import { approvalOptions, decideApproval, landDecision, refetchApprovals, type ApprovalView } from "./approvals.queries";
-import { destroyedLine, otherChanges } from "./approval-review";
+import { otherChanges } from "./approval-review";
 
 /**
  * One destructive Publish, Deploy or Server operation waiting on a human, drawn from its Cloud row and reread while it waits, so a

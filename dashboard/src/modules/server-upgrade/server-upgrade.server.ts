@@ -25,8 +25,9 @@ import {
   type ReleaseChannel,
   releaseFromPointer,
   releaseLine,
+  serverUpgradeSettings,
   type RequestServerUpgradeInput,
-  type SetServerUpgradeSettingsInput,
+  type ServerUpgradeSettingsChange,
   UPGRADE_OBSERVATION_LIMIT_MS,
   type UpgradeTrigger,
 } from "#/modules/server-upgrade/server-upgrade";
@@ -79,6 +80,17 @@ export const organizationReleaseChannel = Effect.fn("ServerUpgrade.channel")(fun
   const [row] = yield* drizzle.select({ channel: organizationServerUpgrades.channel }).from(organizationServerUpgrades)
     .where(eq(organizationServerUpgrades.organizationId, organizationId));
   return row?.channel ?? DEFAULT_SERVER_UPGRADE_SETTINGS.channel;
+});
+
+/** The Organization's upgrade settings; no settings row reads as the defaults. */
+export const organizationServerUpgradeSettings = Effect.fn("ServerUpgrade.settings")(function* (organizationId: string) {
+  const { drizzle } = yield* Database;
+  const rows = yield* drizzle.select({
+    id: organizationServerUpgrades.organizationId,
+    automatic: organizationServerUpgrades.automatic,
+    channel: organizationServerUpgrades.channel,
+  }).from(organizationServerUpgrades).where(eq(organizationServerUpgrades.organizationId, organizationId));
+  return serverUpgradeSettings(rows);
 });
 
 /** Each Server's latest Upgrade attempt in the Organization, keyed by Machine ID. */
@@ -393,10 +405,9 @@ export const listAutomaticUpgradeOrganizationIds = Effect.fn("ServerUpgrade.list
 
 /** "Upgrade automatically" and "Releases" in the Server upgrades dialog: any member may change them. */
 export const setServerUpgradeSettings = Effect.fn("ServerUpgrade.setSettings")(function* (
-  actor: Actor,
-  { organizationSlug, ...settings }: SetServerUpgradeSettingsInput,
+  organizationId: string,
+  settings: ServerUpgradeSettingsChange,
 ) {
-  const { organization: { id: organizationId } } = yield* requireAccess(actor, organizationSlug, "operate");
   const { drizzle } = yield* Database;
   const [row] = yield* drizzle.insert(organizationServerUpgrades).values({ organizationId, ...settings })
     .onConflictDoUpdate({ target: organizationServerUpgrades.organizationId, set: { ...settings, updatedAt: new Date() } })

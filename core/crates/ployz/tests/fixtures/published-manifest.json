@@ -1,0 +1,438 @@
+{
+  "format": 1,
+  "revision": "7cb4b56d7399",
+  "commands": [
+    {
+      "name": "server_upgrade_policy_show",
+      "path": [
+        "server",
+        "upgrade-policy",
+        "show"
+      ],
+      "about": "Show the Organization's upgrade policy: its Release Channel and whether Servers upgrade automatically",
+      "examples": [
+        "ployz server upgrade-policy show"
+      ],
+      "kind": "read",
+      "gate": "never",
+      "agents": true,
+      "typed": null,
+      "positional": [],
+      "input": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "channel": {
+            "type": "string",
+            "enum": [
+              "stable",
+              "beta"
+            ]
+          },
+          "automatic": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "channel",
+          "automatic"
+        ],
+        "additionalProperties": false
+      },
+      "render": "record"
+    },
+    {
+      "name": "server_upgrade_policy_set",
+      "path": [
+        "server",
+        "upgrade-policy",
+        "set"
+      ],
+      "about": "Change the Organization's upgrade policy: the Release Channel every upgrade follows, or automatic upgrades on or off",
+      "examples": [
+        "ployz server upgrade-policy set --channel beta",
+        "ployz server upgrade-policy set --automatic true"
+      ],
+      "kind": "write",
+      "gate": "never",
+      "agents": true,
+      "typed": null,
+      "positional": [],
+      "input": {
+        "type": "object",
+        "properties": {
+          "channel": {
+            "type": "string",
+            "enum": [
+              "stable",
+              "beta"
+            ],
+            "description": "The Release Channel every upgrade follows"
+          },
+          "automatic": {
+            "type": "boolean",
+            "description": "Whether Servers behind the channel upgrade on their own"
+          }
+        },
+        "additionalProperties": false,
+        "required": []
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "channel": {
+            "type": "string",
+            "enum": [
+              "stable",
+              "beta"
+            ]
+          },
+          "automatic": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "channel",
+          "automatic"
+        ],
+        "additionalProperties": false
+      },
+      "render": "record"
+    },
+    {
+      "name": "org_approval_ls",
+      "path": [
+        "org",
+        "approval",
+        "ls"
+      ],
+      "about": "List the Organization's pending approvals",
+      "examples": [
+        "ployz org approval ls"
+      ],
+      "kind": "read",
+      "gate": "never",
+      "agents": true,
+      "typed": null,
+      "positional": [],
+      "input": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "output": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "pending",
+                "approved",
+                "denied",
+                "superseded"
+              ]
+            },
+            "verb": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "created_at": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "status",
+            "verb",
+            "name",
+            "created_at"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "render": "table"
+    },
+    {
+      "name": "org_approval_show",
+      "path": [
+        "org",
+        "approval",
+        "show"
+      ],
+      "about": "Show one approval: what the plan destroys and how it was answered",
+      "examples": [
+        "ployz org approval show 7f3c2a10-5d2e-4b61-9c4e-2f0a1b3c4d5e"
+      ],
+      "kind": "read",
+      "gate": "never",
+      "agents": true,
+      "typed": null,
+      "positional": [
+        "id"
+      ],
+      "input": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The approval id"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "approved",
+              "denied",
+              "superseded"
+            ]
+          },
+          "verb": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "destroys": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "decided_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "verb",
+          "name",
+          "destroys",
+          "reason",
+          "created_at",
+          "decided_at"
+        ],
+        "additionalProperties": false
+      },
+      "render": "record"
+    },
+    {
+      "name": "org_approval_approve",
+      "path": [
+        "org",
+        "approval",
+        "approve"
+      ],
+      "about": "Approve a pending approval so the command waiting on it goes ahead",
+      "examples": [
+        "ployz org approval approve 7f3c2a10-5d2e-4b61-9c4e-2f0a1b3c4d5e"
+      ],
+      "kind": "write",
+      "gate": "never",
+      "agents": false,
+      "typed": "organization",
+      "positional": [
+        "id"
+      ],
+      "input": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The approval id"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "approved",
+              "denied",
+              "superseded"
+            ]
+          },
+          "verb": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "destroys": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "decided_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "verb",
+          "name",
+          "destroys",
+          "reason",
+          "created_at",
+          "decided_at"
+        ],
+        "additionalProperties": false
+      },
+      "render": "message"
+    },
+    {
+      "name": "org_approval_deny",
+      "path": [
+        "org",
+        "approval",
+        "deny"
+      ],
+      "about": "Deny a pending approval; the agent or command waiting on it hears the reason",
+      "examples": [
+        "ployz org approval deny 7f3c2a10-5d2e-4b61-9c4e-2f0a1b3c4d5e --reason \"not during the demo\""
+      ],
+      "kind": "write",
+      "gate": "never",
+      "agents": false,
+      "typed": null,
+      "positional": [
+        "id"
+      ],
+      "input": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The approval id"
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 1024,
+            "description": "Why not, passed back to whoever asked"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "approved",
+              "denied",
+              "superseded"
+            ]
+          },
+          "verb": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "destroys": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "decided_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "verb",
+          "name",
+          "destroys",
+          "reason",
+          "created_at",
+          "decided_at"
+        ],
+        "additionalProperties": false
+      },
+      "render": "message"
+    }
+  ]
+}

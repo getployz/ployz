@@ -346,6 +346,18 @@ Cloud forgets a Cluster it can no longer reach only when a user says its Servers
 were deleted, and only while none of them answers; a failed connection may gate
 that decision, never make it.
 
+**Cloud-published commands.** Some verbs exist only because Cloud exists: the
+Organization's upgrade policy, its pending Approvals, and whatever Cloud adds
+next. The rule for where a verb lives: would a cloudless Cluster need it? If
+yes, it is compiled into `ployz` and works against a local Store. If no, Cloud
+publishes it in a command manifest and `ployz` runs it as data: one generic
+module turns the manifest into clap leaves, MCP tools and one HTTP call, and
+never names a published feature. Cloud owns their names, shapes and
+deprecation; a compiled command wins any name collision; a published command
+may fail with `unknown_command` when Cloud no longer has it. This keeps the
+CLI surface a client courtesy (Stable promise) and keeps the Cluster's own
+verbs free of Cloud.
+
 **Red flags:** Cloud-held runtime truth, a connection catalog treated as
 membership, absence or transport failure used to reset a founder, Cluster
 operations whose correctness depends on Cloud reachability, a Volume Run step

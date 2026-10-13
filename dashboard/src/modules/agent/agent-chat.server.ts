@@ -41,6 +41,9 @@ import { latestPageContext, PageContext, readPageContext, renderPageContext, wit
 import { notSetUpScript, ScriptedAdapter, stubScript } from "#/modules/agent/scripted-adapter.server";
 import { PostHog } from "#/modules/analytics/posthog.server";
 import { decideApproval, requestApproval, reviewedDiff, trustedApproval } from "#/modules/approvals/approvals.server";
+import type { Ran } from "#/modules/commands/command.server";
+import { findCommand, inputSchema, type Published, runCommand } from "#/modules/commands/commands.server";
+import { COMMANDS } from "#/modules/commands/registry.server";
 import { callStore, type StoreSource } from "#/modules/config-store/config-store.server";
 import type { StoreAnswer, StoreCall, StoreRefusal, StoreResult } from "#/modules/config-store/store.contract";
 import type { Caller } from "#/modules/identity/actor";
@@ -145,9 +148,13 @@ const runGatedAct = Effect.fn("Agent.runGatedAct")(function* (caller: Caller, ac
   return { result: { ok: false, refusal: denialForAgent(ACTS[act.action.action], result.refusal) } as const };
 });
 
+/** A published command's answer as the model hears it; the line `ployz` prints for a human is not for the model. */
+const heard = (ran: Ran<unknown>): ToolOutcome => ran.ok ? { ok: true, value: ran.output } : { ok: false, refusal: ran.refusal };
+
 type AgentServices =
   | Effect.Services<ReturnType<typeof runGated>>
   | Effect.Services<ReturnType<typeof runGatedAct>>
+  | Effect.Services<ReturnType<typeof runCommand>>
   | Effect.Services<ReturnType<typeof agentPersistence>>;
 
 const decodeArguments = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
@@ -192,13 +199,18 @@ const approvalGate = (caller: Caller, run: Run, here: Here) => {
   const outcomes = new Map<string, ToolOutcome>();
   const answers = new Map<string, { approvalId: string | null; cancelled: boolean }>();
   const decide = (call: { id: string; function: { name: string; arguments: string } }, turn: string) =>
-    Effect.gen(function* (): Effect.fn.Return<Gated, Effect.Error<ReturnType<typeof runGated>>, AgentServices> {
+    Effect.gen(function* (): Effect.fn.Return<Gated, Effect.Error<ReturnType<typeof runGated>> | Effect.Error<ReturnType<typeof runCommand>>, AgentServices> {
       const answer = answers.get(call.id);
       if (answer?.cancelled === true) {
         if (answer.approvalId !== null) {
           yield* decideApproval(caller, answer.approvalId, { reject: {} }).pipe(Effect.catchTag("NotFound", () => Effect.void));
         }
         return { outcome: { ok: false, cancelled: true } };
+      }
+      const published = findCommand(call.function.name);
+      if (published !== undefined) {
+        const ran = yield* runCommand(caller, published.name, toolInput(call.function.arguments), { approvalId: answer?.approvalId ?? null, key: `${turn}:${call.id}` });
+        return (!ran.ok && ran.refusal.code === "approval_required" ? asking(ran.refusal) : null) ?? { outcome: heard(ran) };
       }
       const read = agentRead(caller);
       const started = agentStart(call.function.name, toolInput(call.function.arguments), here.place, `${turn}:${call.id}`);
@@ -248,13 +260,25 @@ const approvalGate = (caller: Caller, run: Run, here: Here) => {
   });
 };
 
-const agentTools = (caller: Caller, run: Run, turn: string, here: Here) => CATALOG.tools.map((tool) =>
-  // SAFETY: the catalog writes each input schema as a JSON Schema object.
-  toolDefinition({ name: tool.name, description: tool.description, inputSchema: tool.input_schema as JSONSchema })
+const publishedTool = (caller: Caller, run: Run, turn: string) => (command: Published) =>
+  toolDefinition({ name: command.name, description: command.about, inputSchema: inputSchema(command) })
     .server((args, context) => {
-      if (GATED.has(tool.name)) throw new Error(`${tool.name} ran outside the approval gate.`);
-      return run(runTool(caller, tool.name, projectJsonValue(args) ?? null, here.place, `${turn}:${context?.toolCallId ?? randomUUID()}`));
-    }));
+      if (GATED.has(command.name)) throw new Error(`${command.name} ran outside the approval gate.`);
+      const key = `${turn}:${context?.toolCallId ?? randomUUID()}`;
+      return run(runCommand(caller, command.name, projectJsonValue(args) ?? null, { approvalId: null, key }).pipe(Effect.map(heard)));
+    });
+
+/** The compiled catalog's tools, then every published command Cloud offers agents. */
+const agentTools = (caller: Caller, run: Run, turn: string, here: Here) => [
+  ...CATALOG.tools.map((tool) =>
+    // SAFETY: the catalog writes each input schema as a JSON Schema object.
+    toolDefinition({ name: tool.name, description: tool.description, inputSchema: tool.input_schema as JSONSchema })
+      .server((args, context) => {
+        if (GATED.has(tool.name)) throw new Error(`${tool.name} ran outside the approval gate.`);
+        return run(runTool(caller, tool.name, projectJsonValue(args) ?? null, here.place, `${turn}:${context?.toolCallId ?? randomUUID()}`));
+      })),
+  ...COMMANDS.filter((command) => command.agents).map(publishedTool(caller, run, turn)),
+];
 
 const systemPrompt = (caller: Caller, model: string) => `${CATALOG.instructions}
 
