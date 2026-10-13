@@ -30,6 +30,9 @@ import urllib.request
 sys.dont_write_bytecode = True
 
 CORE = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(CORE / "scripts" / "verify"))
+from cloud_recovery import alive  # noqa: E402
+
 REPO = CORE.parent
 HELPER = CORE / "scripts" / "verify-cluster"
 CATALOG = CORE / "crates" / "ployz-core" / "src" / "rpc_catalog.rs"
@@ -656,33 +659,50 @@ class VolumeMove:
                  if "=" in line)
         return dict(pairs), "ployz-verify-" + hashlib.sha1(str(dashboard.parent).encode()).hexdigest()[:10]
 
-    def cancel(self, row):
-        environment, postgres = self.dashboard_env()
+    def inngest_run(self, row):
+        """Cloud records the Inngest run that claimed a request; a request no run picked up has none."""
+        _, postgres = self.dashboard_env()
         query = self.runner(["docker", "exec", postgres, "psql", "-U", "postgres", "-d", "ployz_cloud", "-Atc",
                              f"select inngest_run_id from volume_run where id = '{row['id']}'"],
                             capture_output=True, text=True, timeout=60)
-        run_id = query.stdout.strip()
-        base = environment["INNGEST_BASE_URL"]
+        return query.stdout.strip()
+
+    def cancel(self, row):
+        run_id = self.inngest_run(row)
+        base = self.dashboard_env()[0]["INNGEST_BASE_URL"]
         status, text = http("DELETE", f"{base}/v1/runs/{run_id}")
-        evidence = [f"DELETE {run_id} {status} {text[:200]}"]
-        if status not in (200, 202, 204):
+        attempts = [f"DELETE {run_id} {status} {text[:200]}"]
+        landed = 200 <= status < 300
+        if not landed:
             mutation = "mutation($envID: UUID!, $runID: ULID!) { cancelRun(envID: $envID, runID: $runID) { id } }"
             for env_id in ("00000000-0000-4000-b000-000000000000", "00000000-0000-0000-0000-000000000000"):
                 status, text = http("POST", f"{base}/v0/gql", dict(query=mutation, variables=dict(envID=env_id, runID=run_id)))
-                evidence.append(f"gql {env_id} {status} {text[:200]}")
-                if status == 200 and '"errors"' not in text:
+                attempts.append(f"gql {env_id} {status} {text[:200]}")
+                landed = status == 200 and '"errors"' not in text
+                if landed:
                     break
-        return evidence
+        return [dict(kill="cancel", attempts=attempts, landed=landed)]
+
+    def runner_kill(self):
+        """verify-cluster's runner kill succeeds without killing anything when the recorded worker is already dead."""
+        pid_file = Path(self.run["cloud"]["dashboard"]) / ".verify" / "run" / "worker.pid"
+        old = int(pid_file.read_text())
+        alive_before = alive(old)
+        self.runner_state("kill")
+        alive_after = alive(old)
+        self.sleep(5)
+        self.runner_state("start")
+        new = int(pid_file.read_text())
+        return [dict(kill="runner", pid=old, alive_before=alive_before, alive_after_kill=alive_after, new_pid=new,
+                     landed=alive_before and not alive_after and new != old and alive(new))]
 
     def act(self, action, machine, row):
         if action == "cancel":
             self.runner_state("kill")
             return self.cancel(row)
         if action == "runner-kill":
-            self.runner_state("kill")
-            self.sleep(5)
-            self.runner_state("start")
-        elif action in ("kill-ployz", "kill-docker"):
+            return self.runner_kill()
+        if action in ("kill-ployz", "kill-docker"):
             unit = "ployz.service" if action == "kill-ployz" else "docker.service"
             kill = self.sh(machine, f"""
 before=$(systemctl show -p MainPID --value {unit}); invocation=$(systemctl show -p InvocationID --value {unit})
@@ -750,6 +770,12 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
         result["failures"] = assess(states, lost)
         if case["trigger"] and not result.get("triggered"):
             result["failures"].append("the trigger never fired before the run ended")
+        if result.get("triggered") and not self.inngest_run(row):
+            result["failures"].append(f"the first run {row.get('id')} ended {result['run'].get('state')} and no "
+                                      "Inngest run claimed it, so the trigger evidence is not its")
+        evidence = result.get("action_evidence")
+        if result.get("triggered") and case["action"] != "none" and not (evidence and all(e["landed"] for e in evidence)):
+            result["failures"].append(f"no evidence the {case['action']} landed: {json.dumps(evidence)[:500]}")
         if case["action"] == "cancel" and result.get("triggered") and result["run"].get("state") not in ("cancelled", "lost"):
             result["failures"].append(f"the cancel did not land: the run ended {result['run'].get('state')}")
         last = (result["recovery"] or [result["run"]])[-1]

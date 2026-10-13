@@ -1024,7 +1024,7 @@ class VolumeMoveTests(unittest.TestCase):
                     found["state"] = ended
                     if ended == "done":
                         model.mirror, model.writer = model.writer, model.other(model.writer)
-                    return [f"DELETE {row['id']} 200 "]
+                    return [dict(kill="cancel", attempts=[f"DELETE {row['id']} 200 "], landed=True)]
                 model.cli, checks.cancel = running, cancel
                 with redirect_stdout(io.StringIO()):
                     summary = checks.run_all([undo])
