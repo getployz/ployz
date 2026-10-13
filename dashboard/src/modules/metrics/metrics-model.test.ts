@@ -166,7 +166,7 @@ describe("serviceMetrics series", () => {
     expect(metrics.byServer.find((entry) => entry.server.id === B)?.gaps).toEqual([{ from: 0, to: 5000, reason: "not_sampled" }]);
   });
 
-  it("gaps the sum only where no Server has data, as a timeout if any Server timed out there", () => {
+  it("gaps the sum wherever a Server timed out, even where another has data", () => {
     const top = { service: [cpu(0), cpu(1000), cpu(2000), cpu(2600), cpu(3000), cpu(4000)] };
     const metrics = serviceMetrics(read({
       points: top,
@@ -175,11 +175,19 @@ describe("serviceMetrics series", () => {
         answering(B, reply({ service: [cpu(0), cpu(1000), cpu(2000)] }, { gaps: [{ from: ms(2500), to: ms(10_000), reason: "timeout" }] })),
       ],
     }), names);
-    expect(metrics.allGaps).toEqual([{ from: 2500, to: 3000, reason: "timeout" }]);
-    expect(metrics.all.cpu.map((sample) => sample.at)).toEqual([0, 1000, 2000, 3000, 4000]);
+    expect(metrics.allGaps).toEqual([{ from: 2500, to: 10_000, reason: "timeout" }]);
+    expect(metrics.all.cpu.map((sample) => sample.at)).toEqual([0, 1000, 2000]);
     const a = metrics.byServer.find((entry) => entry.server.id === A);
     expect(a?.gaps).toEqual([{ from: 1000, to: 3000, reason: "not_sampled" }]);
     expect(a?.series.cpu.map((sample) => sample.at)).toEqual([0, 3000, 4000]);
+  });
+
+  it("gaps the whole sum when one Server has data and another timed out over the range", () => {
+    const onA = { service: every(0, 10_000) };
+    const metrics = serviceMetrics(read({ points: onA, machines: [answering(A, reply(onA)), answering(B, nothing("timeout"))] }), names);
+    expect(metrics.allGaps).toEqual([{ from: 0, to: 10_000, reason: "timeout" }]);
+    expect(metrics.all.cpu).toEqual([]);
+    expect(metrics.byServer.find((entry) => entry.server.id === A)?.series.cpu).toHaveLength(10);
   });
 
   it("gaps the whole range when every Server timed out", () => {

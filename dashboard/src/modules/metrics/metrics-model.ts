@@ -180,9 +180,11 @@ export function serviceMetrics(read: MetricRead, names: Names): ServiceMetrics {
     reply: machine.value,
     gaps: mergeGaps(machine.value.gaps.map(toGap)),
   }));
-  // Every up Server answers, and one without the Service answers a gap over the whole range,
-  // so the sum is unmeasured only where no Server has data.
-  const allGaps = replies.length === 0 ? [] : mergeGaps(replies.map((entry) => entry.gaps).reduce(intersectGaps));
+  // Every up Server answers, and one without the Service answers a not_sampled gap over the whole range, so those gap
+  // the sum only where no Server has data. A timeout is a Server whose share is missing, so it gaps the sum wherever it is.
+  const sampled = replies.map((entry) => entry.gaps.filter((gap) => gap.reason === "not_sampled"));
+  const timedOut = replies.flatMap((entry) => entry.gaps.filter((gap) => gap.reason === "timeout"));
+  const allGaps = mergeGaps([...(sampled.length === 0 ? [] : sampled.reduce(intersectGaps)), ...timedOut]);
   const all = serviceSeries(servicePoints(history.points), allGaps);
   const byServer = replies
     .map(({ server, reply, gaps }) => ({ server, series: serviceSeries(servicePoints(reply.points), gaps), gaps, markers: reply.markers ?? [] }))
