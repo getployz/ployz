@@ -5,6 +5,7 @@ import { ConfigProvider, Effect, Layer } from "effect";
 import { Inngest } from "inngest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
+import { StoreRefused } from "#/modules/config-store/store.contract";
 import { CloudStore } from "#/modules/config-store/store-sdk.server";
 import { GithubApi } from "#/modules/github/github-observation.api";
 import { InngestClient } from "#/modules/inngest/client";
@@ -312,10 +313,19 @@ describe("volume placement", () => {
       expect(await holder()).toBeNull();
     });
 
-    it("leaves the name with the Store when the Deploy deletes the Volume there too", async () => {
+    it("leaves a Volume the Deploy deletes to the Store's own confirmation, and stamps it", async () => {
       await stage("web-1");
       deleting = true;
-      expect(await admission(admit(["data"], await shown()))).toEqual({ ok: true, command: admit(["data"]) });
+      const store = (command: ConfigCommand) => command.command === "admit" && command.admit === "deploy" && command.accept_volume_loss?.includes("data")
+        ? write(command)
+        : Effect.fail(new StoreRefused({ code: "confirmation_required", message: "Deploying deletes data. Accept each by name", details: { accept: ["data"] } }));
+      const admitStore = (command: ConfigCommand) => run(writeAdmitted(organizationId, command, store, () => Effect.succeed(members)).pipe(
+        Effect.map(() => ({ ok: true as const, command: writes.at(-1) })),
+        Effect.catchTag("StoreRefused", (error) => Effect.succeed({ ok: false as const, refusal: error.refusal })),
+      ));
+      expect(await admitStore(admit([]))).toMatchObject({ ok: false, refusal: { message: "Deploying deletes data. Accept each by name" } });
+      expect(await admitStore(admit(["data"]))).toEqual({ ok: true, command: admit(["data"]) });
+      expect(await holder()).toBe("dep-1");
     });
 
     it("refuses while the Servers can't be asked about a copy", async () => {

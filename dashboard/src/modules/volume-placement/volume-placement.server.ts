@@ -323,11 +323,13 @@ export const writeAdmitted = <R>(
       const volume = volumes.find((entry) => entry.id === row.volumeId);
       return volume === undefined ? [] : [{ row, volume }];
     });
+    // A Volume the Deploy deletes loses every copy; the Store confirms that itself, with its own details.
+    const kept = listed.filter(({ volume }) => volume.change !== "delete");
     // Asked together, a silent Server costs the admission one timeout, not one per Volume.
-    const members = yield* Effect.forEach(listed, ({ row }) => inspect(organizationId, command.environment, row.volumeId), { concurrency: "unbounded" })
+    const members = yield* Effect.forEach(kept, ({ row }) => inspect(organizationId, command.environment, row.volumeId), { concurrency: "unbounded" })
       .pipe(Effect.option);
     if (Option.isNone(members)) return yield* new StoreRefused(UNANSWERED);
-    const lost = listed.flatMap(({ row, volume }, index) =>
+    const lost = kept.flatMap(({ row, volume }, index) =>
       placementLosses(placementChanges({ id: volume.id, name: volume.name }, members.value[index] ?? [], view(row))));
     const taken = listed.map(({ row }) => row.volumeId);
     const names = [...new Set(lost.map(({ volume }) => volume.name))];
@@ -345,8 +347,7 @@ export const writeAdmitted = <R>(
         },
       });
     }
-    const deleted = (name: string) => volumes.some((volume) => volume.name === name && volume.change === "delete");
-    written = yield* write({ ...command, version: store, accept_volume_loss: accepted.filter((name) => !names.includes(name) || deleted(name)) });
+    written = yield* write({ ...command, version: store, accept_volume_loss: accepted.filter((name) => !names.includes(name)) });
     if (written.written === "deployment" && written.status !== "applied") yield* stampPlacements(organizationId, taken, written.id, ended);
     return written;
   })).pipe(
