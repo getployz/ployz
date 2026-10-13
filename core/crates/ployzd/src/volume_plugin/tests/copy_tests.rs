@@ -198,7 +198,7 @@ async fn docker_still_gets_a_root_cut_into_its_slot() {
     assert_eq!(got.pointer("/Volume/Mountpoint"), Some(&json!("")), "{got}");
 
     let listed = post(&socket, "/VolumeDriver.List", json!({})).await;
-    assert_eq!(listed.pointer("/Volumes"), Some(&json!([])), "{listed}");
+    assert_eq!(listed, json!({"Volumes": [], "Err": ""}));
     server.abort();
 }
 
