@@ -30,7 +30,7 @@ Details, and you drop it in Details. A deploy that removes a mirror asks you to 
   deploy sends what changed since the last refresh, then pauses writes for the final sync.
 - A move leaves the old server holding an old copy. It serves nothing and never refreshes. Its ×
   deletes it right away, after you confirm **Delete copy**. Its **Restore** stages a restore from its
-  last point.
+  last point. While a staged restore reads the copy, × says "A restore reads this copy."
 - A move or mirror onto a server that holds an old copy deletes that copy first. Details says so.
 - When the primary's server stops answering, Copies says "web-1 is not answering" and when
   changes are lost from, for example "Changes after 10:36 lost". **Use mirror**, or **Make
