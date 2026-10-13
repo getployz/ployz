@@ -12,7 +12,8 @@ import {
 import { failedRestore, volumePlacement } from "#/modules/volume-placement/tables";
 import { discardPlacement, RESTORE_FAILED, restoreSettled, stagePlacement, view } from "#/modules/volume-placement/volume-placement.server";
 import {
-  appliedMirrors, drainPlacement, dropChange, nextPlacementStep, observePlacement, type Placement, placementChanges, type PlacementStep, type PlacementVolume,
+  appliedMirrors, changeKey, drainPlacement, dropChange, nextPlacementStep, observePlacement, type Placement, placementChanges, type PlacementStep, type PlacementVolume,
+  sameChange,
 } from "#/modules/volume-placement/volume-placement";
 import { ACTIVE_VOLUME_RUN_STATES, dockerVolumeName, type VolumeRunState } from "#/modules/volume-run/volume-run";
 import {
@@ -55,6 +56,7 @@ const release = Effect.fn("VolumePlacement.release")(function* (organizationId: 
 
 const fail = Effect.fn("VolumePlacement.fail")(function* (
   organizationId: string, deploymentId: string, volumeId: string, remaining: Placement | null, message: string,
+  mirrors: readonly MachineId[] | null = null,
 ) {
   const { drizzle } = yield* Database;
   const claim = and(eq(volumePlacement.volumeId, volumeId), eq(volumePlacement.deploymentId, deploymentId));
@@ -63,7 +65,9 @@ const fail = Effect.fn("VolumePlacement.fail")(function* (
     yield* drizzle.update(volumePlacement).set({ deploymentId: null, updatedAt: new Date() })
       .where(and(claim, eq(volumePlacement.staged, remaining)));
   }
-  yield* drizzle.update(volumePlacement).set({ staged: remaining, updatedAt: new Date() }).where(claim);
+  const settled: Partial<typeof volumePlacement.$inferInsert> = { staged: remaining, updatedAt: new Date() };
+  if (mirrors !== null) settled.mirrors = [...mirrors];
+  yield* drizzle.update(volumePlacement).set(settled).where(claim);
   yield* release(organizationId, deploymentId, true);
   const failed: PlacementAdvance = { kind: "failed", message };
   return failed;
@@ -80,9 +84,12 @@ const remainingAfterFailure = Effect.fn("VolumePlacement.remainingAfterFailure")
   const [row] = yield* drizzle.select().from(volumePlacement)
     .where(and(eq(volumePlacement.volumeId, volumeId), eq(volumePlacement.deploymentId, deploymentId)));
   const volume = volumes.find((entry) => entry.id === volumeId);
-  if (row?.staged == null || volume === undefined) return null;
+  if (row?.staged == null || volume === undefined) return { remaining: null, mirrors: null };
   const members = yield* inspect(organizationId, environment, volumeId);
-  return dropChange(volume, members, view(row), step.change);
+  const placement = view(row);
+  // A change the Servers no longer show landed despite the failure, so the step's mirrors are what they hold, as on success.
+  const landed = !placementChanges(volume, members, placement).some((change) => sameChange(changeKey(change), step.change));
+  return { remaining: dropChange(volume, members, placement, step.change), mirrors: landed ? step.mirrors : null };
 });
 
 /**
@@ -183,8 +190,8 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
     if (waited.step !== null && run.state !== "done") {
       const message = `${run.volume_name}: ${run.message ?? run.state}`;
       if (waited.step.change.kind === "seed") return restoreFailed(waited.volumeId, environment, message);
-      const remaining = yield* remainingAfterFailure(organizationId, deploymentId, environment, volumes, waited.volumeId, waited.step, inspect);
-      return yield* fail(organizationId, deploymentId, waited.volumeId, remaining, message);
+      const { remaining, mirrors } = yield* remainingAfterFailure(organizationId, deploymentId, environment, volumes, waited.volumeId, waited.step, inspect);
+      return yield* fail(organizationId, deploymentId, waited.volumeId, remaining, message, mirrors);
     }
     // The run this Deploy started has ended, so its mirrors are what the Servers hold, whoever claims the row now.
     if (waited.step !== null) yield* settle(waited.volumeId, { mirrors: [...waited.step.mirrors] });
