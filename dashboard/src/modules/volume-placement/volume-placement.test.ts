@@ -24,6 +24,8 @@ import {
   placementLosses,
   volumeLossItems,
   lossByVolume,
+  lossVersion,
+  type PlacementLost,
   restorePoints,
   stagedOffServer,
   storageStep,
@@ -545,6 +547,27 @@ describe("lossByVolume", () => {
     const details = JSON.parse(JSON.stringify({ volumes: lossByVolume(placementLosses(staged)), accept: ["data", "pg-data"], version: "9:1:0.1" }));
     const refused = volumeLoss({ code: "confirmation_required", details });
     expect(refused && volumeLossItems(refused.volumes, (machine) => machine.replace(/0+$/u, ""))).toEqual(placementLoss(staged).items);
+  });
+});
+
+describe("two write losses on one Volume", () => {
+  const data = { id: "src", name: "data" };
+  const restore = (when: Date): PlacementLost => ({ volume: data, server: null, writes: true, after: when });
+  const failover = (when: Date | null): PlacementLost => ({ volume: data, server: { id: id("web-1"), name: "web-1" }, writes: true, after: when });
+  const later = new Date(at.getTime() + 3_600_000);
+  const detail = (lost: PlacementLost[]) => volumeLossItems(lossByVolume(lost), () => undefined)[0]?.detail;
+
+  it.each([["restore first", (a: PlacementLost, b: PlacementLost) => [a, b]], ["failover first", (a: PlacementLost, b: PlacementLost) => [b, a]]])(
+    "words and binds the earlier cutoff, %s", (_, order) => {
+      expect(lossByVolume(order(restore(later), failover(at)))).toMatchObject([{ loss: "writes", after: at.getTime() / 1000 }]);
+      expect(detail(order(restore(later), failover(at)))).toBe(detail(order(failover(at), restore(later))));
+      const earlier = new Date(at.getTime() - 60_000);
+      expect(lossVersion("v1", order(restore(later), failover(earlier)))).not.toBe(lossVersion("v1", order(restore(later), failover(at))));
+    });
+
+  it.each([["restore first", false], ["failover first", true]])("takes an unknown cutoff over a known one, %s", (_, flipped) => {
+    const lost = [restore(at), failover(null)];
+    expect(lossByVolume(flipped ? lost.reverse() : lost)).toEqual([{ name: "data", deletes: [{ machine_id: id("web-1") }], loss: "writes" }]);
   });
 });
 

@@ -523,9 +523,12 @@ type VolumeLost = { name: string; deletes: { machine_id: MachineId }[]; loss: "d
 export function lossByVolume(lost: readonly PlacementLost[]): VolumeLost[] {
   return [...new Set(lost.map(({ volume }) => volume.name))].map((name) => {
     const of = lost.filter(({ volume }) => volume.name === name);
-    const after = of.find((entry) => entry.after !== null)?.after ?? null;
     const deletes = of.flatMap(({ server }) => server === null ? [] : [{ machine_id: server.id }]);
-    if (!of.some(({ writes }) => writes)) return { name, deletes, loss: "data" };
+    const writes = of.filter((entry) => entry.writes);
+    if (writes.length === 0) return { name, deletes, loss: "data" };
+    // The earliest cutoff loses the most; an unknown one may be earlier still.
+    const after = writes.reduce<Date | null>((earliest, { after: cutoff }) => cutoff === null || earliest === null ? null : cutoff < earliest ? cutoff : earliest,
+      writes[0]?.after ?? null);
     return after === null ? { name, deletes, loss: "writes" } : { name, deletes, loss: "writes", after: after.getTime() / 1000 };
   });
 }
