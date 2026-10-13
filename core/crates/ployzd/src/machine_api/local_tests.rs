@@ -1408,9 +1408,11 @@ mod set_volume_copy {
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 
+    /// A Deploy that floors the Volume during the drain sees the holder running and
+    /// keeps it, so the cut must neither stop it nor leave it out of ingress.
     #[tokio::test]
     #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
-    async fn a_floor_raised_during_the_drain_refuses_the_cut_stale_with_its_holder_stopped() {
+    async fn a_floor_raised_during_the_drain_refuses_the_cut_stale_and_leaves_its_holder_serving() {
         let (data_dir, _store, service, fake) = fake_docker_service("ployzd-copy-fenced").await;
         let plugin = cutting_plugin();
         let (socket, server) = plugin.serve(&data_dir);
@@ -1426,7 +1428,15 @@ mod set_volume_copy {
         assert_eq!(error.details["reason"], json!("stale"), "{error:?}");
         assert_eq!(error.details["floor"], json!(2));
         assert_eq!(error.details["copy"], writer_root(0, None)["Ok"]);
-        assert_eq!(holder_status(&fake), vec![json!("exited")]);
+        assert_eq!(holder_status(&fake), vec![json!("running")]);
+        let local = service.local();
+        let observed = local
+            .containers()
+            .unwrap()
+            .inspect_managed(&holder, &local.record().id())
+            .await
+            .unwrap();
+        assert!(observed.runtime.may_serve(), "{:?}", observed.runtime);
         assert!(
             !plugin
                 .routes_called()
@@ -1460,9 +1470,7 @@ mod set_volume_copy {
         let error = refusal(&refused);
         assert_eq!(error.details["reason"], json!("stale"), "{error:?}");
         assert_eq!(error.details["floor"], json!(2));
-        let mut status = holder_status(&fake);
-        status.sort_by_key(ToString::to_string);
-        assert_eq!(status, vec![json!("exited"), json!("running")]);
+        assert_eq!(running(&fake), 2, "{:?}", holder_status(&fake));
         assert!(
             !plugin
                 .routes_called()

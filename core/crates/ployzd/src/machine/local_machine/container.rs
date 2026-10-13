@@ -249,24 +249,40 @@ impl LocalMachine {
     /// restart forgets the mark; a still-running Container returns to ingress
     /// and the resend redoes the drain.
     ///
+    /// With a `fence`, the Container holds that Volume and the gen is checked against
+    /// its floor under the turn, after the drain: a Deploy that raised the floor
+    /// meanwhile may already have answered Done on this holder, so a raised floor
+    /// clears the mark and stops nothing. A start ordered after that check waits for
+    /// the turn, so it runs after the stop.
+    ///
     /// Polls no proxy and reads no other Machine.
     pub(crate) async fn stop_behind_ingress(
         &self,
         installation: &crate::mutation::MutationGuard,
         container: &ContainerId,
+        fence: Option<(&DockerVolumeName, VolumeGen)>,
         drain: Drain,
         stop: &StopOptions,
-    ) -> Result<ContainerObservation, Error> {
+    ) -> Result<Result<ContainerObservation, VolumeGen>, Error> {
         let _ = installation;
         let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
         let machine_id = self.record().id();
         let observed = containers.inspect_managed(container, &machine_id).await?;
         if !is_running(&observed) {
-            return Ok(observed);
+            return Ok(Ok(observed));
         }
         containers.mark_stopping(*container);
         tokio::time::sleep(drain.as_duration()).await;
         let turn = self.owner.admission_lock().write_owned().await;
+        if let Some((name, r#gen)) = fence {
+            let admitted = containers.floor_turn().await.admit(name, r#gen).await;
+            if !matches!(admitted, Ok(Ok(()))) {
+                containers.clear_stopping(container);
+            }
+            if let Err(floor) = admitted? {
+                return Ok(Err(floor));
+            }
+        }
         let stopped = containers
             .stop(
                 container,
@@ -276,7 +292,9 @@ impl LocalMachine {
             .await;
         drop(turn);
         stopped?;
-        Ok(containers.inspect_managed(container, &machine_id).await?)
+        Ok(Ok(containers
+            .inspect_managed(container, &machine_id)
+            .await?))
     }
 
     /// The cut's Container half: drain and stop every holder of the Volume, then run
@@ -287,8 +305,8 @@ impl LocalMachine {
     /// `gen` is checked against the floor before each holder's drain and again under the
     /// floor lock, held from that last check through `zfs`, so a floor raised during the
     /// drain makes the cut `Stale` and a floor read never sees the flip half done. A
-    /// `Stale` cut leaves the root a writer; it stops no holder it reached after the
-    /// raise, since that holder may be the Container the raiser started.
+    /// `Stale` cut leaves the root a writer and stops no holder after the raise, since
+    /// the raiser may have kept that holder or started it.
     ///
     /// Detached from the RPC with the installation held, so a caller that hangs up
     /// does not abandon a half-stopped Container.
@@ -311,9 +329,13 @@ impl LocalMachine {
                 if let Err(floor) = containers.floor_turn().await.admit(&name, r#gen).await? {
                     return Ok(Err(CutRefusal::Stale(floor)));
                 }
-                let observed = local
-                    .stop_behind_ingress(&installation, &holder, drain, &stop)
-                    .await?;
+                let observed = match local
+                    .stop_behind_ingress(&installation, &holder, Some((&name, r#gen)), drain, &stop)
+                    .await?
+                {
+                    Ok(observed) => observed,
+                    Err(floor) => return Ok(Err(CutRefusal::Stale(floor))),
+                };
                 if is_running(&observed) {
                     return Ok(Err(CutRefusal::Busy));
                 }
@@ -584,8 +606,9 @@ impl LocalMachine {
                 let local = self.clone();
                 self.finish_installed(move |installation| async move {
                     local
-                        .stop_behind_ingress(&installation, &id, drain, &stop)
-                        .await?;
+                        .stop_behind_ingress(&installation, &id, None, drain, &stop)
+                        .await?
+                        .ok();
                     Ok(())
                 })
                 .await?;
@@ -613,8 +636,15 @@ impl LocalMachine {
                 let local = self.clone();
                 self.finish_installed(move |installation| async move {
                     local
-                        .stop_behind_ingress(&installation, &id, drain, &StopOptions::default())
-                        .await?;
+                        .stop_behind_ingress(
+                            &installation,
+                            &id,
+                            None,
+                            drain,
+                            &StopOptions::default(),
+                        )
+                        .await?
+                        .ok();
                     let turn = local.owner.admission_lock().write_owned().await;
                     let removed = local
                         .containers
