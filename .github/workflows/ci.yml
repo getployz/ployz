@@ -7,8 +7,10 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.event_name }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Every main commit runs to the end, so each leaves its builds behind for later runs and local verify.
+  # A shared group would still cancel a pending main run, so main groups by commit.
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.event_name }}-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -248,6 +250,51 @@ jobs:
       contents: read
       actions: write
     secrets: inherit
+
+  # The binaries the verify harness runs, built once per change on main so local runs download them.
+  # Not a check: no PR waits on it, so it stays out of ready.
+  verify-binaries:
+    if: github.event_name != 'pull_request'
+    defaults:
+      run:
+        working-directory: core
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: ployz
+        run: python3 scripts/artifacts.py lookup ployz >> "$GITHUB_OUTPUT"
+      - id: ployzd
+        run: python3 scripts/artifacts.py lookup ployzd >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/setup-rust
+        if: steps.ployz.outputs.run-id == '' || steps.ployzd.outputs.run-id == ''
+        with:
+          cache-key: verify-binaries
+      - name: Build what no earlier run uploaded
+        if: steps.ployz.outputs.run-id == '' || steps.ployzd.outputs.run-id == ''
+        run: >-
+          python3 scripts/artifacts.py binaries "$RUNNER_TEMP/binaries"
+          ${{ steps.ployz.outputs.run-id == '' && 'ployz' || '' }}
+          ${{ steps.ployzd.outputs.run-id == '' && 'ployzd' || '' }}
+      - uses: actions/upload-artifact@v4
+        if: steps.ployz.outputs.run-id == ''
+        with:
+          name: ${{ steps.ployz.outputs.name }}
+          path: ${{ runner.temp }}/binaries/ployz
+          retention-days: ${{ github.ref == 'refs/heads/main' && 14 || 3 }}
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: steps.ployzd.outputs.run-id == ''
+        with:
+          name: ${{ steps.ployzd.outputs.name }}
+          path: ${{ runner.temp }}/binaries/ployzd
+          retention-days: ${{ github.ref == 'refs/heads/main' && 14 || 3 }}
+          if-no-files-found: error
 
   ready:
     name: CI ready

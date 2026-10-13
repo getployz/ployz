@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
-"""Which edits change which artifact keys, and how the local cache keeps, returns and drops builds."""
+"""Which edits change which artifact keys, how the local cache keeps, returns and drops builds, and which CI uploads it takes."""
 
+import hashlib
+import io
+import json
 import os
 from pathlib import Path
 import re
@@ -8,8 +11,10 @@ import sys
 import tempfile
 import tomllib
 import time
+from types import SimpleNamespace
 import unittest
 from unittest import mock
+import zipfile
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -86,9 +91,32 @@ class Cache(unittest.TestCase):
         scratch = tempfile.TemporaryDirectory()
         self.addCleanup(scratch.cleanup)
         self.root = Path(scratch.name)
-        patch = mock.patch.object(artifacts, "CACHE", self.root / "cache")
-        patch.start()
-        self.addCleanup(patch.stop)
+        for name, value in [("CACHE", self.root / "cache"), ("gh", self.github)]:
+            patch = mock.patch.object(artifacts, name, value)
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.uploads = []
+
+    def upload(self, found, content, *, run, fork=False, expired=False, digest=None):
+        """Record a CI upload of found, newest first, as the artifacts API lists them."""
+        archive = io.BytesIO()
+        with zipfile.ZipFile(archive, "w") as files:
+            files.writestr("ployz-sdk.node", content)
+            files.writestr("generated/config-wasm.mjs", content + b".mjs")
+        archive = archive.getvalue()
+        row = {"id": len(self.uploads), "name": found.artifact, "expired": expired,
+               "digest": digest or "sha256:" + hashlib.sha256(archive).hexdigest(),
+               "workflow_run": {"id": run, "head_sha": f"sha{run}", "repository_id": 1,
+                                "head_repository_id": 2 if fork else 1}}
+        self.uploads.insert(0, (row, archive))
+
+    def github(self, path, stdout=None, capture_output=False):
+        if path.endswith("/zip"):
+            stdout.write(next(archive for row, archive in self.uploads if path.endswith(f"/{row['id']}/zip")))
+            return None
+        name = path.split("name=")[1].split("&")[0]
+        listing = {"artifacts": [row for row, _ in self.uploads if row["name"] == name]}
+        return SimpleNamespace(stdout=json.dumps(listing).encode())
 
     def build(self, name, content):
         directory = self.root / name
@@ -125,6 +153,38 @@ class Cache(unittest.TestCase):
             artifacts.prune()
         self.assertEqual(sorted(entry.name for entry in (self.root / "cache" / "sdk").iterdir()),
                          sorted([used.value, new.value]))
+
+    def test_a_miss_downloads_the_newest_live_upload_from_this_repository_and_keeps_it(self):
+        found = artifacts.Key("sdk", "1" * 32, {})
+        self.upload(found, b"old", run=10)
+        self.upload(found, b"main", run=11)
+        self.upload(found, b"expired", run=12, expired=True)
+        self.upload(found, b"fork", run=13, fork=True)
+        meta = artifacts.fetch(found, self.root / "out")
+        self.assertEqual((meta["run"], meta["revision"]), (11, "sha11"))
+        self.assertEqual((self.root / "out" / "ployz-sdk.node").read_bytes(), b"main")
+        self.assertEqual((self.root / "out" / "generated" / "config-wasm.mjs").read_bytes(), b"main.mjs")
+        self.uploads.clear()
+        self.assertEqual(artifacts.fetch(found, self.root / "elsewhere")["run"], 11)
+
+    def test_only_fork_uploads_is_a_miss(self):
+        found = artifacts.Key("sdk", "2" * 32, {})
+        self.upload(found, b"fork", run=20, fork=True)
+        self.assertIsNone(artifacts.fetch(found, self.root / "out"))
+
+    def test_a_download_that_does_not_match_its_digest_is_not_cached(self):
+        found = artifacts.Key("sdk", "3" * 32, {})
+        self.upload(found, b"tampered", run=30, digest="sha256:" + "0" * 64)
+        with self.assertRaises(SystemExit):
+            artifacts.fetch(found, self.root / "out")
+        self.uploads.clear()
+        self.assertIsNone(artifacts.fetch(found, self.root / "out"))
+
+    def test_without_gh_a_miss_is_a_miss(self):
+        def missing(*args, **kwargs):
+            raise FileNotFoundError("gh")
+        with mock.patch.object(artifacts, "gh", missing):
+            self.assertIsNone(artifacts.fetch(artifacts.Key("sdk", "4" * 32, {}), self.root / "out"))
 
     def test_prune_drops_entries_unused_for_a_month(self):
         found = artifacts.Key("ployzd", "f" * 32, {})
