@@ -729,13 +729,13 @@ class VolumeMoveTests(unittest.TestCase):
 
     def test_a_sync_running_when_the_fault_would_be_armed_is_waited_out_before_arming(self):
         checks, model = self.checks()
-        arming_runs = checks.arming_runs
+        listed_runs = checks.listed_runs
 
         def a_sync_starts(op):
             if not model.holds:
                 model.hold(5, "cron-sync")
-            return arming_runs(op)
-        checks.arming_runs = a_sync_starts
+            return listed_runs(op)
+        checks.listed_runs = a_sync_starts
         with redirect_stdout(io.StringIO()):
             summary = checks.run_all([volume_move.KILLS[0]])
         self.assertIsNone(model.tripped)
@@ -929,7 +929,7 @@ class VolumeMoveTests(unittest.TestCase):
             with self.subTest(fault_line_after_the_read=fault_line):
                 shutil.rmtree(self.root / "out", ignore_errors=True)
                 checks, model = self.checks()
-                cli, arming_runs, refused = model.cli, checks.arming_runs, []
+                cli, listed_runs, refused = model.cli, checks.listed_runs, []
 
                 def refusing(args, cli=cli, refused=refused):
                     if args[:2] == ["volume", "move"] and any(model.fault.values()) and not refused:
@@ -937,12 +937,12 @@ class VolumeMoveTests(unittest.TestCase):
                         return 1, json.dumps(dict(error=dict(code="internal", message="placement exploded")))
                     return cli(args)
 
-                def a_sync_trips_the_fault(op, arming_runs=arming_runs, refused=refused, fault_line=fault_line):
-                    listed = arming_runs(op)
+                def a_sync_trips_the_fault(op, listed_runs=listed_runs, refused=refused, fault_line=fault_line):
+                    listed = listed_runs(op)
                     if refused and fault_line:
                         model.fired = True
                     return listed
-                model.cli, checks.arming_runs = refusing, a_sync_trips_the_fault
+                model.cli, checks.listed_runs = refusing, a_sync_trips_the_fault
                 with redirect_stdout(io.StringIO()):
                     summary = checks.run_all([kill])
                 case = summary["cases"][0]
