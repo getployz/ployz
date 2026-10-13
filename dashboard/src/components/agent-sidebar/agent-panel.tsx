@@ -1,18 +1,21 @@
 import { Fragment, useEffect, useMemo, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { EventType, type StreamChunk } from "@tanstack/ai/client";
 import { fetchServerSentEvents, useChat, type UIMessage } from "@tanstack/ai-react";
 import { Option, Schema } from "effect";
 import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remend from "remend";
-import { ArrowUpIcon, ChevronRightIcon, SquareIcon, SquarePenIcon } from "lucide-react";
+import { ArrowUpIcon, ChevronRightIcon, HistoryIcon, SquareIcon, SquarePenIcon } from "lucide-react";
 import type { CollectionScope } from "#/collections/scope";
 import { Bubble, BubbleContent } from "#/components/ui/bubble";
 import { Button } from "#/components/ui/button";
+import { RelativeTime } from "#/components/relative-time";
+import { Command, CommandEmpty, CommandGroup, CommandItem, CommandList } from "#/components/ui/command";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "#/components/ui/collapsible";
 import { Empty, EmptyDescription, EmptyHeader } from "#/components/ui/empty";
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupTextarea } from "#/components/ui/input-group";
+import { Popover, PopoverContent, PopoverTitle, PopoverTrigger } from "#/components/ui/popover";
 import { Marker, MarkerContent, MarkerIcon } from "#/components/ui/marker";
 import { Message, MessageContent } from "#/components/ui/message";
 import {
@@ -25,6 +28,7 @@ import { isPageContext, type PageContext } from "#/modules/agent/page-context";
 import type { Failure } from "#/modules/agent/provider-error";
 import { ApprovalCard } from "./approval-card";
 import { pendingApprovalsOptions } from "./approvals.queries";
+import { agentThreadsOptions, refetchAgentThreads, type ThreadSummary } from "./threads.queries";
 import { toolOutcome, ToolRow } from "./tool-row";
 
 const askedKey = (threadId: string) => `ployz.agent.asked.${threadId}`;
@@ -37,19 +41,57 @@ type PanelProps = {
   /** Where the member is; each message carries it, so the agent reads "this service" as the one on screen. */
   page: PageContext;
   threadId: string;
-  onNewChat: () => void;
+  /** Opens a chat: one from history, or a fresh id for a new one. */
+  onChat: (threadId: string) => void;
 };
 
 /** One agent conversation; the sidebar picks the thread, and switching Organization or thread swaps in a fresh connection. */
-export default function AgentPanel({ organizationSlug, scope, page, threadId, onNewChat }: PanelProps) {
+export default function AgentPanel({ organizationSlug, scope, page, threadId, onChat }: PanelProps) {
+  const { data: threads } = useQuery(agentThreadsOptions(organizationSlug));
+  const title = threads?.find((thread) => thread.threadId === threadId)?.title ?? "New chat";
+  const onNewChat = () => onChat(crypto.randomUUID());
   return (
     <section aria-label="Ployz agent" className="flex h-full min-h-0 flex-col bg-background">
-      <header className="flex h-12 shrink-0 items-center gap-2 border-b px-3">
-        <h2 className="truncate text-sm font-semibold">New chat</h2>
-        <Button className="ml-auto" size="icon-sm" variant="ghost" aria-label="New chat" title="New chat" onClick={onNewChat}><SquarePenIcon /></Button>
+      <header className="flex h-12 shrink-0 items-center gap-1 border-b px-3">
+        <h2 className="min-w-0 flex-1 truncate text-sm font-semibold" title={title}>{title}</h2>
+        <ChatHistory threads={threads} threadId={threadId} onChat={onChat} />
+        <Button size="icon-sm" variant="ghost" aria-label="New chat" title="New chat" onClick={onNewChat}><SquarePenIcon /></Button>
       </header>
       <Conversation key={`${organizationSlug}/${threadId}`} organizationSlug={organizationSlug} scope={scope} page={page} threadId={threadId} onNewChat={onNewChat} />
     </section>
+  );
+}
+
+/** The member's past chats in this Organization, newest first; picking one opens it. */
+function ChatHistory({ threads, threadId, onChat }: {
+  threads: readonly ThreadSummary[] | undefined;
+  threadId: string;
+  onChat: (threadId: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger render={<Button size="icon-sm" variant="ghost" aria-label="Chat history" title="Chat history" />}>
+        <HistoryIcon />
+      </PopoverTrigger>
+      <PopoverContent padding="none" align="end" className="w-[min(20rem,calc(100vw-2rem))]">
+        <PopoverTitle className="sr-only">Chat history</PopoverTitle>
+        <Command tabIndex={0} label="Chat history" defaultValue={threadId}>
+          <CommandList className="max-h-[min(24rem,60dvh)]">
+            {threads !== undefined && <CommandEmpty>No chats yet</CommandEmpty>}
+            <CommandGroup heading="Chats">
+              {threads?.map((thread) => (
+                <CommandItem key={thread.threadId} value={thread.threadId} data-checked={thread.threadId === threadId}
+                  onSelect={() => { setOpen(false); onChat(thread.threadId); }}>
+                  <span className="flex-1 truncate">{thread.title}</span>
+                  <span className="shrink-0 text-muted-foreground"><RelativeTime date={thread.updatedAt} /></span>
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
   );
 }
 
@@ -68,7 +110,10 @@ function Conversation({ organizationSlug, scope, page, threadId, onNewChat }: {
   const forwardedProps = useMemo(() => ({ page }), [page]);
   const [retryAt, setRetryAt] = useState<number | null>(null);
   const [tooLong, setTooLong] = useState(false);
+  const queryClient = useQueryClient();
   const onChunk = (chunk: StreamChunk) => {
+    // A finished turn saved the thread: its title and its place in history change.
+    if (chunk.type === EventType.RUN_FINISHED || chunk.type === EventType.RUN_ERROR) void refetchAgentThreads(queryClient, organizationSlug);
     if (chunk.type !== EventType.RUN_ERROR) return;
     const wait = chunk.metadata?.tanstack?.retryAfterMs;
     setRetryAt(wait === undefined ? null : Date.now() + wait);
