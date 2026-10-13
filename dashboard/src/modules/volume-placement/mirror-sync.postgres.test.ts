@@ -101,10 +101,20 @@ describe("the mirror sync", () => {
     expect(await sync()).toMatchObject({ sync: { kind: "synced" }, lines: ["still pulling w-1-4 on db-web-2"] });
   });
 
-  it("hands nothing off while a pull runs, so the writer keeps its source", async () => {
+  it("takes no snapshot while a pull runs, so the writer keeps its source", async () => {
     members = [member("web-1", "writer"), member("web-2", "pulling")];
     expect((await sync()).lines).toEqual(["still pulling w-1-4 on db-web-2"]);
-    expect(asked).toEqual([]);
+    expect(asked).toEqual(["mirror web-2"]);
+  });
+
+  it("finishes a pull that landed, then refreshes the mirror again", async () => {
+    members = [member("web-1", "writer"), { ...member("web-2", "mirror"), view: { copy: { ...COPIES.mirror, pull: { target: "w-1-4", failure: null } } } } as Member];
+    const finishing: CopyAsk = (asker, machine, expected, want) => want.kind === "mirror" && want.target === "w-1-4"
+      ? Effect.sync(() => { asked.push(`finish ${machine.name}`); return { ok: true, copy: COPIES.mirror } satisfies CopyAnswer; })
+      : ask(asker, machine, expected, want);
+    expect((await run(syncMirrors(organizationId, volume, () => Effect.succeed(members), finishing))).lines).toEqual(["db-web-2 is pulling w-1-5"]);
+    expect(asked).toEqual(["finish web-2", "snapshot web-1", "mirror web-2"]);
+    expect(await status()).toEqual([expect.objectContaining({ ok_snapshot: "w-1-4" })]);
   });
 
   it("carries a gen below any lane opened after its lane check", async () => {

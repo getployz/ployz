@@ -194,10 +194,21 @@ export const syncMirrors = Effect.fn("MirrorSync.sync")(function* (
   const steps: MirrorStep[] = [];
   const named = (member: Member) => copyName(volume.name, member.machine.name);
 
-  const busy = mirrors.flatMap((member) => {
-    const target = pullingTo(member.view.copy);
-    return target === null ? [] : [{ kind: "pulling", mirror: named(member), target } as const];
-  });
+  // The Machine finishes a landed pull only when asked for it again, so resend each pull before calling it busy.
+  const busy: MirrorStep[] = [];
+  const idle: { readonly member: SlotMember; readonly copy: Slot }[] = [];
+  for (const member of mirrors) {
+    const { copy } = member.view;
+    const target = pullingTo(copy);
+    if (target === null) {
+      idle.push({ member, copy });
+      continue;
+    }
+    const resent = yield* ask(asker, member.machine, expectOf(copy), { kind: "mirror", from: writer.address, target, drain: DRAIN_MS });
+    if (resent.ok && resent.copy?.kind === "slot" && resent.copy.pull === null) idle.push({ member, copy: resent.copy });
+    else if (resent.ok || resent.reason === "busy") busy.push({ kind: "pulling", mirror: named(member), target });
+    else busy.push({ kind: "refused", mirror: named(member), message: resent.message });
+  }
   // A writer keeps its newest two snapshots, so a new one while a pull runs could prune that pull's source.
   if (busy.length > 0) return yield* answer(reported, { kind: "synced", mirrors: busy });
 
@@ -206,8 +217,7 @@ export const syncMirrors = Effect.fn("MirrorSync.sync")(function* (
   const target: Snapshot | null = snapshot.copy?.newest ?? null;
   if (target === null) return yield* answer(reported, { kind: "refused", message: `${named(writer)} made no snapshot` });
 
-  for (const member of mirrors) {
-    const { copy } = member.view;
+  for (const { member, copy } of idle) {
     if (copy.pull === null && copy.newest?.guid === target.guid) {
       yield* recordSuccess(organizationId, volume.volumeId, member.machine.id, target.name, true);
       steps.push({ kind: "current", mirror: named(member), snapshot: target.name });
