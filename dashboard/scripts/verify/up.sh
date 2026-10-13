@@ -7,6 +7,8 @@
 # down.sh tears that cluster down too. Real Servers also get a per-checkout Inngest dev server and worker.
 # Stops itself after 15 idle minutes with no connection to vite (idle.sh; VERIFY_IDLE_TIMEOUT=<seconds>, 0 keeps it up).
 set -euo pipefail
+# A verify session takes main's SDK build while the SDK's interface is unchanged; SDK=exact builds this checkout's.
+export SDK=${SDK:-stale}
 dash=$(cd "$(dirname "$0")/../.." && pwd)
 wt=$(dirname "$dash")
 name=ployz-verify-$(printf %s "$wt" | sha1sum | cut -c1-10)
@@ -142,6 +144,7 @@ if [ "${VERIFY_IDLE_TIMEOUT:-900}" != 0 ]; then
 fi
 base=http://localhost:$port
 curl -s -o /dev/null -H "Cookie: better-auth.session_token=$cookie" "$base/cloud/$org/shop/production" || true
+grep -sh 'stale main@' "$run/sdk.log" >&2 || true
 
 cat <<EOF | tee "$run/info"
 Ployz Cloud verify: $base  (billing $([ "${BILLING:-0}" = 1 ] && echo on || echo off))

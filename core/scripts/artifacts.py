@@ -40,6 +40,7 @@ class Kind:
     inputs: tuple = ()  # other files under core/ the build reads
     generated: tuple = ()  # files the build writes into the tree: outputs, so not part of the key
     surface: tuple = ()  # what callers see: while these match main's, `fetch --stale-ok` takes main's build
+    embeds: tuple = ()  # kinds built into this one, which must match main's exactly for `fetch --stale-ok`
 
 
 SDK = "crates/ployz-sdk"
@@ -47,7 +48,11 @@ KINDS = {
     "sdk": Kind("cloud-sdk", ("ployz-sdk", "ployz-config-wasm"), ("ployz-sdk.node", "generated/config-wasm.mjs"),
                 "sdk-v1", ("scripts/build-cloud-sdk.sh", "scripts/build-config-wasm.sh"),
                 (f"{SDK}/generated/config-wasm.mjs",),
-                (f"{SDK}/src", f"{SDK}/index.d.ts", f"{SDK}/index.js", f"{SDK}/config.d.ts", f"{SDK}/generated")),
+                (f"{SDK}/src", f"{SDK}/index.d.ts", f"{SDK}/index.js", f"{SDK}/config.d.ts", f"{SDK}/generated"),
+                ("config-wasm",)),
+    # Part of the SDK, cached on its own so the addon can rebuild without it. CI never uploads it alone.
+    "config-wasm": Kind("config-wasm", ("ployz-config-wasm",), ("generated/config-wasm.mjs",), "wasm-v1",
+                        ("scripts/build-config-wasm.sh",)),
     "ployzd": Kind("ployzd", ("ployzd",), ("ployzd",), "dev-debug0-strip-v1"),
     "ployz": Kind("ployz", ("ployz",), ("ployz",), "dev-debug0-strip-v1"),
 }
@@ -263,7 +268,7 @@ def nearest_main(found, depth=20):
 def fetch_main(found, destination, hint, *, same_surface=False):
     """Fetch main's build in place of found and name the crates that differ. Returns its metadata, or None.
 
-    same_surface refuses main's build unless the kind's surface matches the checkout's.
+    same_surface refuses main's build unless the kind's surface and embedded kinds match the checkout's.
     """
     nearest = nearest_main(found)
     if nearest is None:
@@ -272,6 +277,9 @@ def fetch_main(found, destination, hint, *, same_surface=False):
     rev, candidate = nearest
     if same_surface and surface(found.kind) != surface(found.kind, rev):
         print(f"{found.kind}: interface differs from main@{rev[:9]}, so building", file=sys.stderr)
+        return None
+    if same_surface and any(key(kind).value != key(kind, rev=rev).value for kind in KINDS[found.kind].embeds):
+        print(f"{found.kind}: {', '.join(KINDS[found.kind].embeds)} differs from main@{rev[:9]}, so building", file=sys.stderr)
         return None
     meta = fetch(candidate, destination, announce=False)
     if meta is None:

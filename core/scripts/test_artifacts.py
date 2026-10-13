@@ -21,7 +21,7 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import artifacts  # noqa: E402
 
-KINDS = ["sdk", "ployzd", "ployz"]
+KINDS = ["sdk", "config-wasm", "ployzd", "ployz"]
 
 
 def keys():
@@ -50,7 +50,7 @@ class Keys(unittest.TestCase):
     def test_a_crate_edit_moves_the_artifacts_built_from_it(self):
         self.assertEqual(self.changed_by("crates/ployzd/src/zz_probe.rs"), {"ployzd"})
         self.assertEqual(self.changed_by("crates/ployz/src/zz_probe.rs"), {"ployz", "sdk"})
-        self.assertEqual(self.changed_by("crates/ployz-config-wasm/src/zz_probe.rs"), {"sdk"})
+        self.assertEqual(self.changed_by("crates/ployz-config-wasm/src/zz_probe.rs"), {"sdk", "config-wasm"})
         self.assertEqual(self.changed_by("crates/ployz-core/src/zz_probe.rs"), set(KINDS))
 
     def test_workspace_files_move_every_key(self):
@@ -218,8 +218,9 @@ class Main(Scratch):
         patch = mock.patch.object(artifacts, "CORE", self.core)
         patch.start()
         self.addCleanup(patch.stop)
-        self.write("Cargo.toml", '[workspace]\nmembers = ["crates/ployz-sdk", "crates/ployz-config-wasm", "crates/ployz-core"]\n')
-        for name, dependencies in [("ployz-sdk", ["ployz-core"]), ("ployz-config-wasm", ["ployz-core"]), ("ployz-core", [])]:
+        self.write("Cargo.toml", '[workspace]\nmembers = ["crates/ployz-sdk", "crates/ployz-store", "crates/ployz-config-wasm", "crates/ployz-core"]\n')
+        for name, dependencies in [("ployz-sdk", ["ployz-store", "ployz-core"]), ("ployz-store", []),
+                                   ("ployz-config-wasm", ["ployz-core"]), ("ployz-core", [])]:
             self.write(f"crates/{name}/Cargo.toml", f'[package]\nname = "{name}"\n[dependencies]\n' +
                        "".join(f'{dependency} = {{ path = "../{dependency}" }}\n' for dependency in dependencies))
             self.write(f"crates/{name}/src/lib.rs", "// one\n")
@@ -227,7 +228,7 @@ class Main(Scratch):
         artifacts.git("init", "-q", "-b", "main")
         self.built = self.commit("built on main")
         self.store_build(b"main")
-        self.write("crates/ployz-core/src/lib.rs", "// two\n")
+        self.write("crates/ployz-store/src/lib.rs", "// two\n")
         self.commit("main without a build")
         artifacts.git("update-ref", "refs/remotes/origin/main", "HEAD")
 
@@ -250,11 +251,21 @@ class Main(Scratch):
         return meta, stderr.getvalue().strip()
 
     def test_an_edit_behind_an_unchanged_interface_takes_mains_newest_build_and_names_what_differs(self):
-        self.write("crates/ployz-core/src/lib.rs", "// three\n")
+        self.write("crates/ployz-store/src/lib.rs", "// three\n")
         meta, said = self.stale()
         self.assertEqual(meta["revision"], self.built)
         self.assertEqual((self.root / "out" / "ployz-sdk.node").read_bytes(), b"main")
-        self.assertEqual(said, f"sdk: stale main@{self.built[:9]} (ployz-core differs) -- SDK=exact to build")
+        self.assertEqual(said, f"sdk: stale main@{self.built[:9]} (ployz-store differs) -- SDK=exact to build")
+
+    def test_an_edit_to_the_embedded_config_wasm_builds_though_the_interface_is_unchanged(self):
+        for crate in ["ployz-config-wasm", "ployz-core"]:
+            with self.subTest(crate):
+                self.write(f"crates/{crate}/src/lib.rs", "// three\n")
+                meta, said = self.stale()
+                self.assertIsNone(meta)
+                self.assertFalse((self.root / "out").exists())
+                self.assertEqual(said, f"sdk: config-wasm differs from main@{self.built[:9]}, so building")
+                self.write(f"crates/{crate}/src/lib.rs", "// one\n")
 
     def test_an_interface_edit_builds(self):
         self.write("crates/ployz-sdk/index.d.ts", "export declare function added(): void;\n")
