@@ -71,9 +71,9 @@ A file is one change, so discarding it restores both its text and permissions.
 New files use mode `0444` and user and group ID `0`. In a file's options menu, turn on
 **Executable** to use `0555`, then click **Save**. The mount stays read-only.
 
-The dashboard can't set a custom mode or user and group ID yet. Ask the
-[Ployz agent](../account/agent-sidebar.md) to set them, or use the CLI. For an app that reads files
-as user `1000`, set the owner and permissions together:
+The dashboard can't set a custom mode or user and group ID yet. Set them when you write the file,
+from the CLI or by giving the [Ployz agent](../account/agent-sidebar.md) the file's text. For an app
+that reads files as user `1000`, set the owner and permissions together:
 
 ```sh
 ployz config put app-settings app.conf --from ./app.conf --mode 0440 --uid 1000 --gid 1000
