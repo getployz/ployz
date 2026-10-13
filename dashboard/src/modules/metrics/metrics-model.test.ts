@@ -20,6 +20,9 @@ const down: RpcError = { code: "unavailable", message: "the Server is not up, so
 
 const reply = (points: MetricHistoryReply["points"], extra: Partial<MetricHistoryReply> = {}): MetricHistoryReply =>
   ({ points, step_nanos: ms(1000), gaps: [], ...extra });
+// What the daemon sends from a Server without the Service, or for a read that timed out: no points, one gap over the range.
+const nothing = (reason: "not_sampled" | "timeout" = "not_sampled"): MetricHistoryReply =>
+  reply({ service: [] }, { gaps: [{ from: ms(window.from), to: ms(window.to), reason }] });
 const read = (history: Partial<MetricHistory>): MetricRead => ({
   type: "history",
   window,
@@ -76,6 +79,18 @@ describe("serviceMetrics availability", () => {
     });
   });
 
+  it("names the Servers that did not answer, not mixed, when the ones that answered have nothing", () => {
+    expect(serviceMetrics(read({ machines: [answering(A, nothing())], unanswered: [failing(B, refusal)] }), names).availability).toEqual({
+      type: "needs_upgrade",
+      servers: [{ id: B, name: "web-2" }],
+    });
+    expect(serviceMetrics(read({ machines: [answering(A, nothing())], unanswered: [failing(B, refusal), failing(D, down)] }), names).availability).toEqual({
+      type: "unanswered",
+      servers: [{ id: D, name: D }],
+      needsUpgrade: [{ id: B, name: "web-2" }],
+    });
+  });
+
   it("is unanswered when none answer and any did not, still listing the ones that need upgrade", () => {
     expect(serviceMetrics(read({ unanswered: [failing(B, refusal), failing(D, down)] }), names).availability).toEqual({
       type: "unanswered",
@@ -86,6 +101,7 @@ describe("serviceMetrics availability", () => {
 
   it("has no readings when no Server is asked, or every answer is empty", () => {
     expect(serviceMetrics(read({}), names).availability).toEqual({ type: "no_readings" });
+    expect(serviceMetrics(read({ machines: [answering(A, nothing()), answering(B, nothing())] }), names).availability).toEqual({ type: "no_readings" });
     const empty = { service: [servicePoint(0)] };
     expect(serviceMetrics(read({ points: empty, machines: [answering(A, reply(empty))] }), names).availability).toEqual({ type: "no_readings" });
   });
@@ -122,31 +138,65 @@ describe("serviceMetrics series", () => {
     });
   });
 
-  it("drops samples inside a gap, merges gaps across Servers, and never fills them", () => {
-    const at = (t: number) => servicePoint(t, { cpu_usec: 1_000_000 });
-    const top = { service: [at(0), at(1000), at(2000), at(3000), at(4000), at(5000)] };
+  const cpu = (t: number, usec = 1_000_000) => servicePoint(t, { cpu_usec: usec });
+  const every = (from: number, to: number, usec?: number) => Array.from({ length: (to - from) / 1000 }, (_, index) => cpu(from + index * 1000, usec));
+
+  it("keeps a Service's readings when another Server answers that it has none", () => {
+    const onA = { service: every(0, 10_000, 500_000) };
+    const metrics = serviceMetrics(read({ points: onA, machines: [answering(A, reply(onA)), answering(B, nothing())] }), names);
+    expect(metrics.availability).toEqual({ type: "normal" });
+    expect(metrics.allGaps).toEqual([]);
+    expect(metrics.all.cpu).toEqual(onA.service.map((point) => ({ at: point.ts / 1e6, value: 0.5 })));
+    expect(metrics.byServer.map((entry) => entry.server.id)).toEqual([A]);
+  });
+
+  it("keeps the early readings of one Server when another starts mid-range", () => {
+    const onA = every(0, 10_000);
+    const onB = every(5000, 10_000);
+    const top = { service: [...every(0, 5000), ...every(5000, 10_000, 2_000_000)] };
     const metrics = serviceMetrics(read({
       points: top,
       machines: [
-        answering(A, reply({ service: [at(0), at(3000)] }, { gaps: [{ from: ms(1000), to: ms(3000), reason: "not_sampled" }] })),
-        answering(B, reply({ service: [at(0)] }, { gaps: [{ from: ms(2500), to: ms(4000), reason: "timeout" }] })),
+        answering(A, reply({ service: onA })),
+        answering(B, reply({ service: onB }, { gaps: [{ from: ms(0), to: ms(5000), reason: "not_sampled" }] })),
       ],
     }), names);
-    expect(metrics.allGaps).toEqual([{ from: 1000, to: 4000, reason: "not_sampled" }]);
-    expect(metrics.all.cpu.map((sample) => sample.at)).toEqual([0, 4000, 5000]);
-    const a = metrics.byServer.find((entry) => entry.server.id === A);
-    expect(a?.gaps).toEqual([{ from: 1000, to: 3000, reason: "not_sampled" }]);
-    expect(a?.series.cpu.map((sample) => sample.at)).toEqual([0, 3000]);
+    expect(metrics.allGaps).toEqual([]);
+    expect(metrics.all.cpu.map((sample) => sample.value)).toEqual([1, 1, 1, 1, 1, 2, 2, 2, 2, 2]);
+    expect(metrics.byServer.find((entry) => entry.server.id === B)?.gaps).toEqual([{ from: 0, to: 5000, reason: "not_sampled" }]);
   });
 
-  it("lists answering Servers with points or markers, by name with numbers in order", () => {
+  it("gaps the sum only where no Server has data, as a timeout if any Server timed out there", () => {
+    const top = { service: [cpu(0), cpu(1000), cpu(2000), cpu(2600), cpu(3000), cpu(4000)] };
+    const metrics = serviceMetrics(read({
+      points: top,
+      machines: [
+        answering(A, reply({ service: [cpu(0), cpu(3000), cpu(4000)] }, { gaps: [{ from: ms(1000), to: ms(3000), reason: "not_sampled" }] })),
+        answering(B, reply({ service: [cpu(0), cpu(1000), cpu(2000)] }, { gaps: [{ from: ms(2500), to: ms(10_000), reason: "timeout" }] })),
+      ],
+    }), names);
+    expect(metrics.allGaps).toEqual([{ from: 2500, to: 3000, reason: "timeout" }]);
+    expect(metrics.all.cpu.map((sample) => sample.at)).toEqual([0, 1000, 2000, 3000, 4000]);
+    const a = metrics.byServer.find((entry) => entry.server.id === A);
+    expect(a?.gaps).toEqual([{ from: 1000, to: 3000, reason: "not_sampled" }]);
+    expect(a?.series.cpu.map((sample) => sample.at)).toEqual([0, 3000, 4000]);
+  });
+
+  it("gaps the whole range when every Server timed out", () => {
+    const metrics = serviceMetrics(read({ machines: [answering(A, nothing("timeout")), answering(B, nothing())] }), names);
+    expect(metrics.allGaps).toEqual([{ from: 0, to: 10_000, reason: "timeout" }]);
+    expect(metrics.byServer).toEqual([]);
+  });
+
+  it("lists answering Servers with readings or markers, by name with numbers in order", () => {
     const some = { service: [servicePoint(0, { mem_bytes: 1 })] };
     const metrics = serviceMetrics(read({
       points: some,
       machines: [
         answering(A, reply(some)),
-        answering(C, reply({ service: [] })),
-        answering(B, reply({ service: [] }, { markers: [marker(B, 0, { kind: "restart" })] })),
+        answering(C, nothing()),
+        answering(D, reply({ service: [servicePoint(0)] })),
+        answering(B, { ...nothing(), markers: [marker(B, 0, { kind: "restart" })] }),
       ],
     }), names);
     expect(metrics.byServer.map((entry) => entry.server.name)).toEqual(["web-2", "web-10"]);
@@ -203,6 +253,18 @@ describe("serverMetrics", () => {
       ],
       gaps: [{ from: 1000, to: 2000, reason: "timeout" }],
     });
+  });
+
+  it("merges overlapping gaps as a timeout when either one is", () => {
+    const metrics = serverMetrics(read({
+      points: { machine: [] },
+      machines: [answering(A, reply({ machine: [] }, { gaps: [
+        { from: ms(0), to: ms(1500), reason: "not_sampled" },
+        { from: ms(1000), to: ms(2000), reason: "timeout" },
+        { from: ms(5000), to: ms(6000), reason: "not_sampled" },
+      ] }))],
+    }), names);
+    expect(metrics.gaps).toEqual([{ from: 0, to: 2000, reason: "timeout" }, { from: 5000, to: 6000, reason: "not_sampled" }]);
   });
 
   it("classifies a Server that refused or did not answer", () => {

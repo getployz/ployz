@@ -90,11 +90,10 @@ function availability(history: MetricHistory, names: Names, hasSample: boolean):
   const refs = (failures: readonly MachineFailure<RpcError>[]) => failures.map((failure) => serverRef(failure.machine_id, names));
   const refused = refs(history.unanswered.filter((failure) => needsUpgrade(failure.error)));
   const silent = refs(history.unanswered.filter((failure) => !needsUpgrade(failure.error)));
-  const answered = history.machines.length;
-  if (answered > 0 && history.unanswered.length > 0) return { type: "mixed", needsUpgrade: refused, unanswered: silent };
-  if (answered === 0 && silent.length > 0) return { type: "unanswered", servers: silent, needsUpgrade: refused };
-  if (answered === 0 && refused.length > 0) return { type: "needs_upgrade", servers: refused };
-  return hasSample ? { type: "normal" } : { type: "no_readings" };
+  if (history.unanswered.length === 0) return hasSample ? { type: "normal" } : { type: "no_readings" };
+  if (hasSample) return { type: "mixed", needsUpgrade: refused, unanswered: silent };
+  // A Server that answered with nothing only says the Service is not there, so the ones that did not answer explain the empty chart.
+  return silent.length > 0 ? { type: "unanswered", servers: silent, needsUpgrade: refused } : { type: "needs_upgrade", servers: refused };
 }
 
 const toGap = (gap: MetricGap): Gap => ({ from: toMs(gap.from), to: toMs(gap.to), reason: gap.reason });
@@ -103,10 +102,29 @@ function mergeGaps(gaps: readonly Gap[]): Gap[] {
   const merged: Gap[] = [];
   for (const gap of [...gaps].sort((left, right) => left.from - right.from)) {
     const last = merged.at(-1);
-    if (last !== undefined && gap.from <= last.to) merged[merged.length - 1] = { ...last, to: Math.max(last.to, gap.to) };
+    if (last !== undefined && gap.from <= last.to) merged[merged.length - 1] = { from: last.from, to: Math.max(last.to, gap.to), reason: worse(last, gap) };
     else merged.push(gap);
   }
   return merged;
+}
+
+const worse = (left: Gap, right: Gap): Gap["reason"] => left.reason === "timeout" || right.reason === "timeout" ? "timeout" : "not_sampled";
+
+/** The spans inside a gap of both merged lists. */
+function intersectGaps(left: readonly Gap[], right: readonly Gap[]): Gap[] {
+  const both: Gap[] = [];
+  let i = 0;
+  let j = 0;
+  for (;;) {
+    const l = left[i];
+    const r = right[j];
+    if (l === undefined || r === undefined) return both;
+    const from = Math.max(l.from, r.from);
+    const to = Math.min(l.to, r.to);
+    if (from < to) both.push({ from, to, reason: worse(l, r) });
+    if (l.to < r.to) i++;
+    else j++;
+  }
 }
 
 const inGap = (at: number, gaps: readonly Gap[]) => gaps.some((gap) => at >= gap.from && at < gap.to);
@@ -157,15 +175,19 @@ export function serviceMetrics(read: MetricRead, names: Names): ServiceMetrics {
     return { availability: { type: "offline" }, window: read.window, stepMs: null, all: EMPTY_SERVICE, allGaps: [], byServer: [], markers: [] };
   }
   const { history } = read;
-  const replyGaps = new Map(history.machines.map((machine) => [machine.machine_id, machine.value.gaps.map(toGap)] as const));
-  const allGaps = mergeGaps([...replyGaps.values()].flat());
+  const replies = history.machines.map((machine) => ({
+    server: serverRef(machine.machine_id, names),
+    reply: machine.value,
+    gaps: mergeGaps(machine.value.gaps.map(toGap)),
+  }));
+  // Every up Server answers, and one without the Service answers a gap over the whole range,
+  // so the sum is unmeasured only where no Server has data.
+  const allGaps = replies.length === 0 ? [] : mergeGaps(replies.map((entry) => entry.gaps).reduce(intersectGaps));
   const all = serviceSeries(servicePoints(history.points), allGaps);
-  const byServer = history.machines
-    .filter((machine) => servicePoints(machine.value.points).length > 0 || (machine.value.markers ?? []).length > 0)
-    .map((machine) => {
-      const gaps = replyGaps.get(machine.machine_id) ?? [];
-      return { server: serverRef(machine.machine_id, names), series: serviceSeries(servicePoints(machine.value.points), gaps), gaps };
-    })
+  const byServer = replies
+    .map(({ server, reply, gaps }) => ({ server, series: serviceSeries(servicePoints(reply.points), gaps), gaps, markers: reply.markers ?? [] }))
+    .filter((entry) => entry.markers.length > 0 || hasSamples(Object.values(entry.series)))
+    .map(({ server, series: own, gaps }) => ({ server, series: own, gaps }))
     .sort((left, right) => byName(left.server, right.server));
   return {
     availability: availability(history, names, hasSamples(Object.values(all))),
