@@ -817,6 +817,38 @@ fn discard_review_whole_runtime_node_dominates_draft_children() {
     );
 }
 
+fn unset(store: &ConfigStore, who: &Actor, path: &str) {
+    store
+        .write(
+            who,
+            &Edit {
+                environment: EnvironmentRef::default(),
+                expect: None,
+                changes: vec![Change::Unset {
+                    path: SettingPath::parse(path).unwrap(),
+                }],
+            },
+        )
+        .unwrap();
+}
+
+fn history_preview(
+    store: &ConfigStore,
+    who: &Actor,
+    revision: u64,
+    action: ployz_store::HistoryAction,
+) -> Result<ployz_store::HistoryPreview, RpcError> {
+    store.read(
+        who,
+        &ployz_store::HistoryPreviewQuery {
+            environment: EnvironmentRef::default(),
+            revision: Revision(revision),
+            action,
+            change: None,
+        },
+    )
+}
+
 fn stage_history(
     store: &ConfigStore,
     who: &Actor,
@@ -1248,7 +1280,7 @@ fn history_undo_of_a_config_file_replaced_by_one_inside_it_undoes_both() {
 }
 
 #[test]
-fn history_restores_sealed_versions_and_never_downgrades_a_secret_to_plaintext() {
+fn history_never_changes_a_sealed_value_and_never_shows_it() {
     let (store, who) = shop();
     set(&store, &who, "web.env.TOKEN", json!("plain"));
     publish(&store, &who, None).unwrap();
@@ -1283,18 +1315,155 @@ fn history_restores_sealed_versions_and_never_downgrades_a_secret_to_plaintext()
     )
     .unwrap();
     assert!(!history.contains("private-value"));
-    stage_history(&store, &who, 2, ployz_store::HistoryAction::Restore);
-    assert_eq!(
-        value(&store, &who, "web.env.TOKEN"),
-        Some(json!({ "secret": true }))
-    );
-    assert_eq!(
-        store.read(&who, &query(1)).unwrap_err().code,
-        RpcErrorCode::Conflict
-    );
+    for (revision, action) in [
+        (1, ployz_store::HistoryAction::Restore),
+        (2, ployz_store::HistoryAction::Restore),
+        (3, ployz_store::HistoryAction::Undo),
+        (2, ployz_store::HistoryAction::Undo),
+    ] {
+        let preview = history_preview(&store, &who, revision, action).unwrap();
+        assert_eq!(preview.total_count, 0, "#{revision} {action:?}");
+        assert!(
+            !serde_json::to_string(&preview)
+                .unwrap()
+                .contains("private-value")
+        );
+        stage_history(&store, &who, revision, action);
+        assert_eq!(diff(&store, &who).draft_count, 0);
+    }
     let deployed = backend::deploy(&store, &who, "production", 1);
-    assert!(deployed.to_string().contains("first-private-value"));
-    assert!(!deployed.to_string().contains("second-private-value"));
+    assert!(deployed.to_string().contains("second-private-value"));
+    assert!(!deployed.to_string().contains("first-private-value"));
+}
+
+#[test]
+fn history_undo_of_a_sealed_rotation_by_delete_and_add_keeps_the_new_value() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "web.env.ROT_KEY",
+        json!({ "secret": "old-private" }),
+    );
+    publish(&store, &who, None).unwrap();
+    unset(&store, &who, "web.env.ROT_KEY");
+    set(
+        &store,
+        &who,
+        "web.env.ROT_KEY",
+        json!({ "secret": "new-private" }),
+    );
+    publish(&store, &who, None).unwrap();
+    let preview = history_preview(&store, &who, 2, ployz_store::HistoryAction::Undo).unwrap();
+    assert_eq!(preview.total_count, 0);
+    stage_history(&store, &who, 2, ployz_store::HistoryAction::Undo);
+    assert_eq!(diff(&store, &who).draft_count, 0);
+    let deployed = backend::deploy(&store, &who, "production", 1);
+    assert!(deployed.to_string().contains("new-private"));
+    assert!(!deployed.to_string().contains("old-private"));
+}
+
+#[test]
+fn history_keeps_a_sealed_key_deleted_since_deleted() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "web.env.TOKEN",
+        json!({ "secret": "private-value" }),
+    );
+    publish(&store, &who, None).unwrap();
+    unset(&store, &who, "web.env.TOKEN");
+    publish(&store, &who, None).unwrap();
+    for (revision, action) in [
+        (1, ployz_store::HistoryAction::Restore),
+        (2, ployz_store::HistoryAction::Undo),
+    ] {
+        let preview = history_preview(&store, &who, revision, action).unwrap();
+        assert_eq!(preview.total_count, 0, "#{revision} {action:?}");
+        stage_history(&store, &who, revision, action);
+        assert_eq!(value(&store, &who, "web.env.TOKEN"), None);
+    }
+}
+
+#[test]
+fn history_keeps_a_sealed_key_added_since() {
+    let (store, who) = shop();
+    set(&store, &who, "web.env.PLAIN", json!("plain-value"));
+    publish(&store, &who, None).unwrap();
+    set(
+        &store,
+        &who,
+        "web.env.TOKEN",
+        json!({ "secret": "private-value" }),
+    );
+    publish(&store, &who, None).unwrap();
+    for (revision, action) in [
+        (1, ployz_store::HistoryAction::Restore),
+        (2, ployz_store::HistoryAction::Undo),
+    ] {
+        let preview = history_preview(&store, &who, revision, action).unwrap();
+        assert_eq!(preview.total_count, 0, "#{revision} {action:?}");
+        stage_history(&store, &who, revision, action);
+        assert_eq!(
+            value(&store, &who, "web.env.TOKEN"),
+            Some(json!({ "secret": true }))
+        );
+    }
+}
+
+#[test]
+fn history_never_brings_back_plain_text_of_a_key_once_sealed() {
+    let (store, who) = shop();
+    set(&store, &who, "web.env.TOKEN", json!("plain-value"));
+    publish(&store, &who, None).unwrap();
+    set(
+        &store,
+        &who,
+        "web.env.TOKEN",
+        json!({ "secret": "private-value" }),
+    );
+    publish(&store, &who, None).unwrap();
+    unset(&store, &who, "web.env.TOKEN");
+    publish(&store, &who, None).unwrap();
+    let error = history_preview(&store, &who, 1, ployz_store::HistoryAction::Restore).unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::Conflict);
+    assert_eq!(error.message, "TOKEN was sealed. Set it again.");
+    assert_eq!(value(&store, &who, "web.env.TOKEN"), None);
+}
+
+#[test]
+fn history_never_brings_back_plain_text_of_a_key_sealed_only_between_saves() {
+    let (store, who) = shop();
+    set(&store, &who, "web.env.TOKEN", json!("plain-value"));
+    publish(&store, &who, None).unwrap();
+    set(
+        &store,
+        &who,
+        "web.env.TOKEN",
+        json!({ "secret": "private-value" }),
+    );
+    unset(&store, &who, "web.env.TOKEN");
+    publish(&store, &who, None).unwrap();
+    for change in [None, Some("web.env.TOKEN")] {
+        let query = ployz_store::HistoryPreviewQuery {
+            environment: EnvironmentRef::default(),
+            revision: Revision(if change.is_some() { 2 } else { 1 }),
+            action: if change.is_some() {
+                ployz_store::HistoryAction::Undo
+            } else {
+                ployz_store::HistoryAction::Restore
+            },
+            change: change.map(Into::into),
+        };
+        let error = store.read(&who, &query).unwrap_err();
+        assert_eq!(error.code, RpcErrorCode::Conflict, "{change:?}");
+        assert_eq!(
+            error.message, "TOKEN was sealed. Set it again.",
+            "{change:?}"
+        );
+    }
+    assert_eq!(value(&store, &who, "web.env.TOKEN"), None);
 }
 
 #[test]

@@ -10,6 +10,7 @@ mod authored;
 pub(crate) mod diff;
 pub(crate) mod history;
 pub(crate) mod publish;
+pub(crate) mod sealed;
 
 use std::collections::BTreeSet;
 
