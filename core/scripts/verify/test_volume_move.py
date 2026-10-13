@@ -84,6 +84,12 @@ class ClusterModel:
         self.workers = set()
         self.receiving = False
         self.events = []
+        # Work that lives inside a daemon or plugin process: a restart of that Machine drops it.
+        self.tasks = []
+        self.interrupted = []
+        self.restarts = []
+        self.pulls = set()
+        self.unreadable = {}
         # Each Machine's clock runs offset seconds ahead of the host, and one exec takes latency seconds.
         self.offset = {"machine-1": 0.0, "machine-2": 0.0}
         self.latency = {"machine-1": 0.0, "machine-2": 0.0}
@@ -114,9 +120,24 @@ class ClusterModel:
         """Something happens in Cloud or on a Machine once the clock reaches moment."""
         self.events.append((moment, event))
 
+    def task(self, machine, moment, name, event):
+        """In-process work on machine that does something once the clock reaches moment, unless a restart drops it."""
+        self.tasks.append((moment, machine, name, event))
+
+    def restart(self, machine):
+        """systemd stops the unit's whole cgroup: in-process tasks and zfs children die, the `pull` property stays."""
+        self.restarts.append((machine, self.clock()))
+        self.interrupted += [(machine, name) for _, where, name, _ in self.tasks if where == machine]
+        self.tasks = [task for task in self.tasks if task[1] != machine]
+        if self.receiving_on(machine):
+            self.interrupted.append((machine, "zfs receive"))
+            self.receiving = (set(self.offset) if self.receiving is True else set(self.receiving)) - {machine}
+
     def tick(self):
         due = [event for moment, event in self.events if self.clock and self.clock() >= moment]
         self.events = [(moment, event) for moment, event in self.events if not (self.clock and self.clock() >= moment)]
+        due += [event for moment, _, _, event in self.tasks if self.clock and self.clock() >= moment]
+        self.tasks = [task for task in self.tasks if not (self.clock and self.clock() >= task[0])]
         for event in due:
             event()
 
@@ -217,6 +238,12 @@ class ClusterModel:
         return 0, "{}"
 
     def guest(self, machine, script):
+        if "systemctl restart ployz.service" in script:
+            self.restart(machine)
+            if "PLOYZD_FAULT" not in script:
+                return 0, ""
+        if "ployz:pull" in script:
+            return self.quiet(machine)
         if "PLOYZD_FAULT" in script:
             value = script.split("PLOYZD_FAULT=", 2)[-1].split("'", 1)[0] if "echo" in script else None
             if value is None and self.disarm_fails:
@@ -260,6 +287,10 @@ class ClusterModel:
                 lines.append("ct def exited db-old")
             return 0, "\n".join(lines) + "\n"
         if "pgrep" in script:
+            if self.unreadable.get(machine) == "exec":
+                return 255, ""
+            if self.unreadable.get(machine) == "pgrep":
+                return 0, "no\n"
             return 0, "yes\n" if self.receiving_on(machine) else "no\n"
         if "pg_isready" in script:
             return 0, ""
@@ -270,6 +301,23 @@ class ClusterModel:
             present = self.acks[:-1] if self.mutation == "lost" else self.acks
             return 0, "\n".join(str(ack) for ack in present) + "\n"
         return 0, ""
+
+
+    def quiet(self, machine):
+        """The clean start's read: every dataset's `ployz:pull` and every zfs receive, each with its exit code."""
+        unreadable = self.unreadable.get(machine)
+        if unreadable == "exec":
+            return 255, ""
+        zfs = 1 if unreadable == "pull" else 0
+        pgrep = 2 if unreadable == "pgrep" else 0 if self.receiving_on(machine) else 1
+        lines = [f"zfs {zfs}", f"pgrep {pgrep}"]
+        if not zfs:
+            pull = "move-1" if machine in self.pulls else "-"
+            lines += ["pull ployz\t-", f"pull ployz/ployz-mirror/{PHYSICAL}\t{pull}",
+                      f"pull ployz/ployz-mirror/{PHYSICAL}/fs\t-"]
+        if not pgrep:
+            lines.append(f"recv 4242 /usr/sbin/zfs receive -u -s ployz/ployz-mirror/{PHYSICAL}/fs")
+        return 0, "\n".join(lines) + "\n"
 
 
 class FakeProbe:
@@ -1448,6 +1496,138 @@ class VolumeMoveTests(unittest.TestCase):
         self.assertEqual((result["run"], result["recovery"]), ("lost", ["done"]), result)
         self.assertEqual(result["failures"], [f"the first run {first[0]['id']} ended lost and no Inngest run claimed "
                                               "it, so the trigger evidence is not its"], result)
+
+    def admit_pull(self, model, machine, spawns, ends):
+        """An earlier sync's pull is admitted on machine: `pull` is set now, its receive spawns and ends later."""
+        now = model.clock()
+        model.pulls.add(machine)
+
+        def finish():
+            model.receiving = False
+            model.pulls.discard(machine)
+
+        def spawn():
+            model.receiving = {machine}
+            model.task(machine, now + ends, "pull", finish)
+        model.task(machine, now + spawns, "pull", spawn)
+
+    def run_with(self, name, before=None, ends=60, effect=None):
+        """Run one case whose first move is claimed and ends failed; before(model) runs right after prepare."""
+        case = next(case for case in volume_move.CASES + volume_move.soak_cases() if case["name"] == name)
+        shutil.rmtree(self.root / "out", ignore_errors=True)
+        checks, model = self.checks()
+        prepare = checks.prepare
+
+        def prepared(case, other):
+            prepare(case, other)
+            if before:
+                before(model)
+        checks.prepare = prepared
+        self.first_move(model, ends, effect=effect)
+        with redirect_stdout(io.StringIO()):
+            result = checks.run_all([case])["cases"][0]
+        return result, model
+
+    def assert_not_credited(self, result):
+        self.assertFalse(result["passed"], result)
+        self.assertFalse(any("no Inngest run claimed" in failure for failure in result["failures"]), result)
+        if not result.get("skipped"):
+            self.assertIn("the trigger never fired before the run ended", result["failures"], result)
+
+    def test_a_pull_admitted_before_its_receive_exists_is_not_credited_to_the_first_run(self):
+        # Codex r4 finding 1 and Opus S1: no process exists at the clean start, and the receive spawns 30 s later.
+        for name in ("soak-1-rounds-runner-kill", "soak-1-rounds-kill-ployz-writer", "soak-1-rounds-kill-docker-other"):
+            with self.subTest(name):
+                result, _ = self.run_with(name, lambda model: self.admit_pull(model, "machine-2", 30, 40))
+                self.assert_not_credited(result)
+
+    def test_a_cut_an_earlier_move_left_waiting_in_the_daemon_is_not_credited_to_the_first_run(self):
+        # Codex r4's detached cut: the cut waits for the admission turn and stops the writer after the clean start.
+        def waiting(model):
+            model.task("machine-1", model.clock() + 20, "cut", lambda: model.stop("machine-1"))
+        result, model = self.run_with("soak-3-cut-runner-kill", waiting)
+        self.assert_not_credited(result)
+        self.assertIn(("machine-1", "cut"), model.interrupted)
+
+    def test_a_stop_already_handed_to_docker_before_the_barrier_is_not_credited_to_the_first_run(self):
+        # dockerd outlives the daemon restart, and its default stop timeout lands the stop up to 10 s after it.
+        def handed(model):
+            moment = model.clock() + 8
+            model.at(moment, lambda: model.stop("machine-1", moment))
+        result, _ = self.run_with("soak-3-cut-runner-kill", handed)
+        self.assert_not_credited(result)
+
+    def test_a_clock_that_steps_after_calibration_fails_the_case(self):
+        # Codex r4 finding 2 and Opus S2: a warm-round fault at +2, the writer's stop at +10, and maybe a final fault.
+        for name, machine, step, final, ends, passes in (
+                ("trigger Machine steps forward 20 s", "machine-2", 20.0, None, 11, False),
+                ("writer steps back 9 s", "machine-1", -9.0, None, 11, False),
+                ("no step, a real final fault", None, 0.0, 11, 13, True)):
+            with self.subTest(name):
+                def effect(begun, model=None, machine=machine, step=step, final=final):
+                    model = self.model
+                    if machine:
+                        model.at(begun + 1, lambda: model.offset.update({machine: model.offset[machine] + step}))
+                    model.log_fault("machine-2", begun + 2, "fault: delaying switch verb")
+                    model.at(begun + 10, lambda: model.stop("machine-1", begun + 10))
+                    if final:
+                        model.at(begun + final, lambda: model.log_fault("machine-2", begun + final,
+                                                                        "fault: delaying switch verb"))
+
+                def keep(model):
+                    self.model = model
+                result, _ = self.run_with("soak-4-final-runner-kill", keep, ends, effect)
+                self.assertEqual((result["run"], result["recovery"]), ("failed", ["done"]), result)
+                if passes:
+                    self.assertTrue(result["passed"], result)
+                else:
+                    self.assertFalse(result["passed"], result)
+                    self.assertTrue(any(failure.startswith(f"the clock on {machine} moved")
+                                        for failure in result["failures"]), result["failures"])
+
+    def test_a_clean_start_read_that_does_not_prove_it_ran_skips_the_case(self):
+        # Codex r4 finding 3: the clean-start read fails while the leftover it would have shown is real, and the
+        # trigger polls that follow succeed.
+        for unreadable in ("exec", "pgrep", "pull"):
+            with self.subTest(unreadable):
+                def leftover(model, unreadable=unreadable):
+                    model.unreadable = {"machine-2": unreadable}
+                    if unreadable == "pull":
+                        self.admit_pull(model, "machine-2", 30, 40)
+                    else:
+                        model.receiving = {"machine-2"}
+                        model.at(model.clock() + 30, lambda: setattr(model, "receiving", False))
+                    cli = model.cli
+
+                    def readable_once_requested(args):
+                        if args[:2] == ["volume", "move"]:
+                            model.unreadable = {}
+                        return cli(args)
+                    model.cli = readable_once_requested
+                result, _ = self.run_with("soak-1-rounds-runner-kill", leftover)
+                self.assertFalse(result["passed"], result)
+                self.assertIn("could not read", result.get("skipped") or "", result)
+                self.assertIn("on machine-2", result.get("skipped") or "", result)
+
+    def test_the_barrier_waits_out_a_pull_and_a_receive_instead_of_killing_them(self):
+        def receive_in_run(begun, model=None):
+            model = self.model
+            model.at(begun + 0.5, lambda: setattr(model, "receiving", {"machine-2"}))
+            model.at(begun + 2, lambda: setattr(model, "receiving", False))
+        for name, leftover in (
+                ("a pull admitted with no process yet", lambda model: self.admit_pull(model, "machine-2", 30, 40)),
+                ("a receive already running", lambda model: (
+                    model.pulls.add("machine-2"), setattr(model, "receiving", {"machine-2"}),
+                    model.task("machine-2", model.clock() + 20, "pull", lambda: (
+                        setattr(model, "receiving", False), model.pulls.discard("machine-2")))))):
+            with self.subTest(name):
+                def before(model, leftover=leftover):
+                    self.model = model
+                    leftover(model)
+                result, model = self.run_with("soak-1-rounds-runner-kill", before, 2, receive_in_run)
+                self.assertTrue(result["passed"], result)
+                self.assertEqual(model.interrupted, [])
+                self.assertEqual(model.pulls, set())
 
     def test_each_planted_defect_fails_the_run(self):
         for mutation in ("two-writers", "stopped", "snapshots", "lost"):
