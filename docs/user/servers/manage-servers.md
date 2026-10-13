@@ -52,7 +52,7 @@ Click a server. Its page shows its status and public IP address, then:
 - **Builds**: **Run builds here** and **Builds at once**. See
   [Where builds run](../builds/where-builds-run.md#build-on-your-servers).
 
-![A server's page: Running here, Services and Builds](../images/server-running-here.png)
+![A server's page: Running here with each service's CPU and memory, then Services](../images/server-running-here.png)
 
 An entry marked **Not in any Project** is left over from a deleted project or environment.
 **Remove** deletes its containers and its volumes, data included, from every server.
