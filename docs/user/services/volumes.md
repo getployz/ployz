@@ -77,9 +77,8 @@ see [When a server goes down](scaling.md#when-a-server-goes-down).
 A volume's copies are the places its data lives besides the server that writes it. With Ployz
 Cloud a volume can have a mirror, a read-only copy on a second server that refreshes on every
 deploy and every 15 minutes. A move leaves an old copy on the server it left. Open the volume and
-look under **Copies**. Its top line says "No copies" in amber until the volume has a mirror. An
-old copy doesn't count, since it never refreshes. The line says "Mirror behind" when the mirror is
-more than an hour old.
+look under **Copies**. An old copy never refreshes, so it doesn't protect the data. A mirror's age
+turns amber with a **⚠** once it is more than an hour old.
 
 Copy changes, like a new mirror or a restore, go out with your next deploy. **Redeploy** on a past
 deployment ships what that deployment froze, so it leaves them staged and says **Copies wait for

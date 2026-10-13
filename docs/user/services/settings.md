@@ -194,9 +194,8 @@ Shown once a healthcheck is on. 300 seconds by default, which is also the most. 
 doesn't pass in time is stopped, and the old version keeps serving. See
 [My new version never becomes healthy](../troubleshooting/deployments.md#my-new-version-never-becomes-healthy).
 
-A replica that passed keeps getting traffic if its check fails later, and its service shows
-**Healthcheck failing**. See
-[My service shows Healthcheck failing](../troubleshooting/deployments.md#my-service-shows-healthcheck-failing).
+A replica that passed keeps getting traffic if its check fails later, and its service card shows an amber **⚠**. See
+[My service shows an amber ⚠](../troubleshooting/deployments.md#my-service-shows-an-amber-).
 
 ### Restart policy
 

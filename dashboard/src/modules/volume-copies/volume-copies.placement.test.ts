@@ -3,7 +3,7 @@ import type { MachineId } from "@ployz/sdk";
 import type { PlacementRow } from "#/modules/volume-placement/volume-placement";
 import { COPIES, member, run } from "#/modules/volume-run/volume-run.test-fixture";
 import { copiesFromPlacement } from "./volume-copies.placement";
-import { cardLine, safetyLine, traySpeech } from "./volume-copies";
+import { cardLine, traySpeech } from "./volume-copies";
 
 const volume = { id: "v1", name: "pg-data" };
 const id = (server: string) => server.padEnd(32, "0") as MachineId;
@@ -68,7 +68,6 @@ describe("copiesFromPlacement", () => {
     const model = copies(row(["web-2"]), [member("web-1", "writer"), member("web-2", "unanswered")], null, failed, done);
     const [mirror] = model.elsewhere;
     expect(mirror).toMatchObject({ kind: "mirror", skipped: "silent", refreshedAt: new Date("2026-10-09T00:00:00.000Z") });
-    expect(safetyLine(model, now)).toEqual({ tone: "warn", words: "Mirror behind", detail: "3 hours ago" });
     expect(mirror && cardLine(mirror, now).stale).toBe(true);
   });
 
@@ -79,7 +78,6 @@ describe("copiesFromPlacement", () => {
     const model = copies(row(["web-2"]), undefined, null, done, done);
     const [mirror] = model.elsewhere;
     expect(mirror).toMatchObject({ kind: "mirror", skipped: null, refreshedAt: new Date(now.getTime() - 5 * 60_000) });
-    expect(safetyLine(model, now).tone).not.toBe("warn");
     expect(mirror && cardLine(mirror, now)).toMatchObject({ stale: false, age: "5 minutes ago" });
   });
 
@@ -100,7 +98,6 @@ describe("copiesFromPlacement", () => {
     const model = copies(row(["web-2"]), [member("web-1", "writer"), fresh], null, done, done);
     const [mirror] = model.elsewhere;
     expect(mirror).toMatchObject({ kind: "mirror", refreshedAt: null });
-    expect(safetyLine(model, now)).toEqual({ tone: "warn", words: "Mirror behind", detail: null });
     expect(mirror && cardLine(mirror, now).stale).toBe(true);
   });
 

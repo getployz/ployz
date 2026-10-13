@@ -19,7 +19,7 @@ import { InfoHint } from "#/components/info-hint";
 import { Switch } from "#/components/ui/switch";
 import { serviceSettingRows } from "#/modules/config-store/store-services";
 import { SettingsSection, SHARED_VOLUME_WHY } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
-import { SafetyLine, useVolumeCopies, VolumeCopiesPanel } from "./StoreVolumeCopies";
+import { useVolumeCopies, VolumeCopiesPanel } from "./StoreVolumeCopies";
 import { mirrorResourceId } from "#/modules/volume-placement/volume-placement";
 import { useStagedPlacements } from "#/modules/volume-placement/volume-placement.hooks";
 import { VOLUME_PAGES, volumePageSchema } from "./volume-pages";
@@ -88,10 +88,6 @@ function VolumeDrawer({ params, environment, volume, volumes, services, settings
   const nameSchema = Schema.String.check(Schema.makeFilter<string>((name) => dnsLabelError(name)
     ?? (volumes.some((other) => other.id !== volume.id && other.name === name) ? `A volume here is already named ${name}.` : undefined)));
   const managed = volume.deployed && volume.storage.kind === "provisioned" && !removing;
-  const paths = new Set(volume.mounts.map((entry) => entry.path));
-  const mounted = paths.size > 1
-    ? volume.mounts.map((entry) => `${entry.service}:${entry.path}`).join(", ")
-    : volume.mounts.length > 0 ? `${[...new Set(volume.mounts.map((entry) => entry.service))].join(", ")} · ${[...paths][0]}` : "Not mounted";
   // A mirror shows only in Copies, whatever tab the address carried in.
   const page = copy !== null || !Schema.is(volumePageSchema)(tab) ? "copies" : tab;
   const open = (next: MachineId | null) => void navigate({
@@ -108,10 +104,6 @@ function VolumeDrawer({ params, environment, volume, volumes, services, settings
             {...changedProps(renamed)}
             onRename={(name) => writer.commit({ command: "rename_volume", environment, volume: volume.name, name })} />
         )}
-        <p className="truncate text-sm text-muted-foreground">
-          {mounted}
-        </p>
-        {managed && data.copies ? <SafetyLine copies={data.copies} /> : null}
       </CanvasInspectorHeader>
       <div className="flex min-h-0 flex-1 flex-col px-4 pb-4">
         <Tabs value={page}

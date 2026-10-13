@@ -74,11 +74,3 @@ it("opens a mirror on the Copies tab, even from a URL that had Settings open", a
   await openDrawer("/cloud/acme/shop/production/resources/vol~web-2?tab=settings", {}, "web-2" as MachineId);
   expect(screen.getByRole("tab", { name: "Copies" }).getAttribute("aria-selected")).toBe("true");
 });
-
-it("pairs each Service with its own mount path, and shows one path once when they share it", async () => {
-  await openDrawer("/cloud/acme/shop/production/resources/vol", { mounts: [{ service: "api", path: "/data" }, { service: "worker", path: "/cache" }] });
-  expect(screen.getByText("api:/data, worker:/cache")).toBeTruthy();
-  cleanup();
-  await openDrawer("/cloud/acme/shop/production/resources/vol", { mounts: [{ service: "api", path: "/data" }, { service: "worker", path: "/data" }] });
-  expect(screen.getByText("api, worker · /data")).toBeTruthy();
-});
