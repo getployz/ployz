@@ -496,9 +496,8 @@ impl ContainerRuntime {
         .map(drop)
     }
 
-    /// Stop the Container only if `still_wanted` holds after it is inspected, so
-    /// nothing is awaited between that answer and the stop request. A refusal wins
-    /// over a failed inspect.
+    /// Stop the Container only if `still_wanted` holds after it is inspected. A
+    /// refusal wins over a failed inspect.
     pub async fn stop_if<E: From<Error>>(
         &self,
         container_id: &ContainerId,

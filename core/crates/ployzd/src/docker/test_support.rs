@@ -38,8 +38,6 @@ pub(crate) struct FakeDocker {
     pub(crate) create_barrier: Option<Arc<tokio::sync::Barrier>>,
     /// A start waits here twice: once to announce it began, once to be released.
     pub(crate) start_barrier: Option<Arc<tokio::sync::Barrier>>,
-    /// The next Container inspect waits here twice: once to announce it began, once
-    /// to be released.
     pub(crate) inspect_hold: Arc<Mutex<Option<Arc<tokio::sync::Barrier>>>>,
     pub(crate) reject_list: Arc<AtomicBool>,
     /// Named mode: every stop fails and leaves the Container as it was.

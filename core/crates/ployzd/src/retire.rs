@@ -29,7 +29,6 @@ const DEBOUNCE: Duration = Duration::from_millis(200);
 const DEBOUNCE_LIMIT: Duration = Duration::from_secs(2);
 const MEMBERSHIP_SAMPLE_TIMEOUT: Duration = Duration::from_secs(1);
 const LIST_TIMEOUT: Duration = Duration::from_secs(10);
-/// Bounds the pointer read made while holding the exclusive admission turn.
 const UNDER_TURN_READ_TIMEOUT: Duration = Duration::from_secs(1);
 
 pub(crate) trait RetireHost: Clone + Send + Sync + 'static {
@@ -481,13 +480,6 @@ pub(crate) enum Outcome {
     Failed(io::Error),
 }
 
-/// Reads the Service pointer before taking the Container out of ingress, so a
-/// repoint during the round never drains it, and under the admission turn right
-/// before the stop request, so a repoint any time before the stop keeps it. A
-/// repoint during the drain routes the Container again only once it is kept,
-/// while the serving rule routes the retiring Containers whenever no pointed
-/// one may serve. The read under the turn fails closed after
-/// `UNDER_TURN_READ_TIMEOUT`.
 async fn retire<H: RetireHost>(
     host: &H,
     replicated: &ReplicatedStore,
@@ -504,17 +496,10 @@ async fn retire<H: RetireHost>(
         container: candidate.container,
     };
     host.drain().await;
-    let read = still_retired(replicated.clone(), candidate.clone());
-    host.remove(candidate.container, async move {
-        tokio::time::timeout(UNDER_TURN_READ_TIMEOUT, read)
-            .await
-            .unwrap_or_else(|_| {
-                Err(CorrosionError::Io(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "serving pointer read under the admission turn timed out",
-                )))
-            })
-    })
+    host.remove(
+        candidate.container,
+        still_retired_under_turn(replicated.clone(), candidate.clone()),
+    )
     .await
 }
 
@@ -523,6 +508,23 @@ async fn still_retired(
     candidate: Candidate,
 ) -> Result<bool, CorrosionError> {
     Ok(candidate.still_retired_by(&replicated.serving_pointers().await?))
+}
+
+async fn still_retired_under_turn(
+    replicated: ReplicatedStore,
+    candidate: Candidate,
+) -> Result<bool, CorrosionError> {
+    tokio::time::timeout(
+        UNDER_TURN_READ_TIMEOUT,
+        still_retired(replicated, candidate),
+    )
+    .await
+    .unwrap_or_else(|_| {
+        Err(CorrosionError::Io(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "serving pointer read under the admission turn timed out",
+        )))
+    })
 }
 
 /// Clears the stopping mark however the retire ends: a removed Container is
@@ -1449,8 +1451,6 @@ mod tests {
         point_at_a(cluster, vec![id("b")])
     }
 
-    /// Points `d3` at A while A stays in the retiring list, as a pointer row that
-    /// names a Container in both lists would.
     fn point_at_a_still_retiring_it(cluster: &Arc<FakeCluster>) -> Hook {
         point_at_a(cluster, vec![id("a"), id("b")])
     }
@@ -1701,7 +1701,6 @@ mod tests {
         assert!(machine.host.containers.stopping_ids_for_test().is_empty());
     }
 
-    /// Repoints `d3` at A while the inspect right before A's stop is in flight.
     async fn repoint_during_the_last_inspect_before_the_stop(retiring_a: bool) {
         let cluster = FakeCluster::start();
         let store = cluster.store();

@@ -43,8 +43,7 @@ impl<'serving> ServingContainer<'serving> {
 /// With a pointer, the pointed Containers serve alone while every pointed id is
 /// visible and one of them may serve. Otherwise the retiring Containers and the
 /// previous deploy's Containers serve beside them, so an identity routes nothing
-/// only when none of those may serve. A Container stopped on purpose is marked
-/// Stopping first and never may serve.
+/// only when none of those may serve.
 #[must_use]
 pub fn serving_containers<'serving, 'pointer>(
     containers: impl IntoIterator<Item = &'serving ServiceContainer>,

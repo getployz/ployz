@@ -271,11 +271,6 @@ impl LocalMachine {
         Ok(containers.inspect_managed(container, &machine_id).await?)
     }
 
-    /// Stop and remove one managed Container, already drained, under one exclusive
-    /// admission turn. `still_wanted` runs under that turn after the Container is
-    /// inspected and right before the stop request, so nothing that changes its
-    /// answer while the turn or the inspect is awaited reaches Docker. Answers
-    /// whether the Container was removed; false means `still_wanted` refused it.
     pub(crate) async fn remove_drained_if<W>(
         &self,
         container: ContainerId,
