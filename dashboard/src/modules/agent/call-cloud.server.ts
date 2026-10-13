@@ -24,6 +24,7 @@ import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.serv
 import { observeVolumeCopies, rpcErrorCode, sdkFailureMessage } from "#/modules/runtime/ployz.server";
 import type { VolumeRunInput } from "#/modules/volume-run/volume-run";
 import { dockerVolumeName } from "#/modules/volume-run/volume-run";
+import { refreshMirror } from "#/modules/volume-copies/volume-copies.refresh.server";
 import { Conflict, NotFound, Validation } from "#/server/public-error";
 
 export type CloudCall = { readonly ask: CloudQuery } | { readonly act: Act };
@@ -201,6 +202,15 @@ const act = Effect.fn("CallCloud.act")(function* (caller: Caller, { attempt, dig
     case "volume": {
       const found = yield* beforeWrite(findVolume(organizationId, action.volume));
       if (found === null) return noSuch("Volume");
+      if (action.run.run === "sync" && !action.run.full) {
+        const synced = yield* refreshMirror({ userId: caller.userId, organizationId }, found.environment, action.volume);
+        if (!synced.ok) return synced;
+        const now = Math.floor(Date.now() / 1000);
+        return answer<Operation>({
+          attempt: dashedAttempt(attempt), run: `sync ${found.name}`, state: "done", requested_at: now, ended_at: now,
+          reason: synced.lines.join("\n"), servers: [], kept: [], unanswered: [],
+        });
+      }
       const input = { volumeId: action.volume, environment: found.environment, ...volumeRunInput(action.run, found.name) };
       return yield* admitted(yield* runVolume(caller, input, call), { kind: "volume", volume: action.volume }, "Volume");
     }
