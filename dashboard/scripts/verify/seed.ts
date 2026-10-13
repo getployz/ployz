@@ -15,11 +15,12 @@
 //   #144        retargeted to dev and merged there
 //   #146        open: its On merge list lands API_URL and CACHE_TTL (over production's own change since), excludes
 //               LOG_LEVEL, and lands TOKEN Not set
-// A fake Server is paired so the Store admits Deploys; nothing answers it. VERIFY_REAL_SERVERS=1 leaves pairing to the
+// A fake Server is paired so the Store admits Deploys; nothing answers it, so production's Deploy stays queued and the seed
+// writes its Services into Applied State, as a finished one would. VERIFY_REAL_SERVERS=1 leaves pairing to the
 // real Servers that enroll next, so the queued Deploy and blog's pull requests are skipped: the Store admits none, and
 // opens no PR Environment, before a Server joins.
 import { createHash, createHmac, randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import type { Change, ConfigCommand, PullRequest } from "@ployz/sdk";
 import { callStore, storeSystem } from "#/modules/config-store/config-store.server";
@@ -116,10 +117,21 @@ const seed = Effect.gen(function* () {
       organizationId, machineId: MACHINE_ID as never, clusterKey: createHash("sha256").update(pairingSecret).digest("hex"),
       encryptedCapability: encryption.encrypt("cap"),
     });
+    const deployment = randomUUID();
     yield* write("deploy production", {
-      command: "admit", admit: "deploy", id: randomUUID(), environment: at("production"),
+      command: "admit", admit: "deploy", id: deployment, environment: at("production"),
       services: [], version: null, accept_volume_loss: [], message: "Ship everything",
     });
+    // Nothing runs the Deploy, so its Services land in Applied State here, as the Store's advance writes them for a
+    // finished one: without it every Service reads as undeployed. No Store command records an outcome without a
+    // Server answering, hence the statement.
+    yield* drizzle.execute(sql`
+      insert into config_applied (environment_id, node_id, organization_id, deployment_id, node_type, node)
+      select d.environment_id, service->>'id', d.organization_id, d.id, 'service', service::text
+      from config_deployment d
+      join config_saved s on s.environment_id = d.environment_id and s.revision = d.saved_revision
+      cross join jsonb_array_elements(s.intent::jsonb->'services') service
+      where d.id = ${deployment}`);
   }
 
   // A Branch with its own edits to save back; production then moves on, leaving unpublished edits on its canvas.

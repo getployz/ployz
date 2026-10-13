@@ -23,12 +23,12 @@ The seed (`scripts/verify/seed.ts`) writes through the app's own Config Store co
 | Where | What |
 | --- | --- |
 | organization `ada`, project `shop` | |
-| `production` | services web, api, postgres (with volume pg-data), worker, redis; config sentry (`config.yml` referencing redis and the secret `api.SECRET_KEY`, and `sentry.conf.py`) mounted on web and worker at `/etc/sentry`; domain acme.com on web; one queued Deploy "Ship everything"; unpublished api edits (image whoami v1.11.0, `FEATURE_SEARCH`) |
+| `production` | services web, api, postgres (with volume pg-data), worker, redis; config sentry (`config.yml` referencing redis and the secret `api.SECRET_KEY`, and `sentry.conf.py`) mounted on web and worker at `/etc/sentry`; domain acme.com on web; one queued Deploy "Ship everything", whose Services the seed writes into Applied State as if it had finished (without `SERVERS`), so they read as deployed; unpublished api edits (image whoami v1.11.0, `FEATURE_SEARCH`) |
 | `fix-api` | a Branch of production holding api and web, with 2 changes to save |
 | uptime (`scripts/verify/seed-uptime.ts`) | Monitoring tab states in `production`: web Up with 90 days and a closed incident, api Unreachable, worker Checking, redis Unreachable with a 404 at its healthcheck path `/health`, postgres Not checked |
 | metrics (`src/modules/metrics/metrics.verify-fixture.ts`, without `SERVERS`) | Services: web normal on Servers `0123…` and `1111…`; api mixed (`0123…` answers, `2222…` needs upgrade, `3333…` not up); worker normal on `0123…`, with `1111…` answering as a Server without it does (no points, one gap over the range); redis needs upgrade on `1111…` and `2222…`; postgres normal on `0123…` (`1111…` answers without it) with a gap in the middle third, an OOM then a restart, and disk reads and writes; any other Service no readings (both Servers answer without it). Servers: `0123456789abcdef0123456789abcdef` normal with CPU, memory, eth0 (lo and docker0 hidden) and every disk field; `2222…` needs upgrade; `1111…` and any other id not up |
 
-With `SERVERS`, the seed skips the fake Server and the queued Deploy, and `seed.json` lists them under `skipped`. To seed different state, add Config Store writes to `seed.ts`. It is typechecked with the app, so a domain refactor that breaks it fails `pnpm typecheck`.
+With `SERVERS`, the seed skips the fake Server and the queued Deploy, so it writes no Applied State, and `seed.json` lists them under `skipped`. To seed different state, add Config Store writes to `seed.ts`. It is typechecked with the app, so a domain refactor that breaks it fails `pnpm typecheck`.
 
 ## Doctor
 
