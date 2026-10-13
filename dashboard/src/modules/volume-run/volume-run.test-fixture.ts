@@ -9,7 +9,7 @@ export const COPIES = {
   writer: { kind: "root", readonly: false, newest: snapshot, epoch: 1, seed: false },
   cut: { kind: "root", readonly: true, newest: snapshot, epoch: 1, seed: false },
   seed: { kind: "root", readonly: false, newest: null, epoch: 0, seed: true },
-  old: { kind: "root", readonly: false, newest: null, epoch: 0 } as VolumeCopy,
+  rootWithoutSeed: { kind: "root", readonly: false, newest: null, epoch: 0 } as VolumeCopy,
   mirror: { kind: "slot", slot: "1", readonly: true, newest: snapshot, resume_token: null, pull: null },
   final: { kind: "slot", slot: "1", readonly: true, newest: { ...snapshot, name: "f-1" }, resume_token: null, pull: null },
   behind: { kind: "slot", slot: "1", readonly: true, newest: older, resume_token: null, pull: null },

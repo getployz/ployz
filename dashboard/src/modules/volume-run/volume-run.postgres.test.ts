@@ -1400,7 +1400,7 @@ describe("volume runs", () => {
         [dockerVolume, [member("fsn-1", "seed")]],
         ["gone-production_vol-s", [member("fsn-1", "seed")]],
         ["gone-production_vol-w", [member("fsn-1", "seed"), member("fsn-2", "writer")]],
-        ["gone-production_vol-o", [member("fsn-1", "old")]],
+        ["gone-production_vol-o", [member("fsn-1", "rootWithoutSeed")]],
       ]);
       const inspect = vi.fn((_: string, name: string) => Effect.succeed(answers.get(name) ?? [member("fsn-1", "empty")]));
       const observe = () => Effect.succeed(copies(
