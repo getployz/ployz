@@ -41,6 +41,7 @@ const waitFor = async (ready: () => Promise<boolean>, settled: Promise<unknown>)
 describe("volume placement", () => {
   let harness: PostgresTestHarness;
   let inFlight: boolean;
+  let status: string;
   let unreadable: boolean;
   let deleting: boolean;
   // Runs once, as the Store answers `query`: a Deploy admitted while the edit is between its check and its write.
@@ -64,7 +65,7 @@ describe("volume placement", () => {
           if (query.query === "namespaces") {
             return { namespaces: ["production", "staging"].map((name) => ({ namespace: `shop-${name}`, project: "shop", environment: name })) };
           }
-          if (query.query === "deployment") return { in_flight: inFlight, nodes: [] };
+          if (query.query === "deployment") return { in_flight: inFlight, status, nodes: [] };
           if (query.query === "diff") return { version: "diff-7" };
           if (query.environment?.environment === "staging") {
             return {
@@ -87,6 +88,7 @@ describe("volume placement", () => {
   afterAll(async () => { await harness?.stop(); });
   beforeEach(async () => {
     inFlight = true;
+    status = "running";
     unreadable = false;
     deleting = false;
     between = null;
@@ -412,6 +414,24 @@ describe("volume placement", () => {
     it("leaves a Volume another Deploy took to that Deploy, neither confirming its loss nor taking it", async () => {
       await stage("web-1");
       await run(stampPlacements(organizationId, [volumeId], "dep-0"));
+      expect(await admission(admit([]))).toEqual({ ok: true, command: admit([]) });
+      expect(await holder()).toBe("dep-0");
+    });
+
+    it("takes over a Volume held by the queued Deploy this one supersedes", async () => {
+      await stage("web-1", ["web-2"]);
+      await run(stampPlacements(organizationId, [volumeId], "dep-0"));
+      status = "queued";
+      during = async () => { inFlight = false; status = "superseded"; };
+      expect(await admission(admit([]))).toEqual({ ok: true, command: admit([]) });
+      expect(await holder()).toBe("dep-1");
+    });
+
+    it("leaves a Volume to a queued Deploy that started before this one's write", async () => {
+      await stage("web-1", ["web-2"]);
+      await run(stampPlacements(organizationId, [volumeId], "dep-0"));
+      status = "queued";
+      during = async () => { status = "running"; };
       expect(await admission(admit([]))).toEqual({ ok: true, command: admit([]) });
       expect(await holder()).toBe("dep-0");
     });

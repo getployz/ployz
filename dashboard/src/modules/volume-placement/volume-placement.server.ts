@@ -278,6 +278,13 @@ export const holdsFailedRestore = Effect.fn("VolumePlacement.holdsFailedRestore"
   return failed.length > 0;
 });
 
+/** Whether Deployment `id` still runs the rows it holds, waits queued for the next admission to supersede it, or never will. */
+const holderState = (organizationId: string, id: string) => readStore(organizationId, { query: "deployment", id }).pipe(
+  Effect.map((deployment) => !deployment.in_flight ? "ended" : deployment.status === "queued" ? "queued" : "running"),
+  Effect.catchIf(refusedWith("not_found"), () => Effect.succeed("ended" as const)),
+  Effect.catchTag("StoreRefused", () => Effect.succeed("running" as const)),
+);
+
 /**
  * Writes `command` through `write`, where every path to the Store meets it: the dashboard, the CLI, MCP and the agent.
  * An admitted Deploy takes the placements staged in its Environment, and only one admit stamps: a Redeploy ships what
@@ -309,14 +316,13 @@ export const writeAdmitted = <R>(
       .orderBy(volumePlacement.volumeId)
       .for("update");
     // A Deploy admitted alongside, under the shared lock, keeps what it stamped while the Store still runs it. One the Store
-    // superseded or ended never runs its rows again, so this one takes them over. The rows stay locked while the Store answers.
+    // superseded or ended never runs its rows again, so this one takes them over, and those of a queued one this write
+    // supersedes unless it starts first. The rows stay locked while the Store answers.
     const holders = [...new Set(locked.flatMap((row) => row.deploymentId ?? []))];
-    const ended = (yield* Effect.forEach(holders, (id) => readStore(organizationId, { query: "deployment", id }).pipe(
-      Effect.map((deployment) => deployment.in_flight ? [] : [id]),
-      Effect.catchIf(refusedWith("not_found"), () => Effect.succeed([id])),
-      Effect.catchTag("StoreRefused", () => Effect.succeed([])),
-    ))).flat();
-    const rows = locked.filter((row) => row.deploymentId === null || ended.includes(row.deploymentId));
+    const states = yield* Effect.forEach(holders, (id) => holderState(organizationId, id));
+    const ended = holders.filter((_, index) => states[index] === "ended");
+    const queued = holders.filter((_, index) => states[index] === "queued");
+    const rows = locked.filter((row) => row.deploymentId === null || ended.includes(row.deploymentId) || queued.includes(row.deploymentId));
     // Read under the lock: a restore staged before it has landed or never will, so a seeded Volume missing is gone.
     const { volumes } = rows.length === 0 ? { volumes: [] } : yield* readStore(organizationId, { query: "volumes", environment: command.environment });
     const listed = rows.flatMap((row) => {
@@ -348,7 +354,10 @@ export const writeAdmitted = <R>(
       });
     }
     written = yield* write({ ...command, version: store, accept_volume_loss: accepted.filter((name) => !names.includes(name)) });
-    if (written.written === "deployment" && written.status !== "applied") yield* stampPlacements(organizationId, taken, written.id, ended);
+    if (written.written === "deployment" && written.status !== "applied") {
+      const after = yield* Effect.forEach(queued, (id) => holderState(organizationId, id));
+      yield* stampPlacements(organizationId, taken, written.id, [...ended, ...queued.filter((_, index) => after[index] === "ended")]);
+    }
     return written;
   })).pipe(
     // The Store write committed: nothing after it may answer as its refusal. The rows stay staged for the next Deploy.
