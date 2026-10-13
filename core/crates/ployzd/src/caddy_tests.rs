@@ -115,7 +115,10 @@ fn automatic_sites_render_routes_and_health_endpoint() {
     // An unknown hostname a pinned wildcard covers gets 404 over HTTPS too, not an empty 200.
     assert_eq!(
         automatic_site_block(&caddyfile, "https://"),
-        "error NOT_DEPLOYED 404 import error_page log"
+        format!(
+            "import ployz_headers {local} import ployz_trace {local} \"\" \"\" NOT_DEPLOYED \
+             error NOT_DEPLOYED 404 import error_page {local} log"
+        )
     );
     let health = automatic_site_block(&caddyfile, "http://");
     let handler = automatic_site_block(&health, INGRESS_VERIFY_PATH);
@@ -160,7 +163,10 @@ fn every_site_answers_failures_with_the_error_page() {
         "https://secure.example.com",
     ] {
         let site = automatic_site_block(&caddyfile, address);
-        assert!(site.ends_with("import error_page log"), "{address}: {site}");
+        assert!(
+            site.ends_with(&format!("import error_page {} log", "a".repeat(32))),
+            "{address}: {site}"
+        );
     }
 }
 

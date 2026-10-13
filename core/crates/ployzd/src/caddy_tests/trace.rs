@@ -211,3 +211,199 @@ fn count_and_label_changes_change_the_projection() {
     assert_ne!(derive(base()), derive(leftover));
     assert_ne!(derive(base()), derive(relabeled));
 }
+
+/// One site block exactly as rendered, from its address line to its closing brace.
+fn site_text(caddyfile: &str, address: &str) -> String {
+    let start = caddyfile
+        .find(&format!("\n{address} {{\n"))
+        .unwrap_or_else(|| panic!("missing site {address}"))
+        + 1;
+    let end = start + caddyfile[start..].find("\n}\n").unwrap() + 3;
+    caddyfile[start..end].to_owned()
+}
+
+#[test]
+fn sites_import_the_trace_page_with_their_facts() {
+    let caddyfile = super::render_caddyfile(&super::renderer_projection(), "TIMESTAMP");
+    let a = "a".repeat(32);
+    let b = "b".repeat(32);
+
+    assert_eq!(
+        site_text(&caddyfile, "http://example.com"),
+        format!(
+            "http://example.com {{
+\timport ployz_headers {a}
+\timport ployz_trace {a} dep_7 {a}:2,{b}:1 ok
+\thandle /.well-known/acme-challenge/ployz-verify {{
+\t\trespond \"{a}\" 200
+\t}}
+\thandle /.well-known/acme-challenge/LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0 {{
+\t\trespond \"LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\" 200
+\t}}
+\treverse_proxy 10.210.1.2:8080 10.210.2.2:8080 {{
+\t\timport common_proxy
+\t}}
+\tlog_append upstream {{http.reverse_proxy.upstream.hostport}}
+\timport error_page {a}
+\tlog
+}}
+"
+        )
+    );
+    assert_eq!(
+        site_text(&caddyfile, "http://empty.example.com"),
+        format!(
+            "http://empty.example.com {{
+\timport ployz_headers {a}
+\timport ployz_trace {a} dep_7 {a}:2,{b}:1 NOT_RUNNING
+\thandle /.well-known/acme-challenge/ployz-verify {{
+\t\trespond \"{a}\" 200
+\t}}
+\terror NOT_RUNNING 503
+\timport error_page {a}
+\tlog
+}}
+"
+        )
+    );
+    assert_eq!(
+        site_text(&caddyfile, "http://"),
+        format!(
+            "http:// {{
+\timport ployz_headers {a}
+\timport ployz_trace {a} \"\" \"\" NOT_DEPLOYED
+\thandle /.ployz-verify {{
+\t\trespond \"{a}\" 200
+\t}}
+\thandle /.well-known/acme-challenge/ployz-verify {{
+\t\trespond \"{a}\" 200
+\t}}
+\terror NOT_DEPLOYED 404
+\timport error_page {a}
+\tlog
+}}
+"
+        )
+    );
+    assert_eq!(
+        site_text(&caddyfile, "https://"),
+        format!(
+            "https:// {{
+\timport ployz_headers {a}
+\timport ployz_trace {a} \"\" \"\" NOT_DEPLOYED
+\terror NOT_DEPLOYED 404
+\timport error_page {a}
+\tlog
+}}
+"
+        )
+    );
+    // The HTTP redirect site reports the HTTPS route it redirects to.
+    assert!(
+        site_text(&caddyfile, "http://secure.example.com")
+            .contains(&format!("\timport ployz_trace {a} dep_7 {a}:2,{b}:1 ok\n"))
+    );
+}
+
+#[test]
+fn trace_bodies_list_the_fixed_keys_and_end_with_a_newline() {
+    let caddyfile = super::render_caddyfile(&super::renderer_projection(), "TIMESTAMP");
+    let direct = "server={args[0]}
+deploy={args[1]}
+replicas={args[2]}
+status={args[3]}
+ip={http.request.remote.host}
+http={http.request.proto}
+tls={ployz_trace_tls}
+sni={ployz_trace_sni}
+request_id={http.request.uuid}
+ts={time.now.unix}
+";
+    let cloudflare = format!(
+        "{direct}via=cloudflare
+cf_ray={{ployz_trace_ray}}
+client_ip={{ployz_trace_client_ip}}
+"
+    );
+
+    assert!(caddyfile.contains(&format!(
+        "\t\t\trespond <<TRACE_DIRECT\n{direct}\nTRACE_DIRECT 200\n"
+    )));
+    assert!(caddyfile.contains(&format!(
+        "\t\t\trespond <<TRACE_CF\n{cloudflare}\nTRACE_CF 200\n"
+    )));
+    assert!(caddyfile.contains(
+        "\t@ployz_trace_request {\n\t\tmethod GET\n\t\tpath /.well-known/ployz/trace\n\t}\n"
+    ));
+    assert!(caddyfile.contains("\t\t@ployz_trace_cloudflare remote_ip 173.245.48.0/20 "));
+    assert!(caddyfile.contains(
+        "(ployz_headers) {
+\theader {
+\t\t>ployz-server {args[0]}
+\t\t>ployz-request-id {http.request.uuid}
+\t}
+\tlog_append request_id {http.request.uuid}
+}
+"
+    ));
+}
+
+#[test]
+fn every_site_and_the_error_page_set_the_ployz_headers() {
+    let caddyfile = super::render_caddyfile(&super::renderer_projection(), "TIMESTAMP");
+    let a = "a".repeat(32);
+    let sites = caddyfile
+        .lines()
+        .filter(|line| line.starts_with("http") && line.ends_with(" {"))
+        .map(|line| line.trim_end_matches(" {"))
+        .collect::<Vec<_>>();
+
+    assert_eq!(sites.len(), 6, "{sites:?}");
+    for address in sites {
+        let site = site_text(&caddyfile, address);
+        assert!(
+            site.contains(&format!("\timport ployz_headers {a}\n")),
+            "{site}"
+        );
+        assert!(
+            site.contains(&format!("\timport ployz_trace {a} ")),
+            "{site}"
+        );
+    }
+    let error_page = &caddyfile[caddyfile.find("(error_page) {").unwrap()..];
+    assert!(error_page.contains("\t\timport ployz_headers {args[0]}\n"));
+}
+
+/// Every whitespace token that reads as `ip:port`.
+fn upstream_tokens(caddyfile: &str) -> std::collections::BTreeSet<String> {
+    caddyfile
+        .split_whitespace()
+        .filter(|token| token.parse::<std::net::SocketAddr>().is_ok())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+#[test]
+fn a_withdrawn_container_leaves_the_file_but_stays_in_the_placement() {
+    let a = machine('a');
+    let b = machine('b');
+    let serving = vec![api(1, &a, 1), api(2, &b, 2)];
+    let withdrawn = vec![
+        api(1, &a, 1),
+        with(api(2, &b, 2), |parts| {
+            parts.runtime = ContainerRuntimeObservation::Exited { code: 0 };
+        }),
+    ];
+
+    let before = super::render_caddyfile(&derive(serving), "TIMESTAMP");
+    let projection = derive(withdrawn);
+    let after = super::render_caddyfile(&projection, "TIMESTAMP");
+
+    assert!(upstream_tokens(&before).contains("10.210.1.2:80"));
+    assert_eq!(upstream_tokens(&after), ["10.210.1.1:80".to_owned()].into());
+    assert_eq!(
+        trace(&projection).placement,
+        placement(&[('a', 1), ('b', 1)])
+    );
+    assert!(after.contains(&format!(" {a}:1,{b}:1 ok\n")));
+}

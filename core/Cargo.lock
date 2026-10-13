@@ -3783,6 +3783,7 @@ dependencies = [
  "ployz-core",
  "ployz-testkit",
  "rcgen",
+ "regex",
  "reqwest",
  "rusqlite",
  "sd-notify",
