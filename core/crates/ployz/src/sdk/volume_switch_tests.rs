@@ -53,6 +53,7 @@ fn a_set_volume_copy_reply_and_its_refusal_pass_through_as_the_machine_sent_them
         "readonly": false,
         "newest": { "name": "f-1", "guid": "13", "created_unix_seconds": 1700000000 },
         "epoch": 2,
+        "seed": false,
     });
     let current: ployz_core::VolumeCopy = serde_json::from_value(copy.clone())
         .unwrap_or_else(|error| panic!("the copy parses: {error}"));

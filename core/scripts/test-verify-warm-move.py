@@ -807,15 +807,10 @@ def delete_mirrored_environment(vc):
     vc.mirror("foxtrot", B, DOOMED)
     code, data = vc.accepted("env", "rm", DOOMED, "--confirm", f"verify/{DOOMED}")
     removal = find_key(data, "removal")
-    deadline = time.monotonic() + 120
-    while True:
-        gone = f'"{DOOMED}"' not in say(vc.cli("env", "ls")[1])
-        if gone or time.monotonic() > deadline:
-            break
-        time.sleep(5)
-    vc.verdict("delete_mirrored_environment_reports_success", code == 0 and gone,
+    gone = f'"{DOOMED}"' not in say(vc.cli("env", "ls")[1])
+    vc.verdict("delete_mirrored_environment_reports_success", code == 0 and removal == "removed" and gone,
                f"env rm exit {code}, removal {removal!r}, waiting_on {find_key(data, 'waiting_on')!r}; "
-               f"environment gone within 120 s={gone}; {say(data)[:800]}")
+               f"environment gone from env ls right after={gone}; {say(data)[:800]}")
     deletion_verdicts(vc, "delete_mirrored_environment", phys, vc.wait_gone(phys))
 
 

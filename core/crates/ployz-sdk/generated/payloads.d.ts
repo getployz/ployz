@@ -4528,7 +4528,12 @@ export type VolumeCopy = { "kind": "root", readonly: boolean, newest: Snapshot |
 /**
  * The run of writes this root belongs to; 0 until `SetVolumeCopy` numbers it.
  */
-epoch: WriterEpoch, } | { "kind": "slot",
+epoch: WriterEpoch,
+/**
+ * A root `Volume.Seed` landed that Docker has not adopted yet: it carries both
+ * `ployz:seed` and `ployz:promote`. Older daemons never report it.
+ */
+seed: boolean, } | { "kind": "slot",
 /**
  * The slot parent's guid, which changes when the slot is destroyed and created again.
  */

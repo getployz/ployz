@@ -7,10 +7,11 @@ pub use enabled::{kill_inside, leak_memory};
 
 /// Verbs whose effect outlives the RPC; `kill-daemon` fires inside them, from [`kill_inside`].
 #[cfg_attr(not(feature = "verify-faults"), allow(dead_code))]
-const LONG_EFFECTS: [&str; 7] = [
+const LONG_EFFECTS: [&str; 8] = [
     "SetVolumeCopy.WriterToMirror",
     "SetVolumeCopy.WriterToSnapshot",
     "SetVolumeCopy.WriterToForget",
+    "SetVolumeCopy.SeedToForget",
     "SetVolumeCopy.MirrorToWriter",
     "SetVolumeCopy.MirrorToMirror",
     "SetVolumeCopy.MirrorToForget",

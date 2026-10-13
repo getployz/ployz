@@ -17,7 +17,7 @@ import { followUp } from "#/modules/config-store/store-github.inngest";
 import { sweepStore } from "#/modules/config-store/store-pull-request.server";
 import { advancePlacement, type PlacementAdvance, type PlacementWait, refreshMirrors } from "#/modules/volume-placement/volume-placement.deploy.server";
 import { syncUptimeChecks } from "#/modules/uptime/uptime-sync.server";
-import { cleanOrphanSlots } from "#/modules/volume-run/volume-run.server";
+import { cleanOrphans } from "#/modules/volume-run/volume-run.server";
 import { runInngestEffect } from "#/server/run.server";
 
 export const RUN_STORE_DEPLOYMENT_FUNCTION_ID = "run-store-deployment";
@@ -72,7 +72,7 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Store
       // An applied Deployment can drop a Volume or an Environment, leaving its mirrors orphaned. A removed Environment
       // holds its Volumes' names until the sweep deletes it, so the scan comes after.
       if (applied) {
-        await step.run("delete-orphan-mirrors", () => runEffect(cleanOrphanSlots(event.data.organizationId)));
+        await step.run("delete-orphan-mirrors", () => runEffect(cleanOrphans(event.data.organizationId)));
       }
       return ran;
     },
