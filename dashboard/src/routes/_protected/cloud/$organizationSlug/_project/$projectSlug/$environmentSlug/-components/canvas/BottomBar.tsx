@@ -225,7 +225,7 @@ export function BottomBar({
     environment: params.environmentSlug, groups, totalChanges, canDeploy: deployable, canPublish,
     onClose: () => setOpen(false), onDeploy: deploy, message, onMessageChange: setMessage, admitting,
     // A message edited while the Save is in flight is the next one: keep it.
-    onPublish: () => void onPublish(message).then((saved) => { if (saved) setTyped((now) => now.message === message ? { message: "", stages } : now); }),
+    onPublish: () => void onPublish(message).then((saved) => { if (saved) setTyped((now) => now.message === message && now.stages === stages ? { message: "", stages } : now); }),
     onDiscardAll: discardAll,
     onDiscardNode, onDiscardRow,
     ...notes,
