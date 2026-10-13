@@ -107,16 +107,55 @@ async fn departure_on_a_machine_without_zfs_demotes_nothing() {
 }
 
 #[tokio::test]
-async fn departure_keeps_a_slot_and_its_data() {
-    let test = TestDir::new();
-    let (socket, server) = start(&test, USABLE_POOL, &["root", "slot"]);
+async fn departure_destroys_a_received_mirror() {
+    for markers in [&["root", "mirror", "mirror-fs"][..], &["root", "mirror"]] {
+        let test = TestDir::new();
+        set_property(
+            &test,
+            "tank/ployz-mirror/data/fs",
+            "snapshots",
+            "tank/ployz-mirror/data/fs@w-3-1\t901\t1690000001",
+        );
+        let (socket, server) = start(&test, USABLE_POOL, markers);
 
-    let response = post(&socket, "/Storage.Demote", json!(null)).await;
-    assert_eq!(response, json!({"Ok": []}));
-    let log = commands(&test);
-    assert!(!log.contains("zfs rename"), "{log}");
-    assert!(!log.contains("zfs destroy"), "{log}");
-    server.abort();
+        let response = post(&socket, "/Storage.Demote", json!(null)).await;
+        assert_eq!(response, json!({"Ok": ["data"]}), "{markers:?}");
+        let log = commands(&test);
+        assert!(
+            log.contains("zfs destroy -r tank/ployz-mirror/data\n"),
+            "{markers:?}: {log}"
+        );
+        assert!(!test.0.join("mirror").exists(), "{markers:?}");
+        let capacity = post(&socket, "/Storage.Inspect", json!(null)).await;
+        assert_eq!(
+            capacity.pointer("/Ok/copies").unwrap(),
+            &json!({}),
+            "{markers:?}"
+        );
+        server.abort();
+    }
+}
+
+#[tokio::test]
+async fn departure_keeps_a_copy_this_machine_wrote() {
+    for (property, value) in [
+        (
+            "snapshots",
+            "tank/ployz-mirror/data/fs@dep-100\t900\t1690000000",
+        ),
+        ("ployz:cut", "on"),
+    ] {
+        let test = TestDir::new();
+        set_property(&test, "tank/ployz-mirror/data/fs", property, value);
+        let (socket, server) = start(&test, USABLE_POOL, &["root", "mirror", "mirror-fs"]);
+
+        let response = post(&socket, "/Storage.Demote", json!(null)).await;
+        assert_eq!(response, json!({"Ok": []}), "{property}");
+        let log = commands(&test);
+        assert!(!log.contains("zfs destroy"), "{property}: {log}");
+        assert!(test.0.join("mirror-fs").exists(), "{property}");
+        server.abort();
+    }
 }
 
 async fn assert_departed_into_a_slot(test: &TestDir, socket: &Path) {
