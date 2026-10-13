@@ -5,7 +5,6 @@ import { decorative } from "@tanstack/charts/mark/decorative";
 import { Chart } from "@tanstack/charts/react/tooltip";
 import { scaleLinear } from "@tanstack/charts/scales/linear";
 import { tooltip } from "@tanstack/charts/tooltip";
-import { portal } from "@tanstack/charts/tooltip/portal";
 import { scaleUtc } from "d3-scale";
 import { Button } from "#/components/ui/button";
 import { Card } from "#/components/ui/card";
@@ -144,10 +143,9 @@ export function MetricChart({
     cursor: { use: cursorHost, controller: cursor, mode: "focus", match: "x", pin: true },
     tooltip: {
       use: tooltip,
-      portal,
       anchor: { x: "group-center", y: "plot-top" },
       placement: ["right", "left", "bottom"],
-      className: "metric-tooltip [--ts-chart-tooltip-background:var(--popover)] [--ts-chart-tooltip-color:var(--popover-foreground)]",
+      className: "metric-tooltip",
       formatGroup: (points) => {
         const row = points[0]?.datum;
         if (!row || !("values" in row)) return "";
@@ -178,7 +176,7 @@ export function MetricChart({
             const time = primaryPoint.xValue.getTime();
             const open = pinned ? incidentAt?.(time) ?? null : null;
             return (
-              <>
+              <div className="rounded-md border bg-popover px-2 py-1.5 whitespace-pre text-popover-foreground shadow-md">
                 {renderTooltip?.(time) ?? defaultBody}
                 {open ? (
                   <Button variant="link" size="sm" className="h-auto px-0 pt-1"
@@ -186,7 +184,7 @@ export function MetricChart({
                     Incident details
                   </Button>
                 ) : null}
-              </>
+              </div>
             );
           }}
           className={cn("text-xs text-muted-foreground transition-opacity", dimmed && "opacity-50")} />
@@ -204,7 +202,7 @@ export function MetricChart({
             );
           })}
           {deploys.filter((at) => at >= from && at <= to).map((at) => (
-            <div key={at} className="absolute border-l border-dashed border-current opacity-50"
+            <div key={at} data-deploy className="absolute border-l border-dashed border-current opacity-50"
               style={{ left: plotX(fraction(at)), top: MARGIN.top, height: plotHeight }} />
           ))}
           {blank ? (
