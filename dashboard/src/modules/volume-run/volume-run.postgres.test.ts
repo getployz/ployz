@@ -1249,18 +1249,18 @@ describe("volume runs", () => {
   describe("epoch", () => {
     it("takes one above the highest epoch a copy shows, in its root or its newest snapshot's name", async () => {
       machines = [
-        { name: "fsn-1", pool: true, copy: writerCopy(snap("10", "w-7-2"), 3) },
-        { name: "fsn-2", pool: true, copy: slotCopy(snap("10", "f-5")) },
+        { name: "fsn-1", pool: true, copy: writerCopy(snap("10", "w-7-2"), 3), writes: 1 },
+        { name: "fsn-2", pool: true, copy: null },
         { name: "fsn-3", pool: false, copy: null },
         { name: "docker-1", pool: false, stateless: true, copy: null, silent: true },
       ];
-      const run = await requested({ kind: "sync", args: { full: false } });
+      const run = await requested({ kind: "mirror", args: { to: "fsn-2" } });
 
       const output = await execute(run.id);
 
       expect(output.error).toBeUndefined();
       expect(await rows()).toMatchObject([{ epoch: "8", state: "done" }]);
-      expect(verbs).toEqual(["snapshot@fsn-1(w-8-0)"]);
+      expect(verbs).toContain("snapshot@fsn-1(w-8-0)");
     });
 
     it("takes one above every epoch this Volume's runs took, so a Machine reset can't reuse one", async () => {
@@ -1269,7 +1269,7 @@ describe("volume runs", () => {
          values ($1, 'env-1', $2, 'data', $3, 'sync', '{"full":false}', 'done', 12, now())`,
         [organizationId, volumeId, dockerVolume]);
       machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
-      const run = await requested({ kind: "sync", args: { full: false } });
+      const run = await requested({ kind: "sync", args: { full: true } });
 
       await execute(run.id);
 
@@ -1278,13 +1278,13 @@ describe("volume runs", () => {
 
     it("a replay reads back the epoch the run took", async () => {
       machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
-      const run = await requested({ kind: "sync", args: { full: false } });
+      const run = await requested({ kind: "sync", args: { full: true } });
       await harness.pool.query(`update volume_run set epoch = 40 where id = $1`, [run.id]);
 
       await execute(run.id);
 
       expect(await rows()).toMatchObject([{ epoch: "40", state: "done" }]);
-      expect(verbs).toEqual(["snapshot@fsn-1(w-40-0)"]);
+      expect(verbs).toContain("snapshot@fsn-1(w-40-0)");
     });
   });
 
@@ -1336,14 +1336,15 @@ describe("volume runs", () => {
       expect(await rows()).toMatchObject([{ state: "done", message: null }]);
     });
 
-    it("sync: a mirror already at the writer's newest needs no pull", async () => {
+    it("a plain sync row with one primary ends without touching a copy, since the mirror sync runs with no row", async () => {
       machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
       const run = await requested({ kind: "sync", args: { full: false } });
 
       const output = await execute(run.id);
 
       expect(output.result).toEqual({ runId: run.id, rounds: 0 });
-      expect(verbs).toEqual(["snapshot@fsn-1(w-1-0)"]);
+      expect(verbs).toEqual([]);
+      expect(await rows()).toMatchObject([{ state: "done" }]);
     });
 
     it("sync --full: forgets both copies' shared snapshots, then pulls from nothing", async () => {

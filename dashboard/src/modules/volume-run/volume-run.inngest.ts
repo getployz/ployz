@@ -99,6 +99,11 @@ export async function runVolume(
   if (phase.kind === "seed") return seedVolume(steps, phase);
   if (phase.kind === "delete_mirror") return deleteMirror(steps, phase);
   if (phase.kind === "landed") return landVolume(steps, phase);
+  // A plain sync row only demotes a primary that came back; with one primary, the rowless mirror sync refreshes the mirror.
+  if (phase.kind === "sync" && !phase.full) {
+    await finish(steps, "02-finish", `${run.volumeName} has one primary to keep`);
+    return { runId: run.id, rounds: 0 };
+  }
   const { epoch } = await step.run("02-epoch", () => runEffect(takeEpoch(run, runId, observedEpoch(members))));
   switch (phase.kind) {
     case "restore":
@@ -254,7 +259,7 @@ async function mirrorVolume(steps: RunSteps, phase: PhaseOf<"mirror"> | PhaseOf<
   const B = target.machine;
   let copy = target.view.copy;
   try {
-    if (phase.kind === "sync" && phase.full) {
+    if (phase.kind === "sync") {
       await mustSet(steps, "03-reset-forget-mirror", B, expectOf(copy), { kind: "forget" }, `${B.name} is still busy with ${run.volumeName}`);
       await mustSet(steps, "03-reset-forget-writer", A.machine, { kind: "writer", epoch: epochOf(A) }, { kind: "forget" }, `${A.machine.name} is still busy with ${run.volumeName}`);
       copy = null;
