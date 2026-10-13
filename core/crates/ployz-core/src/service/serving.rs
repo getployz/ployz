@@ -43,8 +43,7 @@ impl<'serving> ServingContainer<'serving> {
 /// With a pointer, the pointed Containers serve alone while every pointed id is
 /// visible and one of them may serve. Otherwise the previous deploy's Containers
 /// serve beside them, so an identity routes nothing only when none of those may
-/// serve. The retiring list never routes: it can name a generation older than
-/// the previous deploy whose retirement is already under way.
+/// serve.
 #[must_use]
 pub fn serving_containers<'serving, 'pointer>(
     containers: impl IntoIterator<Item = &'serving ServiceContainer>,

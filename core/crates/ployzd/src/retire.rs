@@ -217,9 +217,7 @@ impl Candidate {
             && (self.serving.is_empty() || !ack.containers.is_disjoint(&self.serving))
     }
 
-    /// Still retired only under the pointer deploy it was decided against; a
-    /// newer pointer is decided again next round against its own acks.
-    fn still_retired_by(&self, pointers: &ServingPointers) -> bool {
+    fn decided_deploy_still_retires(&self, pointers: &ServingPointers) -> bool {
         let pointed = pointers
             .iter()
             .any(|(_, pointer)| pointer.containers.contains(&self.container));
@@ -508,7 +506,7 @@ async fn still_retired(
     replicated: ReplicatedStore,
     candidate: Candidate,
 ) -> Result<bool, CorrosionError> {
-    Ok(candidate.still_retired_by(&replicated.serving_pointers().await?))
+    Ok(candidate.decided_deploy_still_retires(&replicated.serving_pointers().await?))
 }
 
 /// Clears the stopping mark however the retire ends: a removed Container is
