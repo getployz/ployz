@@ -482,6 +482,19 @@ class VolumeMoveTests(unittest.TestCase):
         self.assertTrue(summary["passed"], summary)
         self.assertEqual([wait["holder"] for wait in summary["volume_busy_waits"]], ["sync-1"])
 
+    def test_a_holder_that_outlasts_the_heal_skips_its_ops_and_the_next_case_runs(self):
+        checks, model = self.checks("two-writers")
+        model.mirror = "machine-2"
+        model.hold(volume_move.BUSY_LIMIT * 3 + 60)
+        with redirect_stdout(io.StringIO()):
+            summary = checks.run_all([volume_move.KILLS[0], volume_move.CASES[0]])
+        skipped = json.loads((self.root / "out" / f"{volume_move.KILLS[0]['name']}.json").read_text())
+        self.assertTrue(skipped["skipped"], skipped)
+        self.assertEqual([attempt["op"] for attempt in skipped["heal"]["attempts"]], ["move", "release"])
+        self.assertTrue(all(attempt.get("skipped") for attempt in skipped["heal"]["attempts"]), skipped["heal"])
+        self.assertEqual(summary["cases"][1]["run"], "done")
+        self.assertTrue((self.root / "out" / "summary.json").exists())
+
     def test_a_skip_names_the_run_that_refused_last(self):
         checks, model = self.checks()
         model.hold(10, "sync-a")
