@@ -87,9 +87,9 @@ const needsUpgrade: (error: RpcError) => boolean = Schema.is(Schema.Struct({
 }));
 
 function availability(history: MetricHistory, names: Names, hasSample: boolean): MetricAvailability {
-  const upgrade = (failures: readonly MachineFailure<RpcError>[]) => failures.map((failure) => serverRef(failure.machine_id, names));
-  const refused = upgrade(history.unanswered.filter((failure) => needsUpgrade(failure.error)));
-  const silent = upgrade(history.unanswered.filter((failure) => !needsUpgrade(failure.error)));
+  const refs = (failures: readonly MachineFailure<RpcError>[]) => failures.map((failure) => serverRef(failure.machine_id, names));
+  const refused = refs(history.unanswered.filter((failure) => needsUpgrade(failure.error)));
+  const silent = refs(history.unanswered.filter((failure) => !needsUpgrade(failure.error)));
   const answered = history.machines.length;
   if (answered > 0 && history.unanswered.length > 0) return { type: "mixed", needsUpgrade: refused, unanswered: silent };
   if (answered === 0 && silent.length > 0) return { type: "unanswered", servers: silent, needsUpgrade: refused };
