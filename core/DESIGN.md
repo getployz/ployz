@@ -188,6 +188,13 @@ waits on it. Its 10 second metric loop does file reads only. A source that can
 block, such as `zfs list`, runs on its own 60 second tick with a timeout, so a
 slow source drops a metric and never stalls the loop.
 
+The retire loop is the other Machine-local exception. It runs continuously on
+each Machine and stops only that Machine's own Containers a Serving Pointer
+superseded, once every Machine not Down has acked the pointer's deploy without
+them, or 300 seconds after it first saw them. It re-derives everything from rows
+and Docker, so a restart resumes it, and it never starts, places, or moves a
+Container.
+
 **Red flags:** controllers, persisted desired state other than a removal mark,
 durable workflows other than a requested Volume Run, cluster-wide reconcilers, any
 behavior that continues after its command returns other than a removal finishing.

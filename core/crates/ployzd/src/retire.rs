@@ -1,15 +1,3 @@
-//! Stop this Machine's own Containers that a Serving Pointer superseded.
-//!
-//! A pointer's `retiring` list names the Containers its deploy replaced. Each
-//! Machine stops only the ones it runs, and only once every Machine that is not
-//! Down has acked the pointer's deploy with a route set that leaves the Container
-//! out, so no ingress still sends it traffic. A Machine that never acks holds a
-//! Container back for at most [`FORCE_AFTER`].
-//!
-//! Everything is re-derived from the `serving/%` and `ingress_routes` rows and
-//! local Docker, so a daemon restart picks up where it left off; only the cap's
-//! clock restarts.
-
 use std::{
     collections::{BTreeMap, BTreeSet},
     future::Future,
@@ -19,7 +7,8 @@ use std::{
 
 use ployz_core::{
     AnonymousVolumes, ContainerId, ContainerLocator, ContainerWant, DeploymentLogId, Drain,
-    MachineId, MachineName, MembershipObservation, QualifiedService, synthesize_membership,
+    Machine, MachineId, MachineName, ManagementAddress, MembershipEvidence, MembershipObservation,
+    QualifiedService, synthesize_membership,
 };
 use tokio::{task::JoinSet, time::Instant};
 use tokio_util::sync::CancellationToken;
@@ -33,32 +22,22 @@ use crate::{
     machine::LocalMachine,
 };
 
-/// Longest a Machine that never acks can hold a superseded Container running.
 const FORCE_AFTER: Duration = Duration::from_secs(300);
-/// Re-check membership and the cap this often while a local Container waits.
 const PENDING_TICK: Duration = Duration::from_secs(5);
-/// Re-read even when no change was reported, so a stalled subscription cannot
-/// freeze the loop.
 const REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 const RETRY_INTERVAL: Duration = Duration::from_secs(1);
 const DEBOUNCE: Duration = Duration::from_millis(200);
 const DEBOUNCE_LIMIT: Duration = Duration::from_secs(2);
 const MEMBERSHIP_SAMPLE_TIMEOUT: Duration = Duration::from_secs(1);
 const LIST_TIMEOUT: Duration = Duration::from_secs(10);
-/// Drain plus Docker's stop grace and removal.
 const RETIRE_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// What the loop needs from this Machine.
 pub(crate) trait RetireHost: Clone + Send + Sync + 'static {
-    /// Every managed Container on this Machine, running or not.
     fn local_containers(&self) -> impl Future<Output = io::Result<BTreeSet<ContainerId>>> + Send;
-    /// Machines that must ack before a Container retires: every one not Down.
     fn ackers(&self) -> impl Future<Output = BTreeMap<MachineId, MachineName>> + Send;
-    /// Drain, stop, and remove one local Container.
     fn retire(&self, container: ContainerId) -> impl Future<Output = io::Result<()>> + Send;
 }
 
-/// The daemon's host: local Docker, the Machine view, and Corrosion membership.
 #[derive(Clone)]
 pub(crate) struct DaemonHost {
     pub(crate) machine_id: MachineId,
@@ -87,25 +66,23 @@ impl RetireHost for DaemonHost {
         let Some(machines) = self.machines.current() else {
             return BTreeMap::new();
         };
-        let sample =
-            tokio::time::timeout(MEMBERSHIP_SAMPLE_TIMEOUT, self.admin.membership_states()).await;
-        let machines = machines.observations.clone();
-        let Ok(Ok(states)) = sample else {
-            tracing::warn!("membership sample failed; every Machine must ack before retiring");
-            return machines
-                .into_iter()
-                .map(|machine| (machine.id, machine.name))
-                .collect();
-        };
-        synthesize_membership(
-            machines,
+        let states =
+            match tokio::time::timeout(MEMBERSHIP_SAMPLE_TIMEOUT, self.admin.membership_states())
+                .await
+            {
+                Ok(Ok(states)) => Some(membership_states_by_address(states)),
+                _ => {
+                    tracing::warn!(
+                        "membership sample failed; every Machine must ack before retiring"
+                    );
+                    None
+                }
+            };
+        required_ackers(
+            machines.observations.clone(),
             &self.machine_id,
-            &membership_states_by_address(states),
+            states.as_ref(),
         )
-        .into_iter()
-        .filter(|observation| observation.membership != MembershipObservation::Down)
-        .map(|observation| (observation.machine.id, observation.machine.name))
-        .collect()
     }
 
     async fn retire(&self, container: ContainerId) -> io::Result<()> {
@@ -122,7 +99,24 @@ impl RetireHost for DaemonHost {
     }
 }
 
-/// One local Container a pointer supersedes.
+fn required_ackers(
+    machines: Vec<Machine>,
+    local: &MachineId,
+    states: Option<&BTreeMap<ManagementAddress, MembershipEvidence>>,
+) -> BTreeMap<MachineId, MachineName> {
+    let Some(states) = states else {
+        return machines
+            .into_iter()
+            .map(|machine| (machine.id, machine.name))
+            .collect();
+    };
+    synthesize_membership(machines, local, states)
+        .into_iter()
+        .filter(|observation| observation.membership != MembershipObservation::Down)
+        .map(|observation| (observation.machine.id, observation.machine.name))
+        .collect()
+}
+
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct Candidate {
     service: QualifiedService,
@@ -136,20 +130,16 @@ enum Verdict {
     Forced { unacked: Vec<MachineName> },
 }
 
-/// What the loop remembers between rounds. Losing it on restart only restarts
-/// the cap's clock and one Docker listing.
 #[derive(Default)]
 struct Retirer {
     first_seen: BTreeMap<Candidate, Instant>,
-    /// Retiring ids this Machine does not run; ids are never reused.
+    /// Docker Container ids are random and never reused, so an absent id stays absent.
     absent: BTreeSet<ContainerId>,
-    /// Retiring ids Docker last listed here.
     present: BTreeSet<ContainerId>,
     in_flight: BTreeSet<ContainerId>,
 }
 
 impl Retirer {
-    /// Retiring ids Docker has not yet been asked about.
     fn unknown(&self, pointers: &ServingPointers) -> BTreeSet<ContainerId> {
         self.candidates(pointers)
             .into_iter()
@@ -185,7 +175,6 @@ impl Retirer {
             .collect()
     }
 
-    /// Candidates every acker has acked away, or that waited past the cap.
     fn decide(
         &mut self,
         candidates: Vec<Candidate>,
@@ -203,7 +192,7 @@ impl Retirer {
                 .iter()
                 .filter(|(machine, _)| {
                     !acks
-                        .get(&((*machine).clone(), candidate.service.clone()))
+                        .get(&(**machine, candidate.service.clone()))
                         .is_some_and(|ack| {
                             ack.deploy == candidate.deploy
                                 && !ack.containers.contains(&candidate.container)
@@ -226,7 +215,6 @@ impl Retirer {
     }
 }
 
-/// Run the retire loop until `shutdown`.
 pub(crate) async fn run<H: RetireHost>(
     host: H,
     replicated: ReplicatedStore,
@@ -417,5 +405,361 @@ fn finish(
             error = %ployz_core::error_chain::inline(&error),
             "failed to retire Container, retrying",
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        collections::{BTreeMap, BTreeSet},
+        io,
+        sync::{Arc, Mutex},
+        time::Duration,
+    };
+
+    use ployz_core::{
+        AdvertisedEndpoint, ContainerId, DeploymentLogId, Machine, MachineId, MachineName,
+        MachineRuntime, MembershipEvidence, QualifiedService, ServingPointer, WireGuardPublicKey,
+    };
+    use tokio::time::Instant;
+    use tokio_util::sync::CancellationToken;
+
+    use super::{Candidate, FORCE_AFTER, RetireHost, Retirer, Verdict, required_ackers, run};
+    use crate::corrosion::{
+        IngressRouteAck, IngressRouteChange, ServingPointers, fake_cluster::FakeCluster,
+    };
+
+    type Acks = BTreeMap<(MachineId, QualifiedService), IngressRouteAck>;
+
+    fn id(letter: &str) -> ContainerId {
+        ContainerId::parse(letter.repeat(64)).unwrap()
+    }
+
+    fn deploy(name: &str) -> DeploymentLogId {
+        DeploymentLogId::parse(name).unwrap()
+    }
+
+    fn service() -> QualifiedService {
+        QualifiedService::parse("app/api").unwrap()
+    }
+
+    fn machine(name: &str, octet: u8) -> Machine {
+        Machine {
+            labels: Default::default(),
+            accepts_builds: true,
+            accepts_services: true,
+            accepts_ingress: true,
+            id: MachineId::random(),
+            name: MachineName::parse(name).unwrap(),
+            subnet: format!("10.210.{octet}.0/24").parse().unwrap(),
+            public_key: WireGuardPublicKey([octet; 32]),
+            public_ip: None,
+            advertised_endpoints: vec![AdvertisedEndpoint(
+                format!("192.0.2.{octet}:51820").parse().unwrap(),
+            )],
+            runtime: MachineRuntime::default(),
+            build_concurrency: None,
+        }
+    }
+
+    fn pointers() -> ServingPointers {
+        ServingPointers::from_iter([(
+            service(),
+            ServingPointer {
+                deploy: deploy("d2"),
+                containers: vec![id("b")],
+                previous: Some(deploy("d1")),
+                retiring: vec![id("a")],
+            },
+        )])
+    }
+
+    fn ack(deploy_name: &str, containers: &[ContainerId]) -> IngressRouteAck {
+        IngressRouteAck {
+            deploy: deploy(deploy_name),
+            containers: containers.iter().copied().collect(),
+        }
+    }
+
+    fn ackers(machines: &[&Machine]) -> BTreeMap<MachineId, MachineName> {
+        machines
+            .iter()
+            .map(|machine| (machine.id, machine.name.clone()))
+            .collect()
+    }
+
+    fn acked_away(machines: &[&Machine]) -> Acks {
+        machines
+            .iter()
+            .map(|machine| ((machine.id, service()), ack("d2", &[id("b")])))
+            .collect()
+    }
+
+    fn decide_now(
+        retirer: &mut Retirer,
+        pointers: &ServingPointers,
+        acks: &Acks,
+        ackers: &BTreeMap<MachineId, MachineName>,
+        local: &[ContainerId],
+    ) -> Vec<(Candidate, Verdict)> {
+        retirer.note_local(pointers, &local.iter().copied().collect());
+        let candidates = retirer.candidates(pointers);
+        retirer.decide(candidates, acks, ackers, Instant::now())
+    }
+
+    fn retired(decided: &[(Candidate, Verdict)]) -> Vec<ContainerId> {
+        decided
+            .iter()
+            .map(|(candidate, _)| candidate.container)
+            .collect()
+    }
+
+    #[test]
+    fn retires_once_every_acker_acked_the_container_away() {
+        let (one, two) = (machine("one", 1), machine("two", 2));
+        let decided = decide_now(
+            &mut Retirer::default(),
+            &pointers(),
+            &acked_away(&[&one, &two]),
+            &ackers(&[&one, &two]),
+            &[id("a"), id("b")],
+        );
+        let [(candidate, verdict)] = decided.as_slice() else {
+            panic!("expected one retirement, got {decided:?}");
+        };
+        assert_eq!(candidate.container, id("a"));
+        assert_eq!(*verdict, Verdict::Acked { machines: 2 });
+    }
+
+    #[test]
+    fn one_up_machine_without_an_ack_holds_the_container() {
+        let (one, two) = (machine("one", 1), machine("two", 2));
+        let decided = decide_now(
+            &mut Retirer::default(),
+            &pointers(),
+            &acked_away(&[&one]),
+            &ackers(&[&one, &two]),
+            &[id("a")],
+        );
+        assert!(decided.is_empty());
+    }
+
+    #[test]
+    fn an_ack_that_still_routes_the_container_holds_it() {
+        let one = machine("one", 1);
+        let acks = Acks::from([((one.id, service()), ack("d2", &[id("a"), id("b")]))]);
+        let decided = decide_now(
+            &mut Retirer::default(),
+            &pointers(),
+            &acks,
+            &ackers(&[&one]),
+            &[id("a")],
+        );
+        assert!(decided.is_empty());
+    }
+
+    #[test]
+    fn an_ack_for_an_older_deploy_holds_the_container() {
+        let one = machine("one", 1);
+        let acks = Acks::from([((one.id, service()), ack("d1", &[id("b")]))]);
+        let decided = decide_now(
+            &mut Retirer::default(),
+            &pointers(),
+            &acks,
+            &ackers(&[&one]),
+            &[id("a")],
+        );
+        assert!(decided.is_empty());
+    }
+
+    #[test]
+    fn down_machines_need_not_ack_and_suspect_ones_must() {
+        let (local, down, suspect) = (
+            machine("local", 1),
+            machine("down", 2),
+            machine("suspect", 3),
+        );
+        let states = BTreeMap::from([(suspect.management_address(), MembershipEvidence::Suspect)]);
+        let required = required_ackers(
+            vec![local.clone(), down.clone(), suspect.clone()],
+            &local.id,
+            Some(&states),
+        );
+        assert_eq!(required, ackers(&[&local, &suspect]));
+        let decided = decide_now(
+            &mut Retirer::default(),
+            &pointers(),
+            &acked_away(&[&local, &suspect]),
+            &required,
+            &[id("a")],
+        );
+        assert_eq!(retired(&decided), vec![id("a")]);
+    }
+
+    #[test]
+    fn without_a_membership_sample_every_machine_must_ack() {
+        let (local, other) = (machine("local", 1), machine("other", 2));
+        let required = required_ackers(vec![local.clone(), other.clone()], &local.id, None);
+        assert_eq!(required, ackers(&[&local, &other]));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn forces_the_stop_at_the_cap_and_names_the_machines_that_never_acked() {
+        let (one, two) = (machine("one", 1), machine("two", 2));
+        let mut retirer = Retirer::default();
+        let acks = acked_away(&[&one]);
+        let required = ackers(&[&one, &two]);
+        assert!(decide_now(&mut retirer, &pointers(), &acks, &required, &[id("a")]).is_empty());
+        tokio::time::advance(FORCE_AFTER - Duration::from_secs(1)).await;
+        assert!(decide_now(&mut retirer, &pointers(), &acks, &required, &[id("a")]).is_empty());
+        tokio::time::advance(Duration::from_secs(1)).await;
+        let decided = decide_now(&mut retirer, &pointers(), &acks, &required, &[id("a")]);
+        assert_eq!(
+            decided
+                .into_iter()
+                .map(|(_, verdict)| verdict)
+                .collect::<Vec<_>>(),
+            vec![Verdict::Forced {
+                unacked: vec![two.name.clone()]
+            }]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_pointed_container_is_never_retired_even_past_the_cap() {
+        let one = machine("one", 1);
+        let pointers = ServingPointers::from_iter([(
+            service(),
+            ServingPointer {
+                deploy: deploy("d2"),
+                containers: vec![id("b")],
+                previous: None,
+                retiring: vec![id("b")],
+            },
+        )]);
+        let mut retirer = Retirer::default();
+        let acks = acked_away(&[&one]);
+        assert!(
+            decide_now(&mut retirer, &pointers, &acks, &ackers(&[&one]), &[id("b")]).is_empty()
+        );
+        tokio::time::advance(FORCE_AFTER).await;
+        assert!(
+            decide_now(&mut retirer, &pointers, &acks, &ackers(&[&one]), &[id("b")]).is_empty()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_booting_container_no_pointer_names_is_never_retired() {
+        let one = machine("one", 1);
+        let mut retirer = Retirer::default();
+        let acks = acked_away(&[&one]);
+        let local = [id("a"), id("b"), id("c")];
+        let decided = decide_now(&mut retirer, &pointers(), &acks, &ackers(&[&one]), &local);
+        assert_eq!(retired(&decided), vec![id("a")]);
+        tokio::time::advance(FORCE_AFTER).await;
+        retirer.in_flight.clear();
+        let decided = decide_now(&mut retirer, &pointers(), &acks, &ackers(&[&one]), &local);
+        assert_eq!(retired(&decided), vec![id("a")]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_retiring_id_with_no_local_container_is_skipped() {
+        let one = machine("one", 1);
+        let mut retirer = Retirer::default();
+        let acks = acked_away(&[&one]);
+        assert!(decide_now(&mut retirer, &pointers(), &acks, &ackers(&[&one]), &[]).is_empty());
+        tokio::time::advance(FORCE_AFTER).await;
+        assert!(decide_now(&mut retirer, &pointers(), &acks, &ackers(&[&one]), &[]).is_empty());
+        assert!(retirer.unknown(&pointers()).is_empty());
+    }
+
+    #[derive(Clone)]
+    struct FakeHost {
+        local: Arc<Mutex<BTreeSet<ContainerId>>>,
+        ackers: BTreeMap<MachineId, MachineName>,
+        retired: Arc<Mutex<Vec<ContainerId>>>,
+        listings: Arc<Mutex<usize>>,
+    }
+
+    impl RetireHost for FakeHost {
+        async fn local_containers(&self) -> io::Result<BTreeSet<ContainerId>> {
+            *self.listings.lock().unwrap() += 1;
+            Ok(self.local.lock().unwrap().clone())
+        }
+
+        async fn ackers(&self) -> BTreeMap<MachineId, MachineName> {
+            self.ackers.clone()
+        }
+
+        async fn retire(&self, container: ContainerId) -> io::Result<()> {
+            if !self.local.lock().unwrap().remove(&container) {
+                return Err(io::Error::from(io::ErrorKind::NotFound));
+            }
+            self.retired.lock().unwrap().push(container);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn the_loop_stops_only_its_own_container_once_acked_then_goes_quiet() {
+        let cluster = FakeCluster::start();
+        let store = cluster.store();
+        let (local, peer) = (machine("local", 1), machine("peer", 2));
+        cluster.write_serving_pointer(
+            "serving/app/api",
+            &serde_json::to_string(&ServingPointer {
+                deploy: deploy("d2"),
+                containers: vec![id("b")],
+                previous: Some(deploy("d1")),
+                retiring: vec![id("a"), id("c")],
+            })
+            .unwrap(),
+        );
+        let host = FakeHost {
+            local: Arc::new(Mutex::new(BTreeSet::from([id("a"), id("b")]))),
+            ackers: ackers(&[&local, &peer]),
+            retired: Arc::default(),
+            listings: Arc::default(),
+        };
+        let shutdown = CancellationToken::new();
+        let task = tokio::spawn(run(host.clone(), store.clone(), shutdown.clone()));
+
+        for machine in [&local, &peer] {
+            store
+                .publish_ingress_routes(
+                    &machine.id,
+                    &BTreeMap::from([(
+                        service(),
+                        IngressRouteChange::Upsert(ack("d2", &[id("b")])),
+                    )]),
+                )
+                .await
+                .unwrap();
+        }
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while host.retired.lock().unwrap().is_empty() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let listings = *host.listings.lock().unwrap();
+        cluster.write_serving_pointer(
+            "serving/app/other",
+            &serde_json::to_string(&ServingPointer {
+                deploy: deploy("d3"),
+                containers: vec![id("b")],
+                previous: None,
+                retiring: Vec::new(),
+            })
+            .unwrap(),
+        );
+        tokio::time::sleep(Duration::from_millis(600)).await;
+
+        assert_eq!(*host.retired.lock().unwrap(), vec![id("a")]);
+        assert_eq!(*host.local.lock().unwrap(), BTreeSet::from([id("b")]));
+        assert_eq!(*host.listings.lock().unwrap(), listings);
+        shutdown.cancel();
+        task.await.unwrap();
     }
 }

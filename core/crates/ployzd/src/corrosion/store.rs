@@ -703,9 +703,6 @@ impl ReplicatedStore {
             .await
     }
 
-    /// Every Machine's ingress route ack by `(machine, service)`. Rows that do not
-    /// decode are left out, so they read as a missing ack. Only the retire loop reads
-    /// this table; the ingress never does.
     pub(crate) async fn ingress_routes(
         &self,
     ) -> Result<BTreeMap<(MachineId, QualifiedService), IngressRouteAck>, Error> {

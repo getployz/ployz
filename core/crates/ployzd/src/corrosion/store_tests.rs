@@ -649,6 +649,13 @@ async fn ingress_route_acks_upsert_and_delete_against_the_schema() {
             format!("[\"{}\"]", "c".repeat(64)),
         ]]
     );
+    assert_eq!(
+        store.ingress_routes().await.unwrap(),
+        BTreeMap::from([(
+            (machine, QualifiedService::parse("app/api").unwrap()),
+            ack("d2", &["c"])
+        )])
+    );
     task.abort();
 }
 

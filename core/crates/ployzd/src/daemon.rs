@@ -302,7 +302,7 @@ impl Daemon {
                 .map_err(io::Error::other)?;
         let socket_path = config.socket.clone();
         let retire_admin = corrosion.as_ref().map(RunningCorrosion::admin_client);
-        let retire_id = local_id.clone();
+        let retire_id = local_id;
         let local_for_servers = local.clone();
         let shutdown_for_servers = shutdown.clone();
         let servers = tokio::spawn(async move {
