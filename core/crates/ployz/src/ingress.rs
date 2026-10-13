@@ -7,7 +7,7 @@ use ployz_core::{
     ContainerId, ContainerLocator, ContainerNow, ContainerObservation, ContainerWant,
     DeployOutcome, EnvironmentValues, FailedOperation, HealthFailure, MachineObservation,
     PlacementConstraint, QualifiedService, RequestedServiceSpec, RpcError, RunTarget,
-    caddy_service_spec, error_chain,
+    caddy_service_spec,
 };
 use ployz_store::{IngressAction, IngressFailure, IngressRepair};
 use tokio_util::sync::CancellationToken;
@@ -226,7 +226,7 @@ async fn started(
         () = cancel.cancelled() => return Some(cancelled()),
     };
     if let Err(error) = ensured {
-        return Some(classify(error_chain::inline(&error)));
+        return Some(classify(crate::ui::row(&error)));
     }
     match ready.await {
         Ok(()) => None,
@@ -236,7 +236,7 @@ async fn started(
         }),
         Err(HealthWaitError::Inspect(error)) => Some(classify(format!(
             "it started, but checking that it stayed up failed: {}",
-            error_chain::inline(&error)
+            crate::ui::row(&error)
         ))),
     }
 }
