@@ -138,8 +138,6 @@ async fn probe_ingress_hostname(
     judge_answers(&answers, machine_ids, cluster_addresses, ingress_returning)
 }
 
-/// The hostname's verdict, or none when it only went unanswered on Servers whose
-/// Ingress Proxy this Deploy brings back: their silence says nothing until it runs.
 fn judge_answers(
     answers: &[(IpAddr, VerifyAnswer)],
     machine_ids: &[MachineId],

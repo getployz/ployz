@@ -603,8 +603,6 @@ struct Run {
 }
 
 impl Run {
-    /// The lowering's warnings, then one per ingress repair that left its Server's
-    /// Ingress Proxy not running.
     fn summary_warnings(&self) -> Vec<DeploymentWarning> {
         let failed = self.ingress.iter().filter_map(|repair| {
             let ingress = repair.failure.clone()?;

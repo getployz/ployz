@@ -50,7 +50,6 @@ export function clusterDomainStatus(
       ],
     };
   }
-  // Something else on the port explains a stopped Ingress Proxy, and a stopped one explains a closed port.
   const state: ClusterDomainState = traffic?.kind === "no_servers" || traffic?.kind === "no_public_ip"
     ? { kind: "attention", reason: traffic.kind }
     : taken.length > 0

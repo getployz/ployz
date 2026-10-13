@@ -148,7 +148,6 @@ pub(super) fn noop(view: &DeploymentView) -> bool {
             .is_some_and(|preview| preview.noop() && !preview.has_observation_gaps())
 }
 
-/// What to say about each Server whose Ingress Proxy the Deploy left down.
 pub(super) fn ingress_verb(action: IngressAction) -> &'static str {
     match action {
         IngressAction::Create => "create",

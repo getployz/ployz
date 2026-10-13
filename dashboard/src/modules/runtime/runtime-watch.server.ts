@@ -56,7 +56,6 @@ export const openRuntimeWatchForOrganization = Effect.fn(
     .watch({ signal: input.request.signal })
     .pipe(Effect.onError(() => close));
   const inngest = yield* InngestClient;
-  // A Server whose Ingress Proxy starts or stops joins or leaves the Cluster Domain without waiting for the hourly sync.
   const requestDomainSync = () => Effect.runFork(
     sendInngestEvent(createClusterDomainSyncRequestedEvent({ organizationId: input.organizationId })).pipe(
       Effect.provideService(InngestClient, inngest),

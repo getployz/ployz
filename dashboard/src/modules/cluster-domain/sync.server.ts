@@ -99,7 +99,6 @@ export const probeIngressServers = Effect.fn("ClusterDomain.probeIngressServers"
     probeIngress(`http://${isIPv6(server.address) ? `[${server.address}]` : server.address}`, server.machineId)
       .pipe(Effect.map((answer) => ({ server, answer }))), { concurrency: "unbounded" });
   const answering = (wanted: IngressAnswer) => probed.flatMap(({ server, answer }) => answer === wanted ? [server] : []);
-  // Nothing on port 80 because the Ingress Proxy isn't running: a Deploy fixes that, not a firewall.
   const isDown = ({ machineId }: IngressServerAddress) => !running.has(machineId) && !unobserved.has(machineId);
   const closed = answering("closed");
   return {

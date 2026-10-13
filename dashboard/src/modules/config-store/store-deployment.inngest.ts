@@ -65,7 +65,6 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Store
       await step.run("sync-uptime", () =>
         runEffect(syncUptimeChecks(event.data.organizationId, event.data.environmentId, applied ? event.data.deploymentId : undefined)));
       await step.run("forget-run", () => runEffect(forgetStoreDeploymentRun(runId)));
-      // A Server whose Ingress Proxy this run created or started may have joined or left the Cluster Domain.
       if ("ran" in ran && ran.ran.ingress?.length) {
         await step.sendEvent("sync-cluster-domain", createClusterDomainSyncRequestedEvent({ organizationId: event.data.organizationId }));
       }

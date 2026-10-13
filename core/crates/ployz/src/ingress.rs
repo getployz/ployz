@@ -161,9 +161,6 @@ fn failure(outcome: &Outcome) -> Option<IngressFailure> {
     )
 }
 
-/// The Cluster's Machines and the Ingress Proxy spec to run with `image`, keeping its
-/// observed placement constraints. No spec when no Ingress Proxy runs and no Server holds
-/// the role.
 async fn wanted(
     client: &mut Client,
     image: IngressImage,

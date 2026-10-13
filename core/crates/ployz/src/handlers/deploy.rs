@@ -674,10 +674,8 @@ struct Planned<'p> {
     plan: &'p ployz_store::PlanView,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     domain_changes: Vec<super::store::DomainLine>,
-    /// Missing or stopped Ingress Proxies any Deploy brings back. Empty when none
-    /// is down or the Cluster can't be reached.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    ingress: Vec<ployz_store::IngressRepair>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ingress: Option<Vec<ployz_store::IngressRepair>>,
 }
 
 fn plan(matches: &ArgMatches, store: &Store, services: Vec<ServiceName>) -> Result<(), Error> {
@@ -711,7 +709,7 @@ fn plan(matches: &ArgMatches, store: &Store, services: Vec<ServiceName>) -> Resu
             }
             super::review::restarts(change);
         }
-        for repair in &shown.ingress {
+        for repair in shown.ingress.iter().flatten() {
             crate::ui::stream(format_args!(
                 "ingress on {}: would {}",
                 repair.server,
@@ -728,24 +726,15 @@ fn plan(matches: &ArgMatches, store: &Store, services: Vec<ServiceName>) -> Resu
     })
 }
 
-/// The Ingress Proxies a Deploy would bring back, read from the Cluster. Best effort:
-/// a Cluster this can't reach shows none, as the plan itself needs no Cluster.
-fn ingress_repairs(matches: &ArgMatches) -> Vec<ployz_store::IngressRepair> {
+fn ingress_repairs(matches: &ArgMatches) -> Option<Vec<ployz_store::IngressRepair>> {
     let context = matches
         .try_get_one::<String>("context")
         .ok()
         .flatten()
         .map(String::as_str);
-    let Ok(runtime) = runtime() else {
-        return Vec::new();
-    };
-    runtime.block_on(async {
-        let Ok(mut client) = super::server::connect(matches, context).await else {
-            return Vec::new();
-        };
-        crate::ingress::planned_slots(&mut client)
-            .await
-            .unwrap_or_default()
+    runtime().ok()?.block_on(async {
+        let mut client = super::server::connect(matches, context).await.ok()?;
+        crate::ingress::planned_slots(&mut client).await.ok()
     })
 }
 
