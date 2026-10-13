@@ -961,8 +961,6 @@ impl Client {
             .map(|(now, _)| now)
     }
 
-    /// [`Client::ensure_container`], with the health verdict a Settled creation
-    /// waits for on the Machine.
     pub(crate) async fn ensure_settled(
         &self,
         machine_id: &MachineId,

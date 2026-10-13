@@ -69,7 +69,6 @@ enum Reply {
     Ok,
     Listed(Vec<ContainerObservation>),
     Created(ContainerId),
-    /// A Settled creation the Machine answers with this verdict.
     Settled(ContainerId, HealthVerdict),
     CreatedLater(ContainerId),
     Observed(
@@ -488,7 +487,6 @@ fn created(call: Call, container_id: &ContainerId) -> Step {
     Step(call, Reply::Created(*container_id))
 }
 
-/// A Settled creation of `container_id` whose health check failed.
 fn unhealthy_run(machine: MachineId, container_id: &ContainerId) -> Step {
     Step(
         Call::Run(machine, ContainerKind::ServiceContainer),

@@ -1,5 +1,3 @@
-//! Wait for a dependency's Containers to be healthy before its dependents start.
-
 use ployz_core::{
     ContainerRuntimeObservation, DEFAULT_HEALTH_MONITOR, DependencyHealthFailure, ExecutionError,
     HEALTH_POLL_INTERVAL, HealthExpectation, HealthObservation, HealthPoll, HealthcheckSpec,

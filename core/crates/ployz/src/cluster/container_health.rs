@@ -1,6 +1,3 @@
-//! Health wait for a Container started by restart or `ployz service start`. Deploy
-//! asks the Machine to answer once health settles instead.
-
 use std::future::Future;
 
 use ployz_core::{
@@ -19,8 +16,6 @@ pub(crate) enum HealthWaitError<E> {
     Health(HealthFailure),
 }
 
-/// Poll a started Container until it is ready, fails, or outlives the deadline of
-/// the healthcheck the Machine observed.
 async fn wait_until_ready<E, F: Future<Output = Result<ContainerDetails, E>>>(
     started: Instant,
     cancellation: &CancellationToken,

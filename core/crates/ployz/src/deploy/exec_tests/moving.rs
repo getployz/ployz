@@ -17,7 +17,6 @@ async fn move_with(client: &Scripted) -> Result<ContainerId, MoveContainerError>
     .await
 }
 
-/// Run the new Container `b` on `TO` until it settles.
 fn served() -> Vec<Step> {
     vec![created(
         Call::Run(machine(TO), ContainerKind::ServiceContainer),

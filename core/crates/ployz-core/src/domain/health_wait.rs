@@ -1,8 +1,3 @@
-//! When a started Container counts as ready, failed, or still pending.
-//!
-//! Times are offsets from the start the wait measures from, so the Machine and the
-//! client classify the same observations alike without sharing a clock.
-
 use std::time::Duration;
 
 use crate::{
@@ -10,7 +5,6 @@ use crate::{
     HealthObservation, HealthcheckSpec, LastHealthCheck, ResolvedServiceSpec, healthcheck_deadline,
 };
 
-/// How often a health wait looks at its Container again.
 pub const HEALTH_POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// How long a Container without a healthcheck must stay up to count as started.
 pub const DEFAULT_HEALTH_MONITOR: Duration = Duration::from_secs(5);
@@ -87,8 +81,6 @@ pub fn classify_health(
         ContainerRuntimeObservation::Running {
             health: HealthObservation::NotConfigured,
         } if expectation == HealthExpectation::ContainerReady && health_deadline.is_none() => {
-            // Without a healthcheck, staying up through the monitor window is the
-            // only sign a crash loop did not start.
             if elapsed >= monitor_deadline {
                 HealthPoll::Complete
             } else {
@@ -115,8 +107,6 @@ pub fn classify_health(
                 HealthPoll::PendingUntil(health_deadline)
             }
         }
-        // The process already died. Waiting would let a later healthy snapshot
-        // during the next start window succeed the deploy.
         ContainerRuntimeObservation::Restarting | ContainerRuntimeObservation::Exited { .. }
             if expectation == HealthExpectation::ContainerReady =>
         {

@@ -792,17 +792,17 @@ mod settled {
         }
     }
 
-    /// Once the fake has started the Container, report `state` for it from then on.
     async fn report_once_started(fake: &FakeDocker, state: Value) {
         let containers = fake.named_containers.as_ref().unwrap();
         loop {
             {
                 let mut containers = containers.lock().unwrap();
-                if let Some(container) = containers
+                if let Some(current) = containers
                     .values_mut()
-                    .find(|container| container["State"]["Status"] == "running")
+                    .filter_map(|container| container.get_mut("State"))
+                    .find(|current| current.get("Status") == Some(&Value::from("running")))
                 {
-                    container["State"] = state;
+                    *current = state;
                     return;
                 }
             }

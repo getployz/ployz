@@ -80,8 +80,6 @@ pub(super) trait MachineOperations {
         &self,
         service: &QualifiedService,
     ) -> Result<Vec<ContainerObservation>, RpcError>;
-    /// Converge one Container to `want` and answer what the Machine then observes,
-    /// with the health verdict a Settled creation waits for.
     async fn ensure_container(
         &self,
         machine_id: &MachineId,
@@ -755,10 +753,6 @@ pub(in crate::deploy) async fn move_container<C: MachineOperations>(
     Ok(new)
 }
 
-/// Create and start the Container of `slot`, answered once `answer` allows. A
-/// failure that may have left one there removes it again, unless a Global key could
-/// name an earlier attempt's. A Container that started but failed its health stays,
-/// named by the [`ExecutionError::Health`] the caller compensates.
 #[expect(
     clippy::too_many_arguments,
     reason = "progress row plus slot travel together through execute"
@@ -803,10 +797,6 @@ async fn start<C: MachineOperations>(
     started_container(started, cancellation)
 }
 
-/// Ask `machine_id` to create and start the Container of `slot`. The answer is
-/// awaited even after a cancellation, so the cleanup that follows cannot reach the
-/// Machine before the creation does; a Settled answer bounds that wait by the
-/// health deadline.
 async fn run_new<C: MachineOperations>(
     client: &C,
     index: usize,
@@ -972,10 +962,10 @@ async fn replace_container<C: MachineOperations>(
     )
     .await;
     if let Err(error) = started {
-        // A started new container travels with the failure so compensation can remove it.
-        let new_container = match &error {
-            ExecutionError::Health { container_id, .. } => Some(*container_id),
-            _ => None,
+        let new_container = if let ExecutionError::Health { container_id, .. } = &error {
+            Some(*container_id)
+        } else {
+            None
         };
         return Err(compensate(
             client,

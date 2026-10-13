@@ -185,7 +185,6 @@ async fn a_failed_verdict_fails_the_start_naming_the_container_without_polling_i
         spec(Some(0), Some(healthcheck()), None),
         false,
     )];
-    // The script holds no Inspect step, so any poll of the new Container panics.
     let client = Scripted::new(vec![Step(
         Call::Run(machine, ContainerKind::ServiceContainer),
         Reply::Settled(

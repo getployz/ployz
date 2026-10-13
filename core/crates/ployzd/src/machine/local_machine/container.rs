@@ -425,8 +425,7 @@ impl LocalMachine {
         .await
     }
 
-    /// Make one Container match `want` and answer with what is then observed. A
-    /// Settled creation answers once the started Container's health settles.
+    /// Make one Container match `want` and answer with what is then observed.
     ///
     /// # Errors
     ///
@@ -436,34 +435,33 @@ impl LocalMachine {
         &self,
         want: ContainerWant,
     ) -> Result<EnsuredContainer, Error> {
-        let settled_spec = match &want {
-            ContainerWant::Running {
-                container: RunTarget::New(new),
-            } if new.answer == AnswerWhen::Settled => Some(new.resolved_spec.clone()),
-            _ => None,
+        let settled_spec = if let ContainerWant::Running {
+            container: RunTarget::New(new),
+        } = &want
+            && new.answer == AnswerWhen::Settled
+        {
+            Some(new.resolved_spec.clone())
+        } else {
+            None
         };
         let ensured = self.converge_container(want).await?;
         let Some(spec) = settled_spec else {
             return Ok(ensured);
         };
-        Ok(match ensured {
-            EnsuredContainer::Ensured {
-                now: ContainerNow::Present(observed),
-                health: None,
-            } => {
-                let health = self.settle_health(&observed.container_id, &spec).await?;
-                EnsuredContainer::Ensured {
-                    now: ContainerNow::Present(observed),
-                    health: Some(health),
-                }
-            }
-            other => other,
+        let EnsuredContainer::Ensured {
+            now: ContainerNow::Present(observed),
+            health: None,
+        } = ensured
+        else {
+            return Ok(ensured);
+        };
+        let health = self.settle_health(&observed.container_id, &spec).await?;
+        Ok(EnsuredContainer::Ensured {
+            now: ContainerNow::Present(observed),
+            health: Some(health),
         })
     }
 
-    /// Poll a started Container until it is healthy, fails, or reaches its deadline.
-    /// A spec without its own healthcheck waits out the monitor window, the only sign
-    /// a crash loop did not start.
     async fn settle_health(
         &self,
         container_id: &ContainerId,
@@ -501,7 +499,6 @@ impl LocalMachine {
                 HealthPoll::Failed(HealthFailure::TimedOut { last_check }) => {
                     return Ok(HealthVerdict::TimedOut { last_check });
                 }
-                // Classification never answers a cancellation; no caller cancels here.
                 HealthPoll::Failed(HealthFailure::Cancelled) => {
                     return Ok(HealthVerdict::TimedOut { last_check: None });
                 }
