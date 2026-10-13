@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import type { EnvironmentRef, MachineId, Snapshot, VolumeCopy } from "@ployz/sdk";
-import { and, eq, inArray, max } from "drizzle-orm";
+import { and, eq, inArray, max, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { volumePlacement } from "#/modules/volume-placement/tables";
 import { deployClaim } from "#/modules/volume-placement/volume-placement.server";
@@ -102,18 +102,27 @@ const recordFailure = Effect.fn("MirrorSync.recordFailure")(function* (organizat
     });
 });
 
-/** A pull that landed; `matched` when the mirror is at the writer's newest as of now. */
+/**
+ * A pull that landed; `matched` when the mirror is at the writer's newest as of now. Otherwise the mirror holds the
+ * writer's data as of the snapshot's taking, so a mirror that never catches a written Volume still dates its data.
+ */
 const recordSuccess = Effect.fn("MirrorSync.recordSuccess")(function* (
-  organizationId: string, volumeId: string, machineId: MachineId, snapshot: string, matched: boolean,
+  organizationId: string, volumeId: string, machineId: MachineId, snapshot: Snapshot, matched: boolean,
 ) {
   const { drizzle } = yield* Database;
   const now = new Date();
-  const set = matched
-    ? { okAt: now, okSnapshot: snapshot, matchedAt: now, updatedAt: now }
-    : { okAt: now, okSnapshot: snapshot, updatedAt: now };
+  const matchedAt = matched ? now : new Date(snapshot.created_unix_seconds * 1000);
   yield* drizzle.insert(volumeMirrorStatus)
-    .values({ organizationId, volumeId, machineId, ...set })
-    .onConflictDoUpdate({ target: [volumeMirrorStatus.volumeId, volumeMirrorStatus.machineId], set });
+    .values({ organizationId, volumeId, machineId, okAt: now, okSnapshot: snapshot.name, matchedAt, updatedAt: now })
+    .onConflictDoUpdate({
+      target: [volumeMirrorStatus.volumeId, volumeMirrorStatus.machineId],
+      set: {
+        okAt: now,
+        okSnapshot: snapshot.name,
+        matchedAt: sql`greatest(${volumeMirrorStatus.matchedAt}, ${matchedAt})`,
+        updatedAt: now,
+      },
+    });
 });
 
 /**
@@ -219,13 +228,13 @@ export const syncMirrors = Effect.fn("MirrorSync.sync")(function* (
 
   for (const { member, copy } of idle) {
     if (copy.pull === null && copy.newest?.guid === target.guid) {
-      yield* recordSuccess(organizationId, volume.volumeId, member.machine.id, target.name, true);
+      yield* recordSuccess(organizationId, volume.volumeId, member.machine.id, target, true);
       steps.push({ kind: "current", mirror: named(member), snapshot: target.name });
       continue;
     }
     if (copy.pull === null && copy.newest !== null) {
       const status = statuses.find((row) => row.machineId === member.machine.id);
-      if (status?.okSnapshot !== copy.newest.name) yield* recordSuccess(organizationId, volume.volumeId, member.machine.id, copy.newest.name, false);
+      if (status?.okSnapshot !== copy.newest.name) yield* recordSuccess(organizationId, volume.volumeId, member.machine.id, copy.newest, false);
     }
     const handed = yield* ask(asker, member.machine, expectOf(copy), { kind: "mirror", from: writer.address, target: target.name, drain: DRAIN_MS });
     if (handed.ok) {

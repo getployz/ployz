@@ -73,7 +73,8 @@ export const volumeRun = pgTable(
 
 /**
  * What the mirror syncs saw of one mirror. The last pull that landed and the last that failed are kept apart, so a newer
- * success never hides an older failure; `matchedAt` is the last sync that found the mirror at the writer's newest.
+ * success never hides an older failure; `matchedAt` is the newest time the mirror held the writer's data as of: a sync
+ * that found it at the writer's newest, or the taking of a snapshot it landed.
  */
 export const volumeMirrorStatus = pgTable(
   "volume_mirror_status",

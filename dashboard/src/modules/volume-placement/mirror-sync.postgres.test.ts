@@ -140,6 +140,20 @@ describe("the mirror sync", () => {
     expect(row.ok_at > row.failed_at).toBe(true);
   });
 
+  it("dates a mirror that never catches a written Volume by the snapshot it last landed", async () => {
+    const landed = { name: "w-1-4", guid: "11", created_unix_seconds: 1_790_000_050 };
+    members = [member("web-1", "writer"), member("web-2", "behind")];
+    await sync();
+    members = [member("web-1", "writer"), { ...member("web-2", "mirror"), view: { copy: { ...COPIES.mirror, newest: landed } } } as Member];
+    await sync();
+    const matched = async () => (await harness.pool.query(`select matched_at from volume_mirror_status`)).rows[0].matched_at;
+    expect(await matched()).toEqual(new Date(landed.created_unix_seconds * 1000));
+    await harness.pool.query(`update volume_mirror_status set ok_snapshot = 'w-1-3'`);
+    members = [member("web-1", "writer"), { ...member("web-2", "mirror"), view: { copy: { ...COPIES.mirror, newest: { ...landed, created_unix_seconds: 1_790_000_010 } } } } as Member];
+    await sync();
+    expect(await matched()).toEqual(new Date(landed.created_unix_seconds * 1000));
+  });
+
   it("says the mirror already holds the writer's newest", async () => {
     const [writer, mirror] = [member("web-1", "writer"), member("web-2", "mirror")];
     if (!mirror.answered) throw new Error("fixture");
