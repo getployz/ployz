@@ -21,7 +21,7 @@ use ployz_core::{
     rpc::{BUILD_PATH, EXEC_PATH},
 };
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use tokio::task::JoinSet;
 use tonic::{
     Streaming,
@@ -277,15 +277,15 @@ impl Client {
         // Machine costs the budget once instead of once per attempt.
         let deadline = timeout.map(|timeout| tokio::time::Instant::now() + timeout);
         loop {
-            let attempt = self.unary_attempt::<T>(payload.clone(), target, redial);
             let outcome = match deadline {
-                Some(deadline) => match tokio::time::timeout_at(deadline, attempt).await {
-                    Ok(outcome) => outcome,
-                    Err(_) => Err(ConnectError::Rpc(TransportError::budget_expired(
-                        "target Machine RPC timed out",
-                    ))),
-                },
-                None => attempt.await,
+                Some(deadline) => {
+                    self.bounded_attempt::<T>(&payload, target, redial, deadline)
+                        .await
+                }
+                None => {
+                    self.unary_attempt::<T>(payload.clone(), target, redial)
+                        .await
+                }
             };
             match outcome {
                 Ok(response) => return Ok(response),
@@ -303,6 +303,39 @@ impl Client {
                 }
                 Err(error) => return Err(error),
             }
+        }
+    }
+
+    /// Only a deadline spent waiting on a confirmed entry is evidence the target is silent;
+    /// one spent reconnecting to the entry says nothing about it.
+    async fn bounded_attempt<T: Rpc>(
+        &mut self,
+        payload: &OpaquePayload,
+        target: Option<&MachineTarget>,
+        redial: bool,
+        deadline: tokio::time::Instant,
+    ) -> Result<T::Response, ConnectError> {
+        if redial {
+            let reconnect = async {
+                self.channel = self.connector.connect(&self.connection).await?;
+                self.confirm_entry().await
+            };
+            match tokio::time::timeout_at(deadline, reconnect).await {
+                Ok(confirmed) => confirmed?,
+                Err(_) => {
+                    return Err(tonic::Status::deadline_exceeded(
+                        "entry Machine reconnect timed out",
+                    )
+                    .into());
+                }
+            }
+        }
+        match tokio::time::timeout_at(deadline, self.call_once::<T>(payload.clone(), target)).await
+        {
+            Ok(outcome) => outcome,
+            Err(_) => Err(ConnectError::Rpc(TransportError::budget_expired(
+                "target Machine RPC timed out",
+            ))),
         }
     }
 
@@ -751,6 +784,16 @@ impl Client {
         &mut self,
         machine: &MachineTarget,
     ) -> Result<(), RpcError> {
+        self.remove_membership(machine, DeadConfirmed::Yes).await
+    }
+
+    /// As [`Self::remove_machine_membership`], but a Server confirmed while it answered
+    /// that stops answering before it goes is refused: dead was never typed for it.
+    pub(crate) async fn remove_membership(
+        &mut self,
+        machine: &MachineTarget,
+        dead: DeadConfirmed,
+    ) -> Result<(), RpcError> {
         let machines = self.machines().await.map_err(RpcError::from)?;
         let Some(observation) = listed_unless_forgotten(machine, &machines)? else {
             return Ok(());
@@ -759,9 +802,12 @@ impl Client {
         if refuse_last_managed(self, &machines, selected).await? == CloudHold::Last {
             return Err(cloud_holds_last(selected));
         }
-        let held = match self.held_copies(observation).await? {
-            HeldCopies::Dead => BTreeSet::new(),
-            HeldCopies::Answered(held) => held,
+        let held = match (self.held_copies(observation).await?, dead) {
+            (HeldCopies::Dead, DeadConfirmed::Yes) => BTreeSet::new(),
+            (HeldCopies::Dead, DeadConfirmed::No) => {
+                return Err(stopped_answering(&observation.machine));
+            }
+            (HeldCopies::Answered(held), _) => held,
         };
         if !held.is_empty() {
             return Err(copies_left_behind(
@@ -1132,6 +1178,27 @@ async fn remove_volumes_on(
         VolumeRemoval { id, outcome }
     }))
     .await
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DeadConfirmed {
+    Yes,
+    No,
+}
+
+fn stopped_answering(machine: &Machine) -> RpcError {
+    RpcError {
+        code: RpcErrorCode::ConfirmationRequired,
+        message: format!(
+            "Server {} stopped answering after its name was typed. Removing it without a reset leaves any Volume copies on it behind, so it needs dead typed. No changes made.",
+            machine.name
+        ),
+        details: json!({
+            "server": { "id": machine.id, "name": machine.name },
+            "answered": false,
+        }),
+        cause: Vec::new(),
+    }
 }
 
 #[derive(Debug)]

@@ -9,7 +9,7 @@ use crate::approval::{self, Verb};
 use crate::cloud_account::{self, Credential, Release};
 use crate::cloud_login::{CredentialStore, LoginError};
 use crate::cluster::{
-    CloudHold, HeldCopies, LeftNotForgotten, copies_left_behind, refuse_last_managed,
+    CloudHold, DeadConfirmed, HeldCopies, LeftNotForgotten, copies_left_behind, refuse_last_managed,
 };
 use crate::connect::{Remover, TARGET_RPC_TIMEOUT};
 use crate::context::ConnectionSource;
@@ -231,7 +231,12 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
             }
             cloud_released = Some(removed.release == Release::Released);
         } else if no_reset {
-            client.remove_machine_membership(&selected_target).await?;
+            client
+                .remove_membership(
+                    &selected_target,
+                    if dead { DeadConfirmed::Yes } else { DeadConfirmed::No },
+                )
+                .await?;
         } else {
             let removed = client
                     .remove_machine(&selected_target, &confirmation, Remover::Operator)
