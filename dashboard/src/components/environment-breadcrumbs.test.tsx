@@ -108,7 +108,7 @@ it("lists Environments as a tree, each Branch under its Parent, noting the defau
   expect(screen.getAllByRole("option").map((option) => option.getAttribute("aria-label") ?? option.textContent)).toEqual([
     "production, default", "fix-web, branch of production", "pr-146, branch of production, merged", "staging",
     "pr-142, branch of staging, deleting",
-    "New branch of production", "Manage environments",
+    "New branch of production", "New environment",
   ]);
 });
 
@@ -140,12 +140,11 @@ it("keeps every crumb but the last two in a More menu", async () => {
   expect(within(menu).getAllByRole("link").map((link) => link.textContent)).toEqual(["First"]);
 });
 
-it("notes the Default Environment and opens the Project settings from Manage environments", async () => {
-  await using app = await renderAt("/cloud/acme/store/staging/logs");
+it("opens the New environment dialog from the switcher", async () => {
+  await using _app = await renderAt("/cloud/acme/store/staging/logs");
   fireEvent.click(screen.getByRole("button", { name: "Environment: staging" }));
-  expect(await screen.findByRole("option", { name: "production, default" })).toBeTruthy();
-  fireEvent.click(screen.getByRole("option", { name: "Manage environments" }));
-  await waitFor(() => expect(app.router.state.location.href).toBe("/cloud/acme/store/staging/settings?scope=project"));
+  fireEvent.click(await screen.findByRole("option", { name: "New environment" }));
+  expect(await screen.findByRole("dialog", { name: "Add environment" })).toBeTruthy();
 });
 
 it("offers no Branch controls on a Branch: they're the Sync button's", async () => {
