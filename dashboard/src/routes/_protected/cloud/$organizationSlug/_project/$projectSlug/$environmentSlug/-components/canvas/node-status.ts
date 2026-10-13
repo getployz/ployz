@@ -176,3 +176,8 @@ export function restartedServices(deployment: Pick<DeploymentView, "nodes">): Re
 export function stagedSurface(light: Lit | null | undefined, change: ReviewLifecycleKind | null): StagedColour | undefined {
   return light !== undefined || change === null ? undefined : stagedColour(change);
 }
+
+/** How many of a Service's secrets have no value, which its Deploys leave out. None when every secret has one. */
+export function notSetLabel(notSet: readonly string[]): string | undefined {
+  return notSet.length ? `${notSet.length} not set` : undefined;
+}

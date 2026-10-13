@@ -2579,7 +2579,7 @@ fn undo_brings_a_removed_service_and_config_back_whole() {
         change: None,
     };
     let preview = store.read(&who, &query).unwrap();
-    store
+    let staged = store
         .write(
             &who,
             &StageHistory {
@@ -2592,8 +2592,24 @@ fn undo_brings_a_removed_service_and_config_back_whole() {
             },
         )
         .unwrap();
-    // IDs, sealed values, mounts, files, and the registry credential kept by ID.
-    assert_eq!(snapshot(&store), before);
+    assert_eq!(
+        staged
+            .not_set
+            .iter()
+            .map(|variable| format!("{}.{}", variable.service, variable.key))
+            .collect::<Vec<_>>(),
+        ["db.PASSWORD"]
+    );
+    // IDs, mounts, files, and the registry credential kept by ID come back as they were. History
+    // holds no sealed value, so the sealed PASSWORD of the removed Service comes back Not set.
+    let mut expected = before;
+    expected["db"][2]["env"]["PASSWORD"] = json!({ "secret": false });
+    for setting in expected["settings"].as_array_mut().unwrap() {
+        if setting["path"] == "db.env.PASSWORD" {
+            setting["value"] = json!({ "secret": false });
+        }
+    }
+    assert_eq!(snapshot(&store), expected);
 }
 
 #[test]

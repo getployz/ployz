@@ -331,9 +331,8 @@ pub(super) fn history(root: &ArgMatches) -> Result<(), Error> {
             accept_overwrite: matches.get_flag("accept-overwrite"),
         })
         .map_err(|error| store.fail(with_refresh_hint(error, matches, "history")))?;
-    crate::ui::done(
-        &staged,
-        format_args!(
+    crate::ui::finish(&staged, || {
+        crate::ui::stream(format_args!(
             "{} Saved revision {} in the draft. Review before saving or deploying.",
             if action == ployz_store::HistoryAction::Restore {
                 "Restored"
@@ -341,6 +340,12 @@ pub(super) fn history(root: &ArgMatches) -> Result<(), Error> {
                 "Undid"
             },
             revision
-        ),
-    )
+        ));
+        for variable in &staged.not_set {
+            crate::ui::stream(format_args!(
+                "  {}.env.{} came back Not set. Deploys leave it out until you set it.",
+                variable.service, variable.key
+            ));
+        }
+    })
 }

@@ -79,6 +79,9 @@ Your service still gets the real value when it deploys.
   A retried deployment of an older version gets the sealed value, not the one it had.
 - To change a sealed value, delete the variable and add it again. Setting a sealed variable to
   a plain value is refused, so a secret never turns into plain text by mistake.
+- Undo or Roll back in History never brings back an old sealed value. A sealed variable that
+  History brings back comes back **Not set**: choose **Set value** to give it one. Until then,
+  deploys leave it out of your service.
 - A sealed value is stored exactly as typed, so it can't hold a
   [reference](#reference-another-services-variable).
 

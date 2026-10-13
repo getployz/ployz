@@ -69,6 +69,8 @@ type BottomBarProps = {
   proposals?: Pick<ReviewProps, "included" | "onRemoveIncluded" | "onIncludeNewer">;
   /** The Organization has no Server to deploy to: Deploy becomes Add a server; Publish still works. */
   noServers?: boolean;
+  /** Secrets without a value: the next Deploy leaves them out. */
+  notSet?: number;
 };
 
 type ReviewProps = Parameters<typeof EnvironmentChangesReview>[0];
@@ -96,6 +98,7 @@ export function BottomBar({
   proposals,
   noServers = false,
   admitting = false,
+  notSet = 0,
 }: BottomBarProps) {
   const slot = useContext(BottomBarSlot);
   const dock = useContext(AgentDock);
@@ -187,7 +190,7 @@ export function BottomBar({
   });
 
   const staged = hasChanges ? (
-    <Row staged title={totalChanges > 0 ? plural(totalChanges, "change") : "Changes to save"}
+    <Row staged title={(totalChanges > 0 ? plural(totalChanges, "change") : "Changes to save") + (notSet > 0 ? ` · ${notSet} not set` : "")}
       shortTitle={totalChanges > 0 ? plural(totalChanges, "change") : "To save"} detail={null}>
       <Button ref={triggerRef} variant="outline" aria-expanded={open} onClick={openReview}>Details</Button>
       {/* Deploying behind a running or queued attempt queues. */}
