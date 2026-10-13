@@ -752,7 +752,7 @@ it.live(
         assert.deepStrictEqual(sent.mock.calls.map(([event]) => (event as { id?: string }).id), [`namespace-cleanup-${cleanupId}`]);
         assert.strictEqual((yield* cli("GET", "namespace-cleanups/not-a-uuid", alice)).json.error?.code, "not_found");
 
-        const removal = yield* cli("DELETE", `servers/${fra1}`, alice, { no_reset: true });
+        const removal = yield* cli("POST", `servers/${fra1}/forget`, alice, {});
         assert.strictEqual(removal.status, 409);
         assert.deepStrictEqual(removal.json.error?.details.operation, { verb: "remove", name: "fra-1" });
 
@@ -787,8 +787,7 @@ it.live(
       yield* Effect.gen(function* () {
         const { drizzle } = yield* Database;
         const alice = yield* signUp("alice");
-        const keep = { no_reset: true };
-        const asked = (yield* cli("DELETE", `servers/${fra1}`, alice, keep)).json.error?.details ?? assert.fail("no ask");
+        const asked = (yield* cli("POST", `servers/${fra1}/forget`, alice, {})).json.error?.details ?? assert.fail("no ask");
         const approvalId = asked.approval_id ?? assert.fail("no approval id");
         yield* cli("POST", `approvals/${approvalId}`, alice, { approve: { digest: asked.approval ?? "" } });
 
@@ -796,17 +795,17 @@ it.live(
         assert.strictEqual(reset.json.error?.code, "approval_required");
         assert.notStrictEqual(reset.json.error?.details.approval_id, approvalId);
 
-        const started = yield* cli("DELETE", `servers/${fra1}`, { ...alice, approval: approvalId }, keep);
+        const started = yield* cli("POST", `servers/${fra1}/forget`, { ...alice, approval: approvalId }, {});
         const removalId = started.json.id ?? assert.fail("no removal id");
         const resetAfterUse = yield* cli("DELETE", `servers/${fra1}`, { ...alice, approval: approvalId }, { confirm_data_loss: { confirmed: [] } });
         assert.strictEqual(resetAfterUse.json.error?.code, "approval_required");
-        const elsewhere = yield* cli("DELETE", `servers/${"e".repeat(32)}`, { ...alice, approval: approvalId }, keep);
+        const elsewhere = yield* cli("POST", `servers/${"e".repeat(32)}/forget`, { ...alice, approval: approvalId }, {});
         assert.strictEqual(elsewhere.json.error?.code, "not_found");
         const ended = new Date();
         yield* drizzle.update(machineRemoveAttempt).set({
           state: "failed", inngestRunId: "run-1", startedAt: ended, terminalAt: ended, failureCode: "unreachable", failureMessage: "gone",
         }).where(eq(machineRemoveAttempt.id, removalId));
-        assert.strictEqual((yield* cli("DELETE", `servers/${fra1}`, { ...alice, approval: approvalId }, keep)).json.id, removalId);
+        assert.strictEqual((yield* cli("POST", `servers/${fra1}/forget`, { ...alice, approval: approvalId }, {})).json.id, removalId);
         assert.deepStrictEqual(sent.mock.calls.map(([event]) => (event as { id?: string }).id), [`machine-remove-${removalId}`]);
       }).pipe(Effect.provide(layer));
     }),
@@ -824,22 +823,23 @@ it.live(
       yield* Effect.gen(function* () {
         const { drizzle } = yield* Database;
         const alice = yield* signUp("alice");
-        const keep = { no_reset: true };
-        const asked = (yield* cli("DELETE", `servers/${fra1}`, alice, keep)).json.error?.details ?? assert.fail("no ask");
+        const asked = (yield* cli("POST", `servers/${fra1}/forget`, alice, {})).json.error?.details ?? assert.fail("no ask");
         const approvalId = asked.approval_id ?? assert.fail("no approval id");
         yield* cli("POST", `approvals/${approvalId}`, alice, { approve: { digest: asked.approval ?? "" } });
-        const removalId = (yield* cli("DELETE", `servers/${fra1}`, { ...alice, approval: approvalId }, keep)).json.id
+        const removalId = (yield* cli("POST", `servers/${fra1}/forget`, { ...alice, approval: approvalId }, {})).json.id
           ?? assert.fail("no removal id");
         const ended = new Date();
         yield* drizzle.update(machineRemoveAttempt).set({ state: "succeeded", inngestRunId: "run-1", startedAt: ended, terminalAt: ended })
           .where(eq(machineRemoveAttempt.id, removalId));
         cluster.observesFra1 = false;
 
-        const retried = yield* cli("DELETE", `servers/${fra1}`, { ...alice, approval: approvalId }, keep);
+        const retried = yield* cli("POST", `servers/${fra1}/forget`, { ...alice, approval: approvalId }, {});
         assert.strictEqual(retried.status, 200);
         assert.strictEqual(retried.json.id, removalId);
-        for (const body of [keep, { confirm_data_loss: { confirmed: [] } }]) {
-          const gone = yield* cli("DELETE", `servers/${fra1}`, alice, body);
+        for (const gone of [
+          yield* cli("POST", `servers/${fra1}/forget`, alice, {}),
+          yield* cli("DELETE", `servers/${fra1}`, alice, { confirm_data_loss: { confirmed: [] } }),
+        ]) {
           assert.strictEqual(gone.status, 404);
           assert.deepStrictEqual([gone.json.error?.code, gone.json.error?.message], ["not_found", "No such Server."]);
         }
@@ -924,7 +924,7 @@ const operationClusterOf = (plan: FraRunsGlobal) => Layer.succeed(OrganizationRu
 });
 
 const operations = [
-  { verb: "remove", name: "fra-1", method: "DELETE", path: `servers/${fra1}`, body: { no_reset: true } },
+  { verb: "remove", name: "fra-1", method: "POST", path: `servers/${fra1}/forget`, body: {} },
   { verb: "clean", name: "left-behind", method: "POST", path: "namespaces/left-behind/clean", body: undefined },
   { verb: "drain", name: "fra-1", method: "POST", path: `servers/${fra1}/drain`, body: undefined },
 ] as const;

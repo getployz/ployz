@@ -14,6 +14,7 @@ import {
   actService,
   cleanNamespace,
   drainServer,
+  forgetServer,
   type OperationCall,
   removeServer,
   runVolume,
@@ -193,7 +194,7 @@ const act = Effect.fn("CallCloud.act")(function* (caller: Caller, { attempt, dig
     }
     case "forget_server":
       return yield* admitted(
-        yield* removeServer(caller, action.server.machine, null, call),
+        yield* forgetServer(caller, action.server.machine, call),
         { kind: "server", machine: action.server.machine },
         "Server",
       );

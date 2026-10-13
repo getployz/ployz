@@ -1,9 +1,10 @@
 import { createServerFn } from "@tanstack/react-start";
-import { Effect, Schema } from "effect";
+import { Effect } from "effect";
 import { actorMiddleware, publicErrorMiddleware, runActor, strictValidator } from "#/server/tanstack";
+import { ForgetServersInput } from "./forget-servers";
 import { checkForgetServers, forgetServers, forgetterFor } from "./forget-servers.server";
 
-const input = strictValidator(Schema.Struct({ organizationSlug: Schema.String }));
+const input = strictValidator(ForgetServersInput);
 
 /** Forget Servers' check as its dialog opens: every Server tried; refused (as data) when one answers. */
 export const previewForgetServersServerFn = createServerFn({ method: "POST" })
