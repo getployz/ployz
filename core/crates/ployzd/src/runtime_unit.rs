@@ -53,27 +53,46 @@ fn runs_as_host_unit(cgroup: &str) -> bool {
         .any(|unit| unit.trim_end() == HOST_UNIT_NAME)
 }
 
-/// Write `text` to `file` and reload systemd, only when the file differs.
-/// Answers whether it did, so the caller can restart a unit still running the
-/// old definition.
+/// Write `text` to `file` and reload systemd when its loaded copy of the unit
+/// is missing or older than the file. Answers whether it reloaded, so the
+/// caller can restart a process still running the old definition.
+///
+/// The file is the record: a reload that fails or is cancelled leaves systemd
+/// stale, and the next call reloads again.
 ///
 /// # Errors
 ///
 /// Returns an error when the unit cannot be written or systemd does not
-/// reload. A failed reload removes the file so the next start retries it.
+/// reload.
 pub(crate) async fn install(file: &Path, text: &str) -> io::Result<bool> {
-    if fs::read_to_string(file).ok().as_deref() == Some(text) {
+    if fs::read_to_string(file).ok().as_deref() != Some(text) {
+        atomic_write(file, text.as_bytes(), 0o644)?;
+    }
+    let unit = file
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| io::Error::other(format!("{} names no unit", file.display())))?;
+    if !loaded_copy_is_stale(unit).await {
         return Ok(false);
     }
-    atomic_write(file, text.as_bytes(), 0o644)?;
-    if systemctl(&["daemon-reload"]).await.is_none() {
-        let _ = fs::remove_file(file);
-        return Err(io::Error::other(format!(
-            "systemd did not reload after writing {}",
-            file.display()
-        )));
-    }
+    systemctl(&["daemon-reload"])
+        .await
+        .ok_or_else(|| io::Error::other(format!("systemd did not reload {unit}")))?;
     Ok(true)
+}
+
+async fn loaded_copy_is_stale(unit: &str) -> bool {
+    let Some(output) =
+        systemctl(&["show", "-p", "LoadState", "-p", "NeedDaemonReload", unit]).await
+    else {
+        return true;
+    };
+    String::from_utf8_lossy(&output.stdout).lines().any(|line| {
+        line == "NeedDaemonReload=yes"
+            || line
+                .strip_prefix("LoadState=")
+                .is_some_and(|state| state != "loaded")
+    })
 }
 
 /// Whether `unit`'s main process runs a binary other than `own`, as it does

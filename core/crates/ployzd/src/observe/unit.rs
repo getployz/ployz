@@ -11,8 +11,8 @@ use crate::{
 
 const UNIT_NAME: &str = "ployz-observe.service";
 
-/// Write the runtime unit and start the Observe Store, restarting it when the
-/// unit changed or it runs other software. A legacy unit in `/etc` shadows the runtime one until
+/// Write the runtime unit and start the Observe Store, restarting it when
+/// systemd reloaded the unit or it runs other software. A legacy unit in `/etc` shadows the runtime one until
 /// the next install removes it; both run the same binary path.
 ///
 /// # Errors
@@ -35,12 +35,15 @@ async fn converge_in(
     data_dir: &Path,
     socket: &Path,
 ) -> io::Result<()> {
-    let rewritten = runtime_unit::install(
+    let reloaded = runtime_unit::install(
         &unit_dir.join(UNIT_NAME),
         &unit_text(exe.path(), data_dir, socket),
     )
     .await?;
-    let verb = if rewritten || runtime_unit::runs_other_software(UNIT_NAME, exe).await {
+    // A crash loop, here or under a release that rolled back, can leave the
+    // unit at its start limit; a daemon start is a fresh attempt.
+    systemctl(&["reset-failed", UNIT_NAME]).await;
+    let verb = if reloaded || runtime_unit::runs_other_software(UNIT_NAME, exe).await {
         "restart"
     } else {
         "start"
@@ -97,14 +100,37 @@ mod tests {
     const ROOT: &str = "PLOYZ_OBSERVE_UNIT_ROOT";
 
     /// Logs every call; `show` answers the main PID in `main-pid`, or 0 when nothing runs.
-    /// `start` and `restart` fail when `fail-start` exists.
-    const SYSTEMCTL: &str = r#"echo "$*" >> "$PLOYZ_OBSERVE_UNIT_ROOT/systemctl.log"
-if [ -f "$PLOYZ_OBSERVE_UNIT_ROOT/fail-start" ] && { [ "$1" = start ] || [ "$1" = restart ]; }; then exit 1; fi
-if [ "$1" = show ]; then
-  pid=0
-  if [ -f "$PLOYZ_OBSERVE_UNIT_ROOT/main-pid" ]; then read -r pid < "$PLOYZ_OBSERVE_UNIT_ROOT/main-pid"; fi
-  echo "$pid"
-fi"#;
+    /// Models systemd's loaded copy of the unit in `loaded`. `daemon-reload` fails once when
+    /// `fail-reload` exists; `start` and `restart` fail when `fail-start` exists. `show -p MainPID`
+    /// answers the PID in `main-pid`, or 0 when nothing runs.
+    const SYSTEMCTL: &str = r#"root="$PLOYZ_OBSERVE_UNIT_ROOT"
+echo "$*" >> "$root/systemctl.log"
+case "$1" in
+  daemon-reload)
+    if [ -f "$root/fail-reload" ]; then rm "$root/fail-reload"; exit 1; fi
+    cp "$root/units/ployz-observe.service" "$root/loaded" ;;
+  start|restart)
+    if [ -f "$root/fail-start" ]; then exit 1; fi ;;
+  show)
+    if [ "$3" = MainPID ]; then
+      pid=0
+      if [ -f "$root/main-pid" ]; then read -r pid < "$root/main-pid"; fi
+      echo "$pid"
+    elif [ -f "$root/loaded" ]; then
+      echo LoadState=loaded
+      if cmp -s "$root/loaded" "$root/units/ployz-observe.service"; then echo NeedDaemonReload=no; else echo NeedDaemonReload=yes; fi
+    else
+      echo LoadState=not-found
+      echo NeedDaemonReload=no
+    fi ;;
+esac"#;
+
+    fn which(tool: &str) -> PathBuf {
+        env::split_paths(&env::var_os("PATH").unwrap())
+            .map(|dir| dir.join(tool))
+            .find(|path| path.is_file())
+            .unwrap_or_else(|| panic!("{tool} is not on PATH"))
+    }
 
     fn write_script(path: &Path, body: &str) {
         fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
@@ -141,6 +167,11 @@ fi"#;
             };
             if case == "start-fails" {
                 assert!(converge().is_err(), "a refused start is reported");
+            } else if case == "reload-fails" {
+                assert!(converge().is_err(), "a refused reload is reported");
+                // The next daemon start finds systemd still stale and reloads.
+                fs::remove_file(root.join("systemctl.log")).unwrap();
+                converge().unwrap();
             } else {
                 converge().unwrap();
             }
@@ -160,19 +191,28 @@ fi"#;
             "other-software",
             "current",
             "start-fails",
+            "reload-fails",
         ] {
             let root = tempfile::tempdir().unwrap();
             let root = root.path();
             fs::create_dir_all(root.join("commands")).unwrap();
             fs::create_dir_all(root.join("units")).unwrap();
             write_script(&root.join("commands/systemctl"), SYSTEMCTL);
+            for tool in ["cp", "cmp", "rm"] {
+                let path = which(tool);
+                std::os::unix::fs::symlink(path, root.join("commands").join(tool)).unwrap();
+            }
             if case == "stale-definition" {
                 // An observer on this binary still running a unit written with other settings.
                 fs::write(root.join("units/ployz-observe.service"), "[Service]\n").unwrap();
+                fs::write(root.join("loaded"), "[Service]\n").unwrap();
                 fs::write(root.join("main-pid"), std::process::id().to_string()).unwrap();
             }
             if case == "start-fails" {
                 fs::write(root.join("fail-start"), "").unwrap();
+            }
+            if case == "reload-fails" {
+                fs::write(root.join("fail-reload"), "").unwrap();
             }
             let mut stale = None;
             if case == "other-software" {
@@ -221,8 +261,15 @@ fi"#;
                 "{case}: runtime unit is enabled"
             );
             let expected: &[&str] = match case {
-                "current" => &["start --no-block ployz-observe.service"],
-                _ => &["daemon-reload", "restart --no-block ployz-observe.service"],
+                "current" => &[
+                    "reset-failed ployz-observe.service",
+                    "start --no-block ployz-observe.service",
+                ],
+                _ => &[
+                    "daemon-reload",
+                    "reset-failed ployz-observe.service",
+                    "restart --no-block ployz-observe.service",
+                ],
             };
             assert_eq!(log(root), expected, "{case}");
         }
