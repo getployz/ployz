@@ -621,7 +621,7 @@ systemctl enable --now ployz.socket ployz-volume-plugin.socket ployz.service $ob
             response = json.loads(result.stdout) if result.stdout else {}
             follow_up = response.get("follow_up_error", {})
             if result.returncode and not (result.returncode == 3 and response.get("server") and follow_up.get("code") == "unavailable"):
-                raise RuntimeError(f"Enrollment failed: {result.stderr.decode(errors='replace')}\nEvidence: {commands.evidence}")
+                raise RuntimeError(f"{node['name']}: enrollment failed: {result.stderr.decode(errors='replace')}\nEvidence: {commands.evidence}")
             node["machine_id"] = response["server"]["machine"]["id"]
             if result.returncode:
                 # Initialization committed, but the published daemon can serve
