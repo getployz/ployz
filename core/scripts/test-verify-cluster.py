@@ -26,10 +26,8 @@ try:
         start = int(event["artifact"].split("-", 1)[0]) / 1e9
         return start, start + event["seconds"]
 
-    build_start = interval(next(event for event in events
-                                if event["command"][:2] == ["cargo", "build"]))[0]
-    build_end = interval(next(event for event in events
-                              if event["command"] == ["git", "rev-parse", "HEAD"]))[1]
+    build_start, build_end = interval(next(event for event in events
+                                           if event["command"][:2] == ["cargo", "build"]))
     overlap = max((max(0, min(build_end, end) - max(build_start, start))
                    for event in events if "incus" in event["command"]
                    for start, end in [interval(event)]), default=0)
