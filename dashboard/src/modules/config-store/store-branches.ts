@@ -27,19 +27,62 @@ export function settingName(name: string) {
 /** Each field a Service's `source` row holds, by the Setting that sets it: the source changes as one row. */
 export const SOURCE_FIELDS = [["image", "image"], ["repository", "repository"], ["rootDir", "rootDir"], ["registryCredential", "credentials"]] as const;
 
-const decodeSource = Schema.decodeUnknownOption(Schema.Struct({
-  image: Schema.optional(Schema.String), repository: Schema.optional(Schema.String),
-  rootDir: Schema.optional(Schema.String), credentials: Schema.optional(Schema.Boolean),
-}));
+/**
+ * A Service's source as the Store shows it, without its repository's ID, authority or stored version. History holds
+ * the credentials themselves; a change row holds them by presence and leaves the branch to its own row.
+ */
+const Source = Schema.Union([
+  Schema.Struct({ type: Schema.Literal("image"), image: Schema.String,
+    credentials: Schema.optional(Schema.Union([Schema.Boolean, Schema.Struct({ type: Schema.Literals(["none", "configured"]) })])) }),
+  Schema.Struct({ type: Schema.Literal("git"), repository: Schema.String, rootDir: Schema.optional(Schema.String),
+    branch: Schema.optional(Schema.Union([
+      Schema.Struct({ type: Schema.Literal("connected"), name: Schema.String }),
+      Schema.Struct({ type: Schema.Literal("disconnected") }),
+    ])) }),
+  Schema.Struct({ type: Schema.Literal("empty"), rootDir: Schema.optional(Schema.String) }),
+]);
+const decodeSource = Schema.decodeUnknownOption(Source);
 
-/** The `source` row's value in words: what it runs from, then a root directory and credentials where it has them. */
+const inRoot = (rootDir: string | undefined) => rootDir && rootDir !== "/" ? ` in ${rootDir}` : "";
+
+/** What a source runs from, then the part that may move alone: an image's tag, a repository's branch. */
+function sourceParts(source: typeof Source.Type) {
+  switch (source.type) {
+    case "image": {
+      const ref = source.image;
+      const at = ref.indexOf("@");
+      const colon = ref.lastIndexOf(":");
+      const split = at >= 0 ? at : colon > ref.lastIndexOf("/") ? colon + 1 : ref.length;
+      const { credentials } = source;
+      const configured = credentials === true || (credentials !== undefined && credentials !== false && credentials.type === "configured");
+      return { from: ref.slice(0, split), part: ref.slice(split), rest: configured ? " with credentials" : "" };
+    }
+    case "git":
+      if (source.branch === undefined) return { from: source.repository, part: "", rest: inRoot(source.rootDir) };
+      return { from: `${source.repository} · `, part: source.branch.type === "connected" ? source.branch.name : "no branch", rest: inRoot(source.rootDir) };
+    case "empty":
+      return { from: "None", part: "", rest: inRoot(source.rootDir) };
+  }
+}
+
+/** The `source` row's value in words: an image, or a repository and its branch, then a root directory and credentials where it has them. */
 export function sourceText(value: JsonValue): string {
+  if (value === null) return "";
   return Option.match(decodeSource(value), {
-    onNone: () => value === null ? "" : JSON.stringify(value),
-    onSome: ({ image, repository, rootDir, credentials }) =>
-      [image ?? repository ?? "None", rootDir && rootDir !== "/" ? `in ${rootDir}` : "", credentials ? "with credentials" : ""]
-        .filter(Boolean).join(" "),
+    onNone: () => JSON.stringify(value),
+    onSome: (source) => {
+      const { from, part, rest } = sourceParts(source);
+      return `${from}${part}${rest}`;
+    },
   });
+}
+
+/** A source change in words, before then after: when only the tag or branch moved, after says just that. */
+export function sourceChange(before: JsonValue, after: JsonValue): [string, string] {
+  const parts = [before, after].map((value) => value === null ? Option.none() : Option.map(decodeSource(value), sourceParts));
+  const [was, now] = parts.map(Option.getOrUndefined);
+  const onlyPart = was && now && was.from === now.from && was.rest === now.rest && now.part !== "" && was.part !== now.part;
+  return [sourceText(before), onlyPart ? now.part : sourceText(after)];
 }
 
 /** A row and the value it offers in words: which setting of which node ("New" for the node itself). */

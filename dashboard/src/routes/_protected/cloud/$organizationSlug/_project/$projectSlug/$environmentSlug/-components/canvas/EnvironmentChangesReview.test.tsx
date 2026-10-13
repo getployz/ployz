@@ -160,6 +160,13 @@ describe("Details", () => {
     expect(test.onClose).not.toHaveBeenCalled();
   });
 
+  it("says a node History brings back comes back, not that it will be added", () => {
+    review({ groups: [{ ...nginx, nodeName: "redis", discardPath: "redis", comesBack: true }] });
+
+    expect(lineOf("redis").getByText("Comes back")).toBeTruthy();
+    expect(screen.queryByText(/will be added/u)).toBeNull();
+  });
+
   it("groups what arrived apart from the Environment's own changes, said once in words", () => {
     const own = row("api.env.LOG_LEVEL", { currentValue: "warn", newValue: "debug" });
     const arrived = row("api.env.CACHE_TTL", { row: "a:variables.CACHE_TTL" as RowId });

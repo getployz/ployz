@@ -5,7 +5,7 @@ import type {
 import { Option, Schema } from "effect";
 import { settingTitle } from "./catalog";
 import { healthcheckOf } from "./healthcheck";
-import { sourceText } from "./store-branches";
+import { sourceChange } from "./store-branches";
 import { volumeStorageText } from "./store-volumes";
 
 /** A Config file in a change. `content` is missing where the reader may not see it: Ployz support, unless the Organization shows it. */
@@ -57,6 +57,8 @@ export type ChangeGroup = {
   serviceSourceType?: ServiceListing["source"];
   /** A failed Deploy gave its changes back before it got to them. */
   unreached?: boolean;
+  /** Created only against the Saved version: the deployed one still holds it, so History brings it back. */
+  comesBack?: true;
 };
 
 /** A Setting the catalog doesn't title: a variable, a mount, a route, or a Volume's own. */
@@ -97,7 +99,7 @@ export function changeGroups(diff: DiffView, services: readonly ServiceListing[]
         : setting.startsWith("configs.@") ? "Config mount"
         : setting === "name" ? "Name" : title ?? untitledLabel(node.type, setting);
       const variable = node.type === "service" && setting.startsWith("env.");
-      const shown = setting === "source" ? sourceText : shownValue;
+      const [before, after] = setting === "source" ? sourceChange(row.before, row.after) : [shownValue(row.before), shownValue(row.after)];
       const file = (value: JsonValue) => value === null ? null : Option.getOrThrowWith(decodeFile(value),
         () => new Error(`Could not read Config file comparison for ${row.path}.`));
       const configFile = node.type === "config" && setting.startsWith("files.") ? { before: file(row.before), after: file(row.after) } : undefined;
@@ -109,8 +111,8 @@ export function changeGroups(diff: DiffView, services: readonly ServiceListing[]
         label,
         name: variable ? setting.slice("env.".length) : label,
         variable,
-        currentValue: configFile ? configFile.before === null ? "" : "File" : shown(row.before),
-        newValue: configFile ? configFile.after === null ? "" : "File" : shown(row.after),
+        currentValue: configFile ? configFile.before === null ? "" : "File" : before,
+        newValue: configFile ? configFile.after === null ? "" : "File" : after,
         configFile,
         // Whether Discard takes this path alone is the Store's to say.
         canDiscard: row.canRestore,
@@ -128,7 +130,7 @@ export function reviewGroups(diff: DiffView, services: readonly ServiceListing[]
     draft.rows = draft.rows.map((row) => ({ ...row, discardTarget: "saved" }));
     const runtime = groups.find((group) => group.nodeType === draft.nodeType && group.nodeId === draft.nodeId);
     if (!runtime) {
-      groups.push(draft);
+      groups.push(draft.lifecycle === "create" ? { ...draft, comesBack: true } : draft);
       continue;
     }
     if (runtime.lifecycle !== "update") continue;

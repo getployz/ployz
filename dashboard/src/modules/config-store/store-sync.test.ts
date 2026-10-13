@@ -24,7 +24,7 @@ describe("the Sync dialog over the Store", () => {
   it("words each change by name, with at most one badge, Secret first, and hides a secret's value", () => {
     const lines = [image, logLevel, webhook, cache, cacheMode, dataName].map((one) => syncLine(one, "production"));
     expect(lines).toEqual([
-      { name: "Source", variable: false, badge: null, before: "shop/api:1.8", after: "shop/api:1.9" },
+      { name: "Source", variable: false, badge: null, before: "shop/api:1.8", after: "1.9" },
       { name: "LOG_LEVEL", variable: true, badge: "Changed in production", before: "warn", after: "debug" },
       { name: "STRIPE_WEBHOOK_SECRET", variable: true, badge: "Secret", before: "", after: "" },
       { name: "Service", variable: false, badge: "New", before: "", after: "" },
