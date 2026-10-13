@@ -20,6 +20,8 @@ export const NORMAL = "0123456789abcdef0123456789abcdef";
 export const ONES = "1".repeat(32);
 export const TWOS = "2".repeat(32);
 const THREES = "3".repeat(32);
+/** Up and answering, with nothing sampled yet. */
+export const FOURS = "4".repeat(32);
 const MIB = 1024 * 1024;
 
 // SAFETY: fixture ids are fixed literals already in each brand's shape.
@@ -166,13 +168,19 @@ function hostPoints(ts: readonly number[]): HostPoint[] {
 
 function machineFixture(machine: string, { step, ts }: Buckets): MetricHistory {
   if (machine === NORMAL) {
-    const points = hostPoints(ts);
+    const gapFrom = ts[Math.floor(ts.length / 2)];
+    const gapTo = ts[Math.floor(ts.length / 2) + 8];
+    const gaps: MetricGap[] = gapFrom === undefined || gapTo === undefined ? [] : [{ from: gapFrom, to: gapTo, reason: "not_sampled" }];
+    const points = hostPoints(ts).filter((point) => !gaps.some((gap) => point.ts >= gap.from && point.ts < gap.to));
     return {
       step_nanos: step,
       points: { machine: points },
-      machines: [{ machine_id: brand.machine(machine), value: { points: { machine: points }, step_nanos: step, gaps: [] } }],
+      machines: [{ machine_id: brand.machine(machine), value: { points: { machine: points }, step_nanos: step, gaps } }],
       unanswered: [],
     };
+  }
+  if (machine === FOURS) {
+    return { step_nanos: step, points: { machine: [] }, machines: [{ machine_id: brand.machine(machine), value: { points: { machine: [] }, step_nanos: step, gaps: [] } }], unanswered: [] };
   }
   return { points: { machine: [] }, machines: [], unanswered: [machine === TWOS ? refusal(machine) : down(machine)] };
 }
