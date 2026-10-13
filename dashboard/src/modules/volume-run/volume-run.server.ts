@@ -379,6 +379,8 @@ export type LaneTaker = {
   readonly input: { readonly volumeId: string } & VolumeLaneInput;
   readonly volume: ResolvedVolume;
   readonly id: string;
+  /** The one lane this taker may end; finding another, or none, leaves the Volume alone. */
+  readonly lane?: string;
 };
 
 export type LaneTake = { readonly run: VolumeRunView; readonly ended: VolumeRunView | null };
@@ -392,6 +394,8 @@ const TAKEN_BY = {
 
 class LaneRefused extends Data.TaggedError("LaneRefused")<{ readonly refusal: StoreRefusal; readonly busy: VolumeRunView }> {}
 
+class LaneMoved extends Data.TaggedError("LaneMoved")<{ readonly active: VolumeRunRow | undefined }> {}
+
 class LaneChurn extends Data.TaggedError("LaneChurn")<{ readonly message: string }> {}
 
 type Caller = { readonly userId: string | null; readonly organizationId: string };
@@ -402,10 +406,11 @@ const TAKE_ROUNDS = 3;
  * The insert waits on any lane committing concurrently, so a conflict means a lane landed between the read and the
  * insert; the next round reads it under the lock and takes it over too.
  */
-const takeLane = Effect.fn("VolumeRun.takeLane")(function* (caller: Caller, { input, volume, id }: LaneTaker, end: LaneEnd | null, inngestRunId: string | null = null) {
+const takeLane = Effect.fn("VolumeRun.takeLane")(function* (caller: Caller, { input, volume, id, lane: only }: LaneTaker, end: LaneEnd | null, inngestRunId: string | null = null) {
   const { drizzle } = yield* Database;
   for (let round = 1; ; round++) {
     const lane = end === null ? undefined : yield* activeLane(input.volumeId, true);
+    if (only !== undefined && lane?.id !== only) return yield* new LaneMoved({ active: lane });
     let taken: VolumeRunRow | undefined;
     if (lane !== undefined && end !== null) {
       if (keepsLane(lane, end)) return yield* new LaneRefused({ refusal: yield* laneRefusal(lane, input.kind), busy: volumeRunView(lane) });
@@ -475,8 +480,8 @@ export const machineNamed = Effect.fn("VolumeRun.machineNamed")(function* (organ
 export const releaseLanesOff = Effect.fn("VolumeRun.releaseLanesOff")(function* (
   organizationId: string, machine: { readonly id: MachineId; readonly name: MachineName | null }, writes: readonly string[],
 ) {
-  const { drizzle } = yield* Database;
-  const lanes = yield* drizzle.select().from(volumeRun).where(and(
+  const database = yield* Database;
+  const lanes = yield* database.drizzle.select().from(volumeRun).where(and(
     eq(volumeRun.organizationId, organizationId),
     inArray(volumeRun.state, ACTIVE_VOLUME_RUN_STATES),
     eq(volumeRun.phase, "warm"),
@@ -487,10 +492,21 @@ export const releaseLanesOff = Effect.fn("VolumeRun.releaseLanesOff")(function* 
     if (pastReturn(lane) || input.kind === "release" || lane.kind === "deploy") continue;
     const bound = machine.name !== null && isDestination(input, { id: machine.id, name: machine.name });
     if (!bound && !writes.includes(lane.dockerVolume)) continue;
-    const taken = yield* insertRun({ userId: null, organizationId }, { volumeId: lane.volumeId, kind: "release", args: {} }, {
-      environmentId: lane.environmentId, volumeName: lane.volumeName, dockerVolume: lane.dockerVolume, refquotaBytes: lane.refquotaBytes,
-    }, crypto.randomUUID());
-    if (taken.ok) released.push(taken.run.id);
+    const taker: LaneTaker = {
+      input: { volumeId: lane.volumeId, kind: "release", args: {} },
+      volume: { environmentId: lane.environmentId, volumeName: lane.volumeName, dockerVolume: lane.dockerVolume, refquotaBytes: lane.refquotaBytes },
+      id: crypto.randomUUID(),
+      lane: lane.id,
+    };
+    const left = (reason: string, run: string | null) =>
+      Effect.logWarning("A Server leaving left a run on its Volume alone.", { machine: machine.name ?? machine.id, volume: lane.volumeName, run, reason }).pipe(Effect.as(null));
+    const taken = yield* database.transaction(takeLane({ userId: null, organizationId }, taker, "cancelled")).pipe(
+      Effect.catchTags({
+        LaneMoved: ({ active }) => left(active === undefined ? `${lane.id} ended on its own` : `${lane.id} ended and ${active.id} took the lane`, active?.id ?? null),
+        LaneRefused: ({ refusal, busy }) => left(refusal.message, busy.id),
+      }),
+    );
+    if (taken !== null) released.push(taken.run.id);
   }
   return released;
 });

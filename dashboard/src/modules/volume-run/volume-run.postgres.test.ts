@@ -839,6 +839,30 @@ describe("volume runs", () => {
       expect(await lanes()).toMatchObject([{ kind: "move", state: "cancelled" }, { kind: "release", state: "requested" }]);
     });
 
+    it("a run that starts after the read, once the Move it saw ended, is not the one a leaving Server takes", async () => {
+      const move = await warmMove();
+      const other = await harness.pool.connect();
+      try {
+        await other.query("begin");
+        await other.query("select id from volume_run where id = $1 for update", [move.id]);
+        const releasing = runEffect(releaseLanesOff(organizationId, fsn("fsn-2"), []));
+        while ((await harness.pool.query("select 1 from pg_stat_activity where wait_event_type = 'Lock'")).rowCount === 0) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        await other.query("update volume_run set state = 'done', finished_at = now() where id = $1", [move.id]);
+        await other.query(`
+          insert into volume_run (id, organization_id, environment_id, volume_id, volume_name, docker_volume, refquota_bytes, kind, args, state, inngest_run_id)
+          select gen_random_uuid(), organization_id, environment_id, volume_id, volume_name, docker_volume, refquota_bytes, 'mirror', '{"to":"fsn-3"}', 'running', 'run-9'
+          from volume_run where id = $1`, [move.id]);
+        await other.query("commit");
+
+        expect(await releasing).toEqual([]);
+      } finally {
+        other.release();
+      }
+      expect(await lanes()).toMatchObject([{ id: move.id, state: "done" }, { kind: "mirror", state: "running" }]);
+    });
+
     it("removing the source of a warm Move releases, and the release names B's copy to restore from", async () => {
       const at = newSnap("f-1");
       await warmMove();
