@@ -97,7 +97,7 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
             server: repair.server.clone(),
         },
         state: if repair.failure.is_some() {
-            State::Failed
+            State::Warned
         } else {
             State::Completed
         },
@@ -444,7 +444,7 @@ mod tests {
                         machine: held,
                         server: "web-1".into(),
                     },
-                    State::Failed,
+                    State::Warned,
                     Some("create".into()),
                 ),
                 (
