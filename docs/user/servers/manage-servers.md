@@ -40,18 +40,19 @@ Click a server. Its page shows its status and public IP address, then:
   space into **Volumes**, **Mirrors**, **Logs and metrics** and **Other**, then **Free**. A stretch
   the server didn't measure is hatched **Not measured**. A server on an older Ployz version reads
   **Upgrade web-1 to see its metrics**. If it doesn't reply, the section reads **web-1 didn't answer**.
+  While the server is offline, the page leaves Resources out.
 
   ![A server's Resources: CPU, memory and disk meters over CPU, memory and network charts](../images/server-resources.png)
 
 - **Running here**: the server's services, with the CPU and memory each uses on this server now.
-  Past five, **All 12 services** lists the rest. While the server is offline, each one says whether
-  it's **Still on** another server or **Down**.
+  Past five, **All 12 services** opens the full list, with a filter. While the server is offline, each one says whether
+  it's **Still on** another server or **Down**. A service with no readings on this server shows **–**.
 - **Services**: **Run services here** and **Drain**. See
   [Change what a server does](#change-what-a-server-does).
 - **Builds**: **Run builds here** and **Builds at once**. See
   [Where builds run](../builds/where-builds-run.md#build-on-your-servers).
 
-![A server's page: Running here, Builds and Remove server](../images/server-page.png)
+![A server's page: Running here, Services and Builds](../images/server-running-here.png)
 
 An entry marked **Not in any Project** is left over from a deleted project or environment.
 **Remove** deletes its containers and its volumes, data included, from every server.

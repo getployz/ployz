@@ -125,11 +125,13 @@ function MeterCard({ title, value, fraction, aside = false }: { title: string; v
         {aside && fraction !== null ? <span className="text-xs text-muted-foreground tabular-nums">{percentText(fraction)}</span> : null}
       </div>
       <p className="truncate text-xl font-medium tabular-nums">{value}</p>
-      <Meter.Root value={fraction === null ? 0 : Math.min(1, Math.max(0, fraction)) * 100} aria-label={title}>
-        <Meter.Track className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
-          <Meter.Indicator className={cn("h-full rounded-full", fraction !== null && fraction >= 0.85 ? "bg-warning" : "bg-foreground/60")} />
-        </Meter.Track>
-      </Meter.Root>
+      {fraction === null ? <div aria-hidden className="h-1.5 w-full rounded-full bg-muted" /> : (
+        <Meter.Root value={Math.min(1, Math.max(0, fraction)) * 100} aria-label={title}>
+          <Meter.Track className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+            <Meter.Indicator className={cn("h-full rounded-full", fraction >= 0.85 ? "bg-warning" : "bg-foreground/60")} />
+          </Meter.Track>
+        </Meter.Root>
+      )}
     </Card>
   );
 }

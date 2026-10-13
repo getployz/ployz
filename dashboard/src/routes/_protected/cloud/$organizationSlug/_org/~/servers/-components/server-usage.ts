@@ -27,13 +27,20 @@ const BREAKDOWN = [
   { key: "other", label: "Other" },
 ] as const satisfies readonly { key: keyof DiskSample; label: string }[];
 
-/** Where a disk's bytes go, ending with what is free. A Server that reports no breakdown shows its used bytes as one. */
+/**
+ * Where a disk's bytes go, ending with what is free. A Server leaves out the parts it didn't measure, so used bytes no
+ * part names go to Other, or to one Used when the Server named none.
+ */
 export function diskSegments(sample: DiskSample): DiskSegment[] {
-  const parts = BREAKDOWN.flatMap(({ key, label }) => {
+  const parts: DiskSegment[] = BREAKDOWN.flatMap(({ key, label }) => {
     const bytes = sample[key];
     return bytes === undefined ? [] : [{ key, label, bytes }];
   });
-  const used: DiskSegment[] = parts.length > 0 ? parts : [{ key: "used", label: "Used", bytes: sample.total - sample.free }];
+  const unnamed = sample.total - sample.free - parts.reduce((sum, part) => sum + part.bytes, 0);
+  const rest: DiskSegment | null = unnamed <= 0 ? null
+    : parts.length === 0 ? { key: "used", label: "Used", bytes: unnamed }
+    : { key: "other", label: "Other", bytes: unnamed + (parts.find((part) => part.key === "other")?.bytes ?? 0) };
+  const used = rest === null ? parts : [...parts.filter((part) => part.key !== "other"), rest];
   return [...used, { key: "free", label: "Free", bytes: sample.free }];
 }
 

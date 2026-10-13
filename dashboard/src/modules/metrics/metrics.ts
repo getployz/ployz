@@ -23,7 +23,7 @@ export const ReadRuntimeServiceMetricsInput = Schema.Struct({
 });
 export type ReadRuntimeServiceMetricsInput = typeof ReadRuntimeServiceMetricsInput.Type;
 
-export const ReadServerMetricsInput =Schema.Struct({
+export const ReadServerMetricsInput = Schema.Struct({
   organizationSlug: Schema.NonEmptyString,
   machineId: Schema.String.check(Schema.isPattern(/^[0-9a-f]{32}$/u)),
   from: RangeEdge,

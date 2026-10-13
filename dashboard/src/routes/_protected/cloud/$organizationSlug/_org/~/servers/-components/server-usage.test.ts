@@ -40,6 +40,16 @@ describe("diskSegments", () => {
     expect(diskSegments({ at: 0, total: 1800, free: 1390 }).map((segment) => [segment.label, segment.bytes]))
       .toEqual([["Used", 410], ["Free", 1390]]);
   });
+
+  it("covers every used byte when the pool went unmeasured", () => {
+    expect(diskSegments({ at: 0, total: 1800, free: 1390, logsAndMetrics: 38 }).map((segment) => [segment.label, segment.bytes]))
+      .toEqual([["Logs and metrics", 38], ["Other", 372], ["Free", 1390]]);
+  });
+
+  it("covers every used byte when logs and metrics went unmeasured", () => {
+    expect(diskSegments({ at: 0, total: 1800, free: 1390, volumes: 214, mirrors: 96 }).map((segment) => [segment.label, segment.bytes]))
+      .toEqual([["Volumes", 214], ["Mirrors", 96], ["Other", 100], ["Free", 1390]]);
+  });
 });
 
 describe("serviceUsageOn", () => {

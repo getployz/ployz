@@ -99,7 +99,7 @@ function RouteComponent() {
           <AlertDescription>Check that it’s powered on and online.</AlertDescription>
         </Alert>
       ) : null}
-      <ServerResources organizationSlug={organizationSlug} server={{ id: machine.id, name: server.name }} />
+      {server.status === "offline" ? null : <ServerResources organizationSlug={organizationSlug} server={{ id: machine.id, name: server.name }} />}
       <RunningHere organizationSlug={organizationSlug} server={server} servers={servers} stale={stale} />
       <Suspense fallback={null}>
         <ServerUpgradeSection machine={machine} status={server.status} organizationSlug={organizationSlug} />

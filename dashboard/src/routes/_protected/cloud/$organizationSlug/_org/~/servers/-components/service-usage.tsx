@@ -16,7 +16,11 @@ export function ServiceUsage({ organizationSlug, server, namespace, name }: {
   name: string;
 }) {
   const { data } = useQuery(runtimeServiceMetricsQueryOptions({ organizationSlug, namespace, name, from: "5m", to: "now" }));
-  const usage = data ? serviceUsageOn(serviceMetrics(data, new Map([[server.id, server.name]])), server.id) : null;
-  if (usage === null) return null;
-  return <ItemDescription className="whitespace-nowrap tabular-nums">{cpuText(usage.cpu)} vCPU · {bytesText(usage.memory)}</ItemDescription>;
+  if (data === undefined) return null;
+  const usage = serviceUsageOn(serviceMetrics(data, new Map([[server.id, server.name]])), server.id);
+  return (
+    <ItemDescription className="whitespace-nowrap tabular-nums">
+      {usage === null ? "–" : `${cpuText(usage.cpu)} vCPU · ${bytesText(usage.memory)}`}
+    </ItemDescription>
+  );
 }

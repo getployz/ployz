@@ -44,7 +44,7 @@ export const readRuntimeServiceMetrics = Effect.fn("Metrics.readRuntimeService")
   return yield* readHistory(organization.id, { kind: "service", service: `${input.namespace}/${input.name}` }, window);
 });
 
-export const readServerMetrics =Effect.fn("Metrics.readServer")(function* (actor: Actor, input: ReadServerMetricsInput) {
+export const readServerMetrics = Effect.fn("Metrics.readServer")(function* (actor: Actor, input: ReadServerMetricsInput) {
   const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
   const window = resolveRange(input, yield* Clock.currentTimeMillis);
   // SAFETY: the input schema checks the 32 lowercase hex digits a MachineId is.
