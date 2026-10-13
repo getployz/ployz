@@ -517,7 +517,7 @@ class VolumeMove:
             holder = self.wait_idle(deadline) or holder
             code, data = self.cli(*args[op], check=False)
             refused = busy(data)
-            holder = holder or refused
+            holder = refused or holder
             if not refused or self.clock() >= deadline:
                 break
             self.sleep(4)

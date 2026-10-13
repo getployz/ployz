@@ -66,12 +66,19 @@ class ClusterModel:
         self.asks = set()
         self.started = []
         self.clock = None
-        self.held_until = 0
-        self.holder_listed = True
+        self.holds = []
         self.calls = 0
 
     def other(self, machine):
         return "machine-2" if machine == "machine-1" else "machine-1"
+
+    def hold(self, seconds, run_id="sync-1", listed=True):
+        """Another run holds the Volume for seconds after the previous hold ends, as a cron sync would."""
+        start = self.holds[-1]["until"] if self.holds else self.clock()
+        self.holds.append(dict(id=run_id, until=start + seconds, listed=listed))
+
+    def holder(self):
+        return next((hold for hold in self.holds if self.clock() < hold["until"]), None)
 
     def __call__(self, args, **kwargs):
         self.calls += 1
@@ -95,14 +102,14 @@ class ClusterModel:
             self.started.append(args)
         if args[:2] == ["volume", "inspect"]:
             return 0, json.dumps(dict(id="1", environment=dict(project="verify", name="production")))
-        held = self.clock is not None and self.clock() < self.held_until
+        held = self.holder() if self.clock else None
         if args[:2] == ["volume", "runs"]:
-            holder = [dict(id="sync-1", kind="sync", state="running")] if held and self.holder_listed else []
+            holder = [dict(id=held["id"], kind="sync", state="running")] if held and held["listed"] else []
             return 0, json.dumps(dict(runs=holder + list(reversed(self.runs))))
         if held and args[:2] in (["volume", "move"], ["volume", "mirror"], ["volume", "release"]):
-            run = dict(id="sync-1", kind="sync", state="running")
-            return 1, json.dumps(dict(error=dict(code="conflict", message="VolumeBusy: run sync-1 (sync) is running",
-                                                 details=dict(run=run))))
+            run = dict(id=held["id"], kind="sync", state="running")
+            message = f"VolumeBusy: run {held['id']} (sync) is running"
+            return 1, json.dumps(dict(error=dict(code="conflict", message=message, details=dict(run=run))))
         if args[:2] == ["volume", "move"]:
             destination = args[-1]
             row = dict(id=f"run-{len(self.runs)}", kind="move", state="running")
@@ -448,8 +455,7 @@ class VolumeMoveTests(unittest.TestCase):
         for listed in (True, False):
             with self.subTest(holder_listed=listed):
                 checks, model = self.checks()
-                model.held_until = checks.clock() + volume_move.BUSY_LIMIT + 20
-                model.holder_listed = listed
+                model.hold(volume_move.BUSY_LIMIT + 20, listed=listed)
                 with redirect_stdout(io.StringIO()):
                     summary = checks.run_all([volume_move.KILLS[0], volume_move.CASES[0]])
                 skipped, clean = summary["cases"]
@@ -460,6 +466,15 @@ class VolumeMoveTests(unittest.TestCase):
                 self.assertEqual(clean["final_writer"], "machine-2")
                 self.assertEqual([(wait["case"], wait["holder"]) for wait in summary["volume_busy_waits"]],
                                  [(skipped["name"], "sync-1"), (clean["name"], "sync-1")])
+
+    def test_a_skip_names_the_run_that_refused_last(self):
+        checks, model = self.checks()
+        model.hold(10, "sync-a")
+        model.hold(volume_move.BUSY_LIMIT + 20, "sync-b", listed=False)
+        checks.case_name = "clean"
+        with redirect_stdout(io.StringIO()), self.assertRaisesRegex(volume_move.Skipped, "sync-b"):
+            checks.start_op("move", "machine-2")
+        self.assertEqual([wait["holder"] for wait in checks.busy_waits], ["sync-b"])
 
     def test_each_planted_defect_fails_the_run(self):
         for mutation in ("two-writers", "stopped", "snapshots", "lost"):
