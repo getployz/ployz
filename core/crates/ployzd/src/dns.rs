@@ -138,7 +138,7 @@ impl Projection {
         let mut service_ids = HashMap::<ServiceId, Vec<Ipv4Addr>>::new();
         let mut identities = HashMap::<QualifiedService, ServiceAddresses>::new();
         let mut machine_identities = HashMap::<MachineServiceTarget, Vec<Ipv4Addr>>::new();
-        for serving in serving_containers(&containers) {
+        for serving in serving_containers(&containers, |_| None) {
             let observation = serving.as_observation();
             if observation.machine_id != *local_id
                 && down_machines.is_some_and(|down| down.contains(&observation.machine_id))
