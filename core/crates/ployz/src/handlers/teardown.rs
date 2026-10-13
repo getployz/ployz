@@ -203,7 +203,10 @@ pub(super) fn remove(
                 }
                 // The review is the only word on `waiting_on`, and it skips an
                 // Environment once its removal applied, so it stays the freshest.
-                if waiting_on.is_empty() {
+                // An Environment with no removal admitted waits its turn or stalled,
+                // and Cloud carries it on alone; otherwise only Cloud's sweep is left.
+                let sweep_next = left.iter().all(|left| left.deployment.is_some());
+                if waiting_on.is_empty() && sweep_next {
                     swept_by_cloud(store, project, environment)?;
                 } else if !gone(store, project, environment)? {
                     let left = applied(left, &ran);
@@ -313,10 +316,12 @@ impl Removed {
         }
     }
 
-    /// Exit 3 when Cloud is still removing it, unless `--detach` asked not to wait.
+    /// Exit 3 when a Server didn't answer, unless `--detach` asked not to wait.
     pub(super) fn ended(&self, matches: &ArgMatches) -> Result<(), Error> {
         match (&self.removal, matches.get_flag("detach")) {
-            (Removal::Removing { .. }, false) => Err(Error::partial()),
+            (Removal::Removing { waiting_on, .. }, false) if !waiting_on.is_empty() => {
+                Err(Error::partial())
+            }
             _ => Ok(()),
         }
     }
