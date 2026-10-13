@@ -21,7 +21,7 @@ volume_move = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(volume_move)
 
 PHYSICAL = "verify-production_vol-1"
-CALL_LIMIT = 3000
+CALL_LIMIT = 6000
 
 
 class Runaway(Exception):
@@ -68,7 +68,7 @@ class ClusterModel:
         self.mirror = None
         self.runs = []
         self.fault = {"machine-1": None, "machine-2": None}
-        self.fired = False
+        self.journal = []
         self.acks = []
         self.asks = set()
         self.started = []
@@ -84,6 +84,31 @@ class ClusterModel:
         self.workers = set()
         self.receiving = False
         self.events = []
+        # Each Machine's clock runs offset seconds ahead of the host, and one exec takes latency seconds.
+        self.offset = {"machine-1": 0.0, "machine-2": 0.0}
+        self.latency = {"machine-1": 0.0, "machine-2": 0.0}
+        self.stops = []
+
+    @property
+    def fired(self):
+        return bool(self.journal)
+
+    @fired.setter
+    def fired(self, value):
+        if value:
+            for machine in self.offset:
+                self.log_fault(machine)
+
+    def log_fault(self, machine, at=None, text="fault: killing daemon inside the effect"):
+        """The daemon on machine logs a fault line at host time at, stamped by machine's own clock."""
+        self.journal.append((machine, self.clock() if at is None else at, text))
+
+    def stop(self, machine, at=None):
+        """The db Container on machine exits at host time at, and Docker stamps it in machine's clock."""
+        self.stops.append((machine, self.clock() if at is None else at))
+
+    def receiving_on(self, machine):
+        return self.receiving is True or (isinstance(self.receiving, set) and machine in self.receiving)
 
     def at(self, moment, event):
         """Something happens in Cloud or on a Machine once the clock reaches moment."""
@@ -178,7 +203,8 @@ class ClusterModel:
             row = dict(id=f"run-{len(self.runs)}", kind="mirror", state="done", finished_at=self.now())
             self.runs.append(row)
             # The armed kill lands inside the effect and the resumed run finishes it.
-            self.fired = self.fired or any(self.fault.values())
+            if any(self.fault.values()):
+                self.fired = True
             if args[2] == "rm":
                 self.mirror = None
             else:
@@ -202,9 +228,22 @@ class ClusterModel:
                 self.fired = True
             self.fault[machine] = value
             return 0, ""
+        if script == "date +%s.%N":
+            self.clock.now += self.latency[machine] / 2
+            reading = self.clock() + self.offset[machine]
+            self.clock.now += self.latency[machine] / 2
+            return 0, f"{reading:.9f}\n"
+        if "FinishedAt" in script:
+            return 0, "".join(f"{at + self.offset[machine]:.9f}\n" for where, at in self.stops if where == machine)
         if "fault:" in script:
-            plugin_journal = "-u ployz-volume-plugin.service" in script
-            return 0, "fault: killing daemon inside the effect\n" if self.fired and plugin_journal else ""
+            if "-u ployz-volume-plugin.service" not in script:
+                return 0, ""
+            since = int(re.search(r"--since @(-?\d+)", script)[1])
+            lines = [(at + self.offset[machine], text) for where, at, text in self.journal
+                     if where == machine and at + self.offset[machine] >= since]
+            if "-o cat" in script:
+                return 0, "".join(f"{text}\n" for _, text in lines)
+            return 0, "".join(f"{at:.6f} machine ployzd[1]: {text}\n" for at, text in lines)
         if script.startswith("for d in"):
             lines = []
             two_writers = self.mutation == "two-writers"
@@ -221,7 +260,7 @@ class ClusterModel:
                 lines.append("ct def exited db-old")
             return 0, "\n".join(lines) + "\n"
         if "pgrep" in script:
-            return 0, "yes\n" if self.receiving else "no\n"
+            return 0, "yes\n" if self.receiving_on(machine) else "no\n"
         if "pg_isready" in script:
             return 0, ""
         if "systemctl kill" in script:
@@ -1224,6 +1263,191 @@ class VolumeMoveTests(unittest.TestCase):
                     self.assertEqual(len(result["failures"]), 1, result["failures"])
                     self.assertTrue(result["failures"][0].startswith(f"no evidence the {action} landed"),
                                     result["failures"])
+
+    def first_move(self, model, ends, state="failed", effect=None, claimed=True):
+        """The case's first move is accepted and ends state ends seconds later; effect(begun) schedules what it does."""
+        cli, first = model.cli, []
+
+        def scripted(args):
+            if args[:2] != ["volume", "move"] or first:
+                return cli(args)
+            row = dict(id=f"run-{len(model.runs)}", kind="move", state="running", finished_at=None)
+            model.runs.append(row)
+            first.append(row)
+            begun, destination = model.clock(), args[-1]
+
+            def end():
+                row["state"], row["finished_at"] = state, iso(begun + ends)
+                if state == "done":
+                    model.mirror, model.writer = model.writer, destination
+            if not claimed:
+                model.unclaimed.add(row["id"])
+            model.at(begun + ends, end)
+            if effect:
+                effect(begun)
+            return 0, json.dumps(row)
+        model.cli = scripted
+        return first
+
+    def test_a_receive_an_earlier_sync_left_running_is_not_credited_to_the_first_run(self):
+        cases = {case["name"]: case for case in volume_move.soak_cases()}
+        # Codex r3 finding 1: a sync holds the Volume, starts a receive and ends while the receive runs on; the first
+        # move sends no effect and fails, or is never claimed and closes lost.
+        for name, state, ends, receive_ends in (
+                ("soak-1-rounds-runner-kill", "failed", 1, 30),
+                ("soak-1-rounds-kill-ployz-writer", "failed", 1, 30),
+                ("soak-1-rounds-kill-docker-other", "failed", 1, 30),
+                ("soak-1-rounds-runner-kill", "lost", 600, 30),
+                ("soak-1-rounds-runner-kill", "failed", 1, None)):
+            with self.subTest(case=name, first_run=state, receive_ends=receive_ends):
+                shutil.rmtree(self.root / "out", ignore_errors=True)
+                checks, model = self.checks()
+                prepare = checks.prepare
+
+                def a_sync_left_a_receive(case, other, prepare=prepare, model=model, receive_ends=receive_ends):
+                    prepare(case, other)
+                    model.hold(4, "sync-1")
+                    model.receiving = {"machine-2"}
+                    if receive_ends:
+                        model.at(model.clock() + receive_ends, lambda: setattr(model, "receiving", False))
+                checks.prepare = a_sync_left_a_receive
+                self.first_move(model, ends, state, claimed=state != "lost")
+                with redirect_stdout(io.StringIO()):
+                    result = checks.run_all([cases[name]])["cases"][0]
+                self.assertFalse(result["passed"], result)
+                if receive_ends:
+                    self.assertEqual((result["run"], result["recovery"]), (state, ["done"]), result)
+                    self.assertIn("the trigger never fired before the run ended", result["failures"], result)
+                else:
+                    self.assertIn(f"a zfs receive still ran on machine-2 past {volume_move.BUSY_LIMIT}s before move",
+                                  result.get("skipped") or "", result)
+
+    def test_a_fault_after_stop_is_ordered_on_host_time_whichever_clock_runs_ahead(self):
+        case = next(case for case in volume_move.soak_cases() if case["name"] == "soak-4-final-runner-kill")
+        # (name, Machine clock offsets, exec latency, host second of the final-pull fault, first run end, passes)
+        for name, offsets, latency, final, ends, passes in (
+                # Codex r3 finding 2: the warm-round fault at +2 is stamped +22, after the writer's stop at +10.
+                ("trigger Machine 20 s ahead, no final fault", {"machine-2": 20.0}, 0.0, None, 11, False),
+                ("writer 20 s ahead, a real final fault", {"machine-1": 20.0}, 0.0, 12, 13, True),
+                ("no skew, a real final fault", {}, 0.0, 11, 13, True),
+                ("small measured skew, a real final fault", {"machine-1": -0.2, "machine-2": 0.3}, 0.2, 11, 13, True)):
+            with self.subTest(name):
+                shutil.rmtree(self.root / "out", ignore_errors=True)
+                checks, model = self.checks()
+                model.offset.update(offsets)
+                model.latency = {"machine-1": latency, "machine-2": latency}
+
+                def effect(begun, model=model, final=final):
+                    model.log_fault("machine-2", begun + 2, "fault: delaying switch verb")
+                    model.at(begun + 10, lambda: model.stop("machine-1", begun + 10))
+                    if final:
+                        model.at(begun + final, lambda: model.log_fault("machine-2", begun + final,
+                                                                        "fault: delaying switch verb"))
+                self.first_move(model, ends, effect=effect)
+                with redirect_stdout(io.StringIO()):
+                    result = checks.run_all([case])["cases"][0]
+                self.assertEqual((result["run"], result["recovery"]), ("failed", ["done"]), result)
+                if passes:
+                    self.assertTrue(result["passed"], result)
+                else:
+                    self.assertFalse(result["passed"], result)
+                    self.assertEqual(result["failures"], ["the trigger never fired before the run ended"], result)
+
+    def test_a_fault_line_from_before_the_case_is_outside_its_window_on_a_clock_running_ahead(self):
+        kill = volume_move.KILLS[0]
+        self.assertEqual(kill["trigger"], "fault")
+        checks, model = self.checks()
+        model.offset["machine-2"] = 20.0
+        prepare = checks.prepare
+
+        def an_old_fault_line(case, other):
+            prepare(case, other)
+            model.log_fault("machine-2", model.clock() - 15)
+        checks.prepare = an_old_fault_line
+        self.first_move(model, 1)
+        with redirect_stdout(io.StringIO()):
+            result = checks.run_all([kill])["cases"][0]
+        self.assertFalse(result["passed"], result)
+        self.assertEqual(result["failures"], ["the trigger never fired before the run ended"], result)
+
+    def test_a_stop_or_a_fault_after_it_seen_after_the_first_run_ended_is_not_its(self):
+        cases = {case["name"]: case for case in volume_move.soak_cases()}
+        for name in ("soak-3-cut-kill-ployz-writer", "soak-4-final-kill-ployz-writer"):
+            # Both triggers poll every 0.5 s, so the run ends and the trigger appears between two polls.
+            for ends, trips, passes in ((0.75, 1.0, False), (1.5, 1.0, True)):
+                with self.subTest(case=name, ends=ends, trips=trips):
+                    shutil.rmtree(self.root / "out", ignore_errors=True)
+                    checks, model = self.checks()
+                    case = cases[name]
+
+                    def effect(begun, model=model, case=case, trips=trips):
+                        if case["trigger"] == "stopped":
+                            model.at(begun + trips, lambda: model.stop("machine-1", begun + trips))
+                        else:
+                            model.at(begun + trips - 0.5, lambda: model.stop("machine-1", begun + trips - 0.5))
+                            model.at(begun + trips, lambda: model.log_fault("machine-2", begun + trips))
+                    first = self.first_move(model, ends, effect=effect)
+                    with redirect_stdout(io.StringIO()):
+                        result = checks.run_all([case])["cases"][0]
+                    self.assertEqual((result["run"], result["recovery"]), ("failed", ["done"]), result)
+                    if passes:
+                        self.assertTrue(result["passed"], result)
+                    else:
+                        run = first[0]
+                        self.assertFalse(result["passed"], result)
+                        self.assertEqual(len(result["failures"]), 1, result["failures"])
+                        self.assertIn(f"the first run {run['id']} ended failed at {run['finished_at']}, before the "
+                                      "trigger was seen at", result["failures"][0])
+
+    def test_a_first_run_killed_inside_a_receive_it_started_passes(self):
+        cases = {case["name"]: case for case in volume_move.soak_cases()}
+        for name in ("soak-1-rounds-kill-ployz-writer", "soak-1-rounds-kill-docker-other", "soak-1-rounds-runner-kill"):
+            with self.subTest(name):
+                shutil.rmtree(self.root / "out", ignore_errors=True)
+                checks, model = self.checks()
+
+                def effect(begun, model=model):
+                    model.at(begun + 0.5, lambda: setattr(model, "receiving", {"machine-2"}))
+                    model.at(begun + 2, lambda: setattr(model, "receiving", False))
+                self.first_move(model, 2, effect=effect)
+                with redirect_stdout(io.StringIO()):
+                    result = checks.run_all([cases[name]])["cases"][0]
+                self.assertTrue(result["passed"], result)
+                self.assertEqual((result["run"], result["recovery"]), ("failed", ["done"]), result)
+
+    def test_a_sync_that_starts_and_ends_between_the_clean_start_and_an_unarmed_request_skips_the_case(self):
+        case = next(case for case in volume_move.soak_cases() if case["name"] == "soak-1-rounds-runner-kill")
+        self.assertIsNone(case["fault"])
+        checks, model = self.checks()
+        self.first_move(model, 1)
+        scripted, slipped = model.cli, []
+
+        def a_sync_slips_in(args):
+            if args[:2] == ["volume", "move"] and not slipped:
+                slipped.append(True)
+                now = model.clock()
+                model.holds.append(dict(id="sync-2", start=now, until=now, listed=True))
+                model.receiving = {"machine-2"}
+                model.at(now + 5, lambda: setattr(model, "receiving", False))
+            return scripted(args)
+        model.cli = a_sync_slips_in
+        with redirect_stdout(io.StringIO()):
+            result = checks.run_all([case])["cases"][0]
+        self.assertFalse(result["passed"], result)
+        self.assertIn("a run took the Volume between the clean start and move: run sync-2 (sync)",
+                      result.get("skipped") or "", result)
+
+    def test_a_triggered_case_fails_when_no_inngest_run_claimed_its_first_run(self):
+        # A late RPC from a run that ended before the case logs the fault line while the request waits unclaimed.
+        kill = volume_move.KILLS[0]
+        checks, model = self.checks()
+        first = self.first_move(model, 600, "lost", claimed=False,
+                                effect=lambda begun: model.at(begun + 1, lambda: model.log_fault("machine-1")))
+        with redirect_stdout(io.StringIO()):
+            result = checks.run_all([kill])["cases"][0]
+        self.assertEqual((result["run"], result["recovery"]), ("lost", ["done"]), result)
+        self.assertEqual(result["failures"], [f"the first run {first[0]['id']} ended lost and no Inngest run claimed "
+                                              "it, so the trigger evidence is not its"], result)
 
     def test_each_planted_defect_fails_the_run(self):
         for mutation in ("two-writers", "stopped", "snapshots", "lost"):
