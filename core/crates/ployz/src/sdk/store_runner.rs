@@ -309,7 +309,9 @@ impl Run {
                 } else {
                     Vec::new()
                 };
-                self.fill_ingress(session).await;
+                if self.status().await.ok() != Some(DeploymentStatus::Cancelling) {
+                    self.fill_ingress(session).await;
+                }
                 self.record(RunEvidence::Executed {
                     progress,
                     outcome: Box::new(outcome),
