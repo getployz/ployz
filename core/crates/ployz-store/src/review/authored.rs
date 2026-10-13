@@ -2183,6 +2183,7 @@ impl Prepared {
 pub(super) fn prepare_history(
     tx: &mut dyn Tx,
     environment: &Environment,
+    ever: &EverSealed,
     saved: Option<&SavedEnvironmentIntent>,
     selected: &SavedEnvironmentIntent,
     previous: Option<&SavedEnvironmentIntent>,
@@ -2219,7 +2220,7 @@ pub(super) fn prepare_history(
     } else {
         selected.clone()
     };
-    let not_set = keep_sealed(tx, environment, &mut target)?;
+    let not_set = keep_sealed(environment, ever, &mut target)?;
     crate::names::refuse_new_taken(tx, environment, &target)?;
     let mut prepared = Prepared::from_target(tx, environment, saved, target, None)?;
     prepared.not_set = not_set;
@@ -2230,11 +2231,10 @@ pub(super) fn prepare_history(
 /// comes back, comes back sealed without a value. A key once sealed never comes
 /// back as plain text. Returns the keys that came back without a value.
 fn keep_sealed(
-    tx: &mut dyn Tx,
     environment: &Environment,
+    ever: &EverSealed,
     target: &mut SavedEnvironmentIntent,
 ) -> Result<Vec<NotSetVariable>, RpcError> {
-    let ever = EverSealed::load(tx, environment.summary.id.as_str())?;
     let mut not_set = Vec::new();
     for service in &mut target.services {
         let current = environment

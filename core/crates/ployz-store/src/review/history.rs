@@ -306,6 +306,7 @@ fn prepare(
     match super::authored::prepare_history(
         tx,
         environment,
+        scrub.ever(),
         reviewed.saved.as_ref().map(|saved| &saved.intent),
         &selected,
         previous.as_ref(),
