@@ -1536,7 +1536,7 @@ mod ensure_container {
     }
 
     #[tokio::test]
-    async fn a_stopped_want_stops_a_running_container_and_leaves_a_stopped_one_without_a_drain() {
+    async fn a_stopped_want_stops_a_running_container_and_holds_a_stopped_one_without_a_drain() {
         let (data_dir, _store, service, fake) = fake_docker_service("ployzd-ensure-stop").await;
         let id = present(&ensure(&service, run_new("k1", spec("example.test/api:1"))).await)
             .container_id;
@@ -1558,10 +1558,17 @@ mod ensure_container {
             .await
             .expect("an already stopped Container waits no drain");
         assert_eq!(again, reply);
+        let later = requests_since(&fake, seen);
+        assert_eq!(
+            ends_with(&later, Method::POST, "/stop").count(),
+            1,
+            "a stop holds a Container at rest down: {later:?}"
+        );
         assert!(
-            requests_since(&fake, seen)
+            later
                 .iter()
-                .all(|(method, _)| *method == Method::GET)
+                .all(|(method, path)| *method == Method::GET || path.ends_with("/stop")),
+            "a hold only stops: {later:?}"
         );
         std::fs::remove_dir_all(data_dir).unwrap();
     }
