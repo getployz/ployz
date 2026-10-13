@@ -2270,7 +2270,8 @@ fn keep_sealed(
                     variable.value = SavedVariableValue::SecretWithoutValue;
                     variable.value_fingerprint.clear();
                     not_set.push(NotSetVariable {
-                        service: service.slug.clone(),
+                        service: ServiceName::parse(&service.slug)
+                            .map_err(|_| error::corrupt("Service name"))?,
                         key: variable.key.clone(),
                     });
                 }

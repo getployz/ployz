@@ -2758,11 +2758,7 @@ rows: Array<ServerRow>, } & ({ "type": "service", id: ServiceLineageId, name: Se
 
 export type NodeStatus = "pending" | "deployed" | "removed" | "failed" | "not_attempted" | "unchanged" | "unknown";
 
-export type NotSetVariable = {
-/**
- * The Service's name.
- */
-service: string, key: string, };
+export type NotSetVariable = { service: ServiceName, key: string, };
 
 export type NumberedDeploymentQuery = { environment: EnvironmentRef, number: number, };
 

@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
-use ployz_core::RpcError;
 use ployz_core::config::{SavedEnvironmentIntent, SavedVariableIntent};
+use ployz_core::{RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
@@ -121,8 +121,7 @@ pub struct HistoryStaged {
 /// it out until someone sets it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct NotSetVariable {
-    /// The Service's name.
-    pub service: String,
+    pub service: ServiceName,
     pub key: String,
 }
 
