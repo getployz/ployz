@@ -326,3 +326,25 @@ async fn a_seed_resent_while_its_copy_runs_answers_the_slot_and_copies_once() {
     assert_eq!(resent.pointer("/Ok/copy/kind").unwrap(), "slot", "{resent}");
     assert_eq!(commands(&test).matches("zfs send ").count(), 1);
 }
+
+#[tokio::test]
+async fn departure_during_a_seed_copy_stops_it_and_destroys_the_slot() {
+    let test = TestDir::new();
+    let (socket, _server) = start(&test, USABLE_POOL, &["root", "volume"]);
+    set_property(&test, "tank/ployz/data", "snapshots", POINT);
+    fs::write(test.0.join("props").join("stall-read"), "").unwrap();
+    post(&socket, "/Volume.Seed", seed(77)).await;
+    let pid = test.0.join("props/receive-pid");
+    for _ in 0..300 {
+        if pid.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let pid = fs::read_to_string(pid).unwrap();
+
+    let reply = post(&socket, "/Storage.Demote", json!(null)).await;
+    assert_eq!(reply, json!({"Ok": ["data", "seed"]}));
+    assert!(!Path::new(&format!("/proc/{}", pid.trim())).exists());
+    assert!(!test.0.join("seed-slot").exists());
+}

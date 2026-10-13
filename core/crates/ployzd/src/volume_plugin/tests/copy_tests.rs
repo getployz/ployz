@@ -1056,6 +1056,32 @@ async fn a_pull_for_another_target_while_a_receive_runs_refuses_busy_and_keeps_t
 }
 
 #[tokio::test]
+async fn departure_during_a_receive_stops_it_and_destroys_the_mirror() {
+    let source = Source::start(Some(BOUND), "snapshot w-1-1 77\n").await;
+    let test = TestDir::new();
+    let (socket, server) = puller(&test, &["root"], source.port);
+    fs::create_dir_all(test.0.join("props")).unwrap();
+    fs::write(test.0.join("props/stall-read"), "").unwrap();
+    post(&socket, "/Volume.Copy.Pull", pull("w-1-1")).await;
+    let pid = test.0.join("props/receive-pid");
+    for _ in 0..300 {
+        if pid.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let pid = fs::read_to_string(pid).unwrap();
+
+    let reply = post(&socket, "/Storage.Demote", json!(null)).await;
+    assert_eq!(reply, json!({"Ok": ["data"]}));
+    assert!(!Path::new(&format!("/proc/{}", pid.trim())).exists());
+    let copy = post(&socket, "/Volume.Copy.Inspect", json!({"name": "data"})).await;
+    assert_eq!(copy, json!({"Ok": null}));
+    assert!(!test.0.join("mirror").exists());
+    server.abort();
+}
+
+#[tokio::test]
 async fn a_pull_into_a_slot_smaller_than_the_writer_raises_the_slot_to_the_writer_bound() {
     let source = Source::start(Some(2 * BOUND), "snapshot w-1-2 12\n").await;
     let test = TestDir::new();

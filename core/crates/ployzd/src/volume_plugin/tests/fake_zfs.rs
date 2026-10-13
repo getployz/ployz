@@ -322,6 +322,9 @@ case "$*" in
     rm -rf '{seed_volume}' '{props}/tank/ployz/seed'
     ;;
   'destroy -r tank/ployz-mirror/seed')
+    if pid=$(cat '{props}/receive-pid' 2>/dev/null) && kill -0 "$pid" 2>/dev/null; then
+      echo 'dataset is busy' >&2; exit 1
+    fi
     rm -rf '{seed_slot}' '{seed_fs}' '{props}/tank/ployz-mirror/seed'
     ;;
   'send tank/ployz/data@'*|'send tank/ployz-mirror/data/fs@'*)
@@ -347,6 +350,9 @@ case "$*" in
     rm -f '{volume}' '{mounted}'
     ;;
   'destroy -r tank/ployz-mirror/data')
+    if pid=$(cat '{props}/receive-pid' 2>/dev/null) && kill -0 "$pid" 2>/dev/null; then
+      echo 'dataset is busy' >&2; exit 1
+    fi
     rm -rf '{mirror}' '{mirror_fs}' '{props}/tank/ployz-mirror/data'
     ;;
   'destroy '*'@'*)
