@@ -29,7 +29,6 @@ const DEBOUNCE: Duration = Duration::from_millis(200);
 const DEBOUNCE_LIMIT: Duration = Duration::from_secs(2);
 const MEMBERSHIP_SAMPLE_TIMEOUT: Duration = Duration::from_secs(1);
 const LIST_TIMEOUT: Duration = Duration::from_secs(10);
-const RETIRE_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub(crate) trait RetireHost: Clone + Send + Sync + 'static {
     fn local_containers(&self) -> impl Future<Output = io::Result<BTreeSet<ContainerId>>> + Send;
@@ -81,9 +80,9 @@ impl RetireHost for DaemonHost {
             drain: Drain::DEFAULT,
             anonymous_volumes: AnonymousVolumes::default(),
         };
-        tokio::time::timeout(RETIRE_TIMEOUT, self.machine.ensure_container(want))
+        self.machine
+            .ensure_container(want)
             .await
-            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "retiring timed out"))?
             .map(|_| ())
             .map_err(io::Error::other)
     }
