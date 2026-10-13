@@ -9,13 +9,12 @@ use ployzd::machine_pool::MachinePool;
 
 use super::{
     Dataset, DockerVolumeName, Result, VolumeError, VolumeStorage,
+    seed::SEED_PROPERTY,
     storage::{
         EPOCH_PROPERTY, PROMOTE_PROPERTY, PULL_PROPERTY, RESUME_TOKEN_PROPERTY, slot_fs,
         slot_parent,
     },
 };
-
-use super::seed::SEED_PROPERTY;
 
 pub(super) fn internal(error: VolumeError) -> RpcError {
     match error {
