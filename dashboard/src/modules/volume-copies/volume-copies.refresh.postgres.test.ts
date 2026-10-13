@@ -83,6 +83,14 @@ describe("Refresh now", () => {
     expect(asked).toEqual(["mirror"]);
   });
 
+  it("refuses when the mirror refuses the pull, so no success is reported for a pull that never started", async () => {
+    const mismatch: CopyAsk = (asker, machine, expect, want) => want.kind === "mirror"
+      ? Effect.succeed<CopyAnswer>({ ok: false, reason: "mismatch", copy: COPIES.mirror, message: "data-web-2 changed" })
+      : ask(asker, machine, expect, want);
+    expect(await run(refreshMirror(caller, environment, volumeId, () => Effect.succeed(blockers), () => Effect.succeed(members), () => Effect.succeed(members), mismatch)))
+      .toEqual({ ok: false, refusal: { code: "conflict", message: "data-web-2 refused the pull: data-web-2 changed", details: null } });
+  });
+
   it("names the run that covers the Volume and takes no snapshot", async () => {
     const move = await run(requestVolumeRun(caller, { volumeId, environment, kind: "move", args: { to: "web-2" } }));
     if (!move.ok) throw new Error("expected a run");

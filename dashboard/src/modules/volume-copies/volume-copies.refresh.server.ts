@@ -18,7 +18,7 @@ const silent = (names: readonly string[]): StoreRefusal => ({
 
 /**
  * Refresh now and a user's sync: the one mirror sync, as the 15-minute cron runs it. It answers once the mirror has the
- * pull, without waiting for it to land; a sync that could do nothing answers why.
+ * pull, without waiting for it to land; a sync that could do nothing, or that a mirror refused, answers why.
  */
 export const refreshMirror = Effect.fn("VolumeCopies.refreshMirror")(function* (
   caller: { readonly userId: string | null; readonly organizationId: string },
@@ -44,7 +44,8 @@ export const refreshMirror = Effect.fn("VolumeCopies.refreshMirror")(function* (
     .pipe(Effect.option);
   if (Option.isNone(answer)) return yield* named(UNANSWERED);
   const { sync, lines } = answer.value;
-  if (sync.kind === "synced" || sync.kind === "demoting") return { ok: true, lines } as const;
+  const refused = sync.kind === "synced" && sync.mirrors.some((step) => step.kind === "refused");
+  if (!refused && (sync.kind === "synced" || sync.kind === "demoting")) return { ok: true, lines } as const;
   if (sync.kind === "unanswered") return { ok: false, refusal: silent(sync.servers) } as const;
   return { ok: false, refusal: { code: "conflict", message: lines.join("; "), details: null } satisfies StoreRefusal } as const;
 });
