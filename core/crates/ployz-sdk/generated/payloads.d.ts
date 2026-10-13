@@ -624,7 +624,7 @@ export type ConfigName = string;
 
 export type ConfigNodeConfig = { version: 1, name: ConfigName, files: { [key in ConfigFileName]: SavedConfigFile }, };
 
-export type ConfigQuery = { "query": "environment" } & EnvironmentQuery | { "query": "diff" } & DiffQuery | { "query": "history" } & HistoryQuery | { "query": "history_preview" } & HistoryPreviewQuery | { "query": "plan" } & PlanQuery | { "query": "deployments" } & DeploymentsQuery | { "query": "deployment" } & DeploymentQuery | { "query": "numbered_deployment" } & NumberedDeploymentQuery | { "query": "build_log" } & BuildLogQuery | { "query": "services" } & ServicesQuery | { "query": "service" } & ServiceQuery | { "query": "namespace" } & NamespaceQuery | { "query": "namespaces" } & NamespacesQuery | { "query": "domains" } & DomainsQuery | { "query": "domain" } & DomainQuery | { "query": "volumes" } & VolumesQuery | { "query": "volume" } & VolumeQuery | { "query": "removals" } & RemovalsQuery | { "query": "configs" } & ConfigsQuery | { "query": "config" } & ConfigItemQuery | { "query": "branch" } & BranchQuery | { "query": "branch_plan" } & BranchPlanQuery | { "query": "build_order" } & BuildOrderQuery | { "query": "sync" } & SyncQuery | { "query": "environments" } & EnvironmentsQuery | { "query": "projects" } & ProjectsQuery | { "query": "due" } & DueQuery | { "query": "pr_plans" } & PrPlansQuery | { "query": "pull_request" } & PullRequestQuery | { "query": "on_merge" } & OnMergeQuery;
+export type ConfigQuery = { "query": "environment" } & EnvironmentQuery | { "query": "diff" } & DiffQuery | { "query": "history" } & HistoryQuery | { "query": "history_preview" } & HistoryPreviewQuery | { "query": "plan" } & PlanQuery | { "query": "deployments" } & DeploymentsQuery | { "query": "deployment" } & DeploymentQuery | { "query": "numbered_deployment" } & NumberedDeploymentQuery | { "query": "build_log" } & BuildLogQuery | { "query": "services" } & ServicesQuery | { "query": "service" } & ServiceQuery | { "query": "namespace" } & NamespaceQuery | { "query": "namespaces" } & NamespacesQuery | { "query": "domains" } & DomainsQuery | { "query": "domain" } & DomainQuery | { "query": "volumes" } & VolumesQuery | { "query": "volume" } & VolumeQuery | { "query": "removals" } & RemovalsQuery | { "query": "configs" } & ConfigsQuery | { "query": "config" } & ConfigItemQuery | { "query": "branch" } & BranchQuery | { "query": "branch_plan" } & BranchPlanQuery | { "query": "build_order" } & BuildOrderQuery | { "query": "sync" } & SyncQuery | { "query": "environments" } & EnvironmentsQuery | { "query": "projects" } & ProjectsQuery | { "query": "due" } & DueQuery | { "query": "removed" } & RemovedQuery | { "query": "pr_plans" } & PrPlansQuery | { "query": "pull_request" } & PullRequestQuery | { "query": "on_merge" } & OnMergeQuery;
 
 export type ConfigRef = string;
 
@@ -684,7 +684,7 @@ servers?: number,
  */
 approval?: Approval, };
 
-export type ConfigView = { "view": "environment" } & EnvironmentView | { "view": "diff" } & DiffView | { "view": "history" } & HistoryView | { "view": "history_preview" } & HistoryPreview | { "view": "plan" } & PlanView | { "view": "deployments" } & DeploymentsView | { "view": "deployment" } & DeploymentView | { "view": "numbered_deployment" } & DeploymentView | { "view": "build_log" } & BuildLogView | { "view": "services" } & ServicesView | { "view": "service" } & ServiceView | { "view": "namespace" } & NamespaceView | { "view": "namespaces" } & NamespacesView | { "view": "domains" } & DomainsView | { "view": "domain" } & DomainView | { "view": "volumes" } & VolumesView | { "view": "volume" } & VolumeView | { "view": "removals" } & RemovalsView | { "view": "configs" } & ConfigsView | { "view": "config" } & ConfigItemView | { "view": "branch" } & BranchView | { "view": "branch_plan" } & BranchPlanView | { "view": "build_order" } & BuildOrderView | { "view": "sync" } & SyncView | { "view": "environments" } & EnvironmentsView | { "view": "projects" } & ProjectsView | { "view": "due" } & Array<Due> | { "view": "pr_plans" } & PrPlansView | { "view": "pull_request" } & PullRequestView | { "view": "on_merge" } & OnMerge;
+export type ConfigView = { "view": "environment" } & EnvironmentView | { "view": "diff" } & DiffView | { "view": "history" } & HistoryView | { "view": "history_preview" } & HistoryPreview | { "view": "plan" } & PlanView | { "view": "deployments" } & DeploymentsView | { "view": "deployment" } & DeploymentView | { "view": "numbered_deployment" } & DeploymentView | { "view": "build_log" } & BuildLogView | { "view": "services" } & ServicesView | { "view": "service" } & ServiceView | { "view": "namespace" } & NamespaceView | { "view": "namespaces" } & NamespacesView | { "view": "domains" } & DomainsView | { "view": "domain" } & DomainView | { "view": "volumes" } & VolumesView | { "view": "volume" } & VolumeView | { "view": "removals" } & RemovalsView | { "view": "configs" } & ConfigsView | { "view": "config" } & ConfigItemView | { "view": "branch" } & BranchView | { "view": "branch_plan" } & BranchPlanView | { "view": "build_order" } & BuildOrderView | { "view": "sync" } & SyncView | { "view": "environments" } & EnvironmentsView | { "view": "projects" } & ProjectsView | { "view": "due" } & Array<Due> | { "view": "removed" } & RemovedView | { "view": "pr_plans" } & PrPlansView | { "view": "pull_request" } & PullRequestView | { "view": "on_merge" } & OnMerge;
 
 export type ConfigWritten = { "written": "project" } & ProjectCreated | { "written": "project_renamed" } & ProjectSummary | { "written": "environment" } & EnvironmentCreated | { "written": "service" } & ServiceStaged | { "written": "service_renamed" } & ServiceStaged | { "written": "service_removed" } & ServiceStaged | { "written": "volume" } & VolumeStaged | { "written": "volume_removed" } & VolumeStaged | { "written": "volume_renamed" } & VolumeStaged | { "written": "config" } & ConfigStaged | { "written": "config_removed" } & ConfigStaged | { "written": "config_renamed" } & ConfigStaged | { "written": "edited" } & Edited | { "written": "published" } & Published | { "written": "discarded" } & Discarded | { "written": "history_staged" } & HistoryStaged | { "written": "deployment" } & DeploymentSummary | { "written": "domain_added" } & DomainAdded | { "written": "domain" } & DomainStaged | { "written": "automated" } & Automated | { "written": "branch" } & Branched | { "written": "build_order" } & BuildOrderView | { "written": "synced" } & Synced | { "written": "undone" } & Undone | { "written": "removed" } & Removed | { "written": "taken" } & Taken | { "written": "never_synced" } & NeverSynced | { "written": "on_merge" } & OnMerge | { "written": "default_environment" } & EnvironmentsView | { "written": "branch_setup" } & EnvironmentsView | { "written": "removal" } & Removal | { "written": "removal_cancelled" } & RemovalCancelled | { "written": "pr_plans" } & PrPlansView | { "written": "batch" } & Batched;
 
@@ -3268,9 +3268,11 @@ services: Array<QualifiedService>,
  */
 unchosen: Array<QualifiedService>, } | { "kind": "unobserved", error: string, };
 
-export type Removal = { "removal": "removed", residuals: Array<Residual>, } | { "removal": "removing", left: Array<Left>, waiting_on: Array<Waiting>, };
+export type Removal = { "removal": "removed", residuals: Array<Residual>, } | { "removal": "removing", id: RemovalId, left: Array<Left>, waiting_on: Array<Waiting>, };
 
 export type RemovalCancelled = { project: ProjectName, environment: EnvironmentName | null, cancelled: Array<DeploymentId>, };
+
+export type RemovalId = string;
 
 export type RemovalsQuery = {
 /**
@@ -3383,6 +3385,10 @@ environment: EnvironmentSummary,
  * False when the draft held no such proposal, as when a Remove is retried.
  */
 removed: boolean, };
+
+export type RemovedQuery = { id: RemovalId, };
+
+export type RemovedView = { residuals: Array<Residual>, };
 
 export type RemovedVolume = { id: VolumeId, name: VolumeName,
 /**
