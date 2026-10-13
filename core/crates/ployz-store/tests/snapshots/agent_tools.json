@@ -58,6 +58,34 @@
       "read_only": false
     },
     {
+      "description": "Rename a Project. Applies at once; its Environments keep running. Never asks a human to approve.",
+      "gate": "never",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project": {
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "to": {
+            "description": "New name, unique in the Organization.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project",
+          "to"
+        ],
+        "type": "object"
+      },
+      "name": "project_rename",
+      "output_schema": {
+        "type": "object"
+      },
+      "read_only": false
+    },
+    {
       "description": "Everything about one Service: Settings with values and defaults, variables, mounts, Configs, domains with status, and what is Staged. Use it before changing a Service. Never asks a human to approve.",
       "gate": "never",
       "input_schema": {
@@ -1151,6 +1179,49 @@
         "type": "object"
       },
       "name": "config_write",
+      "output_schema": {
+        "type": "object"
+      },
+      "read_only": false
+    },
+    {
+      "description": "Rename a Config. Its files and mounts stay. Staged. Never asks a human to approve.",
+      "gate": "never",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "config": {
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "environment": {
+            "description": "Environment name, e.g. staging. Omit for the one you are in.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "expect_revision": {
+            "description": "Write only if the place is still at this revision. Omit unless you just read it.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "project": {
+            "description": "Project name. Omit for the one you are in.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "to": {
+            "description": "New name.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "config",
+          "to"
+        ],
+        "type": "object"
+      },
+      "name": "config_rename",
       "output_schema": {
         "type": "object"
       },

@@ -1,4 +1,4 @@
-//! Tools on Configs, files mounted into Services: write files, remove them.
+//! Tools on Configs, files mounted into Services: write files, rename, remove them.
 
 use std::collections::BTreeMap;
 
@@ -12,7 +12,7 @@ use super::refusal::Refusal;
 use crate::catalog::NODE_NAME;
 use crate::{
     AttachConfig, BatchCommand, ConfigsQuery, CreateConfig, DeleteConfig, EnvironmentName,
-    ProjectName, PutConfigFile, RemoveConfigFile, Written,
+    ProjectName, PutConfigFile, RemoveConfigFile, RenameConfig, Written,
 };
 
 #[derive(Deserialize, JsonSchema)]
@@ -139,6 +139,53 @@ impl Tool for ConfigWrite {
             "created": !exists,
             "written": names,
             "mounted": mount.map(|(service, path)| json!({ "service": service, "path": path })),
+            "staged": true,
+        }))
+    }
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ConfigRename {
+    #[schemars(with = "String", pattern(NODE_NAME))]
+    config: ConfigName,
+    /// New name.
+    #[schemars(with = "String", pattern(NODE_NAME))]
+    to: ConfigName,
+    /// Write only if the place is still at this revision. Omit unless you just read it.
+    #[serde(default)]
+    expect_revision: Option<u64>,
+    /// Project name. Omit for the one you are in.
+    #[serde(default)]
+    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
+    project: Option<ProjectName>,
+    /// Environment name, e.g. staging. Omit for the one you are in.
+    #[serde(default)]
+    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
+    environment: Option<EnvironmentName>,
+}
+
+impl Tool for ConfigRename {
+    const NAME: &'static str = "config_rename";
+    const DESCRIPTION: &'static str = "Rename a Config. Its files and mounts stay. Staged.";
+    const READ_ONLY: bool = false;
+
+    fn example() -> Value {
+        json!({ "config": "nginx", "to": "proxy" })
+    }
+
+    fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
+        let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
+        cx.expect(&scope, self.expect_revision)?;
+        let staged = cx.write(&RenameConfig {
+            environment: scope,
+            config: self.config.clone(),
+            name: self.to,
+        })?;
+        Ok(json!({
+            "at": at(&staged.environment),
+            "config": staged.config.name,
+            "renamed_from": self.config,
             "staged": true,
         }))
     }

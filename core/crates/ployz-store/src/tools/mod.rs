@@ -43,6 +43,7 @@ use machine::{Entry, entry};
 pub(crate) const TOOLS: &[Entry] = &[
     entry::<environment::EnvironmentShow>(),
     entry::<project::ProjectCreate>(),
+    entry::<project::ProjectRename>(),
     entry::<service::ServiceInspect>(),
     entry::<service::ServiceAdd>(),
     entry::<service::ServiceUpdate>(),
@@ -55,6 +56,7 @@ pub(crate) const TOOLS: &[Entry] = &[
     entry::<volume::VolumeUpdate>(),
     entry::<volume::VolumeRemove>(),
     entry::<config::ConfigWrite>(),
+    entry::<config::ConfigRename>(),
     entry::<config::ConfigRemove>(),
     entry::<release::Review>(),
     entry::<release::DiscardInput>(),

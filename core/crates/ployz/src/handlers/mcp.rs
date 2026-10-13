@@ -592,6 +592,32 @@ impl Server {
         };
         Ok(StoreAt::Cloud { organization })
     }
+
+    async fn move_links_after_project_rename(&self, backend: &Backend<'_>, write: &Write) {
+        let Write::Store(ployz_store::Command::RenameProject(rename)) = write else {
+            return;
+        };
+        let moved = match self.store_at(backend).await {
+            Ok(StoreAt::Local) => Ok(store::LOCAL_ORGANIZATION.to_owned()),
+            Ok(StoreAt::Cloud { organization }) => Ok(organization.as_str().to_owned()),
+            Err(error) => Err(error),
+        }
+        .and_then(|acting| {
+            super::link::rename_project(
+                &self.account.config,
+                Some(&acting),
+                &rename.project,
+                &rename.name,
+            )
+            .map_err(|error| error.to_string())
+        });
+        if let Err(error) = moved {
+            crate::ui::note(format_args!(
+                "Renamed Project {} to {}, but this device's links still name {0}: {error}",
+                rename.project, rename.name
+            ));
+        }
+    }
 }
 
 /// MCP forbids reusing a request ID within a session, so the session and the ID name
@@ -952,6 +978,10 @@ impl Server {
                             _ => None,
                         };
                         let Some(asked) = asked else {
+                            if written.is_ok() {
+                                self.move_links_after_project_rename(call.backend, &write)
+                                    .await;
+                            }
                             (step, state) = tools::resume(state, vec![written]);
                             continue;
                         };

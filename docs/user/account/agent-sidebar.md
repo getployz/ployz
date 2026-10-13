@@ -8,10 +8,10 @@ and deployments, or ask it to change something and deploy. Before a deploy remov
 anything, it stops and asks you.
 
 The agent works in the project and environment you're looking at, unless you name another. It
-can create a project, add and change services, [configs](../services/configs.md), volumes and
-domains, review what's staged, restore or undo a saved version, publish and deploy. It can list an
-environment's deployments, follow one to its end, redeploy a failed, cancelled or unknown one, start
-a queued one now, and cancel one, like the
+can create or rename a project, add, change and rename services, [configs](../services/configs.md)
+and volumes, add and change domains, review what's staged, restore or undo a saved version, publish
+and deploy. It can list an environment's deployments, follow one to its end, redeploy a failed,
+cancelled or unknown one, start a queued one now, and cancel one, like the
 [deployment page](../deploy/deployments.md#redeploy-or-cancel-a-deployment)'s buttons. It can also
 read your GitHub repositories and work on your servers. It doesn't create environments.
 

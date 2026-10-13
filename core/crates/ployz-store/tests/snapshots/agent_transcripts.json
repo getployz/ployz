@@ -514,6 +514,127 @@
     ]
   },
   {
+    "tool": "project_rename",
+    "input": {
+      "project": "docs",
+      "to": "handbook"
+    },
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
+    },
+    "call_key": "call-project_rename",
+    "turns": [
+      {
+        "step": {
+          "step": "write",
+          "write": {
+            "at": "store",
+            "write": {
+              "command": "rename_project",
+              "project": "docs",
+              "name": "handbook"
+            }
+          }
+        },
+        "answers": [
+          {
+            "error": {
+              "code": "not_found",
+              "message": "No Project named docs",
+              "details": {}
+            }
+          }
+        ]
+      },
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": false,
+            "refusal": {
+              "code": "not_found",
+              "message": "No Project named docs",
+              "retry": {
+                "tool": "project_rename",
+                "input": {
+                  "project": "docs",
+                  "to": "handbook"
+                }
+              },
+              "writes": "none",
+              "next": []
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "tool": "project_rename",
+    "input": {
+      "project": "docs",
+      "to": "handbook"
+    },
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": {
+        "at": "local"
+      }
+    },
+    "call_key": "call-project_rename",
+    "turns": [
+      {
+        "step": {
+          "step": "write",
+          "write": {
+            "at": "store",
+            "write": {
+              "command": "rename_project",
+              "project": "docs",
+              "name": "handbook"
+            }
+          }
+        },
+        "answers": [
+          {
+            "error": {
+              "code": "not_found",
+              "message": "No Project named docs",
+              "details": {}
+            }
+          }
+        ]
+      },
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": false,
+            "refusal": {
+              "code": "not_found",
+              "message": "No Project named docs",
+              "retry": {
+                "tool": "project_rename",
+                "input": {
+                  "project": "docs",
+                  "to": "handbook"
+                }
+              },
+              "writes": "none",
+              "next": []
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
     "tool": "service_inspect",
     "input": {
       "service": "web"
@@ -2581,6 +2702,139 @@
                   },
                   "path": "/etc/nginx",
                   "service": "web"
+                }
+              },
+              "writes": "none",
+              "next": []
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "tool": "config_rename",
+    "input": {
+      "config": "nginx",
+      "to": "proxy"
+    },
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
+    },
+    "call_key": "call-config_rename",
+    "turns": [
+      {
+        "step": {
+          "step": "write",
+          "write": {
+            "at": "store",
+            "write": {
+              "command": "rename_config",
+              "environment": {
+                "project": "shop",
+                "environment": null
+              },
+              "config": "nginx",
+              "name": "proxy"
+            }
+          }
+        },
+        "answers": [
+          {
+            "error": {
+              "code": "not_found",
+              "message": "No Config named nginx in Environment production",
+              "details": {
+                "valid_children": []
+              }
+            }
+          }
+        ]
+      },
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": false,
+            "refusal": {
+              "code": "not_found",
+              "message": "No Config named nginx in Environment production",
+              "retry": {
+                "tool": "config_rename",
+                "input": {
+                  "config": "nginx",
+                  "to": "proxy"
+                }
+              },
+              "writes": "none",
+              "next": []
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "tool": "config_rename",
+    "input": {
+      "config": "nginx",
+      "to": "proxy"
+    },
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": {
+        "at": "local"
+      }
+    },
+    "call_key": "call-config_rename",
+    "turns": [
+      {
+        "step": {
+          "step": "write",
+          "write": {
+            "at": "store",
+            "write": {
+              "command": "rename_config",
+              "environment": {
+                "project": "shop",
+                "environment": null
+              },
+              "config": "nginx",
+              "name": "proxy"
+            }
+          }
+        },
+        "answers": [
+          {
+            "error": {
+              "code": "not_found",
+              "message": "No Config named nginx in Environment production",
+              "details": {
+                "valid_children": []
+              }
+            }
+          }
+        ]
+      },
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": false,
+            "refusal": {
+              "code": "not_found",
+              "message": "No Config named nginx in Environment production",
+              "retry": {
+                "tool": "config_rename",
+                "input": {
+                  "config": "nginx",
+                  "to": "proxy"
                 }
               },
               "writes": "none",

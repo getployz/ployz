@@ -208,6 +208,7 @@ fn the_catalog_has_the_agreed_tools() {
         [
             "environment_show",
             "project_create",
+            "project_rename",
             "service_inspect",
             "service_add",
             "service_update",
@@ -220,6 +221,7 @@ fn the_catalog_has_the_agreed_tools() {
             "volume_update",
             "volume_remove",
             "config_write",
+            "config_rename",
             "config_remove",
             "review",
             "discard",
@@ -601,6 +603,84 @@ fn project_create_makes_a_project_once_per_key() {
     .refused();
     assert_eq!(refusal.code, RpcErrorCode::Conflict);
     assert_eq!(refusal.writes, Writes::None);
+}
+
+#[test]
+fn project_rename_applies_at_once_and_repeats_harmlessly() {
+    let store = shop();
+    let input = json!({ "project": "shop", "to": "store" });
+    let renamed = call(&store, "project_rename", input, "rename-1").ok();
+    assert_eq!(renamed["project"], "store", "{renamed}");
+    assert_eq!(renamed["renamed_from"], "shop");
+    let shown = call(
+        &store,
+        "environment_show",
+        json!({ "project": "store" }),
+        "show-1",
+    )
+    .ok();
+    assert_eq!(shown["at"], "store/production", "{shown}");
+    assert_eq!(shown["projects"][0]["name"], "store");
+
+    let again = call(
+        &store,
+        "project_rename",
+        json!({ "project": "store", "to": "store" }),
+        "rename-2",
+    )
+    .ok();
+    assert_eq!(again["project"], "store");
+
+    call(
+        &store,
+        "project_create",
+        json!({ "name": "docs", "request_key": "project-docs-0001" }),
+        "create-1",
+    )
+    .ok();
+    let taken = call(
+        &store,
+        "project_rename",
+        json!({ "project": "docs", "to": "store" }),
+        "rename-3",
+    )
+    .refused();
+    assert_eq!(taken.code, RpcErrorCode::Conflict, "{taken:?}");
+    assert_eq!(taken.writes, Writes::None);
+}
+
+#[test]
+fn config_rename_stages_the_new_name_and_keeps_its_files() {
+    let store = shop();
+    call(
+        &store,
+        "config_write",
+        json!({ "config": "nginx", "files": { "nginx.conf": "events {}" } }),
+        "write-1",
+    )
+    .ok();
+    let renamed = call(
+        &store,
+        "config_rename",
+        json!({ "config": "nginx", "to": "proxy" }),
+        "rename-1",
+    )
+    .ok();
+    assert_eq!(renamed["at"], "shop/production", "{renamed}");
+    assert_eq!(renamed["config"], "proxy");
+    assert_eq!(renamed["renamed_from"], "nginx");
+    assert_eq!(renamed["staged"], true);
+    let shown = call(&store, "environment_show", json!({}), "show-1").ok();
+    assert_eq!(shown["configs"], json!(["proxy"]), "{shown}");
+
+    let gone = call(
+        &store,
+        "config_rename",
+        json!({ "config": "nginx", "to": "edge" }),
+        "rename-2",
+    )
+    .refused();
+    assert_eq!(gone.code, RpcErrorCode::NotFound, "{gone:?}");
 }
 
 #[test]
