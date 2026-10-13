@@ -12,7 +12,6 @@ export type RefusalCode =
   | "volume_switching"
   | "second_mirror"
   | "invalid"
-  | "no_pool"
   | "no_mirror"
   | "no_copy"
   | "another_copy"
@@ -171,7 +170,6 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
   if (elsewhere !== undefined) return refuse("second_mirror", `${name} already has a mirror, ${named(elsewhere)}`);
   const target = answered.find((member) => isDestination(input.args, member));
   if (target === undefined) return refuse("invalid", `${to} is not a Server of this cluster`);
-  if (!target.pool) return refuse("no_pool", `${to} has no managed volume storage yet`);
   return { ok: true, phase: { kind: "mirror", writer: root, target } };
 }
 
@@ -198,7 +196,6 @@ function planMove(name: string, args: VolumeRunArgs["move"], answered: readonly 
   const elsewhere = others.find((member) => member !== root);
   if (root !== null) {
     if (elsewhere !== undefined) return refuse("second_mirror", `${name} already has a mirror, ${named(elsewhere)}`);
-    if (!target.pool) return refuse("no_pool", `${to} has no managed volume storage yet`);
     return move(root, roleOf(root) === "cutting" ? "cut" : "rounds");
   }
 
@@ -207,7 +204,6 @@ function planMove(name: string, args: VolumeRunArgs["move"], answered: readonly 
   if (second !== undefined) return refuse("second_mirror", `${name} has copies on ${others.map(named).join(" and ")}; volume release ${name} first`);
   const at = newestGuid(source.view.copy);
   if (at === null) return refuse("no_writer", `${name} has no writer; deploy ${name} before moving it`);
-  if (!target.pool) return refuse("no_pool", `${to} has no managed volume storage yet`);
   return move(source, newestGuid(target.view.copy) === at ? "start" : "final");
 }
 

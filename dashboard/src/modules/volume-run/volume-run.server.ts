@@ -174,7 +174,6 @@ const refusalCode = {
   unanswered: "unavailable",
   confirm_required: "confirmation_required",
   invalid: "invalid_argument",
-  no_pool: "invalid_argument",
   no_writer: "conflict",
   two_writers: "conflict",
   volume_switching: "conflict",
@@ -640,13 +639,12 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
   const frame = yield* session.watchFirstFrame(5_000);
   // A Docker-only Machine holds no copy and may not serve the verb, so it must not block the run.
   const managed = frame.machines.filter((observed) => observed.storage?.state !== "stateless");
-  return yield* Effect.forEach(managed, ({ machine, storage }) =>
+  return yield* Effect.forEach(managed, ({ machine }) =>
     session.volumeSwitch(machine.id, { command: "inspect_volume_copy", payload: { name: dockerVolume } }).pipe(
       Effect.map((view): Member => ({
         machine: { id: machine.id, name: machine.name },
         address: managementAddress(machine.public_key),
         answered: true,
-        pool: storage?.state === "pool" || view.copy !== null,
         view,
       })),
       Effect.timeout(OBSERVE_TIMEOUT),

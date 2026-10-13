@@ -48,7 +48,7 @@ const row = (mirrors: string[] | null, staged: { primary: string; mirrors?: stri
   unreached: false,
   deploymentId: null,
 });
-const pooled = (server: string) => member(server, "empty", { pool: true });
+const pooled = (server: string) => member(server, "empty");
 const at = new Date(2026, 9, 10, 10, 36);
 const mirrorAsOf = (server: string, when: Date): Member => {
   const base = member(server, "mirror");

@@ -57,7 +57,7 @@ describe("Details", () => {
   it("shows a staged move as the primary's Server before and after, and undoes just that change", async () => {
     const volume = { id: "v1", name: "pg-data" };
     const id = (server: string) => member(server, "empty").machine.id;
-    const changes = placementChanges(volume, [member("web-1", "writer"), member("web-3", "empty", { pool: true })], {
+    const changes = placementChanges(volume, [member("web-1", "writer"), member("web-3", "empty")], {
       volumeId: "v1", environmentId: "e1", mirrors: [], staged: { primary: id("web-3"), mirrors: [], deletes: [] }, unreached: false, deploymentId: null,
     });
     const handlers = review({ groups: [placementGroup(volume, changes, new Date())] });
@@ -69,7 +69,7 @@ describe("Details", () => {
   it("lists a copy change's steps, and marks changes a failed Deploy never reached", () => {
     const volume = { id: "v1", name: "pg-data" };
     const id = (server: string) => member(server, "empty").machine.id;
-    const changes = placementChanges(volume, [member("web-1", "writer"), member("web-3", "empty", { pool: true })], {
+    const changes = placementChanges(volume, [member("web-1", "writer"), member("web-3", "empty")], {
       volumeId: "v1", environmentId: "e1", mirrors: [], staged: { primary: id("web-3"), mirrors: [], deletes: [] }, unreached: false, deploymentId: null,
     });
     review({ groups: [placementGroup(volume, changes, new Date())] });

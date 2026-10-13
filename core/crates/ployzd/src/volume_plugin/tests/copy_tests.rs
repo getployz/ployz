@@ -11,6 +11,7 @@ use axum::{Router, body::Body, extract::Request, http::StatusCode, response::Int
 use tokio::{net::TcpListener, sync::Semaphore};
 use tokio_util::sync::CancellationToken;
 
+use super::first_pool_tests::fake_first_pool;
 use super::inspect_tests::{set_property, start};
 use super::*;
 
@@ -1117,6 +1118,86 @@ async fn a_pull_converges_after_a_failure_before_the_receive_starts() {
         );
         server.abort();
     }
+}
+
+fn poolless(test: &TestDir, port: u16) -> (PathBuf, Server) {
+    let socket = test.0.join("plugin.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let mut storage = fake_first_pool(&test.0, 4096);
+    storage.send_port = port;
+    (socket, tokio::spawn(serve(listener, storage)))
+}
+
+#[tokio::test]
+async fn a_pull_onto_a_machine_without_a_pool_creates_the_pool_sized_for_the_writer() {
+    let source = Source::start(Some(BOUND), "").await;
+    source.hold("/volume-send/", "");
+    let test = TestDir::new();
+    let (socket, server) = poolless(&test, source.port);
+
+    let reply = post(&socket, "/Volume.Copy.Pull", pull("w-1-1")).await;
+    assert_eq!(reply.pointer("/Ok/kind"), Some(&json!("slot")), "{reply}");
+    assert_eq!(reply.pointer("/Ok/pull/target"), Some(&json!("w-1-1")));
+    let log = commands(&test);
+    assert_eq!(log.matches("zpool create").count(), 1, "{log}");
+    assert!(log.contains("fallocate -l 2147483648 "), "{log}");
+    assert_eq!(
+        fs::read_to_string(test.0.join("slot")).unwrap(),
+        format!("{BOUND}\n")
+    );
+
+    assert_eq!(
+        post(&socket, "/Volume.Copy.Pull", pull("w-1-1")).await,
+        reply
+    );
+    assert_eq!(commands(&test).matches("zpool create").count(), 1);
+    source.release();
+    server.abort();
+}
+
+#[tokio::test]
+async fn a_pull_that_fails_after_creating_the_first_pool_converges_on_resend() {
+    let source = Source::start(Some(BOUND), "").await;
+    source.hold("/volume-send/", "");
+    let test = TestDir::new();
+    fs::write(test.0.join("fail-slot-once"), "").unwrap();
+    let (socket, server) = poolless(&test, source.port);
+
+    let failed = post(&socket, "/Volume.Copy.Pull", pull("w-1-1")).await;
+    assert!(failed.get("Err").is_some(), "{failed}");
+    assert!(test.0.join("pool").exists());
+
+    let reply = post(&socket, "/Volume.Copy.Pull", pull("w-1-1")).await;
+    assert_eq!(reply.pointer("/Ok/kind"), Some(&json!("slot")), "{reply}");
+    assert_eq!(commands(&test).matches("zpool create").count(), 1);
+    assert!(test.0.join("slot").exists());
+    source.release();
+    server.abort();
+}
+
+#[tokio::test]
+async fn a_machine_without_a_pool_has_no_copy_to_inspect_forget_or_destroy() {
+    let test = TestDir::new();
+    let (socket, server) = poolless(&test, ployz_core::VOLUME_SEND_PORT);
+
+    for route in [
+        "/Volume.Copy.Inspect",
+        "/Volume.Copy.Forget",
+        "/Volume.Copy.Destroy",
+    ] {
+        assert_eq!(
+            post(&socket, route, json!({"name": "data"})).await,
+            json!({"Ok": null}),
+            "{route}"
+        );
+    }
+    let writer = json!({"name": "data", "at": "13", "epoch": 2});
+    let reply = post(&socket, "/Volume.Copy.Writer", writer).await;
+    assert!(reply.get("Err").is_some(), "{reply}");
+    let log = commands(&test);
+    assert!(!log.contains("zpool create"), "{log}");
+    assert!(!log.contains("fallocate"), "{log}");
+    server.abort();
 }
 
 #[tokio::test]

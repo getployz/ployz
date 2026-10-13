@@ -17,12 +17,12 @@ export const COPIES = {
 export type Copy = keyof typeof COPIES | "empty" | "unanswered";
 
 /** One Machine's answer for the Volume, named by its Server. `epoch` numbers a root's run of writes. */
-export function member(server: string, copy: Copy, options: { pool?: boolean; epoch?: number } = {}): Member {
+export function member(server: string, copy: Copy, options: { epoch?: number } = {}): Member {
   const machine = { id: server.padEnd(32, "0") as MachineId, name: server };
   if (copy === "unanswered") return { machine, answered: false };
   const answer: VolumeCopy | null = copy === "empty" ? null : COPIES[copy];
   const view = { copy: answer?.kind === "root" && options.epoch !== undefined ? { ...answer, epoch: options.epoch } : answer };
-  return { machine, address: "fdcc::1", answered: true, pool: options.pool ?? copy !== "empty", view };
+  return { machine, address: "fdcc::1", answered: true, view };
 }
 
 export const run = (kind: VolumeRunView["kind"], args: VolumeRunView["args"], state: VolumeRunView["state"]): VolumeRunView => ({
