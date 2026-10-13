@@ -94,7 +94,7 @@ Each script under `scripts/` boots or takes a run, prints its verdicts and exits
 - `test-verify-volume-fences.py <manifest>` checks that a readonly slot stays hidden from Docker. Run it after changing the volume plugin or slot handling.
 - `test-verify-warm-move.py [check ...]` checks Restore, Server removal and rejoin, demotion of a returning copy, deletion, stale `SetVolumeCopy` replays, deploys held mid-Move, Release, mirror reuse and slow or failing starts. `--list` names the checks and the Machines each needs; with no `--manifest` it boots that many under `/tmp/ployz-warm-move-vc.lock` and takes them down. Run it after changing Warm Move, Volume runs or `server rm`.
 
-The three volume scripts need the fault build, `PLOYZ_VERIFY_CARGO_ARGS='--features ployz/verify-faults,ployzd/verify-faults'`. The Move and Warm Move scripts also need `--cloud`.
+The three volume scripts need the fault build, `PLOYZ_VERIFY_CARGO_ARGS='--features ployz/verify-faults,ployzd/verify-faults'`. A `--manifest` run for the Move and Warm Move scripts must also come from `up --cloud`.
 
 ## Evidence and cleanup
 

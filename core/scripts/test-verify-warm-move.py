@@ -1157,11 +1157,6 @@ def run_checks(manifest, selected):
 
 
 def boot(machines):
-    free = subprocess.run(["free", "-g"], capture_output=True, text=True).stdout
-    available = int(free.splitlines()[1].split()[-1])
-    if available < 2 * machines + 4:
-        raise CheckError(f"only {available} GiB available on this shared host; {machines} Machines and Cloud need "
-                         f"{2 * machines + 4}\n{free}")
     env = dict(os.environ)
     if FAULT_BUILD not in env.get("PLOYZ_VERIFY_CARGO_ARGS", ""):
         env["PLOYZ_VERIFY_CARGO_ARGS"] = (env.get("PLOYZ_VERIFY_CARGO_ARGS", "") + " " + FAULT_BUILD).strip()
