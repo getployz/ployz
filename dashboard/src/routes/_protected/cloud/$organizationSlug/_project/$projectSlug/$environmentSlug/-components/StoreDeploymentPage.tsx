@@ -1,7 +1,7 @@
 import { Suspense, useState, type ReactNode } from "react";
 import { Link, useLoaderData, useNavigate, useParams } from "@tanstack/react-router";
 import type { BuildView, DeploymentSummary, DeploymentView, NodeOutcome } from "@ployz/sdk";
-import { DatabaseIcon, GitBranchPlusIcon, LockIcon, MoreVerticalIcon } from "lucide-react";
+import { DatabaseIcon, GitBranchPlusIcon, LockIcon, MoreVerticalIcon, TriangleAlertIcon } from "lucide-react";
 import { ContainerLogs } from "#/components/container-logs";
 import { DeploymentStatusIcon } from "#/components/deployment-status-icon";
 import { Badge } from "#/components/ui/badge";
@@ -49,6 +49,9 @@ export function StoreDeploymentPage({ deploymentId, search }: { deploymentId: st
   if (!result.ok) return <CanvasInspectorNotFound noun="Deployment" />;
   const deployment = result.value;
   const storage = storageSteps(deployment.id);
+  const warnings = deployment.warnings ?? [];
+  const ingressWarnings = warnings.filter((warning) => "ingress" in warning);
+  const variableWarnings = warnings.filter((warning) => !("ingress" in warning));
   const services = deployment.nodes.filter((node) => node.type === "service");
   const volumes = deployment.nodes.filter((node) => node.type === "volume");
   const focused = focusedService(deployment, search.service);
@@ -120,13 +123,20 @@ export function StoreDeploymentPage({ deploymentId, search }: { deploymentId: st
         {storage ? <p role="status" className="text-sm">{storage}</p> : null}
 
         {/* What it shipped despite: a secret left out, or a Config file reference left empty. */}
-        {deployment.warnings?.length ? (
+        {variableWarnings.length ? (
           <ul aria-label="Warnings" className="flex flex-wrap gap-1.5">
-            {deployment.warnings.map((warning) => (
+            {variableWarnings.map((warning) => (
               <li key={deploymentWarningText(warning)}><Badge variant="warning"><LockIcon />{deploymentWarningText(warning)}</Badge></li>
             ))}
           </ul>
         ) : null}
+        {ingressWarnings.map((warning) => (
+          <p key={warning.server} role="status" className="flex flex-wrap items-center gap-1.5 text-sm text-warning">
+            <TriangleAlertIcon className="size-4" />{deploymentWarningText(warning)}.
+            <Link to="/cloud/$organizationSlug/~/settings" params={{ organizationSlug: params.organizationSlug }}
+              className="underline underline-offset-4">Organization › General › Domain</Link>
+          </p>
+        ))}
 
         {!focused ? <>
           {volumes.length ? <NodeRow>{volumeMarks}</NodeRow> : null}

@@ -299,8 +299,13 @@ export function focusedService(deployment: DeploymentView, picked: string | unde
 export const canFixOnBranch = (deployment: DeploymentView, node: NodeOutcome, noServers: boolean) =>
   !noServers && deployment.status === "failed" && deployment.outcome?.type === "executed" && !nodeApplied(node.outcome);
 
-/** What a Deployment shipped despite, in words: "TOKEN not set", or where a Config file left one empty. */
+/** What a Deployment shipped despite, in words: "TOKEN not set", where a Config file left one empty, or a Server left without ingress. */
 export function deploymentWarningText(warning: DeploymentWarning) {
+  if ("ingress" in warning) {
+    return warning.ingress.type === "port_taken"
+      ? `Ingress isn't running on ${warning.server}: something else holds port 80 or 443`
+      : `Ingress isn't running on ${warning.server}: ${warning.ingress.cause}`;
+  }
   if ("service" in warning) return `${warning.variable} not set in ${warning.service}`;
   if ("secret" in warning) return `${warning.secret} not set in ${warning.config}/${warning.file}`;
   return `${warning.variable} may break ${warning.config}/${warning.file}`;
