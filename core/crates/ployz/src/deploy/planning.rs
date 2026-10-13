@@ -282,7 +282,9 @@ pub struct SlotRepair {
 /// that went unobserved.
 #[must_use]
 pub fn plan_ingress_repairs(intent: &DeployIntent, snapshot: &DeploySnapshot) -> Vec<SlotRepair> {
-    let service_id = snapshot.system_ingress().map(|service| service.service_id);
+    let service_id = snapshot
+        .system_ingress()
+        .map_or_else(ServiceId::random, |service| service.service_id);
     let unchecked = snapshot
         .unobserved_ingress()
         .into_iter()
@@ -310,19 +312,18 @@ pub fn plan_ingress_repairs(intent: &DeployIntent, snapshot: &DeploySnapshot) ->
     all
 }
 
-/// Plan the Ingress Proxy on the one Machine of `only` as the same Service its siblings
-/// run, which `only` cannot see: they share its creation key.
+/// Plan the Ingress Proxy on the one Machine of `only` as the Service `service_id`, which
+/// its siblings run or are created as in the same check and `only` cannot see: they share
+/// its creation key.
 fn plan_create(
     intent: &DeployIntent,
     only: &DeploySnapshot,
-    service_id: Option<ServiceId>,
+    service_id: ServiceId,
 ) -> Result<DeployPlan, PlanError> {
     let mut planned = plan_operations(intent, only)?;
-    if let Some(service_id) = service_id {
-        for operation in &mut planned.operations {
-            if let DeployOperation::RunContainer { spec, .. } = operation {
-                spec.service_id = service_id;
-            }
+    for operation in &mut planned.operations {
+        if let DeployOperation::RunContainer { spec, .. } = operation {
+            spec.service_id = service_id;
         }
     }
     Ok(admit(intent, only, planned))

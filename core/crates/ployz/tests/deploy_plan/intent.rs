@@ -457,6 +457,31 @@ fn ingress_repair_creates_a_missing_slot_and_starts_a_stopped_one() {
 }
 
 #[test]
+fn ingress_created_on_every_server_at_once_is_one_service() {
+    let snapshot = DeploySnapshot {
+        machines: vec![machine('1', "missing"), machine('2', "also-missing")],
+        ..Default::default()
+    };
+    let service_ids: Vec<_> = planned_ingress(&snapshot)
+        .into_iter()
+        .map(|repair| {
+            let SlotAction::Create(Ok(plan)) = repair.action else {
+                panic!("expected a create, got {:?}", repair.action);
+            };
+            let operations = operations(plan.preview());
+            let [DeployOperation::RunContainer { spec, .. }] = operations.as_slice() else {
+                panic!("expected one run");
+            };
+            spec.service_id
+        })
+        .collect();
+    assert!(
+        matches!(service_ids.as_slice(), [first, second] if first == second),
+        "{service_ids:?}"
+    );
+}
+
+#[test]
 fn a_dead_ingress_proxy_is_never_started_and_never_returns() {
     let dead = || ContainerRuntimeObservation::Dead;
     let mut only_dead = machine('1', "only-dead");
