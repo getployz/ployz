@@ -13,7 +13,17 @@ export const ReadServiceMetricsInput = Schema.Struct({
 });
 export type ReadServiceMetricsInput = typeof ReadServiceMetricsInput.Type;
 
-export const ReadServerMetricsInput = Schema.Struct({
+/** A Service by the namespace and name the Engine runs it under, for pages that list what runs on a Server. */
+export const ReadRuntimeServiceMetricsInput = Schema.Struct({
+  organizationSlug: Schema.NonEmptyString,
+  namespace: Schema.NonEmptyString,
+  name: Schema.NonEmptyString,
+  from: RangeEdge,
+  to: RangeEdge,
+});
+export type ReadRuntimeServiceMetricsInput = typeof ReadRuntimeServiceMetricsInput.Type;
+
+export const ReadServerMetricsInput =Schema.Struct({
   organizationSlug: Schema.NonEmptyString,
   machineId: Schema.String.check(Schema.isPattern(/^[0-9a-f]{32}$/u)),
   from: RangeEdge,

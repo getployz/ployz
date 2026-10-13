@@ -1,7 +1,7 @@
 import { queryOptions } from "@tanstack/react-query";
 import { DEFAULT_RANGE } from "#/modules/uptime/uptime-range";
-import type { ReadServerMetricsInput, ReadServiceMetricsInput } from "./metrics";
-import { readServerMetricsServerFn, readServiceMetricsServerFn } from "./metrics.functions";
+import type { ReadRuntimeServiceMetricsInput, ReadServerMetricsInput, ReadServiceMetricsInput } from "./metrics";
+import { readRuntimeServiceMetricsServerFn, readServerMetricsServerFn, readServiceMetricsServerFn } from "./metrics.functions";
 
 /** One Service's metrics over `from`..`to`, summed across its Servers. */
 export function serviceMetricsQueryOptions(input: ReadServiceMetricsInput) {
@@ -36,5 +36,15 @@ export function serviceMarkersQueryOptions(scope: { organizationSlug: string; en
     staleTime: 60_000,
     refetchInterval: 300_000,
     refetchOnWindowFocus: false,
+  });
+}
+
+/** A runtime Service's metrics over `from`..`to`, by the namespace and name it runs under. */
+export function runtimeServiceMetricsQueryOptions(input: ReadRuntimeServiceMetricsInput) {
+  return queryOptions({
+    queryKey: ["metrics", "runtime-service", input.organizationSlug, input.namespace, input.name, input.from, input.to] as const,
+    queryFn: () => readRuntimeServiceMetricsServerFn({ data: input }),
+    staleTime: 30_000,
+    refetchInterval: 60_000,
   });
 }

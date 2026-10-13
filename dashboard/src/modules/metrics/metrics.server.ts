@@ -6,7 +6,7 @@ import { findService } from "#/modules/config-store/store-lookup.server";
 import { requireAccess } from "#/modules/organization/access.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { resolveRange } from "#/modules/uptime/uptime-range";
-import type { MetricRead, MetricWindow, ReadServerMetricsInput, ReadServiceMetricsInput } from "./metrics";
+import type { MetricRead, MetricWindow, ReadRuntimeServiceMetricsInput, ReadServerMetricsInput, ReadServiceMetricsInput } from "./metrics";
 
 const nanos = (ms: number) => (BigInt(ms) * 1_000_000n).toString();
 
@@ -38,7 +38,13 @@ export const readServiceMetrics = Effect.fn("Metrics.readService")(function* (ac
   return yield* readHistory(organization.id, { kind: "service", service: `${found.namespace}/${found.runtime}` }, window, input.markersOnly === true);
 });
 
-export const readServerMetrics = Effect.fn("Metrics.readServer")(function* (actor: Actor, input: ReadServerMetricsInput) {
+export const readRuntimeServiceMetrics = Effect.fn("Metrics.readRuntimeService")(function* (actor: Actor, input: ReadRuntimeServiceMetricsInput) {
+  const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
+  const window = resolveRange(input, yield* Clock.currentTimeMillis);
+  return yield* readHistory(organization.id, { kind: "service", service: `${input.namespace}/${input.name}` }, window);
+});
+
+export const readServerMetrics =Effect.fn("Metrics.readServer")(function* (actor: Actor, input: ReadServerMetricsInput) {
   const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
   const window = resolveRange(input, yield* Clock.currentTimeMillis);
   // SAFETY: the input schema checks the 32 lowercase hex digits a MachineId is.
