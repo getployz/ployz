@@ -53,7 +53,6 @@ export type Member =
       readonly machine: { readonly id: MachineId; readonly name: MachineName };
       readonly address: string;
       readonly answered: true;
-      readonly pool: boolean;
       readonly view: VolumeCopyView;
     }
   | {

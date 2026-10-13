@@ -636,15 +636,15 @@ describe("volume runs", () => {
       expect(await rows()).toMatchObject([{ state: "failed", message: "data-fsn-2 could not receive ployz-10: disk full" }]);
     });
 
-    it("mirror: a Server without a Pool is refused before any epoch", async () => {
+    it("mirror: a Server without a Pool gets the mirror", async () => {
       machines[1] = { name: "fsn-2", pool: false, copy: null };
       const run = await requested({ kind: "mirror", args: { to: "fsn-2" } });
 
       const output = await execute(run.id);
 
-      expect(output.result).toMatchObject({ refused: { code: "no_pool" } });
-      expect(verbs).toEqual([]);
-      expect(await rows()).toMatchObject([{ state: "failed", message: "fsn-2 has no managed volume storage yet", epoch: null }]);
+      expect(output.result).toEqual({ runId: run.id, rounds: 1 });
+      expect(verbs).toEqual(["snapshot@fsn-1(w-1-0)", "pull@fsn-2(ployz-10)", "pull@fsn-2(ployz-10)", "snapshot@fsn-1(w-1-1)"]);
+      expect(await rows()).toMatchObject([{ state: "done", message: null }]);
     });
 
     it("sync: a mirror already at the writer's newest needs no pull", async () => {

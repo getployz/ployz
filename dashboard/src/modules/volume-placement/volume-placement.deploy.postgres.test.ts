@@ -146,7 +146,7 @@ describe("deploying a Volume placement", () => {
     if (started.kind !== "wait") throw new Error("expected a run");
 
     await endRun(started.wait.runId, "failed", "web-2 lost the reply");
-    members = [member("web-1", "writer"), member("web-2", "empty", { pool: true })];
+    members = [member("web-1", "writer"), member("web-2", "empty")];
     expect(await run(advancePlacement(organizationId, "dep-1", started.wait, inspect, answered))).toEqual({ kind: "failed", message: "data: web-2 lost the reply" });
     const row = await placement();
     expect(row).toMatchObject({ mirrors: [], staged: null, deploymentId: null });
@@ -155,7 +155,7 @@ describe("deploying a Volume placement", () => {
   });
 
   it("settles a landed mirror removal while another change stays staged", async () => {
-    members = [member("web-1", "writer"), member("web-2", "mirror"), member("web-3", "empty", { pool: true })];
+    members = [member("web-1", "writer"), member("web-2", "mirror"), member("web-3", "empty")];
     const staged = { primary: web("web-1"), mirrors: [web("web-3")], deletes: [] };
     await run(stagePlacement(organizationId, { environment, volumeId, staged, mirrors: [web("web-2")] }));
     await run(stampPlacements(organizationId, [volumeId], "dep-1"));
@@ -164,7 +164,7 @@ describe("deploying a Volume placement", () => {
     expect((await harness.pool.query(`select args ->> 'slot' as slot from volume_run where id = $1`, [started.wait.runId])).rows).toEqual([{ slot: "web-2" }]);
 
     await endRun(started.wait.runId, "failed", "web-2 lost the reply");
-    members = [member("web-1", "writer"), member("web-2", "empty", { pool: true }), member("web-3", "empty", { pool: true })];
+    members = [member("web-1", "writer"), member("web-2", "empty"), member("web-3", "empty")];
     await run(advancePlacement(organizationId, "dep-1", started.wait, inspect, answered));
     expect(await placement()).toMatchObject({ mirrors: [], staged, deploymentId: null });
   });

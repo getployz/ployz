@@ -11,7 +11,7 @@ import { type CopyServer, VolumeCopiesPanel } from "./StoreVolumeCopies";
 const NOW = new Date("2026-10-12T12:00:00Z");
 const id = (server: string) => server.padEnd(32, "0") as MachineId;
 const volume = { id: "v1", name: "data", mounts: [{ service: "postgres" }] };
-const pooled = (server: string) => member(server, "empty", { pool: true });
+const pooled = (server: string) => member(server, "empty");
 const row = (mirrors: string[], staged: { primary: string; mirrors?: string[]; deletes?: string[] } | null = null): PlacementRow => ({
   volumeId: "v1",
   environmentId: "e1",
