@@ -89,8 +89,8 @@ To bring services back:
    server fails before it changes anything, and the dashboard's **Deploy** includes every
    service.
 2. When the server comes back, its replicas start again. Your next deploy tidies up the extras.
-3. If it's gone for good, [remove it](../servers/manage-servers.md#remove-a-server) with
-   `ployz server rm web-2 --no-reset --confirm web-2` (Ployz can't reach it to reset it), then
+3. If it's gone for good, [forget it](../servers/manage-servers.md#forget-a-server-that-is-gone)
+   with **Forget server** on its page or `ployz server forget web-2 --confirm web-2`, then
    restore its databases from your backups.
 
 ## Good to know
