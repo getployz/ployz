@@ -490,57 +490,101 @@ export function changeSteps(change: PlacementChange, now: Date): readonly string
 }
 
 /**
- * One thing a Deploy of staged changes takes from the Servers: a copy of `volume` on `server`, or for a restore from a
- * restore point, the source's writes `after` it, since the app stops seeing them.
+ * One thing a Deploy of staged changes takes: the copy of `volume` on `server`, or a restore's dropped writes, the
+ * source's after `after` when a restore point bounds them. A restore drops both the unanswered primary's copy and its
+ * writes.
  */
-export type PlacementLost = { readonly volume: PlacementVolume; readonly server: MachineRef; readonly after: Date | null };
+export type PlacementLost = { readonly volume: PlacementVolume; readonly server: MachineRef | null; readonly writes: boolean; readonly after: Date | null };
 
 export function placementLosses(changes: readonly PlacementChange[]): PlacementLost[] {
-  const copy = (volume: PlacementVolume, server: MachineRef): PlacementLost => ({ volume, server, after: null });
+  const copy = (volume: PlacementVolume, server: MachineRef): PlacementLost => ({ volume, server, writes: false, after: null });
   return changes.flatMap((change) => {
     const cleared = "clears" in change ? change.clears.map((server) => copy(change.volume, server)) : [];
     switch (change.kind) {
       case "move":
-        return change.how === "restore" && change.from !== null ? [...cleared, copy(change.volume, change.from)] : cleared;
+        return change.how === "restore" ? [...cleared, { volume: change.volume, server: change.from, writes: true, after: change.lostAfter }] : cleared;
       case "add_mirror":
         return cleared;
       case "remove_mirror":
       case "delete_copy":
         return [copy(change.volume, change.server)];
       case "seed":
-        return [{ volume: change.source, server: change.to, after: new Date(change.point.at * 1000) }];
+        return [{ volume: change.source, server: null, writes: true, after: new Date(change.point.at * 1000) }];
     }
   });
 }
 
+type VolumeLost = { name: string; deletes: { machine_id: MachineId }[]; loss: "data" | "writes"; after?: number };
+
 /**
  * Each Volume that loses something, as a `confirmation_required` refusal names it: the Servers losing a copy, and for a
- * restore dropping writes, `writes` and the restore point in seconds, so a refused Deploy words its confirm as the local
+ * restore dropping writes, `writes` and any restore point in seconds, so a refused Deploy words its confirm as the local
  * check does.
  */
-export function lossByVolume(lost: readonly PlacementLost[]) {
-  type Deletes = { machine_id: MachineId }[];
-  type Lost = { name: string; deletes: Deletes; loss: "data" } | { name: string; deletes: Deletes; loss: "writes"; after: number };
-  return [...new Set(lost.map(({ volume }) => volume.name))].map((name): Lost => {
+export function lossByVolume(lost: readonly PlacementLost[]): VolumeLost[] {
+  return [...new Set(lost.map(({ volume }) => volume.name))].map((name) => {
     const of = lost.filter(({ volume }) => volume.name === name);
     const after = of.find((entry) => entry.after !== null)?.after ?? null;
-    const deletes = of.flatMap(({ server, after: dropped }) => dropped === null ? [{ machine_id: server.id }] : []);
-    return after === null ? { name, deletes, loss: "data" } : { name, deletes, loss: "writes", after: after.getTime() / 1000 };
+    const deletes = of.flatMap(({ server }) => server === null ? [] : [{ machine_id: server.id }]);
+    if (!of.some(({ writes }) => writes)) return { name, deletes, loss: "data" };
+    return after === null ? { name, deletes, loss: "writes" } : { name, deletes, loss: "writes", after: after.getTime() / 1000 };
   });
 }
 
+/** Each Volume a Deploy loses, as its confirm lists it, whether Cloud refused it or the canvas checked first. */
+export function volumeLossItems(
+  volumes: readonly { name: string; deletes: readonly { machine_id: string }[]; loss?: "data" | "writes"; after?: number }[],
+  machineName: (id: string) => string | undefined,
+): DeletionItem[] {
+  return volumes.map((volume) => ({
+    kind: "volume",
+    name: volume.name,
+    detail: volume.deletes.flatMap((held) => machineName(held.machine_id) ?? []).join(", ")
+      || (volume.after !== undefined ? `changes after ${lossTime(new Date(volume.after * 1000))}` : volume.loss === "writes" ? "recent changes" : undefined),
+  }));
+}
+
+const LOSS_MARK = "#loss-";
+
 /**
- * What a Deploy of staged changes takes, for its typed confirm: what goes, whether a restore drops writes, and the name
- * of each Volume that loses something, which the Deploy accepts as it accepts a Volume the Store deletes.
+ * The Store diff version a Deploy carries, bound to the loss its confirm showed. Names alone would let consent to one
+ * loss pass for another staged on the same Volume meanwhile, and staging a copy change doesn't move the Store's version.
+ * The version is the one field every client carries back verbatim.
  */
-export type PlacementLoss = { readonly items: readonly DeletionItem[]; readonly losesWrites: boolean; readonly accept: readonly string[] };
+export function lossVersion(version: string, lost: readonly PlacementLost[]) {
+  if (lost.length === 0) return version;
+  const shown = JSON.stringify(lossByVolume(lost)
+    .map((volume) => ({ ...volume, deletes: volume.deletes.map(({ machine_id }) => machine_id).sort() }))
+    .sort((a, b) => a.name.localeCompare(b.name)));
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < shown.length; index++) hash = Math.imul(hash ^ shown.charCodeAt(index), 0x01000193);
+  return `${version}${LOSS_MARK}${(hash >>> 0).toString(36)}`;
+}
+
+/** The Store's own version inside one `lossVersion` bound. */
+export const storeVersion = (version: string) => version.split(LOSS_MARK)[0] ?? version;
+
+/**
+ * What a Deploy of staged changes takes, for its typed confirm: what goes, whether a restore drops writes, the name of
+ * each Volume that loses something, which the Deploy accepts as it accepts a Volume the Store deletes, and the version
+ * binding that acceptance to this loss.
+ */
+export type PlacementLoss = {
+  readonly items: readonly DeletionItem[];
+  readonly losesWrites: boolean;
+  readonly accept: readonly string[];
+  readonly version: (version: string) => string;
+};
 
 export function placementLoss(changes: readonly PlacementChange[]): PlacementLoss {
   const lost = placementLosses(changes);
+  const volumes = lossByVolume(lost);
+  const servers = lost.flatMap(({ server }) => server ?? []);
   return {
-    items: lost.map(({ volume, server, after }) => ({ kind: "volume", name: volume.name, detail: after === null ? server.name : `changes after ${lossTime(after)}` })),
-    losesWrites: changes.some((change) => (change.kind === "move" && change.how === "restore") || change.kind === "seed"),
+    items: volumeLossItems(volumes, (id) => servers.find((server) => server.id === id)?.name),
+    losesWrites: volumes.some(({ loss }) => loss === "writes"),
     accept: [...new Set(lost.map(({ volume }) => volume.name))],
+    version: (version) => lossVersion(version, lost),
   };
 }
 

@@ -6,7 +6,7 @@ import { StoreRefused } from "#/modules/config-store/store.contract";
 import { useVolumeLossCheck, type VolumeLossCheck } from "#/modules/config-store/use-volume-loss-check";
 import type { PlacementLoss } from "#/modules/volume-placement/volume-placement";
 type Action = "deploy" | "publish";
-const NO_PLACEMENT_LOSS: PlacementLoss = { items: [], losesWrites: false, accept: [] };
+const NO_PLACEMENT_LOSS: PlacementLoss = { items: [], losesWrites: false, accept: [], version: (version) => version };
 /** A Deploy's own words: what it ships (optional; the Store trims it). */
 type Message = string | null;
 
@@ -52,7 +52,7 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
   function deploy(message: Message) {
     if (inFlight.current) return;
     if (placementLoss.items.length > 0) {
-      setLoss({ action: "deploy", check: { items: placementLoss.items, evidence: { accept: placementLoss.accept, version }, losesWrites: placementLoss.losesWrites }, message });
+      setLoss({ action: "deploy", check: { items: placementLoss.items, evidence: { accept: placementLoss.accept, version: placementLoss.version(version) }, losesWrites: placementLoss.losesWrites }, message });
       return;
     }
     inFlight.current = true;

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { MachineId } from "@ployz/sdk";
 import type { ChangeGroup } from "#/modules/config-store/store-deployments";
-import { volumeLoss, volumeLossItems } from "#/modules/config-store/store-volumes";
+import { volumeLoss } from "#/modules/config-store/store-volumes";
 import type { Member, VolumeRunView } from "#/modules/volume-run/volume-run";
 import { COPIES, member } from "#/modules/volume-run/volume-run.test-fixture";
 import {
@@ -22,6 +22,7 @@ import {
   placementGroup,
   placementLoss,
   placementLosses,
+  volumeLossItems,
   lossByVolume,
   restorePoints,
   stagedOffServer,
@@ -460,7 +461,10 @@ describe("changeSteps", () => {
 });
 
 describe("placementLoss", () => {
-  const lossOf = (members: Member[], placement: PlacementRow) => placementLoss(changes(members, placement));
+  const lossOf = (members: Member[], placement: PlacementRow) => {
+    const { version: _, ...loss } = placementLoss(changes(members, placement));
+    return loss;
+  };
 
   it("names each copy a Deploy deletes and the Volume to accept, and asks nothing of a move that keeps every copy", () => {
     const members = [member("web-1", "writer"), member("web-2", "mirror")];
@@ -472,6 +476,11 @@ describe("placementLoss", () => {
   it("says a restore drops the unanswered primary's writes", () => {
     const members = [member("web-1", "unanswered"), mirrorAsOf("web-2", at)];
     expect(lossOf(members, row(["web-2"], { primary: "web-2" }))).toEqual({ items: [{ kind: "volume", name: "pg-data", detail: "web-1" }], losesWrites: true, accept: ["pg-data"] });
+  });
+
+  it("asks before a restore no Server is known to have held, since it still drops writes", () => {
+    expect(lossOf([mirrorAsOf("web-2", at)], row(["web-2"], { primary: "web-2" })))
+      .toEqual({ items: [{ kind: "volume", name: "pg-data", detail: "changes after 10:36" }], losesWrites: true, accept: ["pg-data"] });
   });
 
   it("says a restore from a restore point drops the source's writes after it", () => {
@@ -501,6 +510,12 @@ describe("lossByVolume", () => {
     ]);
   });
 
+  it("tells a refused restore's Deploy it drops writes, naming the unanswered primary as the local check does", () => {
+    const members = [member("web-1", "unanswered"), mirrorAsOf("web-2", at)];
+    expect(lossByVolume(placementLosses(changes(members, row(["web-2"], { primary: "web-2" })))))
+      .toEqual([{ name: "pg-data", deletes: [{ machine_id: id("web-1") }], loss: "writes", after: at.getTime() / 1000 }]);
+  });
+
   it("words a refused restore's confirm as the local check does, with the changes it drops rather than the Server", () => {
     const seeded: PlacementRow = {
       ...row([], { primary: "web-1" }),
@@ -512,7 +527,7 @@ describe("lossByVolume", () => {
     const staged = [...changes([], seeded), ...changes(members, row(["web-2"], { primary: "web-1" }))];
     const details = JSON.parse(JSON.stringify({ volumes: lossByVolume(placementLosses(staged)), accept: ["data", "pg-data"], version: "9:1:0.1" }));
     const refused = volumeLoss({ code: "confirmation_required", details });
-    expect(refused && volumeLossItems(refused, (machine) => machine.replace(/0+$/u, ""))).toEqual(placementLoss(staged).items);
+    expect(refused && volumeLossItems(refused.volumes, (machine) => machine.replace(/0+$/u, ""))).toEqual(placementLoss(staged).items);
   });
 });
 
