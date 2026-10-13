@@ -1,17 +1,19 @@
 //! Ingress Proxy identity and deployment boundaries.
 
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, future::Future};
 
 use futures_util::future::join_all;
 use ployz_core::{
-    ContainerId, ContainerLocator, ContainerObservation, ContainerWant, DeployOutcome,
-    EnvironmentValues, FailedOperation, MachineObservation, PlacementConstraint, QualifiedService,
-    RequestedServiceSpec, RunTarget, caddy_service_spec,
+    ContainerId, ContainerLocator, ContainerNow, ContainerObservation, ContainerWant,
+    DeployOutcome, EnvironmentValues, FailedOperation, HealthFailure, MachineObservation,
+    PlacementConstraint, QualifiedService, RequestedServiceSpec, RpcError, RunTarget,
+    caddy_service_spec,
 };
 use ployz_store::{IngressAction, IngressFailure, IngressRepair};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
+    cluster::HealthWaitError,
     connect::{Client, TARGET_RPC_TIMEOUT},
     deploy::{DeployIntent, DeployPlan, Outcome, SlotAction},
     failure::Failure,
@@ -97,17 +99,19 @@ pub(crate) async fn fill_slots(
         let failure = match work {
             None => return shown,
             Some(Work::Create(plan)) => failure(&client.confirm(&plan, cancel, None).await),
-            Some(Work::Start(container_id)) => client
-                .ensure_container(
-                    &shown.machine,
-                    ContainerWant::Running {
-                        container: RunTarget::Existing(ContainerLocator::Id(container_id)),
-                    },
-                    Some(TARGET_RPC_TIMEOUT),
+            Some(Work::Start(container_id)) => {
+                started(
+                    client.ensure_container(
+                        &shown.machine,
+                        ContainerWant::Running {
+                            container: RunTarget::Existing(ContainerLocator::Id(container_id)),
+                        },
+                        Some(TARGET_RPC_TIMEOUT),
+                    ),
+                    client.wait_until_ready(&shown.machine, &container_id, cancel),
                 )
                 .await
-                .err()
-                .map(|error| classify(error.to_string())),
+            }
         };
         IngressRepair { failure, ..shown }
     }))
@@ -194,6 +198,26 @@ async fn slot_repairs(client: &mut Client) -> Result<Slots, Failure> {
     Ok(slots)
 }
 
+/// The failure of starting a stopped Ingress Proxy: the start itself, or the container
+/// not staying up through the readiness window `ployz service start` waits.
+async fn started(
+    ensured: impl Future<Output = Result<ContainerNow, RpcError>>,
+    ready: impl Future<Output = Result<(), HealthWaitError<RpcError>>>,
+) -> Option<IngressFailure> {
+    if let Err(error) = ensured.await {
+        return Some(classify(error.to_string()));
+    }
+    match ready.await {
+        Ok(()) => None,
+        Err(HealthWaitError::Health(failure)) => Some(IngressFailure::Failed {
+            cause: format!("it stopped right after starting: {failure}"),
+        }),
+        Err(HealthWaitError::Inspect(error)) => Some(IngressFailure::Failed {
+            cause: format!("it started, but checking that it stayed up failed: {error}"),
+        }),
+    }
+}
+
 fn failure(outcome: &Outcome) -> Option<IngressFailure> {
     let DeployOutcome::Failed { failed, .. } = outcome else {
         return None;
@@ -273,9 +297,36 @@ pub fn is_system_ingress(observation: &ContainerObservation) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use ployz_core::{PlacementConstraint, ServiceMode};
+    use std::future::ready;
+
+    use ployz_core::{ContainerRuntimeObservation, PlacementConstraint, ServiceMode};
 
     use super::*;
+
+    fn absent() -> ContainerNow {
+        ContainerNow::Absent {
+            of: ContainerLocator::Id(ContainerId::parse("1".repeat(64)).unwrap()),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_start_that_stays_up_is_repaired() {
+        assert_eq!(started(ready(Ok(absent())), ready(Ok(()))).await, None);
+    }
+
+    #[tokio::test]
+    async fn a_start_that_exits_right_away_fails_with_the_exit() {
+        let exited = HealthWaitError::Health(HealthFailure::Runtime {
+            observation: ContainerRuntimeObservation::Exited { code: 1 },
+            last_check: None,
+        });
+        let Some(IngressFailure::Failed { cause }) =
+            started(ready(Ok(absent())), ready(Err(exited))).await
+        else {
+            panic!("an exited start is a failed repair");
+        };
+        assert!(cause.contains("exited with code 1"), "{cause}");
+    }
 
     #[tokio::test]
     async fn builds_the_caddy_service_spec() {
