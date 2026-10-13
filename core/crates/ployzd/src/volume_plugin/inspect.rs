@@ -42,9 +42,6 @@ impl VolumeStorage {
         Ok(self.property(dataset, PROMOTE_PROPERTY).await?.is_some())
     }
 
-    /// A root `Volume.Seed` landed that Docker has not adopted. Adoption clears only
-    /// `ployz:promote`, and a Move's promoted root carries only `ployz:promote`, so it
-    /// takes both.
     pub(super) async fn unadopted_seed(&self, dataset: &str) -> Result<bool> {
         Ok(self.unregistered(dataset).await?
             && self.property(dataset, SEED_PROPERTY).await?.is_some())

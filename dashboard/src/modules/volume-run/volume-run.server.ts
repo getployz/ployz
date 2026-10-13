@@ -784,7 +784,6 @@ export const observeOrganizationCopies: CopyObserver = (organizationId) =>
     return (yield* observeVolumeCopies(loaded.connections)).copies;
   });
 
-/** Names no config entry holds whose root some Machine holds: each may be a seed root Docker never adopted. */
 function unheldRootNames(copies: CopyObservation["copies"], configNames: ReadonlySet<string>): string[] {
   const roots = copies.filter((copy) => copy.role !== "slot" && !configNames.has(copy.name));
   return [...new Set(roots.map((copy) => copy.name))].sort();
@@ -797,7 +796,6 @@ const onlyUnadoptedSeeds = (members: readonly Member[]) => {
   return roots.length > 0 && roots.every(isUnadoptedSeed);
 };
 
-/** Slots no config entry holds, and seed roots a restore left behind that Docker never adopted. */
 export const findOrphans = Effect.fn("VolumeRun.findOrphans")(function* (
   organizationId: string,
   observe: CopyObserver,

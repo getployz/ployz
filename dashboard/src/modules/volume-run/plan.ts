@@ -57,7 +57,6 @@ export function roleOf(member: Member): Role {
   return copy.readonly ? "cutting" : "writer";
 }
 
-/** A root a restore seeded that Docker never adopted. A daemon too old to say reads as a writer. */
 export const isUnadoptedSeed = (member: Member) =>
   member.answered && member.view.copy?.kind === "root" && member.view.copy.seed;
 

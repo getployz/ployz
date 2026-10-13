@@ -733,8 +733,6 @@ impl VolumeStorage {
             .map_err(|error| internal(format!("GET {url} answered {body:?}: {error}").into()))
     }
 
-    /// Mirror to Forget: the slot and its copy destroyed. A root `Volume.Seed` landed
-    /// that Docker never adopted goes the same way; any other root is refused.
     async fn copy_destroy(&self, name: &WireName) -> Result<Copy, RpcError> {
         let scope = self.scope(name).await?;
         let name = &scope.name;
