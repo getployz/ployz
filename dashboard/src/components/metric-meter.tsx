@@ -3,8 +3,8 @@ import { cn } from "#/lib/utils";
 
 const RUNNING_OUT_AT = 0.85;
 
-/** A fraction as a meter's value, 0 to 100. */
-export const meterValue = (fraction: number) => Math.min(1, Math.max(0, fraction)) * 100;
+/** A fraction as a meter's value, in whole percent so screen readers say "47%". */
+export const meterValue = (fraction: number) => Math.round(Math.min(1, Math.max(0, fraction)) * 100);
 
 /** The bar's indicator, in the warning colour once the fraction is running out. */
 export const meterIndicatorClass = (fraction: number) =>
