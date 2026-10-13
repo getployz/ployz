@@ -3,7 +3,7 @@ import { useQueryErrorResetBoundary } from "@tanstack/react-query";
 import { CatchBoundary, Link, type ErrorComponentProps } from "@tanstack/react-router";
 import { useOrgStoreGate } from "#/collections/org-store";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import { AgentSidebar } from "./agent-sidebar/agent-sidebar";
+import { AgentButton, AgentColumn } from "./agent-sidebar/agent-sidebar";
 import { useAgentPage } from "./agent-sidebar/use-agent-page";
 import { getDashboardDestination, getDashboardSectionLabel, type DashboardScope } from "./dashboard-navigation-model";
 import { HomeLink, PhoneSections, PhoneTabBar, Rail } from "./dashboard-rail";
@@ -39,12 +39,12 @@ export function DashboardShell({
   // The top bar names the place, so Billing, a section of Organization, reads Organization like its siblings.
   const placeLabel = places.find((place) => place.current)?.label ?? getDashboardSectionLabel(section);
   return (
-    <div className="relative flex h-dvh min-h-0 overflow-hidden">
+    <div className="flex h-dvh min-h-0 overflow-hidden">
       <Rail organizationSlug={scope.organizationSlug} places={places} organization={organization} narrow={canvas}
         account={<DashboardAccountMenu scope={scope} side="right" variant={canvas ? "avatar" : "row"} />} />
-      <main className="flex min-h-0 min-w-0 flex-1 flex-col bg-background">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background">
         {banner}
-        {/* The one top bar: on phones it also carries the logo and the avatar, which live in the rail on desktop. */}
+        {/* The one top bar, over the agent too, so its Agent button never moves. On phones it also carries the logo and the avatar, which live in the rail on desktop. */}
         <header className="flex h-12 shrink-0 items-center gap-2 border-b bg-background px-3 min-wf-nav:px-4">
           <HomeLink organizationSlug={scope.organizationSlug} className="min-wf-nav:hidden" />
           {scope.kind === "environment"
@@ -59,29 +59,36 @@ export function DashboardShell({
                   <Crumb key="crumb" />,
                 ]} />
               : <h1 className="truncate text-sm font-semibold">{placeLabel}</h1>}
-          <div className="ml-auto min-wf-nav:hidden"><DashboardAccountMenu scope={scope} /></div>
+          <div className="ml-auto flex shrink-0 items-center gap-2">
+            <AgentButton organizationSlug={scope.organizationSlug} chat={chat} onChat={onChat} />
+            <div className="min-wf-nav:hidden"><DashboardAccountMenu scope={scope} /></div>
+          </div>
         </header>
-        {/* Over the canvas a page's sections have no room, and the rail shows none either. */}
-        {canvas ? null : <PhoneSections places={places} />}
-        <NavigationProgress />
-        <OrganizationCollectionRefreshNotice
-          scope={collectionScope}
-          organizationSlug={scope.organizationSlug}
-        />
-        <div
-          data-scroll-restoration-id="wireframe-content"
-          className="min-h-0 min-w-0 flex-1 overflow-y-auto"
-        >
-          {/* The one Org Store gate: pages below it read org rows synchronously; chrome above it never waits. */}
-          <CatchBoundary getResetKey={() => scope.organizationSlug} errorComponent={OrgStoreError}>
-            <Suspense fallback={<div className="p-4 md:p-6"><RouteContentSkeleton /></div>}>
-              <OrgStoreGate organizationSlug={scope.organizationSlug}>{children}</OrgStoreGate>
-            </Suspense>
-          </CatchBoundary>
+        <div className="relative flex min-h-0 flex-1">
+          <main className="flex min-h-0 min-w-0 flex-1 flex-col">
+            {/* Over the canvas a page's sections have no room, and the rail shows none either. */}
+            {canvas ? null : <PhoneSections places={places} />}
+            <NavigationProgress />
+            <OrganizationCollectionRefreshNotice
+              scope={collectionScope}
+              organizationSlug={scope.organizationSlug}
+            />
+            <div
+              data-scroll-restoration-id="wireframe-content"
+              className="min-h-0 min-w-0 flex-1 overflow-y-auto"
+            >
+              {/* The one Org Store gate: pages below it read org rows synchronously; chrome above it never waits. */}
+              <CatchBoundary getResetKey={() => scope.organizationSlug} errorComponent={OrgStoreError}>
+                <Suspense fallback={<div className="p-4 md:p-6"><RouteContentSkeleton /></div>}>
+                  <OrgStoreGate organizationSlug={scope.organizationSlug}>{children}</OrgStoreGate>
+                </Suspense>
+              </CatchBoundary>
+            </div>
+          </main>
+          <AgentColumn organizationSlug={scope.organizationSlug} collectionScope={collectionScope} page={page} chat={chat} onChat={onChat} />
         </div>
         <PhoneTabBar places={places} />
-      </main>
-      <AgentSidebar scope={scope} collectionScope={collectionScope} page={page} canvas={canvas} chat={chat} onChat={onChat} />
+      </div>
     </div>
   );
 }
