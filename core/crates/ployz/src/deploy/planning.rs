@@ -11,7 +11,7 @@ use ployz_core::{
 
 use super::{
     DeployIntent, DeployOperation, DeployPreview, DeploySnapshot, DeployWarning,
-    EliminatingConstraint, PlanError, PlanOptions, ReplacementOperation,
+    EliminatingConstraint, HeldIngress, PlanError, PlanOptions, ReplacementOperation,
 };
 
 pub(super) mod capacity;
@@ -263,6 +263,9 @@ pub enum SlotAction {
     Create(Result<DeployPlan, PlanError>),
     /// The newest Ingress Proxy at rest there starts again as it is.
     Start(ContainerId),
+    /// Only dead Ingress Proxy containers are there, the newest given. Docker starts
+    /// none, so the Server's repair fails until they are removed.
+    Dead(ContainerId),
     /// The Server's containers went unobserved, so it was not checked.
     Unchecked(String),
 }
@@ -292,9 +295,10 @@ pub fn plan_ingress_repairs(intent: &DeployIntent, snapshot: &DeploySnapshot) ->
         .into_iter()
         .map(|empty| SlotRepair {
             machine_id: empty.machine.machine.id,
-            action: match empty.stopped {
-                Some(stopped) => SlotAction::Start(stopped.container_id),
-                None => SlotAction::Create(plan_create(
+            action: match empty.held {
+                HeldIngress::Stopped(stopped) => SlotAction::Start(stopped.container_id),
+                HeldIngress::Dead(dead) => SlotAction::Dead(dead.container_id),
+                HeldIngress::None => SlotAction::Create(plan_create(
                     intent,
                     &snapshot.only(empty.machine),
                     service_id,

@@ -184,6 +184,18 @@ async fn slot_repairs(client: &mut Client) -> Result<Slots, Failure> {
                 shown(IngressAction::Start, None),
                 Some(Work::Start(container_id)),
             ),
+            SlotAction::Dead(container_id) => (
+                shown(
+                    IngressAction::Start,
+                    Some(IngressFailure::Failed {
+                        cause: format!(
+                            "its Ingress Proxy container is dead, which Docker won't start; \
+                             remove it there with `docker rm -f {container_id}`"
+                        ),
+                    }),
+                ),
+                None,
+            ),
             SlotAction::Create(Ok(plan)) => {
                 (shown(IngressAction::Create, None), Some(Work::Create(plan)))
             }

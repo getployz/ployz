@@ -401,6 +401,7 @@ fn planned_ingress(snapshot: &DeploySnapshot) -> Vec<SlotRepair> {
 enum Repair {
     Create,
     Start(ContainerId),
+    Dead(ContainerId),
     Unchecked,
 }
 
@@ -417,6 +418,7 @@ fn ingress_repairs(snapshot: &DeploySnapshot) -> Vec<(MachineId, Repair)> {
                     Repair::Create
                 }
                 SlotAction::Start(container_id) => Repair::Start(container_id),
+                SlotAction::Dead(container_id) => Repair::Dead(container_id),
                 SlotAction::Unchecked(_) => Repair::Unchecked,
             };
             (repair.machine_id, shown)
@@ -451,6 +453,41 @@ fn ingress_repair_creates_a_missing_slot_and_starts_a_stopped_one() {
             (machine_id('2'), Repair::Create),
             (machine_id('3'), Repair::Start(container_id('c')))
         ]
+    );
+}
+
+#[test]
+fn a_dead_ingress_proxy_is_never_started_and_never_returns() {
+    let dead = || ContainerRuntimeObservation::Dead;
+    let mut only_dead = machine('1', "only-dead");
+    only_dead.machine.public_ip = Some(std::net::IpAddr::from([192, 0, 2, 1]));
+    let mut stopped_beside = machine('2', "stopped-beside-dead");
+    stopped_beside.machine.public_ip = Some(std::net::IpAddr::from([192, 0, 2, 2]));
+    let snapshot = DeploySnapshot {
+        machines: vec![only_dead, stopped_beside],
+        containers: vec![
+            ingress_container('a', '1', "caddy:test", dead()),
+            ingress_container('b', '1', "caddy:test", dead()),
+            ingress_container(
+                'c',
+                '2',
+                "caddy:test",
+                ContainerRuntimeObservation::Exited { code: 0 },
+            ),
+            ingress_container('d', '2', "caddy:test", dead()),
+        ],
+        ..Default::default()
+    };
+    assert_eq!(
+        ingress_repairs(&snapshot),
+        [
+            (machine_id('1'), Repair::Dead(container_id('b'))),
+            (machine_id('2'), Repair::Start(container_id('c'))),
+        ]
+    );
+    assert_eq!(
+        snapshot.ingress_returning(),
+        [Some(std::net::IpAddr::from([192, 0, 2, 2]))]
     );
 }
 
@@ -554,7 +591,7 @@ fn ingress_repair_that_cannot_admit_on_one_server_still_plans_the_other() {
         .iter()
         .map(|repair| match &repair.action {
             SlotAction::Create(plan) => (repair.machine_id, plan.as_ref().ok()),
-            other @ (SlotAction::Start(_) | SlotAction::Unchecked(_)) => {
+            other @ (SlotAction::Start(_) | SlotAction::Dead(_) | SlotAction::Unchecked(_)) => {
                 panic!("expected a create, got {other:?}")
             }
         })

@@ -278,13 +278,32 @@ impl VolumeSnapshot {
     }
 }
 
+fn newest(containers: Vec<&ContainerObservation>) -> Option<&ContainerObservation> {
+    containers.into_iter().max_by_key(|container| {
+        (
+            container.created_at_unix_nanos,
+            container.container_id.as_str(),
+        )
+    })
+}
+
 /// An ingress Server with no active Ingress Proxy.
 #[derive(Clone, Copy, Debug)]
 pub struct EmptyIngress<'snapshot> {
     pub machine: &'snapshot MachineObservation,
-    /// The newest Ingress Proxy at rest there, which starts again with its own spec.
-    /// `None`: there is none, so one is created.
-    pub stopped: Option<&'snapshot ContainerObservation>,
+    pub held: HeldIngress<'snapshot>,
+}
+
+/// The Ingress Proxy containers an [`EmptyIngress`] Server holds, all at rest.
+#[derive(Clone, Copy, Debug)]
+pub enum HeldIngress<'snapshot> {
+    /// None, so one is created.
+    None,
+    /// The newest one Docker can start again, which starts with its own spec.
+    Stopped(&'snapshot ContainerObservation),
+    /// Only dead ones, the newest given: Docker starts none of them, and one may still
+    /// hold the name a created one needs.
+    Dead(&'snapshot ContainerObservation),
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -323,13 +342,15 @@ impl DeploySnapshot {
                 if !held.iter().all(|container| is_at_rest(&container.runtime)) {
                     return None;
                 }
-                let stopped = held.into_iter().max_by_key(|container| {
-                    (
-                        container.created_at_unix_nanos,
-                        container.container_id.as_str(),
-                    )
-                });
-                Some(EmptyIngress { machine, stopped })
+                let (dead, startable): (Vec<_>, Vec<_>) = held
+                    .into_iter()
+                    .partition(|container| container.runtime == ContainerRuntimeObservation::Dead);
+                let held = match (newest(startable), newest(dead)) {
+                    (Some(stopped), _) => HeldIngress::Stopped(stopped),
+                    (None, Some(dead)) => HeldIngress::Dead(dead),
+                    (None, None) => HeldIngress::None,
+                };
+                Some(EmptyIngress { machine, held })
             })
             .collect()
     }
@@ -375,12 +396,14 @@ impl DeploySnapshot {
             .find(|service| service.identity == QualifiedService::system_ingress())
     }
 
-    /// One entry per Server in [`Self::empty_ingress`]: its public address, or `None`
-    /// when it has none recorded. They cannot answer port 80 until the Deploy ends.
+    /// One entry per Server in [`Self::empty_ingress`] a Deploy brings back: its public
+    /// address, or `None` when it has none recorded. They cannot answer port 80 until
+    /// the Deploy ends.
     #[must_use]
     pub fn ingress_returning(&self) -> Vec<Option<std::net::IpAddr>> {
         self.empty_ingress()
             .into_iter()
+            .filter(|empty| !matches!(empty.held, HeldIngress::Dead(_)))
             .map(|empty| empty.machine.machine.public_ip)
             .collect()
     }
