@@ -16,9 +16,9 @@ type RpcError = MetricHistory["unanswered"][number]["error"];
 type Answer = MetricHistory["machines"][number];
 type Failure = MetricHistory["unanswered"][number];
 
-const NORMAL = "0123456789abcdef0123456789abcdef";
-const ONES = "1".repeat(32);
-const TWOS = "2".repeat(32);
+export const NORMAL = "0123456789abcdef0123456789abcdef";
+export const ONES = "1".repeat(32);
+export const TWOS = "2".repeat(32);
 const THREES = "3".repeat(32);
 const MIB = 1024 * 1024;
 
