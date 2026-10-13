@@ -1185,7 +1185,11 @@ outcome: Outcome | null,
 /**
  * What its runner was warned of when it claimed it.
  */
-warnings?: Array<DeploymentWarning>, };
+warnings?: Array<DeploymentWarning>,
+/**
+ * Each Server's Ingress Proxy it created or started.
+ */
+ingress?: Array<IngressRepair>, };
 
 export type DeploymentView = { environment: EnvironmentSummary,
 /**
@@ -1271,7 +1275,11 @@ outcome: Outcome | null,
 /**
  * What its runner was warned of when it claimed it.
  */
-warnings?: Array<DeploymentWarning>, };
+warnings?: Array<DeploymentWarning>,
+/**
+ * Each Server's Ingress Proxy it created or started.
+ */
+ingress?: Array<IngressRepair>, };
 
 export type DeploymentWarning = { config: ConfigName, file: ConfigFileName,
 /**
@@ -1285,7 +1293,7 @@ variable: string, } | { config: ConfigName, file: ConfigFileName,
 /**
  * The variable as the file references it, such as `api.TOKEN`.
  */
-secret: string, };
+secret: string, } | { server: string, ingress: IngressFailure, };
 
 export type DeploymentsQuery = { environment: EnvironmentRef,
 /**
@@ -2085,7 +2093,17 @@ kind: EnvironmentNodeType,
  */
 name: string | null, };
 
+export type IngressAction = "create" | "start";
+
+export type IngressFailure = { "type": "port_taken", cause: string, } | { "type": "failed", cause: string, };
+
 export type IngressHost = string;
+
+export type IngressRepair = { machine: MachineId, server: string, action: IngressAction,
+/**
+ * Why it isn't running; none once it started.
+ */
+failure: IngressFailure | null, };
 
 export type InitialMachinePolicy = {
 /**

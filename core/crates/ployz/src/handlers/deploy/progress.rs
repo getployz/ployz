@@ -7,7 +7,8 @@ use crate::ui::{
 };
 use ployz_core::{QualifiedService, RpcError, RpcErrorCode};
 use ployz_store::{
-    BuildStatus, DeployedNode, DeploymentStatus, DeploymentView, NodeStatus, RowState,
+    BuildStatus, DeployedNode, DeploymentStatus, DeploymentView, IngressAction, IngressFailure,
+    NodeStatus, RowState,
 };
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -89,6 +90,28 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
             });
         }
     }
+    rows.extend(view.deployment.ingress.iter().map(|repair| {
+        Row {
+            subject: Subject::ServiceOnServer {
+                service: QualifiedService::system_ingress(),
+                machine: repair.machine,
+                server: repair.server.clone(),
+            },
+            state: if repair.failure.is_some() {
+                State::Failed
+            } else {
+                State::Completed
+            },
+            detail: Some(
+                match repair.action {
+                    IngressAction::Create => "create",
+                    IngressAction::Start => "start",
+                }
+                .to_owned(),
+            ),
+            timing: Timing::Unavailable,
+        }
+    }));
     Frame {
         run: Run::Stored(view.deployment.id.clone()),
         title: format!(
@@ -107,9 +130,11 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
 
 /// Start once there is observed work, preserving one caption for a clean no-op.
 pub(super) fn visible(view: &DeploymentView) -> bool {
-    view.preview
-        .as_ref()
-        .is_some_and(|preview| !preview.noop() || preview.has_observation_gaps())
+    !view.deployment.ingress.is_empty()
+        || view
+            .preview
+            .as_ref()
+            .is_some_and(|preview| !preview.noop() || preview.has_observation_gaps())
         || view.builds.iter().any(|build| {
             matches!(
                 build.status,
@@ -120,6 +145,7 @@ pub(super) fn visible(view: &DeploymentView) -> bool {
 
 pub(super) fn noop(view: &DeploymentView) -> bool {
     view.deployment.status == DeploymentStatus::Applied
+        && view.deployment.ingress.is_empty()
         && view
             .nodes
             .iter()
@@ -128,6 +154,27 @@ pub(super) fn noop(view: &DeploymentView) -> bool {
             .preview
             .as_ref()
             .is_some_and(|preview| preview.noop() && !preview.has_observation_gaps())
+}
+
+/// What to say about each Server whose Ingress Proxy the Deploy left down.
+pub(super) fn ingress_warnings(view: &DeploymentView) -> Vec<String> {
+    view.deployment
+        .ingress
+        .iter()
+        .filter_map(|repair| {
+            let server = &repair.server;
+            Some(match repair.failure.as_ref()? {
+                IngressFailure::PortTaken { cause } => format!(
+                    "Ingress isn't running on {server}: something else holds port 80 or 443 ({cause}). \
+                     See what holds it with `sudo ss -ltnp '( sport = :80 or sport = :443 )'`. \
+                     Ployz starts ingress on its own once the port is free."
+                ),
+                IngressFailure::Failed { cause } => format!(
+                    "Ingress isn't running on {server}: {cause}. Deploy again to retry."
+                ),
+            })
+        })
+        .collect()
 }
 
 pub(super) fn completion(
@@ -348,6 +395,86 @@ mod tests {
             Some("applied")
         );
         assert!(encoded.pointer("/preview/warnings/0/gap").is_some());
+    }
+
+    #[test]
+    fn an_ingress_repair_is_work_and_one_left_down_warns_with_its_server_and_cause() {
+        use ployz_core::{DeployPreview, MachineId};
+        use ployz_store::IngressRepair;
+        let mut view = view();
+        view.deployment.status = DeploymentStatus::Applied;
+        for node in &mut view.nodes {
+            node.outcome = NodeStatus::Unchanged;
+        }
+        view.preview = Some(DeployPreview::new(
+            Vec::new(),
+            Vec::new(),
+            view.namespace.clone(),
+        ));
+        assert!(noop(&view) && !visible(&view));
+        let (held, started) = (MachineId::random(), MachineId::random());
+        view.deployment.ingress = vec![
+            IngressRepair {
+                machine: held,
+                server: "web-1".into(),
+                action: IngressAction::Create,
+                failure: Some(IngressFailure::PortTaken {
+                    cause: "address already in use".into(),
+                }),
+            },
+            IngressRepair {
+                machine: started,
+                server: "web-2".into(),
+                action: IngressAction::Start,
+                failure: None,
+            },
+        ];
+        assert!(!noop(&view) && visible(&view));
+        assert!(completion(&view, command).is_ok());
+        let rows: Vec<_> = frame(&view)
+            .rows
+            .into_iter()
+            .filter(|row| matches!(&row.subject, Subject::ServiceOnServer { service, .. } if *service == QualifiedService::system_ingress()))
+            .map(|row| (row.subject, row.state, row.detail))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                (
+                    Subject::ServiceOnServer {
+                        service: QualifiedService::system_ingress(),
+                        machine: held,
+                        server: "web-1".into(),
+                    },
+                    State::Failed,
+                    Some("create".into()),
+                ),
+                (
+                    Subject::ServiceOnServer {
+                        service: QualifiedService::system_ingress(),
+                        machine: started,
+                        server: "web-2".into(),
+                    },
+                    State::Completed,
+                    Some("start".into()),
+                ),
+            ]
+        );
+        assert_eq!(
+            ingress_warnings(&view),
+            [
+                "Ingress isn't running on web-1: something else holds port 80 or 443 (address already in use). \
+              See what holds it with `sudo ss -ltnp '( sport = :80 or sport = :443 )'`. \
+              Ployz starts ingress on its own once the port is free."
+            ]
+        );
+        view.deployment.ingress.first_mut().unwrap().failure = Some(IngressFailure::Failed {
+            cause: "pull failed".into(),
+        });
+        assert_eq!(
+            ingress_warnings(&view),
+            ["Ingress isn't running on web-1: pull failed. Deploy again to retry."]
+        );
     }
 
     #[test]

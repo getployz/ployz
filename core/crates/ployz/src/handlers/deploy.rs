@@ -393,6 +393,9 @@ pub(super) fn execute(
     if !detached {
         finish_progress(&mut followed, disposition);
     }
+    for warning in progress::ingress_warnings(&followed.view) {
+        ui::warn(warning);
+    }
     let view = followed.view;
     let ran = if interrupted {
         Err(Error::cancelled())
