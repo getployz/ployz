@@ -641,6 +641,7 @@ fn the_merge_lands_every_riding_row_in_one_saved_revision_that_undo_takes_back()
         environment: at("production"),
         revision: landed.revision,
         action: HistoryAction::Undo,
+        change: None,
     };
     let preview = store.read(&who, &query).unwrap();
     store
@@ -650,6 +651,7 @@ fn the_merge_lands_every_riding_row_in_one_saved_revision_that_undo_takes_back()
                 environment: at("production"),
                 revision: query.revision,
                 action: query.action,
+                change: None,
                 version: preview.version,
                 accept_overwrite: false,
             },
@@ -2574,6 +2576,7 @@ fn undo_brings_a_removed_service_and_config_back_whole() {
         environment: at("production"),
         revision: landed.revision,
         action: HistoryAction::Undo,
+        change: None,
     };
     let preview = store.read(&who, &query).unwrap();
     store
@@ -2583,6 +2586,7 @@ fn undo_brings_a_removed_service_and_config_back_whole() {
                 environment: at("production"),
                 revision: query.revision,
                 action: query.action,
+                change: None,
                 version: preview.version,
                 accept_overwrite: false,
             },
@@ -2913,6 +2917,7 @@ fn undo_merge(store: &ConfigStore, who: &Actor) {
         environment: at("production"),
         revision: landed.revision,
         action: HistoryAction::Undo,
+        change: None,
     };
     let preview = store.read(who, &query).unwrap();
     store
@@ -2922,6 +2927,7 @@ fn undo_merge(store: &ConfigStore, who: &Actor) {
                 environment: at("production"),
                 revision: query.revision,
                 action: query.action,
+                change: None,
                 version: preview.version,
                 accept_overwrite: false,
             },

@@ -121,6 +121,47 @@ enum ConfigField {
     Name(Delta<ConfigName>),
     File(ConfigFileName, Delta<Option<SavedConfigFile>>),
 }
+/// A name or path that one thing in an Environment holds at a time.
+#[derive(Clone, PartialEq)]
+enum Slot<'a> {
+    /// A Service slug or private DNS name: they share one namespace.
+    Service(&'a str),
+    Variable(&'a str, &'a str),
+    VariableId(&'a str),
+    Volume(&'a str),
+    Config(&'a str),
+    /// A file path inside one Config.
+    File(&'a str, &'a str),
+    /// A container path one Service mounts a Volume or Config at.
+    Mount(&'a str, String),
+    /// The container path where one Service sees a mounted Config file.
+    MountedFile(&'a str, String),
+}
+impl Slot<'_> {
+    /// Whether holding `self` keeps `other` from being held: the same slot, or
+    /// a Config file path that another needs as a directory.
+    fn blocks(&self, other: &Self) -> bool {
+        let inside = |path: &str, dir: &str| {
+            path.strip_prefix(dir)
+                .is_some_and(|rest| rest.starts_with('/'))
+        };
+        match (self, other) {
+            (Self::File(config, path), Self::File(other_config, other_path)) => {
+                config == other_config
+                    && (path == other_path || inside(path, other_path) || inside(other_path, path))
+            }
+            (Self::MountedFile(service, path), Self::MountedFile(other_service, other_path)) => {
+                service == other_service
+                    && (path == other_path || inside(path, other_path) || inside(other_path, path))
+            }
+            (Self::Mount(service, at), Self::MountedFile(other_service, file))
+            | (Self::MountedFile(other_service, file), Self::Mount(service, at)) => {
+                service == other_service && (at == file || inside(at, file))
+            }
+            _ => self == other,
+        }
+    }
+}
 enum Effect {
     ServiceLifecycle(Box<Lifecycle<SavedServiceIntent>>),
     Service {
@@ -168,6 +209,81 @@ enum Effect {
 pub(super) struct Summary {
     pub(super) changes: Vec<NodeChange>,
     pub(super) total_count: usize,
+    /// Row path to how many changes undoing that row alone reverses; rows that
+    /// undo only themselves are absent.
+    pub(super) linked: BTreeMap<String, usize>,
+}
+/// What one side of an effect depends on: the service lineages its values
+/// reference and the resources it mounts.
+#[derive(Default)]
+struct Uses {
+    lineages: BTreeSet<String>,
+    volumes: BTreeSet<String>,
+    configs: BTreeSet<String>,
+}
+impl Uses {
+    fn of_service(service: &SavedServiceIntent) -> Self {
+        Self {
+            lineages: service
+                .variables
+                .iter()
+                .flat_map(|variable| variable.value.referenced_lineages())
+                .map(str::to_owned)
+                .collect(),
+            volumes: service
+                .volume_attachments
+                .iter()
+                .map(|mount| mount.volume_resource_id.clone())
+                .collect(),
+            configs: service
+                .config_attachments
+                .iter()
+                .map(|mount| mount.config_resource_id.clone())
+                .collect(),
+        }
+    }
+    fn of_config(config: &SavedConfigIntent) -> Self {
+        Self {
+            lineages: config
+                .files
+                .values()
+                .flat_map(SavedConfigFile::referenced_lineages)
+                .map(str::to_owned)
+                .collect(),
+            ..Self::default()
+        }
+    }
+    fn of_value(value: &SavedVariableValue) -> Self {
+        Self {
+            lineages: value.referenced_lineages().map(str::to_owned).collect(),
+            ..Self::default()
+        }
+    }
+    fn of_file(file: Option<&SavedConfigFile>) -> Self {
+        Self {
+            lineages: file
+                .into_iter()
+                .flat_map(SavedConfigFile::referenced_lineages)
+                .map(str::to_owned)
+                .collect(),
+            ..Self::default()
+        }
+    }
+    fn names(&self, effect: &Effect) -> bool {
+        match effect {
+            Effect::ServiceLifecycle(change) => self.lineages.contains(&change.record().lineage_id),
+            Effect::VolumeLifecycle(change) => self.volumes.contains(&change.record().resource_id),
+            Effect::ConfigLifecycle(change) => self.configs.contains(&change.record().resource_id),
+            Effect::Service { .. }
+            | Effect::VariableLifecycle { .. }
+            | Effect::Variable { .. }
+            | Effect::Volume { .. }
+            | Effect::Config { .. }
+            | Effect::Route { .. }
+            | Effect::VolumeMount { .. }
+            | Effect::ConfigMount { .. } => false,
+        }
+    }
 }
 struct Row {
     node: ReviewNodeIdentity,
@@ -177,6 +293,8 @@ struct Row {
 struct Plan {
     effects: Vec<Effect>,
 }
+/// The saved versions a plan goes from and to.
+type Sides<'a> = (&'a SavedEnvironmentIntent, &'a SavedEnvironmentIntent);
 
 macro_rules! field {
     ($effects:expr, $id:expr, $before:expr, $after:expr, $variant:ident) => {
@@ -440,6 +558,77 @@ impl Plan {
                 .reverse_into(current)?;
         }
         Ok(())
+    }
+    /// What undoing each effect must undo with it, once per plan.
+    fn links(&self, rows: &[Row], sides: Sides<'_>) -> Links {
+        let mut first_row = vec![None; self.effects.len()];
+        let mut next = vec![BTreeSet::new(); self.effects.len()];
+        for (at, row) in rows.iter().enumerate() {
+            for effect in &row.effects {
+                first_row
+                    .get_mut(*effect)
+                    .expect("row effects belong to plan")
+                    .get_or_insert(at);
+                next.get_mut(*effect)
+                    .expect("row effects belong to plan")
+                    .extend(row.effects.iter().filter(|other| *other != effect));
+            }
+        }
+        for (index, effect) in self.effects.iter().enumerate() {
+            for (other, candidate) in self.effects.iter().enumerate() {
+                if other != index && effect.drags(candidate, sides) {
+                    next.get_mut(index)
+                        .expect("effect belongs to plan")
+                        .insert(other);
+                }
+            }
+        }
+        Links { next, first_row }
+    }
+}
+
+/// Which effects undoing one drags along: the rest of its row, and whatever the
+/// same save linked to it.
+struct Links {
+    next: Vec<BTreeSet<usize>>,
+    first_row: Vec<Option<usize>>,
+}
+impl Links {
+    /// Every effect that undoing `seed` must undo with it.
+    fn closure(&self, seed: &[usize]) -> BTreeSet<usize> {
+        let mut closed: BTreeSet<usize> = seed.iter().copied().collect();
+        let mut frontier: Vec<usize> = closed.iter().copied().collect();
+        while let Some(index) = frontier.pop() {
+            for other in self.next.get(index).expect("seed belongs to plan") {
+                if closed.insert(*other) {
+                    frontier.push(*other);
+                }
+            }
+        }
+        closed
+    }
+    /// How many listed changes `effects` span: one per node row for a lifecycle,
+    /// one per settings row otherwise.
+    fn units(&self, effects: &BTreeSet<usize>) -> usize {
+        effects
+            .iter()
+            .filter_map(|effect| *self.first_row.get(*effect).expect("effect belongs to plan"))
+            .collect::<BTreeSet<_>>()
+            .len()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct MovedMount {
+    resource: String,
+    attached: bool,
+}
+impl MovedMount {
+    fn reversed(self) -> Self {
+        Self {
+            attached: !self.attached,
+            ..self
+        }
     }
 }
 
@@ -871,6 +1060,317 @@ impl Effect {
             | Self::VolumeMount { .. }
             | Self::ConfigMount { .. } => None,
         }
+    }
+    /// What the saved side of this effect depends on.
+    fn uses(&self) -> Uses {
+        match self {
+            Self::ServiceLifecycle(change) => match change.as_ref() {
+                Lifecycle::Added(service) => Uses::of_service(service),
+                Lifecycle::Removed(_) => Uses::default(),
+            },
+            Self::VariableLifecycle {
+                change: Lifecycle::Added(variable),
+                ..
+            } => Uses::of_value(&variable.value),
+            Self::Variable {
+                field: VariableField::Value(delta),
+                ..
+            } => Uses::of_value(&delta.after.value),
+            Self::ConfigLifecycle(Lifecycle::Added(config)) => Uses::of_config(config),
+            Self::Config {
+                field: ConfigField::File(_, delta),
+                ..
+            } => Uses::of_file(delta.after.as_ref()),
+            Self::VolumeMount {
+                resource,
+                delta: Delta { after: Some(_), .. },
+                ..
+            } => Uses {
+                volumes: BTreeSet::from([resource.clone()]),
+                ..Uses::default()
+            },
+            Self::ConfigMount {
+                resource,
+                delta: Delta { after: Some(_), .. },
+                ..
+            } => Uses {
+                configs: BTreeSet::from([resource.clone()]),
+                ..Uses::default()
+            },
+            Self::VariableLifecycle { .. }
+            | Self::Variable { .. }
+            | Self::ConfigLifecycle(_)
+            | Self::Config { .. }
+            | Self::VolumeMount { .. }
+            | Self::ConfigMount { .. }
+            | Self::Service { .. }
+            | Self::VolumeLifecycle(_)
+            | Self::Volume { .. }
+            | Self::Route { .. } => Uses::default(),
+        }
+    }
+    /// What undoing this effect puts back, and so depends on again.
+    fn restores(&self) -> Uses {
+        match self {
+            Self::ServiceLifecycle(change) => match change.as_ref() {
+                Lifecycle::Removed(service) => Uses::of_service(service),
+                Lifecycle::Added(_) => Uses::default(),
+            },
+            Self::VariableLifecycle {
+                change: Lifecycle::Removed(variable),
+                ..
+            } => Uses::of_value(&variable.value),
+            Self::Variable {
+                field: VariableField::Value(delta),
+                ..
+            } => Uses::of_value(&delta.before.value),
+            Self::ConfigLifecycle(Lifecycle::Removed(config)) => Uses::of_config(config),
+            Self::Config {
+                field: ConfigField::File(_, delta),
+                ..
+            } => Uses::of_file(delta.before.as_ref()),
+            Self::VolumeMount {
+                resource,
+                delta: Delta {
+                    before: Some(_), ..
+                },
+                ..
+            } => Uses {
+                volumes: BTreeSet::from([resource.clone()]),
+                ..Uses::default()
+            },
+            Self::ConfigMount {
+                resource,
+                delta: Delta {
+                    before: Some(_), ..
+                },
+                ..
+            } => Uses {
+                configs: BTreeSet::from([resource.clone()]),
+                ..Uses::default()
+            },
+            Self::VariableLifecycle { .. }
+            | Self::Variable { .. }
+            | Self::ConfigLifecycle(_)
+            | Self::Config { .. }
+            | Self::VolumeMount { .. }
+            | Self::ConfigMount { .. }
+            | Self::Service { .. }
+            | Self::VolumeLifecycle(_)
+            | Self::Volume { .. }
+            | Self::Route { .. } => Uses::default(),
+        }
+    }
+    /// Whether undoing `self` alone would leave `other`'s side of the same save
+    /// dangling, or split one authored change in two.
+    fn drags(&self, other: &Self, sides: Sides<'_>) -> bool {
+        let mounted = match (self, other) {
+            (Self::VolumeLifecycle(change), Self::VolumeMount { resource, .. }) => {
+                change.record().resource_id == *resource
+            }
+            (Self::ConfigLifecycle(change), Self::ConfigMount { resource, .. }) => {
+                change.record().resource_id == *resource
+            }
+            _ => false,
+        };
+        if mounted {
+            return true;
+        }
+        if let (
+            Self::Service { id, field },
+            Self::Service {
+                id: other_id,
+                field: other_field,
+            },
+        ) = (self, other)
+            && id == other_id
+        {
+            let source = |field: &ServiceField| {
+                matches!(
+                    field,
+                    ServiceField::Source(_) | ServiceField::GitSource(_) | ServiceField::Branch(_)
+                )
+            };
+            if source(field) && source(other_field) {
+                return true;
+            }
+        }
+        if let Some(moved) = self.moved_mount()
+            && other.moved_mount() == Some(moved.reversed())
+        {
+            return true;
+        }
+        let (before, after) = self.slots(sides);
+        let (other_before, other_after) = other.slots(sides);
+        let blocks = |taken: &[Slot<'_>], held: &[Slot<'_>]| {
+            taken
+                .iter()
+                .any(|slot| held.iter().any(|other| slot.blocks(other)))
+        };
+        if blocks(&before, &other_after) || blocks(&other_before, &after) {
+            return true;
+        }
+        if self.lifecycle() == Some(ReviewLifecycleKind::Create) && other.uses().names(self) {
+            return true;
+        }
+        other.lifecycle() == Some(ReviewLifecycleKind::Delete) && self.restores().names(other)
+    }
+    /// The names and paths this change gives up and the ones it takes, each
+    /// only on its own side: undoing it takes back the first and frees the second.
+    fn slots<'a>(&'a self, (earlier, later): Sides<'a>) -> (Vec<Slot<'a>>, Vec<Slot<'a>>) {
+        fn lifecycle<'a, T>(
+            change: &'a Lifecycle<T>,
+            slots: impl FnOnce(&'a T) -> Vec<Slot<'a>>,
+        ) -> (Vec<Slot<'a>>, Vec<Slot<'a>>) {
+            match change {
+                Lifecycle::Added(record) => (Vec::new(), slots(record)),
+                Lifecycle::Removed(record) => (slots(record), Vec::new()),
+            }
+        }
+        fn delta<'a, T>(
+            delta: &'a Delta<T>,
+            slot: impl Fn(&'a T) -> Option<Slot<'a>>,
+        ) -> (Vec<Slot<'a>>, Vec<Slot<'a>>) {
+            (
+                slot(&delta.before).into_iter().collect(),
+                slot(&delta.after).into_iter().collect(),
+            )
+        }
+        let (before, after) = match self {
+            Self::ServiceLifecycle(change) => lifecycle(change, |service| {
+                vec![
+                    Slot::Service(&service.slug),
+                    Slot::Service(service.config.private_dns.as_str()),
+                ]
+            }),
+            Self::Service {
+                field: ServiceField::Name(name),
+                ..
+            } => delta(name, |name| Some(Slot::Service(name))),
+            Self::Service {
+                field: ServiceField::PrivateDns(dns),
+                ..
+            } => delta(dns, |dns| Some(Slot::Service(dns.as_str()))),
+            Self::VariableLifecycle {
+                service,
+                key,
+                change,
+            } => lifecycle(change, |variable| {
+                vec![Slot::Variable(service, key), Slot::VariableId(&variable.id)]
+            }),
+            Self::Variable {
+                field: VariableField::Id(id),
+                ..
+            } => delta(id, |id| Some(Slot::VariableId(id))),
+            Self::VolumeLifecycle(change) => {
+                lifecycle(change, |volume| vec![Slot::Volume(&volume.name)])
+            }
+            Self::Volume {
+                field: VolumeField::Name(name),
+                ..
+            } => delta(name, |name| Some(Slot::Volume(name))),
+            Self::ConfigLifecycle(change) => {
+                lifecycle(change, |config| vec![Slot::Config(config.name.as_str())])
+            }
+            Self::Config {
+                field: ConfigField::Name(name),
+                ..
+            } => delta(name, |name| Some(Slot::Config(name.as_str()))),
+            Self::Config {
+                id,
+                field: ConfigField::File(file, change),
+            } => {
+                let side = |intent: &'a SavedEnvironmentIntent, held: &Option<SavedConfigFile>| {
+                    let mut slots = Vec::new();
+                    if held.is_some() {
+                        slots.push(Slot::File(id, file.as_str()));
+                        for service in &intent.services {
+                            for mount in &service.config_attachments {
+                                if mount.config_resource_id == *id {
+                                    slots.push(Slot::MountedFile(
+                                        &service.id,
+                                        format!("{}/{file}", mount.mount_dir.as_str()),
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    slots
+                };
+                (side(earlier, &change.before), side(later, &change.after))
+            }
+            Self::VolumeMount {
+                service,
+                delta: change,
+                ..
+            } => delta(change, |mount| {
+                mount
+                    .as_ref()
+                    .map(|mount| Slot::Mount(service, mount.container_path()))
+            }),
+            Self::ConfigMount {
+                service,
+                resource,
+                delta: change,
+            } => {
+                let side = |intent: &'a SavedEnvironmentIntent,
+                            mount: &Option<ConfigAttachment>| {
+                    let Some(mount) = mount else {
+                        return Vec::new();
+                    };
+                    let dir = mount.mount_dir.as_str();
+                    let files = intent
+                        .configs
+                        .iter()
+                        .filter(|config| config.resource_id == *resource)
+                        .flat_map(|config| config.files.keys())
+                        .map(|file| Slot::MountedFile(service, format!("{dir}/{file}")));
+                    std::iter::once(Slot::Mount(service, dir.to_owned()))
+                        .chain(files)
+                        .collect()
+                };
+                (side(earlier, &change.before), side(later, &change.after))
+            }
+            Self::Service { .. }
+            | Self::Variable { .. }
+            | Self::Volume { .. }
+            | Self::Route { .. } => (Vec::new(), Vec::new()),
+        };
+        (
+            before
+                .iter()
+                .filter(|slot| !after.contains(slot))
+                .cloned()
+                .collect(),
+            after
+                .iter()
+                .filter(|slot| !before.contains(slot))
+                .cloned()
+                .collect(),
+        )
+    }
+    fn moved_mount(&self) -> Option<MovedMount> {
+        let (resource, before, after) = match self {
+            Self::VolumeMount {
+                resource, delta, ..
+            } => (resource, delta.before.is_some(), delta.after.is_some()),
+            Self::ConfigMount {
+                resource, delta, ..
+            } => (resource, delta.before.is_some(), delta.after.is_some()),
+            Self::ServiceLifecycle(_)
+            | Self::Service { .. }
+            | Self::VariableLifecycle { .. }
+            | Self::Variable { .. }
+            | Self::VolumeLifecycle(_)
+            | Self::Volume { .. }
+            | Self::ConfigLifecycle(_)
+            | Self::Config { .. }
+            | Self::Route { .. } => return None,
+        };
+        (before != after).then(|| MovedMount {
+            resource: resource.clone(),
+            attached: after,
+        })
     }
     fn intersects(&self, other: &Self) -> bool {
         let resource_descendant = match self {
@@ -1454,10 +1954,21 @@ impl Plan {
                 }
             })
             .sum();
+        let mut seen = BTreeSet::new();
+        let links = self.links(&rows, (before, after));
+        let linked = rows
+            .iter()
+            .filter(|row| row.effects.iter().any(|effect| seen.insert(*effect)))
+            .filter_map(|row| {
+                let units = links.units(&links.closure(&row.effects));
+                (units > 1).then(|| (row.path.clone(), units))
+            })
+            .collect();
         Ok((
             Summary {
                 changes,
                 total_count,
+                linked,
             },
             rows,
         ))
@@ -1662,12 +2173,35 @@ pub(super) fn prepare_history(
     saved: Option<&SavedEnvironmentIntent>,
     selected: &SavedEnvironmentIntent,
     previous: Option<&SavedEnvironmentIntent>,
+    change: Option<&str>,
 ) -> Result<Prepared, RpcError> {
     let target = if let Some(previous) = previous {
-        keeps_route_order(previous, selected)?;
         let plan = Plan::between(previous, selected)?;
+        let selection: Vec<usize> = match change {
+            Some(path) => {
+                let (_, rows) = plan.render(previous, selected)?;
+                let row = rows.iter().find(|row| row.path == path).ok_or_else(|| {
+                    error::not_found(
+                        "This saved version has no change at this path",
+                        json!({ "path": path }),
+                    )
+                })?;
+                plan.links(&rows, (previous, selected))
+                    .closure(&row.effects)
+                    .into_iter()
+                    .collect()
+            }
+            None => (0..plan.effects.len()).collect(),
+        };
+        if change.is_none()
+            || selection
+                .iter()
+                .any(|index| matches!(plan.effects.get(*index), Some(Effect::Route { .. })))
+        {
+            keeps_route_order(previous, selected)?;
+        }
         let mut target = environment.working.clone();
-        plan.reverse_into(&mut target, &(0..plan.effects.len()).collect::<Vec<_>>())?;
+        plan.reverse_into(&mut target, &selection)?;
         target
     } else {
         selected.clone()

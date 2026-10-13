@@ -293,6 +293,7 @@ pub(super) fn history(root: &ArgMatches) -> Result<(), Error> {
         environment: environment.clone(),
         revision,
         action,
+        change: None,
     })?;
     if matches.get_flag("preview") {
         return crate::ui::finish(&preview, || {
@@ -322,6 +323,7 @@ pub(super) fn history(root: &ArgMatches) -> Result<(), Error> {
             environment,
             revision,
             action,
+            change: None,
             version: matches
                 .get_one::<String>("version")
                 .cloned()

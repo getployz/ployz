@@ -590,6 +590,7 @@ fn history_restore_previews_exact_overwrites_and_refuses_stale_confirmation() {
         environment: EnvironmentRef::default(),
         revision: Revision(1),
         action: ployz_store::HistoryAction::Restore,
+        change: None,
     };
     let preview = store.read(&who, &query).unwrap();
     assert_eq!(preview.overwritten, ["api.startCommand", "web.replicas"]);
@@ -598,6 +599,7 @@ fn history_restore_previews_exact_overwrites_and_refuses_stale_confirmation() {
         environment: EnvironmentRef::default(),
         revision: query.revision,
         action: query.action,
+        change: None,
         version: preview.version,
         accept_overwrite: false,
     };
@@ -623,6 +625,7 @@ fn history_restore_previews_exact_overwrites_and_refuses_stale_confirmation() {
                 environment: EnvironmentRef::default(),
                 revision: query.revision,
                 action: query.action,
+                change: None,
                 version: fresh.version,
                 accept_overwrite: true,
             },
@@ -643,6 +646,7 @@ fn history_undo_stages_only_its_delta_and_preserves_later_unrelated_edits() {
         environment: EnvironmentRef::default(),
         revision: Revision(2),
         action: ployz_store::HistoryAction::Undo,
+        change: None,
     };
     let preview = store.read(&who, &query).unwrap();
     assert!(preview.overwritten.is_empty());
@@ -653,6 +657,7 @@ fn history_undo_stages_only_its_delta_and_preserves_later_unrelated_edits() {
                 environment: EnvironmentRef::default(),
                 revision: query.revision,
                 action: query.action,
+                change: None,
                 version: preview.version,
                 accept_overwrite: false,
             },
@@ -822,6 +827,7 @@ fn stage_history(
         environment: EnvironmentRef::default(),
         revision: Revision(revision),
         action,
+        change: None,
     };
     let preview = store.read(who, &query).unwrap();
     store
@@ -831,11 +837,414 @@ fn stage_history(
                 environment: EnvironmentRef::default(),
                 revision: query.revision,
                 action,
+                change: None,
                 version: preview.version,
                 accept_overwrite: true,
             },
         )
         .unwrap();
+}
+
+fn stage_change(store: &ConfigStore, who: &Actor, revision: u64, change: &str) {
+    let query = ployz_store::HistoryPreviewQuery {
+        environment: EnvironmentRef::default(),
+        revision: Revision(revision),
+        action: ployz_store::HistoryAction::Undo,
+        change: Some(change.into()),
+    };
+    let preview = store.read(who, &query).unwrap();
+    assert_eq!(preview.change.as_deref(), Some(change));
+    store
+        .write(
+            who,
+            &ployz_store::StageHistory {
+                environment: EnvironmentRef::default(),
+                revision: query.revision,
+                action: query.action,
+                change: query.change,
+                version: preview.version,
+                accept_overwrite: true,
+            },
+        )
+        .unwrap();
+}
+
+fn discard_to_saved(store: &ConfigStore, who: &Actor) {
+    store
+        .write(
+            who,
+            &Discard {
+                environment: EnvironmentRef::default(),
+                target: ployz_store::DiscardTarget::Saved,
+                path: None,
+                version: None,
+            },
+        )
+        .unwrap();
+}
+
+fn linked(store: &ConfigStore, who: &Actor, revision: u64) -> Vec<(String, usize)> {
+    store
+        .read(who, &ployz_store::HistoryQuery::default())
+        .unwrap()
+        .revisions
+        .into_iter()
+        .find(|saved| saved.revision == Revision(revision))
+        .unwrap()
+        .linked
+        .into_iter()
+        .collect()
+}
+
+fn add_service(store: &ConfigStore, who: &Actor, n: u8, name: &str) {
+    store
+        .write(
+            who,
+            &CreateService {
+                id: ServiceLineageId::parse(format!("00000000-0000-4000-8000-0000000000{n:02}"))
+                    .unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse(name).unwrap(),
+                image: Some("postgres:16".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+}
+
+#[test]
+fn history_undo_of_one_change_keeps_the_rest_of_its_save() {
+    let (store, who) = shop();
+    publish(&store, &who, None).unwrap();
+    set(&store, &who, "web.replicas", json!(2));
+    set(&store, &who, "api.startCommand", json!("serve"));
+    publish(&store, &who, None).unwrap();
+    assert_eq!(linked(&store, &who, 2), []);
+    let error = store
+        .read(
+            &who,
+            &ployz_store::HistoryPreviewQuery {
+                environment: EnvironmentRef::default(),
+                revision: Revision(2),
+                action: ployz_store::HistoryAction::Undo,
+                change: Some("web.image".into()),
+            },
+        )
+        .unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::NotFound);
+    let error = store
+        .read(
+            &who,
+            &ployz_store::HistoryPreviewQuery {
+                environment: EnvironmentRef::default(),
+                revision: Revision(2),
+                action: ployz_store::HistoryAction::Restore,
+                change: Some("web.replicas".into()),
+            },
+        )
+        .unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::InvalidArgument);
+    stage_change(&store, &who, 2, "web.replicas");
+    assert_eq!(value(&store, &who, "web.replicas"), Some(json!(1)));
+    assert_eq!(
+        value(&store, &who, "api.startCommand"),
+        Some(json!("serve"))
+    );
+}
+
+#[test]
+fn history_undo_of_a_service_add_undoes_same_save_refs_to_it() {
+    let (store, who) = shop();
+    publish(&store, &who, None).unwrap();
+    add_service(&store, &who, 10, "pg");
+    set(&store, &who, "pg.env.PASS", json!("secret"));
+    set(&store, &who, "web.env.DATABASE", json!("${{ pg.PASS }}"));
+    set(&store, &who, "api.replicas", json!(3));
+    publish(&store, &who, None).unwrap();
+    assert_eq!(linked(&store, &who, 2), [("pg".to_owned(), 2)]);
+    stage_change(&store, &who, 2, "web.env.DATABASE");
+    assert_eq!(value(&store, &who, "web.env.DATABASE"), None);
+    assert_eq!(value(&store, &who, "pg.env.PASS"), Some(json!("secret")));
+    discard_to_saved(&store, &who);
+    stage_change(&store, &who, 2, "pg");
+    assert_eq!(value(&store, &who, "web.env.DATABASE"), None);
+    assert_eq!(value(&store, &who, "pg.image"), None);
+    assert_eq!(value(&store, &who, "api.replicas"), Some(json!(3)));
+}
+
+#[test]
+fn history_undo_of_a_volume_add_removes_its_mounts() {
+    let (store, who) = shop();
+    publish(&store, &who, None).unwrap();
+    mount_data(&store, &who);
+    set(&store, &who, "api.replicas", json!(3));
+    publish(&store, &who, None).unwrap();
+    assert_eq!(linked(&store, &who, 2), [("volumes.data".to_owned(), 2)]);
+    stage_change(&store, &who, 2, "volumes.data");
+    assert_eq!(value(&store, &who, "web.mounts.data"), None);
+    assert!(
+        store
+            .read(&who, &ployz_store::VolumesQuery::default())
+            .unwrap()
+            .volumes
+            .is_empty()
+    );
+    assert_eq!(value(&store, &who, "api.replicas"), Some(json!(3)));
+}
+
+#[test]
+fn history_undo_of_a_volume_that_replaced_a_mount_puts_the_old_mount_back() {
+    let (store, who) = shop();
+    mount_data(&store, &who);
+    publish(&store, &who, None).unwrap();
+    store
+        .write(
+            &who,
+            &Edit {
+                environment: EnvironmentRef::default(),
+                expect: None,
+                changes: vec![Change::Unset {
+                    path: SettingPath::parse("web.mounts.data").unwrap(),
+                }],
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &who,
+            &CreateVolume {
+                shared_writes: false,
+                storage_locked: false,
+                storage: ployz_core::config::VolumeKind::Docker {},
+                id: VolumeId::parse("00000000-0000-4000-8000-000000000007").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: VolumeName::parse("fresh").unwrap(),
+                mounts: vec![Mount {
+                    service: ServiceName::parse("web").unwrap(),
+                    path: "/data".into(),
+                }],
+            },
+        )
+        .unwrap();
+    publish(&store, &who, None).unwrap();
+    stage_change(&store, &who, 2, "volumes.fresh");
+    assert_eq!(value(&store, &who, "web.mounts.data"), Some(json!("/data")));
+    assert_eq!(value(&store, &who, "web.mounts.fresh"), None);
+}
+
+#[test]
+fn history_undo_of_a_mount_move_takes_back_what_took_its_old_path() {
+    let (store, who) = shop();
+    mount_data(&store, &who);
+    publish(&store, &who, None).unwrap();
+    set(&store, &who, "web.mounts.data", json!("/other"));
+    store
+        .write(
+            &who,
+            &CreateVolume {
+                shared_writes: false,
+                storage_locked: false,
+                storage: ployz_core::config::VolumeKind::Docker {},
+                id: VolumeId::parse("00000000-0000-4000-8000-000000000007").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: VolumeName::parse("fresh").unwrap(),
+                mounts: vec![Mount {
+                    service: ServiceName::parse("web").unwrap(),
+                    path: "/data".into(),
+                }],
+            },
+        )
+        .unwrap();
+    publish(&store, &who, None).unwrap();
+    stage_change(&store, &who, 2, "web.mounts.data");
+    assert_eq!(value(&store, &who, "web.mounts.data"), Some(json!("/data")));
+    assert_eq!(value(&store, &who, "web.mounts.fresh"), None);
+}
+
+#[test]
+fn history_undo_of_a_service_removal_brings_back_what_it_referred_to() {
+    let (store, who) = shop();
+    set(&store, &who, "web.env.SOURCE", json!("old"));
+    set(&store, &who, "api.env.USE", json!("${{ web.SOURCE }}"));
+    publish(&store, &who, None).unwrap();
+    remove_service(&store, &who, "api");
+    remove_service(&store, &who, "web");
+    publish(&store, &who, None).unwrap();
+    assert_eq!(linked(&store, &who, 2), [("api".to_owned(), 2)]);
+    stage_change(&store, &who, 2, "web");
+    assert_eq!(value(&store, &who, "web.env.SOURCE"), Some(json!("old")));
+    assert_eq!(value(&store, &who, "api.image"), None);
+    discard_to_saved(&store, &who);
+    stage_change(&store, &who, 2, "api");
+    assert_eq!(
+        value(&store, &who, "api.env.USE"),
+        Some(json!("${{ web.SOURCE }}"))
+    );
+    assert_eq!(value(&store, &who, "web.env.SOURCE"), Some(json!("old")));
+}
+
+fn rename_service(store: &ConfigStore, who: &Actor, from: &str, to: &str) {
+    store
+        .write(
+            who,
+            &ployz_store::RenameService {
+                environment: EnvironmentRef::default(),
+                service: ServiceName::parse(from).unwrap(),
+                name: ServiceName::parse(to).unwrap(),
+            },
+        )
+        .unwrap();
+}
+
+#[test]
+fn history_undo_of_one_side_of_a_name_swap_undoes_both() {
+    let (store, who) = shop();
+    publish(&store, &who, None).unwrap();
+    rename_service(&store, &who, "web", "tmp");
+    set(&store, &who, "tmp.privateDns", json!("tmp"));
+    rename_service(&store, &who, "api", "web");
+    set(&store, &who, "web.privateDns", json!("web"));
+    rename_service(&store, &who, "tmp", "api");
+    set(&store, &who, "api.privateDns", json!("api"));
+    publish(&store, &who, None).unwrap();
+    for path in ["api.name", "web.privateDns"] {
+        stage_change(&store, &who, 2, path);
+        assert_eq!(
+            value(&store, &who, "web.image"),
+            Some(json!("nginx:1")),
+            "{path}"
+        );
+        assert_eq!(
+            value(&store, &who, "api.image"),
+            Some(json!("caddy:2")),
+            "{path}"
+        );
+        discard_to_saved(&store, &who);
+    }
+}
+
+fn rename_variable(store: &ConfigStore, who: &Actor, path: &str, to: &str) {
+    store
+        .write(
+            who,
+            &Edit {
+                environment: EnvironmentRef::default(),
+                expect: None,
+                changes: vec![Change::Rename {
+                    path: SettingPath::parse(path).unwrap(),
+                    to: to.to_owned(),
+                    update_references: false,
+                }],
+            },
+        )
+        .unwrap();
+}
+
+#[test]
+fn history_undo_of_one_side_of_a_variable_rename_undoes_both() {
+    let (store, who) = shop();
+    set(&store, &who, "web.env.OLD", json!("value"));
+    publish(&store, &who, None).unwrap();
+    rename_variable(&store, &who, "web.env.OLD", "NEW");
+    publish(&store, &who, None).unwrap();
+    for path in ["web.env.OLD", "web.env.NEW"] {
+        stage_change(&store, &who, 2, path);
+        assert_eq!(
+            value(&store, &who, "web.env.OLD"),
+            Some(json!("value")),
+            "{path}"
+        );
+        assert_eq!(value(&store, &who, "web.env.NEW"), None, "{path}");
+        discard_to_saved(&store, &who);
+    }
+}
+
+#[test]
+fn history_undo_of_a_config_file_replaced_by_one_inside_it_undoes_both() {
+    let (store, who) = shop();
+    let config = ployz_core::ConfigName::parse("sentry").unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::CreateConfig {
+                environment: EnvironmentRef::default(),
+                id: ployz_store::ConfigId::parse("00000000-0000-4000-8000-000000000009").unwrap(),
+                name: config.clone(),
+                mounts: Vec::new(),
+            },
+        )
+        .unwrap();
+    let put = |file: &str| {
+        store
+            .write(
+                &who,
+                &ployz_store::PutConfigFile {
+                    environment: EnvironmentRef::default(),
+                    config: config.clone(),
+                    file: ployz_core::ConfigFileName::parse(file).unwrap(),
+                    content: "content".into(),
+                    mode: None,
+                    uid: None,
+                    gid: None,
+                },
+            )
+            .unwrap();
+    };
+    put("a");
+    publish(&store, &who, None).unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::RemoveConfigFile {
+                environment: EnvironmentRef::default(),
+                config: config.clone(),
+                file: ployz_core::ConfigFileName::parse("a").unwrap(),
+            },
+        )
+        .unwrap();
+    put("a/b");
+    publish(&store, &who, None).unwrap();
+    let history = store
+        .read(&who, &ployz_store::HistoryQuery::default())
+        .unwrap();
+    let paths: Vec<String> = history.revisions[0]
+        .changes
+        .iter()
+        .flat_map(|change| &change.settings)
+        .map(|setting| setting.path.to_string())
+        .collect();
+    assert_eq!(paths.len(), 2, "{paths:?}");
+    let files = store
+        .read(
+            &who,
+            &ployz_store::ConfigItemQuery {
+                environment: EnvironmentRef::default(),
+                config: config.clone().into(),
+            },
+        )
+        .unwrap();
+    for path in &paths {
+        stage_change(&store, &who, 2, path);
+        let staged = store
+            .read(
+                &who,
+                &ployz_store::ConfigItemQuery {
+                    environment: EnvironmentRef::default(),
+                    config: config.clone().into(),
+                },
+            )
+            .unwrap();
+        assert_ne!(
+            serde_json::to_value(&staged).unwrap(),
+            serde_json::to_value(&files).unwrap(),
+            "{path}"
+        );
+        assert!(
+            !serde_json::to_string(&staged).unwrap().contains("a/b"),
+            "{path}"
+        );
+        discard_to_saved(&store, &who);
+    }
 }
 
 #[test]
@@ -861,6 +1270,7 @@ fn history_restores_sealed_versions_and_never_downgrades_a_secret_to_plaintext()
         environment: EnvironmentRef::default(),
         revision: Revision(revision),
         action: ployz_store::HistoryAction::Restore,
+        change: None,
     };
     let preview = store.read(&who, &query(2)).unwrap();
     let public = serde_json::to_string(&preview).unwrap();
@@ -979,6 +1389,7 @@ fn history_undo_restores_exact_config_files_and_preserves_later_mounts() {
             &ployz_store::HistoryPreviewQuery {
                 revision: Revision(2),
                 action: ployz_store::HistoryAction::Undo,
+                change: None,
                 environment: EnvironmentRef::default(),
             },
         )
@@ -1041,6 +1452,7 @@ fn export_only_draft_is_reviewable_and_undo_preserves_a_later_export() {
                 environment: EnvironmentRef::default(),
                 revision: Revision(2),
                 action: ployz_store::HistoryAction::Undo,
+                change: None,
             },
         )
         .unwrap();
@@ -1114,6 +1526,7 @@ fn history_undo_volume_mount_named_name_and_shared_writes() {
                 environment: EnvironmentRef::default(),
                 revision: Revision(1),
                 action: ployz_store::HistoryAction::Restore,
+                change: None,
             },
         )
         .unwrap();
@@ -1187,6 +1600,7 @@ fn undo_export_only_revision_preserves_later_value_and_review_discards_both_fiel
                 environment: EnvironmentRef::default(),
                 revision: Revision(2),
                 action: ployz_store::HistoryAction::Undo,
+                change: None,
             },
         )
         .unwrap();
@@ -1244,6 +1658,7 @@ fn undo_domain_revision_preserves_later_unrelated_route_without_confirmation() {
                 environment: EnvironmentRef::default(),
                 revision: Revision(2),
                 action: ployz_store::HistoryAction::Undo,
+                change: None,
             },
         )
         .unwrap();
@@ -1256,6 +1671,7 @@ fn undo_domain_revision_preserves_later_unrelated_route_without_confirmation() {
                 environment: EnvironmentRef::default(),
                 revision: Revision(2),
                 action: preview.action,
+                change: None,
                 version: preview.version,
                 accept_overwrite: false,
             },
@@ -1381,6 +1797,7 @@ fn restoring_a_deleted_draft_variable_requires_explicit_overwrite_consent() {
                 environment: EnvironmentRef::default(),
                 revision: Revision(1),
                 action: ployz_store::HistoryAction::Restore,
+                change: None,
             },
         )
         .unwrap();
@@ -1393,6 +1810,7 @@ fn restoring_a_deleted_draft_variable_requires_explicit_overwrite_consent() {
                     environment: EnvironmentRef::default(),
                     revision: Revision(1),
                     action: preview.action,
+                    change: None,
                     version: preview.version,
                     accept_overwrite: false,
                 }
@@ -1422,6 +1840,7 @@ fn undo_variable_creation_requires_consent_for_later_export_and_value_edits() {
                     environment: EnvironmentRef::default(),
                     revision: Revision(2),
                     action: ployz_store::HistoryAction::Undo,
+                    change: None,
                 },
             )
             .unwrap();
@@ -1430,6 +1849,7 @@ fn undo_variable_creation_requires_consent_for_later_export_and_value_edits() {
             environment: EnvironmentRef::default(),
             revision: Revision(2),
             action: preview.action,
+            change: None,
             version: preview.version,
             accept_overwrite: false,
         };
@@ -1540,6 +1960,7 @@ fn legacy_metadata_inverse_preserves_later_value_and_export_without_consent() {
             &ployz_store::HistoryPreviewQuery {
                 revision: Revision(2),
                 action: ployz_store::HistoryAction::Undo,
+                change: None,
                 environment: EnvironmentRef::default(),
             },
         )
@@ -1552,6 +1973,7 @@ fn legacy_metadata_inverse_preserves_later_value_and_export_without_consent() {
                 environment: EnvironmentRef::default(),
                 revision: Revision(2),
                 action: preview.action,
+                change: None,
                 version: preview.version,
                 accept_overwrite: false,
             },
@@ -1689,6 +2111,7 @@ fn undo_variable_creation_requires_consent_for_legacy_description_edit() {
             &ployz_store::HistoryPreviewQuery {
                 revision: Revision(2),
                 action: ployz_store::HistoryAction::Undo,
+                change: None,
                 environment: EnvironmentRef::default(),
             },
         )
@@ -1700,6 +2123,7 @@ fn undo_variable_creation_requires_consent_for_legacy_description_edit() {
             environment: EnvironmentRef::default(),
             revision: Revision(2),
             action: preview.action,
+            change: None,
             version: preview.version,
             accept_overwrite: false,
         },
@@ -1760,6 +2184,7 @@ fn undo_git_selection_preserves_a_later_branch_without_consent() {
                 environment: EnvironmentRef::default(),
                 revision: Revision(2),
                 action: ployz_store::HistoryAction::Undo,
+                change: None,
             },
         )
         .unwrap();
@@ -1772,6 +2197,7 @@ fn undo_git_selection_preserves_a_later_branch_without_consent() {
                 environment: EnvironmentRef::default(),
                 revision: Revision(2),
                 action: preview.action,
+                change: None,
                 version: preview.version,
                 accept_overwrite: false,
             },
@@ -1795,6 +2221,7 @@ fn undo_source_kind_requires_consent_for_a_later_branch_edit() {
                 environment: EnvironmentRef::default(),
                 revision: Revision(2),
                 action: ployz_store::HistoryAction::Undo,
+                change: None,
             },
         )
         .unwrap();
@@ -1813,6 +2240,7 @@ fn undo_source_kind_requires_consent_for_a_later_branch_edit() {
         environment: EnvironmentRef::default(),
         revision: Revision(2),
         action: preview.action,
+        change: None,
         version: preview.version,
         accept_overwrite: false,
     };
@@ -2168,6 +2596,7 @@ fn history_undo_refuses_reordered_routes_but_restore_stages() {
                 environment: EnvironmentRef::default(),
                 revision: Revision(2),
                 action: ployz_store::HistoryAction::Undo,
+                change: None,
             },
         )
         .unwrap_err();
@@ -2180,6 +2609,20 @@ fn history_undo_refuses_reordered_routes_but_restore_stages() {
     let mut restored = route_order(&store, &who);
     restored.sort();
     assert_eq!(restored, original);
+}
+
+#[test]
+fn history_undo_of_one_change_ignores_a_route_reorder_in_its_save() {
+    let (store, who) = shop();
+    for hostname in ["a.example.com", "b.example.com", "c.example.com"] {
+        add_domain(&store, &who, hostname);
+    }
+    publish(&store, &who, None).unwrap();
+    reorder_routes(&store, &who);
+    set(&store, &who, "api.replicas", json!(2));
+    publish(&store, &who, None).unwrap();
+    stage_change(&store, &who, 2, "api.replicas");
+    assert_eq!(value(&store, &who, "api.replicas"), Some(json!(1)));
 }
 
 const WEB: &str = "00000000-0000-4000-8000-000000000003";
@@ -2558,4 +3001,141 @@ fn publish_review_perf() {
         "publish (review + gate), 50 staged changes over 200 deployed Services: {} us mean over {rounds} publishes",
         spent.as_micros() / u128::from(rounds)
     );
+}
+
+fn volume_at(store: &ConfigStore, who: &Actor, path: &str) {
+    store
+        .write(
+            who,
+            &CreateVolume {
+                shared_writes: false,
+                storage_locked: false,
+                storage: ployz_core::config::VolumeKind::Docker {},
+                id: VolumeId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: VolumeName::parse("data").unwrap(),
+                mounts: vec![Mount {
+                    service: ServiceName::parse("web").unwrap(),
+                    path: path.into(),
+                }],
+            },
+        )
+        .unwrap();
+}
+
+fn config_with(
+    store: &ConfigStore,
+    who: &Actor,
+    mounts: Vec<ployz_store::ConfigMountAt>,
+    file: &str,
+) {
+    let config = ployz_core::ConfigName::parse("sentry").unwrap();
+    store
+        .write(
+            who,
+            &ployz_store::CreateConfig {
+                environment: EnvironmentRef::default(),
+                id: ployz_store::ConfigId::parse("00000000-0000-4000-8000-000000000009").unwrap(),
+                name: config.clone(),
+                mounts,
+            },
+        )
+        .unwrap();
+    put_config_file(store, who, file);
+}
+
+fn put_config_file(store: &ConfigStore, who: &Actor, file: &str) {
+    store
+        .write(
+            who,
+            &ployz_store::PutConfigFile {
+                environment: EnvironmentRef::default(),
+                config: ployz_core::ConfigName::parse("sentry").unwrap(),
+                file: ployz_core::ConfigFileName::parse(file).unwrap(),
+                content: "content".into(),
+                mode: None,
+                uid: None,
+                gid: None,
+            },
+        )
+        .unwrap();
+}
+
+fn unmount_data(store: &ConfigStore, who: &Actor) {
+    store
+        .write(
+            who,
+            &Edit {
+                environment: EnvironmentRef::default(),
+                expect: None,
+                changes: vec![Change::Unset {
+                    path: SettingPath::parse("web.mounts.data").unwrap(),
+                }],
+            },
+        )
+        .unwrap();
+}
+
+#[test]
+fn history_undo_of_a_volume_mount_takes_back_the_config_file_now_at_its_path() {
+    let (store, who) = shop();
+    volume_at(&store, &who, "/etc/a");
+    config_with(&store, &who, Vec::new(), "a");
+    publish(&store, &who, None).unwrap();
+    unmount_data(&store, &who);
+    store
+        .write(
+            &who,
+            &ployz_store::AttachConfig {
+                environment: EnvironmentRef::default(),
+                config: ployz_core::ConfigName::parse("sentry").unwrap(),
+                service: ServiceName::parse("web").unwrap(),
+                dir: "/etc".into(),
+            },
+        )
+        .unwrap();
+    publish(&store, &who, None).unwrap();
+    stage_change(&store, &who, 2, "web.mounts.data");
+    assert_eq!(
+        value(&store, &who, "web.mounts.data"),
+        Some(json!("/etc/a"))
+    );
+    assert_eq!(value(&store, &who, "web.mounts.sentry"), None);
+}
+
+#[test]
+fn history_undo_of_a_volume_mount_takes_back_the_config_file_added_at_its_path() {
+    let (store, who) = shop();
+    config_with(
+        &store,
+        &who,
+        vec![ployz_store::ConfigMountAt {
+            service: ServiceName::parse("web").unwrap(),
+            dir: "/etc".into(),
+        }],
+        "keep",
+    );
+    volume_at(&store, &who, "/etc/a/b");
+    publish(&store, &who, None).unwrap();
+    unmount_data(&store, &who);
+    put_config_file(&store, &who, "a");
+    publish(&store, &who, None).unwrap();
+    stage_change(&store, &who, 2, "web.mounts.data");
+    assert_eq!(
+        value(&store, &who, "web.mounts.data"),
+        Some(json!("/etc/a/b"))
+    );
+    let files = serde_json::to_string(
+        &store
+            .read(
+                &who,
+                &ployz_store::ConfigItemQuery {
+                    environment: EnvironmentRef::default(),
+                    config: ployz_core::ConfigName::parse("sentry").unwrap().into(),
+                },
+            )
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(!files.contains("\"a\""), "{files}");
 }

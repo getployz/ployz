@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use ployz_core::RpcError;
 use ployz_core::config::SavedEnvironmentIntent;
 use serde::{Deserialize, Serialize};
@@ -46,6 +48,9 @@ pub struct SavedRevision {
     pub predecessor: Option<Revision>,
     pub changes: Vec<NodeChange>,
     pub total_count: usize,
+    /// Change path to how many changes undoing that one change reverses, for
+    /// changes the same save linked together. Absent means one.
+    pub linked: BTreeMap<String, usize>,
 }
 
 /// Restore a complete version, or reverse only what one revision changed.
@@ -64,6 +69,10 @@ pub struct HistoryPreviewQuery {
     pub environment: EnvironmentRef,
     pub revision: Revision,
     pub action: HistoryAction,
+    /// Undo only this change of the revision, by its path, and what it links.
+    #[serde(default)]
+    #[ts(optional)]
+    pub change: Option<String>,
 }
 
 /// What a History action stages, and exactly which draft fields it overwrites.
@@ -72,6 +81,8 @@ pub struct HistoryPreview {
     pub environment: EnvironmentSummary,
     pub revision: Revision,
     pub action: HistoryAction,
+    #[ts(optional)]
+    pub change: Option<String>,
     /// The exact current Diff version, required when staging this preview.
     pub version: String,
     pub changes: Vec<NodeChange>,
@@ -87,6 +98,9 @@ pub struct StageHistory {
     pub environment: EnvironmentRef,
     pub revision: Revision,
     pub action: HistoryAction,
+    #[serde(default)]
+    #[ts(optional)]
+    pub change: Option<String>,
     pub version: String,
     #[serde(default)]
     #[ts(as = "Option<bool>", optional)]
@@ -141,6 +155,7 @@ pub(crate) fn history(
                     .as_ref()
                     .map_or_else(Vec::new, |changes| changes.changes.clone()),
                 total_count: changes.as_ref().map_or(0, |changes| changes.total_count),
+                linked: changes.map(|changes| changes.linked).unwrap_or_default(),
             });
         }
         previous = Some((revision, intent));
@@ -160,14 +175,15 @@ pub(crate) fn preview(
 ) -> Result<HistoryPreview, RpcError> {
     let environment = scope::environment(tx, who, &query.environment)?;
     let reviewed = review::review(tx, &environment)?;
-    let prepared = prepare(tx, &environment, &reviewed, query.revision, query.action)?;
-    Ok(preview_of(
+    let prepared = prepare(
+        tx,
         &environment,
         &reviewed,
-        &prepared,
         query.revision,
         query.action,
-    ))
+        query.change.as_deref(),
+    )?;
+    Ok(preview_of(&environment, &reviewed, &prepared, query))
 }
 
 pub(crate) fn stage(
@@ -189,11 +205,18 @@ pub(crate) fn stage(
         &reviewed,
         command.revision,
         command.action,
+        command.change.as_deref(),
     )?;
     if !prepared.overwritten().is_empty() && !command.accept_overwrite {
+        let query = HistoryPreviewQuery {
+            environment: command.environment.clone(),
+            revision: command.revision,
+            action: command.action,
+            change: command.change.clone(),
+        };
         return Err(error::confirmation_required(
             "This History action overwrites draft changes",
-            json!({ "history_preview": preview_of(&environment, &reviewed, &prepared, command.revision, command.action) }),
+            json!({ "history_preview": preview_of(&environment, &reviewed, &prepared, &query) }),
         ));
     }
     let (environment, changed) = prepared.persist(tx)?;
@@ -232,7 +255,14 @@ fn prepare(
     reviewed: &review::Review,
     revision: Revision,
     action: HistoryAction,
+    change: Option<&str>,
 ) -> Result<super::authored::Prepared, RpcError> {
+    if action == HistoryAction::Restore && change.is_some() {
+        return Err(error::invalid(
+            "Only Undo takes a single change; Restore puts back the whole version",
+            json!({ "revision": revision }),
+        ));
+    }
     let selected = snapshot(tx, environment, revision)?;
     let previous = match action {
         HistoryAction::Restore => None,
@@ -256,19 +286,20 @@ fn prepare(
         reviewed.saved.as_ref().map(|saved| &saved.intent),
         &selected,
         previous.as_ref(),
+        change,
     )
 }
 fn preview_of(
     environment: &Environment,
     reviewed: &review::Review,
     prepared: &super::authored::Prepared,
-    revision: Revision,
-    action: HistoryAction,
+    query: &HistoryPreviewQuery,
 ) -> HistoryPreview {
     HistoryPreview {
         environment: environment.summary.clone(),
-        revision,
-        action,
+        revision: query.revision,
+        action: query.action,
+        change: query.change.clone(),
         version: reviewed.view.version.clone(),
         changes: prepared.preview().changes.clone(),
         total_count: prepared.preview().total_count,

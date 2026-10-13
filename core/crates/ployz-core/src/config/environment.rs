@@ -183,6 +183,25 @@ pub struct VolumeAttachment {
     pub mount_path: String,
 }
 
+impl VolumeAttachment {
+    /// The mount path with empty and `.` segments dropped and `..` applied, the
+    /// form Config mount directories and file paths are compared in.
+    #[must_use]
+    pub fn container_path(&self) -> String {
+        let mut segments = Vec::new();
+        for segment in self.mount_path.split('/') {
+            match segment {
+                "" | "." => {}
+                ".." => {
+                    segments.pop();
+                }
+                segment => segments.push(segment),
+            }
+        }
+        format!("/{}", segments.join("/"))
+    }
+}
+
 /// An authored Volume name attached to stable resource and lineage identities.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -444,9 +463,10 @@ pub fn parse_environment_intent(value: Value) -> Result<SavedEnvironmentIntent, 
             false,
         )?;
         if service.config_attachments.iter().any(|config| {
-            service.volume_attachments.iter().any(|volume| {
-                normalize_container_path(volume.mount_path.as_str()) == config.mount_dir.as_str()
-            })
+            service
+                .volume_attachments
+                .iter()
+                .any(|volume| volume.container_path() == config.mount_dir.as_str())
         }) {
             return Err(ConfigError::at(
                 "mountPath",
@@ -470,20 +490,6 @@ pub fn parse_environment_intent(value: Value) -> Result<SavedEnvironmentIntent, 
         nonempty(&volume.name, "volumes.name")?;
     }
     Ok(intent)
-}
-
-fn normalize_container_path(path: &str) -> String {
-    let mut segments = Vec::new();
-    for segment in path.split('/') {
-        match segment {
-            "" | "." => {}
-            ".." => {
-                segments.pop();
-            }
-            segment => segments.push(segment),
-        }
-    }
-    format!("/{}", segments.join("/"))
 }
 
 fn mounted_files(
@@ -522,7 +528,7 @@ fn mounted_files(
         ));
     }
     let volume_on_file = service.volume_attachments.iter().any(|volume| {
-        let at = normalize_container_path(volume.mount_path.as_str());
+        let at = volume.container_path();
         let at = at.as_str();
         paths.contains(at)
             || at
