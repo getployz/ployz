@@ -1030,6 +1030,15 @@ fn an_agent_adds_checks_and_removes_domains() {
                 assert!(changes.contains(&line), "{read}");
             }
         }
+        let planned = ok(store, &["deploy", "--plan"]);
+        let unchecked = planned["ingress_unchecked"]
+            .as_array()
+            .is_some_and(|causes| !causes.is_empty());
+        assert_eq!(
+            (planned["ingress"].is_array(), unchecked),
+            (cloud, !cloud),
+            "{planned}"
+        );
 
         let listed = ok(store, &["domain", "ls"]);
         let first = &listed["domains"][0];

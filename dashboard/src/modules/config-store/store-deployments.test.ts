@@ -313,4 +313,10 @@ it("words what a Deployment shipped despite", () => {
   expect(deploymentWarningText({ service: "web", variable: "TOKEN" })).toBe("TOKEN not set in web");
   expect(deploymentWarningText({ config: "sentry", file: "config.yml", secret: "web.TOKEN" })).toBe("web.TOKEN not set in sentry/config.yml");
   expect(deploymentWarningText({ config: "sentry", file: "config.yml", variable: "web.DSN" })).toBe("web.DSN may break sentry/config.yml");
+  expect(deploymentWarningText({ server: "web-1", ingress: { type: "port_taken", cause: "address already in use" } }))
+    .toBe("Ingress isn't running on web-1: something else holds port 80 or 443");
+  expect(deploymentWarningText({ server: "web-1", ingress: { type: "failed", cause: "image pull failed" } }))
+    .toBe("Ingress isn't running on web-1: image pull failed");
+  expect(deploymentWarningText({ cause: "Couldn't list the Cluster's Servers." }))
+    .toBe("Couldn't check ingress: Couldn't list the Cluster's Servers. Deploy again to retry");
 });

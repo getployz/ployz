@@ -98,6 +98,10 @@ pub enum ClusterDomainStatus {
     Port80Taken {
         addresses: Vec<String>,
     },
+    /// These ingress Servers run no Ingress Proxy; a Deploy brings it back.
+    IngressDown {
+        servers: Vec<String>,
+    },
     /// Its wildcard certificate expired.
     HttpsDown,
 }

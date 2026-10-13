@@ -6,6 +6,7 @@ import { and, eq } from "drizzle-orm";
 import { Data, Effect } from "effect";
 import { loadClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
 import { type IngressAnswer, probeIngress } from "#/modules/cluster-domain/ingress-probe.server";
+import { ingressAwakeOn } from "#/modules/cluster-domain/ingress-running";
 import {
   HostedDnsError,
   type HostedDomainTarget,
@@ -16,6 +17,7 @@ import {
 import {
   type ClusterDomainTraffic,
   type IngressServerAddress,
+  type IngressServerName,
   organizationClusterDomain,
 } from "#/modules/cluster-domain/tables";
 import { createWildcardCsr } from "#/modules/cluster-domain/wildcard-csr.server";
@@ -86,18 +88,28 @@ export const probeIngressServers = Effect.fn("ClusterDomain.probeIngressServers"
   const ingress = frame.machines.filter(({ machine }) => machine.accepts_ingress && machine.public_ip !== null);
   if (ingress.length === 0) return { kind: "no_public_ip" } satisfies IngressProbe;
   // A down Server reads Offline on the Servers page, where the user fixes it; probing it would only time out.
-  const servers = ingress.flatMap(({ machine, membership }): IngressServerAddress[] =>
-    membership !== "down" && machine.public_ip !== null ? [{ machineId: machine.id, address: machine.public_ip }] : []);
+  const servers = ingress.flatMap(({ machine, membership }): IngressServerName[] =>
+    membership !== "down" && machine.public_ip !== null
+      ? [{ machineId: machine.id, address: machine.public_ip, name: machine.name }]
+      : []);
   if (servers.length === 0) return { kind: "no_servers" } satisfies IngressProbe;
+  const awake = ingressAwakeOn(frame);
+  const unobserved = new Set<string>(frame.incomplete_ids.machines);
+  // An incomplete container row carries no Machine id, so it could be the Ingress Proxy on any Server.
+  const containersUnobserved = frame.incomplete_ids.containers.length > 0;
   const probed = yield* Effect.forEach(servers, (server) =>
     probeIngress(`http://${isIPv6(server.address) ? `[${server.address}]` : server.address}`, server.machineId)
       .pipe(Effect.map((answer) => ({ server, answer }))), { concurrency: "unbounded" });
   const answering = (wanted: IngressAnswer) => probed.flatMap(({ server, answer }) => answer === wanted ? [server] : []);
+  const isDown = ({ machineId }: IngressServerAddress) =>
+    !containersUnobserved && !awake.has(machineId) && !unobserved.has(machineId);
+  const closed = answering("closed");
   return {
     kind: "probed",
-    reachable: answering("ployz"),
-    unreachable: answering("closed"),
-    taken: answering("taken"),
+    reachable: answering("ployz").map(({ machineId, address }) => ({ machineId, address })),
+    unreachable: closed.filter((server) => !isDown(server)).map(({ machineId, address }) => ({ machineId, address })),
+    taken: answering("taken").map(({ machineId, address }) => ({ machineId, address })),
+    down: closed.filter(isDown),
   } satisfies IngressProbe;
 }, Effect.scoped, Effect.catch((error) =>
   Effect.logWarning("No runtime frame for the Cluster Domain sync; records stay as published.", error)

@@ -977,6 +977,9 @@ pub struct ContainerDetails {
     /// The newest healthcheck result; `None` without one, or from older daemons.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_check: Option<crate::LastHealthCheck>,
+    /// Which run of the Container this is; `None` from older daemons.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<crate::ContainerRun>,
 }
 
 /// The Machine's answer to `EnsureContainer`: the Container as now observed, and

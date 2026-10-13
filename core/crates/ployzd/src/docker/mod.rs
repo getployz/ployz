@@ -364,6 +364,7 @@ impl ContainerRuntime {
 
         let environment = inspected.config.as_ref().and_then(inspected_environment);
         let address = container_address(&inspected);
+        let run = container_run(&inspected);
         let mut runtime = runtime_observation(inspected.state.as_ref());
         let mut effective_check = effective_healthcheck(inspected.config.as_ref());
         let mut last_check = last_docker_check(inspected.state.as_ref());
@@ -422,6 +423,7 @@ impl ContainerRuntime {
             environment,
             image_id: inspected.image,
             last_check,
+            run,
         })
     }
 }
@@ -551,6 +553,7 @@ fn display_name(name: Option<&str>) -> String {
 #[serde(rename_all = "PascalCase")]
 struct RawContainerInspect {
     name: Option<String>,
+    restart_count: Option<i64>,
     created: Option<String>,
     image: Option<String>,
     config: Option<RawContainerConfig>,
@@ -599,6 +602,14 @@ struct RawNetworkSettings {
 struct RawEndpointSettings {
     #[serde(rename = "IPAddress")]
     ip_address: Option<String>,
+}
+
+fn container_run(inspected: &RawContainerInspect) -> Option<ployz_core::ContainerRun> {
+    let started = started_at(inspected.state.as_ref())?;
+    Some(ployz_core::ContainerRun {
+        restart_count: inspected.restart_count.unwrap_or_default(),
+        started_at_unix_nanos: started.timestamp_nanos_opt().unwrap_or_default(),
+    })
 }
 
 fn started_at(state: Option<&serde_json::Value>) -> Option<chrono::DateTime<chrono::Utc>> {
@@ -1944,6 +1955,23 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(effective_healthcheck(inherited.config.as_ref()), None);
+    }
+
+    #[test]
+    fn each_docker_start_is_its_own_run() {
+        let run = |restart_count: i64, started_at: &str| {
+            let inspected: RawContainerInspect = serde_json::from_value(json!({
+                "RestartCount": restart_count,
+                "State": { "Status": "running", "StartedAt": started_at },
+            }))
+            .unwrap();
+            container_run(&inspected)
+        };
+        let first = run(0, "2026-10-05T11:00:00.1Z");
+        assert!(first.is_some());
+        assert_ne!(first, run(1, "2026-10-05T11:00:00.1Z"));
+        assert_ne!(first, run(0, "2026-10-05T11:00:00.2Z"));
+        assert_eq!(first, run(0, "2026-10-05T11:00:00.1Z"));
     }
 
     fn inspect_json() -> serde_json::Value {

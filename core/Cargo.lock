@@ -3635,6 +3635,7 @@ dependencies = [
  "tokio-util",
  "tonic",
  "tower",
+ "tracing",
  "ts-rs",
  "unicode-segmentation",
  "unicode-width",

@@ -453,7 +453,7 @@ export type CloudQuery = { "query": "github_tree" } & GithubTreeQuery | { "query
 
 export type ClusterDomain = { name: Hostname, status: ClusterDomainStatus, };
 
-export type ClusterDomainStatus = { "kind": "setting_up" } | { "kind": "ready" } | { "kind": "no_servers" } | { "kind": "no_public_ip" } | { "kind": "port_80", addresses: Array<string>, } | { "kind": "port_80_taken", addresses: Array<string>, } | { "kind": "https_down" };
+export type ClusterDomainStatus = { "kind": "setting_up" } | { "kind": "ready" } | { "kind": "no_servers" } | { "kind": "no_public_ip" } | { "kind": "port_80", addresses: Array<string>, } | { "kind": "port_80_taken", addresses: Array<string>, } | { "kind": "ingress_down", servers: Array<string>, } | { "kind": "https_down" };
 
 export type ClusterTeardown = { destroyed_namespaces: Array<Namespace>, machines: PartialResult<LocalMachineRemoved, RpcError>, pairing_revoked: boolean, };
 
@@ -1183,9 +1183,14 @@ in_flight: boolean,
  */
 outcome: Outcome | null,
 /**
- * What its runner was warned of when it claimed it.
+ * What its runner was warned of when it claimed it, and the Ingress Proxies its
+ * Deploy left down or couldn't check.
  */
-warnings?: Array<DeploymentWarning>, };
+warnings?: Array<DeploymentWarning>,
+/**
+ * Each Server's Ingress Proxy it created or started.
+ */
+ingress?: Array<IngressRepair>, };
 
 export type DeploymentView = { environment: EnvironmentSummary,
 /**
@@ -1269,9 +1274,14 @@ in_flight: boolean,
  */
 outcome: Outcome | null,
 /**
- * What its runner was warned of when it claimed it.
+ * What its runner was warned of when it claimed it, and the Ingress Proxies its
+ * Deploy left down or couldn't check.
  */
-warnings?: Array<DeploymentWarning>, };
+warnings?: Array<DeploymentWarning>,
+/**
+ * Each Server's Ingress Proxy it created or started.
+ */
+ingress?: Array<IngressRepair>, };
 
 export type DeploymentWarning = { config: ConfigName, file: ConfigFileName,
 /**
@@ -1285,7 +1295,7 @@ variable: string, } | { config: ConfigName, file: ConfigFileName,
 /**
  * The variable as the file references it, such as `api.TOKEN`.
  */
-secret: string, };
+secret: string, } | { server: string, ingress: IngressFailure, } | { cause: string, };
 
 export type DeploymentsQuery = { environment: EnvironmentRef,
 /**
@@ -2085,7 +2095,17 @@ kind: EnvironmentNodeType,
  */
 name: string | null, };
 
+export type IngressAction = "create" | "start";
+
+export type IngressFailure = { "type": "port_taken", cause: string, } | { "type": "failed", cause: string, };
+
 export type IngressHost = string;
+
+export type IngressRepair = { machine: MachineId, server: string, action: IngressAction,
+/**
+ * Why it isn't running; none once it started.
+ */
+failure: IngressFailure | null, };
 
 export type InitialMachinePolicy = {
 /**

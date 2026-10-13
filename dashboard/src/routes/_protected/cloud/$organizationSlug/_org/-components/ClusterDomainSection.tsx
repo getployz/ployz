@@ -35,6 +35,8 @@ function statusCopy(status: ClusterDomainState) {
       return { message: `Traffic can’t reach ${status.addresses.join(", ")}. Make sure port 80 is open.`, action: "check" } as const;
     case "port_80_taken":
       return { message: `Something else answers on port 80 of ${status.addresses.join(", ")}. Free the port for Ployz.`, action: "check" } as const;
+    case "ingress_down":
+      return { message: `Ingress isn’t running on ${status.servers.join(", ")}. Deploy to bring it back.`, action: "check" } as const;
     case "https_down":
       return { message: "HTTPS isn’t working right now. We’re fixing it.", action: null } as const;
   }
@@ -43,10 +45,12 @@ function statusCopy(status: ClusterDomainState) {
 /** The Servers traffic skips while others carry it: the redundancy the user can win back. */
 function excludedCopy(excluded: readonly ExcludedServer[]) {
   const on = (reason: ExcludedServer["reason"]) =>
-    excluded.flatMap((server) => server.reason === reason ? [server.address] : []).join(", ");
+    excluded.flatMap((server) => server.reason !== reason ? [] : "address" in server ? [server.address] : [server.server]).join(", ");
   const closed = on("port_80");
   const taken = on("port_80_taken");
-  return [closed && `Port 80 closed on ${closed}.`, taken && `Port 80 taken on ${taken}.`].filter(Boolean).join(" ");
+  const down = on("ingress_down");
+  return [closed && `Port 80 closed on ${closed}.`, taken && `Port 80 taken on ${taken}.`, down && `Ingress isn’t running on ${down}.`]
+    .filter(Boolean).join(" ");
 }
 
 export function ClusterDomainSection({ organizationSlug, domain, onCheck }: {
