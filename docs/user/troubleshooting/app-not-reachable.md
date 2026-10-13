@@ -119,7 +119,10 @@ certificate**, a DNS status, or **Certificate failed; retrying at …**. Fix any
 ## Port 80 is closed
 
 You'll see **Port 80 is closed on 203.0.113.10**. Your servers use port 80 to get certificates,
-so Ployz leaves that server out of your organization's domain until it's open.
+so Ployz leaves that server out of your organization's domain until it's open. When your other
+servers still take the traffic, your domains stay live and only **Domain** in
+**Organization → General** shows **Port 80 closed on 203.0.113.10.** An offline server is left
+out without a warning here: it shows **Offline** on the Servers page instead.
 
 Open TCP port 80 and TCP and UDP port 443 to the internet on every server that takes web
 traffic, in your hosting provider's firewall (like a Hetzner Cloud Firewall or an AWS security
@@ -131,7 +134,9 @@ group) as well as the server's own. Then click **Check again** under **Domain** 
 You'll see **Something else answers on port 80 of 203.0.113.10**. The server answers on port 80,
 but not as Ployz: another web server holds the port, often Caddy or nginx in front of a
 [self-hosted Ployz Cloud](../self-hosting.md#choose-where-it-runs). Until Ployz gets the port
-back, Ployz leaves that server out of your organization's domain. See what holds it:
+back, Ployz leaves that server out of your organization's domain. When your other servers still
+take the traffic, your domains stay live and only **Domain** in **Organization → General** shows
+**Port 80 taken on 203.0.113.10.** See what holds it:
 
 ```sh
 sudo ss -ltnp '( sport = :80 or sport = :443 )'
