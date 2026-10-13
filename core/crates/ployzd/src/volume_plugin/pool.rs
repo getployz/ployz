@@ -227,22 +227,28 @@ impl PoolStorage {
             .map_err(|error| ployz_core::error_chain::inline(&error))?)
     }
 
+    /// Whether this Machine's Pool backing file exists, imported or not.
+    ///
+    /// # Errors
+    /// Returns an error when the backing file cannot be inspected.
+    pub(super) fn backing_exists(&self) -> Result<bool> {
+        self.backing.try_exists().map_err(|error| {
+            format!(
+                "could not inspect Machine Pool backing file {}: {error}",
+                self.backing.display(),
+                error = ployz_core::error_chain::inline(&error),
+            )
+            .into()
+        })
+    }
+
     /// Imports this host's valid backing Pool and optionally reclaims an unlabeled stale file.
     ///
     /// # Errors
     /// Returns an error for ambiguous or destroyed labels, failed import, or failed cleanup.
     pub(super) async fn recover(&self, unlabeled: UnlabeledBacking) -> Result<Option<MachinePool>> {
-        match self.backing.try_exists() {
-            Ok(false) => return Ok(None),
-            Ok(true) => {}
-            Err(error) => {
-                return Err(format!(
-                    "could not inspect Machine Pool backing file {}: {error}",
-                    self.backing.display(),
-                    error = ployz_core::error_chain::inline(&error),
-                )
-                .into());
-            }
+        if !self.backing_exists()? {
+            return Ok(None);
         }
         let backing = self.backing_text()?;
         let output = checked_command(&self.zpool, &["import", "-d", backing]).await?;

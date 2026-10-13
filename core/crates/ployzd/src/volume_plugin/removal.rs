@@ -38,7 +38,12 @@ impl VolumeStorage {
     }
 
     async fn inspect(&self, name: &DockerVolumeName) -> Result<Option<PluginVolume>> {
-        let pool = self.one_pool().await?;
+        let Some(pool) = self.pool.one_usable().await? else {
+            if self.pool.backing_exists()? {
+                return Err("Machine Pool backing exists but is not imported".into());
+            }
+            return Ok(None);
+        };
         let datasets = self.datasets(&pool).await?;
         let Some(dataset) = Self::dataset(&datasets, &pool, name)? else {
             return self.inspect_cut(&datasets, &pool, name).await;
