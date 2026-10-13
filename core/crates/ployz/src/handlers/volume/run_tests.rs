@@ -288,7 +288,7 @@ async fn each_kind_posts_only_its_own_fields() {
             .await
             .unwrap();
         assert_eq!(started.id.as_str(), RUN);
-        assert_eq!(started.state, VolumeRunState::Requested);
+        assert_eq!(started.state, MaybeKnown::Known(VolumeRunState::Requested));
         assert_eq!(serde_json::to_value(started.kind).unwrap(), json!(kind));
     }
 }
@@ -340,7 +340,7 @@ async fn runs_are_read_by_volume_and_environment_and_one_by_its_id() {
     let one = get(&credential, &VolumeRunId::parse(RUN).unwrap())
         .await
         .unwrap();
-    assert_eq!(one.state, VolumeRunState::Failed);
+    assert_eq!(one.state, MaybeKnown::Known(VolumeRunState::Failed));
     assert_eq!(asked(&one.args), "full");
 }
 
@@ -362,7 +362,7 @@ async fn wait_polls_the_run_until_it_ends() {
     let requested: VolumeRun =
         serde_json::from_value(run("requested", "sync", json!({ "full": false }))).unwrap();
     let ended = settle(&token(&cloud), requested).await.unwrap();
-    assert_eq!(ended.state, VolumeRunState::Done);
+    assert_eq!(ended.state, MaybeKnown::Known(VolumeRunState::Done));
     assert_eq!(polls.load(Ordering::SeqCst), 2);
 }
 
@@ -384,7 +384,7 @@ fn a_run_that_did_not_finish_is_the_command_s_failure() {
     );
     assert_eq!(error.details["run"]["id"], json!(RUN));
 
-    failed.state = VolumeRunState::Lost;
+    failed.state = MaybeKnown::Known(VolumeRunState::Lost);
     let error = ended(&failed, "Mirror", follow).unwrap_err().report();
     assert_eq!(error.code, RpcErrorCode::Unavailable);
 }
@@ -393,7 +393,7 @@ fn a_run_that_did_not_finish_is_the_command_s_failure() {
 fn a_yielded_run_says_a_deploy_took_its_volume() {
     let mut yielded: VolumeRun =
         serde_json::from_value(run("yielded", "move", json!({ "to": "web-2" }))).unwrap();
-    assert_eq!(yielded.state, VolumeRunState::Yielded);
+    assert_eq!(yielded.state, MaybeKnown::Known(VolumeRunState::Yielded));
     yielded.message = Some("a Deploy took the Volume".to_owned());
     let error = ended(&yielded, "Move", format!("ployz volume runs data {RUN}"))
         .unwrap_err()
@@ -429,4 +429,52 @@ async fn a_plain_sync_posts_its_environment_and_reads_back_the_lines() {
     .await
     .unwrap();
     assert_eq!(synced.lines, ["data-web-2 is pulling w-3-1700000000"]);
+}
+
+#[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+#[tokio::test]
+async fn a_run_of_a_kind_or_state_this_cli_predates_still_lists_by_its_word() {
+    let cloud = fake_cloud(|route, _| match route {
+        r if r == format!("GET /api/cli/volumes/{VOLUME}/runs?environment={ENVIRONMENT}") => (
+            200,
+            json!({ "runs": [
+                run("done", "seed", json!({})),
+                run("paused_for_review", "move", json!({ "to": "web-2" })),
+            ] }),
+        ),
+        other => panic!("unexpected {other}"),
+    });
+    let runs = list(&token(&cloud), &volume(), &environment())
+        .await
+        .unwrap();
+    assert_eq!(runs[0].kind, MaybeKnown::Unknown("seed".to_owned()));
+    assert_eq!(runs[0].state, MaybeKnown::Known(VolumeRunState::Done));
+    assert_eq!(runs[1].kind, MaybeKnown::Known(VolumeRunKind::Move));
+    assert_eq!(store::word(&runs[0].kind), "seed");
+    assert_eq!(store::word(&runs[1].state), "paused for review");
+    assert_eq!(runs[1].state.tone(), Tone::Muted);
+    assert_eq!(
+        serde_json::to_value(&runs[1]).unwrap()["state"],
+        json!("paused_for_review")
+    );
+
+    let mut shown = Vec::new();
+    record(&runs[0]).write(&mut shown, true).unwrap();
+    let shown = String::from_utf8(shown).unwrap();
+    assert!(shown.contains("seed"), "{shown}");
+}
+
+#[test]
+fn a_wait_stops_on_a_state_this_cli_predates_and_names_it() {
+    let paused: VolumeRun =
+        serde_json::from_value(run("paused_for_review", "move", json!({ "to": "web-2" }))).unwrap();
+    assert!(paused.state.ended());
+    let error = ended(&paused, "Move", format!("ployz volume runs data {RUN}"))
+        .unwrap_err()
+        .report();
+    assert_eq!(error.code, RpcErrorCode::Conflict);
+    assert_eq!(
+        error.message,
+        "The Move is paused for review: Cloud gave no reason"
+    );
 }
