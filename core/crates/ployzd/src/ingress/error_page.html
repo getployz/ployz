@@ -61,18 +61,18 @@ h1 { margin: 1.1rem 0 0.6rem; font-size: clamp(1.75rem, 5vw, 2.25rem); line-heig
 .app { color: var(--ink); font-weight: 600; }
 .app .mark { background: color-mix(in oklch, var(--accent) 18%, transparent); color: var(--accent); }
 .app .mark::after { content: "✕"; }
-[data-error="NOT_RUNNING"] .app, [data-error="DOMAIN_NOT_FOUND"] .app { color: inherit; font-weight: inherit; }
-[data-error="NOT_RUNNING"] .app .mark, [data-error="DOMAIN_NOT_FOUND"] .app .mark { background: none; border: 1px dashed var(--rule); color: var(--muted); }
-[data-error="NOT_RUNNING"] .app .mark::after, [data-error="DOMAIN_NOT_FOUND"] .app .mark::after { content: "–"; }
+[data-error="NOT_RUNNING"] .app, [data-error="NOT_DEPLOYED"] .app { color: inherit; font-weight: inherit; }
+[data-error="NOT_RUNNING"] .app .mark, [data-error="NOT_DEPLOYED"] .app .mark { background: none; border: 1px dashed var(--rule); color: var(--muted); }
+[data-error="NOT_RUNNING"] .app .mark::after, [data-error="NOT_DEPLOYED"] .app .mark::after { content: "–"; }
 .own { margin-top: 2.5rem; padding-top: 1.1rem; border-top: 1px solid var(--rule); font-size: 0.93rem; color: var(--soft); }
 .own p { margin: 0; }
 .own p + p { margin-top: 0.4rem; }
 .own b { color: var(--ink); font-weight: 600; }
 .own a { color: var(--accent); font-weight: 600; text-underline-offset: 2px; }
-[data-for], [data-error="DOMAIN_NOT_FOUND"] .btn, [data-error="INTERNAL_ERROR"] .hops { display: none; }
+[data-for], [data-error="NOT_DEPLOYED"] .btn, [data-error="INTERNAL_ERROR"] .hops { display: none; }
 [data-error="NO_RESPONSE"] [data-for="NO_RESPONSE"],
 [data-error="NOT_RUNNING"] [data-for="NOT_RUNNING"],
-[data-error="DOMAIN_NOT_FOUND"] [data-for="DOMAIN_NOT_FOUND"],
+[data-error="NOT_DEPLOYED"] [data-for="NOT_DEPLOYED"],
 [data-error="INTERNAL_ERROR"] [data-for="INTERNAL_ERROR"] { display: block; }
 footer { border-top: 1px solid var(--rule); padding: 1rem 1.5rem; display: flex; flex-wrap: wrap; gap: 0.4rem 1.5rem; justify-content: space-between; font: 0.78rem/1.4 ui-monospace, "SF Mono", Menlo, Consolas, monospace; color: var(--muted); }
 footer dl { margin: 0; display: flex; flex-wrap: wrap; gap: 0.4rem 1.5rem; }
@@ -94,7 +94,7 @@ footer a:hover b, footer a:focus-visible b { color: var(--accent); text-decorati
     <h1>This app isn't running</h1>
     <p class="lede">It may be deploying. This page retries every 10 seconds.</p>
   </div>
-  <div data-for="DOMAIN_NOT_FOUND">
+  <div data-for="NOT_DEPLOYED">
     <h1>Nothing is deployed here</h1>
     <p class="lede">Check the address. No app uses {ployz_host}.</p>
   </div>
@@ -118,7 +118,7 @@ footer a:hover b, footer a:focus-visible b { color: var(--accent); text-decorati
       <p><b>No healthy replica is running.</b></p>
       <p>A deploy is in progress, the service is stopped, or it fails its healthcheck.</p>
     </div>
-    <div data-for="DOMAIN_NOT_FOUND">
+    <div data-for="NOT_DEPLOYED">
       <p><b>This domain points at your server, but no service has it, or its certificate is still being issued.</b></p>
       <p>Add <code>{ployz_host}</code> to a service, including any <code>www.</code></p>
     </div>

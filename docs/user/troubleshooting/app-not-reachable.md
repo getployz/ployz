@@ -78,7 +78,7 @@ The domain's row says where traffic goes. **→ Uses PORT** means the `PORT` var
 
 ## Nothing is deployed here
 
-You'll see `404 · DOMAIN_NOT_FOUND`. The domain leads to one of your servers, but no service
+You'll see `404 · NOT_DEPLOYED`. The domain leads to one of your servers, but no service
 answers for it there.
 
 - **Check the exact name.** `www.example.com` and `example.com` are different domains. Add each

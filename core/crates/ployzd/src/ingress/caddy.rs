@@ -197,7 +197,7 @@ fn render_caddyfile(projection: &IngressProjection, timestamp: &str) -> String {
         "# Health check endpoint to verify Caddy reachability on this Machine.\n\
 http:// {{\n\
 {ingress_verify}{hostname_verify}\
-\terror DOMAIN_NOT_FOUND 404\n\
+\terror NOT_DEPLOYED 404\n\
 \timport error_page\n\
 \tlog\n\
 }}\n\
@@ -205,7 +205,7 @@ http:// {{\n\
 # Unknown hostnames over HTTPS: a wildcard certificate another site pins may cover them,\n\
 # and Caddy would answer an unmatched request 200 with an empty body.\n\
 https:// {{\n\
-\terror DOMAIN_NOT_FOUND 404\n\
+\terror NOT_DEPLOYED 404\n\
 \timport error_page\n\
 \tlog\n\
 }}\n\
@@ -235,7 +235,7 @@ https:// {{\n\
             None if https.is_some() => Some(REDIRECT_TO_HTTPS.to_owned()),
             None => site
                 .challenge()
-                .map(|_| "\terror DOMAIN_NOT_FOUND 404\n".to_owned()),
+                .map(|_| "\terror NOT_DEPLOYED 404\n".to_owned()),
         };
         if let Some(answer) = http {
             // The hostname's own site shadows the catch-all, so it answers the verify probe too.
@@ -296,7 +296,7 @@ fn write_error_page(output: &mut String) {
 	handle_errors {
 		map "{err.status_code} {err.message}" {ployz_error} {ployz_message} {ployz_docs} {
 			"503 NOT_RUNNING" NOT_RUNNING "The app isn't running." "#this-app-isnt-running"
-			"404 DOMAIN_NOT_FOUND" DOMAIN_NOT_FOUND "Nothing is deployed at this domain." "#nothing-is-deployed-here"
+			"404 NOT_DEPLOYED" NOT_DEPLOYED "Nothing is deployed at this domain." "#nothing-is-deployed-here"
 			~^50[234] NO_RESPONSE "The app didn't respond." "#this-app-didnt-respond"
 			default INTERNAL_ERROR "Something went wrong." ""
 		}
