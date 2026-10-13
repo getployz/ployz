@@ -1553,7 +1553,7 @@ impl Effect {
                     .ok_or_else(|| {
                         error::conflict(
                             "The Variable this change belongs to was removed",
-                            json!({ "key": key }),
+                            json!({ "removed": "variable", "id": service, "key": key }),
                         )
                     })?;
                 match field {
@@ -1571,7 +1571,10 @@ impl Effect {
                     .iter_mut()
                     .find(|volume| &volume.resource_id == id)
                     .ok_or_else(|| {
-                        error::conflict("The Volume this change belongs to was removed", json!({}))
+                        error::conflict(
+                            "The Volume this change belongs to was removed",
+                            json!({ "removed": "volume", "id": id }),
+                        )
                     })?;
                 match field {
                     VolumeField::Name(delta) => volume.name.clone_from(&delta.before),
@@ -1585,7 +1588,10 @@ impl Effect {
                     .iter_mut()
                     .find(|config| &config.resource_id == id)
                     .ok_or_else(|| {
-                        error::conflict("The Config this change belongs to was removed", json!({}))
+                        error::conflict(
+                            "The Config this change belongs to was removed",
+                            json!({ "removed": "config", "id": id }),
+                        )
                     })?;
                 match field {
                     ConfigField::Name(delta) => config.name.clone_from(&delta.before),
@@ -1665,7 +1671,7 @@ fn service_mut<'a>(
         .ok_or_else(|| {
             error::conflict(
                 "The Service this change belongs to was removed",
-                json!({ "id": id }),
+                json!({ "removed": "service", "id": id }),
             )
         })
 }

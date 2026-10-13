@@ -1725,7 +1725,31 @@ fn history_refuses_a_service_name_taken_since() {
     publish(&store, &who, None).unwrap();
     assert_eq!(
         refused_undo(&store, &who, 2),
-        "Environment production already has a Service named api"
+        "api exists. Rename it first."
+    );
+}
+
+#[test]
+fn history_names_a_private_dns_name_taken_since() {
+    let (store, who) = shop();
+    publish(&store, &who, None).unwrap();
+    remove_service(&store, &who, "api");
+    publish(&store, &who, None).unwrap();
+    create_service(&store, &who, EnvironmentRef::default(), 31, "api");
+    store
+        .write(
+            &who,
+            &ployz_store::RenameService {
+                environment: EnvironmentRef::default(),
+                service: ServiceName::parse("api").unwrap(),
+                name: ServiceName::parse("api-two").unwrap(),
+            },
+        )
+        .unwrap();
+    publish(&store, &who, None).unwrap();
+    assert_eq!(
+        refused_undo(&store, &who, 2),
+        "api is another Service's private DNS name. Change it first."
     );
 }
 
@@ -1748,7 +1772,7 @@ fn history_refuses_a_volume_name_taken_since() {
     publish(&store, &who, None).unwrap();
     assert_eq!(
         refused_undo(&store, &who, 2),
-        "Environment production already has a Volume named data"
+        "data exists. Rename it first."
     );
 }
 
@@ -1886,6 +1910,142 @@ fn history_never_brings_back_plain_text_of_a_key_sealed_only_between_saves() {
         }
     }
     assert_eq!(value(&store, &who, "web.env.TOKEN"), None);
+}
+
+#[test]
+fn history_names_the_save_that_deleted_what_an_undo_changes() {
+    let (store, who) = shop();
+    publish(&store, &who, None).unwrap();
+    set(&store, &who, "api.replicas", json!(2));
+    publish(&store, &who, None).unwrap();
+    remove_service(&store, &who, "api");
+    assert_eq!(refused_undo(&store, &who, 2), "api was deleted");
+    publish(&store, &who, None).unwrap();
+    assert_eq!(refused_undo(&store, &who, 2), "api was deleted in #3");
+}
+
+#[test]
+fn history_names_the_save_that_deleted_a_variable_an_undo_changes() {
+    let (store, who) = shop();
+    publish(&store, &who, None).unwrap();
+    set(&store, &who, "api.env.FOO", json!("a"));
+    publish(&store, &who, None).unwrap();
+    set(&store, &who, "api.env.FOO", json!("b"));
+    publish(&store, &who, None).unwrap();
+    unset(&store, &who, "api.env.FOO");
+    publish(&store, &who, None).unwrap();
+    assert_eq!(refused_undo(&store, &who, 3), "FOO was deleted in #4");
+}
+
+#[test]
+fn history_names_the_save_that_last_deleted_what_an_undo_changes() {
+    let (store, who) = shop();
+    publish(&store, &who, None).unwrap();
+    set(&store, &who, "api.env.FOO", json!("a"));
+    publish(&store, &who, None).unwrap();
+    set(&store, &who, "api.env.FOO", json!("b"));
+    publish(&store, &who, None).unwrap();
+    unset(&store, &who, "api.env.FOO");
+    publish(&store, &who, None).unwrap();
+    set(&store, &who, "api.env.FOO", json!("c"));
+    publish(&store, &who, None).unwrap();
+    unset(&store, &who, "api.env.FOO");
+    publish(&store, &who, None).unwrap();
+    assert_eq!(refused_undo(&store, &who, 3), "FOO was deleted in #6");
+}
+
+#[test]
+fn history_follows_a_renamed_variable_to_the_save_that_deleted_it() {
+    let (store, who) = shop();
+    publish(&store, &who, None).unwrap();
+    set(&store, &who, "api.env.FOO", json!("a"));
+    publish(&store, &who, None).unwrap();
+    set(&store, &who, "api.env.FOO", json!("b"));
+    publish(&store, &who, None).unwrap();
+    rename_variable(&store, &who, "api.env.FOO", "BAR");
+    publish(&store, &who, None).unwrap();
+    unset(&store, &who, "api.env.BAR");
+    publish(&store, &who, None).unwrap();
+    assert_eq!(refused_undo(&store, &who, 3), "BAR was deleted in #5");
+}
+
+#[test]
+fn history_names_a_renamed_variable_by_its_new_name_not_as_deleted() {
+    let (store, who) = shop();
+    publish(&store, &who, None).unwrap();
+    set(&store, &who, "api.env.FOO", json!("a"));
+    publish(&store, &who, None).unwrap();
+    set(&store, &who, "api.env.FOO", json!("b"));
+    publish(&store, &who, None).unwrap();
+    rename_variable(&store, &who, "api.env.FOO", "BAR");
+    publish(&store, &who, None).unwrap();
+    assert_eq!(
+        refused_undo(&store, &who, 3),
+        "FOO was renamed to BAR in #4"
+    );
+}
+
+#[test]
+fn history_names_an_unsaved_deletion_over_an_earlier_rename() {
+    let (store, who) = shop();
+    publish(&store, &who, None).unwrap();
+    set(&store, &who, "api.replicas", json!(2));
+    publish(&store, &who, None).unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::RenameService {
+                environment: EnvironmentRef::default(),
+                service: ServiceName::parse("api").unwrap(),
+                name: ServiceName::parse("backend").unwrap(),
+            },
+        )
+        .unwrap();
+    publish(&store, &who, None).unwrap();
+    remove_service(&store, &who, "backend");
+    assert_eq!(refused_undo(&store, &who, 2), "backend was deleted");
+}
+
+#[test]
+fn history_follows_a_recreated_variable_through_its_rename() {
+    let (store, who) = shop();
+    publish(&store, &who, None).unwrap();
+    set(&store, &who, "api.env.FOO", json!("a"));
+    publish(&store, &who, None).unwrap();
+    set(&store, &who, "api.env.FOO", json!("b"));
+    publish(&store, &who, None).unwrap();
+    unset(&store, &who, "api.env.FOO");
+    publish(&store, &who, None).unwrap();
+    set(&store, &who, "api.env.FOO", json!("c"));
+    publish(&store, &who, None).unwrap();
+    rename_variable(&store, &who, "api.env.FOO", "BAR");
+    publish(&store, &who, None).unwrap();
+    assert_eq!(
+        refused_undo(&store, &who, 3),
+        "FOO was renamed to BAR in #6"
+    );
+}
+
+#[test]
+fn history_names_what_was_deleted_by_the_name_it_had_then() {
+    let (store, who) = shop();
+    publish(&store, &who, None).unwrap();
+    set(&store, &who, "api.replicas", json!(2));
+    publish(&store, &who, None).unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::RenameService {
+                environment: EnvironmentRef::default(),
+                service: ServiceName::parse("api").unwrap(),
+                name: ServiceName::parse("backend").unwrap(),
+            },
+        )
+        .unwrap();
+    publish(&store, &who, None).unwrap();
+    remove_service(&store, &who, "backend");
+    publish(&store, &who, None).unwrap();
+    assert_eq!(refused_undo(&store, &who, 2), "backend was deleted in #4");
 }
 
 #[test]

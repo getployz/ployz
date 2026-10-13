@@ -1,4 +1,4 @@
-import { useRef, useState, useTransition } from "react";
+import { useContext, useRef, useState, useTransition } from "react";
 import type { ChangeKind, HistoryAction, HistoryPreview, SavedRevision } from "@ployz/sdk";
 import { useLoaderData, useParams } from "@tanstack/react-router";
 import { HistoryIcon, MoreVerticalIcon, Undo2Icon } from "lucide-react";
@@ -17,6 +17,7 @@ import { diffQuery, requireView, storeViewOptions, useStoreView } from "#/module
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { CanvasInspectorHeader } from "./CanvasInspectorHeader";
 import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
+import { HistoryStages } from "./canvas/BottomBar";
 import { kindText, Value } from "./canvas/EnvironmentChangesReview";
 
 /** How many more revisions each Show older reads. */
@@ -94,13 +95,15 @@ export function EnvironmentHistory() {
   const request = useRef(0);
   const [review, setReview] = useState<HistoryReview>({ kind: "closed" });
   const [unfolded, setUnfolded] = useState<ReadonlySet<number>>(new Set());
+  const { staged } = useContext(HistoryStages);
 
   async function stage(preview: HistoryPreview, acceptOverwrite: boolean) {
     setReview({ kind: "preview", preview, saving: true });
     try {
-      await writer.commit({ command: "stage_history", environment: store, revision: preview.revision,
+      const written = await writer.commit({ command: "stage_history", environment: store, revision: preview.revision,
         action: preview.action, change: preview.change, version: preview.version, accept_overwrite: acceptOverwrite },
       ["conflict", "confirmation_required"]).isPersisted.promise;
+      if (written.written === "history_staged" && written.changed) staged();
       setReview({ kind: "closed" });
     } catch (error) {
       setReview({ kind: "preview", preview, saving: false,

@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use ployz_core::RpcError;
-use ployz_core::config::SavedEnvironmentIntent;
+use ployz_core::config::{SavedEnvironmentIntent, SavedVariableIntent};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
@@ -290,14 +290,19 @@ fn prepare(
             )?)
         }
     };
-    super::authored::prepare_history(
+    match super::authored::prepare_history(
         tx,
         environment,
         reviewed.saved.as_ref().map(|saved| &saved.intent),
         &selected,
         previous.as_ref(),
         change,
-    )
+    ) {
+        Err(error) if error.details.get("removed").is_some() => {
+            Err(deleted_since(tx, environment, revision, &selected, error)?)
+        }
+        prepared => prepared,
+    }
 }
 fn preview_of(
     environment: &Environment,
@@ -315,4 +320,102 @@ fn preview_of(
         total_count: prepared.preview().total_count,
         overwritten: prepared.overwritten().to_vec(),
     }
+}
+
+/// `error`, from a change to a node deleted since `revision`, as the node's name
+/// and the save that deleted it.
+fn deleted_since(
+    tx: &mut dyn Tx,
+    environment: &Environment,
+    revision: Revision,
+    selected: &SavedEnvironmentIntent,
+    error: RpcError,
+) -> Result<RpcError, RpcError> {
+    let text = |key: &str| error.details.get(key).and_then(serde_json::Value::as_str);
+    let (Some(kind), Some(id)) = (text("removed"), text("id")) else {
+        return Ok(error);
+    };
+    let key = text("key").unwrap_or_default();
+    fn variables<'a>(
+        intent: &'a SavedEnvironmentIntent,
+        service: &str,
+    ) -> Option<&'a [SavedVariableIntent]> {
+        intent
+            .services
+            .iter()
+            .find(|candidate| candidate.id == service)
+            .map(|candidate| candidate.variables.as_slice())
+    }
+    // The node's name in `intent`, and for a variable the ID it has there: a
+    // variable found by key is followed by its new ID from then on.
+    let name_in = |intent: &SavedEnvironmentIntent,
+                   name: &str,
+                   variable: &Option<String>|
+     -> Option<(String, Option<String>)> {
+        let named = |name: String| Some((name, None));
+        match kind {
+            "service" => intent
+                .services
+                .iter()
+                .find(|service| service.id == id)
+                .and_then(|service| named(service.slug.clone())),
+            "variable" => {
+                let variables = variables(intent, id)?;
+                variables
+                    .iter()
+                    .find(|now| variable.as_ref() == Some(&now.id))
+                    .or_else(|| variables.iter().find(|now| now.key == name))
+                    .map(|now| (now.key.clone(), Some(now.id.clone())))
+            }
+            "volume" => intent
+                .volumes
+                .iter()
+                .find(|volume| volume.resource_id == id)
+                .and_then(|volume| named(volume.name.clone())),
+            _ => intent
+                .configs
+                .iter()
+                .find(|config| config.resource_id == id)
+                .and_then(|config| named(config.name.to_string())),
+        }
+    };
+    let Some((mut name, mut variable)) = name_in(selected, key, &None) else {
+        return Ok(error);
+    };
+    let rows = tx.query(
+        "SELECT revision, intent FROM config_saved WHERE environment_id = ?1 AND revision > ?2 \
+         ORDER BY revision",
+        &[
+            environment.summary.id.as_str().into(),
+            revision_param(revision)?.into(),
+        ],
+    )?;
+    let then = name.clone();
+    let mut renamed = None;
+    let mut deleted = None;
+    for row in &rows {
+        if let Some((held, id)) = name_in(&row.intent(1, "Saved State")?, &name, &variable) {
+            if held != name {
+                renamed = Some(row.int(0)?);
+            }
+            name = held;
+            variable = id;
+            deleted = None;
+        } else if deleted.is_none() {
+            deleted = Some(row.int(0)?);
+        }
+    }
+    // Undo applies to the draft, so a node gone from it is deleted whatever the
+    // saves did, and one renamed in it carries its draft name.
+    let message = match (name_in(&environment.working, &name, &variable), deleted) {
+        (None, Some(revision)) => format!("{name} was deleted in #{revision}"),
+        (None, None) => format!("{name} was deleted"),
+        (Some((held, _)), _) if held == then => format!("{name} was deleted"),
+        (Some((held, _)), _) if held != name => format!("{then} was renamed to {held}"),
+        (Some(_), _) => match renamed {
+            Some(revision) => format!("{then} was renamed to {name} in #{revision}"),
+            None => format!("{then} was renamed to {name}"),
+        },
+    };
+    Ok(error::conflict(message, error.details))
 }

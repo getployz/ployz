@@ -193,7 +193,33 @@ pub(crate) fn refuse_new_taken(
     };
     let mut others = None;
     for (owner, name) in claims {
-        refuse_taken_among(tx, &target, name, Some(owner), &mut others)?;
+        refuse_taken_among(tx, &target, name, Some(owner), &mut others).map_err(
+            |error| match name {
+                Name::Service(name)
+                    if error.code == ployz_core::RpcErrorCode::Conflict
+                        && !target
+                            .working
+                            .services
+                            .iter()
+                            .any(|service| service.id != owner && service.slug == name) =>
+                {
+                    error::conflict(
+                        format!("{name} is another Service's private DNS name. Change it first."),
+                        error.details,
+                    )
+                }
+                Name::Service(name) | Name::Volume(name) | Name::Config(name)
+                    if error.code == ployz_core::RpcErrorCode::Conflict =>
+                {
+                    error::conflict(format!("{name} exists. Rename it first."), error.details)
+                }
+                Name::Service(_)
+                | Name::Volume(_)
+                | Name::Config(_)
+                | Name::Hostname(_)
+                | Name::Prefix(_) => error,
+            },
+        )?;
     }
     Ok(())
 }
