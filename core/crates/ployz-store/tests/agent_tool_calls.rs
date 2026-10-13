@@ -1174,6 +1174,13 @@ fn a_queued_deployment_starts_and_a_cancelled_one_retries_once_per_key() {
     assert_eq!(retried["next"]["input"]["deployment"], 2);
     let again = call(&store, "deployment_retry", retry, "retry-3").ok();
     assert_eq!(again["deployment"], 2, "one key, one Deployment");
+    let named = json!({ "deployment": 1 });
+    let cancelled = call(&store, "deployment_start", named, "start-3").refused();
+    assert_eq!(
+        cancelled.code,
+        RpcErrorCode::Conflict,
+        "starts #1, not the latest"
+    );
 
     let numbers = |listed: &Value| {
         listed["deployments"]
@@ -1188,6 +1195,9 @@ fn a_queued_deployment_starts_and_a_cancelled_one_retries_once_per_key() {
     let all = all.ok();
     assert_eq!(numbers(&all), [json!(2), json!(1)], "newest first");
     assert_eq!(all["deployments"][1]["status"], "cancelled");
+    let source_revision = &all["deployments"][1]["saved_revision"];
+    assert!(source_revision.is_u64(), "{all}");
+    assert_eq!(retried["saved_revision"], *source_revision);
     assert!(all.get("next").is_none(), "{all}");
 
     let first = call(&store, "deployment_list", json!({ "limit": 1 }), "list-2").ok();
