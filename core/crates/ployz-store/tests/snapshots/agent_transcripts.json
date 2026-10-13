@@ -3037,6 +3037,145 @@
     ]
   },
   {
+    "tool": "history",
+    "input": {
+      "revision": 1,
+      "undo": true
+    },
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
+    },
+    "call_key": "call-history",
+    "turns": [
+      {
+        "step": {
+          "step": "read",
+          "asks": [
+            {
+              "at": "store",
+              "ask": {
+                "query": "history_preview",
+                "environment": {
+                  "project": "shop",
+                  "environment": null
+                },
+                "revision": 1,
+                "action": "undo",
+                "change": null
+              }
+            }
+          ]
+        },
+        "answers": [
+          {
+            "error": {
+              "code": "not_found",
+              "message": "No saved version has this revision",
+              "details": {
+                "revision": 1
+              }
+            }
+          }
+        ]
+      },
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": false,
+            "refusal": {
+              "code": "not_found",
+              "message": "No saved version has this revision",
+              "retry": {
+                "tool": "history",
+                "input": {
+                  "revision": 1,
+                  "undo": true
+                }
+              },
+              "writes": "none",
+              "next": []
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "tool": "history",
+    "input": {
+      "revision": 1,
+      "undo": true
+    },
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": {
+        "at": "local"
+      }
+    },
+    "call_key": "call-history",
+    "turns": [
+      {
+        "step": {
+          "step": "read",
+          "asks": [
+            {
+              "at": "store",
+              "ask": {
+                "query": "history_preview",
+                "environment": {
+                  "project": "shop",
+                  "environment": null
+                },
+                "revision": 1,
+                "action": "undo",
+                "change": null
+              }
+            }
+          ]
+        },
+        "answers": [
+          {
+            "error": {
+              "code": "not_found",
+              "message": "No saved version has this revision",
+              "details": {
+                "revision": 1
+              }
+            }
+          }
+        ]
+      },
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": false,
+            "refusal": {
+              "code": "not_found",
+              "message": "No saved version has this revision",
+              "retry": {
+                "tool": "history",
+                "input": {
+                  "revision": 1,
+                  "undo": true
+                }
+              },
+              "writes": "none",
+              "next": []
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
     "tool": "publish",
     "input": {
       "environment": "staging"
