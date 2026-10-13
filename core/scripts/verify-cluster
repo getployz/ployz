@@ -481,7 +481,7 @@ def preflight(args):
     memory = host.size(args.memory or module.DEFAULT_SIZES["memory"])
     meminfo = {line.split(":")[0]: int(line.split()[1]) * 1024 for line in Path("/proc/meminfo").read_text().splitlines()}
     try:
-        free, total = module.capacity(os.environ.get("PLOYZ_VERIFY_INCUS_POOL", "ployz-verify"))
+        free, total = module.capacity(os.environ.get("PLOYZ_VERIFY_INCUS_POOL", module.DEFAULT_POOL))
     except subprocess.CalledProcessError:
         # The pool does not exist yet; its first run creates it on the root filesystem.
         usage = shutil.disk_usage("/")
