@@ -20,6 +20,7 @@ import { Switch } from "#/components/ui/switch";
 import { serviceSettingRows } from "#/modules/config-store/store-services";
 import { SettingsSection, SHARED_VOLUME_WHY } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
 import { SafetyLine, useVolumeCopies, VolumeCopiesPanel } from "./StoreVolumeCopies";
+import { SnapshotSettings } from "./StoreVolumeSchedule";
 import { mirrorResourceId } from "#/modules/volume-placement/volume-placement";
 import { useStagedPlacements } from "#/modules/volume-placement/volume-placement.hooks";
 import { VOLUME_PAGES, volumePageSchema } from "./volume-pages";
@@ -142,6 +143,8 @@ function VolumeDrawer({ params, environment, volume, volumes, services, settings
                 <SettingsSection id="space" title="Space">
                   <StoreVolumeStorage key={`${volume.id}:${JSON.stringify(volume.storage)}`} state={state} removing={removing} />
                 </SettingsSection>
+                {managed && data.snapshots.list !== null ? <SnapshotSettings volume={volume.name} server={data.copies?.live.server?.name ?? ""}
+                  schedule={data.schedule} snapshots={data.snapshots.list.snapshots} /> : null}
                 {removing ? <SettingsSection id="mounts" title="Mounts">
                     <Empty variant="placeholder">
                       <EmptyDescription>Removed on next deploy.</EmptyDescription>

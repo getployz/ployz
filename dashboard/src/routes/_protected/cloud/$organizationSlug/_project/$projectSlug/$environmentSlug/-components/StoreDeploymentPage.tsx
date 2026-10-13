@@ -25,6 +25,7 @@ import { useStoreWriter } from "#/modules/config-store/store-write";
 import { useCopiesWait, useStorageSteps } from "#/modules/volume-placement/volume-placement.hooks";
 import { formatDuration } from "#/utils/relative-time";
 import { CanvasInspectorHeader } from "./CanvasInspectorHeader";
+import { DeploymentRestoreData } from "./DeploymentRestoreData";
 import { CanvasInspectorNotFound } from "./CanvasInspectorRouteStates";
 import { DEPLOYMENT_PAGE_ROUTE_TO, type deploymentPageSearchSchema } from "./deployment-page";
 import { ENVIRONMENT_NEW_BRANCH_ROUTE_TO, ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_SERVICE_ROUTE_TO } from "./environment-route-paths";
@@ -41,6 +42,7 @@ type LogStage = NonNullable<typeof deploymentPageSearchSchema.Type["logs"]>;
  */
 export function StoreDeploymentPage({ deploymentId, search }: { deploymentId: string; search: typeof deploymentPageSearchSchema.Type }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
+  const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const navigate = useNavigate();
   const result = useStoreView(params.organizationSlug, deploymentQuery(deploymentId));
   // With no Server, nothing can run it: the way on is adding one.
@@ -118,6 +120,8 @@ export function StoreDeploymentPage({ deploymentId, search }: { deploymentId: st
           </div>
         ) : null}
         {storage ? <p role="status" className="text-sm">{storage}</p> : null}
+        {deployment.status === "failed"
+          ? <DeploymentRestoreData organizationSlug={params.organizationSlug} environment={store} deploymentId={deployment.id} /> : null}
 
         {/* What it shipped despite: a secret left out, or a Config file reference left empty. */}
         {deployment.warnings?.length ? (

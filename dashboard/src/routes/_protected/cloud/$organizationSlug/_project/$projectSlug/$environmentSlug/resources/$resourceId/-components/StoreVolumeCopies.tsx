@@ -20,7 +20,7 @@ import {
 import { useRefreshMirror } from "#/modules/volume-copies/volume-copies.hooks";
 import { copiesFromPlacement } from "#/modules/volume-copies/volume-copies.placement";
 import { relWords, type SnapshotClock, snapshotClock, snapshotsServed } from "#/modules/volume-copies/volume-snapshots";
-import { useVolumeSnapshots } from "#/modules/volume-copies/volume-snapshots.hooks";
+import { useSnapshotPolicy, useVolumeSnapshots } from "#/modules/volume-copies/volume-snapshots.hooks";
 import { MIRROR_ROUND_MINUTES, mirrorLast, skippedWords } from "#/modules/volume-copies/volume-copies.refresh";
 import { placementLacking, placementServers, placementUnknown, restoreOpen } from "#/modules/volume-placement/daemon-release";
 import {
@@ -32,7 +32,8 @@ import { useVolumePlacements } from "#/modules/volume-placement/volume-placement
 import type { Member, VolumeRunView } from "#/modules/volume-run/volume-run";
 import { useActiveVolumeRuns, useVolumeMembers } from "#/modules/volume-run/volume-run.queries";
 import { useTimeZone } from "#/utils/time-zone";
-import { SnapshotsView, type VolumeSnapshotsData } from "./StoreVolumeSnapshots";
+import type { VolumeScheduleData } from "./StoreVolumeSchedule";
+import { type RestoreTarget, SnapshotsView, type VolumeSnapshotsData } from "./StoreVolumeSnapshots";
 
 /** A Volume as the Copies tab shows it: who mounts it names who its Primary runs. */
 export type CopiesVolume = PlacementVolume & { readonly mounts: readonly { readonly service: string }[] };
@@ -54,7 +55,9 @@ export function useVolumeCopies(organizationSlug: string, environment: Environme
   const mirror = useRefreshMirror(organizationSlug, environment, volume.id);
   const clock = snapshotClock(useTimeZone());
   const writer = members === undefined ? null : observePlacement(members).primary?.id ?? null;
-  const snapshots = useVolumeSnapshots(organizationSlug, environment, volume.id, snapshotsServed(lens.machines, writer));
+  const served = snapshotsServed(lens.machines, writer);
+  const snapshots = useVolumeSnapshots(organizationSlug, environment, volume.id, served);
+  const schedule = useSnapshotPolicy(organizationSlug, environment, volume.id, served);
   const row = rows.find((entry) => entry.volumeId === volume.id) ?? null;
   const copies = members === undefined ? null : copiesFromPlacement({
     volume, members, row, active: running, lastSync: mirror.lastSync, lastDone: mirror.lastDone, snapshots: snapshots.list?.snapshots ?? null,
@@ -79,6 +82,7 @@ export function useVolumeCopies(organizationSlug: string, environment: Environme
     refresh: mirror.refresh,
     refreshing: mirror.pending,
     snapshots,
+    schedule,
     snapshotClock: clock,
   };
 }
@@ -108,6 +112,7 @@ export type CopiesPanelProps = {
   /** From the Refresh now click until its round ends. */
   refreshing: boolean;
   snapshots: VolumeSnapshotsData;
+  schedule: VolumeScheduleData;
   snapshotClock: SnapshotClock;
   open: MachineId | null;
   onOpen: (copy: MachineId | null) => void;
@@ -134,19 +139,31 @@ export function VolumeCopiesPanel(props: CopiesPanelProps) {
   const mirror = copies.elsewhere.find((copy): copy is MirrorCopy => copy.kind === "mirror" && copy.id === open);
   if (mirror !== undefined) return <CopyView {...props} members={members} row={row} copies={copies} copy={mirror} onBack={() => onOpen(null)} />;
   if (snapshotsOpen && copies.live.snapshots !== null) {
-    return <SnapshotsView volume={volume.name} services={services(volume)} live={copies.live.server?.name ?? "its server"} snapshots={props.snapshots}
-      clock={props.snapshotClock} staged={row?.staged?.restore?.from ?? null} restoreTo={restoreTo({ ...props, members, row, target })}
+    return <SnapshotsView volume={volume.name} services={mountedServices(volume)} live={copies.live.server?.name ?? "its server"} snapshots={props.snapshots}
+      schedule={props.schedule} clock={props.snapshotClock} staged={row?.staged?.restore?.from ?? null} restoreTo={restoreTo({ ...props, members, row, target })}
       stage={props.stage} onBack={() => setSnapshotsOpen(false)} now={props.now} />;
   }
   return <CopiesView {...props} members={members} row={row} copies={copies} target={target} onSnapshots={() => setSnapshotsOpen(true)} />;
 }
 
+/** Where a snapshot of this Volume restores now, or null; a failed Deployment's Restore data reads it outside the panel. */
+export function snapshotRestoreTarget(data: Pick<VolumeCopiesData, "volume" | "members" | "rows" | "upgrade" | "unknown" | "disabled" | "deploying">) {
+  if (data.members === undefined) return null;
+  const row = data.rows.find((entry) => entry.volumeId === data.volume.id) ?? null;
+  const target = targetPlacement(observePlacement(data.members), row);
+  return target === null ? null : restoreTo({ ...data, members: data.members, row, target });
+}
+
 type Resolved = CopiesPanelProps & { members: readonly Member[]; row: PlacementRow | null; copies: VolumeCopies };
 
-const services = (volume: CopiesVolume) => [...new Set(volume.mounts.map((mount) => mount.service))].join(", ") || volume.name;
+export const mountedServices = (volume: CopiesVolume) => [...new Set(volume.mounts.map((mount) => mount.service))].join(", ") || volume.name;
 
 /** A snapshot restores onto the writer as it stands: not while a move, a seed or a Deploy has the Volume. */
-function restoreTo({ members, row, target, upgrade, unknown, disabled, deploying }: CopiesPanelProps & { members: readonly Member[]; row: PlacementRow | null; target: Placement }) {
+function restoreTo({ members, row, target, upgrade, unknown, disabled, deploying }: Pick<CopiesPanelProps, "upgrade" | "unknown" | "disabled" | "deploying"> & {
+  members: readonly Member[];
+  row: PlacementRow | null;
+  target: Placement;
+}): RestoreTarget | null {
   const observed = observePlacement(members);
   const free = !disabled && !deploying && upgrade.length === 0 && unknown.length === 0;
   if (!free || target.seed !== undefined || observed.primary?.id !== target.primary) return null;
@@ -363,7 +380,7 @@ function CopyView({ volume, members, row, rows, copies, copy, accepting, upgrade
   const remove = offered === null ? null : editPlacement(offered, { kind: "remove_mirror", server: copy.server.id });
   const locked = disabled || deploying;
   const live = copies.live.server?.name ?? "the live server";
-  const mounted = services(volume);
+  const mounted = mountedServices(volume);
   const stale = isStale(copy, now);
   const shown = refreshing && copy.busy === null ? { ...copy, busy: "Refreshing" } : copy;
   const last = mirrorLast(shown, now);

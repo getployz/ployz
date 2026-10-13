@@ -112,6 +112,27 @@ drops writes, the deploy asks you to type where you deploy first. Discard a stag
 If the volume moved to another server since you picked the snapshot, the deploy fails and drops
 the restore. The services start again on the data they had. Open **Snapshots** and restore again.
 
+### Automatic snapshots
+
+**Edit** in **Snapshots**, or under **Snapshots** in the volume's **Settings**, sets them up.
+Saving runs at once, not on deploy.
+
+- **Before** and **After** take a snapshot of the volume at each deploy in its environment.
+  **Before** runs before the deploy's pre-deploy command and volume changes. **After** runs once
+  the deploy succeeds. **Keep** says how many deploy snapshots to keep. Before and After
+  snapshots count together, so with both on, 10 keeps the last 5 deploys.
+- **Every** takes one each hour, or each day at 00:00 UTC. **Keep** sets how far back they go,
+  such as 1 day of hourly snapshots. **Off** stops them and keeps the ones you have.
+- **Up to** caps the space snapshots use, from 1 to 20 GB. Past it, the oldest automatic
+  snapshots go first.
+
+Ployz never prunes a manual snapshot or one you marked **Keep**. When saving deletes snapshots
+now, the dialog says how many and the toast counts them. **Settings** shows the space snapshots
+use against the cap, the server that holds them, and the schedule in words.
+
+A snapshot Ployz can't take, because the server is busy or not answering, waits for the next
+hour or deploy. It never fails the deploy.
+
 Snapshots live on the same server as the volume. They don't survive that server. Keep a copy
 elsewhere too.
 

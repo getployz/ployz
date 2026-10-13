@@ -1,3 +1,4 @@
+import type { EnvironmentRef } from "@ployz/sdk";
 import type { webhooks } from "#/modules/billing/polar-api";
 import { Schema } from "effect";
 import type { ServerPolicyChange } from "#/modules/machines/server-policy";
@@ -80,6 +81,15 @@ export type VolumeRunRequestedEventData = {
   environment: string;
   volumeId: string;
   runId: string;
+};
+export const volumeSnapshotScheduledEvent = "volume/snapshot.scheduled";
+
+/** `tick` is the hour the schedule ran for, as an ISO string; the snapshot's id is minted from it. */
+export type VolumeSnapshotScheduledEventData = {
+  organizationId: string;
+  environment: EnvironmentRef;
+  volumeId: string;
+  tick: string;
 };
 export const serverDrainRequestedEvent = "server/drain.requested";
 export const namespaceCleanupRequestedEvent = "namespace/cleanup.requested";
@@ -272,6 +282,10 @@ export const volumeRunRequestedEventType = eventType(
   volumeRunRequestedEvent,
   { schema: staticSchema<VolumeRunRequestedEventData>() },
 );
+export const volumeSnapshotScheduledEventType = eventType(
+  volumeSnapshotScheduledEvent,
+  { schema: staticSchema<VolumeSnapshotScheduledEventData>() },
+);
 export const inngestFunctionFinishedEventType = eventType(
   "inngest/function.finished",
   { schema: staticSchema<{ function_id: string; run_id: string; error?: { name: string; message: string } | null }>() },
@@ -369,6 +383,11 @@ export function createCliServerUpgradeRequestedEvent(data: ServerUpgradeRequeste
 /** Keyed by the run's row: sending it again for the same request runs nothing new. */
 export function createVolumeRunRequestedEvent(data: VolumeRunRequestedEventData) {
   return { id: `volume-run-${data.runId}`, name: volumeRunRequestedEvent, data } as const;
+}
+
+/** Keyed by the Volume and the tick: a retried schedule sends nothing new. */
+export function createVolumeSnapshotScheduledEvent(data: VolumeSnapshotScheduledEventData) {
+  return { id: `volume-snapshot-${data.volumeId}-${Date.parse(data.tick) / 1000}`, name: volumeSnapshotScheduledEvent, data } as const;
 }
 
 /** Keyed by the Drain's row: sending it again for the same request runs nothing new. */
@@ -554,6 +573,7 @@ export type InngestSendableEvent =
   | ReturnType<typeof createNamespaceCleanupRequestedEvent>
   | ReturnType<typeof createServiceActRequestedEvent>
   | ReturnType<typeof createVolumeRunRequestedEvent>
+  | ReturnType<typeof createVolumeSnapshotScheduledEvent>
   | ReturnType<typeof createClusterDomainSyncRequestedEvent>
   | ReturnType<typeof createConfigFirstServerJoinedEvent>
   | ReturnType<typeof createOrganizationBillingSyncRequestedEvent>

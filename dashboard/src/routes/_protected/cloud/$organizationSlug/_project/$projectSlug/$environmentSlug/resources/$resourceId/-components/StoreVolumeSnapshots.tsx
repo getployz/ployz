@@ -9,10 +9,25 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Field, FieldContent, FieldTitle } from "#/components/ui/field";
 import { Item, ItemActions, ItemContent, ItemGroup, ItemTitle } from "#/components/ui/item";
 import { cn } from "#/lib/utils";
+import { scheduleWords } from "#/modules/volume-copies/snapshot-schedule";
 import type { Snapshot } from "#/modules/volume-copies/volume-copies";
 import type { SnapshotList } from "#/modules/volume-copies/volume-snapshots.hooks";
 import { lossWords, type SnapshotClock, SNAPSHOT_WORDS, sizeWords } from "#/modules/volume-copies/volume-snapshots";
 import type { Placement, SnapshotRestore } from "#/modules/volume-placement/volume-placement";
+import { useScheduleEditor, type VolumeScheduleData } from "./StoreVolumeSchedule";
+
+export type RestoreTarget = { readonly target: Placement; readonly applied: readonly MachineId[] };
+
+/**
+ * The staged swap that brings `snapshot` back on the next Deploy; `epoch` is the list it was read from, and `save` names
+ * the Before restore snapshot of the data it replaces.
+ */
+export const stagedSnapshot = ({ target, applied }: RestoreTarget, snapshot: Snapshot, epoch: number, save: string = crypto.randomUUID()) => {
+  const restore: SnapshotRestore = {
+    from: snapshot.id, at: Math.floor(snapshot.at.getTime() / 1000), losesBytes: snapshot.losesBytes, save, expect: epoch,
+  };
+  return [{ ...target, restore }, applied] as const;
+};
 
 export type VolumeSnapshotsData = {
   readonly list: SnapshotList | null;
@@ -26,14 +41,15 @@ export type VolumeSnapshotsData = {
  * One Volume's snapshots, by day. Take, Keep and Delete run now on the writer; Restore stages a swap for the next Deploy.
  * `restoreTo` is the placement a restore stages onto, or null where a restore can't be staged now.
  */
-export function SnapshotsView({ volume, services, live, snapshots, clock, staged, restoreTo, stage, onBack, now = new Date() }: {
+export function SnapshotsView({ volume, services, live, snapshots, schedule, clock, staged, restoreTo, stage, onBack, now = new Date() }: {
   volume: string;
   services: string;
   live: string;
   snapshots: VolumeSnapshotsData;
+  schedule: VolumeScheduleData;
   clock: SnapshotClock;
   staged: string | null;
-  restoreTo: { readonly target: Placement; readonly applied: readonly MachineId[] } | null;
+  restoreTo: RestoreTarget | null;
   stage: (staged: Placement, mirrors: readonly MachineId[]) => void;
   onBack: () => void;
   now?: Date;
@@ -44,12 +60,16 @@ export function SnapshotsView({ volume, services, live, snapshots, clock, staged
   const epoch = snapshots.list?.epoch ?? null;
   const total = list.reduce((sum, snapshot) => sum + snapshot.bytes, 0);
   const label = (snapshot: Snapshot) => `${SNAPSHOT_WORDS[snapshot.kind]} · ${clock.when(snapshot.at, now)}`;
+  const editor = useScheduleEditor(volume, schedule, list);
 
   return <div className="flex flex-col gap-4">
     <Button variant="ghost" size="sm" className="self-start" onClick={onBack}><ChevronLeftIcon data-icon="inline-start" />Copies</Button>
     <div className="flex items-center gap-2">
-      <span className="font-semibold">Snapshots</span>
-      <span className="min-w-0 flex-1 truncate text-sm text-muted-foreground">{live} · {sizeWords(total)}</span>
+      <div className="flex min-w-0 flex-1 flex-col">
+        <p className="truncate"><span className="font-semibold">Snapshots</span> <span className="text-sm text-muted-foreground">{live} · {sizeWords(total)}</span></p>
+        {schedule.policy === null ? null : <p className="text-sm text-muted-foreground">{scheduleWords(schedule.policy)}</p>}
+      </div>
+      {editor.edit}
       <Button size="sm" disabled={snapshots.pending || epoch === null} onClick={snapshots.take}>
         <CameraIcon data-icon="inline-start" />Take snapshot
       </Button>
@@ -63,15 +83,11 @@ export function SnapshotsView({ volume, services, live, snapshots, clock, staged
             onRestore={() => setRestoring(snapshot)} onKeep={() => snapshots.keep(snapshot.id, !snapshot.kept)} onDelete={() => setDeleting(snapshot)} />)}
         </ItemGroup>
       </section>)}
+    {editor.dialog}
     <RestoreDialog volume={volume} services={services} live={live} snapshot={restoring} label={restoring ? label(restoring) : ""} now={now}
       onOpenChange={(open) => { if (!open) setRestoring(null); }}
       onRestore={(snapshot) => {
-        if (restoreTo !== null && epoch !== null) {
-          const restore: SnapshotRestore = {
-            from: snapshot.id, at: Math.floor(snapshot.at.getTime() / 1000), losesBytes: snapshot.losesBytes, save: crypto.randomUUID(), expect: epoch,
-          };
-          stage({ ...restoreTo.target, restore }, restoreTo.applied);
-        }
+        if (restoreTo !== null && epoch !== null) stage(...stagedSnapshot(restoreTo, snapshot, epoch));
         setRestoring(null);
       }} />
     <ConfirmDialog open={deleting !== null} onOpenChange={(next) => { if (!next) setDeleting(null); }} title="Delete snapshot" variant="destructive"
