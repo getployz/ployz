@@ -733,11 +733,17 @@ impl VolumeStorage {
             .map_err(|error| internal(format!("GET {url} answered {body:?}: {error}").into()))
     }
 
-    /// Mirror to Forget: the slot and its copy destroyed.
+    /// Mirror to Forget: the slot and its copy destroyed. A root `Volume.Seed` landed
+    /// that Docker never adopted goes the same way; any other root is refused.
     async fn copy_destroy(&self, name: &WireName) -> Result<Copy, RpcError> {
         let scope = self.scope(name).await?;
         let name = &scope.name;
-        if scope.root()?.is_some() {
+        if let Some(root) = scope.root()? {
+            if self.unadopted_seed(&root.name).await.map_err(internal)? {
+                ployzd::faults::kill_inside("SetVolumeCopy.SeedToForget");
+                self.z(&["destroy", "-r", &root.name]).await?;
+                return self.copy_now(&scope).await;
+            }
             return Err(self
                 .refuse_found(
                     &scope,

@@ -420,7 +420,11 @@ async fn the_writer_route_restores_a_cut_root_without_hiding_it_from_docker() {
     assert_eq!(reply.pointer("/Ok/readonly"), Some(&json!(false)));
     assert!(property(&test, ROOT, "ployz:promote").is_none());
     assert!(property(&test, ROOT, "ployz:cut").is_none());
-    assert!(!commands(&test).contains("ployz:promote"));
+    assert!(
+        effects(&commands(&test))
+            .iter()
+            .all(|effect| !effect.contains("ployz:promote"))
+    );
     server.abort();
 }
 
@@ -1146,6 +1150,27 @@ async fn destroy_drops_the_slot_and_leaves_a_root_alone() {
 }
 
 #[tokio::test]
+async fn destroy_refuses_a_root_without_both_seed_markers() {
+    for markers in [&[("ployz:promote", "on")][..], &[("ployz:seed", "77")][..]] {
+        let test = TestDir::new();
+        let (socket, server) = writer(&test, &[("w-1-1", 11)]);
+        for (property, value) in markers {
+            set_property(&test, ROOT, property, value);
+        }
+        let reply = post(&socket, "/Volume.Copy.Destroy", json!({"name": "data"})).await;
+        assert_eq!(reason(&reply), "no_transition", "{markers:?}");
+        assert_eq!(
+            reply.pointer("/Err/details/copy/seed"),
+            Some(&json!(false)),
+            "{markers:?}"
+        );
+        assert!(effects(&commands(&test)).is_empty(), "{markers:?}");
+        assert!(test.0.join("volume").exists(), "{markers:?}");
+        server.abort();
+    }
+}
+
+#[tokio::test]
 #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
 async fn docker_sees_a_cut_root_through_its_slot_until_the_root_is_back() {
     let test = TestDir::new();
@@ -1700,7 +1725,7 @@ async fn set_copy(machine: &Machine, docker: &mut Docker, set: &Set) -> Value {
                 .call("/Volume.Copy.Pull", pull(&target.to_string()))
                 .await
         }
-        (CopyTransition::MirrorToForget, WantedCopy::Forget) => {
+        (CopyTransition::MirrorToForget | CopyTransition::SeedToForget, WantedCopy::Forget) => {
             machine
                 .call("/Volume.Copy.Destroy", json!({"name": "data"}))
                 .await

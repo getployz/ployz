@@ -160,7 +160,7 @@ impl MachineService {
                 self.plugin_copy(PULL_ROUTE, &PullRequest { name, from, target })
                     .await
             }
-            (CopyTransition::MirrorToForget, WantedCopy::Forget) => {
+            (CopyTransition::MirrorToForget | CopyTransition::SeedToForget, WantedCopy::Forget) => {
                 self.plugin_copy(DESTROY_ROUTE, &CopyRequest { name }).await
             }
             (transition, want) => {
@@ -280,6 +280,7 @@ fn fault_point(transition: CopyTransition) -> &'static str {
         CopyTransition::WriterToMirror => "SetVolumeCopy.WriterToMirror",
         CopyTransition::WriterToSnapshot => "SetVolumeCopy.WriterToSnapshot",
         CopyTransition::WriterToForget => "SetVolumeCopy.WriterToForget",
+        CopyTransition::SeedToForget => "SetVolumeCopy.SeedToForget",
         CopyTransition::MirrorToWriter => "SetVolumeCopy.MirrorToWriter",
         CopyTransition::MirrorToMirror => "SetVolumeCopy.MirrorToMirror",
         CopyTransition::MirrorToForget => "SetVolumeCopy.MirrorToForget",

@@ -15,6 +15,8 @@ use super::{
     },
 };
 
+use super::seed::SEED_PROPERTY;
+
 pub(super) fn internal(error: VolumeError) -> RpcError {
     match error {
         VolumeError::Capacity(error) => error.into_rpc_error(),
@@ -39,6 +41,14 @@ impl VolumeStorage {
 
     pub(super) async fn unregistered(&self, dataset: &str) -> Result<bool> {
         Ok(self.property(dataset, PROMOTE_PROPERTY).await?.is_some())
+    }
+
+    /// A root `Volume.Seed` landed that Docker has not adopted. Adoption clears only
+    /// `ployz:promote`, and a Move's promoted root carries only `ployz:promote`, so it
+    /// takes both.
+    pub(super) async fn unadopted_seed(&self, dataset: &str) -> Result<bool> {
+        Ok(self.unregistered(dataset).await?
+            && self.property(dataset, SEED_PROPERTY).await?.is_some())
     }
 
     /// Every snapshot of a dataset as `name<TAB>guid<TAB>creation`, newest first by
@@ -157,6 +167,7 @@ impl VolumeStorage {
                 readonly: root.readonly,
                 newest: self.newest_snapshot(&root.name).await?,
                 epoch: self.epoch(&root.name).await?,
+                seed: self.unadopted_seed(&root.name).await?,
             }));
         }
         let Some(slot) = Self::slot(datasets, pool, name) else {
