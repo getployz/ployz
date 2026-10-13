@@ -90,7 +90,7 @@ function drift(): string[] {
       }
     }
   }
-  const idempotent = new Set<string>(Object.values(OPERATIONS).map(({ idempotency }) => idempotency).filter((tool) => typeof tool === "string"));
+  const idempotent = new Set<unknown>(Object.values(OPERATIONS).map(({ idempotency }) => idempotency));
   for (const tool of OPERATION_TOOLS) {
     if (!idempotent.has(tool)) problems.push(`operation tool ${tool}: no operation is idempotent under it`);
   }
