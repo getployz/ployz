@@ -110,8 +110,8 @@ Volume data has no writer; web-2 holds its only copy. Make it the writer: ployz 
 
 Run the `ployz volume restore` line it prints to make that copy the writer again, then deploy.
 If several servers hold copies, keep the newest and remove the others with the `ployz volume mirror rm` lines it names. A volume
-that is [mid-move](move-a-volume.md#when-a-move-stops) refuses too, and names the move to wait for
-or the `ployz volume release` line to run.
+that is [mid-move](move-a-volume.md#when-a-move-stops) refuses too, and names the
+`ployz volume release` line that stops the move.
 
 ## When your servers show Docker only
 
