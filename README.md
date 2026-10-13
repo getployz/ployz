@@ -101,6 +101,25 @@ Ployz is young and changing quickly. Good to know before you move a production a
 
 Planned: snapshots, backups and rollbacks, and moving a database to a bigger server without downtime.
 
+## How Ployz is built
+
+Most of Ployz is written by agents. I don't hand-edit much code anymore. I design the loop the
+agents run in, and I'm responsible for what comes out of it.
+
+We use pstack. Every change ships as a small PR, and the agent has to prove it works by actually
+running Ployz the way you would: deploying to real servers, adding a machine, checking that
+traffic moves. If it can't show me that, it doesn't merge.
+
+Low-risk PRs merge on their own after the checks pass. Higher-risk ones, like the orchestrator,
+networking, or anything touching your data, get a human review first. I read everything else
+after it lands.
+
+When an agent gets something wrong, we don't just fix that one spot. We turn it into a lint rule
+or a test, so it can't happen again.
+
+Code review never caught every bug, and verification won't either. But every mistake makes the
+system stricter, and that's the part I trust.
+
 ## Contributing
 
 Bug reports and feature requests go in [GitHub Issues](https://github.com/getployz/ployz/issues).
