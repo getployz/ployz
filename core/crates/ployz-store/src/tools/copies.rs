@@ -272,10 +272,7 @@ impl Tool for VolumeMirror {
                 .with_next(Call::new("volume_mirror_remove", Value::Object(input)))
                 .into());
             }
-            (Some(to), None) => VolumeRun::Mirror {
-                to,
-                full: self.full,
-            },
+            (Some(to), None) => VolumeRun::Mirror { to },
         };
         on_volume(cx, &view, run, self.request_key, self.wait_seconds)
     }

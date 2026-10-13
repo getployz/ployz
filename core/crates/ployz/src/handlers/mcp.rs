@@ -897,7 +897,7 @@ fn typed(write: &Write) -> Option<String> {
             None => remove.project.to_string(),
         }),
         Write::Act(Act {
-            action: Action::RemoveServer { server, .. },
+            action: Action::RemoveServer { server, .. } | Action::ForgetServer { server },
             ..
         }) => Some(server.name.to_string()),
         Write::Store(_) | Write::Act(_) => None,

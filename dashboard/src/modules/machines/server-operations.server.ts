@@ -149,7 +149,7 @@ export function removePlan(
   const volumes = [...(confirmed ?? [])].sort((a, b) => byName(volumeName(a), volumeName(b)));
   return {
     subject: `server:${machineId}`,
-    verb: "remove",
+    verb: confirmed === null ? "forget" : "remove",
     name,
     preview: { server: machineId, reset: confirmed !== null, volumes: volumes.map(volumeName) },
     effects: [
@@ -241,7 +241,8 @@ export const freshOperationDigest: OperationDigest<Effect.Services<ReturnType<ty
       case "clean":
         if (yield* ownedOrSystem(organizationId, key)) return null;
         return operationDigest(yield* planClean(organizationId, key));
-      case "remove": {
+      case "remove":
+      case "forget": {
         const frame = yield* observe(organizationId);
         return frame.machines.some(({ machine }) => machine.id === key) ? stored : null;
       }

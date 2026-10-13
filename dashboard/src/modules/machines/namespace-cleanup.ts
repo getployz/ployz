@@ -1,3 +1,6 @@
+import { Schema } from "effect";
+import { dataLossIdentitySchema } from "#/modules/runtime/data-loss-identity";
+
 /**
  * One clean of a Namespace no Environment owns, as its row moves: the CLI's request writes `pending`, the run claims it
  * `running` right before the Engine is asked, and the Engine's success ends it `finished`. The rest end it under an end
@@ -30,3 +33,10 @@ export type CleanupEndCodeWithoutMessage = Exclude<CleanupEndCode, (typeof CLEAN
 export const CLEANUP_PENDING_LIMIT_MS = 15 * 60_000;
 /** A clean running this long lost its run; the hourly sweep closes it as lost. */
 export const CLEANUP_RUNNING_LIMIT_MS = 60 * 60_000;
+
+/** The dashboard's clean of one stray Namespace, deleting exactly the Data Loss its dialog showed. */
+export const RemoveNamespaceInput = Schema.Struct({
+  organizationSlug: Schema.NonEmptyString,
+  namespace: Schema.NonEmptyString,
+  confirmDataLoss: Schema.Array(dataLossIdentitySchema),
+});

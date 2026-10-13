@@ -453,18 +453,18 @@ class Cluster:
     # Removal and rejoin
 
     def remove_dead(self, machine, limit=900):
-        """`server rm --no-reset --confirm dead`, retried while the entry Server still lists it as answering:
+        """`server forget --confirm dead`, retried while the entry Server still lists it as answering:
         until its handshake goes stale, the copies it holds are asked for and the ask times out."""
         deadline = time.monotonic() + limit
         attempts = []
         while True:
-            code, data = self.accepted("server", "rm", machine, "--no-reset", "--confirm", "dead", timeout=600)
+            code, data = self.accepted("server", "forget", machine, "--confirm", "dead", timeout=600)
             attempts.append(f"exit {code} {say(data)[:300]}")
             if code == 0:
                 return attempts
             retry = "does not match" in say(data) or find_key(data, "code") == "unavailable"
             if not retry or time.monotonic() > deadline:
-                raise CheckError(f"server rm {machine} --no-reset --confirm dead refused: {attempts[-3:]}")
+                raise CheckError(f"server forget {machine} --confirm dead refused: {attempts[-3:]}")
             time.sleep(10)
 
     def daemon_up(self, machine):
@@ -770,7 +770,7 @@ def no_reset_refused(vc):
     before = state()
     attempts = {}
     for confirm in ("dead", B):
-        code, data = vc.cli("server", "rm", B, "--no-reset", "--confirm", confirm, timeout=600)
+        code, data = vc.cli("server", "forget", B, "--confirm", confirm, timeout=600)
         attempts[confirm] = (code, say(data)[:600])
     after = state()
     named = attempts[B][1]

@@ -1,4 +1,4 @@
-//! Tools on Servers: show them, drain, upgrade, clean a leftover, remove one.
+//! Tools on Servers: show them, drain, upgrade, clean a leftover, remove or forget one.
 
 use std::collections::BTreeMap;
 
@@ -315,6 +315,45 @@ impl Tool for ServerRemove {
             action: Action::RemoveServer {
                 server: server.reference(),
                 loss,
+            },
+            read: server_show(None),
+        };
+        operate(cx, run, self.request_key, 0)
+    }
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ServerForget {
+    #[schemars(with = "String", pattern(NODE_NAME))]
+    server: ServerName,
+    #[serde(default)]
+    #[schemars(with = "Option<String>", pattern(REQUEST_KEY))]
+    request_key: Option<RequestKey>,
+}
+
+impl Tool for ServerForget {
+    const NAME: &'static str = "server_forget";
+    const DESCRIPTION: &'static str = "Forget a server that is gone, without a reset; its volumes are lost. Refused while it answers and holds a volume copy.";
+    const GATE: Gate = Gate::Cloud;
+    const READ_ONLY: bool = false;
+
+    fn example() -> Value {
+        json!({ "server": "web-3" })
+    }
+
+    fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
+        cx.cloud_only()?;
+        let mut answers = cx.read(vec![servers()])?.into_iter();
+        let answer = cx.cloud::<ServersAnswer>(answers.next())?;
+        let server = resolve(&answer, &self.server, "server", false)?;
+        let run = Run {
+            at: server.name.as_str().to_owned(),
+            subject: Subject::Server {
+                machine: server.machine,
+            },
+            action: Action::ForgetServer {
+                server: server.reference(),
             },
             read: server_show(None),
         };

@@ -84,6 +84,7 @@ pub(crate) const TOOLS: &[Entry] = &[
     entry::<removal::EnvironmentRemove>(),
     entry::<removal::ProjectRemove>(),
     entry::<server::ServerRemove>(),
+    entry::<server::ServerForget>(),
 ];
 
 /// What a model is told: every tool's name, description and schemas.

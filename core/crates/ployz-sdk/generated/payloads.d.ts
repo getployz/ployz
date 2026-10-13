@@ -5,7 +5,7 @@ export type AcceptedLoss = { volumes: Array<string>, version: string, };
 
 export type Act = { attempt: AttemptId, digest: BodyDigest, action: Action, };
 
-export type Action = { "action": "service", environment: EnvironmentId, service: ServiceName, only: ServerRef | null, verb: ServiceVerb, } | { "action": "drain", server: ServerRef, } | { "action": "upgrade", server: ServerRef, } | { "action": "clean", leftover: Namespace, loss: AcceptedLoss | null, } | { "action": "remove_server", server: ServerRef, loss: AcceptedLoss | null, } | { "action": "volume", volume: VolumeId, run: VolumeRun, };
+export type Action = { "action": "service", environment: EnvironmentId, service: ServiceName, only: ServerRef | null, verb: ServiceVerb, } | { "action": "drain", server: ServerRef, } | { "action": "upgrade", server: ServerRef, } | { "action": "clean", leftover: Namespace, loss: AcceptedLoss | null, } | { "action": "remove_server", server: ServerRef, loss: AcceptedLoss | null, } | { "action": "forget_server", server: ServerRef, } | { "action": "volume", volume: VolumeId, run: VolumeRun, };
 
 export type AddDomain = { environment: EnvironmentRef, service: ServiceName,
 /**
@@ -4627,7 +4627,7 @@ export type VolumeRemoval = { id: DockerVolumeId, outcome: VolumeRemovalOutcome,
 
 export type VolumeRemovalOutcome = { "status": "removed" } | { "status": "failed", error: RpcError, } | { "status": "omitted" };
 
-export type VolumeRun = { "run": "mirror", to: ServerRef, full: boolean, } | { "run": "sync", full: boolean, } | { "run": "move", to: ServerRef, } | { "run": "release", loss: AcceptedLoss | null, } | { "run": "remove_mirror", loss: AcceptedLoss | null, };
+export type VolumeRun = { "run": "mirror", to: ServerRef, } | { "run": "sync", full: boolean, } | { "run": "move", to: ServerRef, } | { "run": "release", loss: AcceptedLoss | null, } | { "run": "remove_mirror", loss: AcceptedLoss | null, };
 
 export type VolumeSource = { "kind": "bind", machine_path: MachinePath, create_machine_path: boolean, propagation: BindPropagation | null, recursive: BindRecursive | null, } | { "kind": "external", name: DockerVolumeName, } | { "kind": "ordinary", name: DockerVolumeName, driver: VolumeDriver, labels: { [key in string]: string }, } | { "kind": "provisioned",
 /**

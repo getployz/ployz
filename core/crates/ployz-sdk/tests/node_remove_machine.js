@@ -50,7 +50,7 @@ function dockerVolume(loss) {
 
   const client = await sdk.connect({ connections: connectionsFor(machineId) });
 
-  // Cloud's `--no-reset` path: a refusal comes back as an RpcError, not a TypeError.
+  // The `server forget` path: a refusal comes back as an RpcError, not a TypeError.
   try {
     await client.removeMachineMembership("no-such-machine");
     throw new Error("removing an unknown Machine's membership must fail");
