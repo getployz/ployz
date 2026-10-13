@@ -69,6 +69,7 @@ class ClusterModel:
         self.holds = []
         self.tripped = None
         self.disarm_fails = False
+        self.just_ended = 0
         self.calls = 0
 
     def other(self, machine):
@@ -112,6 +113,10 @@ class ClusterModel:
             run = dict(id=held["id"], kind="sync", state="running")
             message = f"VolumeBusy: run {held['id']} (sync) is running"
             return 1, json.dumps(dict(error=dict(code="conflict", message=message, details=dict(run=run))))
+        if self.just_ended and args[:2] in (["volume", "move"], ["volume", "mirror"], ["volume", "release"]):
+            self.just_ended -= 1
+            message = "A run on this Volume just ended. Try again."
+            return 1, json.dumps(dict(error=dict(code="conflict", message=message, details=None)))
         if args[:2] == ["volume", "move"]:
             destination = args[-1]
             row = dict(id=f"run-{len(self.runs)}", kind="move", state="running")
@@ -542,6 +547,16 @@ class VolumeMoveTests(unittest.TestCase):
         with redirect_stdout(io.StringIO()):
             summary = checks.run_all([volume_move.KILLS[0]])
         self.assertIn("before the fault was armed", summary["cases"][0]["skipped"] or "", summary["cases"][0])
+
+    def test_a_run_that_just_ended_does_not_replace_the_holder_already_seen(self):
+        checks, model = self.checks()
+        model.hold(100, "sync-a")
+        model.just_ended = 1
+        checks.case_name = "clean"
+        with redirect_stdout(io.StringIO()):
+            row = checks.start_op("move", "machine-2")
+        self.assertEqual(row["state"], "done")
+        self.assertEqual([wait["holder"] for wait in checks.busy_waits], ["sync-a"])
 
     def test_a_failed_disarm_after_a_case_error_still_writes_the_summary(self):
         checks, model = self.checks()

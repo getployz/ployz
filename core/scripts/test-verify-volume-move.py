@@ -524,7 +524,8 @@ class VolumeMove:
                 armed = True
             code, data = self.cli(*args[op], check=False)
             refused = busy(data)
-            holder = refused or holder
+            if refused and not (refused["id"] == "ended" and holder):
+                holder = refused
             if not refused:
                 break
             if armed:
