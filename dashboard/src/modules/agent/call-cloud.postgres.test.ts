@@ -1,5 +1,5 @@
 import { it } from "@effect/vitest";
-import type { CloudQuery, LogsAnswer, MachineId } from "@ployz/sdk";
+import type { Act, CloudQuery, LogsAnswer, MachineId, ServerRef } from "@ployz/sdk";
 import { Effect, Layer } from "effect";
 import { describe, expect } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
@@ -113,5 +113,24 @@ describe("callCloud", () => {
           refusal: { code: "unavailable", message: UNREACHABLE_MESSAGE, details: { fix: { fix: "connect_servers" } } },
         });
       }
+    }));
+
+  // Catches a failed read before the removal reported as a write that may have reached the Servers.
+  it.live("says nothing was written when a removal fails while reading what it would lose", () =>
+    Effect.gen(function* () {
+      const services = yield* Layer.build(yield* storeTestCloud());
+      const reading: ScopedRuntimeClientSession = {
+        status: "connected",
+        connected: asTestDouble<PloyzSession>()({
+          dataLossIfMachineRemoved: () => Effect.fail(new Error("the Server hung up")),
+        }),
+      };
+      const act: Act = {
+        attempt: "a".repeat(32),
+        digest: "b".repeat(64),
+        action: { action: "remove_server", server: { machine: MACHINE, name: "web-2" as ServerRef["name"] }, loss: null },
+      };
+      const heard = yield* callCloud(member, { act }).pipe(runtime(reading, []), Effect.provide(services));
+      expect(heard).toEqual({ ok: false, refusal: { code: "unavailable", message: "Cloud couldn't answer this. Try again.", details: null } });
     }));
 });

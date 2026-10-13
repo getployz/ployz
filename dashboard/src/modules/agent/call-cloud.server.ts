@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import type { Act, AcceptedLoss, CloudQuery, CopiesAnswer, EnvironmentRef, MachineId, Operation, OperationsAnswer, Subject, VolumeRun } from "@ployz/sdk";
-import { Effect } from "effect";
+import { Data, Effect } from "effect";
 import { type StoreRefusal, StoreRefused, type StoreResult } from "#/modules/config-store/store.contract";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { findService, owners } from "#/modules/config-store/store-lookup.server";
@@ -34,6 +34,10 @@ const answer = <A>(value: A): StoreResult<A> => ({ ok: true, value });
 const CONNECT_SERVERS = { fix: { fix: "connect_servers" } };
 const unreachable = () => refusal("unavailable", UNREACHABLE_MESSAGE, CONNECT_SERVERS);
 const noSuch = (what: string) => refusal("not_found", `No such ${what}.`);
+
+/** A failure before Cloud wrote anything, so the agent may retry without checking its runs. */
+class BeforeWrite extends Data.TaggedError("CallCloud.BeforeWrite")<{ readonly error: unknown }> {}
+const beforeWrite = <A, E, R>(read: Effect.Effect<A, E, R>) => Effect.mapError(read, (error) => new BeforeWrite({ error }));
 
 const session = (organizationId: string) =>
   Effect.flatMap(OrganizationRuntime, (runtime) => runtime.open(organizationId)).pipe(
@@ -162,7 +166,7 @@ const act = Effect.fn("CallCloud.act")(function* (caller: Caller, { attempt, dig
   });
   switch (action.action) {
     case "service": {
-      const found = yield* findService(organizationId, action.environment, action.service);
+      const found = yield* beforeWrite(findService(organizationId, action.environment, action.service));
       if (found === null) return noSuch("Service");
       const admission = yield* actService(caller, { environmentId: action.environment, service: action.service, ...found, verb: action.verb, only: action.only, digest }, call);
       return yield* admitted(admission, { kind: "service", environment: action.environment, service: action.service }, "Service");
@@ -178,17 +182,23 @@ const act = Effect.fn("CallCloud.act")(function* (caller: Caller, { attempt, dig
     case "clean":
       return yield* admitted(yield* cleanNamespace(caller, action.leftover, call), { kind: "leftover", namespace: action.leftover }, "leftover");
     case "remove_server": {
-      const connected = yield* session(organizationId);
+      const connected = yield* beforeWrite(session(organizationId));
       if (connected === null) return unreachable();
-      const { data_loss } = yield* connected.dataLossIfMachineRemoved(action.server.machine);
+      const { data_loss } = yield* beforeWrite(connected.dataLossIfMachineRemoved(action.server.machine));
       return yield* admitted(
         yield* removeServer(caller, action.server.machine, data_loss, call),
         { kind: "server", machine: action.server.machine },
         "Server",
       );
     }
+    case "forget_server":
+      return yield* admitted(
+        yield* removeServer(caller, action.server.machine, null, call),
+        { kind: "server", machine: action.server.machine },
+        "Server",
+      );
     case "volume": {
-      const found = yield* findVolume(organizationId, action.volume);
+      const found = yield* beforeWrite(findVolume(organizationId, action.volume));
       if (found === null) return noSuch("Volume");
       const input = { volumeId: action.volume, environment: found.environment, ...volumeRunInput(action.run, found.name) };
       return yield* admitted(yield* runVolume(caller, input, call), { kind: "volume", volume: action.volume }, "Volume");
@@ -199,7 +209,8 @@ const act = Effect.fn("CallCloud.act")(function* (caller: Caller, { attempt, dig
 type CloudServices = Effect.Services<ReturnType<typeof act>> | Effect.Services<ReturnType<typeof ask>>;
 type CloudError = Effect.Error<ReturnType<typeof act>> | Effect.Error<ReturnType<typeof ask>>;
 
-const refusalOf = (error: CloudError, acting: boolean) => {
+const refusalOf = (error: unknown, acting: boolean): ReturnType<typeof refusal> => {
+  if (error instanceof BeforeWrite) return refusalOf(error.error, false);
   if (error instanceof StoreRefused) return refusal(error.code, error.message, error.details);
   if (error instanceof NotFound) return refusal("not_found", error.message);
   if (error instanceof Validation) return refusal("invalid_argument", error.message);

@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use ployz_core::{DeployOutcome, DeployPreview, ServiceName};
 use ployz_core::{RpcError, RpcErrorCode};
 use ployz_store::tools::{
-    Act, Ask, Call, CloudQuery, Fix, Gate, INSTRUCTIONS, MetricsQuery, MetricsSince,
+    Act, Action, Ask, Call, CloudQuery, Fix, Gate, INSTRUCTIONS, MetricsQuery, MetricsSince,
     MetricsSubject, Place, Refusal, STEP_BUDGET, Step, StoreAt, Timestamp, ToolResult,
     WAIT_CAP_SECONDS, Write, Writes, catalog, example, lint, resume, start,
 };
@@ -250,6 +250,7 @@ fn the_catalog_has_the_agreed_tools() {
             "environment_remove",
             "project_remove",
             "server_remove",
+            "server_forget",
         ]
     );
 }
@@ -270,6 +271,7 @@ fn the_store_and_cloud_decide_who_asks_a_human() {
             ("publish", Gate::Store),
             ("server_clean", Gate::Cloud),
             ("server_drain", Gate::Cloud),
+            ("server_forget", Gate::Cloud),
             ("server_remove", Gate::Cloud),
             ("volume_mirror", Gate::Cloud),
             ("volume_mirror_remove", Gate::Cloud),
@@ -546,7 +548,7 @@ fn two_organizations_create_with_the_same_key() {
 }
 
 /// The tools that need Ployz Cloud's view of the Servers.
-const CLOUD_TOOLS: [&str; 17] = [
+const CLOUD_TOOLS: [&str; 18] = [
     "server_show",
     "server_metrics",
     "service_status",
@@ -564,6 +566,7 @@ const CLOUD_TOOLS: [&str; 17] = [
     "volume_move",
     "volume_release",
     "server_remove",
+    "server_forget",
 ];
 
 fn machine(letter: char) -> String {
@@ -766,6 +769,40 @@ fn a_lost_reply_retries_with_the_key_that_names_the_same_attempt() {
     assert_eq!(drained["at"], "web-2");
     assert_eq!(attempts.len(), 2);
     assert_eq!(attempts[0], attempts[1], "the retry is the same attempt");
+}
+
+#[test]
+fn a_server_that_does_not_answer_is_forgotten_without_a_reset() {
+    let store = shop();
+    let mut acted = Vec::new();
+    let mut cloud = |cloud: Cloud| match cloud {
+        Cloud::Ask(CloudQuery::Servers { .. }) => {
+            let mut listed = servers(&[("web-2", 'b')]);
+            listed["servers"][0]["state"] = json!("offline");
+            Ok(listed)
+        }
+        Cloud::Ask(query) => panic!("unexpected read: {query:?}"),
+        Cloud::Act(act) => {
+            acted.push(act.action.clone());
+            Ok(operation(&act, "done"))
+        }
+    };
+
+    let forgotten = drive(
+        &store,
+        in_org(),
+        "server_forget",
+        json!({ "server": "web-2" }),
+        "forget-1",
+        &mut cloud,
+    )
+    .ok();
+
+    assert_eq!(forgotten["at"], "web-2");
+    let [Action::ForgetServer { server }] = acted.as_slice() else {
+        panic!("forget acts once, as a forget: {acted:?}");
+    };
+    assert_eq!(server.name.as_str(), "web-2");
 }
 
 #[test]

@@ -2267,6 +2267,32 @@
         "type": "object"
       },
       "read_only": false
+    },
+    {
+      "description": "Forget a server that is gone, without a reset; its volumes are lost. Refused while it answers and holds a volume copy. It may stop to ask a human to approve; call it alone, never alongside another tool.",
+      "gate": "cloud",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "request_key": {
+            "pattern": "^[A-Za-z0-9_-]{8,64}$",
+            "type": "string"
+          },
+          "server": {
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "server"
+        ],
+        "type": "object"
+      },
+      "name": "server_forget",
+      "output_schema": {
+        "type": "object"
+      },
+      "read_only": false
     }
   ]
 }

@@ -233,6 +233,9 @@ pub enum Action {
         server: ServerRef,
         loss: Option<AcceptedLoss>,
     },
+    ForgetServer {
+        server: ServerRef,
+    },
     Volume {
         volume: VolumeId,
         run: VolumeRun,
@@ -250,7 +253,7 @@ pub enum ServiceVerb {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "run", rename_all = "snake_case", deny_unknown_fields)]
 pub enum VolumeRun {
-    Mirror { to: ServerRef, full: bool },
+    Mirror { to: ServerRef },
     Sync { full: bool },
     Move { to: ServerRef },
     Release { loss: Option<AcceptedLoss> },
