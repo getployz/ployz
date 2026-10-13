@@ -552,11 +552,12 @@ async fn the_transport_child_leaves_the_terminal_process_group() {
     use tokio::io::AsyncReadExt as _;
     let mut child = spawn_child(
         Path::new("sh"),
-        &["-c".to_owned(), "cut -d' ' -f1,5 /proc/$$/stat".to_owned()],
+        &["-c".to_owned(), "ps -o pid=,pgid= -p $$".to_owned()],
     )
     .unwrap();
     let mut out = String::new();
     child.read_to_string(&mut out).await.unwrap();
-    let (pid, group) = out.trim().split_once(' ').expect("pid and process group");
-    assert_eq!(pid, group, "the child leads its own process group");
+    let ids: Vec<&str> = out.split_whitespace().collect();
+    assert_eq!(ids.len(), 2, "pid and process group: {out:?}");
+    assert_eq!(ids.first(), ids.last(), "the child leads its own process group");
 }
