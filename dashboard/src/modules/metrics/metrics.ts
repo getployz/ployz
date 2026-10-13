@@ -8,6 +8,8 @@ export const ReadServiceMetricsInput = Schema.Struct({
   service: Schema.NonEmptyString,
   from: RangeEdge,
   to: RangeEdge,
+  /** One bucket for the whole range, for a caller that reads only the markers. Every Server still answers. */
+  markersOnly: Schema.optional(Schema.Boolean),
 });
 export type ReadServiceMetricsInput = typeof ReadServiceMetricsInput.Type;
 
