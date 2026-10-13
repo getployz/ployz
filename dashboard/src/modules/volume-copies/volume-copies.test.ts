@@ -59,6 +59,10 @@ describe("protected", () => {
     expect(cardLine(added, now)).toEqual({ spin: false, words: "Mirror", age: null, stale: false });
   });
 
+  it("warns on a live mirror that has never refreshed", () => {
+    expect(cardLine(mirror(today("14:00"), { refreshedAt: null }), now)).toEqual({ spin: false, words: "Mirror", age: "Not yet", stale: true });
+  });
+
   it("drops the kind from a card staged for removal, leaving the badge", () => {
     expect(cardLine(mirror(today("14:00"), { staged: "removing" }), now).words).toBe("");
   });

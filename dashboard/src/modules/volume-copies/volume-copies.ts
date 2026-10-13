@@ -104,7 +104,8 @@ export function cardLine(copy: VolumeCopy, now: Date): CardLine {
   if (copy.busy !== null) return { spin: true, words: copy.busy, age: null, stale: false };
   if (copy.staged !== null) return { spin: false, words: copy.staged === "removing" ? "" : COPY_WORDS[copy.kind], age: null, stale: false };
   const at = lastAt(copy);
-  return { spin: false, words: COPY_WORDS[copy.kind], age: at === null ? null : age(at, now), stale: isStale(copy, now) };
+  const stale = isStale(copy, now);
+  return { spin: false, words: COPY_WORDS[copy.kind], age: at === null ? (stale ? "Not yet" : null) : age(at, now), stale };
 }
 
 export type TraySpeech = { readonly tone: "busy" | "staged"; readonly words: string };
