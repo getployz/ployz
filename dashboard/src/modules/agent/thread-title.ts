@@ -9,7 +9,12 @@ export function threadTitle(message: ModelMessage | null | undefined): string | 
   const parts = Array.isArray(message.content)
     ? message.content.flatMap((part) => part.type === "text" && !isPageContext(part.content) ? [part.content] : [])
     : [message.content ?? ""];
-  const text = parts.join(" ").replace(/\s+/g, " ").trim();
+  return chatTitle(parts.join(" "));
+}
+
+/** `words` on one line, cut to a title's length. None when there are no words. */
+export function chatTitle(words: string): string | undefined {
+  const text = words.replace(/\s+/g, " ").trim();
   if (text === "") return undefined;
   return text.length <= MAX_LENGTH ? text : `${text.slice(0, MAX_LENGTH - 1).trimEnd()}…`;
 }

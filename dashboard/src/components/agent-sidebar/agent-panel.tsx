@@ -25,6 +25,7 @@ import {
 import { Spinner } from "#/components/ui/spinner";
 import { approvalInterrupt } from "#/modules/agent/agent";
 import { isPageContext, type PageContext } from "#/modules/agent/page-context";
+import { chatTitle } from "#/modules/agent/thread-title";
 import type { Failure } from "#/modules/agent/provider-error";
 import { ApprovalCard } from "./approval-card";
 import { pendingApprovalsOptions } from "./approvals.queries";
@@ -47,28 +48,30 @@ type PanelProps = {
 
 /** One agent conversation; the sidebar picks the thread, and switching Organization or thread swaps in a fresh connection. */
 export default function AgentPanel({ organizationSlug, scope, page, threadId, onChat }: PanelProps) {
-  const { data: threads } = useQuery(agentThreadsOptions(organizationSlug));
-  const title = threads?.find((thread) => thread.threadId === threadId)?.title ?? "New chat";
-  const onNewChat = () => onChat(crypto.randomUUID());
   return (
     <section aria-label="Ployz agent" className="flex h-full min-h-0 flex-col bg-background">
-      <header className="flex h-12 shrink-0 items-center gap-1 border-b px-3">
-        <h2 className="min-w-0 flex-1 truncate text-sm font-semibold" title={title}>{title}</h2>
-        <ChatHistory threads={threads} threadId={threadId} onChat={onChat} />
-        <Button size="icon-sm" variant="ghost" aria-label="New chat" title="New chat" onClick={onNewChat}><SquarePenIcon /></Button>
-      </header>
-      <Conversation key={`${organizationSlug}/${threadId}`} organizationSlug={organizationSlug} scope={scope} page={page} threadId={threadId} onNewChat={onNewChat} />
+      <Conversation key={`${organizationSlug}/${threadId}`} organizationSlug={organizationSlug} scope={scope} page={page} threadId={threadId}
+        onChat={onChat} />
     </section>
   );
 }
 
+/** The chat's title from history; a chat history hasn't listed yet takes it from the member's first message, as history will. */
+function titleOf(threads: readonly ThreadSummary[] | undefined, threadId: string, messages: readonly UIMessage[]) {
+  const first = messages.find(({ role }) => role === "user");
+  return threads?.find((thread) => thread.threadId === threadId)?.title
+    ?? chatTitle(first?.parts.flatMap((part) => part.type === "text" && !isPageContext(part.content) ? [part.content] : []).join(" ") ?? "")
+    ?? "New chat";
+}
+
 /** The member's past chats in this Organization, newest first; picking one opens it. */
-function ChatHistory({ threads, threadId, onChat }: {
-  threads: readonly ThreadSummary[] | undefined;
+function ChatHistory({ organizationSlug, threadId, onChat }: {
+  organizationSlug: string;
   threadId: string;
   onChat: (threadId: string) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const { data: threads, isError, refetch } = useQuery(agentThreadsOptions(organizationSlug));
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger render={<Button size="icon-sm" variant="ghost" aria-label="Chat history" title="Chat history" />}>
@@ -79,6 +82,12 @@ function ChatHistory({ threads, threadId, onChat }: {
         <Command tabIndex={0} label="Chat history" defaultValue={threadId}>
           <CommandList className="max-h-[min(24rem,60dvh)]">
             {threads !== undefined && <CommandEmpty>No chats yet</CommandEmpty>}
+            {isError && threads === undefined && (
+              <div role="alert" className="flex items-center justify-between gap-2 p-2 text-sm text-muted-foreground">
+                Chats couldn't load.
+                <Button size="sm" variant="outline" onClick={() => void refetch()}>Retry</Button>
+              </div>
+            )}
             <CommandGroup heading="Chats">
               {threads?.map((thread) => (
                 <CommandItem key={thread.threadId} value={thread.threadId} data-checked={thread.threadId === threadId}
@@ -98,13 +107,14 @@ function ChatHistory({ threads, threadId, onChat }: {
 /** The client reports any refused request only as text; a 403 means the thread in the link is another member's. */
 const refused = (error: Error | undefined) => error?.message.includes("status: 403") ?? false;
 
-function Conversation({ organizationSlug, scope, page, threadId, onNewChat }: {
+function Conversation({ organizationSlug, scope, page, threadId, onChat }: {
   organizationSlug: string;
   scope: CollectionScope;
   page: PageContext;
   threadId: string;
-  onNewChat: () => void;
+  onChat: (threadId: string) => void;
 }) {
+  const onNewChat = () => onChat(crypto.randomUUID());
   const [connection] = useState(() => fetchServerSentEvents(`/api/agent/${encodeURIComponent(organizationSlug)}/chat`));
   // useChat hands new forwardedProps to its client on every change of identity.
   const forwardedProps = useMemo(() => ({ page }), [page]);
@@ -112,14 +122,19 @@ function Conversation({ organizationSlug, scope, page, threadId, onNewChat }: {
   const [tooLong, setTooLong] = useState(false);
   const queryClient = useQueryClient();
   const onChunk = (chunk: StreamChunk) => {
-    // A finished turn saved the thread: its title and its place in history change.
-    if (chunk.type === EventType.RUN_FINISHED || chunk.type === EventType.RUN_ERROR) void refetchAgentThreads(queryClient, organizationSlug);
     if (chunk.type !== EventType.RUN_ERROR) return;
     const wait = chunk.metadata?.tanstack?.retryAfterMs;
     setRetryAt(wait === undefined ? null : Date.now() + wait);
     setTooLong(chunk.code === ("chat_too_long" satisfies Failure));
   };
   const chat = useChat({ connection, threadId, persistence: true, interrupts: [approvalInterrupt], live: true, forwardedProps, onChunk });
+  // Every turn saves the thread, so its place in history changes once the turn ends: finished, failed, stopped, or left mid-reply.
+  useEffect(() => {
+    if (!chat.isLoading) return;
+    return () => void refetchAgentThreads(queryClient, organizationSlug);
+  }, [chat.isLoading, queryClient, organizationSlug]);
+  const { data: threads } = useQuery(agentThreadsOptions(organizationSlug));
+  const title = titleOf(threads, threadId, chat.messages);
   const bound = chat.interrupts.flatMap((interrupt) =>
     interrupt.kind === "generic" && "definitionId" in interrupt && interrupt.definitionId === approvalInterrupt.id && interrupt.payload
       ? [{ key: interrupt.key, approvalId: interrupt.payload.approvalId, interrupt }]
@@ -139,6 +154,11 @@ function Conversation({ organizationSlug, scope, page, threadId, onNewChat }: {
     // Follows the reply as it streams. Anchoring each question to the top made the scroller jump back to an older one
     // whenever the Thinking marker gave way to the reply, because the message count stayed the same.
     <MessageScrollerProvider autoScroll>
+      <header className="flex h-12 shrink-0 items-center gap-1 border-b px-3">
+        <h2 className="min-w-0 flex-1 truncate text-sm font-semibold" title={title}>{title}</h2>
+        <ChatHistory organizationSlug={organizationSlug} threadId={threadId} onChat={onChat} />
+        <Button size="icon-sm" variant="ghost" aria-label="New chat" title="New chat" onClick={onNewChat}><SquarePenIcon /></Button>
+      </header>
       <MessageScroller className="flex-1">
         <MessageScrollerViewport>
           <MessageScrollerContent aria-busy={chat.isLoading} className="gap-3 p-3">

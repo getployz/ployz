@@ -246,7 +246,7 @@ it("titles the open chat from history and opens a past chat picked from it", asy
   expect(onChat).toHaveBeenCalledWith("thread-1");
 });
 
-it("says New chat until the first turn ends, then asks history again for the chat's title", async () => {
+it("titles a new chat from the member's first words, then asks history again once the turn ends", async () => {
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
   vi.stubGlobal("fetch", vi.fn((_url: string, init?: RequestInit) => Promise.resolve(init?.method === "POST"
     ? events({ type: "RUN_STARTED", runId: "r1" }, { type: "RUN_FINISHED", runId: "r1", finishReason: "stop" })
@@ -260,9 +260,30 @@ it("says New chat until the first turn ends, then asks history again for the cha
   expect(client.getQueryState(threads)?.isInvalidated).toBe(false);
 
   const box = screen.getByRole("textbox", { name: "Message the agent" });
+  fireEvent.change(box, { target: { value: "count   services" } });
+  fireEvent.keyDown(box, { key: "Enter" });
+  await waitFor(() => expect(screen.getByRole("heading", { level: 2 }).textContent).toBe("count services"));
+  await waitFor(() => expect(client.getQueryState(threads)?.isInvalidated).toBe(true));
+});
+
+it("asks history again when the member stops a reply", async () => {
+  vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+  vi.stubGlobal("fetch", vi.fn((_url: string, init?: RequestInit) => {
+    if (init?.method !== "POST") return Promise.resolve(Response.json({ messages: [] }));
+    const body = new ReadableStream({ start(controller) {
+      controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ type: "RUN_STARTED", runId: "r1", threadId: "thread-acme", timestamp: 0 })}\n\n`));
+      init.signal?.addEventListener("abort", () => controller.error(new DOMException("Aborted", "AbortError")));
+    } });
+    return Promise.resolve(new Response(body, { headers: { "content-type": "text/event-stream" } }));
+  }));
+  const client = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false } } });
+  const threads = agentThreadsOptions("acme").queryKey;
+  client.setQueryData(threads, []);
+  render(<QueryClientProvider client={client}><AgentPanel organizationSlug="acme" scope={scope} page={page} threadId="thread-acme"
+    onChat={() => {}} /></QueryClientProvider>);
+  const box = screen.getByRole("textbox", { name: "Message the agent" });
   fireEvent.change(box, { target: { value: "count services" } });
   fireEvent.keyDown(box, { key: "Enter" });
+  fireEvent.click(await screen.findByRole("button", { name: "Stop" }));
   await waitFor(() => expect(client.getQueryState(threads)?.isInvalidated).toBe(true));
-  client.setQueryData(threads, [{ threadId: "thread-acme", title: "count services", updatedAt: new Date() }]);
-  await waitFor(() => expect(screen.getByRole("heading", { level: 2 }).textContent).toBe("count services"));
 });
