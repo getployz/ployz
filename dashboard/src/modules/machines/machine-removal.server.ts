@@ -35,6 +35,7 @@ import { dropRemovedServer, forgetEmptiedPairing } from "#/modules/machines/pair
 import { loadOrganizationConnections } from "#/modules/machines/connections.server";
 import { planRemove } from "#/modules/machines/server-operations.server";
 import { storeSystem } from "#/modules/config-store/config-store.server";
+import { machineNamed, observeOrganizationCopies, releaseLanesOff } from "#/modules/volume-run/volume-run.server";
 
 function asMachineId(machineId: string): MachineId {
   // SAFETY: Cloud machine ids are the same strings rust brands as MachineId.
@@ -157,6 +158,21 @@ export const removeMachineActivity = Effect.fn("MachineRemoval.remove")(
     return { ...outcome, generation: access.generation };
   },
 );
+
+/** The leaving Server's name and the Volumes it writes, read while the Cluster still lists it. */
+export const observeLeavingServerActivity = Effect.fn("MachineRemoval.observeLeaving")(function* (input: {
+  organizationId: string; machineId: string;
+}) {
+  const machine = yield* machineNamed(input.organizationId, asMachineId(input.machineId));
+  const copies = yield* observeOrganizationCopies(input.organizationId).pipe(Effect.orElseSucceed(() => []));
+  const writes = copies.flatMap((copy) => copy.machine_id === machine.id && copy.role === "writer" ? [copy.name] : []);
+  return { machine, writes };
+});
+
+/** Releases each warm lane the removed Server was part of; the releases run on their own and nothing here waits. */
+export const releaseLeavingLanesActivity = (input: {
+  organizationId: string; machineId: string; name: string | null; writes: readonly string[];
+}) => releaseLanesOff(input.organizationId, { id: asMachineId(input.machineId), name: input.name }, input.writes);
 
 /**
  * What a removed Server leaves of Cloud's hold. A reset that didn't finish is a partial outcome: the Server may keep

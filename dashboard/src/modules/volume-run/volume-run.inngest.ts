@@ -27,6 +27,7 @@ import {
   findHolder,
   findKept,
   inspectCopy,
+  laneTarget,
   type MachineRef,
   observeMembers,
   organizationsWithMachines,
@@ -127,8 +128,7 @@ async function floor({ step, runEffect, run, runId }: RunSteps, members: readonl
       continue;
     }
     const answer = await step.run(`01-floor-${member.machine.name}`, () => runEffect(setVolumeCopy(run, runId, member.machine, expectOf(copy), { kind: "floor" })));
-    // SAFETY: step output is the JSON of a VolumeCopy, which holds only JSON values.
-    floored.push({ ...member, view: { ...member.view, copy: answer.copy as VolumeCopy | null } });
+    floored.push({ ...member, view: { ...member.view, copy: answer.copy } });
   }
   return floored;
 }
@@ -357,7 +357,8 @@ async function releaseVolume(steps: RunSteps, phase: PhaseOf<"release">, epoch: 
     const owner = source === null ? undefined : from.slots.find((slot) => slot.machine.id === source.machine.id);
     const cut = slotAt(owner?.view.copy ?? null);
     if (source === null || owner === undefined || cut === null) {
-      return fail(steps, "03-no-source", `${run.volumeName} has no writer and no stopped Service on its copies; volume restore ${run.volumeName} --from <server>`);
+      const held = from.slots.find((slot) => slotAt(slot.view.copy) !== null)?.machine.name ?? "<server>";
+      return fail(steps, "03-no-source", `${run.volumeName} has no writer and no stopped Service on its copies; ployz volume restore ${run.volumeName} --from ${held}`);
     }
     const A = owner.machine;
     const at = cut.newest;
@@ -391,6 +392,14 @@ async function finishRelease(steps: RunSteps, members: readonly Member[], curren
   const B = members.find((member): member is AnsweredMember => member.answered && member.machine.id === current);
   const copy = B?.view.copy ?? null;
   const at = copy?.newest ?? null;
+  if (!members.some((member) => member.machine.id === current)) {
+    const target = await step.run("02-target", () => runEffect(laneTarget(run)));
+    const held = members.find((member): member is AnsweredMember => member.answered && (member.view.copy?.newest ?? null) !== null)?.machine.name;
+    const lost = `${run.volumeName}'s writer was on ${target ?? current} (removed)`;
+    return fail(steps, "02-failed", held === undefined
+      ? `${lost}, and no copy left holds its data`
+      : `${lost}. Restore from ${held}'s copy: ployz volume restore ${run.volumeName} --from ${held}`);
+  }
   if (B === undefined || at === null) return fail(steps, "02-failed", `${run.volumeName}'s Move committed, but its new copy is gone`);
   const { epoch } = await step.run("02-epoch", () => runEffect(takeEpoch(run, runId, observedEpoch(members))));
   try {

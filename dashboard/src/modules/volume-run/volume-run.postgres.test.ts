@@ -34,6 +34,7 @@ import {
   commitMove,
   listVolumeRuns,
   orphanSlotNames,
+  releaseLanesOff,
   requestVolumeRun,
   requireOwner,
   type RunContext,
@@ -651,6 +652,77 @@ describe("volume runs", () => {
       expect(verbs).toEqual(["floor@fsn-1", "floor@fsn-2", "forget@fsn-2", "writer@fsn-1(kept)"]);
       expect(named("fsn-1").copy).toMatchObject({ kind: "root", readonly: false, newest: G });
       expect(containers).toEqual([{ machine: "fsn-1", id: "web-fsn-1", running: true }]);
+    });
+  });
+
+  describe("a Server leaving", () => {
+    const lanes = async () => (await harness.pool.query(
+      "select id, kind, state, phase, message from volume_run order by gen")).rows as Array<{ id: string; kind: string; state: string; phase: string; message: string | null }>;
+    const fsn = (name: string) => ({ id: idOf(name), name });
+    const warmMove = async () => {
+      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
+      await harness.pool.query("update volume_run set state = 'running', inngest_run_id = 'run-1' where id = $1", [run.id]);
+      return run;
+    };
+    const releaseRow = async () => {
+      const [lane] = (await lanes()).filter((row) => row.kind === "release");
+      if (lane === undefined) throw new Error("no release requested");
+      return lane;
+    };
+
+    it("removing the target of a warm Move takes its lane with a release, and the Service stays on A", async () => {
+      const move = await warmMove();
+
+      expect(await runEffect(releaseLanesOff(organizationId, fsn("fsn-2"), []))).toHaveLength(1);
+
+      expect(await lanes()).toMatchObject([
+        { id: move.id, state: "cancelled", message: "volume release took this run over" },
+        { kind: "release", state: "requested" },
+      ]);
+      machines = machines.filter((fake) => fake.name !== "fsn-2");
+      const output = await execute((await releaseRow()).id, "run-2");
+      expect(output.result).toMatchObject({ released: "fsn-1" });
+      expect(containers).toEqual([{ machine: "fsn-1", id: "web-fsn-1", running: true }]);
+    });
+
+    it("a Server neither bound for nor writing a lane's Volume leaves the lane alone, and a second pass takes nothing", async () => {
+      await warmMove();
+
+      expect(await runEffect(releaseLanesOff(organizationId, fsn("fsn-3"), []))).toEqual([]);
+      expect(await lanes()).toMatchObject([{ kind: "move", state: "running" }]);
+
+      await runEffect(releaseLanesOff(organizationId, fsn("fsn-2"), []));
+      expect(await runEffect(releaseLanesOff(organizationId, fsn("fsn-2"), [dockerVolume]))).toEqual([]);
+      expect(await lanes()).toMatchObject([{ kind: "move", state: "cancelled" }, { kind: "release", state: "requested" }]);
+    });
+
+    it("removing the source of a warm Move releases, and the release names B's copy to restore from", async () => {
+      const at = newSnap("f-1");
+      await warmMove();
+
+      expect(await runEffect(releaseLanesOff(organizationId, fsn("fsn-1"), [dockerVolume]))).toHaveLength(1);
+      machines = [{ name: "fsn-2", pool: true, copy: slotCopy(at) }];
+      containers = [];
+      await execute((await releaseRow()).id, "run-2");
+
+      expect(await releaseRow()).toMatchObject({
+        state: "failed", message: "data has no writer and no stopped Service on its copies; ployz volume restore data --from fsn-2",
+      });
+    });
+
+    it("removing B after the Move committed fails the release forward and names A's copy to restore from", async () => {
+      const at = newSnap("f-1");
+      const move = await warmMove();
+      await harness.pool.query("update volume_run set state = 'cancelled', phase = 'committed', current = $2 where id = $1", [move.id, idOf("fsn-2")]);
+      const release = await requested({ kind: "release", args: {} });
+      await harness.pool.query("update volume_run set phase = 'committed', current = $2 where id = $1", [release.id, idOf("fsn-2")]);
+      machines = [{ name: "fsn-1", pool: true, copy: slotCopy(at) }];
+
+      await execute(release.id, "run-2");
+
+      expect(await releaseRow()).toMatchObject({
+        state: "failed", message: "data's writer was on fsn-2 (removed). Restore from fsn-1's copy: ployz volume restore data --from fsn-1",
+      });
     });
   });
 
@@ -1468,7 +1540,7 @@ describe("volume runs", () => {
       await execute(run.id);
 
       expect(verbs).toEqual(["floor@fsn-1", "floor@fsn-2"]);
-      expect(await rows()).toMatchObject([{ state: "failed", message: "data has no writer and no stopped Service on its copies; volume restore data --from <server>" }]);
+      expect(await rows()).toMatchObject([{ state: "failed", message: "data has no writer and no stopped Service on its copies; ployz volume restore data --from fsn-1" }]);
     });
   });
 

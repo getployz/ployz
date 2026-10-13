@@ -421,8 +421,7 @@ export const takeLanes = Effect.fn("VolumeRun.takeLanes")(function* (caller: Cal
   return yield* database.transaction(Effect.gen(function* () {
     const takes = new Map<string, LaneTake>();
     for (const taker of ordered) takes.set(taker.id, yield* takeLane(caller, taker, end));
-    // SAFETY: every taker's id was set above.
-    return { ok: true, takes: takers.map((taker) => takes.get(taker.id)!) } satisfies LaneTakes;
+    return { ok: true, takes: takers.flatMap((taker) => takes.get(taker.id) ?? []) } satisfies LaneTakes;
   })).pipe(Effect.catchTag("LaneRefused", refused));
 });
 
@@ -432,6 +431,44 @@ export const insertRun = Effect.fn("VolumeRun.insert")(function* (caller: Caller
   const taken = yield* database.transaction(takeLane(caller, { input, volume, id }, input.kind === "release" ? "cancelled" : null))
     .pipe(Effect.catchTag("LaneRefused", refused));
   return "ok" in taken ? taken : { ok: true, run: taken.run } as const;
+});
+
+/** `machine` with the name the Cluster last gave it, or none when no frame answers. */
+export const machineNamed = Effect.fn("VolumeRun.machineNamed")(function* (organizationId: string, machine: MachineId) {
+  const frame = yield* openSession(organizationId).pipe(
+    Effect.flatMap((session) => session.watchFirstFrame(5_000)),
+    Effect.option,
+  );
+  const name = Option.flatMap(frame, ({ machines }) => Option.fromNullishOr(machines.find((entry) => entry.machine.id === machine)?.machine.name));
+  return { id: machine, name: Option.getOrNull(name) };
+}, Effect.scoped);
+
+/**
+ * A Server leaving: each warm lane bound for `machine`, or on a Volume whose writer copy it holds (`writes`, by Docker
+ * Volume), is taken over by a release, so the Volume's Service stays where it runs. Only requests the releases.
+ */
+export const releaseLanesOff = Effect.fn("VolumeRun.releaseLanesOff")(function* (
+  organizationId: string, machine: { readonly id: MachineId; readonly name: MachineName | null }, writes: readonly string[],
+) {
+  const { drizzle } = yield* Database;
+  const lanes = yield* drizzle.select().from(volumeRun).where(and(
+    eq(volumeRun.organizationId, organizationId),
+    inArray(volumeRun.state, ACTIVE_VOLUME_RUN_STATES),
+    eq(volumeRun.phase, "warm"),
+  ));
+  const released: string[] = [];
+  for (const lane of lanes) {
+    // SAFETY: the row's kind and args were written together from one VolumeRunInput.
+    const input = { kind: lane.kind, args: lane.args } as VolumeRunInput;
+    if (pastReturn(lane) || input.kind === "release") continue;
+    const bound = machine.name !== null && isDestination(input, { id: machine.id, name: machine.name });
+    if (!bound && !writes.includes(lane.dockerVolume)) continue;
+    const taken = yield* insertRun({ userId: null, organizationId }, { volumeId: lane.volumeId, kind: "release", args: {} }, {
+      environmentId: lane.environmentId, volumeName: lane.volumeName, dockerVolume: lane.dockerVolume, refquotaBytes: lane.refquotaBytes,
+    }, crypto.randomUUID());
+    if (taken.ok) released.push(taken.run.id);
+  }
+  return released;
 });
 
 export const listVolumeRuns = Effect.fn("VolumeRun.list")(function* (organizationId: string, volumeId: string) {
