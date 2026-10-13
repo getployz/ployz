@@ -77,10 +77,10 @@ describe("Refresh now", () => {
     expect(await runs()).toEqual([]);
   });
 
-  it("says the mirror is still pulling instead of snapshotting again", async () => {
+  it("asks the mirror for its pull again and says it is still pulling, instead of snapshotting again", async () => {
     members = [member("web-1", "writer"), member("web-2", "pulling")];
     expect(await refresh()).toEqual({ ok: true, lines: ["still pulling w-1-4 on data-web-2"] });
-    expect(asked).toEqual([]);
+    expect(asked).toEqual(["mirror"]);
   });
 
   it("names the run that covers the Volume and takes no snapshot", async () => {
