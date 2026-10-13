@@ -90,7 +90,7 @@ To bring services back:
    service.
 2. When the server comes back, its replicas start again. Your next deploy tidies up the extras.
 3. If it's gone for good, [forget it](../servers/manage-servers.md#forget-a-server-that-is-gone)
-   with **Forget server** on its page or `ployz server forget web-2 --confirm web-2`, then
+   with **Forget server** on its page or `ployz server forget web-2 --confirm dead`, then
    restore its databases from your backups.
 
 ## Good to know
