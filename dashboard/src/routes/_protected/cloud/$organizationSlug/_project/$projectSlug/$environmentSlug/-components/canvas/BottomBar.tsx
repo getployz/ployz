@@ -4,6 +4,7 @@ import { createContext, useContext, useEffect, useRef, useState, useSyncExternal
 import { createPortal } from "react-dom";
 import { Link, useParams } from "@tanstack/react-router";
 import { MoreVerticalIcon, XIcon } from "lucide-react";
+import { AgentDock } from "#/components/agent-sidebar/agent-dock";
 import { Button } from "#/components/ui/button";
 import { ConfirmDialog } from "#/components/confirm-dialog";
 import { buttonVariants } from "#/components/ui/button-variants";
@@ -21,8 +22,8 @@ import { EnvironmentChangesReview } from "./EnvironmentChangesReview";
 import { AddServerDialog } from "#/routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/add-server-dialog";
 
 /**
- * Where the bottom bar renders: the scene, outside the canvas that turns inert under a panel. The canvas owns the change
- * state, so it portals the bar here.
+ * Where the bottom bar renders while the agent is closed: the scene, outside the canvas that turns inert under a panel.
+ * The canvas owns the change state, so it portals the bar here, or into the open agent's dock.
  */
 export const BottomBarSlot = createContext<HTMLElement | null>(null);
 
@@ -93,6 +94,7 @@ export function BottomBar({
   admitting = false,
 }: BottomBarProps) {
   const slot = useContext(BottomBarSlot);
+  const dock = useContext(AgentDock);
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const viewedId = useCanvasInspectorSelection().deploymentId;
   const [open, setOpen] = useState(false);
@@ -204,11 +206,12 @@ export function BottomBar({
   ) : shown ? <AttemptState deployment={shown} storage={storage(shown.id)} /> : null;
   // A failed Deploy hands its unreached changes back: how it ended stays above them until dismissed.
   const bar = staged || outcome ? (
-    <div role="group" aria-label="Bottom bar" className="bottom-bar">
+    <div role="group" aria-label="Bottom bar" className="bottom-bar" data-docked={dock ? true : undefined}>
       {outcome ? <AttemptState deployment={outcome} storage={null} onDismiss={() => dismiss(outcome)} /> : null}
       {staged}
     </div>
   ) : null;
+  const host = dock ?? slot;
 
   const includeNewer = proposals?.onIncludeNewer;
   const reviewProps = {
@@ -226,7 +229,7 @@ export function BottomBar({
   };
   return (
     <>
-      {bar && slot ? createPortal(bar, slot) : null}
+      {bar && host ? createPortal(bar, host) : null}
       {open ? <EnvironmentChangesReview {...reviewProps} /> : null}
       <ConfirmDialog open={confirmingDiscard} onOpenChange={setConfirmingDiscard} title="Discard all changes?"
         description={`${listNames(created)} ${created.length === 1 ? "is" : "are"} new and will be deleted. Other changes return to their reviewed baseline.`}

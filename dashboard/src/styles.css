@@ -254,6 +254,8 @@
 /* Changes to deploy: their row takes the staged-intent surface. */
 .bottom-bar-row[data-staged] { background: var(--changed-soft); }
 .bottom-bar:has(> [data-staged]) { border-color: var(--changed-border); }
+/* Docked in the open agent, above its composer: the column's width, nothing to float over. */
+.bottom-bar[data-docked] { position: static; translate: none; width: auto; max-width: none; box-shadow: none; }
 .canvas-node-list { padding-bottom: 5.5rem; }
 /* Canvas nodes draw their focus only while the user navigates by keyboard (`data-navigation`, set by the canvas), so a
    panel closed after a click hands focus back to its node without drawing it. Only a dragged node casts a shadow. */

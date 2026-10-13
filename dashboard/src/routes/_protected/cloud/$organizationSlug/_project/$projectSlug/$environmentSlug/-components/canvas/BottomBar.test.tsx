@@ -9,6 +9,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { DeploymentSummary } from "@ployz/sdk";
 import type { ChangeGroup } from "#/modules/config-store/store-deployments";
 import { asTestDouble } from "#/lib/test-double";
+import { AgentDock } from "#/components/agent-sidebar/agent-dock";
 import { BottomBar, BottomBarSlot } from "./BottomBar";
 
 const [running, queued] = ["aaaa1111-uuid", "aaaa2222-uuid"];
@@ -48,14 +49,20 @@ function open(url: string, groups: ChangeGroup[] = [], totalChanges = 0, canPubl
     const [slot, setSlot] = useState<HTMLElement | null>(null);
     const [lists, setLists] = useState({ active, ended });
     settle = setLists;
+    const [dock, setDock] = useState<HTMLElement | null>(null);
+    const [agent, setAgent] = useState(false);
     return (
+      <AgentDock.Provider value={dock}>
       <BottomBarSlot.Provider value={slot}>
-        <div ref={setSlot} />
+        <button type="button" onClick={() => setAgent(!agent)}>Agent</button>
+        {agent ? <aside aria-label="Agent"><div ref={setDock} /></aside> : null}
+        <section aria-label="Canvas"><div ref={setSlot} /></section>
         <BottomBar groups={groups} totalChanges={totalChanges} canPublish={canPublish} onDeploy={onDeploy} onPublish={onPublish}
           onDiscardAll={onDiscardAll} onDiscardNode={() => {}} onDiscardRow={() => {}} active={lists.active} ended={lists.ended} storage={storage} notes={{}}
           proposals={{ included: [] }} />
         <Outlet />
       </BottomBarSlot.Provider>
+      </AgentDock.Provider>
     );
   } });
   const index = createRoute({ getParentRoute: () => canvas, path: "/", component: () => null });
@@ -239,4 +246,23 @@ it("preserves the Change message while a Save can still refuse or fail", async (
   expect(onPublish).toHaveBeenCalledWith("Explain this change");
   expect(screen.getByRole("textbox", { name: "Change message" })).toHaveProperty("value", "Explain this change");
   expect(screen.getByRole("dialog", { name: "Environment changes" })).toBeTruthy();
+});
+
+it("docks in the open agent and returns to the canvas when it closes, keeping the Change message", async () => {
+  open(canvasUrl, [replicas], 1);
+  const canvas = await screen.findByRole("region", { name: "Canvas" });
+  expect((await within(canvas).findByRole("group", { name: "Bottom bar" })).dataset["docked"]).toBeUndefined();
+  fireEvent.click(within(canvas).getByRole("button", { name: "Details" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Change message" }), { target: { value: "Explain this change" } });
+  fireEvent.click(screen.getByRole("button", { name: "Close" }));
+
+  fireEvent.click(screen.getByRole("button", { name: "Agent" }));
+  const agent = screen.getByRole("complementary", { name: "Agent" });
+  expect(within(agent).getByRole("group", { name: "Bottom bar" }).dataset["docked"]).toBe("true");
+  expect(within(canvas).queryByRole("group", { name: "Bottom bar" })).toBeNull();
+
+  fireEvent.click(screen.getByRole("button", { name: "Agent" }));
+  expect(within(canvas).getByRole("group", { name: "Bottom bar" }).dataset["docked"]).toBeUndefined();
+  fireEvent.click(within(canvas).getByRole("button", { name: "Details" }));
+  expect(screen.getByRole("textbox", { name: "Change message" })).toHaveProperty("value", "Explain this change");
 });

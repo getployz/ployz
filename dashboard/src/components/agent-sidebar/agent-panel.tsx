@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
+import { Fragment, useEffect, useMemo, useState, type FormEvent, type KeyboardEvent, type ReactNode, type Ref } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { EventType, type StreamChunk } from "@tanstack/ai/client";
 import { fetchServerSentEvents, useChat, type UIMessage } from "@tanstack/ai-react";
@@ -44,14 +44,16 @@ type PanelProps = {
   threadId: string;
   /** Opens a chat: one from history, or a fresh id for a new one. */
   onChat: (threadId: string) => void;
+  /** Receives the element above the composer where the page's bottom bar docks. */
+  dock?: Ref<HTMLDivElement>;
 };
 
 /** One agent conversation; the sidebar picks the thread, and switching Organization or thread swaps in a fresh connection. */
-export default function AgentPanel({ organizationSlug, scope, page, threadId, onChat }: PanelProps) {
+export default function AgentPanel({ organizationSlug, scope, page, threadId, onChat, dock }: PanelProps) {
   return (
     <section aria-label="Ployz agent" className="flex h-full min-h-0 flex-col bg-background">
       <Conversation key={`${organizationSlug}/${threadId}`} organizationSlug={organizationSlug} scope={scope} page={page} threadId={threadId}
-        onChat={onChat} />
+        onChat={onChat} dock={dock} />
     </section>
   );
 }
@@ -107,12 +109,13 @@ function ChatHistory({ organizationSlug, threadId, onChat }: {
 /** The client reports any refused request only as text; a 403 means the thread in the link is another member's. */
 const refused = (error: Error | undefined) => error?.message.includes("status: 403") ?? false;
 
-function Conversation({ organizationSlug, scope, page, threadId, onChat }: {
+function Conversation({ organizationSlug, scope, page, threadId, onChat, dock }: {
   organizationSlug: string;
   scope: CollectionScope;
   page: PageContext;
   threadId: string;
   onChat: (threadId: string) => void;
+  dock?: Ref<HTMLDivElement>;
 }) {
   const onNewChat = () => onChat(crypto.randomUUID());
   const [connection] = useState(() => fetchServerSentEvents(`/api/agent/${encodeURIComponent(organizationSlug)}/chat`));
@@ -217,7 +220,10 @@ function Conversation({ organizationSlug, scope, page, threadId, onChat }: {
         </MessageScrollerViewport>
         <MessageScrollerButton />
       </MessageScroller>
-      <Composer busy={chat.isLoading} onSend={(text) => void chat.sendMessage(text)} onStop={chat.stop} />
+      <div className="flex shrink-0 flex-col gap-2 border-t p-2">
+        <div ref={dock} className="empty:hidden" />
+        <Composer busy={chat.isLoading} onSend={(text) => void chat.sendMessage(text)} onStop={chat.stop} />
+      </div>
     </MessageScrollerProvider>
   );
 }
@@ -354,7 +360,7 @@ function Composer({ busy, onSend, onStop }: { busy: boolean; onSend: (text: stri
     if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) send(event);
   };
   return (
-    <form onSubmit={send} className="shrink-0 border-t p-2">
+    <form onSubmit={send}>
       <InputGroup>
         <InputGroupTextarea aria-label="Message the agent" placeholder="Ask about your servers…" rows={1} value={draft}
           onChange={(event) => setDraft(event.target.value)} onKeyDown={onKeyDown} className="max-h-40 min-h-9" />
