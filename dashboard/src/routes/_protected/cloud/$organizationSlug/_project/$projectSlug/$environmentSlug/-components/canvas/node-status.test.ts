@@ -2,7 +2,7 @@ import type { DomainRow, NodeOutcome, RowId, ServiceListing } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
 import type { RuntimeContainerRecord } from "#/modules/runtime/runtime.collection";
 import { asTestDouble } from "#/lib/test-double";
-import { containerTrouble, deployChip, nodeIssues, publicDomain, restartedServices, runtimeLine, stagedSurface, type RuntimeLens } from "./node-status";
+import { containerTrouble, deployChip, nodeIssues, notSetLabel, publicDomain, restartedServices, runtimeLine, stagedSurface, type RuntimeLens } from "./node-status";
 
 const service: ServiceListing = { source: "image", change: null, template: null, id: "web", row: "web:node" as RowId, name: "web", private_dns: "web" };
 const container = (state: string, health?: string): RuntimeContainerRecord =>
@@ -218,5 +218,15 @@ describe("stagedSurface", () => {
     expect(stagedSurface(undefined, "delete")).toBe("destructive");
     expect(stagedSurface(undefined, null)).toBeUndefined();
     expect(stagedSurface(null, "delete")).toBeUndefined();
+  });
+});
+
+describe("notSetLabel", () => {
+  it("counts every secret the Service has no value for", () => {
+    expect(notSetLabel(["STRIPE_KEY", "WEBHOOK_SECRET"])).toBe("2 not set");
+  });
+
+  it("says nothing when every secret has a value", () => {
+    expect(notSetLabel([])).toBeUndefined();
   });
 });
