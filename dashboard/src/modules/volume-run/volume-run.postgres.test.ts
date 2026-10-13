@@ -393,7 +393,7 @@ describe("volume runs", () => {
     orphan: boolean; volume_id: string; docker_volume: string; refquota_bytes: string; finished_at: Date | null;
   }>;
   const context = (id: string): RunContext => ({
-    id, organizationId, volumeId, volumeName: "data", dockerVolume, kind: "sync", args: { full: false }, orphan: false, refquotaBytes: 0,
+    id, organizationId, volumeId, volumeName: "data", dockerVolume, kind: "sync", args: { full: false }, orphan: false, refquotaBytes: 0, gen: 0, phase: "warm", current: null,
   });
   const running = async (id: string) =>
     harness.pool.query(`update volume_run set state = 'running', inngest_run_id = 'run-1' where id = $1`, [id]);

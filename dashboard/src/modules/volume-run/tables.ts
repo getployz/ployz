@@ -1,3 +1,4 @@
+import type { MachineId } from "@ployz/sdk";
 import { sql } from "drizzle-orm";
 import { bigint, boolean, check, index, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { createdAt, sqlStringLiterals, updatedAt } from "#/db/tables";
@@ -35,6 +36,8 @@ export const volumeRun = pgTable(
     epoch: bigint("epoch", { mode: "number" }),
     gen: bigint("gen", { mode: "number" }).generatedAlwaysAsIdentity().notNull(),
     phase: text("phase").default("warm").notNull().$type<VolumeRunPhase>(),
+    /** The Machine a committed Move made the writer. */
+    current: text("current").$type<MachineId>(),
     /** The Service spec seen when the run started; Restore reads it once that Service's Server is gone. */
     serviceSpec: jsonb("service_spec").$type<ServiceSpec>(),
     inngestRunId: text("inngest_run_id"),
