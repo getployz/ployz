@@ -638,7 +638,7 @@ describe("volume runs", () => {
 
       const both = await Promise.all([execute(run.id, "run-1"), execute(run.id, "run-2")]);
 
-      expect(both.filter((output) => typeof output.result === "object" && output.result !== null && "settled" in output.result)).toHaveLength(1);
+      expect(both.map((output) => output.result).filter((result) => expect.objectContaining({ settled: expect.any(String) }).asymmetricMatch(result))).toHaveLength(1);
       const [row] = await rows();
       expect(row).toMatchObject({ state: "done" });
       expect(["run-1", "run-2"]).toContain(row?.inngest_run_id);
