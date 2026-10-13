@@ -170,7 +170,7 @@ enum Verdict {
 
 #[derive(Default)]
 struct Retirer {
-    first_seen: BTreeMap<Candidate, Instant>,
+    first_seen: BTreeMap<ContainerId, Instant>,
     /// Docker Container ids are random and never reused, so an absent id stays absent.
     absent: BTreeSet<ContainerId>,
     present: BTreeSet<ContainerId>,
@@ -214,10 +214,13 @@ impl Retirer {
     }
 
     fn track(&mut self, candidates: &[Candidate], now: Instant) {
-        self.first_seen
-            .retain(|candidate, _| candidates.contains(candidate));
+        self.first_seen.retain(|container, _| {
+            candidates
+                .iter()
+                .any(|candidate| candidate.container == *container)
+        });
         for candidate in candidates {
-            self.first_seen.entry(candidate.clone()).or_insert(now);
+            self.first_seen.entry(candidate.container).or_insert(now);
         }
     }
 
@@ -230,7 +233,7 @@ impl Retirer {
     ) -> Vec<(Candidate, Verdict)> {
         let mut decided = Vec::new();
         for candidate in candidates {
-            let first_seen = *self.first_seen.entry(candidate.clone()).or_insert(now);
+            let first_seen = *self.first_seen.entry(candidate.container).or_insert(now);
             if self.in_flight.contains(&candidate.container) {
                 continue;
             }
@@ -805,6 +808,41 @@ mod tests {
                 unacked: vec![two.name.to_string()]
             }]
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_newer_deploy_still_retiring_the_container_keeps_its_cap_clock() {
+        let (one, two) = (machine("one", 1), machine("two", 2));
+        let mut retirer = Retirer::default();
+        let required = ackers(&[&one, &two]);
+        assert!(
+            decide_now(
+                &mut retirer,
+                &pointers(),
+                &Acks::new(),
+                &required,
+                &[id("a")]
+            )
+            .is_empty()
+        );
+        tokio::time::advance(FORCE_AFTER).await;
+        let redeployed = ServingPointers::from_iter([(
+            service(),
+            ServingPointer {
+                deploy: deploy("d3"),
+                containers: vec![id("c")],
+                previous: Some(deploy("d2")),
+                retiring: vec![id("a"), id("b")],
+            },
+        )]);
+        let decided = decide_now(
+            &mut retirer,
+            &redeployed,
+            &Acks::new(),
+            &required,
+            &[id("a"), id("b")],
+        );
+        assert_eq!(retired(&decided), vec![id("a")]);
     }
 
     #[tokio::test(start_paused = true)]
