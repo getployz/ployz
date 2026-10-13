@@ -29,7 +29,7 @@ use crate::{
         CorrosionConfig, CorrosionPaths, DEFAULT_CONTAINER_NAME, Error as CorrosionError,
         MachineView, RunningCorrosion, remove_retained, run_machine_publisher,
     },
-    dns::{DnsService, DnsSupervision},
+    dns::DnsService,
     docker::{ContainerRuntime, ImageIngest, LocalDocker, MachineSpecStore, SpecStoreError},
     ingress,
     machine::{
@@ -40,6 +40,7 @@ use crate::{
     machine_api_socket::MachineApiSocket,
     management::{self, ManagementConfig},
     network::{CORROSION_GOSSIP_PORT, NetworkError, NetworkPlane},
+    runtime_unit::UnitSupervision,
 };
 
 /// How the daemon attaches a Container Runtime.
@@ -56,7 +57,7 @@ pub struct DaemonConfig {
     pub data_dir: PathBuf,
     pub socket: PathBuf,
     pub dns_upstreams: Vec<SocketAddr>,
-    pub dns: DnsSupervision,
+    pub units: UnitSupervision,
     pub machine_api_address: Option<SocketAddr>,
     pub containerd_socket: Option<PathBuf>,
     /// Volume plugin socket; None uses the Docker plugin socket.
@@ -76,6 +77,7 @@ pub struct Daemon {
     ingest: Arc<ImageIngest>,
     restart_requested: watch::Receiver<bool>,
     servers: JoinHandle<io::Result<()>>,
+    observe: Option<JoinHandle<()>>,
     _socket_lock: File,
 }
 
@@ -131,19 +133,44 @@ impl Daemon {
     ///
     /// If construction, binding, or required planes fail.
     pub async fn start(config: DaemonConfig) -> Result<Self, Error> {
-        crate::faults::check_env()?;
-        let socket = MachineApiSocket::claim(&config.socket)?;
-        let run_dir = config
-            .socket
-            .parent()
-            .unwrap_or_else(|| Path::new("/run/ployz"))
-            .to_owned();
-        crate::installer::upgrade::reconcile(&config.data_dir, &run_dir)
-            .await
-            .map_err(io::Error::other)?;
-        let build_policy = ployz_build::HostPolicy::from_environment()
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-        Self::start_with_build_policy(config, socket, build_policy, run_dir).await
+        // The Observe Store outlives the daemon, so it starts before anything
+        // here can fail, and the daemon does not exit before it has started.
+        let observe = (config.units == UnitSupervision::Systemd).then(|| {
+            let (data_dir, socket) = (config.data_dir.clone(), config.socket.clone());
+            tokio::spawn(async move {
+                if let Err(error) = crate::observe::unit::converge(&data_dir, &socket).await {
+                    eprintln!("WARNING: the Observe Store did not start: {error}");
+                }
+            })
+        });
+        let started: Result<Self, Error> = async {
+            crate::faults::check_env()?;
+            let socket = MachineApiSocket::claim(&config.socket)?;
+            let run_dir = config
+                .socket
+                .parent()
+                .unwrap_or_else(|| Path::new("/run/ployz"))
+                .to_owned();
+            crate::installer::upgrade::reconcile(&config.data_dir, &run_dir)
+                .await
+                .map_err(io::Error::other)?;
+            let build_policy = ployz_build::HostPolicy::from_environment()
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+            Self::start_with_build_policy(config, socket, build_policy, run_dir).await
+        }
+        .await;
+        match started {
+            Ok(mut daemon) => {
+                daemon.observe = observe;
+                Ok(daemon)
+            }
+            Err(error) => {
+                if let Some(observe) = observe {
+                    let _ = observe.await;
+                }
+                Err(error)
+            }
+        }
     }
 
     async fn start_with_build_policy(
@@ -197,7 +224,7 @@ impl Daemon {
         let local_phase = local_record.phase();
         let local_machine = local_record.machine().cloned();
         let dns = DnsService::start(
-            config.dns,
+            config.units,
             &config.data_dir,
             &run_dir,
             &config.socket,
@@ -418,6 +445,7 @@ impl Daemon {
             ingest,
             restart_requested,
             servers,
+            observe: None,
             _socket_lock: socket.lock,
         })
     }
@@ -526,6 +554,9 @@ impl Daemon {
             Err(_) => tracing::warn!(
                 "admitted Machine work is still running; the record stays claimed until exit"
             ),
+        }
+        if let Some(observe) = self.observe {
+            let _ = observe.await;
         }
         if errors.is_empty() {
             Ok(())
@@ -796,7 +827,7 @@ mod tests {
 
     use tokio::net::UnixListener;
 
-    use crate::dns::DnsSupervision;
+    use crate::runtime_unit::UnitSupervision;
     use ployz_core::{
         CERTIFICATE_POLICY_CAPABILITY, DESCRIBE_CONTRACT_CAPABILITY, DescribeContractRequest,
         LIST_CONTAINERS_CAPABILITY, LeaveRequest, MachineRpcClient, op,
@@ -820,7 +851,7 @@ mod tests {
                 data_dir: root.join("data"),
                 socket: socket.clone(),
                 dns_upstreams: Vec::new(),
-                dns: DnsSupervision::External,
+                units: UnitSupervision::External,
                 machine_api_address: None,
                 containerd_socket: None,
                 volume_plugin_socket: None,
@@ -1010,7 +1041,7 @@ mod tests {
             data_dir: root.0.join("data-a"),
             socket: socket.clone(),
             dns_upstreams: Vec::new(),
-            dns: DnsSupervision::External,
+            units: UnitSupervision::External,
             machine_api_address: None,
             containerd_socket: None,
             volume_plugin_socket: None,
@@ -1023,7 +1054,7 @@ mod tests {
             data_dir: root.0.join("data-b"),
             socket,
             dns_upstreams: Vec::new(),
-            dns: DnsSupervision::External,
+            units: UnitSupervision::External,
             machine_api_address: None,
             containerd_socket: None,
             volume_plugin_socket: None,

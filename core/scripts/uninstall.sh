@@ -103,7 +103,8 @@ main() {
         "$INSTALL_SYSTEMD_DIR/ployz-observe.service" \
         "$INSTALL_SYSTEMD_DIR/ployz-volume-plugin.socket" \
         "$INSTALL_SYSTEMD_DIR/ployz-volume-plugin.service" \
-        "$RUNTIME_SYSTEMD_DIR/ployz-dns.service"
+        "$RUNTIME_SYSTEMD_DIR/ployz-dns.service" \
+        "$RUNTIME_SYSTEMD_DIR/ployz-observe.service"
     systemctl daemon-reload
     rm -f "$INSTALL_BIN_DIR/ployzd"
 
