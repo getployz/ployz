@@ -1965,7 +1965,7 @@
       "read_only": false
     },
     {
-      "description": "Make a Volume's one mirror current. With server, copy it there as <volume>-<server>; without, send what changed since the last sync. full recopies a mirror that diverged. It may stop to ask a human to approve; call it alone, never alongside another tool.",
+      "description": "Make a Volume's one mirror current. With server, copy it there as <volume>-<server>; without, hand the mirror what changed since its last pull and answer without waiting for the download. full recopies a mirror that diverged, as a run. It may stop to ask a human to approve; call it alone, never alongside another tool.",
       "gate": "cloud",
       "input_schema": {
         "additionalProperties": false,
