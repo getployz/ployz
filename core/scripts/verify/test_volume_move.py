@@ -824,6 +824,37 @@ class VolumeMoveTests(unittest.TestCase):
                 named = [reason for reason in reasons if "PermissionError" in reason and command in reason]
                 self.assertTrue(named, (command, reasons))
 
+    def test_a_fault_case_whose_move_is_refused_fails_and_names_the_reply_even_when_another_run_trips_the_fault(self):
+        kill = volume_move.KILLS[0]
+        self.assertEqual(kill["name"], "kill-snapshot")
+        for fault_line in (True, False):
+            with self.subTest(fault_line_after_the_read=fault_line):
+                shutil.rmtree(self.root / "out", ignore_errors=True)
+                checks, model = self.checks()
+                cli, arming_runs, refused = model.cli, checks.arming_runs, []
+
+                def refusing(args, cli=cli, refused=refused):
+                    if args[:2] == ["volume", "move"] and any(model.fault.values()) and not refused:
+                        refused.append(args)
+                        return 1, json.dumps(dict(error=dict(code="internal", message="placement exploded")))
+                    return cli(args)
+
+                def a_sync_trips_the_fault(op, arming_runs=arming_runs, refused=refused, fault_line=fault_line):
+                    listed = arming_runs(op)
+                    if refused and fault_line:
+                        model.fired = True
+                    return listed
+                model.cli, checks.arming_runs = refusing, a_sync_trips_the_fault
+                with redirect_stdout(io.StringIO()):
+                    summary = checks.run_all([kill])
+                case = summary["cases"][0]
+                self.assertEqual(len(refused), 1)
+                self.assertFalse(case["passed"], case)
+                self.assertFalse(summary["passed"])
+                self.assertTrue(any("refused" in failure and "placement exploded" in failure
+                                    for failure in case["failures"]), case["failures"])
+                self.assertEqual(model.fault, {"machine-1": None, "machine-2": None})
+
     def test_each_planted_defect_fails_the_run(self):
         for mutation in ("two-writers", "stopped", "snapshots", "lost"):
             with self.subTest(mutation):
