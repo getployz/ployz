@@ -69,6 +69,8 @@ enum Reply {
     Ok,
     Listed(Vec<ContainerObservation>),
     Created(ContainerId),
+    /// A Settled creation the Machine answers with this verdict.
+    Settled(ContainerId, HealthVerdict),
     CreatedLater(ContainerId),
     Observed(
         ContainerRuntimeObservation,
@@ -86,6 +88,7 @@ struct Scripted {
     steps: Mutex<VecDeque<Step>>,
     observations: Option<Vec<ContainerObservation>>,
     slots: Mutex<Vec<SlotKey>>,
+    answers: Mutex<Vec<AnswerWhen>>,
     cancel_on_prepare: Option<CancellationToken>,
 }
 
@@ -95,8 +98,13 @@ impl Scripted {
             steps: Mutex::new(steps.into()),
             observations: None,
             slots: Mutex::new(Vec::new()),
+            answers: Mutex::new(Vec::new()),
             cancel_on_prepare: None,
         }
+    }
+
+    fn answers(&self) -> Vec<AnswerWhen> {
+        self.answers.lock().unwrap().clone()
     }
 
     fn next(&self, call: Call) -> Reply {
@@ -139,6 +147,7 @@ impl MachineOperations for Scripted {
             Reply::Error(error) => Err(error),
             Reply::Ok
             | Reply::Created(_)
+            | Reply::Settled(..)
             | Reply::CreatedLater(_)
             | Reply::Observed(..)
             | Reply::ObservedIngress(_)
@@ -152,13 +161,16 @@ impl MachineOperations for Scripted {
         &self,
         machine_id: &MachineId,
         want: ContainerWant,
-    ) -> Result<ContainerNow, RpcError> {
+    ) -> Result<(ContainerNow, Option<HealthVerdict>), RpcError> {
         let machine = *machine_id;
+        let mut settled = false;
         let (call, of) = match want {
             ContainerWant::Running {
                 container: RunTarget::New(new),
             } => {
                 let call = Call::Run(machine, new.slot.kind);
+                settled = new.answer == AnswerWhen::Settled;
+                self.answers.lock().unwrap().push(new.answer);
                 self.slots.lock().unwrap().push(new.slot.clone());
                 (call, ContainerLocator::Key(new.slot))
             }
@@ -193,21 +205,21 @@ impl MachineOperations for Scripted {
                 (call, container)
             }
         };
+        let healthy = settled.then_some(HealthVerdict::Healthy);
+        let present = |container_id: &ContainerId| {
+            ContainerNow::Present(observation(machine_id, container_id, running()))
+        };
         match self.next(call) {
-            Reply::Created(container_id) => Ok(ContainerNow::Present(observation(
-                machine_id,
-                &container_id,
-                running(),
-            ))),
+            Reply::Created(container_id) => Ok((present(&container_id), healthy)),
+            Reply::Settled(container_id, verdict) => {
+                assert!(settled, "only a Settled creation answers a verdict");
+                Ok((present(&container_id), Some(verdict)))
+            }
             Reply::CreatedLater(container_id) => {
                 tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-                Ok(ContainerNow::Present(observation(
-                    machine_id,
-                    &container_id,
-                    running(),
-                )))
+                Ok((present(&container_id), healthy))
             }
-            Reply::Ok => Ok(ContainerNow::Absent { of }),
+            Reply::Ok => Ok((ContainerNow::Absent { of }, None)),
             Reply::Error(error) => Err(error),
             Reply::Pending => std::future::pending().await,
             Reply::Listed(_) | Reply::Observed(..) | Reply::ObservedIngress(_) => {
@@ -251,7 +263,11 @@ impl MachineOperations for Scripted {
             }
             Reply::Pending => std::future::pending().await,
             Reply::Error(error) => Err(error),
-            Reply::Ok | Reply::Listed(_) | Reply::Created(_) | Reply::CreatedLater(_) => {
+            Reply::Ok
+            | Reply::Listed(_)
+            | Reply::Created(_)
+            | Reply::Settled(..)
+            | Reply::CreatedLater(_) => {
                 panic!("scripted inspect requires Observed or Error")
             }
         }
@@ -268,6 +284,7 @@ fn unit(reply: Reply) -> Result<(), RpcError> {
         Reply::Error(error) => Err(error),
         Reply::Listed(_)
         | Reply::Created(_)
+        | Reply::Settled(..)
         | Reply::CreatedLater(_)
         | Reply::Observed(..)
         | Reply::ObservedIngress(_)
@@ -471,6 +488,20 @@ fn created(call: Call, container_id: &ContainerId) -> Step {
     Step(call, Reply::Created(*container_id))
 }
 
+/// A Settled creation of `container_id` whose health check failed.
+fn unhealthy_run(machine: MachineId, container_id: &ContainerId) -> Step {
+    Step(
+        Call::Run(machine, ContainerKind::ServiceContainer),
+        Reply::Settled(
+            *container_id,
+            HealthVerdict::Failed {
+                observation: unhealthy(),
+                last_check: None,
+            },
+        ),
+    )
+}
+
 fn created_later(call: Call, container_id: &ContainerId) -> Step {
     Step(call, Reply::CreatedLater(*container_id))
 }
@@ -481,14 +512,6 @@ fn observed(call: Call, runtime: ContainerRuntimeObservation) -> Step {
 
 fn observed_ingress(call: Call, runtime: ContainerRuntimeObservation) -> Step {
     Step(call, Reply::ObservedIngress(runtime))
-}
-
-fn observed_with_healthcheck(
-    call: Call,
-    runtime: ContainerRuntimeObservation,
-    healthcheck: ployz_core::HealthcheckSpec,
-) -> Step {
-    Step(call, Reply::Observed(runtime, Some(healthcheck), None))
 }
 
 fn listed(service: &QualifiedService, containers: Vec<ContainerObservation>) -> Step {

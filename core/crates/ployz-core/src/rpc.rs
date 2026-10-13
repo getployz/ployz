@@ -474,6 +474,25 @@ pub struct NewContainer {
     /// Credentials for pulling the image; used for this pull only, never stored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub registry_auth: Option<crate::RegistryAuth>,
+    #[serde(default, skip_serializing_if = "AnswerWhen::is_started")]
+    pub answer: AnswerWhen,
+}
+
+/// When the Machine answers a new creation: once it starts, or once its health settles.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum AnswerWhen {
+    #[default]
+    Started,
+    /// After the Container is ready, fails, or outlives its health deadline; the
+    /// answer carries a [`HealthVerdict`].
+    Settled,
+}
+
+impl AnswerWhen {
+    fn is_started(&self) -> bool {
+        *self == Self::Started
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -967,6 +986,10 @@ pub struct ContainerDetails {
 pub enum EnsuredContainer {
     Ensured {
         now: ContainerNow,
+        /// How the started Container's health settled, when the want asked to wait for it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        health: Option<HealthVerdict>,
     },
     Refused {
         now: ContainerNow,
@@ -986,11 +1009,52 @@ pub enum ContainerNow {
     Absent { of: ContainerLocator },
 }
 
+/// How a started Container's health settled before the Machine answered.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "verdict", rename_all = "snake_case")]
+pub enum HealthVerdict {
+    Healthy,
+    Failed {
+        observation: crate::ContainerRuntimeObservation,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        last_check: Option<crate::LastHealthCheck>,
+    },
+    TimedOut {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        last_check: Option<crate::LastHealthCheck>,
+    },
+}
+
+impl HealthVerdict {
+    /// Why the Container is not serving, or `None` when it is.
+    #[must_use]
+    pub fn into_failure(self) -> Option<crate::HealthFailure> {
+        match self {
+            Self::Healthy => None,
+            Self::Failed {
+                observation,
+                last_check,
+            } => Some(crate::HealthFailure::Runtime {
+                observation,
+                last_check,
+            }),
+            Self::TimedOut { last_check } => Some(crate::HealthFailure::TimedOut { last_check }),
+        }
+    }
+}
+
 impl EnsuredContainer {
     /// The observed Container, or the refusal as the error the replaced verbs answered.
     pub fn into_result(self) -> Result<ContainerNow, RpcError> {
+        self.into_settled().map(|(now, _)| now)
+    }
+
+    /// The observed Container with its health verdict, or the refusal as an error.
+    pub fn into_settled(self) -> Result<(ContainerNow, Option<HealthVerdict>), RpcError> {
         match self {
-            Self::Ensured { now } => Ok(now),
+            Self::Ensured { now, health } => Ok((now, health)),
             Self::Refused { refusal, .. } => Err(refusal.into_error()),
         }
     }

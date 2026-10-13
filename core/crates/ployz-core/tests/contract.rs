@@ -4,9 +4,9 @@ use std::{
 };
 
 use ployz_core::{
-    BuildGrantId, BuildGrantInspected, CapabilityName, CertificateHost, CertificateMaterialChange,
-    CertificateMaterialPublished, CodecError, ContainerHostname, ContainerId, ContainerKind,
-    ContainerLabels, ContainerRuntimeObservation, ContractDescription,
+    AnswerWhen, BuildGrantId, BuildGrantInspected, CapabilityName, CertificateHost,
+    CertificateMaterialChange, CertificateMaterialPublished, CodecError, ContainerHostname,
+    ContainerId, ContainerKind, ContainerLabels, ContainerRuntimeObservation, ContractDescription,
     DESCRIBE_CONTRACT_CAPABILITY, DescribeContractRequest, DiskSpace, DockerVolumeName,
     ENSURE_IMAGE_INGEST_CAPABILITY, EnsureImageIngestRequest, ExtraHost, FORGET_MACHINE_CAPABILITY,
     FanoutFailure, FanoutOutcome, FanoutResponse, ForgetRequest, Forgotten, FramingError,
@@ -1582,6 +1582,7 @@ fn ensure_container_names_the_want_the_observation_and_the_refusal_on_the_wire()
                 resolved_spec: spec.clone(),
                 deployment_id: None,
                 registry_auth: None,
+                answer: AnswerWhen::Started,
             }),
         },
     };
@@ -1591,6 +1592,19 @@ fn ensure_container_names_the_want_the_observation_and_the_refusal_on_the_wire()
             "slot": slot_json, "resolved_spec": spec
         } } } })
     );
+    let settled: EnsureContainerRequest = serde_json::from_value(json!({
+        "want": { "state": "running", "container": { "new": {
+            "slot": slot_json, "resolved_spec": spec, "answer": "settled"
+        } } }
+    }))
+    .unwrap();
+    let ContainerWant::Running {
+        container: RunTarget::New(settled),
+    } = settled.want
+    else {
+        panic!("a new running want decodes as one");
+    };
+    assert_eq!(settled.answer, AnswerWhen::Settled);
     let request = op::EnsureContainer::into_request(running);
     assert_eq!(request.encode().unwrap().decode_request().unwrap(), request);
 

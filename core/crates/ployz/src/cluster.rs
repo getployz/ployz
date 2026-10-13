@@ -44,10 +44,7 @@ use crate::{
 mod capacity;
 mod container_health;
 
-pub(crate) use container_health::{
-    DEFAULT_HEALTH_MONITOR, HealthExpectation, HealthPoll, HealthWaitError, HealthWaitTick,
-    POLL_INTERVAL, classify_health, health_deadline_for, observed_health, wait_until_ready,
-};
+pub(crate) use container_health::HealthWaitError;
 
 const STORAGE_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(3);
 /// Reply timeout for mutations on a live Machine, which may be mid-Deploy and
@@ -959,13 +956,26 @@ impl Client {
         want: ContainerWant,
         timeout: Option<Duration>,
     ) -> Result<ContainerNow, RpcError> {
+        self.ensure_settled(machine_id, want, timeout)
+            .await
+            .map(|(now, _)| now)
+    }
+
+    /// [`Client::ensure_container`], with the health verdict a Settled creation
+    /// waits for on the Machine.
+    pub(crate) async fn ensure_settled(
+        &self,
+        machine_id: &MachineId,
+        want: ContainerWant,
+        timeout: Option<Duration>,
+    ) -> Result<(ContainerNow, Option<ployz_core::HealthVerdict>), RpcError> {
         self.invoke::<op::EnsureContainer>(
             EnsureContainerRequest { want },
             &MachineTarget::from(machine_id),
             timeout,
         )
         .await?
-        .into_result()
+        .into_settled()
     }
 
     pub async fn change_observed_service(

@@ -648,7 +648,10 @@ impl MachineRpc for DeployService {
                 ContainerNow::Absent { of: container }
             }
         };
-        encoded(RpcResponse::from(EnsuredContainer::Ensured { now }))
+        encoded(RpcResponse::from(EnsuredContainer::Ensured {
+            now,
+            health: None,
+        }))
     }
     async fn exec(
         &self,

@@ -17,15 +17,12 @@ async fn move_with(client: &Scripted) -> Result<ContainerId, MoveContainerError>
     .await
 }
 
-/// Run and serve the new Container `b` on `TO`.
+/// Run the new Container `b` on `TO` until it settles.
 fn served() -> Vec<Step> {
-    vec![
-        created(
-            Call::Run(machine(TO), ContainerKind::ServiceContainer),
-            &container('b'),
-        ),
-        observed(Call::Inspect(machine(TO), container('b')), running()),
-    ]
+    vec![created(
+        Call::Run(machine(TO), ContainerKind::ServiceContainer),
+        &container('b'),
+    )]
 }
 
 #[tokio::test]

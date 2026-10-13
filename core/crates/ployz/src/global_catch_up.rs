@@ -350,6 +350,7 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
             resolved_spec: slot.resolved_spec().clone(),
             deployment_id: None,
             registry_auth: None,
+            answer: ployz_core::AnswerWhen::Started,
         };
         observe(CatchUpFact::Creating(identity.clone()));
         match client.run_slot(&this_machine.id, new).await {

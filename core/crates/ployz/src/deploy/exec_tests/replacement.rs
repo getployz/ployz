@@ -7,10 +7,7 @@ async fn start_first_health_failure_stops_then_removes_the_replacement_and_never
         let old = container('a');
         let new = container('b');
         let plan = vec![replacement(&machine, &old, UpdateOrder::StartFirst)];
-        let mut steps = vec![
-            created(Call::Run(machine, ContainerKind::ServiceContainer), &new),
-            observed(Call::Inspect(machine, new), unhealthy()),
-        ];
+        let mut steps = vec![unhealthy_run(machine, &new)];
         if stop_succeeds {
             steps.push(ok(Call::Discard(machine, new)));
         } else {
@@ -34,35 +31,6 @@ async fn start_first_health_failure_stops_then_removes_the_replacement_and_never
 }
 
 #[tokio::test]
-async fn replacement_inspect_failure_runs_no_health_compensation() {
-    let machine = machine('1');
-    let old = container('a');
-    let new = container('b');
-    let plan = vec![replacement(&machine, &old, UpdateOrder::StartFirst)];
-    let client = Scripted::new(vec![
-        created(Call::Run(machine, ContainerKind::ServiceContainer), &new),
-        failed(Call::Inspect(machine, new), "inspect failed"),
-    ]);
-
-    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
-
-    assert!(matches!(
-        outcome,
-        DeployOutcome::Failed {
-            failed: FailedOperation::Operation {
-                error: ExecutionError::Machine {
-                    action: MachineAction::InspectContainer,
-                    ..
-                },
-                ..
-            },
-            ..
-        }
-    ));
-    client.assert_done();
-}
-
-#[tokio::test]
 async fn stop_first_health_failure_records_both_compensation_attempts() {
     for (stop_succeeds, restart_succeeds) in
         [(true, true), (true, false), (false, true), (false, false)]
@@ -74,8 +42,7 @@ async fn stop_first_health_failure_records_both_compensation_attempts() {
         let mut steps = vec![
             observed(Call::Inspect(machine, old), running()),
             ok(Call::Stop(machine, old)),
-            created(Call::Run(machine, ContainerKind::ServiceContainer), &new),
-            observed(Call::Inspect(machine, new), unhealthy()),
+            unhealthy_run(machine, &new),
         ];
         if stop_succeeds {
             steps.push(ok(Call::Discard(machine, new)));
@@ -118,8 +85,7 @@ async fn stop_first_stops_but_does_not_restart_an_old_container_that_exited() {
     let client = Scripted::new(vec![
         observed(Call::Inspect(machine, old), exited(1)),
         ok(Call::Stop(machine, old)),
-        created(Call::Run(machine, ContainerKind::ServiceContainer), &new),
-        observed(Call::Inspect(machine, new), unhealthy()),
+        unhealthy_run(machine, &new),
         ok(Call::Discard(machine, new)),
     ]);
 
@@ -293,8 +259,7 @@ async fn stop_first_leaves_a_never_started_service_container_down_when_the_new_o
             ]);
         } else {
             steps.extend([
-                created(Call::Run(machine, ContainerKind::ServiceContainer), &new),
-                observed(Call::Inspect(machine, new), unhealthy()),
+                unhealthy_run(machine, &new),
                 ok(Call::Discard(machine, new)),
             ]);
         }
@@ -335,8 +300,7 @@ async fn stop_first_stops_and_can_restart_active_old_container_states() {
         let client = Scripted::new(vec![
             observed(Call::Inspect(machine, old), runtime),
             ok(Call::Stop(machine, old)),
-            created(Call::Run(machine, ContainerKind::ServiceContainer), &new),
-            observed(Call::Inspect(machine, new), unhealthy()),
+            unhealthy_run(machine, &new),
             ok(Call::Discard(machine, new)),
             ok(Call::Restart(machine, old)),
         ]);
@@ -372,7 +336,6 @@ async fn stop_first_tolerates_disappearance_between_inspect_and_stop() {
         observed(Call::Inspect(machine, old), running()),
         Step(Call::Stop(machine, old), Reply::Error(missing.clone())),
         created(Call::Run(machine, ContainerKind::ServiceContainer), &new),
-        observed(Call::Inspect(machine, new), healthy()),
         ok(Call::Remove(machine, old)),
     ]);
 
@@ -398,10 +361,10 @@ async fn replacement_tolerates_an_old_container_missing_from_its_machine() {
                 Reply::Error(missing.clone()),
             ));
         }
-        steps.extend([
-            created(Call::Run(machine, ContainerKind::ServiceContainer), &new),
-            observed(Call::Inspect(machine, new), healthy()),
-        ]);
+        steps.extend([created(
+            Call::Run(machine, ContainerKind::ServiceContainer),
+            &new,
+        )]);
         steps.push(ok(Call::Remove(machine, old)));
         let client = Scripted::new(steps);
 
@@ -431,10 +394,10 @@ async fn replacement_does_not_apply_the_new_stop_grace_to_the_old_container() {
                 ok(Call::Stop(machine, old)),
             ]);
         }
-        steps.extend([
-            created(Call::Run(machine, ContainerKind::ServiceContainer), &new),
-            observed(Call::Inspect(machine, new), healthy()),
-        ]);
+        steps.extend([created(
+            Call::Run(machine, ContainerKind::ServiceContainer),
+            &new,
+        )]);
         steps.push(ok(Call::Remove(machine, old)));
         let client = Scripted::new(steps);
 

@@ -1410,6 +1410,7 @@ mod ensure_container {
     fn present(reply: &EnsuredContainer) -> &ContainerObservation {
         let EnsuredContainer::Ensured {
             now: ContainerNow::Present(observed),
+            ..
         } = reply
         else {
             panic!("expected an ensured present Container, got {reply:?}");
@@ -1586,6 +1587,7 @@ mod ensure_container {
                 now: ContainerNow::Absent {
                     of: serde_json::from_value(json!({"key":slot("k1")})).unwrap(),
                 },
+                health: None,
             }
         );
         let later = requests_since(&fake, seen);
@@ -1729,6 +1731,7 @@ mod ensure_container {
                 now: ContainerNow::Absent {
                     of: serde_json::from_value(json!({"id":id})).unwrap(),
                 },
+                health: None,
             }
         );
 
