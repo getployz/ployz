@@ -175,6 +175,14 @@ impl Retirer {
             .collect()
     }
 
+    fn track(&mut self, candidates: &[Candidate], now: Instant) {
+        self.first_seen
+            .retain(|candidate, _| candidates.contains(candidate));
+        for candidate in candidates {
+            self.first_seen.entry(candidate.clone()).or_insert(now);
+        }
+    }
+
     fn decide(
         &mut self,
         candidates: Vec<Candidate>,
@@ -297,9 +305,7 @@ async fn round<H: RetireHost>(
         }
     }
     let candidates = retirer.candidates(&pointers);
-    retirer
-        .first_seen
-        .retain(|candidate, _| candidates.contains(candidate));
+    retirer.track(&candidates, Instant::now());
     if candidates.is_empty() {
         return;
     }
@@ -504,6 +510,7 @@ mod tests {
     ) -> Vec<(Candidate, Verdict)> {
         retirer.note_local(pointers, &local.iter().copied().collect());
         let candidates = retirer.candidates(pointers);
+        retirer.track(&candidates, Instant::now());
         retirer.decide(candidates, acks, ackers, Instant::now())
     }
 
@@ -614,6 +621,32 @@ mod tests {
         assert!(decide_now(&mut retirer, &pointers(), &acks, &required, &[id("a")]).is_empty());
         tokio::time::advance(Duration::from_secs(1)).await;
         let decided = decide_now(&mut retirer, &pointers(), &acks, &required, &[id("a")]);
+        assert_eq!(
+            decided
+                .into_iter()
+                .map(|(_, verdict)| verdict)
+                .collect::<Vec<_>>(),
+            vec![Verdict::Forced {
+                unacked: vec![two.name.clone()]
+            }]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_cap_counts_rounds_whose_ack_read_failed() {
+        let (one, two) = (machine("one", 1), machine("two", 2));
+        let mut retirer = Retirer::default();
+        retirer.note_local(&pointers(), &BTreeSet::from([id("a")]));
+        let candidates = retirer.candidates(&pointers());
+        retirer.track(&candidates, Instant::now());
+        tokio::time::advance(FORCE_AFTER).await;
+        let decided = decide_now(
+            &mut retirer,
+            &pointers(),
+            &acked_away(&[&one]),
+            &ackers(&[&one, &two]),
+            &[id("a")],
+        );
         assert_eq!(
             decided
                 .into_iter()
