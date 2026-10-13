@@ -512,16 +512,24 @@ class VolumeMove:
         args["mirror-rm"] = ["volume", "mirror", "rm", f"{VOLUME}-{destination}"]
         began = self.clock()
         deadline = began + BUSY_LIMIT
-        holder = None
+        holder = skip = None
+        armed = False
         while True:
             holder = self.wait_idle(deadline) or holder
-            if arm and self.clock() < deadline:
+            if arm and not armed and self.clock() < deadline:
                 arm()
-                arm = None
+                armed = True
             code, data = self.cli(*args[op], check=False)
             refused = busy(data)
             holder = refused or holder
-            if not refused or self.clock() >= deadline:
+            if not refused:
+                break
+            if armed:
+                # A retry would let the fault fire inside that run and pass the case on its fault line.
+                skip = f"a run took the Volume while the fault was armed on {op}"
+                break
+            if self.clock() >= deadline:
+                skip = f"VolumeBusy past {BUSY_LIMIT}s on {op}"
                 break
             self.sleep(4)
         if holder:
@@ -530,8 +538,8 @@ class VolumeMove:
                           started_by_harness=holder.get("id") in self.started_runs)
             self.busy_waits.append(record)
             print(json.dumps(dict(volume_busy_wait=record)), flush=True)
-        if refused:
-            raise Skipped(f"VolumeBusy past {BUSY_LIMIT}s on {op}: run {refused.get('id')} ({refused.get('kind')})")
+        if skip:
+            raise Skipped(f"{skip}: run {holder.get('id')} ({holder.get('kind')})")
         approval = self.approve(data) if op == "release" else None
         if approval:
             code, data = self.cli(*args[op], "--approval", approval, check=False)

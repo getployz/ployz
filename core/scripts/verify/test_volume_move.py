@@ -461,14 +461,16 @@ class VolumeMoveTests(unittest.TestCase):
         self.assertEqual(moved["state"], "refused")
 
     def test_a_volume_held_past_the_limit_skips_the_case_disarms_its_fault_and_the_next_case_runs(self):
-        for listed in (True, False):
+        # An unlisted holder looks idle, so the fault is armed and the first refusal skips the case at once.
+        for listed, seconds, reason in ((True, volume_move.BUSY_LIMIT + 20, "VolumeBusy past"),
+                                        (False, 20, "while the fault was armed")):
             with self.subTest(holder_listed=listed):
                 checks, model = self.checks()
-                model.hold(volume_move.BUSY_LIMIT + 20, listed=listed)
+                model.hold(seconds, listed=listed)
                 with redirect_stdout(io.StringIO()):
                     summary = checks.run_all([volume_move.KILLS[0], volume_move.CASES[0]])
                 skipped, clean = summary["cases"]
-                self.assertTrue(skipped["skipped"], skipped)
+                self.assertIn(reason, skipped["skipped"] or "", skipped)
                 self.assertFalse(skipped["passed"])
                 self.assertEqual(model.fault, {"machine-1": None, "machine-2": None})
                 self.assertTrue(clean["passed"], clean)
@@ -506,6 +508,24 @@ class VolumeMoveTests(unittest.TestCase):
         with redirect_stdout(io.StringIO()), self.assertRaisesRegex(volume_move.Skipped, "sync-b"):
             checks.start_op("move", "machine-2")
         self.assertEqual([wait["holder"] for wait in checks.busy_waits], ["sync-b"])
+
+    def test_a_sync_that_takes_the_volume_while_the_fault_is_armed_skips_the_case(self):
+        checks, model = self.checks()
+        guest = model.guest
+
+        def arming(machine, script):
+            if "echo" in script and "PLOYZD_FAULT" in script and not model.holds:
+                model.hold(30, "cron-sync")
+            return guest(machine, script)
+        model.guest = arming
+        with redirect_stdout(io.StringIO()):
+            summary = checks.run_all([volume_move.KILLS[0]])
+        case = summary["cases"][0]
+        self.assertEqual(model.tripped, "cron-sync")
+        self.assertIn("while the fault was armed", case["skipped"] or "", case)
+        self.assertFalse(case["passed"])
+        self.assertEqual(model.fault, {"machine-1": None, "machine-2": None})
+        self.assertEqual([wait["holder"] for wait in summary["volume_busy_waits"]], ["cron-sync"])
 
     def test_a_failed_disarm_after_a_case_error_still_writes_the_summary(self):
         checks, model = self.checks()
