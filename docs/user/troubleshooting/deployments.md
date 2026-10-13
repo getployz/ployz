@@ -62,7 +62,7 @@ or a command's exit code and output.
 - **Give it time to boot.** If you lowered **Healthcheck timeout** under **Settings → Deploy**,
   raise it. Otherwise make your app start faster.
 
-## My service shows an amber ⚠
+## My running service fails its healthcheck
 
 A replica passed its **Healthcheck** once and fails it now. It keeps getting traffic, so the
 service stays **Online**, with an amber **⚠** on its card.
