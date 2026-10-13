@@ -24,10 +24,13 @@ export function diskSegments(sample: DiskSample): DiskSegment[] {
   return [...parts, ...used, { key: "free", label: "Free", bytes: sample.free }];
 }
 
-/** A Service's current CPU, in vCPUs, and memory on one Server, or null when that Server sent none lately. */
-export function serviceUsageOn(metrics: ServiceMetrics, serverId: string): { readonly cpu: number; readonly memory: number } | null {
+/**
+ * A Service's current CPU, in vCPUs, and memory on one Server, from a read that landed `age` ms ago, or null when that
+ * Server sent none lately.
+ */
+export function serviceUsageOn(metrics: ServiceMetrics, serverId: string, age: number): { readonly cpu: number; readonly memory: number } | null {
   const series = metrics.byServer.find((entry) => entry.server.id === serverId)?.series;
-  const cpu = series && freshLast(series.cpu, metrics);
-  const memory = series && freshLast(series.memory, metrics);
+  const cpu = series && freshLast(series.cpu, metrics, age);
+  const memory = series && freshLast(series.memory, metrics, age);
   return cpu && memory ? { cpu: cpu.value, memory: memory.value } : null;
 }

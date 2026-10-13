@@ -3,6 +3,7 @@ import { ItemDescription } from "#/components/ui/item";
 import { bytesText, cpuText } from "#/modules/metrics/metric-chart-data";
 import { serviceMetrics } from "#/modules/metrics/metrics-model";
 import { runtimeServiceMetricsQueryOptions } from "#/modules/metrics/metrics.queries";
+import { NOW_RANGE } from "./server-now";
 import { serviceUsageOn } from "./server-usage";
 
 /**
@@ -15,9 +16,9 @@ export function ServiceUsage({ organizationSlug, server, namespace, name }: {
   namespace: string;
   name: string;
 }) {
-  const { data } = useQuery(runtimeServiceMetricsQueryOptions({ organizationSlug, namespace, name, from: "5m", to: "now" }));
-  if (data === undefined) return null;
-  const usage = serviceUsageOn(serviceMetrics(data, new Map([[server.id, server.name]])), server.id);
+  const { data, isError, dataUpdatedAt } = useQuery(runtimeServiceMetricsQueryOptions({ organizationSlug, namespace, name, ...NOW_RANGE }));
+  if (data === undefined && !isError) return null;
+  const usage = data === undefined || isError ? null : serviceUsageOn(serviceMetrics(data, new Map([[server.id, server.name]])), server.id, Date.now() - dataUpdatedAt);
   return (
     <ItemDescription className="whitespace-nowrap tabular-nums">
       {usage === null ? "–" : `${cpuText(usage.cpu)} vCPU · ${bytesText(usage.memory)}`}

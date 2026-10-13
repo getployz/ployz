@@ -42,16 +42,16 @@ describe("serviceUsageOn", () => {
     const usage = serviceUsageOn(metrics([
       { server: fra1, series: series({ cpu: at(0.1, 0.24), memory: at(300, 318) }), gaps: [] },
       { server: fra2, series: series({ cpu: at(2), memory: at(900) }), gaps: [] },
-    ]), fra1.id);
+    ]), fra1.id, 0);
     expect(usage).toEqual({ cpu: 0.24, memory: 318 });
   });
 
   it("is null when this Server's readings stopped before the read's end", () => {
     const stale = { ...metrics([{ server: fra1, series: series({ cpu: at(0.1, 0.24), memory: at(300, 318) }), gaps: [] }]), window: { from: 0, to: 600_000 } };
-    expect(serviceUsageOn(stale, fra1.id)).toBeNull();
+    expect(serviceUsageOn(stale, fra1.id, 0)).toBeNull();
   });
 
   it("is null when this Server sent no readings", () => {
-    expect(serviceUsageOn(metrics([{ server: fra2, series: series({ cpu: at(2), memory: at(900) }), gaps: [] }]), fra1.id)).toBeNull();
+    expect(serviceUsageOn(metrics([{ server: fra2, series: series({ cpu: at(2), memory: at(900) }), gaps: [] }]), fra1.id, 0)).toBeNull();
   });
 });

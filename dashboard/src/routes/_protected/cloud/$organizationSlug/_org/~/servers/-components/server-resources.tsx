@@ -42,7 +42,7 @@ export function ServerResources({ organizationSlug, server }: { organizationSlug
   });
   const nowRead = useQuery(serverMetricsQueryOptions({ organizationSlug, machineId: server.id, ...NOW_RANGE }));
   const metrics = query.data ? serverMetrics(query.data, names) : null;
-  const now = nowRead.data ? serverMetrics(nowRead.data, names) : null;
+  const now = nowRead.data && !nowRead.isError ? serverMetrics(nowRead.data, names) : null;
   const availability = query.isError ? "unanswered" : metrics?.availability.type;
 
   return (
@@ -57,7 +57,7 @@ export function ServerResources({ organizationSlug, server }: { organizationSlug
       {availability === "needs_upgrade" ? <Unavailable>Upgrade {server.name} to see its metrics</Unavailable>
         : availability === "unanswered" || availability === "offline" ? <Unavailable>{server.name} didn’t answer</Unavailable>
         : metrics === null || nowRead.isPending ? <ResourcesSkeleton />
-        : <Resources metrics={metrics} now={now} answeredAt={query.dataUpdatedAt} range={range} dimmed={query.isPlaceholderData} />}
+        : <Resources metrics={metrics} now={now} nowAge={Date.now() - nowRead.dataUpdatedAt} answeredAt={query.dataUpdatedAt} range={range} dimmed={query.isPlaceholderData} />}
     </section>
   );
 }
@@ -81,17 +81,18 @@ function ResourcesSkeleton() {
   );
 }
 
-/** `now` is the short read, or null when it failed: every now-value then reads "–". */
-function Resources({ metrics, now, answeredAt, range, dimmed }: {
+/** `now` is the short read, landed `nowAge` ms ago, or null when it failed: every now-value then reads "–". */
+function Resources({ metrics, now, nowAge, answeredAt, range, dimmed }: {
   metrics: ServerMetrics;
   now: ServerMetrics | null;
+  nowAge: number;
   answeredAt: number;
   range: Range;
   dimmed: boolean;
 }) {
   const cursor = useMetricCursor();
   const window = chartWindow(resolveRange({ from: range, to: "now" }, answeredAt), answeredAt, metrics.stepMs ?? 60_000);
-  const nowValues = now && serverNow(now);
+  const nowValues = now && serverNow(now, nowAge);
   const usage = nowValues?.type === "meters" ? nowValues : { cpu: null, memory: null, disk: null };
   const frame = { times: steps(window), gaps: metrics.gaps, deploys: [], from: window.from, to: window.to, cursor, dimmed };
   return (
@@ -109,8 +110,8 @@ function Resources({ metrics, now, answeredAt, range, dimmed }: {
         limit={usage.memory && { value: usage.memory.total, label: `Total ${bytesText(usage.memory.total)}` }}
         series={[{ label: "Memory", color: "var(--chart-4)", values: onGrid(metrics.memoryUsed, window) }]} />
       <MetricChart id="server-network" title="Network" format={rateText} {...frame}
-        value={networkText(now)} series={networkSeries(metrics, window)} />
-      <DiskCard usage={usage.disk} sample={(usage.disk && now && freshLast(now.disk, now, DISK_SAMPLE_MS)) ?? null} />
+        value={networkText(now, nowAge)} series={networkSeries(metrics, window)} />
+      <DiskCard usage={usage.disk} sample={(usage.disk && now && freshLast(now.disk, now, nowAge, DISK_SAMPLE_MS)) ?? null} />
     </div>
   );
 }
@@ -128,10 +129,14 @@ function networkSeries(metrics: ServerMetrics, window: TimeWindow): MetricSeries
   });
 }
 
-function networkText(now: ServerMetrics | null) {
-  const first = now?.interfaces[0];
-  const out = first && freshLast(first.netOut, now);
-  return first && out ? `${first.name} ${rateText(out.value)} out` : "–";
+function networkText(now: ServerMetrics | null, age: number) {
+  if (now === null) return "–";
+  const sum = (key: "netIn" | "netOut") => {
+    const fresh = now.interfaces.flatMap((iface) => freshLast(iface[key], now, age) ?? []);
+    return fresh.length === 0 ? "–" : rateText(fresh.reduce((total, sample) => total + sample.value, 0));
+  };
+  const [netIn, netOut] = [sum("netIn"), sum("netOut")];
+  return netIn === "–" && netOut === "–" ? "–" : `In ${netIn} · Out ${netOut}`;
 }
 
 /** `aside` shows the share beside the title, for meters whose value is an amount rather than a percent. */
