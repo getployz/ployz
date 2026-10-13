@@ -140,6 +140,16 @@ describe("volume placement", () => {
     expect((await harness.pool.query("select count(*)::int as runs from volume_run")).rows).toEqual([{ runs: 0 }]);
   });
 
+  it("refuses deleting an old copy staged back onto the Volume between the check and the run", async () => {
+    await stage("web-1", ["web-2"]);
+    between = { query: "volumes", run: async () => { await stage("web-1", ["web-2", "web-3"]); } };
+    const deleting = { volumeId, environment, kind: "delete_mirror", args: { slot: "web-3", confirmed_name: null } } as const;
+    expect(await run(requestUnclaimedRun({ userId: null, organizationId }, deleting, web("web-3"))))
+      .toEqual({ ok: false, refusal: { message: "Not an old copy" } });
+    expect(between).toBeNull();
+    expect((await harness.pool.query("select count(*)::int as runs from volume_run")).rows).toEqual([{ runs: 0 }]);
+  });
+
   it("refuses deleting an old copy while a Deploy holds the Volume", async () => {
     await stage("web-1", ["web-2"]);
     await run(stampPlacements(organizationId, "env-1", "dep-1"));
