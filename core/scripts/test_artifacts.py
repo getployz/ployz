@@ -3,8 +3,10 @@
 
 import os
 from pathlib import Path
+import re
 import sys
 import tempfile
+import tomllib
 import time
 import unittest
 from unittest import mock
@@ -48,6 +50,22 @@ class Keys(unittest.TestCase):
     def test_workspace_files_move_every_key(self):
         self.assertEqual(self.changed_by("Cargo.toml", "\n"), set(KINDS))
 
+    def test_the_toolchain_moves_every_key(self):
+        self.assertEqual(self.changed_by("rust-toolchain.toml", "\n"), set(KINDS))
+
+    def test_every_rust_pin_names_the_toolchain_files_compiler(self):
+        channel = tomllib.loads((artifacts.CORE / "rust-toolchain.toml").read_text())["toolchain"]["channel"]
+        repository = artifacts.CORE.parent
+        pins = [("Dockerfile", r"FROM rust:([\d.]+)-"),
+                (".github/actions/setup-rust/action.yml", r"dtolnay/rust-toolchain@([\d.]+)"),
+                (".github/workflows/ci.yml", r"dtolnay/rust-toolchain@([\d.]+)"),
+                (".github/workflows/release-contracts.yml", r"RUST_VERSION: ([\d.]+)"),
+                ("core/Cargo.toml", r'rust-version = "([\d.]+)"')]
+        for path, pattern in pins:
+            found = re.findall(pattern, (repository / path).read_text())
+            self.assertTrue(found, f"{path} pins no Rust version")
+            self.assertEqual(set(found), {channel}, f"{path} pins a Rust other than core/rust-toolchain.toml")
+
     def test_tests_docs_and_generated_outputs_move_nothing(self):
         self.assertEqual(self.changed_by("crates/ployz-core/tests/zz_probe.rs"), set())
         self.assertEqual(self.changed_by("crates/ployz-sdk/zz_probe.md"), set())
@@ -57,7 +75,7 @@ class Keys(unittest.TestCase):
         self.assertNotEqual(artifacts.key("sdk", "features=eval"), artifacts.key("sdk", "features="))
 
     def test_a_clean_tree_has_its_commit_key(self):
-        if artifacts.git("status", "--porcelain", "--", "crates", "Cargo.toml", "Cargo.lock", "scripts"):
+        if artifacts.git("status", "--porcelain", "--", "crates", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "scripts"):
             self.skipTest("the checkout has uncommitted changes")
         for kind in KINDS:
             self.assertEqual(artifacts.key(kind), artifacts.key(kind, rev="HEAD"))

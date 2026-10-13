@@ -43,7 +43,7 @@ KINDS = {
     "ployzd": Kind(("ployzd",), ("ployzd",), "dev-debug0-strip-v1"),
     "ployz": Kind(("ployz",), ("ployz",), "dev-debug0-strip-v1"),
 }
-WORKSPACE = ("Cargo.toml", "Cargo.lock", ".cargo")
+WORKSPACE = ("Cargo.toml", "Cargo.lock", ".cargo", "rust-toolchain.toml")
 
 
 @dataclass(frozen=True)
