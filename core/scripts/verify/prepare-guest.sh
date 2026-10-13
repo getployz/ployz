@@ -7,8 +7,11 @@ apt-get install -y -qq --no-install-recommends ca-certificates curl openssh-serv
 # The actual installer prepares Docker, ZFS and systemd once, in the template.
 /opt/ployz-verify/ployzd install --version "$1" --storage zfs
 docker pull "$2"
-docker pull nginx:1.29-alpine
 docker pull caddy:2
+# Scenario workloads, so no check waits on Docker Hub (postgres:16-alpine alone took 44 to 55 s per Machine).
+for image in nginx:1.29-alpine nginx:1.27-alpine postgres:16-alpine alpine:3.20 traefik/whoami:v1.10.3; do
+    docker pull "$image"
+done
 # Enrollment discovers an exact Caddy tag; cache that tag as well as the major alias.
 caddy_version=$(docker run --rm --entrypoint caddy caddy:2 version)
 caddy_version=${caddy_version%% *}
