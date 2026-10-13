@@ -808,6 +808,16 @@ async fn a_server_that_stops_answering_after_its_name_is_typed_is_kept() {
         false,
         "{error}"
     );
+    let retry = error
+        .pointer("/error/details/retry")
+        .unwrap()
+        .as_str()
+        .unwrap();
+    assert!(
+        retry.starts_with("ployz server rm two --no-reset"),
+        "{retry}"
+    );
+    assert!(retry.ends_with("--confirm dead"), "{retry}");
     assert!(removals.lock().unwrap().is_empty());
     server.abort();
 }

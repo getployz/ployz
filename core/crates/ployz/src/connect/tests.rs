@@ -242,13 +242,20 @@ fn deadline_exceeded_is_retryable_not_unreachable() {
 }
 
 #[test]
-fn only_the_spent_budget_reports_the_target_unanswered() {
+fn only_a_spent_budget_or_the_router_reports_the_target_unanswered() {
     let dropped = io::Error::new(io::ErrorKind::BrokenPipe, "connection closed");
     for (error, unanswered) in [
         (
             ConnectError::Rpc(TransportError::budget_expired(
                 "target Machine RPC timed out",
             )),
+            true,
+        ),
+        (
+            ConnectError::from(ployz_core::rpc::target_unanswered_status(&io::Error::new(
+                io::ErrorKind::TimedOut,
+                "operation timed out",
+            ))),
             true,
         ),
         // A daemon sent these: something answered.

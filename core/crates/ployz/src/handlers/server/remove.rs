@@ -236,7 +236,20 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
                     &selected_target,
                     if dead { DeadConfirmed::Yes } else { DeadConfirmed::No },
                 )
-                .await?;
+                .await
+                .map_err(|error| {
+                    let late_dead = error.code == RpcErrorCode::ConfirmationRequired;
+                    let error = Error::from(error);
+                    if !late_dead {
+                        return error;
+                    }
+                    let mut retry = accepting.clone();
+                    if let Some(at) = retry.iter().position(|word| word == "--confirm") {
+                        retry.truncate(at);
+                    }
+                    retry.extend(["--confirm".into(), "dead".into()]);
+                    error.hint(Hint::Retry(shell_words::join(retry)))
+                })?;
         } else {
             let removed = client
                     .remove_machine(&selected_target, &confirmation, Remover::Operator)
