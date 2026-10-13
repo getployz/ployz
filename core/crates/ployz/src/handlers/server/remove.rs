@@ -342,10 +342,10 @@ async fn cloud_removal(
 ) -> Result<Credential, Error> {
     if hold == CloudHold::Last && removal == Removal::Forget {
         return Err(Error::conflict(format!(
-            "Server {} is the last Server and Cloud manages it; Cloud lets go of it only by resetting it. No changes made.",
+            "Server {} is the last Server and Cloud manages it. Remove it to reset it, or, when it is gone, forget every Server. No changes made.",
             selected.name
         ))
-        .hint(Hint::Next(format!("ployz server rm {}", selected.name))));
+        .hint(Hint::Next("ployz server forget".into())));
     }
     let store = CredentialStore::beside(&crate::handlers::config_path(matches)?);
     match cloud_account::from_env(&store).await {
