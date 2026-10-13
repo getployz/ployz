@@ -1,5 +1,5 @@
 import { it } from "@effect/vitest";
-import type { Act, CloudQuery, LogsAnswer, MachineId, ServerRef } from "@ployz/sdk";
+import type { Act, CloudQuery, LogsAnswer, MachineId } from "@ployz/sdk";
 import { Effect, Layer } from "effect";
 import { describe, expect } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
@@ -128,7 +128,7 @@ describe("callCloud", () => {
       const act: Act = {
         attempt: "a".repeat(32),
         digest: "b".repeat(64),
-        action: { action: "remove_server", server: { machine: MACHINE, name: "web-2" as ServerRef["name"] }, loss: null },
+        action: { action: "remove_server", server: { machine: MACHINE, name: "web-2" }, loss: null },
       };
       const heard = yield* callCloud(member, { act }).pipe(runtime(reading, []), Effect.provide(services));
       expect(heard).toEqual({ ok: false, refusal: { code: "unavailable", message: "Cloud couldn't answer this. Try again.", details: null } });

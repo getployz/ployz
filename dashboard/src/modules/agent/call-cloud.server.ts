@@ -36,7 +36,7 @@ const unreachable = () => refusal("unavailable", UNREACHABLE_MESSAGE, CONNECT_SE
 const noSuch = (what: string) => refusal("not_found", `No such ${what}.`);
 
 /** A failure before Cloud wrote anything, so the agent may retry without checking its runs. */
-class BeforeWrite extends Data.TaggedError("CallCloud.BeforeWrite")<{ readonly error: unknown }> {}
+class BeforeWrite<E> extends Data.TaggedError("CallCloud.BeforeWrite")<{ readonly error: E }> {}
 const beforeWrite = <A, E, R>(read: Effect.Effect<A, E, R>) => Effect.mapError(read, (error) => new BeforeWrite({ error }));
 
 const session = (organizationId: string) =>
@@ -209,8 +209,9 @@ const act = Effect.fn("CallCloud.act")(function* (caller: Caller, { attempt, dig
 type CloudServices = Effect.Services<ReturnType<typeof act>> | Effect.Services<ReturnType<typeof ask>>;
 type CloudError = Effect.Error<ReturnType<typeof act>> | Effect.Error<ReturnType<typeof ask>>;
 
-const refusalOf = (error: unknown, acting: boolean): ReturnType<typeof refusal> => {
-  if (error instanceof BeforeWrite) return refusalOf(error.error, false);
+type Failure = CloudError extends infer E ? E extends BeforeWrite<infer Read> ? Read : E : never;
+
+const refusalOf = (error: Failure, acting: boolean) => {
   if (error instanceof StoreRefused) return refusal(error.code, error.message, error.details);
   if (error instanceof NotFound) return refusal("not_found", error.message);
   if (error instanceof Validation) return refusal("invalid_argument", error.message);
@@ -224,7 +225,7 @@ export const callCloud = (caller: Caller, call: CloudCall, approvalId: string | 
   Effect.gen(function* (): Effect.fn.Return<StoreResult<unknown>, CloudError, CloudServices> {
     return "act" in call ? yield* act(caller, call.act, approvalId) : yield* ask(caller, call.ask);
   }).pipe(
-    Effect.catch((error) => Effect.succeed(refusalOf(error, "act" in call))),
+    Effect.catch((error) => Effect.succeed(error instanceof BeforeWrite ? refusalOf(error.error, false) : refusalOf(error, "act" in call))),
     Effect.withSpan("CallCloud", { attributes: { call: "act" in call ? call.act.action.action : call.ask.query } }),
   );
 
