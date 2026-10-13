@@ -187,12 +187,13 @@ const laneRefusal = Effect.fn("VolumeRun.laneRefusal")(function* (lane: VolumeRu
   return { code: "conflict", message: `VolumeBusy: ${finishes}`, details: { run } } satisfies StoreRefusal;
 });
 
-const enqueueRun = (row: VolumeRunRow) =>
+const enqueueRun = (row: VolumeRunRow, took?: VolumeRunKind) =>
   enqueueEvent(createVolumeRunRequestedEvent({
     organizationId: row.organizationId,
     environment: row.environmentId,
     volumeId: row.volumeId,
     runId: row.id,
+    took,
   }));
 
 const readRow = Effect.fn("VolumeRun.readRow")(function* (id: string) {
@@ -433,7 +434,7 @@ const takeLane = Effect.fn("VolumeRun.takeLane")(function* (caller: Caller, { in
       requestedByUserId: caller.userId,
     }).onConflictDoNothing().returning();
     if (inserted !== undefined) {
-      if (inngestRunId === null) yield* enqueueRun(inserted);
+      if (inngestRunId === null) yield* enqueueRun(inserted, taken?.kind);
       if (taken !== undefined) yield* enqueueEvent(createVolumeRunTakenEvent({ runId: taken.id }));
       return { run: volumeRunView(inserted), ended: taken === undefined ? null : volumeRunView(taken) } satisfies LaneTake;
     }

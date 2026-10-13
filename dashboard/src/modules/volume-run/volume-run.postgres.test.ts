@@ -404,9 +404,9 @@ describe("volume runs", () => {
       ...["fsn-2", "fsn-3"].flatMap((server) => [`04-forget-${server}`, `03-forget-${server}`])]
       .flatMap((id) => Array.from({ length: 6 }, (_, check) => `${id}-wait-${check + 1}`)),
   ].map((id) => ({ id, handler: () => undefined }));
-  const execute = (runRowId: string, runId = "run-1", steps?: Array<{ id: string; handler: () => object | undefined }>, volume = volumeId) => new InngestTestEngine({
+  const execute = (runRowId: string, runId = "run-1", steps?: Array<{ id: string; handler: () => object | undefined }>, volume = volumeId, took?: string) => new InngestTestEngine({
     function: createRunVolume(new Inngest({ id: "test" }), runEffect),
-    events: [{ name: "volume/run.requested", data: { organizationId, environment: "env-1", volumeId: volume, runId: runRowId } }],
+    events: [{ name: "volume/run.requested", data: { organizationId, environment: "env-1", volumeId: volume, runId: runRowId, took } }],
     transformCtx: (ctx) => ({ ...mockCtx(ctx), runId }),
     steps: [...(steps ?? []), ...sleeps],
   }).execute();
@@ -804,6 +804,21 @@ describe("volume runs", () => {
       const gen = Number((await lanes()).find((lane) => lane.id === released.run.id)?.gen);
       expect(sent[1]).toMatchObject({ expect: { kind: "none" }, want: { kind: "floor" }, gen });
       expect(named("fsn-2").copy).toBeNull();
+    });
+
+    it("a staged run that took a warm Move whose cut flipped floors A and promotes it back to the writer before it plans", async () => {
+      const G = newSnap("f-1");
+      containers = [{ machine: "fsn-1", id: "web-fsn-1", running: false }];
+      named("fsn-1").copy = slotCopy(G, null, "3");
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(G) };
+      const run = await requested({ kind: "mirror", args: { to: "fsn-2" } });
+
+      await execute(run.id, "run-2", undefined, volumeId, "move");
+
+      expect(verbs.slice(0, 2)).toEqual(["floor@fsn-1", "writer@fsn-1(none)"]);
+      expect(sent[1]).toMatchObject({ expect: { kind: "mirror", newest: G.guid }, want: { kind: "writer", at: G.guid, start: null }, gen: sent[0]?.gen });
+      expect(named("fsn-1").copy).toMatchObject({ kind: "root", readonly: false, newest: G });
+      expect(await rows()).toMatchObject([{ id: run.id, state: "done" }]);
     });
   });
 

@@ -11,6 +11,7 @@ import {
   volumeRunTakenEventType,
 } from "#/modules/inngest/events";
 import { PATIENCE, PATIENCE_WAITS } from "#/modules/volume-run/patience";
+import { fenceTaken } from "#/modules/volume-run/volume-run.deploy.server";
 import { alreadyOn, epochOf, expectOf, observedEpoch, type PlanInput, type Planned, planFromCopies } from "#/modules/volume-run/plan";
 import { type AnsweredMember, copyName, type Member, type VolumeRunArgs } from "#/modules/volume-run/volume-run";
 import {
@@ -58,6 +59,7 @@ const VolumeRunRequestedData = Schema.Struct({
   organizationId: Schema.String.check(Schema.isNonEmpty()),
   volumeId: Schema.String.check(Schema.isNonEmpty()),
   runId: Schema.String.check(Schema.isUUID()),
+  took: Schema.optional(Schema.String),
 });
 
 type PhaseOf<K> = Extract<Extract<Planned, { ok: true }>["phase"], { kind: K }>;
@@ -82,6 +84,7 @@ export async function runVolume(
   // SAFETY: step output is the JSON of a RunContext, and a RunContext holds only JSON values.
   const run = claim.run as RunContext;
 
+  if (request.took !== undefined) await step.run("01-fence", () => runEffect(fenceTaken(run, runId)));
   // SAFETY: step output is the JSON of the Member list, and a Member holds only JSON values.
   const observed = (await step.run("01-observe", () => runEffect(observeMembers(run, runId)))) as Member[];
   const steps: RunSteps = { step, runEffect, run, runId };

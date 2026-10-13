@@ -322,6 +322,7 @@ describe("deploying a Volume placement", () => {
       { id: started.wait.runId, kind: "move", state: "requested", message: null },
     ]);
     expect(send).toHaveBeenCalledWith(expect.objectContaining({ name: "volume/run.taken", data: { runId: other } }));
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ name: "volume/run.requested", data: expect.objectContaining({ runId: started.wait.runId, took: "move" }) }));
 
     await endRun(started.wait.runId, "done");
     members = [member("web-2", "writer"), member("web-1", "mirror")];

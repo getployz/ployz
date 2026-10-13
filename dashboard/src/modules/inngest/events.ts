@@ -2,6 +2,7 @@ import type { webhooks } from "#/modules/billing/polar-api";
 import { Schema } from "effect";
 import type { ServerPolicyChange } from "#/modules/machines/server-policy";
 import type { UpgradeTrigger } from "#/modules/server-upgrade/server-upgrade";
+import type { VolumeRunKind } from "#/modules/volume-run/volume-run";
 import { eventType, staticSchema } from "inngest";
 import { githubCheckSuiteReceivedEventDataSchema, githubPullRequestReceivedEventDataSchema, githubPushReceivedEventDataSchema, type GithubCheckSuiteReceivedEventData, type GithubCheckSuiteReceivedEventInput, type GithubPullRequestReceivedEventData, type GithubPullRequestReceivedEventInput, type GithubPushReceivedEventData, type GithubPushReceivedEventInput } from "#/modules/github/github-ingestion.contracts";
 import { asReferenceId } from "#/lib/json";
@@ -80,6 +81,8 @@ export type VolumeRunRequestedEventData = {
   environment: string;
   volumeId: string;
   runId: string;
+  /** The kind of the warm lane this run took over, so the run fences that lane's Machines before it plans. */
+  took?: VolumeRunKind;
 };
 export const volumeRunTakenEvent = "volume/run.taken";
 
