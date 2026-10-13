@@ -38,7 +38,12 @@ impl VolumeStorage {
     }
 
     async fn inspect(&self, name: &DockerVolumeName) -> Result<Option<PluginVolume>> {
-        let pool = self.one_pool().await?;
+        let Some(pool) = self.pool.one_usable().await? else {
+            if self.pool.has_held_a_pool()? {
+                return Err("this Machine has held a Pool that is not imported".into());
+            }
+            return Ok(None);
+        };
         let datasets = self.datasets(&pool).await?;
         let Some(dataset) = Self::dataset(&datasets, &pool, name)? else {
             return self.inspect_cut(&datasets, &pool, name).await;
