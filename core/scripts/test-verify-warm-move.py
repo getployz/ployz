@@ -284,7 +284,7 @@ class Cluster:
         times = [at for at in times if at >= since]
         return min(times) if times else None
 
-    def wait_held(self, volume, row, phys, source, target, cell, since, limit=900):
+    def wait_held(self, volume, row, phys, source, target, cell, since, limit=300):
         """Wait until `target` logs that its fault delays `cell`, after the db on `source` stopped for the cut."""
         deadline = time.monotonic() + limit
         while time.monotonic() < deadline:
@@ -321,7 +321,7 @@ class Cluster:
     def start_log(self, machine, tag):
         return self.sh(machine, f"cat /tmp/{tag}-start.log 2>/dev/null || true", required=False).stdout.strip()
 
-    def wait_start_log(self, machine, tag, limit=600):
+    def wait_start_log(self, machine, tag, limit=150):
         deadline = time.monotonic() + limit
         while time.monotonic() < deadline:
             began = self.sh(machine, f"grep -m1 '^begin' /tmp/{tag}-start.log 2>/dev/null || true",
@@ -493,7 +493,7 @@ class Cluster:
         finally:
             self.fault(target, None)
             self.runner("start")
-        stopped = self.wait_run(volume, row["id"], limit=600)
+        stopped = self.wait_run(volume, row["id"], limit=300)
         return dict(held=held, cancel=cancelled, run=stopped)
 
     # Removal and rejoin
@@ -511,7 +511,7 @@ class Cluster:
             retry = "does not match" in say(data) or find_key(data, "code") == "unavailable"
             if not retry or time.monotonic() > deadline:
                 raise CheckError(f"server forget {machine} --confirm dead refused: {attempts[-3:]}")
-            time.sleep(10)
+            time.sleep(2)
 
     def daemon_up(self, machine):
         self.sh(machine, "for i in $(seq 180); do systemctl is-active --quiet ployz.service && exit 0; sleep 1; done; "
@@ -539,7 +539,7 @@ class Cluster:
                 return f"joined with catch-up incomplete; the redeploy it asks for finished {round(time.time() - started)}s later"
             if time.time() > deadline:
                 raise CheckError(f"{machine} joined but redeploy still fails after 600s: {say(deployed)[:800]}")
-            time.sleep(30)
+            time.sleep(5)
 
     def accept_services(self, machine):
         """The entry Server may not route to a fresh add over the mesh for some seconds; retry as a user would."""
@@ -550,7 +550,7 @@ class Cluster:
                 return
             if find_key(data, "code") != "unavailable" or time.time() > deadline:
                 raise CheckError(f"server set {machine} --accepts-services=true after its add failed: {say(data)[:800]}")
-            time.sleep(5)
+            time.sleep(2)
 
     def wait_gone(self, phys, limit=480):
         started = time.monotonic()
@@ -600,12 +600,12 @@ class Recorder:
         for machine in self.cluster.machines:
             self.cluster.sh(machine, f"rm -f /tmp/rec-{self.tag}.log; nohup setsid bash -c {shlex.quote(loop)} "
                                      f"> /tmp/rec-{self.tag}.log 2>&1 < /dev/null & echo $! > /tmp/rec-{self.tag}.pid")
-        time.sleep(2)
         for machine in self.cluster.machines:
-            alive = self.cluster.sh(machine, f"kill -0 $(cat /tmp/rec-{self.tag}.pid) && wc -l < /tmp/rec-{self.tag}.log",
+            alive = self.cluster.sh(machine, f"for i in $(seq 100); do kill -0 $(cat /tmp/rec-{self.tag}.pid) || exit 1; "
+                                             f"[ -s /tmp/rec-{self.tag}.log ] && exit 0; sleep 0.1; done; exit 1",
                                     required=False)
             if alive.returncode:
-                raise CheckError(f"recorder on {machine} did not survive: {alive.stdout} {alive.stderr}")
+                raise CheckError(f"recorder on {machine} wrote no sample within 10s: {alive.stdout} {alive.stderr}")
         return self
 
     def __exit__(self, *_):
