@@ -453,13 +453,20 @@ export function undoPlacement(volume: PlacementVolume, members: readonly Member[
 
 /**
  * What stays staged once a Deploy's run for the change `key` names failed: the change goes, and the rest waits for the
- * next Deploy. A change the Servers no longer show landed despite the failure, so everything stays. A move the Servers
- * handed over already stays too, since only finishing it brings the Volume back. One whose primary isn't answering goes
+ * next Deploy. A change the Servers no longer show landed despite the failure: deletes whose copy is gone go, the rest
+ * stays, and the row drops once nothing is left to change. A move the Servers handed over stays whole, since only
+ * finishing it brings the Volume back. One whose primary isn't answering goes
  * back to the Server the move left, else the silent Server presumed to hold the Volume, or drops the row when there is none.
  */
 export function dropChange(volume: PlacementVolume, members: readonly Member[], row: PlacementRow, key: ChangeKey): Placement | null {
   const change = placementChanges(volume, members, row).find((one) => sameChange(changeKey(one), key));
-  if (change === undefined) return row.staged;
+  if (change === undefined) {
+    if (row.staged === null) return null;
+    const observed = observePlacement(members);
+    const held = (id: MachineId) => observed.copies.some((copy) => copy.server.id === id) || observed.unanswered.some((server) => server.id === id);
+    const landed = { ...row.staged, deletes: row.staged.deletes.filter(held) };
+    return placementChanges(volume, members, { ...row, staged: landed }).length === 0 ? null : landed;
+  }
   if (change.kind === "move") {
     const observed = observePlacement(members);
     if (observed.primary?.id === row.staged?.primary) return row.staged;

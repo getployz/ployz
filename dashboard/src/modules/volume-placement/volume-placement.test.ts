@@ -227,10 +227,20 @@ describe("dropChange", () => {
     expect(drop(members, placement, "move")).toEqual({ primary: id("web-1"), mirrors: [id("web-2")], deletes: [id("web-3")] });
   });
 
-  it("keeps everything when the Servers no longer show the change, since it landed despite the failure", () => {
-    const members = [member("web-1", "writer"), member("web-2", "mirror"), pooled("web-3")];
-    const placement = row(["web-2"], { primary: "web-2", deletes: ["web-3"] });
-    expect(dropChange(volume, members, placement, { kind: "delete_copy", server: id("web-3") })).toEqual(placement.staged);
+  describe("a change the Servers no longer show, since it landed despite the failure", () => {
+    const landed = { kind: "delete_copy", server: id("web-3") } as const;
+    const members = [member("web-1", "writer"), member("web-2", "mirror"), pooled("web-3"), pooled("web-4")];
+
+    it("drops the row when the landed delete was all it had staged", () => {
+      expect(dropChange(volume, members, row(["web-2"], { primary: "web-1", mirrors: ["web-2"], deletes: ["web-3"] }), landed)).toBeNull();
+    });
+
+    it("drops the landed delete and keeps the rest staged", () => {
+      expect(dropChange(volume, members, row(["web-2"], { primary: "web-1", mirrors: ["web-2", "web-4"], deletes: ["web-3"] }), landed))
+        .toEqual({ primary: id("web-1"), mirrors: [id("web-2"), id("web-4")], deletes: [] });
+      expect(dropChange(volume, members, row(["web-2"], { primary: "web-2", deletes: ["web-3"] }), landed))
+        .toEqual({ primary: id("web-2"), mirrors: [], deletes: [] });
+    });
   });
 
   it("keeps a move that failed after the hand-over, since the next Deploy must finish it", () => {
