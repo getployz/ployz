@@ -222,7 +222,7 @@ async fn push(grant: &BuildGrant, built: &LocalImage, events: &Events) -> Result
     // The Cloud runner's fixed result line: stdout in every mode.
     use std::io::Write as _;
     writeln!(
-        std::io::stdout().lock(),
+        crate::ui::stdout_bytes(),
         "{}",
         json!({"digest": digest, "tag": tag, "platforms": built.image.platforms})
     )?;

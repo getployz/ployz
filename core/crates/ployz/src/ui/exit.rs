@@ -39,6 +39,9 @@ pub fn exit_code(code: &RpcErrorCode) -> u8 {
 /// End the process: print the failure, if any, and return its exit code.
 #[must_use]
 pub fn exit(result: Result<(), Failure>) -> ExitCode {
+    // A result's last line may still sit in std's buffer, and std drops a
+    // flush error at exit.
+    let _ = io::Write::flush(&mut super::stdout_bytes());
     let Err(failure) = result else {
         return ExitCode::SUCCESS;
     };
@@ -46,7 +49,7 @@ pub fn exit(result: Result<(), Failure>) -> ExitCode {
         &failure,
         super::mode(),
         super::emitted(),
-        &mut io::stdout().lock(),
+        &mut super::stdout_bytes(),
         &mut anstream::stderr().lock(),
     );
     ExitCode::from(code)
