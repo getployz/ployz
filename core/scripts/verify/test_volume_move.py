@@ -148,13 +148,26 @@ class ClusterModel:
         """The db Container on machine exits at host time at, and Docker stamps it then in machine's clock."""
         self.when(at, lambda at: self.stops.append((machine, self.stamp(machine, at))))
 
-    def cut(self, machine, at):
-        """This run's cut on machine: WriterToMirror logs the witness when it is armed there, then the db stops."""
-        def witness():
-            if self.fault[machine] == WITNESS:
-                self.log_fault(machine, at - 0.25, WITNESS_LINE)
-        self.at(at - 0.25, witness)
-        self.stop(machine, at)
+    def epoch(self, run_id):
+        """The epoch Cloud's takeEpoch gives run_id: one above every earlier run on the Volume."""
+        return int(run_id.rsplit("-", 1)[1]) + 1
+
+    def cut(self, machine, at, volume=PHYSICAL, target=None, begins=None, stops=True, finishes=True):
+        """A cut on machine, for the latest run's target unless another is named. WriterToMirror begins at begins, a
+        quarter second before at unless set, and logs the delay fault's line then when one is armed there. The cut
+        stops the db at at unless something stopped it first, and logs that every holder stopped a tenth of a second
+        later unless it never gets that far."""
+        target = target or f"f-{self.epoch(self.runs[-1]['id'])}"
+        begins = at - 0.25 if begins is None else begins
+
+        def delayed():
+            if (self.fault[machine] or "").startswith("delay-rpc:SetVolumeCopy.WriterToMirror:"):
+                self.log_fault(machine, begins, WITNESS_LINE)
+        self.at(begins, delayed)
+        if stops:
+            self.stop(machine, at)
+        if finishes:
+            self.log_fault(machine, at + 0.1, f" INFO cut: holders stopped volume={volume} target={target}")
 
     def when(self, at, event):
         at = self.clock() if at is None else at
@@ -254,9 +267,11 @@ class ClusterModel:
         return subprocess.CompletedProcess(args, code, output, "")
 
     def postgres(self, sql):
-        """Cloud records the Inngest run that claims a request; an unclaimed one has none."""
+        """Cloud records the Inngest run that claims a request and the epoch it takes; an unclaimed one has neither."""
         run_id = re.search(r"id = '([^']+)'", sql)[1]
-        return 0, "" if run_id in self.unclaimed else f"inngest-{run_id}\n"
+        if run_id in self.unclaimed:
+            return 0, ""
+        return 0, f"{self.epoch(run_id)}\n" if sql.startswith("select epoch ") else f"inngest-{run_id}\n"
 
     def worker(self, state):
         """verify-cluster runner kills the recorded worker if it is alive, and start replaces a dead one."""
@@ -361,7 +376,9 @@ class ClusterModel:
                 return 0, ""
             self.clock.advance(self.latency[machine])
             since = int(re.search(r"--since @(-?\d+)", script)[1])
-            lines = [(at, text) for where, at, text in self.journal if where == machine and at >= since]
+            patterns = re.findall(r"-e '([^']*)'", script) or re.findall(r"grep -F '([^']*)'", script)
+            lines = [(at, text) for where, at, text in self.journal
+                     if where == machine and at >= since and any(pattern in text for pattern in patterns)]
             return polled, "".join(f"{at:.6f} machine ployzd[1]: {text}\n" for at, text in lines)
         if script.startswith("for d in"):
             lines = []
@@ -1900,6 +1917,49 @@ class VolumeMoveTests(unittest.TestCase):
         result, model = self.run_with("soak-4-final-runner-kill", before, 30, effect)
         self.assertTrue(result["passed"], result)
         self.assertLess(model.kills[0], begun[0] + 20, (model.kills, begun))
+
+    def close_an_earlier_run(self, model):
+        """An earlier move on the Volume whose row Cloud already closed. It took epoch 1, so the first run takes 2."""
+        self.model = model
+        model.runs.append(dict(id=f"run-{len(model.runs)}", kind="move", state="failed", finished_at=model.now()))
+
+    def test_a_late_step_of_a_closed_run_is_not_credited_to_the_first_run(self):
+        # Round 9 open false pass 1: a step of an earlier run outlives its row and cuts the writer after the clean
+        # start. Its cut names that run's target, f-1, and the first run asked for f-2.
+        result, _ = self.run_with("soak-3-cut-runner-kill", self.close_an_earlier_run, 10,
+                                  lambda begun: self.model.cut("machine-1", begun + 2, target="f-1"))
+        self.assert_not_credited(result)
+
+    def run_alone(self, effect):
+        """Run soak-3-cut-runner-kill with only the cut effect(model, begun) makes."""
+        return self.run_with("soak-3-cut-runner-kill", lambda model: setattr(self, "model", model), 10,
+                             lambda begun: effect(self.model, begun))
+
+    def test_a_cut_line_for_another_volume_is_not_credited(self):
+        # Round 9's other-Volume gap: the db also mounts a second Volume, whose cut on the same writer stops it.
+        result, _ = self.run_alone(lambda model, begun: model.cut("machine-1", begun + 2,
+                                                                  volume="verify-production_vol-2"))
+        self.assert_not_credited(result)
+
+    def test_a_cut_line_for_another_target_is_not_credited(self):
+        result, _ = self.run_alone(lambda model, begun: model.cut("machine-1", begun + 2, target="f-7"))
+        self.assert_not_credited(result)
+
+    def test_a_service_act_stop_inside_the_cut_is_credited_only_once_the_cut_line_follows(self):
+        # Round 9 open false pass 2: the first run's cut begins at +1.75 and drains, and a service act stops the db
+        # at +2. The case's action belongs after the cut has every holder stopped.
+        with self.subTest("the cut never gets that far"):
+            result, _ = self.run_alone(lambda model, begun: (
+                model.cut("machine-1", begun + 6, begins=begun + 1.75, stops=False, finishes=False),
+                model.stop("machine-1", begun + 2)))
+            self.assert_not_credited(result)
+        with self.subTest("the cut line follows at +6.1"):
+            begun = []
+            result, model = self.run_alone(lambda model, at: (
+                begun.append(at), model.cut("machine-1", at + 6, begins=at + 1.75, stops=False),
+                model.stop("machine-1", at + 2)))
+            self.assertTrue(result["passed"], result)
+            self.assertGreaterEqual(model.kills[0], begun[0] + 6.1, (model.kills, begun))
 
     def test_arming_puts_the_cut_witness_on_the_writer_for_every_stop_trigger(self):
         side = dict(writer="machine-1", other="machine-2")
