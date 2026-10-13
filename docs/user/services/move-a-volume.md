@@ -108,7 +108,9 @@ changed since. If the volume already has a mirror on `web-2`, the move starts fr
 A deploy never waits for a move. Until `web-2` is told to start your service, a deploy takes the
 move over: the run ends with "a Deploy took this run over", your service deploys on the old
 server, and the move is requested again once the deploy ends. From the moment `web-2` is told to
-start your service, a deploy follows the move and starts your service on `web-2`.
+start your service, a deploy follows the move and starts your service on `web-2`. A deploy with a
+volume change staged on that volume fails instead, with "data is starting on web-2; it finishes
+there", and the change waits for your next deploy.
 
 ## When a move stops
 

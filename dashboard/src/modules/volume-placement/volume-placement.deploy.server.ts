@@ -163,8 +163,8 @@ const unseededVolume = Effect.fn("VolumePlacement.unseededVolume")(function* (
  * the first stamped Volume needs. A Deploy that is no longer queued (cancelled, superseded) stops between runs, and its
  * Volumes stay staged. A run that fails fails the Deploy: its change is dropped, and the changes it never reached, on that
  * Volume and the others, stay staged. A failed restore is dropped once the Store records the failure. A warm run already
- * on the Volume yields to the Deploy's; a run past its return keeps the Volume, and the change stays staged for the next
- * Deploy while this one follows the run to its Server.
+ * on the Volume yields to the Deploy's; a run past its return keeps the Volume and fails the Deploy, with that change and
+ * every one it never reached staged for the next Deploy.
  */
 export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
   organizationId: string, deploymentId: string, waited: PlacementWait | null, inspect: MemberInspector = inspectVolumeCopies,
@@ -250,8 +250,10 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
     const requested = yield* requestVolumeRun(CLOUD(organizationId), { volumeId: runsOn, environment, ...step.run }, { end: "yielded" });
     if (requested.ok) return { kind: "wait", wait: { runId: requested.run.id, volumeId: row.volumeId, step } } satisfies PlacementAdvance;
     if (requested.busy !== null) {
-      yield* settleClaimed(row.volumeId, deploymentId, { deploymentId: null });
-      continue;
+      // A run past its return keeps the Volume, so the Deploy fails here; the changes it never reached stay staged.
+      yield* Effect.logInfo("Deploy stopped at a run past its return.", { deploymentId, volumeId: row.volumeId, runId: requested.busy.id, kind: requested.busy.kind });
+      yield* release(organizationId, deploymentId, true);
+      return { kind: "failed", message: requested.refusal.message } satisfies PlacementAdvance;
     }
     if (step.change.kind === "seed") return restoreFailed(row.volumeId, environment, `${volume.name}: ${requested.refusal.message}`);
     const remaining = dropChange(volume, members, placement, step.change);
