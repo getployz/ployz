@@ -1054,11 +1054,13 @@ fn a_server_that_does_not_answer_is_forgotten_without_a_reset() {
 }
 
 #[test]
-fn server_set_sends_only_the_values_it_was_given() {
+fn server_set_sends_only_the_values_it_was_given_even_to_a_silent_server() {
     let store = shop();
     let mut acted = Vec::new();
+    let mut offline = servers(&[("db-1", 'a'), ("db-2", 'b')]);
+    offline["servers"][0]["state"] = json!("offline");
     let mut cloud = |cloud: Cloud| match cloud {
-        Cloud::Ask(CloudQuery::Servers { .. }) => Ok(servers(&[("db-1", 'a')])),
+        Cloud::Ask(CloudQuery::Servers { .. }) => Ok(offline.clone()),
         Cloud::Ask(query) => panic!("unexpected read: {query:?}"),
         Cloud::Act(act) => {
             acted.push(act.action.clone());

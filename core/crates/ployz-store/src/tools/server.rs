@@ -295,14 +295,26 @@ impl Tool for ServerSet {
         {
             return Err(Refusal::invalid("Set at least one value", "accepts_builds").into());
         }
-        let set = |server| Action::SetServer {
-            server,
-            accepts_builds: self.accepts_builds,
-            accepts_services: self.accepts_services,
-            accepts_ingress: self.accepts_ingress,
-            build_concurrency,
+        cx.cloud_only()?;
+        let mut answers = cx.read(vec![servers()])?.into_iter();
+        let answer = cx.cloud::<ServersAnswer>(answers.next())?;
+        // Policy is written to the cluster record, so a silent server takes it too.
+        let server = resolve(&answer, &self.server, "server", false)?;
+        let run = Run {
+            at: server.name.as_str().to_owned(),
+            subject: Subject::Server {
+                machine: server.machine,
+            },
+            action: Action::SetServer {
+                server: server.reference(),
+                accepts_builds: self.accepts_builds,
+                accepts_services: self.accepts_services,
+                accepts_ingress: self.accepts_ingress,
+                build_concurrency,
+            },
+            read: server_show(Some(&self.server)),
         };
-        on_server(cx, &self.server, set, None, 0)
+        operate(cx, run, None, 0)
     }
 }
 
