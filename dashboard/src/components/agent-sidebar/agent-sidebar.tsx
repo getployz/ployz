@@ -69,7 +69,7 @@ export function AgentColumn({ organizationSlug, collectionScope, page, chat, onC
     <aside className="z-30 flex min-h-0 flex-col bg-background max-wf-nav:absolute max-wf-nav:inset-0 min-wf-nav:w-96 min-wf-nav:shrink-0 min-wf-nav:border-l">
       {AgentPanel && (
         <AgentPanel organizationSlug={organizationSlug} scope={collectionScope} page={page} threadId={chat}
-          onNewChat={() => onChat(crypto.randomUUID())} />
+          onChat={onChat} />
       )}
     </aside>
   );

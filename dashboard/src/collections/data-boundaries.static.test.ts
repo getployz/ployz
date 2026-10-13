@@ -79,6 +79,7 @@ const ON_DEMAND_READS = {
   volumeMembersQueryOptions: "asks every Server for its copy live, so a slow Server would hold the drawer open; the Placement section waits on it instead",
   strayNamespacesQueryOptions: "asks about the Namespaces the Servers report live, known only once the Runtime Watch answers",
   pendingApprovalsOptions: "polled by the agent sidebar, which every Organization page mounts; no page owns it",
+  agentThreadsOptions: "read when the agent opens, which every Organization page can do; no page owns it",
   approvalOptions: "named by an agent conversation's interrupt, known only once the chat hydrates",
 };
 

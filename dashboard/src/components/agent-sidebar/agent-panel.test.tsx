@@ -8,6 +8,7 @@ import { asTestDouble } from "#/lib/test-double";
 import AgentPanel, { Turn } from "./agent-panel";
 import { approvalOptions, type ApprovalView } from "./approvals.queries";
 import { FAILURES } from "#/modules/agent/provider-error";
+import { agentThreadsOptions, type ThreadSummary } from "./threads.queries";
 
 afterEach(() => { cleanup(); localStorage.clear(); vi.unstubAllGlobals(); });
 
@@ -42,7 +43,7 @@ it("switching Organization with the panel open talks to the new Organization's t
   const panel = (organizationSlug: string) => (
     <QueryClientProvider client={client}>
       <AgentPanel organizationSlug={organizationSlug} scope={scope} page={page} threadId={`thread-${organizationSlug}`}
-        onNewChat={() => {}} />
+        onChat={() => {}} />
     </QueryClientProvider>
   );
   const shown = render(panel("acme"));
@@ -57,7 +58,7 @@ it("sends on Enter, keeps Shift+Enter and composing input as a draft", async () 
   vi.stubGlobal("fetch", fetched);
   const client = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false } } });
   render(<QueryClientProvider client={client}><AgentPanel organizationSlug="acme" scope={scope} page={page} threadId="thread-acme"
-    onNewChat={() => {}} /></QueryClientProvider>);
+    onChat={() => {}} /></QueryClientProvider>);
   const posted = () => fetched.mock.calls.filter(([, init]) => init?.method === "POST").map(([, init]) => String(init?.body));
   const box = screen.getByRole("textbox", { name: "Message the agent" });
   fireEvent.change(box, { target: { value: "list services" } });
@@ -97,7 +98,7 @@ it("stops a streaming reply from the composer, and the request it stops is cut",
   vi.stubGlobal("fetch", fetched);
   const client = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false } } });
   render(<QueryClientProvider client={client}><AgentPanel organizationSlug="acme" scope={scope} page={page} threadId="thread-acme"
-    onNewChat={() => {}} /></QueryClientProvider>);
+    onChat={() => {}} /></QueryClientProvider>);
   const box = screen.getByRole("textbox", { name: "Message the agent" });
   fireEvent.change(box, { target: { value: "explain" } });
   fireEvent.keyDown(box, { key: "Enter" });
@@ -128,7 +129,7 @@ it("retries a failed reply once the wait the model's provider asked for has pass
   }));
   const client = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false } } });
   render(<QueryClientProvider client={client}><AgentPanel organizationSlug="acme" scope={scope} page={page} threadId="thread-acme"
-    onNewChat={() => {}} /></QueryClientProvider>);
+    onChat={() => {}} /></QueryClientProvider>);
   const box = screen.getByRole("textbox", { name: "Message the agent" });
   fireEvent.change(box, { target: { value: "list services" } });
   fireEvent.keyDown(box, { key: "Enter" });
@@ -147,10 +148,10 @@ it("offers a new chat instead of a retry when the chat grew too long for the mod
   vi.stubGlobal("fetch", vi.fn((_url: string, init?: RequestInit) => Promise.resolve(init?.method === "POST"
     ? events({ type: "RUN_STARTED", runId: "r1" }, { type: "RUN_ERROR", runId: "r1", message: FAILURES.chat_too_long, code: "chat_too_long" })
     : Response.json({ messages: [] }))));
-  const onNewChat = vi.fn();
+  const onChat = vi.fn();
   const client = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false } } });
   render(<QueryClientProvider client={client}><AgentPanel organizationSlug="acme" scope={scope} page={page} threadId="thread-acme"
-    onNewChat={onNewChat} /></QueryClientProvider>);
+    onChat={onChat} /></QueryClientProvider>);
   const box = screen.getByRole("textbox", { name: "Message the agent" });
   fireEvent.change(box, { target: { value: "one more thing" } });
   fireEvent.keyDown(box, { key: "Enter" });
@@ -158,7 +159,8 @@ it("offers a new chat instead of a retry when the chat grew too long for the mod
   expect((await screen.findByRole("alert")).textContent).toBe(FAILURES.chat_too_long);
   expect(screen.queryByRole("button", { name: /^Retry/ })).toBeNull();
   fireEvent.click(screen.getByText("New chat", { selector: "button" }));
-  expect(onNewChat).toHaveBeenCalledOnce();
+  expect(onChat).toHaveBeenCalledOnce();
+  expect(onChat.mock.lastCall?.[0]).not.toBe("thread-acme");
 });
 
 it("keeps a reply's thinking folded under Thinking until the member opens it", () => {
@@ -190,7 +192,7 @@ const ask = async (text: string) => {
   }));
   const client = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false } } });
   render(<QueryClientProvider client={client}><AgentPanel organizationSlug="acme" scope={scope} page={page} threadId="thread-acme"
-    onNewChat={() => {}} /></QueryClientProvider>);
+    onChat={() => {}} /></QueryClientProvider>);
   const box = screen.getByRole("textbox", { name: "Message the agent" });
   fireEvent.change(box, { target: { value: text } });
   fireEvent.keyDown(box, { key: "Enter" });
@@ -218,4 +220,70 @@ it("keeps the Thinking marker through a reply that has started but has no words 
   await stream({ type: "TEXT_MESSAGE_CONTENT", messageId: "a1", delta: "Two services." });
   expect(screen.getByText("Two services.")).toBeDefined();
   expect(screen.queryByRole("status")).toBeNull();
+});
+
+const history: ThreadSummary[] = [
+  { threadId: "thread-2", title: "Clean up pg-data-old", updatedAt: new Date("2026-10-13T10:00:00Z") },
+  { threadId: "thread-1", title: "Why is api restarting?", updatedAt: new Date("2026-10-12T10:00:00Z") },
+];
+
+it("titles the open chat from history and opens a past chat picked from it", async () => {
+  Element.prototype.scrollIntoView ??= () => {};
+  vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+  vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(Response.json({ messages: [] }))));
+  const client = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false } } });
+  client.setQueryData(agentThreadsOptions("acme").queryKey, history);
+  const onChat = vi.fn();
+  render(<QueryClientProvider client={client}><AgentPanel organizationSlug="acme" scope={scope} page={page} threadId="thread-2"
+    onChat={onChat} /></QueryClientProvider>);
+  expect(screen.getByRole("heading", { level: 2 }).textContent).toBe("Clean up pg-data-old");
+
+  fireEvent.click(screen.getByRole("button", { name: "Chat history" }));
+  const chats = await screen.findAllByRole("option");
+  expect(chats.map((chat) => chat.textContent)).toEqual([expect.stringContaining("Clean up pg-data-old"), expect.stringContaining("Why is api restarting?")]);
+  expect(chats.map((chat) => chat.getAttribute("data-checked"))).toEqual(["true", "false"]);
+  fireEvent.click(chats[1] as HTMLElement);
+  expect(onChat).toHaveBeenCalledWith("thread-1");
+});
+
+it("titles a new chat from the member's first words, then asks history again once the turn ends", async () => {
+  vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+  vi.stubGlobal("fetch", vi.fn((_url: string, init?: RequestInit) => Promise.resolve(init?.method === "POST"
+    ? events({ type: "RUN_STARTED", runId: "r1" }, { type: "RUN_FINISHED", runId: "r1", finishReason: "stop" })
+    : Response.json({ messages: [] }))));
+  const client = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false } } });
+  const threads = agentThreadsOptions("acme").queryKey;
+  client.setQueryData(threads, []);
+  render(<QueryClientProvider client={client}><AgentPanel organizationSlug="acme" scope={scope} page={page} threadId="thread-acme"
+    onChat={() => {}} /></QueryClientProvider>);
+  expect(screen.getByRole("heading", { level: 2 }).textContent).toBe("New chat");
+  expect(client.getQueryState(threads)?.isInvalidated).toBe(false);
+
+  const box = screen.getByRole("textbox", { name: "Message the agent" });
+  fireEvent.change(box, { target: { value: "count   services" } });
+  fireEvent.keyDown(box, { key: "Enter" });
+  await waitFor(() => expect(screen.getByRole("heading", { level: 2 }).textContent).toBe("count services"));
+  await waitFor(() => expect(client.getQueryState(threads)?.isInvalidated).toBe(true));
+});
+
+it("asks history again when the member stops a reply", async () => {
+  vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+  vi.stubGlobal("fetch", vi.fn((_url: string, init?: RequestInit) => {
+    if (init?.method !== "POST") return Promise.resolve(Response.json({ messages: [] }));
+    const body = new ReadableStream({ start(controller) {
+      controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ type: "RUN_STARTED", runId: "r1", threadId: "thread-acme", timestamp: 0 })}\n\n`));
+      init.signal?.addEventListener("abort", () => controller.error(new DOMException("Aborted", "AbortError")));
+    } });
+    return Promise.resolve(new Response(body, { headers: { "content-type": "text/event-stream" } }));
+  }));
+  const client = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false } } });
+  const threads = agentThreadsOptions("acme").queryKey;
+  client.setQueryData(threads, []);
+  render(<QueryClientProvider client={client}><AgentPanel organizationSlug="acme" scope={scope} page={page} threadId="thread-acme"
+    onChat={() => {}} /></QueryClientProvider>);
+  const box = screen.getByRole("textbox", { name: "Message the agent" });
+  fireEvent.change(box, { target: { value: "count services" } });
+  fireEvent.keyDown(box, { key: "Enter" });
+  fireEvent.click(await screen.findByRole("button", { name: "Stop" }));
+  await waitFor(() => expect(client.getQueryState(threads)?.isInvalidated).toBe(true));
 });
