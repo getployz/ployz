@@ -32,6 +32,8 @@ export const volumeRun = pgTable(
     lease: bigint("lease", { mode: "number" }),
     /** The Service spec seen when the run took its lease; Restore reads it once that Service's Server is gone. */
     serviceSpec: jsonb("service_spec").$type<ServiceSpec>(),
+    /** Containers a snapshot restore stopped and hasn't started again: the ones a cancel starts, none the user stopped. */
+    stoppedHolders: text("stopped_holders").array().default(sql`'{}'::text[]`).notNull(),
     inngestRunId: text("inngest_run_id"),
     requestedByUserId: uuid("requested_by_user_id").references(() => user.id, { onDelete: "set null" }),
     message: text("message"),

@@ -16,5 +16,6 @@ export function runWords(run: VolumeRunView): string {
     release: "Resuming the primary",
     restore: `Using mirror on ${args.from}`,
     seed: `Restoring into ${args.into?.name}`,
+    restore_snapshot: "Restoring",
   }[run.kind];
 }

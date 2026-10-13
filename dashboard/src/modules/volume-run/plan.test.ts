@@ -12,6 +12,8 @@ const move = (to: string): PlanInput => ({ kind: "move", args: { to }, volumeNam
 const release: PlanInput = { kind: "release", args: {}, volumeName: "data", orphan: false };
 const restore = (from: string): PlanInput => ({ kind: "restore", args: { from }, volumeName: "data", orphan: false });
 const seed: PlanInput = { kind: "seed", args: { into: { volumeId: "v2", dockerVolume: "ns_vol-v2", name: "data-1027" }, guid: "11", name: "ployz-1" }, volumeName: "data", orphan: false };
+const restoreSnapshot = (mirror: string | null): PlanInput =>
+  ({ kind: "restore_snapshot", args: { from: "s1", save: "b1", expect: 4, note: "#7", mirror }, volumeName: "data", orphan: false });
 const orphan: PlanInput = { kind: "delete_mirror", args: { slot: null, confirmed_name: null }, volumeName: "ns_vol-1", orphan: true };
 
 function outcome(input: PlanInput, members: Member[]) {
@@ -35,6 +37,8 @@ function outcome(input: PlanInput, members: Member[]) {
       return `demote ${phase.old.machine.name} below ${phase.writer.machine.name}`;
     case "seed":
       return `seed on ${phase.source.machine.name}`;
+    case "restore_snapshot":
+      return `restore_snapshot on ${phase.writer.machine.name} reseed ${phase.mirror?.machine.name ?? "none"}`;
   }
 }
 
@@ -147,6 +151,13 @@ describe("plan_from_copies_table", () => {
     ["seed after handover", seed, [member("a", "handed"), member("b", "stale")], "refuse volume_switching"],
     ["seed with two roots", seed, [member("a", "writer", { lease: 8 }), member("b", "writer", { lease: 3 })], "refuse two_writers"],
     ["seed with a Server unanswered", seed, [member("a", "writer"), member("b", "unanswered")], "refuse unanswered"],
+    ["restore a snapshot on the writer with no mirror", restoreSnapshot(null), [member("a", "writer")], "restore_snapshot on a reseed none"],
+    ["restore a snapshot and reseed the mirror", restoreSnapshot("b"), [member("a", "writer"), member("b", "mirror")], "restore_snapshot on a reseed b"],
+    ["restore a snapshot with no writer", restoreSnapshot(null), [member("b", "mirror")], "refuse no_writer"],
+    ["restore a snapshot mid-move", restoreSnapshot("b"), [member("a", "switching"), member("b", "mirror")], "refuse volume_switching"],
+    ["restore a snapshot with two roots", restoreSnapshot(null), [member("a", "writer", { lease: 8 }), member("b", "writer", { lease: 3 })], "refuse two_writers"],
+    ["restore a snapshot reseeding a Server not in the cluster", restoreSnapshot("z"), [member("a", "writer")], "refuse invalid"],
+    ["restore a snapshot with a Server unanswered", restoreSnapshot(null), [member("a", "writer"), member("b", "unanswered")], "refuse unanswered"],
     ["mirror with a returning root below the restored one", mirror("c"), [member("a", "writer", { lease: 7 }), member("b", "writer", { lease: 8 }), member("c", "empty")], "demote a below b"],
     ["move with a returning root above in the list", move("c"), [member("b", "writer", { lease: 8 }), member("a", "writer", { lease: 7 }), member("c", "empty")], "demote a below b"],
     ["sync with a returning root without a record", sync(), [member("a", "writer"), member("b", "writer", { lease: 8 }), member("c", "mirror")], "demote a below b"],
@@ -227,6 +238,7 @@ describe("participantsOf", () => {
     ["a Sync names both copies and not the empty Servers", sync(), [member("a", "writer"), member("c", "mirror"), member("d", "empty", { pool: true })], ["a", "c"]],
     ["a Mirror names the empty Server it builds on", mirror("b"), [member("a", "writer"), member("b", "empty", { pool: true })], ["a", "b"]],
     ["a Restore names the copy it makes the writer", restore("b"), [member("a", "empty"), member("b", "mirror")], ["b"]],
+    ["a snapshot restore names the writer and the mirror it reseeds", restoreSnapshot("b"), [member("a", "writer"), member("b", "mirror"), member("d", "empty")], ["a", "b"]],
     ["a demote names only the old copy", release, [member("a", "writer", { lease: 3 }), member("b", "writer", { lease: 8 })], ["a"]],
   ])("%s", (_name, input, members, expected) => {
     expect(named(input, members)).toEqual(expected);

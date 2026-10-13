@@ -110,6 +110,7 @@ const VOLUME_TOOLS = {
   delete_mirror: "volume_mirror_remove",
   restore: "volume_restore",
   seed: "volume_seed",
+  restore_snapshot: "volume_restore",
 } as const;
 
 /** A Volume Run whose id is its attempt, so a replayed request reads back the run it started. */

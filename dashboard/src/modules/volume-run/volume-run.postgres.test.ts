@@ -1,4 +1,4 @@
-import type { ConfigStore, CopyObservation, LeaseRecord, MachineId, ReceiveView, Snapshot, SwitchReply, VolumeCopy, VolumeCopyView, VolumeSwitchRequest } from "@ployz/sdk";
+import type { ConfigStore, ContainerId, CopyObservation, LeaseRecord, MachineId, ReceiveView, Snapshot, SwitchReply, VolumeCopy, VolumeCopyView, VolumeSnapshots, VolumeSwitchRequest } from "@ployz/sdk";
 import { InngestTestEngine, mockCtx } from "@inngest/test";
 import { Effect, Exit } from "effect";
 import { Inngest, NonRetriableError } from "inngest";
@@ -11,10 +11,11 @@ import { requirements, ServerLacks } from "#/modules/runtime/daemon-compat";
 import { PloyzProviderError, type PloyzSdkError, type PloyzSession } from "#/modules/runtime/ployz.server";
 import { createRunStoreDeployment } from "#/modules/config-store/store-deployment.inngest";
 import type { InngestRunStatus } from "#/modules/inngest/client";
-import { createCloseFinishedVolumeRun, createCloseStaleVolumeRuns, createRunVolume } from "#/modules/volume-run/volume-run.inngest";
+import { createCancelVolumeRun, createCloseFinishedVolumeRun, createCloseStaleVolumeRuns, createRunVolume } from "#/modules/volume-run/volume-run.inngest";
 import {
   closeStaleVolumeRuns,
   closeVolumeRun,
+  holderVerb,
   orphanSlotNames,
   requestVolumeRun,
   requireOwner,
@@ -87,6 +88,8 @@ describe("volume runs", () => {
   let machines: FakeMachine[];
   let verbs: string[];
   let failNext: Map<string, unknown>;
+  let startsAs: Map<string, "unhealthy" | "unconfirmed">;
+  let stopped: Set<string>;
   let sent: VolumeSwitchRequest[];
   let holders: string[];
   let storeVolumes: Array<{ id: string; name: string; storage: { kind: "provisioned"; maximumBytes: number } | { kind: "docker" }; change?: "delete" }>;
@@ -97,7 +100,7 @@ describe("volume runs", () => {
     return found;
   };
 
-  function answer(fake: FakeMachine, request: VolumeSwitchRequest): VolumeCopyView | ReceiveView | SwitchReply {
+  function answer(fake: FakeMachine, request: VolumeSwitchRequest): VolumeCopyView | ReceiveView | SwitchReply | VolumeSnapshots {
     const reply = (): SwitchReply => ({ decision: "admit", lease: fake.lease ?? { lease: 0, pos: { seq: 0, round: 0, sub: 0 }, cycle: "closed" }, copy: fake.copy });
     switch (request.command) {
       case "inspect_volume_copy":
@@ -160,6 +163,8 @@ describe("volume runs", () => {
         fake.copy = slotCopy(fake.copy?.newest?.guid ?? null);
         fake.lease = { ...request.payload.switch, cycle: "closed" };
         return reply();
+      case "set_volume_snapshot":
+        return { epoch: request.payload.expect, snapshots: [] };
       case "start_receive": {
         const frozen = machines.map((entry) => entry.copy).find((copy) => copy?.kind === "root" && copy.writer.phase === "frozen");
         const guid = request.payload.target.startsWith("f-") && frozen?.kind === "root" && frozen.writer.phase === "frozen"
@@ -173,6 +178,19 @@ describe("volume runs", () => {
     }
   }
 
+  const containerVerb = (verb: string, target: string, container: string) => Effect.suspend(() => {
+    const key = `${verb}@${machine(target).name}`;
+    verbs.push(`${key}(${container})`);
+    const failure = failNext.get(key);
+    if (failure === undefined) {
+      if (verb === "stop_container") stopped.add(container);
+      else stopped.delete(container);
+      return Effect.succeed(startsAs.get(key) ?? "serving");
+    }
+    failNext.delete(key);
+    return Effect.fail(new PloyzProviderError({ operation: verb, cause: failure }));
+  });
+
   const session = asTestDouble<PloyzSession>()({
     watchFirstFrame: () => Effect.succeed({
       machines: machines.map((fake) => ({
@@ -184,6 +202,7 @@ describe("volume runs", () => {
         kind: "service_container",
         container_id: `web-${name}`,
         namespace: "shop-production",
+        runtime: { state: stopped.has(`web-${name}`) ? "exited" : "running" },
         resolved_spec: { name: "web", container: { pull_policy: "always", environment: {} }, volumes: [{ source: { kind: "provisioned", name: dockerVolume } }] },
       })),
     }),
@@ -193,10 +212,12 @@ describe("volume runs", () => {
         resolved_spec: { name: "web", container: { pull_policy: "always", environment: { POSTGRES_PASSWORD: `secret-${machine(target).name}` } }, volumes: [{ source: { kind: "provisioned", name: dockerVolume } }] },
       },
     })),
+    stopContainer: (target: string, container: string) => containerVerb("stop_container", target, container).pipe(Effect.asVoid),
+    startContainer: (target: string, container: string) => containerVerb("start_container", target, container),
     copyContainerImage: (from: string, container: string, to: string) => Effect.sync(() => {
       verbs.push(`copy_image@${machine(from).name}->${machine(to).name}(${container})`);
     }),
-    volumeSwitch: (target: string, request: VolumeSwitchRequest) => Effect.suspend((): Effect.Effect<VolumeCopyView | ReceiveView | SwitchReply, PloyzSdkError> => {
+    volumeSwitch: (target: string, request: VolumeSwitchRequest) => Effect.suspend((): Effect.Effect<VolumeCopyView | ReceiveView | SwitchReply | VolumeSnapshots, PloyzSdkError> => {
       const fake = machine(target);
       sent.push(request);
       if (fake.silent === true) return Effect.never;
@@ -247,7 +268,7 @@ describe("volume runs", () => {
       ...["04-r0", "04-r1", "04-r2", "07-final"].flatMap((prefix) =>
         Array.from({ length: 6 }, (_, poll) => ({ id: `${prefix}-3-wait-${poll}`, handler: () => undefined }))),
       ...Array.from({ length: 6 }, (_, check) => ({ id: `10-promote-wait-${check}`, handler: () => undefined })),
-      ...["06-freeze", "11-start", "13-thaw"].flatMap((id) =>
+      ...["04-swap", "06-freeze", "11-start", "13-thaw"].flatMap((id) =>
         Array.from({ length: 6 }, (_, check) => ({ id: `${id}-wait-${check}`, handler: () => undefined }))),
     ],
   }).execute();
@@ -268,6 +289,8 @@ describe("volume runs", () => {
   beforeEach(async () => {
     verbs = [];
     failNext = new Map();
+    startsAs = new Map();
+    stopped = new Set();
     sent = [];
     holders = ["fsn-1"];
     storeVolumes = [{ id: volumeId, name: "data", storage: { kind: "provisioned", maximumBytes: 5_000_000 } }];
@@ -1054,6 +1077,130 @@ describe("volume runs", () => {
 
       expect(output.result).toMatchObject({ refused: { code: "invalid" } });
       expect(verbs).toEqual([]);
+    });
+  });
+
+  describe("restore_snapshot", () => {
+    const restoring = (mirror: string | null): VolumeRunInput =>
+      ({ kind: "restore_snapshot", args: { from: "s1", save: "b1", expect: 4, note: "#7", mirror } });
+    const swaps = () => sent.filter((request) => request.command === "set_volume_snapshot");
+
+    beforeEach(() => {
+      machines = [
+        { name: "fsn-1", pool: true, copy: writerCopy("10"), lease: null, warms: ["21", "21"] },
+        { name: "fsn-2", pool: true, copy: slotCopy("10"), lease: null },
+      ];
+    });
+
+    it("stops the Service, swaps the snapshot in saved as Before restore, starts it, then reseeds the mirror", async () => {
+      const run = await requested(restoring("fsn-2"));
+
+      const output = await execute(run.id);
+
+      expect(output.error).toBeUndefined();
+      expect(verbs.slice(0, 7)).toEqual([
+        "stop_container@fsn-1(web-fsn-1)", "set_volume_snapshot@fsn-1", "start_container@fsn-1(web-fsn-1)",
+        "destroy_mirror@fsn-2(3,0,0)", "forget_snapshots@fsn-1(3,0,1)", "declare_mirror@fsn-2(3,0,2)", "begin_round@fsn-2(4,0,0)",
+      ]);
+      expect(swaps().map((request) => request.payload)).toEqual([{
+        name: dockerVolume,
+        expect: 4,
+        want: { kind: "restored", from: "s1", save: "b1", label: { kind: "before_restore", note: "#7" } },
+      }]);
+      expect(await rows()).toMatchObject([{ kind: "restore_snapshot", state: "done" }]);
+    });
+
+    it("a retry after the swap replays it from its step and restores once", async () => {
+      failNext.set("start_container@fsn-1", { code: "unavailable", message: "docker restarting", details: null });
+      const run = await requested(restoring(null));
+
+      expect((await execute(run.id)).error).toBeDefined();
+      const replayed = await execute(run.id, "run-1", [
+        { id: "02-running", handler: () => ["web-fsn-1"] },
+        { id: "03-stop-0", handler: () => undefined },
+        { id: "04-swap", handler: () => ({ ok: true, working: false }) },
+      ]);
+
+      expect(replayed.error).toBeUndefined();
+      expect(swaps()).toHaveLength(1);
+      expect(verbs).toEqual([
+        "stop_container@fsn-1(web-fsn-1)", "set_volume_snapshot@fsn-1", "start_container@fsn-1(web-fsn-1)", "start_container@fsn-1(web-fsn-1)",
+      ]);
+      expect(await rows()).toMatchObject([{ state: "done" }]);
+    });
+
+    it("a writer that moved since the listing fails the run without a retry, and starts the Service again", async () => {
+      failNext.set("set_volume_snapshot@fsn-1", { code: "failed_precondition", message: "epoch", details: { reason: "mismatch" } });
+      const run = await requested(restoring("fsn-2"));
+
+      const output = await execute(run.id);
+
+      expect(output.error).toMatchObject({ name: "NonRetriableError" });
+      expect(verbs).toEqual(["stop_container@fsn-1(web-fsn-1)", "set_volume_snapshot@fsn-1", "start_container@fsn-1(web-fsn-1)"]);
+      expect(await rows()).toMatchObject([{ state: "failed", message: "data moved since its snapshots were listed; restore again" }]);
+    });
+
+    const cancel = () => new InngestTestEngine({
+      function: createCancelVolumeRun(new Inngest({ id: "test" }), runEffect),
+      events: [{ name: "inngest/function.cancelled", data: { function_id: "test-run-volume", run_id: "run-1" } }],
+    }).execute();
+
+    it("a restore cancelled after Stop starts the Service again", async () => {
+      const run = await requested(restoring(null));
+      await harness.pool.query(`update volume_run set state = 'running', inngest_run_id = 'run-1' where id = $1`, [run.id]);
+      await runEffect(holderVerb(context(run.id), "run-1", { id: idOf("fsn-1"), name: "fsn-1" }, "web-fsn-1" as ContainerId, "stop"));
+
+      const cancelled = await cancel();
+
+      expect(cancelled.result).toEqual({ closed: 1 });
+      expect(verbs.at(-1)).toBe("start_container@fsn-1(web-fsn-1)");
+      expect(stopped.size).toBe(0);
+      expect(await rows()).toMatchObject([{ state: "cancelled" }]);
+    });
+
+    it("a restore cancelled before Stop leaves a container the user stopped stopped", async () => {
+      const run = await requested(restoring(null));
+      await harness.pool.query(`update volume_run set state = 'running', inngest_run_id = 'run-1' where id = $1`, [run.id]);
+      stopped.add("web-fsn-1");
+
+      const cancelled = await cancel();
+
+      expect(cancelled.result).toEqual({ closed: 1 });
+      expect(verbs).not.toContain("start_container@fsn-1(web-fsn-1)");
+      expect([...stopped]).toEqual(["web-fsn-1"]);
+      expect(await rows()).toMatchObject([{ state: "cancelled" }]);
+    });
+
+    it("a finished restore keeps no container to start again", async () => {
+      const run = await requested(restoring(null));
+
+      expect((await execute(run.id)).error).toBeUndefined();
+      const { rows: [row] } = await harness.pool.query(`select stopped_holders from volume_run where id = $1`, [run.id]);
+      expect(row).toEqual({ stopped_holders: [] });
+    });
+
+    it("a Service that starts unhealthy after the swap fails the run and says so", async () => {
+      startsAs.set("start_container@fsn-1", "unhealthy");
+      const run = await requested(restoring(null));
+
+      const output = await execute(run.id);
+
+      expect(output.error).toMatchObject({ name: "NonRetriableError" });
+      expect(swaps()).toHaveLength(1);
+      expect(await rows()).toMatchObject([{ state: "failed", message: "data is restored, but web-fsn-1 on fsn-1 isn't healthy" }]);
+    });
+
+    it("a writer busy with the Volume is asked again until it swaps, and the run finishes", async () => {
+      failNext.set("set_volume_snapshot@fsn-1", busy);
+      const run = await requested(restoring(null));
+
+      const output = await execute(run.id);
+
+      expect(output.error).toBeUndefined();
+      expect(verbs).toEqual([
+        "stop_container@fsn-1(web-fsn-1)", "set_volume_snapshot@fsn-1", "set_volume_snapshot@fsn-1", "start_container@fsn-1(web-fsn-1)",
+      ]);
+      expect(await rows()).toMatchObject([{ kind: "restore_snapshot", state: "done" }]);
     });
   });
 

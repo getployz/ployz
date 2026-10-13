@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import type { ContainerId, CopyObservation, DestructiveEffect, EnvironmentRef, MachineId, MachineName, SwitchError, VolumeSwitchReply, VolumeSwitchRequest } from "@ployz/sdk";
+import type { ContainerId, ContainerObservation, CopyObservation, DestructiveEffect, EnvironmentRef, MachineId, MachineName, SnapshotRefusal, SwitchError, VolumeSwitchReply, VolumeSwitchRequest } from "@ployz/sdk";
 import { and, desc, eq, inArray, isNotNull, isNull, lt, max, sql } from "drizzle-orm";
 import { Effect, Option, Schema } from "effect";
 import { NonRetriableError } from "inngest";
@@ -192,6 +192,7 @@ function phaseEffects(volume: ResolvedVolume, phase: PlannedPhase): DestructiveE
     case "restore":
     case "demote":
     case "seed":
+    case "restore_snapshot":
       return [];
   }
 }
@@ -204,6 +205,7 @@ const VERBS = {
   move: null,
   restore: null,
   seed: null,
+  restore_snapshot: null,
 } satisfies Record<VolumeRunKind, OperationVerb | null>;
 
 export type VolumeRunPlan =
@@ -466,15 +468,18 @@ export const sendSwitch = <R extends VolumeSwitchRequest>(
 
 export type Holder = ServiceSpec & { readonly containerId: ContainerId };
 
+const holdersOn = (ctx: RunContext, containers: readonly ContainerObservation[], writer: MachineRef) =>
+  containers.filter((container) =>
+    container.machine_id === writer.id
+    && container.kind === "service_container"
+    && container.resolved_spec.volumes.some(({ source }) => source.kind === "provisioned" && source.name === ctx.dockerVolume));
+
 /** The one Service container on the writer that mounts this Volume: Freeze stops it, Thaw restarts it, and Start rebuilds it on the target. */
 export const findHolder = Effect.fn("VolumeRun.findHolder")(function* (ctx: RunContext, inngestRunId: string, writer: MachineRef) {
   yield* requireOwner(ctx.id, inngestRunId);
   const session = yield* openSession(ctx.organizationId);
   const frame = yield* session.watchFirstFrame(5_000);
-  const holders = frame.containers.filter((container) =>
-    container.machine_id === writer.id
-    && container.kind === "service_container"
-    && container.resolved_spec.volumes.some(({ source }) => source.kind === "provisioned" && source.name === ctx.dockerVolume));
+  const holders = holdersOn(ctx, frame.containers, writer);
   const [holder] = holders;
   if (holder === undefined || holders.length > 1) {
     const found = holders.length === 0 ? "no Service container" : `${holders.length} Service containers`;
@@ -482,6 +487,79 @@ export const findHolder = Effect.fn("VolumeRun.findHolder")(function* (ctx: RunC
   }
   return { ok: true, holder: { containerId: holder.container_id, namespace: holder.namespace, redactedSpec: holder.resolved_spec } } as const;
 }, Effect.scoped);
+
+/** The Service containers running on the writer with this Volume mounted, which a snapshot restore stops for its swap. */
+export const runningHolders = Effect.fn("VolumeRun.runningHolders")(function* (ctx: RunContext, inngestRunId: string, writer: MachineRef) {
+  yield* requireOwner(ctx.id, inngestRunId);
+  const session = yield* openSession(ctx.organizationId);
+  const frame = yield* session.watchFirstFrame(5_000);
+  return holdersOn(ctx, frame.containers, writer)
+    .filter((container) => container.runtime.state === "running")
+    .map((container) => container.container_id);
+}, Effect.scoped);
+
+export const holderVerb = Effect.fn("VolumeRun.holderVerb")(function* (
+  ctx: RunContext,
+  inngestRunId: string,
+  writer: MachineRef,
+  container: ContainerId,
+  verb: "stop" | "start",
+) {
+  yield* requireOwner(ctx.id, inngestRunId);
+  const { drizzle } = yield* Database;
+  const stopped = volumeRun.stoppedHolders;
+  // Recorded before the stop is sent, so a run cancelled mid-stop still starts it again.
+  if (verb === "stop") {
+    yield* drizzle.update(volumeRun)
+      .set({ stoppedHolders: sql`case when ${container} = any(${stopped}) then ${stopped} else array_append(${stopped}, ${container}) end` })
+      .where(eq(volumeRun.id, ctx.id));
+  }
+  const session = yield* openSession(ctx.organizationId);
+  const sent = verb === "stop" ? session.stopContainer(writer.id, container).pipe(Effect.as("stopped" as const)) : session.startContainer(writer.id, container);
+  const answer = yield* sent.pipe(Effect.mapError((error) => new Error(`${verb} ${container} on ${writer.name}: ${sdkFailureMessage(error, [writer])}`)));
+  if (verb === "start") yield* drizzle.update(volumeRun).set({ stoppedHolders: sql`array_remove(${stopped}, ${container})` }).where(eq(volumeRun.id, ctx.id));
+  return answer;
+}, Effect.scoped);
+
+const decodeSnapshotRefusal = Schema.decodeUnknownOption(Schema.Struct({
+  details: Schema.Struct({ reason: Schema.Literals(["mismatch", "no_writer", "busy", "not_found"]) }),
+}));
+
+export function snapshotRefusalOf(error: PloyzSdkError): SnapshotRefusal | null {
+  const decoded = decodeSnapshotRefusal("cause" in error ? error.cause : undefined);
+  return Option.isSome(decoded) ? decoded.value.details.reason : null;
+}
+
+type SetSnapshot = Extract<VolumeSwitchRequest, { command: "set_volume_snapshot" }>;
+
+/**
+ * Busy is a SwitchAttemptError the caller waits out; any other refusal is a NonRetriableError, so the caller can start
+ * the Service again before it fails the run. A Mismatch never retries: the writer moved since the snapshot was listed,
+ * and only a fresh listing names the right epoch.
+ */
+export const setSnapshot = (ctx: RunContext, inngestRunId: string, writer: MachineRef, payload: SetSnapshot["payload"]) =>
+  Effect.gen(function* () {
+    yield* requireOwner(ctx.id, inngestRunId);
+    const session = yield* openSession(ctx.organizationId);
+    return yield* session.volumeSwitch(writer.id, { command: "set_volume_snapshot", payload } satisfies SetSnapshot).pipe(
+      Effect.asVoid,
+      Effect.catch((error): Effect.Effect<never, Error> => {
+        const reason = snapshotRefusalOf(error);
+        switch (reason) {
+          case "busy":
+            return Effect.fail(new SwitchAttemptError("busy", `${ctx.volumeName} is busy on ${writer.name}`));
+          case "mismatch":
+            return Effect.fail(new NonRetriableError(`${ctx.volumeName} moved since its snapshots were listed; restore again`));
+          case "no_writer":
+            return Effect.fail(new NonRetriableError(`${ctx.volumeName} has no writer on ${writer.name}`));
+          case "not_found":
+            return Effect.fail(new NonRetriableError("Snapshot not found"));
+          case null:
+            return Effect.fail(new SwitchAttemptError(null, `set_volume_snapshot on ${writer.name}: ${sdkFailureMessage(error, [writer])}`));
+        }
+      }),
+    );
+  }).pipe(Effect.scoped);
 
 /** Restore registers the Volume with the spec of the newest Service container that mounts it, stopped ones included. */
 export const findSpec = Effect.fn("VolumeRun.findSpec")(function* (ctx: RunContext, inngestRunId: string) {
@@ -569,6 +647,7 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
 /** What a run of each kind is called when a Server can't run it. */
 const RUN_FEATURES = {
   mirror: "Volume mirror", sync: "Mirror refresh", delete_mirror: "Mirror removal", move: "Volume move", release: "Volume move", restore: "Using a mirror", seed: "Volume restore",
+  restore_snapshot: "Snapshot restore",
 } satisfies Record<VolumeRunKind, string>;
 
 const lackSentence = Effect.fn("VolumeRun.lackSentence")(function* (
@@ -631,9 +710,30 @@ export const closeVolumeRun = Effect.fn("VolumeRun.close")(function* (
       : ended("failed", end.error.trim().length > 0 ? end.error : "the run failed");
   const rows = yield* drizzle.update(volumeRun).set(closing)
     .where(and(eq(volumeRun.inngestRunId, inngestRunId), eq(volumeRun.state, "running")))
-    .returning({ id: volumeRun.id });
+    .returning({ kind: volumeRun.kind, organizationId: volumeRun.organizationId, dockerVolume: volumeRun.dockerVolume, stoppedHolders: volumeRun.stoppedHolders });
+  for (const row of rows) {
+    if (row.kind === "restore_snapshot" && row.stoppedHolders.length > 0) yield* startStoppedHolders(row.organizationId, row.dockerVolume, row.stoppedHolders);
+  }
   return rows.length;
 });
+
+/**
+ * A snapshot restore stops the Service for its swap, so one that ends between Stop and Start starts again here the
+ * containers it stopped, and only those. Best effort: the run is already closed, and a Service left stopped shows as stopped.
+ */
+const startStoppedHolders = (organizationId: string, dockerVolume: string, holders: readonly string[]) => Effect.gen(function* () {
+  const session = yield* openSession(organizationId);
+  const frame = yield* session.watchFirstFrame(5_000);
+  const stopped = frame.containers.filter((container) =>
+    container.kind === "service_container"
+    && holders.includes(container.container_id)
+    && container.runtime.state !== "running"
+    && container.resolved_spec.volumes.some(({ source }) => source.kind === "provisioned" && source.name === dockerVolume));
+  for (const container of stopped) yield* session.startContainer(container.machine_id, container.container_id);
+}).pipe(
+  Effect.scoped,
+  Effect.catch((error) => Effect.logWarning("Starting the Service after a snapshot restore ended failed.", { organizationId, dockerVolume, error })),
+);
 
 export type InngestRunLookup<R> = (runId: string) => Effect.Effect<InngestRunStatus, unknown, R>;
 

@@ -2,21 +2,17 @@ import "@tanstack/react-start/server-only";
 import { randomUUID } from "node:crypto";
 import type { EnvironmentRef, SnapshotRefusal, VolumeSnapshots, VolumeSwitchRequest, WantedSnapshot } from "@ployz/sdk";
 import { and, eq, isNull, sql } from "drizzle-orm";
-import { Effect, Option, Schema } from "effect";
+import { Effect } from "effect";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { sdkFailureMessage } from "#/modules/runtime/ployz.server";
 import { volumePlacement } from "#/modules/volume-placement/tables";
 import { observePlacement } from "#/modules/volume-placement/volume-placement";
-import { observeVolumeMembers, resolveVolume } from "#/modules/volume-run/volume-run.server";
+import { observeVolumeMembers, resolveVolume, snapshotRefusalOf } from "#/modules/volume-run/volume-run.server";
 import { Database } from "#/server/database.server";
 import type { SnapshotEdit } from "./volume-snapshots";
 
 export type SnapshotsResult = { readonly ok: true; readonly snapshots: VolumeSnapshots } | { readonly ok: false; readonly refusal: StoreRefusal };
-
-const decodeRefusal = Schema.decodeUnknownOption(Schema.Struct({
-  details: Schema.Struct({ reason: Schema.Literals(["mismatch", "no_writer", "busy", "not_found"]) }),
-}));
 
 const refusalMessage = (reason: SnapshotRefusal, volume: string, server: string) => ({
   mismatch: "The volume moved. Try again.",
@@ -56,11 +52,9 @@ const onWriter = Effect.fn("VolumeSnapshots.onWriter")(function* (
   return yield* session.connected.volumeSwitch(writer.id, request(volume.dockerVolume)).pipe(
     Effect.map((snapshots): SnapshotsResult => ({ ok: true, snapshots })),
     Effect.catch((error) => {
-      const refused = decodeRefusal("cause" in error ? error.cause : undefined);
-      const message = Option.isSome(refused)
-        ? refusalMessage(refused.value.details.reason, volume.volumeName, writer.name)
-        : sdkFailureMessage(error, [writer]);
-      const code = Option.isSome(refused) && refused.value.details.reason === "not_found" ? "not_found" : "conflict";
+      const refused = snapshotRefusalOf(error);
+      const message = refused === null ? sdkFailureMessage(error, [writer]) : refusalMessage(refused, volume.volumeName, writer.name);
+      const code = refused === "not_found" ? "not_found" : "conflict";
       return Effect.succeed<SnapshotsResult>({ ok: false, refusal: { code, message, details: null } });
     }),
   );

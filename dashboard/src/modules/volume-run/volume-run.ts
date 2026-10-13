@@ -4,7 +4,7 @@ export const VOLUME_RUN_STATES = ["requested", "running", "done", "failed", "can
 export type VolumeRunState = (typeof VOLUME_RUN_STATES)[number];
 export const ACTIVE_VOLUME_RUN_STATES = ["requested", "running"] as const satisfies readonly VolumeRunState[];
 
-export const VOLUME_RUN_KINDS = ["mirror", "sync", "delete_mirror", "move", "release", "restore", "seed"] as const;
+export const VOLUME_RUN_KINDS = ["mirror", "sync", "delete_mirror", "move", "release", "restore", "seed", "restore_snapshot"] as const;
 export type VolumeRunKind = (typeof VOLUME_RUN_KINDS)[number];
 
 /** The sidebar also pins the Machine it resolved, so a renamed or reused Server name can't redirect the run. */
@@ -21,6 +21,14 @@ export type VolumeRunArgs = {
     readonly into: { readonly volumeId: string; readonly dockerVolume: string; readonly name: string };
     readonly guid: string;
     readonly name: string;
+  };
+  /** Puts snapshot `from` back on the writer, saved first as `save`; `expect` is the writer epoch it was listed under. */
+  restore_snapshot: {
+    readonly from: string;
+    readonly save: string;
+    readonly expect: number;
+    readonly note: string;
+    readonly mirror: MachineName | null;
   };
 };
 export type AnyVolumeRunArgs = VolumeRunArgs[VolumeRunKind];

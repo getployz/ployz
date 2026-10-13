@@ -62,7 +62,7 @@ const review = (members: Member[], placement: PlacementRow | null) => placementG
   .map(({ kind, name, currentValue, newValue, detail, loss }) => ({ kind, name, currentValue, newValue, detail, loss }));
 const primaryMove = (from: string, to: string, loss?: string) =>
   ({ kind: "update", name: "Primary", currentValue: from, newValue: to, detail: undefined, loss });
-const steps = (members: Member[], placement: PlacementRow | null) => placementSteps(changes(members, placement));
+const steps = (members: Member[], placement: PlacementRow | null) => placementSteps(changes(members, placement), 7);
 
 describe("placementChanges", () => {
   it("is empty when nothing is staged", () => {
@@ -276,7 +276,7 @@ describe("dropChange", () => {
 });
 
 describe("nextPlacementStep", () => {
-  const next = (members: Member[], placement: PlacementRow) => nextPlacementStep(changes(members, placement), placement.mirrors ?? []);
+  const next = (members: Member[], placement: PlacementRow) => nextPlacementStep(changes(members, placement), placement.mirrors ?? [], 7);
 
   it("drops the promoted mirror once the move ends, and leaves the old primary detached", () => {
     const members = [member("web-1", "writer"), member("web-2", "mirror")];
@@ -581,7 +581,7 @@ describe("restore into a new Volume", () => {
   };
 
   it("copies the restore point on the source's primary until a root of the new Volume answers", () => {
-    expect(nextPlacementStep(changes([], seeded), [])).toEqual({
+    expect(nextPlacementStep(changes([], seeded), [], 7)).toEqual({
       run: { kind: "seed", args: { into: { volumeId: "v1", dockerVolume: "ns_vol-v1", name: "pg-data" }, guid: "11", name: "ployz-1" } },
       mirrors: [],
       change: { kind: "seed", server: id("web-1") },
@@ -655,8 +655,23 @@ describe("snapshot restore", () => {
     expect(stepsOf([member("web-1", "writer"), member("web-2", "mirror")], restoring(["web-2"]))).toEqual([["Save current", "Stop", "Swap", "Start", "Seed"]]);
   });
 
-  it("has no run yet, so a Deploy can't start one", () => {
-    expect(steps([member("web-1", "writer")], restoring([]))).toEqual([]);
+  it("runs one restore on the writer, noted with the Deploy, that reseeds the mirror it leaves", () => {
+    const run = (mirror: string | null) => ({ kind: "restore_snapshot", args: { from: "s1", save: "b1", expect: 4, note: "#7", mirror } });
+    expect(steps([member("web-1", "writer")], restoring([]))).toEqual([run(null)]);
+    const members = [member("web-1", "writer"), member("web-2", "mirror")];
+    expect(steps(members, restoring(["web-2"]))).toEqual([run("web-2")]);
+    expect(nextPlacementStep(changes(members, restoring(["web-2"])), [id("web-2")], 7)).toEqual({
+      run: run("web-2"), mirrors: [id("web-2")], change: { kind: "restore_snapshot", server: null },
+    });
+  });
+
+  it("restores before a move staged with it, and reseeds the mirror the move promotes", () => {
+    const members = [member("web-1", "writer"), member("web-2", "mirror")];
+    const placement: PlacementRow = { ...row(["web-2"]), staged: { primary: id("web-2"), mirrors: [], deletes: [], restore: restore(0) } };
+    expect(steps(members, placement)).toEqual([
+      { kind: "restore_snapshot", args: { from: "s1", save: "b1", expect: 4, note: "#7", mirror: "web-2" } },
+      { kind: "move", args: { to: "web-2" } },
+    ]);
   });
 
   it("asks for the typed confirm for every restore, since writes go on after staging, and says they are saved first", () => {

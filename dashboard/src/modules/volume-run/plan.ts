@@ -44,6 +44,7 @@ export type Planned =
   | { readonly ok: true; readonly phase: { readonly kind: "restore"; readonly from: AnsweredMember; readonly lostAfter: Snapshot | null } }
   | { readonly ok: true; readonly phase: { readonly kind: "demote"; readonly old: AnsweredMember; readonly writer: AnsweredMember } }
   | { readonly ok: true; readonly phase: { readonly kind: "seed"; readonly source: AnsweredMember } }
+  | { readonly ok: true; readonly phase: { readonly kind: "restore_snapshot"; readonly writer: AnsweredMember; readonly mirror: AnsweredMember | null } }
   | { readonly ok: false; readonly refusal: Refusal };
 
 type Phase = Extract<Planned, { ok: true }>["phase"];
@@ -82,6 +83,8 @@ export function participantsOf(phase: Phase): readonly AnsweredMember[] {
       return [phase.old];
     case "seed":
       return [phase.source];
+    case "restore_snapshot":
+      return phase.mirror === null ? [phase.writer] : [phase.writer, phase.mirror];
   }
 }
 
@@ -186,6 +189,15 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
     if (roots.length > 1) return refuse("two_writers", `${name} has two primaries, ${roots.map(named).join(" and ")}`);
     if (writer === undefined) return refuse("no_writer", `${name} has no primary to restore from`);
     return { ok: true, phase: { kind: "seed", source: writer } };
+  }
+  if (input.kind === "restore_snapshot") {
+    if (switching.length > 0) return midRun();
+    if (roots.length > 1) return refuse("two_writers", `${name} has two primaries, ${roots.map(named).join(" and ")}`);
+    if (writer === undefined) return refuse("no_writer", `${name} has no primary to restore`);
+    const { mirror: on } = input.args;
+    const mirror = on === null ? null : answered.find((member) => member.machine.name === on);
+    if (mirror === undefined) return refuse("invalid", `${on} is not a Server of this cluster`);
+    return { ok: true, phase: { kind: "restore_snapshot", writer, mirror } };
   }
   const [source] = switching;
   if (source !== undefined && switching.length === 1) {

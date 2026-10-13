@@ -101,11 +101,16 @@ The top line counts them next to the copies, as in "1 copy · 3 snapshots".
 **Delete** removes it after you confirm. These run at once, not on deploy.
 
 **Restore** puts a snapshot back in place at your next deploy. The dialog says how much data
-the restore loses, which is everything written since that snapshot. Before the swap, Ployz saves
-the current data as a kept **Before restore** snapshot, so you can go back. The deploy stops the
-services that mount the volume, swaps in the snapshot, and starts them again. A mirror starts
-over from the restored data. When the restore drops writes, the deploy asks you to type where you
-deploy first. Discard a staged restore from **Details**.
+the restore loses, which is everything written since that snapshot. The restore runs before the
+deploy's other volume changes, so a move staged with it carries the restored data. Before the swap,
+Ployz saves the current data as a kept **Before restore** snapshot noted with the deploy's number,
+such as "#12", so you can go back. The deploy stops the services that mount the volume, swaps in
+the snapshot, and starts them again. A mirror starts over from the restored data. When the restore
+drops writes, the deploy asks you to type where you deploy first. Discard a staged restore from
+**Details**.
+
+If the volume moved to another server since you picked the snapshot, the deploy fails and drops
+the restore. The services start again on the data they had. Open **Snapshots** and restore again.
 
 Snapshots live on the same server as the volume. They don't survive that server. Keep a copy
 elsewhere too.

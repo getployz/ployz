@@ -15,7 +15,7 @@ import {
   appliedMirrors, changeKey, drainPlacement, dropChange, nextPlacementStep, observePlacement, type Placement, placementChanges, type PlacementStep, type PlacementVolume,
   sameChange,
 } from "#/modules/volume-placement/volume-placement";
-import { ACTIVE_VOLUME_RUN_STATES, dockerVolumeName, type VolumeRunState } from "#/modules/volume-run/volume-run";
+import { ACTIVE_VOLUME_RUN_STATES, dockerVolumeName, type VolumeRunArgs, type VolumeRunState } from "#/modules/volume-run/volume-run";
 import {
   type CopyObserver, getVolumeRun, inspectVolumeCopies, listActiveVolumeRuns, observeOrganizationCopies, requestVolumeRun,
 } from "#/modules/volume-run/volume-run.server";
@@ -163,6 +163,16 @@ const unseededVolume = Effect.fn("VolumePlacement.unseededVolume")(function* (
 });
 
 /**
+ * The restore that saved its data as `save` is done, so no later Deploy runs it again. Keyed by `save`, since a restore
+ * staged afterwards names its own.
+ */
+const restoreDone = Effect.fn("VolumePlacement.restoreDone")(function* (volumeId: string, save: string) {
+  const { drizzle } = yield* Database;
+  yield* drizzle.update(volumePlacement).set({ staged: sql`${volumePlacement.staged} - 'restore'`, updatedAt: new Date() })
+    .where(and(eq(volumePlacement.volumeId, volumeId), sql`${volumePlacement.staged} -> 'restore' ->> 'save' = ${save}`));
+});
+
+/**
  * One step of Deploy `deploymentId`'s storage, before its Services: settle the run it waited on, then start the next run
  * the first stamped Volume needs. A Deploy that is no longer queued (cancelled, superseded) stops between runs, and its
  * Volumes stay staged. A run that fails fails the Deploy: its change is dropped, and the changes it never reached, on that
@@ -195,6 +205,10 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
     }
     // The run this Deploy started has ended, so its mirrors are what the Servers hold, whoever claims the row now.
     if (waited.step !== null) yield* settle(waited.volumeId, { mirrors: [...waited.step.mirrors] });
+    if (run.kind === "restore_snapshot" && run.state === "done") {
+      // SAFETY: a run's args are its kind's, and this run's kind is restore_snapshot.
+      yield* restoreDone(waited.volumeId, (run.args as VolumeRunArgs["restore_snapshot"]).save);
+    }
   }
   const { drizzle } = yield* Database;
   const stamped = yield* drizzle.select().from(volumePlacement)
@@ -239,12 +253,7 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
     const placement = view(row);
     const members = yield* inspect(organizationId, environment, row.volumeId);
     const changes = placementChanges(volume, members, placement);
-    const restoring = changes.find((change) => change.kind === "restore_snapshot");
-    if (restoring !== undefined) {
-      const remaining = dropChange(volume, members, placement, changeKey(restoring));
-      return yield* fail(organizationId, deploymentId, row.volumeId, remaining, `${volume.name}: restoring a snapshot is not wired into deploys yet`);
-    }
-    const step = nextPlacementStep(changes, appliedMirrors(observePlacement(members), placement));
+    const step = nextPlacementStep(changes, appliedMirrors(observePlacement(members), placement), deployment.number);
     if (step === null) {
       // Nothing left to run, so the Servers hold what was staged.
       yield* settleClaimed(row.volumeId, deploymentId, { mirrors: [...(row.staged?.mirrors ?? [])], staged: null, deploymentId: null });
