@@ -7,8 +7,8 @@ use crate::ui::{
 };
 use ployz_core::{QualifiedService, RpcError, RpcErrorCode};
 use ployz_store::{
-    BuildStatus, DeployedNode, DeploymentStatus, DeploymentView, IngressAction, IngressFailure,
-    NodeStatus, RowState,
+    BuildStatus, DeployedNode, DeploymentStatus, DeploymentView, DeploymentWarning, IngressAction,
+    IngressFailure, NodeStatus, RowState,
 };
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -104,6 +104,14 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
         detail: Some(ingress_verb(repair.action).to_owned()),
         timing: Timing::Unavailable,
     }));
+    if ingress_unchecked(view).is_some() {
+        rows.push(Row {
+            subject: Subject::Service(QualifiedService::system_ingress()),
+            state: State::Unknown,
+            detail: Some("not checked".to_owned()),
+            timing: Timing::Unavailable,
+        });
+    }
     Frame {
         run: Run::Stored(view.deployment.id.clone()),
         title: format!(
@@ -123,6 +131,7 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
 /// Start once there is observed work, preserving one caption for a clean no-op.
 pub(super) fn visible(view: &DeploymentView) -> bool {
     !view.deployment.ingress.is_empty()
+        || ingress_unchecked(view).is_some()
         || view
             .preview
             .as_ref()
@@ -138,6 +147,7 @@ pub(super) fn visible(view: &DeploymentView) -> bool {
 pub(super) fn noop(view: &DeploymentView) -> bool {
     view.deployment.status == DeploymentStatus::Applied
         && view.deployment.ingress.is_empty()
+        && ingress_unchecked(view).is_none()
         && view
             .nodes
             .iter()
@@ -155,7 +165,26 @@ pub(super) fn ingress_verb(action: IngressAction) -> &'static str {
     }
 }
 
+fn ingress_unchecked(view: &DeploymentView) -> Option<&str> {
+    view.deployment
+        .warnings
+        .iter()
+        .find_map(|warning| match warning {
+            DeploymentWarning::IngressUnchecked { cause } => Some(cause.as_str()),
+            DeploymentWarning::Fragile { .. }
+            | DeploymentWarning::NotSet { .. }
+            | DeploymentWarning::NotSetInFile { .. }
+            | DeploymentWarning::IngressNotServing { .. } => None,
+        })
+}
+
 pub(super) fn ingress_warnings(view: &DeploymentView) -> Vec<String> {
+    let unchecked = ingress_unchecked(view).map(|cause| {
+        format!(
+            "Couldn't check ingress: {}. Deploy again to retry.",
+            cause.trim_end_matches('.')
+        )
+    });
     view.deployment
         .ingress
         .iter()
@@ -172,6 +201,7 @@ pub(super) fn ingress_warnings(view: &DeploymentView) -> Vec<String> {
                 ),
             })
         })
+        .chain(unchecked)
         .collect()
 }
 
@@ -472,6 +502,34 @@ mod tests {
         assert_eq!(
             ingress_warnings(&view),
             ["Ingress isn't running on web-1: pull failed. Deploy again to retry."]
+        );
+    }
+
+    #[test]
+    fn an_unchecked_ingress_is_work_with_an_unknown_row_and_a_retry_warning() {
+        use ployz_core::DeployPreview;
+        let mut view = view();
+        view.deployment.status = DeploymentStatus::Applied;
+        for node in &mut view.nodes {
+            node.outcome = NodeStatus::Unchanged;
+        }
+        view.preview = Some(DeployPreview::new(
+            Vec::new(),
+            Vec::new(),
+            view.namespace.clone(),
+        ));
+        view.deployment.warnings = vec![DeploymentWarning::IngressUnchecked {
+            cause: "Couldn't list the Cluster's Servers.".into(),
+        }];
+        assert!(!noop(&view) && visible(&view));
+        assert!(completion(&view, command).is_ok());
+        assert!(frame(&view).rows.iter().any(|row| {
+            row.subject == Subject::Service(QualifiedService::system_ingress())
+                && row.state == State::Unknown
+        }));
+        assert_eq!(
+            ingress_warnings(&view),
+            ["Couldn't check ingress: Couldn't list the Cluster's Servers. Deploy again to retry."]
         );
     }
 

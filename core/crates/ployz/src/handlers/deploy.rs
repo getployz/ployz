@@ -684,12 +684,13 @@ fn plan(matches: &ArgMatches, store: &Store, services: Vec<ServiceName>) -> Resu
         services,
     })?;
     let hint = store.again(&["--expect-version", plan.version.as_str()]);
+    let ingress = ingress_repairs(matches);
     let shown = Planned {
         domain_changes: super::store::domain_changes(
             plan.changes.iter().flat_map(|change| &change.settings),
         ),
         plan: &plan,
-        ingress: ingress_repairs(matches),
+        ingress: ingress.as_ref().ok().cloned(),
     };
     crate::ui::finish(&Next::new(&shown, Some(hint.clone())), || {
         let where_ = format!("{}/{}", plan.environment.project, plan.environment.name);
@@ -709,12 +710,20 @@ fn plan(matches: &ArgMatches, store: &Store, services: Vec<ServiceName>) -> Resu
             }
             super::review::restarts(change);
         }
-        for repair in shown.ingress.iter().flatten() {
-            crate::ui::stream(format_args!(
-                "ingress on {}: would {}",
-                repair.server,
-                progress::ingress_verb(repair.action)
-            ));
+        match &ingress {
+            Ok(repairs) => {
+                for repair in repairs {
+                    crate::ui::stream(format_args!(
+                        "ingress on {}: would {}",
+                        repair.server,
+                        progress::ingress_verb(repair.action)
+                    ));
+                }
+            }
+            Err(cause) => crate::ui::stream(format_args!(
+                "Couldn't check ingress: {}.",
+                cause.trim_end_matches('.')
+            )),
         }
         if !plan.unresolved.is_empty() {
             ui::stream(format_args!(
@@ -726,16 +735,22 @@ fn plan(matches: &ArgMatches, store: &Store, services: Vec<ServiceName>) -> Resu
     })
 }
 
-fn ingress_repairs(matches: &ArgMatches) -> Option<Vec<ployz_store::IngressRepair>> {
+fn ingress_repairs(matches: &ArgMatches) -> Result<Vec<ployz_store::IngressRepair>, String> {
     let context = matches
         .try_get_one::<String>("context")
         .ok()
         .flatten()
         .map(String::as_str);
-    runtime().ok()?.block_on(async {
-        let mut client = super::server::connect(matches, context).await.ok()?;
-        crate::ingress::planned_slots(&mut client).await.ok()
-    })
+    runtime()
+        .map_err(|error| error.to_string())?
+        .block_on(async {
+            let mut client = super::server::connect(matches, context)
+                .await
+                .map_err(|error| error.to_string())?;
+            crate::ingress::planned_slots(&mut client)
+                .await
+                .map_err(|error| error.to_string())
+        })
 }
 
 /// "uploaded by nick, base abc1234 + changes": where an upload came from.

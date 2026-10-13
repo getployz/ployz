@@ -323,18 +323,24 @@ impl Run {
     }
 
     async fn fill_ingress(&self, session: &Session) {
-        let Ok(mut client) = session.client() else {
-            return;
+        let filled = match session.client() {
+            Ok(mut client) => {
+                let stop = CancellationToken::new();
+                self.renewing(crate::ingress::fill_slots(&mut client, &stop), || {
+                    stop.cancel()
+                })
+                .await
+                .map_err(|failure| failure.to_string())
+            }
+            Err(error) => Err(error.to_string()),
         };
-        let stop = CancellationToken::new();
-        let repairs = self
-            .renewing(crate::ingress::fill_slots(&mut client, &stop), || {
-                stop.cancel()
-            })
-            .await
-            .unwrap_or_default();
-        if !repairs.is_empty() {
-            let _ = self.record(RunEvidence::Ingress(repairs)).await;
+        let evidence = match filled {
+            Ok(repairs) if repairs.is_empty() => return,
+            Ok(repairs) => RunEvidence::Ingress(repairs),
+            Err(cause) => RunEvidence::IngressUnchecked(cause),
+        };
+        if let Err(error) = self.record(evidence).await {
+            tracing::warn!(%error, "couldn't record what the Deploy did to ingress");
         }
     }
 

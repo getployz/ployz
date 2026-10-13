@@ -121,7 +121,8 @@ pub struct DeploymentSummary {
     pub in_flight: bool,
     /// What its runner recorded at its end; none while it hasn't ended.
     pub outcome: Option<Outcome>,
-    /// What its runner was warned of when it claimed it.
+    /// What its runner was warned of when it claimed it, and the Ingress Proxies its
+    /// Deploy left down or couldn't check.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(optional, as = "Option<Vec<DeploymentWarning>>")]
     pub warnings: Vec<DeploymentWarning>,
@@ -161,6 +162,8 @@ pub enum DeploymentWarning {
         server: String,
         ingress: IngressFailure,
     },
+    /// The Deploy couldn't check the Cluster's Ingress Proxies, so it brought none back.
+    IngressUnchecked { cause: String },
 }
 
 /// What a Deploy did to one Server's missing or stopped Ingress Proxy. It only
@@ -379,6 +382,9 @@ pub enum RunEvidence {
     /// What filling the Cluster's missing or stopped Ingress Proxies did after
     /// execution. A failure warns; it never fails the Deployment.
     Ingress(Vec<IngressRepair>),
+    /// Checking the Cluster's Ingress Proxies after execution failed, so none was
+    /// filled. It warns; it never fails the Deployment.
+    IngressUnchecked(String),
     /// The runner still holds the Deployment: it renews the lease and reads the
     /// status back, which says whether it was cancelled.
     Alive,

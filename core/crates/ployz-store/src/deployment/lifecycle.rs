@@ -924,6 +924,16 @@ pub(crate) fn record(
             save(tx, &mut stored)?;
             Ok(stored.summary)
         }
+        RunEvidence::IngressUnchecked(cause) => {
+            running(&stored)?;
+            let unchecked = DeploymentWarning::IngressUnchecked { cause };
+            if !stored.run.warnings.contains(&unchecked) {
+                stored.run.warnings.push(unchecked);
+            }
+            stored.summary.warnings = stored.run.summary_warnings();
+            save(tx, &mut stored)?;
+            Ok(stored.summary)
+        }
         RunEvidence::UploadNeeded(services) => {
             let names = services
                 .iter()

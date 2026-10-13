@@ -331,6 +331,35 @@ fn a_failed_ingress_repair_leaves_the_deploy_applied_with_a_warning() {
     assert_eq!((read.warnings, read.ingress), (vec![warning], repairs));
 }
 
+#[test]
+fn an_unchecked_ingress_leaves_the_deploy_applied_with_one_warning() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    let cause = "Couldn't list the Cluster's Servers.".to_owned();
+    for _ in 0..2 {
+        store
+            .record(&id(1), &a, RunEvidence::IngressUnchecked(cause.clone()))
+            .unwrap();
+    }
+    let recorded = store
+        .record(&id(1), &a, succeeded(&["web", "api"]))
+        .unwrap();
+
+    let warning = DeploymentWarning::IngressUnchecked { cause };
+    assert_eq!(recorded.status, DeploymentStatus::Applied);
+    assert_eq!(recorded.warnings, std::slice::from_ref(&warning));
+    let read = store
+        .read(&who, &ployz_store::DeploymentQuery { id: id(1) })
+        .unwrap()
+        .deployment;
+    assert_eq!(read.warnings, [warning]);
+}
+
 fn sentry(store: &ConfigStore, who: &Actor) {
     store
         .write(

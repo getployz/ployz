@@ -51,7 +51,8 @@ export function StoreDeploymentPage({ deploymentId, search }: { deploymentId: st
   const storage = storageSteps(deployment.id);
   const warnings = deployment.warnings ?? [];
   const ingressWarnings = warnings.filter((warning) => "ingress" in warning);
-  const variableWarnings = warnings.filter((warning) => !("ingress" in warning));
+  const uncheckedIngress = warnings.filter((warning) => "cause" in warning);
+  const variableWarnings = warnings.filter((warning) => !("ingress" in warning) && !("cause" in warning));
   const services = deployment.nodes.filter((node) => node.type === "service");
   const volumes = deployment.nodes.filter((node) => node.type === "volume");
   const focused = focusedService(deployment, search.service);
@@ -135,6 +136,11 @@ export function StoreDeploymentPage({ deploymentId, search }: { deploymentId: st
             <TriangleAlertIcon className="size-4" />{deploymentWarningText(warning)}.
             <Link to="/cloud/$organizationSlug/~/settings" params={{ organizationSlug: params.organizationSlug }}
               className="underline underline-offset-4">Organization › General › Domain</Link>
+          </p>
+        ))}
+        {uncheckedIngress.map((warning) => (
+          <p key={warning.cause} role="status" className="flex flex-wrap items-center gap-1.5 text-sm text-warning">
+            <TriangleAlertIcon className="size-4" />{deploymentWarningText(warning)}.
           </p>
         ))}
 

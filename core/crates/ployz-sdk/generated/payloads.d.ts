@@ -1183,7 +1183,8 @@ in_flight: boolean,
  */
 outcome: Outcome | null,
 /**
- * What its runner was warned of when it claimed it.
+ * What its runner was warned of when it claimed it, and the Ingress Proxies its
+ * Deploy left down or couldn't check.
  */
 warnings?: Array<DeploymentWarning>,
 /**
@@ -1273,7 +1274,8 @@ in_flight: boolean,
  */
 outcome: Outcome | null,
 /**
- * What its runner was warned of when it claimed it.
+ * What its runner was warned of when it claimed it, and the Ingress Proxies its
+ * Deploy left down or couldn't check.
  */
 warnings?: Array<DeploymentWarning>,
 /**
@@ -1293,7 +1295,7 @@ variable: string, } | { config: ConfigName, file: ConfigFileName,
 /**
  * The variable as the file references it, such as `api.TOKEN`.
  */
-secret: string, } | { server: string, ingress: IngressFailure, };
+secret: string, } | { server: string, ingress: IngressFailure, } | { cause: string, };
 
 export type DeploymentsQuery = { environment: EnvironmentRef,
 /**
