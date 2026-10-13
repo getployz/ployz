@@ -840,10 +840,31 @@ describe("volume runs", () => {
 
       await deliver(run.id, "run-2");
 
-      expect(verbs.slice(0, 2)).toEqual(["floor@fsn-1", "writer@fsn-1(none)"]);
-      expect(sent[1]).toMatchObject({ expect: { kind: "mirror", newest: G.guid }, want: { kind: "writer", at: G.guid, start: null }, gen: sent[0]?.gen });
+      expect(verbs.slice(0, 2)).toEqual(["floor@fsn-1", "writer@fsn-1(kept)"]);
+      expect(sent[1]).toMatchObject({
+        expect: { kind: "mirror", newest: G.guid },
+        want: { kind: "writer", at: G.guid, start: { kind: "kept", container_id: "web-fsn-1" } },
+        gen: sent[0]?.gen,
+      });
       expect(named("fsn-1").copy).toMatchObject({ kind: "root", readonly: false, newest: G });
+      expect(containers).toEqual([{ machine: "fsn-1", id: "web-fsn-1", running: true }]);
       expect(await lanes()).toMatchObject([{ kind: "move", state: "yielded" }, { id: run.id, state: "done" }]);
+    });
+
+    it("a staged Restore that took a warm Move whose cut flipped, then fails its plan, leaves the Service started on A", async () => {
+      const G = newSnap("f-1");
+      containers = [{ machine: "fsn-1", id: "web-fsn-1", running: false }];
+      named("fsn-1").copy = slotCopy(G, null, "3");
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(G) };
+      await move();
+      const staged = await runEffect(requestVolumeRun({ userId, organizationId }, { volumeId, environment, kind: "restore", args: { from: "fsn-2" } }, { end: "yielded" }));
+      if (!staged.ok) throw new Error(staged.refusal.message);
+
+      await deliver(staged.run.id, "run-2");
+
+      expect(verbs).toEqual(["floor@fsn-1", "writer@fsn-1(kept)"]);
+      expect(containers).toEqual([{ machine: "fsn-1", id: "web-fsn-1", running: true }]);
+      expect(await lanes()).toMatchObject([{ kind: "move", state: "yielded" }, { id: staged.run.id, state: "failed" }]);
     });
   });
 
