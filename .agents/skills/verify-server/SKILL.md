@@ -20,20 +20,20 @@ flowchart LR
 
 ## Launch and doctor
 
-Choose `stable` for dashboard or client work against a published daemon. Use `checkout` when the feature changes daemon behavior; use `beta` or an exact version when that is the required baseline.
+Choose `stable` for dashboard or client work against a published daemon. Use `checkout` when the feature changes daemon behavior; use `beta` or an exact version when that is the required baseline. Each Machine can run its own daemon: `--daemon` takes `[MACHINE=]SOURCE` and repeats. A bare source sets every Machine and a named one overrides it, so `--daemon checkout --daemon machine-2=0.2.3` runs machine-1 on this checkout and machine-2 on the 0.2.3 release.
 
 ```bash
 run=$(scripts/verify-cluster up --daemon stable)
 scripts/verify-cluster doctor "$run"
 ```
 
-`--daemon checkout` is the command's default; it builds and installs this checkout's runtime. `PLOYZ_VERIFY_CARGO_ARGS` appends to that `cargo build`; `PLOYZ_VERIFY_CARGO_ARGS="--features ployz/verify-faults,ployzd/verify-faults"` builds the fault hooks and `ployz debug volume-rpc` that Volume switch verification drives. `--daemon stable`, `beta` or an exact version uses a cached published runtime image and skips daemon compilation, per-Machine binary uploads and installation. Channel selection resolves to an exact version recorded in the manifest. The host CLI still comes from this checkout because the released CLI enrolls through Cloud rather than supporting standalone enrollment.
+`--daemon checkout` is the command's default; it builds and installs this checkout's runtime. `PLOYZ_VERIFY_CARGO_ARGS` appends to that `cargo build`; `PLOYZ_VERIFY_CARGO_ARGS="--features ployz/verify-faults,ployzd/verify-faults"` builds the fault hooks and `ployz debug volume-rpc` that Volume switch verification drives. When every Machine boots the same release, the run uses that release's cached image and skips daemon compilation, per-Machine binary uploads and installation. A mixed run boots the shared base image and installs each Machine's daemon. Channel selection resolves to an exact version, recorded per Machine in the manifest. The host CLI still comes from this checkout because the released CLI enrolls through Cloud rather than supporting standalone enrollment.
 
-`up` returns an absolute manifest path on stdout. Each invocation creates a separate cluster, SSH credentials, CLI context, Config Store and application workspace. The manifest records the selected daemon, Machines, artifact hashes and timings. Incus is the initial provider; its image, bridge and VM commands stay in `scripts/verify/incus.py`.
+`up` returns an absolute manifest path on stdout. Each invocation creates a separate cluster, SSH credentials, CLI context, Config Store and application workspace. The manifest records each Machine's daemon source, version and binary hashes, and the run's artifact hashes and timings. Incus is the initial provider; its image, bridge and VM commands stay in `scripts/verify/incus.py`.
 
 The first run for an image recipe prepares Ubuntu with Docker, real ZFS, Corrosion, Caddy and nginx. Later runs boot clones with cached dependencies. Published daemons and their systemd units stay installed in release images; checkout runs install their own binaries and units. The host CLI drives both and reads each Entry Machine over SSH. Machine identities are created after cloning. Compilation overlaps image preparation and VM boot; installation and enrollment wait for the required binaries. Phase timings overlap; `total` records elapsed startup time.
 
-`doctor` checks active services, the running daemon's executable hash, ZFS, and each Entry Machine's observation of the expected peers. Run it before driving and after an unexpected failure. A deliberate fault can make doctor fail; restore that fault or start a fresh run before continuing unrelated checks.
+`doctor` checks active services, each Machine's running daemon executable hash and reported version against its own selection, ZFS, and each Entry Machine's observation of the expected peers. Run it before driving and after an unexpected failure. A deliberate fault can make doctor fail; restore that fault or start a fresh run before continuing unrelated checks.
 
 A committed enrollment can return a startup follow-up failure. The helper retains that failure in `setup_follow_up_errors`, checks readiness for up to 30 seconds and completes the public ingress recovery command. It reports setup failures in stderr and evidence; inspect and report these when enrollment itself is the feature under verification.
 
@@ -75,13 +75,13 @@ kill "$probe"; wait "$probe"                   # prints the report; exits 1 when
 
 `probe` streams `INSERT … RETURNING id` through `ployz exec -T <service> -- psql` into table `ackprobe`, 200 per second by default (`--rate`). Postgres's default `synchronous_commit=on` holds a commit's reply until the commit is durable. An id counts as acknowledged only after psql prints its row, and each one is logged with its time in `evidence/ackprobe-<service>-<time>.jsonl`. A session that dies or waits longer than `--stall` seconds is replaced, and the ids it left in flight are not retried, so they count as unknown. Each new session runs through `ployz exec`, so it reaches the Service on whichever Machine runs it now. On SIGINT or SIGTERM the probe reads the table back from the current writer and prints one JSON report: `lost` lists acknowledged ids missing there, and `longest_gap_seconds` with `longest_gap_between` gives the longest wait between two acknowledgements, a measure of downtime. While the writer is unreachable a session hangs until `--stall` ends it, so the gap can overstate the outage by up to `--stall` (2 s by default) plus one reconnect through `ployz exec`. `scripts/test-verify-faults.py [daemon] [--cloud]` runs the power-cut case under the probe and, with `--cloud`, kills the runner while a Deploy is `running` and checks that the Deploy applies after `runner start`.
 
-After correcting the implementation, keep the Machines and their data while updating binaries. `update` keeps the run's daemon selection; a channel is resolved again:
+After correcting the implementation, keep the Machines and their data while updating binaries. `update` keeps each Machine's daemon source; a channel is resolved again:
 
 ```bash
 scripts/verify-cluster update "$run"
 ```
 
-To switch a release cluster to a modified daemon, use `scripts/verify-cluster update "$run" --daemon checkout` explicitly.
+`update` takes the same `--daemon [MACHINE=]SOURCE` choices, and Machines it does not name keep their source. `scripts/verify-cluster update "$run" --daemon checkout` moves a release cluster to the modified daemon; `--daemon machine-2=0.2.3` moves only machine-2, downgrades included.
 
 ## Evidence and cleanup
 
@@ -116,4 +116,4 @@ When `cli`, `exec`, `probe` or `doctor` finds a Machine stopped that `power off`
 run=$(scripts/verify-cluster up --daemon stable --cloud)
 ```
 
-`--cloud` starts this checkout's dashboard (`../dashboard/scripts/verify/up.sh`) with Inngest and the worker. It then enrolls the Machines through it with the seed's Organization Token rather than `--standalone`. `cli` then goes through Cloud with that token, and `doctor` also checks that Cloud lists exactly this run's Machines. `down` stops the dashboard it started. It skips the dashboard's idle stop, since a cluster's CLI calls are too brief to count as a connection. When the dashboard's `SERVERS=N up.sh` started the cluster instead, the dashboard owns it and its `down.sh` removes the cluster. Cloud enrollment needs the daemon version to equal this checkout's CLI version, so use `stable` on a release commit and `checkout` otherwise. In this mode the daemon advertises its discovered endpoints, so the provider's `--public-ip` and `--wg-endpoint` choices do not apply.
+`--cloud` starts this checkout's dashboard (`../dashboard/scripts/verify/up.sh`) with Inngest and the worker. It then enrolls the Machines through it with the seed's Organization Token rather than `--standalone`. `cli` then goes through Cloud with that token, and `doctor` also checks that Cloud lists exactly this run's Machines. `down` stops the dashboard it started. It skips the dashboard's idle stop, since a cluster's CLI calls are too brief to count as a connection. When the dashboard's `SERVERS=N up.sh` started the cluster instead, the dashboard owns it and its `down.sh` removes the cluster. Cloud enrollment needs a daemon that speaks this checkout's CLI protocol and reports its version. A release qualifies only when this checkout is that release's tagged commit; a release with the same version string can still predate the checkout's protocol. Any other release Machine enrolls on the checkout daemon, which `up` then compiles, and gets its release installed right after enrollment. Any `--daemon` choice therefore works with `--cloud`, mixed ones included, and `doctor` also checks that Cloud reports each Machine's daemon version. In this mode the daemon advertises its discovered endpoints, so the provider's `--public-ip` and `--wg-endpoint` choices do not apply.
