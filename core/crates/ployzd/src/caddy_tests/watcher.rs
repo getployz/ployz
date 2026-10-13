@@ -723,10 +723,12 @@ async fn query(State(state): State<WatchState>, body: Bytes) -> Bytes {
         )
     } else if statement.query == "SELECT hostname, body FROM certificates ORDER BY hostname" {
         events(&["hostname", "body"], [])
-    } else if statement.query == "SELECT key, value FROM cluster WHERE key LIKE 'serving/%'" {
+    } else if statement.query
+        == "SELECT key AS serving_key, value FROM cluster WHERE key LIKE 'serving/%'"
+    {
         let pointers = state.pointers.lock().unwrap();
         events(
-            &["key", "value"],
+            &["serving_key", "value"],
             pointers
                 .iter()
                 .map(|(key, value)| vec![json!(key), json!(value)]),
@@ -752,8 +754,14 @@ async fn subscribe(State(state): State<WatchState>, body: Bytes) -> Response {
                 &state.certificate_subscriptions,
                 false,
             )
-        } else if statement.query == "SELECT key, value FROM cluster WHERE key LIKE 'serving/%'" {
-            (&["key", "value"][..], &state.pointer_subscriptions, false)
+        } else if statement.query
+            == "SELECT key AS serving_key, value FROM cluster WHERE key LIKE 'serving/%'"
+        {
+            (
+                &["serving_key", "value"][..],
+                &state.pointer_subscriptions,
+                false,
+            )
         } else {
             panic!("unexpected subscription {}", statement.query);
         };

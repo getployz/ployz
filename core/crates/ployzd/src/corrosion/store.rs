@@ -674,7 +674,7 @@ impl ReplicatedStore {
     pub(crate) async fn serving_pointers(&self) -> Result<ServingPointers, Error> {
         let query = self.api.query(Statement::new(SERVING_POINTERS, [])).await?;
         let mut pointers = ServingPointers::default();
-        for [key, value] in query.rows(["key", "value"])? {
+        for [key, value] in query.rows(["serving_key", "value"])? {
             let key = text(&key, "Serving Pointer key")?;
             let decoded = key
                 .strip_prefix("serving/")
@@ -973,7 +973,8 @@ fn volume_incomplete(machine_id: &MachineId, name: &DockerVolumeName) -> Stateme
     )
 }
 
-const SERVING_POINTERS: &str = "SELECT key, value FROM cluster WHERE key LIKE 'serving/%'";
+const SERVING_POINTERS: &str =
+    "SELECT key AS serving_key, value FROM cluster WHERE key LIKE 'serving/%'";
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ServingPointers {
@@ -988,12 +989,21 @@ impl ServingPointers {
     }
 
     pub(crate) fn warn_newly_malformed(&self, already_warned: &mut BTreeSet<String>) {
-        already_warned.retain(|key| self.malformed.contains_key(key));
-        for (key, reason) in &self.malformed {
-            if already_warned.insert(key.clone()) {
-                eprintln!("ignoring malformed Serving Pointer {key}: {reason}");
-            }
+        for (key, reason) in self.newly_malformed(already_warned) {
+            eprintln!("ignoring malformed Serving Pointer {key}: {reason}");
         }
+    }
+
+    pub(super) fn newly_malformed<'a>(
+        &'a self,
+        already_warned: &mut BTreeSet<String>,
+    ) -> Vec<(&'a str, &'a str)> {
+        already_warned.retain(|key| self.malformed.contains_key(key));
+        self.malformed
+            .iter()
+            .filter(|(key, _)| already_warned.insert((*key).clone()))
+            .map(|(key, reason)| (key.as_str(), reason.as_str()))
+            .collect()
     }
 }
 

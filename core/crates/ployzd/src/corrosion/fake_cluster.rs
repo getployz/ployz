@@ -227,9 +227,9 @@ async fn subscriptions(
             kv.machine_changes.subscribe(),
             "{\"columns\":[\"id\",\"info\"]}\n{\"eoq\":{\"time\":0.0}}\n",
         ),
-        "SELECT key, value FROM cluster WHERE key LIKE 'serving/%'" => (
+        "SELECT key AS serving_key, value FROM cluster WHERE key LIKE 'serving/%'" => (
             kv.pointer_changes.subscribe(),
-            "{\"columns\":[\"key\",\"value\"]}\n{\"eoq\":{\"time\":0.0}}\n",
+            "{\"columns\":[\"serving_key\",\"value\"]}\n{\"eoq\":{\"time\":0.0}}\n",
         ),
         query => panic!("unexpected subscription {query}"),
     };
@@ -314,8 +314,8 @@ fn query(kv: &Mutex<ClusterKv>, statement: Statement) -> Result<Bytes, StatusCod
         "SELECT value FROM cluster WHERE key = 'network'" => {
             events(&["value"], vec![vec![json!(kv.network)]])
         }
-        "SELECT key, value FROM cluster WHERE key LIKE 'serving/%'" => events(
-            &["key", "value"],
+        "SELECT key AS serving_key, value FROM cluster WHERE key LIKE 'serving/%'" => events(
+            &["serving_key", "value"],
             kv.serving_pointers
                 .iter()
                 .map(|(key, value)| vec![json!(key), json!(value)]),

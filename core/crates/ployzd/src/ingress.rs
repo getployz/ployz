@@ -544,7 +544,7 @@ async fn wait_for_debounced_change(
                     () = shutdown.cancelled() => return Ok(DebouncedChange::Shutdown),
                     changed = container_changes.changed() => changed?,
                     changed = certificate_changes.changed() => changed?,
-            changed = pointer_changes.changed() => changed?,
+                    changed = pointer_changes.changed() => changed?,
                     () = tokio::time::sleep(WATCH_RESNAPSHOT) => {
                         return Ok(DebouncedChange::Resubscribe);
                     }
