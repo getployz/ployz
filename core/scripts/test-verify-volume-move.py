@@ -756,7 +756,7 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
                 attempts.append(dict(op=op, skipped=str(skip)))
         machine = self.healthy()
         states = self.states()
-        unhealed = placement(states) + ([] if machine else ["no database answers"])
+        unhealed = assess(states, self.lost()) + ([] if machine else ["no database answers"])
         return dict(attempts=attempts, healthy_on=machine, writable=writable_copies(states), unhealed=unhealed,
                     healed=not unhealed)
 
@@ -782,7 +782,7 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
                         result["heal"] = dict(healed=False, error=f"{type(cleanup).__name__}: {cleanup}")
                 heal = result.get("heal", dict(healed=True))
                 if not heal["healed"]:
-                    # A later case would run on a Machine left armed or unhealed and could pass on what this one left.
+                    # A later case would run on what this one left, armed or unhealed, and pass or fail on it.
                     reason = heal.get("error") or f"after the heal, {'; '.join(heal['unhealed'])}"
                     result["failures"].append(f"the run stopped after this case: {reason}"[:2000])
                 (self.out / f"{case['name']}.json").write_text(json.dumps(result, indent=2) + "\n")

@@ -529,8 +529,10 @@ class VolumeMoveTests(unittest.TestCase):
         case = json.loads((self.root / "out" / f"{volume_move.CASES[0]['name']}.json").read_text())
         self.assertIn("states", case)
 
-    def test_a_heal_that_leaves_the_database_off_the_writable_copy_stops_the_run(self):
-        for mutation, left in (("elsewhere", "but the writable copy is"), ("two-running", "2 running db Containers")):
+    def test_a_heal_that_leaves_any_assessed_failure_stops_the_run(self):
+        for mutation, left in (("elsewhere", "but the writable copy is"), ("two-running", "2 running db Containers"),
+                               ("stopped", "stopped db Containers"), ("snapshots", "snapshots, over"),
+                               ("lost", "acknowledged ids lost")):
             with self.subTest(mutation):
                 checks, model = self.checks()
                 setup = checks.setup
