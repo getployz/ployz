@@ -115,18 +115,54 @@ async fn destroy_drops_a_landed_seed_docker_never_adopted() {
         "the seed root is gone"
     );
     assert!(test.0.join("volume").exists(), "the source stays");
-    let effects = commands(&test)[log.len()..]
-        .lines()
-        .filter(|line| !line.starts_with("zfs list") && !line.starts_with("zfs get"))
-        .filter(|line| !line.starts_with("zpool "))
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
-    assert_eq!(effects, ["zfs destroy -r tank/ployz/seed"]);
+    assert_eq!(
+        effects_since(&test, &log),
+        ["zfs destroy -r tank/ployz/seed"]
+    );
     assert_eq!(
         post(&socket, "/Volume.Copy.Destroy", json!({"name": "seed"})).await,
         reply,
         "a resend finds nothing left"
     );
+}
+
+#[tokio::test]
+async fn destroy_drops_a_seed_and_the_slot_parent_a_crashed_landing_left() {
+    let test = TestDir::new();
+    let (socket, _server) = start(&test, USABLE_POOL, &["root", "volume"]);
+    set_property(&test, "tank/ployz/data", "snapshots", POINT);
+    settled(&socket).await;
+    std::fs::write(test.0.join("seed-slot"), "").unwrap();
+    let log = commands(&test);
+
+    let reply = post(&socket, "/Volume.Copy.Destroy", json!({"name": "seed"})).await;
+
+    assert_eq!(reply, json!({"Ok": null}));
+    assert!(
+        !test.0.join("seed-volume").exists(),
+        "the seed root is gone"
+    );
+    assert!(
+        !test.0.join("seed-slot").exists(),
+        "the slot parent is gone"
+    );
+    assert!(test.0.join("volume").exists(), "the source stays");
+    assert_eq!(
+        effects_since(&test, &log),
+        [
+            "zfs destroy -r tank/ployz/seed",
+            "zfs destroy -r tank/ployz-mirror/seed"
+        ]
+    );
+}
+
+fn effects_since(test: &TestDir, log: &str) -> Vec<String> {
+    commands(test)[log.len()..]
+        .lines()
+        .filter(|line| !line.starts_with("zfs list") && !line.starts_with("zfs get"))
+        .filter(|line| !line.starts_with("zpool "))
+        .map(str::to_owned)
+        .collect()
 }
 
 #[tokio::test]

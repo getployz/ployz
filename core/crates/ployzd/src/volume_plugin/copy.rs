@@ -740,6 +740,11 @@ impl VolumeStorage {
             if self.unadopted_seed(&root.name).await.map_err(internal)? {
                 ployzd::faults::kill_inside("SetVolumeCopy.SeedToForget");
                 self.z(&["destroy", "-r", &root.name]).await?;
+                if scope.slot().is_some() && !self.receives.running(name) {
+                    self.z(&["destroy", "-r", &slot_parent(&scope.pool, name)])
+                        .await?;
+                    self.receives.forget(name);
+                }
                 return self.copy_now(&scope).await;
             }
             return Err(self
