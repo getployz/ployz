@@ -107,8 +107,11 @@ async fn departure_on_a_machine_without_zfs_demotes_nothing() {
 }
 
 #[tokio::test]
-async fn departure_destroys_a_received_mirror() {
-    for markers in [&["root", "mirror", "mirror-fs"][..], &["root", "mirror"]] {
+async fn departure_destroys_a_received_mirror_and_the_emptied_mirror_root() {
+    for markers in [
+        &["root", "mirror-root", "mirror", "mirror-fs"][..],
+        &["root", "mirror-root", "mirror"],
+    ] {
         let test = TestDir::new();
         set_property(
             &test,
@@ -126,6 +129,11 @@ async fn departure_destroys_a_received_mirror() {
             "{markers:?}: {log}"
         );
         assert!(!test.0.join("mirror").exists(), "{markers:?}");
+        assert!(
+            log.contains("zfs destroy tank/ployz-mirror\n"),
+            "{markers:?}: {log}"
+        );
+        assert!(!test.0.join("mirror-root").exists(), "{markers:?}");
         let capacity = post(&socket, "/Storage.Inspect", json!(null)).await;
         assert_eq!(
             capacity.pointer("/Ok/copies").unwrap(),
@@ -134,6 +142,19 @@ async fn departure_destroys_a_received_mirror() {
         );
         server.abort();
     }
+}
+
+#[tokio::test]
+async fn departure_keeps_a_mirror_root_a_slot_appeared_in() {
+    let test = TestDir::new();
+    let (socket, server) = start(&test, USABLE_POOL, &["root", "mirror-root", "mirror"]);
+    fs::create_dir_all(test.0.join("props")).unwrap();
+    fs::write(test.0.join("props/mirror-child-appears"), "").unwrap();
+
+    let response = post(&socket, "/Storage.Demote", json!(null)).await;
+    assert_eq!(response, json!({"Ok": ["data"]}));
+    assert!(test.0.join("mirror-root").exists());
+    server.abort();
 }
 
 #[tokio::test]

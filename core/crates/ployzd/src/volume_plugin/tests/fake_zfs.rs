@@ -295,6 +295,12 @@ case "$*" in
     rm -f '{mirror_fs}'
     touch '{volume}'
     ;;
+  'destroy tank/ployz-mirror')
+    if [ -e '{slot}' ] || [ -e '{mirror}' ] || [ -e '{seed_slot}' ] || [ -e '{props}/mirror-child-appears' ]; then
+      echo "cannot destroy 'tank/ployz-mirror': filesystem has children" >&2; exit 1
+    fi
+    rm -f '{mirror_root}'
+    ;;
   'destroy tank/ployz-mirror/data')
     require tank/ployz-mirror/data
     if [ -e '{mirror_fs}' ]; then echo 'filesystem has children' >&2; exit 1; fi
