@@ -115,7 +115,11 @@ export function useStagedPlacements(
     },
     // Every staged row, not just the groups shown: a restore whose Volume the Store discard takes may not have answered yet.
     discardAll: (discardStore) => {
-      discardStore().then(() => settle(rows.map((row) => discardOf(row.volumeId))), () => undefined);
+      // One after another: a restore's discard takes the Environment alone, so a sibling sent alongside finds it held.
+      discardStore().then(() => settle(rows.reduce<Promise<PlacementResult>[]>((sent, row) => {
+        const next = () => discardOf(row.volumeId);
+        return [...sent, sent.at(-1)?.then(next, next) ?? next()];
+      }, [])), () => undefined);
     },
   };
 }
