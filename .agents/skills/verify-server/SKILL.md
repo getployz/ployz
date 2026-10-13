@@ -83,6 +83,19 @@ scripts/verify-cluster update "$run"
 
 `update` takes the same `--daemon [MACHINE=]SOURCE` choices, and Machines it does not name keep their source. `scripts/verify-cluster update "$run" --daemon checkout` moves a release cluster to the modified daemon; `--daemon machine-2=0.2.3` moves only machine-2, downgrades included.
 
+## Scenario scripts
+
+Each script under `scripts/` boots or takes a run, prints its verdicts and exits nonzero on a failure. Run the ones whose behavior your change touches.
+
+- `test-verify-cluster.py` checks a two-Machine run, a managed Volume and cleanup. Run it after changing `verify-cluster` or Machine startup.
+- `test-verify-faults.py` checks that a power cut loses no acknowledged write and, with `--cloud`, that a Deploy survives a killed runner. Run it after changing storage durability or the Cloud runner.
+- `test-verify-merge-removals.py --cloud` checks that a PR merge removes Services and never Volume data. Run it after changing merges or removals.
+- `test-verify-volume-move.py run <manifest>` checks one Move under faults in each RPC step; `--soak` adds a large Volume. Run it after changing the Move steps or `SetVolumeCopy`.
+- `test-verify-volume-fences.py <manifest>` checks that a readonly slot stays hidden from Docker. Run it after changing the volume plugin or slot handling.
+- `test-verify-warm-move.py [check ...]` checks Restore, Server removal and rejoin, demotion of a returning copy, deletion, stale `SetVolumeCopy` replays, deploys held mid-Move, Release, mirror reuse and slow or failing starts. `--list` names the checks and the Machines each needs; with no `--manifest` it boots that many under `/tmp/ployz-warm-move-vc.lock` and takes them down. Run it after changing Warm Move, Volume runs or `server rm`.
+
+The three volume scripts need the fault build, `PLOYZ_VERIFY_CARGO_ARGS='--features ployz/verify-faults,ployzd/verify-faults'`. The Move and Warm Move scripts also need `--cloud`.
+
 ## Evidence and cleanup
 
 Every helper command saves its argv, exit code, duration, stdout and stderr beside the manifest in `evidence/`. Save client traffic traces, feature-specific assertions and any additional proof there too. Capture each Entry Machine separately when replicated observations matter. Name the behavior exercised and report failures or untested cases precisely.
