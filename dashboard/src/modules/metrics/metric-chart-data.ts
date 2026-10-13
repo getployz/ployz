@@ -17,16 +17,23 @@ export function onGrid(samples: readonly Sample[], window: TimeWindow): (number 
 
 const BYTE_UNITS = ["B", "KB", "MB", "GB", "TB"] as const;
 
-export function bytesText(bytes: number) {
-  let value = bytes;
+/** Formats every value in the unit `top` reads in, so one axis never mixes MB and GB. */
+export function bytesIn(top: number) {
   let unit = 0;
-  while (Math.abs(value) >= 1024 && unit < BYTE_UNITS.length - 1) {
-    value /= 1024;
-    unit += 1;
-  }
-  return `${Number(value.toFixed(Math.abs(value) < 10 && unit > 0 ? 1 : 0))} ${BYTE_UNITS[unit]}`;
+  while (Math.abs(top) >= 1024 ** (unit + 1) && unit < BYTE_UNITS.length - 1) unit += 1;
+  return (bytes: number) => {
+    const value = bytes / 1024 ** unit;
+    return `${Number(value.toFixed(Math.abs(value) < 10 && unit > 0 ? 1 : 0))} ${BYTE_UNITS[unit]}`;
+  };
 }
 
+export const bytesText = (bytes: number) => bytesIn(bytes)(bytes);
+
 export const rateText = (bytesPerSecond: number) => `${bytesText(bytesPerSecond)}/s`;
+
+export const rateIn = (top: number) => {
+  const bytes = bytesIn(top);
+  return (bytesPerSecond: number) => `${bytes(bytesPerSecond)}/s`;
+};
 
 export const cpuText = (vcpus: number) => String(Number(vcpus.toFixed(2)));

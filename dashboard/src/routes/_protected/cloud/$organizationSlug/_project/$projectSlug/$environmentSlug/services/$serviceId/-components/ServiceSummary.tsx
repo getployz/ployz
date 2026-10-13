@@ -16,7 +16,7 @@ const deployed = (changes: Map<string, ServiceSettingChange>, name: string, curr
   return change ? settingText(change.before) : current;
 };
 
-function useServiceStatus({ organizationSlug, service, rows, changes }: StoreService, namespace: string | null) {
+export function useServiceStatus({ organizationSlug, service, rows, changes }: StoreService, namespace: string | null) {
   const lens = useRuntimeLens(organizationSlug);
   const privateDns = deployed(changes, "privateDns", settingText(rows.get("privateDns")?.value) || service.private_dns);
   const { runtime } = useRuntimeService(namespace ? `${namespace}/${privateDns}` : "");

@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { areaY, crosshair, defineChart, dot, lineY, rect, ruleX, ruleY } from "@tanstack/charts";
+import { areaY, crosshair, defineChart, dot, lineY, rect, ruleY } from "@tanstack/charts";
 import { createChartCursor, cursorHost, type ChartCursorController } from "@tanstack/charts/cursor";
 import { decorative } from "@tanstack/charts/mark/decorative";
 import { Chart } from "@tanstack/charts/react/tooltip";
@@ -65,8 +65,11 @@ const MARKER_GLYPHS = {
   restart: "size-2 rounded-full border border-current bg-background",
 } as const satisfies Record<ChartMarker["kind"], string>;
 
+/** A time tick nearer an edge than this share of the plot runs into the y labels or past the card. */
+const EDGE = 0.06;
+
 export function MetricChart({
-  id, title, subtitle, value, times, series, format, limit, bands = [], gaps = [], markers = [], deploys, from, to, cursor,
+  id, title, subtitle, value, times, series, format, axisFormat, limit, bands = [], gaps = [], markers = [], deploys, from, to, cursor,
   incidentAt, renderTooltip, focusAt = [], dimmed = false, height = 120, empty = "No readings",
 }: {
   id: string;
@@ -76,6 +79,8 @@ export function MetricChart({
   times: readonly number[];
   series: readonly MetricSeries[];
   format: (value: number) => string;
+  /** The y labels' formatter for an axis that tops out at `top`, so every label reads in one unit. */
+  axisFormat?: (top: number) => (value: number) => string;
   limit?: ChartLimit | null;
   bands?: readonly TimeBand[];
   gaps?: readonly TimeSpan[];
@@ -103,6 +108,10 @@ export function MetricChart({
   const drawsAnything = peak > 0;
   const top = drawsAnything ? peak * 1.15 : 1;
   const plotHeight = height - MARGIN.top - MARGIN.bottom;
+  const span = Math.max(1, to - from);
+  const fraction = (time: number) => Math.min(1, Math.max(0, (time - from) / span));
+  const xTicks = scaleUtc().domain([new Date(from), new Date(to)]).ticks(4)
+    .filter((tickAt) => fraction(tickAt.getTime()) >= EDGE && fraction(tickAt.getTime()) <= 1 - EDGE);
   const definition = defineChart({
     marks: [
       decorative(rect(bands, { x1: (band) => new Date(band.from), x2: (band) => new Date(band.to), y1: () => 0, y2: () => top, fill: "var(--destructive)", fillOpacity: 0.12, inset: 0 })),
@@ -115,7 +124,6 @@ export function MetricChart({
         { x: "at", y: (row) => row.values[index] ?? null, r: 2, fill: line.color }))),
       lineY(focusRows, { x: "at", y: () => 0, strokeOpacity: 0, z: () => "focus" }),
       ...(limit ? [ruleY([limit.value], { stroke: "currentColor", strokeOpacity: 0.45, strokeDasharray: "4 4" })] : []),
-      ruleX(deploys.map((at) => new Date(at)), { stroke: "currentColor", strokeOpacity: 0.35, strokeDasharray: "2 3" }),
       crosshair({ y: false, stroke: "currentColor", strokeOpacity: 0.5, strokeDasharray: "3 3" }),
     ],
     gradients: series.map((line, index) => ({
@@ -125,11 +133,11 @@ export function MetricChart({
     clip: true,
     margin: MARGIN,
     scales: {
-      x: { scale: () => scaleUtc().domain([new Date(from), new Date(to)]), axis: { line: false, ticks: { count: 4, size: 0, format: (value: Date) => tick.format(value) } } },
+      x: { scale: () => scaleUtc().domain([new Date(from), new Date(to)]), axis: { line: false, ticks: { values: xTicks, size: 0, format: (value: Date) => tick.format(value) } } },
       y: {
         scale: () => scaleLinear().domain([0, top]),
         grid: { strokeOpacity: 0.12, strokeDasharray: "3 3" },
-        axis: { line: false, ticks: { count: 3, size: 0, format: drawsAnything ? format : () => "" } },
+        axis: { line: false, ticks: { count: 3, size: 0, format: drawsAnything ? axisFormat?.(top) ?? format : () => "" } },
       },
     },
     focus: "group-x",
@@ -139,7 +147,7 @@ export function MetricChart({
       portal,
       anchor: { x: "group-center", y: "plot-top" },
       placement: ["right", "left", "bottom"],
-      className: "metric-tooltip",
+      className: "metric-tooltip [--ts-chart-tooltip-background:var(--popover)] [--ts-chart-tooltip-color:var(--popover-foreground)]",
       formatGroup: (points) => {
         const row = points[0]?.datum;
         if (!row || !("values" in row)) return "";
@@ -151,8 +159,6 @@ export function MetricChart({
       },
     },
   });
-  const span = Math.max(1, to - from);
-  const fraction = (time: number) => Math.min(1, Math.max(0, (time - from) / span));
   const plotX = (part: number) => `calc(${MARGIN.left}px + ${part} * (100% - ${MARGIN.left + MARGIN.right}px))`;
   const shownGaps = gaps.filter((gap) => gap.to > from && gap.from < to);
   const blank = empty !== null && present.length === 0 && shownGaps.length === 0 && focusRows.length === 0;
@@ -183,7 +189,7 @@ export function MetricChart({
               </>
             );
           }}
-          className={cn("text-xs text-muted-foreground transition-opacity [--ts-chart-tooltip-background:var(--popover)] [--ts-chart-tooltip-color:var(--popover-foreground)]", dimmed && "opacity-50")} />
+          className={cn("text-xs text-muted-foreground transition-opacity", dimmed && "opacity-50")} />
         <div aria-hidden={markers.length === 0 || undefined} className="pointer-events-none absolute inset-0 text-xs text-muted-foreground">
           {shownGaps.map((gap) => {
             const width = fraction(gap.to) - fraction(gap.from);
@@ -197,6 +203,10 @@ export function MetricChart({
               </div>
             );
           })}
+          {deploys.filter((at) => at >= from && at <= to).map((at) => (
+            <div key={at} className="absolute border-l border-dashed border-current opacity-50"
+              style={{ left: plotX(fraction(at)), top: MARGIN.top, height: plotHeight }} />
+          ))}
           {blank ? (
             <div className="absolute flex items-center justify-center" style={{ left: MARGIN.left, right: MARGIN.right, top: MARGIN.top, height: plotHeight }}>
               {empty}
@@ -210,7 +220,7 @@ export function MetricChart({
           {markers.filter((marker) => marker.at >= from && marker.at <= to).map((marker) => (
             <span key={`${marker.kind}-${marker.at}-${marker.label}`} role="img" aria-label={marker.label} title={marker.label}
               className={cn("pointer-events-auto absolute -translate-x-1/2", MARKER_GLYPHS[marker.kind])}
-              style={{ left: plotX(fraction(marker.at)), top: MARGIN.top + plotHeight - 9 }} />
+              style={{ left: plotX(fraction(marker.at)), top: MARGIN.top + plotHeight - (marker.kind === "oom" ? 18 : 9) }} />
           ))}
         </div>
       </div>

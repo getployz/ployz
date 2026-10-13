@@ -17,8 +17,8 @@ import { admission } from "#/modules/config-store/store-deployments";
 import { useStoreDeployments } from "#/modules/config-store/store-view.queries";
 import { volumeStorageText } from "#/modules/config-store/store-volumes";
 import { useServerList } from "#/modules/machines/use-servers";
-import { bytesText, cpuText, onGrid, rateText } from "#/modules/metrics/metric-chart-data";
-import { mergeGaps, serviceMetrics, type Marker, type MetricAvailability, type ServerRef, type ServiceMetrics, type ServiceSeries } from "#/modules/metrics/metrics-model";
+import { bytesIn, bytesText, cpuText, onGrid, rateIn, rateText } from "#/modules/metrics/metric-chart-data";
+import { serviceMetrics, type Marker, type MetricAvailability, type ServerRef, type ServiceMetrics, type ServiceSeries } from "#/modules/metrics/metrics-model";
 import { serviceMetricsQueryOptions } from "#/modules/metrics/metrics.queries";
 import {
   causeText,
@@ -59,6 +59,8 @@ type MonitoringProps = {
   healthcheck: HealthcheckSetting;
   vcpuLimit: number | null;
   volume: VolumeListing | null;
+  /** How many Servers run the Service now. */
+  placedOn: number;
 };
 
 export function MonitoringTab(props: MonitoringProps) {
@@ -155,7 +157,7 @@ function UptimeMonitoring(props: ViewProps) {
   return <MonitoringView {...props} read={{ uptime: data, at: dataUpdatedAt }} />;
 }
 
-function MonitoringView({ organizationSlug, service, range: chosen, shown: range, healthcheck, vcpuLimit, volume, scope, toggle, read }: ViewProps & {
+function MonitoringView({ organizationSlug, service, range: chosen, shown: range, healthcheck, vcpuLimit, volume, placedOn, scope, toggle, read }: ViewProps & {
   read: { uptime: ServiceUptime | null; at: number } | null;
 }) {
   const uptime = read?.uptime ?? null;
@@ -226,7 +228,7 @@ function MonitoringView({ organizationSlug, service, range: chosen, shown: range
         <Suspense fallback={<ChartsSkeleton titles={uptime ? ["Response time", "CPU"] : ["CPU", "Memory"]} />}>
           <Charts organizationSlug={organizationSlug} scope={scope} service={service} range={zoom?.range ?? range}
             dimmed={range !== chosen} uptime={uptime} uptimeAt={read?.at ?? null} deployments={deployments}
-            vcpuLimit={vcpuLimit} volume={volume} onPick={setPicked} />
+            vcpuLimit={vcpuLimit} volume={volume} placedOn={placedOn} onPick={setPicked} />
         </Suspense>
       </CatchBoundary>
       <Popover open={picked !== null} onOpenChange={(next) => { if (!next) setPicked(null); }}>
@@ -266,10 +268,10 @@ type ChartLine = { readonly key: SeriesKey; readonly label: string; readonly col
 
 const RESOURCE_CHARTS = [
   { id: "cpu", title: "CPU", format: (vcpus: number) => `${cpuText(vcpus)} vCPU`, lines: [{ key: "cpu", label: "CPU", color: "var(--chart-1)" }] },
-  { id: "memory", title: "Memory", format: bytesText, lines: [{ key: "memory", label: "Memory", color: "var(--chart-4)" }] },
-  { id: "network", title: "Network", format: rateText, lines: [{ key: "netIn", label: "In", color: "var(--chart-2)" }, { key: "netOut", label: "Out", color: "var(--chart-1)" }] },
-  { id: "disk", title: "Disk", format: rateText, lines: [{ key: "diskRead", label: "Read", color: "var(--chart-3)" }, { key: "diskWrite", label: "Write", color: "var(--chart-5)" }] },
-] as const satisfies readonly { id: string; title: string; format: (value: number) => string; lines: readonly ChartLine[] }[];
+  { id: "memory", title: "Memory", format: bytesText, axisFormat: bytesIn, lines: [{ key: "memory", label: "Memory", color: "var(--chart-4)" }] },
+  { id: "network", title: "Network", format: rateText, axisFormat: rateIn, lines: [{ key: "netIn", label: "In", color: "var(--chart-2)" }, { key: "netOut", label: "Out", color: "var(--chart-1)" }] },
+  { id: "disk", title: "Disk", format: rateText, axisFormat: rateIn, lines: [{ key: "diskRead", label: "Read", color: "var(--chart-3)" }, { key: "diskWrite", label: "Write", color: "var(--chart-5)" }] },
+] as const satisfies readonly { id: string; title: string; format: (value: number) => string; axisFormat?: (top: number) => (value: number) => string; lines: readonly ChartLine[] }[];
 
 const MARKER_WORDS = {
   oom: () => "OOM",
@@ -281,7 +283,7 @@ const latestOf = (values: readonly (number | null)[]) => values.filter((value) =
 
 const sameRange = (left: UptimeRange, right: UptimeRange) => left.from === right.from && left.to === right.to;
 
-function Charts({ organizationSlug, scope, service, range, dimmed, uptime, uptimeAt, deployments, vcpuLimit, volume, onPick }: {
+function Charts({ organizationSlug, scope, service, range, dimmed, uptime, uptimeAt, deployments, vcpuLimit, volume, placedOn, onPick }: {
   organizationSlug: string;
   scope: UptimeScope;
   service: ServiceListing;
@@ -292,13 +294,16 @@ function Charts({ organizationSlug, scope, service, range, dimmed, uptime, uptim
   deployments: readonly DeploymentSummary[];
   vcpuLimit: number | null;
   volume: VolumeListing | null;
+  placedOn: number;
   onPick: (picked: Picked) => void;
 }) {
   const shown = useDeferredValue(range);
   const { data: read, dataUpdatedAt } = useSuspenseQuery(serviceMetricsQueryOptions({
     organizationSlug, environmentId: scope.environmentId, service: service.name, from: shown.from, to: shown.to,
   }));
-  const names = new Map(useServerList(organizationSlug).servers.map((row) => [row.machine.id, row.name]));
+  const serverList = useServerList(organizationSlug);
+  const names = new Map(serverList.servers.map((row) => [row.machine.id, row.name]));
+  const named = serverList.state !== "loading";
   const metrics = serviceMetrics(read, names);
   const cursor = useMetricCursor();
   const [split, setSplit] = useState(false);
@@ -311,7 +316,10 @@ function Charts({ organizationSlug, scope, service, range, dimmed, uptime, uptim
     const touched = deployment.services.length === 0 || deployment.services.includes(service.name);
     return deployment.status === "applied" && touched && ended !== undefined && ended >= window.from && ended < window.to ? [ended] : [];
   });
-  const markers = metrics.markers.map((marker): ChartMarker => ({ at: marker.at, kind: marker.kind, label: `${MARKER_WORDS[marker.kind](marker)} · ${marker.server.name}` }));
+  const markers = metrics.markers.map((marker): ChartMarker => {
+    const words = MARKER_WORDS[marker.kind](marker);
+    return { at: marker.at, kind: marker.kind, label: marker.server.name === null ? words : `${words} · ${marker.server.name}` };
+  });
   const frame = (incidents: readonly UptimeIncidentEntry[]): ChartFrame => ({
     times, deploys, markers, gaps: metrics.allGaps, from: window.from, to: window.to, cursor,
     bands: incidents.flatMap((incident) => {
@@ -327,8 +335,11 @@ function Charts({ organizationSlug, scope, service, range, dimmed, uptime, uptim
     },
   });
   const chart = frame(uptime?.incidents ?? []);
-  const perServer = split && metrics.byServer.length > 1;
-  const memoryLimit = latestOf(metrics.all.memoryLimit.map((sample) => sample.value));
+  const splittable = placedOn > 1 && metrics.byServer.length > 0;
+  const perServer = split && splittable;
+  const lastMemory = metrics.all.memory.at(-1);
+  const lastLimit = metrics.all.memoryLimit.at(-1);
+  const memoryLimit = lastMemory !== undefined && lastLimit?.at === lastMemory.at ? lastLimit.value : null;
   const limits = {
     cpu: vcpuLimit === null ? null : { value: vcpuLimit, label: `Limit ${cpuText(vcpuLimit)} vCPU` },
     memory: memoryLimit === null || memoryLimit <= 0 ? null : { value: memoryLimit, label: `Limit ${bytesText(memoryLimit)}` },
@@ -337,11 +348,10 @@ function Charts({ organizationSlug, scope, service, range, dimmed, uptime, uptim
   } satisfies Record<(typeof RESOURCE_CHARTS)[number]["id"], ChartLimit | null>;
   const lines = (chartLines: readonly ChartLine[]): MetricSeries[] => perServer
     ? metrics.byServer.flatMap((entry, index) => chartLines.map((line) => ({
-      label: chartLines.length > 1 ? `${entry.server.name} ${line.label.toLowerCase()}` : entry.server.name,
+      label: chartLines.length > 1 ? `${entry.server.name ?? "Server"} ${line.label.toLowerCase()}` : entry.server.name ?? "Server",
       color: line.color, dashed: index > 0, gaps: entry.gaps, values: onGrid(entry.series[line.key], window),
     })))
     : chartLines.map((line) => ({ label: line.label, color: line.color, values: onGrid(metrics.all[line.key], window) }));
-  const resourceGaps = perServer ? mergeGaps(metrics.byServer.flatMap((entry) => entry.gaps)) : metrics.allGaps;
   const isDimmed = dimmed || !sameRange(shown, range);
   return (
     <div className={cn("flex flex-col gap-3", isDimmed && "opacity-60")}>
@@ -354,8 +364,8 @@ function Charts({ organizationSlug, scope, service, range, dimmed, uptime, uptim
           </Suspense>
         </CatchBoundary>
       ) : null}
-      <AvailabilityLine organizationSlug={organizationSlug} availability={metrics.availability}
-        toggle={metrics.byServer.length > 1 ? (
+      <AvailabilityLine organizationSlug={organizationSlug} availability={named ? metrics.availability : { type: "normal" }}
+        toggle={splittable ? (
           <ToggleGroup variant="outline" size="sm" spacing={0} value={[perServer ? "server" : "all"]}
             onValueChange={([next]) => { if (next === "all" || next === "server") setSplit(next === "server"); }}>
             <ToggleGroupItem value="all">All</ToggleGroupItem>
@@ -365,7 +375,7 @@ function Charts({ organizationSlug, scope, service, range, dimmed, uptime, uptim
       {metrics.availability.type === "needs_upgrade" || metrics.availability.type === "offline"
         ? <MetricsUnavailable organizationSlug={organizationSlug} availability={metrics.availability} />
         : RESOURCE_CHARTS.map((resource) => (
-          <MetricChart key={resource.id} id={resource.id} title={resource.title} format={resource.format} {...chart} gaps={resourceGaps}
+          <MetricChart key={resource.id} id={resource.id} title={resource.title} format={resource.format} axisFormat={"axisFormat" in resource ? resource.axisFormat : undefined} {...chart}
             value={valueText(resource.lines, metrics, window, resource.format)} series={lines(resource.lines)}
             limit={perServer ? null : limits[resource.id]} />
         ))}
@@ -395,8 +405,8 @@ const LINK_CLASS = "underline underline-offset-4";
 function ServersText({ organizationSlug, servers }: { organizationSlug: string; servers: readonly ServerRef[] }) {
   const [only] = servers;
   if (only === undefined) return null;
-  if (servers.length > 1) {
-    return <Link to="/cloud/$organizationSlug/~/servers" params={{ organizationSlug }} className={LINK_CLASS}>{servers.length} servers</Link>;
+  if (servers.length > 1 || only.name === null) {
+    return <Link to="/cloud/$organizationSlug/~/servers" params={{ organizationSlug }} className={LINK_CLASS}>{servers.length > 1 ? `${servers.length} servers` : "A server"}</Link>;
   }
   return <Link to="/cloud/$organizationSlug/~/servers/$serverId" params={{ organizationSlug, serverId: only.id }} className={LINK_CLASS}>{only.name}</Link>;
 }
@@ -427,13 +437,14 @@ function MetricsUnavailable({ organizationSlug, availability }: {
   availability: Extract<MetricAvailability, { type: "needs_upgrade" | "offline" }>;
 }) {
   const servers = availability.type === "needs_upgrade" ? availability.servers : [];
-  const [only] = servers;
+  const only = servers.length === 1 && servers[0]?.name != null ? { id: servers[0].id, name: servers[0].name } : null;
   const title = availability.type === "offline" ? "Your servers are offline"
-    : only !== undefined && servers.length === 1 ? `Upgrade ${only.name} to see its metrics`
+    : only !== null ? `Upgrade ${only.name} to see its metrics`
+    : servers.length === 1 ? "Upgrade a server to see its metrics"
     : `Upgrade ${servers.length} servers to see their metrics`;
   const link = availability.type === "offline"
     ? <Link to="/cloud/$organizationSlug/~/servers" params={{ organizationSlug }} className={LINK_CLASS}>Check your servers</Link>
-    : only !== undefined && servers.length === 1
+    : only !== null
       ? <Link to="/cloud/$organizationSlug/~/servers/$serverId" params={{ organizationSlug, serverId: only.id }} className={LINK_CLASS}>Open {only.name}</Link>
       : <Link to="/cloud/$organizationSlug/~/servers" params={{ organizationSlug }} className={LINK_CLASS}>Open Servers</Link>;
   return (

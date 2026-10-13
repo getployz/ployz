@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bytesText, cpuText, onGrid, rateText } from "./metric-chart-data";
+import { bytesIn, bytesText, cpuText, onGrid, rateIn, rateText } from "./metric-chart-data";
 
 const MINUTE = 60_000;
 
@@ -27,6 +27,11 @@ describe("formatters", () => {
     expect([0, 812, 1536, 318 * 1024 * 1024, 1.4 * 1024 ** 3, 2 * 1024 ** 3].map(bytesText))
       .toEqual(["0 B", "812 B", "1.5 KB", "318 MB", "1.4 GB", "2 GB"]);
     expect(rateText(885 * 1024)).toBe("885 KB/s");
+  });
+
+  it("says every tick on an axis in the unit of its top", () => {
+    expect([0, 500e6, 1e9].map(bytesIn(1.15 * 1024 ** 3))).toEqual(["0 GB", "0.5 GB", "0.9 GB"]);
+    expect([0, 512 * 1024, 2 * 1024 ** 2].map(rateIn(2.3 * 1024 ** 2))).toEqual(["0 MB/s", "0.5 MB/s", "2 MB/s"]);
   });
 
   it("says vCPUs to two decimals", () => {

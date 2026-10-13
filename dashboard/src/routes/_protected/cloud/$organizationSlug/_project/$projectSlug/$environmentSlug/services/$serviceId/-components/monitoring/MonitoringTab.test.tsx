@@ -50,18 +50,20 @@ const metrics = (history: Partial<MetricHistory> = {}): MetricRead => ({
 const range = { from: "1h", to: "now" };
 const store = { project: "shop", environment: "production" };
 
-async function open({ shown = uptime(), change, checker = true, read = metrics() }: {
+async function open({ shown = uptime(), change, checker = true, read = metrics(), placedOn = 1, listed = "ready" }: {
   shown?: ServiceUptime | null;
   change?: ServiceSettingChange;
   checker?: boolean;
   read?: MetricRead;
+  placedOn?: number;
+  listed?: "ready" | "loading";
 } = {}) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
   const scope = { queryClient, sessionId: "session", userId: "user" };
   vi.spyOn(scopes, "useCollectionScope").mockReturnValue(scope);
   vi.spyOn(servers, "useServerList").mockReturnValue({
-    state: "ready",
-    servers: [{ machine: { id: WEB_1 }, name: "web-1" }, { machine: { id: WEB_2 }, name: "web-2" }],
+    state: listed,
+    servers: listed === "loading" ? [] : [{ machine: { id: WEB_1 }, name: "web-1" }, { machine: { id: WEB_2 }, name: "web-2" }],
   } as never);
   queryClient.setQueryData(["uptime", "env", "api", range.from, range.to], shown, { updatedAt: now });
   queryClient.setQueryData(["metrics", "env", "api", range.from, range.to], read, { updatedAt: now });
@@ -78,7 +80,7 @@ async function open({ shown = uptime(), change, checker = true, read = metrics()
     loader: () => ({ environmentId: "env", store }),
     component: () => (
       <MonitoringTab organizationSlug="acme" checksUptime={checker} service={{ id: "api", name: "api" } as ServiceListing} range={range}
-        onRange={() => {}} vcpuLimit={null} volume={null} healthcheck={{ value: { path: "/health", timeoutSeconds: 30 }, change, set }} />
+        onRange={() => {}} vcpuLimit={null} volume={null} placedOn={placedOn} healthcheck={{ value: { path: "/health", timeoutSeconds: 30 }, change, set }} />
     ),
   });
   const router = createRouter({
@@ -181,21 +183,68 @@ it("keeps the charts and names a Server that needs an upgrade or didn't answer w
   expect(screen.getByText(/didn’t answer/).textContent).toBe("web-2 didn’t answer.");
 });
 
-it("offers All and By server only when more than one Server answered", async () => {
-  await open({ checker: false, read: metrics({ points: sampled, machines: [answered(WEB_1)], unanswered: [refused(WEB_2)] }) });
+const WEB_3 = "c".repeat(32) as MachineId;
+
+it("names neither the Server nor its id when the list doesn't name it, and says nothing until the list loads", async () => {
+  const read = metrics({ points: sampled, machines: [answered(WEB_1)], unanswered: [silent(WEB_3)] });
+  await open({ checker: false, read });
+  expect(screen.getByText(/didn’t answer/).textContent).toBe("A server didn’t answer.");
+  expect(document.body.textContent).not.toContain(WEB_3);
+
+  cleanup();
+  await open({ checker: false, read, listed: "loading" });
+  expect(screen.queryByText(/didn’t answer/)).toBeNull();
+  expect(document.body.textContent).not.toContain(WEB_3);
+});
+
+it("asks to upgrade a server, not an id, when the list doesn't name the only one", async () => {
+  await open({ checker: false, read: metrics({ unanswered: [refused(WEB_3)] }) });
+  expect(charts()).toEqual(["Upgrade a server to see its metrics"]);
+  expect(screen.getByRole("link", { name: "Open Servers" }).getAttribute("href")).toBe("/cloud/acme/~/servers");
+});
+
+it("offers All and By server when the Service runs on several Servers and one answered", async () => {
+  const oneAnswered = metrics({ points: sampled, machines: [answered(WEB_1)], unanswered: [refused(WEB_2)] });
+  await open({ checker: false, read: oneAnswered, placedOn: 2 });
+  expect(screen.getByRole("button", { name: "By server" })).toBeDefined();
+
+  cleanup();
+  await open({ checker: false, read: oneAnswered, placedOn: 1 });
   expect(screen.queryByRole("button", { name: "By server" })).toBeNull();
 
   cleanup();
-  await open({ checker: false, read: metrics({ points: sampled, machines: [answered(WEB_1), answered(WEB_2)] }) });
-  expect(screen.getByRole("button", { name: "By server" })).toBeDefined();
+  await open({ checker: false, read: metrics({ unanswered: [silent(WEB_1), silent(WEB_2)] }), placedOn: 2 });
+  expect(screen.queryByRole("button", { name: "By server" })).toBeNull();
 });
 
-it("hatches a silent Server's own gap in By server, where All still has the other Server's line", async () => {
+const gapped = (machine_id: MachineId, gap: { from: number; to: number; reason: "not_sampled" }) =>
+  ({ machine_id, value: { points: sampled, step_nanos: nanos(60_000), gaps: [gap] } });
+
+it("hatches only where no Server has data, in All and By server alike", async () => {
   const gap = { from: nanos(now - 3_000_000), to: nanos(now - 600_000), reason: "not_sampled" as const };
-  const quiet = { machine_id: WEB_2, value: { points: sampled, step_nanos: nanos(60_000), gaps: [gap] } };
-  await open({ checker: false, read: metrics({ points: sampled, machines: [answered(WEB_1), quiet] }) });
+  await open({ checker: false, read: metrics({ points: sampled, machines: [answered(WEB_1), gapped(WEB_2, gap)] }), placedOn: 2 });
+  expect(screen.queryAllByText("Not measured")).toHaveLength(0);
+  fireEvent.click(screen.getByRole("button", { name: "By server" }));
   expect(screen.queryAllByText("Not measured")).toHaveLength(0);
 
+  cleanup();
+  await open({ checker: false, read: metrics({ points: sampled, machines: [gapped(WEB_1, gap), gapped(WEB_2, gap)] }), placedOn: 2 });
+  expect(screen.getAllByText("Not measured")).toHaveLength(4);
   fireEvent.click(screen.getByRole("button", { name: "By server" }));
   expect(screen.getAllByText("Not measured")).toHaveLength(4);
+});
+
+it("shows the memory limit only when the newest memory reading carries it", async () => {
+  const GIB = 1024 ** 3;
+  const memory = (points: { ts: number; mem_bytes: number; mem_limit?: number }[]) =>
+    metrics({ points: { service: points }, machines: [{ machine_id: WEB_1, value: { points: { service: points }, step_nanos: nanos(60_000), gaps: [] } }] });
+  await open({ checker: false, read: memory([
+    { ts: nanos(now - 1_200_000), mem_bytes: GIB / 2, mem_limit: GIB },
+    { ts: nanos(now - 60_000), mem_bytes: GIB / 2 },
+  ]) });
+  expect(screen.queryByText(/^Limit/)).toBeNull();
+
+  cleanup();
+  await open({ checker: false, read: memory([{ ts: nanos(now - 60_000), mem_bytes: GIB / 2, mem_limit: GIB }]) });
+  expect(screen.getByText("Limit 1 GB")).toBeDefined();
 });

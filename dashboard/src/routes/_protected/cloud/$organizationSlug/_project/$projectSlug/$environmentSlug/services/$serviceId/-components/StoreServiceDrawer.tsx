@@ -1,5 +1,5 @@
 import { StoreRefused } from "#/modules/config-store/store.contract";
-import { Suspense, useState, type ReactNode } from "react";
+import { Suspense, useState, type ComponentProps, type ReactNode } from "react";
 import { Link, useLoaderData, useNavigate, useSearch } from "@tanstack/react-router";
 import { Schema } from "effect";
 import { PackageIcon, PencilIcon, PlusIcon, Trash2Icon, XIcon } from "lucide-react";
@@ -40,7 +40,7 @@ import { SERVICE_SETTINGS_SECTIONS, type ServiceSettingsSectionId } from "./serv
 import { useRemoveStoreService } from "./useDeleteService";
 import { StoreServiceVariablesTab } from "./ServiceVariablesTab";
 import { StoreNetworkingSection } from "./StoreNetworkingSection";
-import { HealthcheckFailing, ServiceSummary } from "./ServiceSummary";
+import { HealthcheckFailing, ServiceSummary, useServiceStatus } from "./ServiceSummary";
 import { ContainerLogs } from "#/components/container-logs";
 import { Skeleton } from "#/components/ui/skeleton";
 import { ItemGroup } from "#/components/ui/item";
@@ -231,7 +231,7 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
           <TabsContent value="monitoring" className="mt-3 min-h-0 flex-1 overflow-clip">
             <div className="h-full overflow-y-auto pr-1 pb-8">
               <div className="mx-auto w-full max-w-2xl">
-                <MonitoringTab organizationSlug={organizationSlug} checksUptime={uptimeEnabled} service={service} range={range}
+                <ServiceMonitoring state={state} namespace={namespace} organizationSlug={organizationSlug} checksUptime={uptimeEnabled} service={service} range={range}
                   vcpuLimit={vcpuLimit} volume={managedVolume}
                   onRange={(next) => {
                     const fallback = next.from === DEFAULT_RANGE.from && next.to === DEFAULT_RANGE.to;
@@ -298,6 +298,12 @@ const OPTION_HELP = new Map([
   ["on-failure", "Restart when it exits with an error, up to Max retries."],
   ["no", "Never restart."],
 ]);
+
+/** The Monitoring tab, told how many Servers run the Service now. */
+function ServiceMonitoring({ state, namespace, ...props }: Omit<ComponentProps<typeof MonitoringTab>, "placedOn"> & { state: StoreService; namespace: string | null }) {
+  const { runtime } = useServiceStatus(state, namespace);
+  return <MonitoringTab {...props} placedOn={new Set(runtime?.containers.map((container) => container.machineId)).size} />;
+}
 
 /** A Deployment Policy value as text; null when unset. */
 const policyText = (value: JsonValue | undefined) => value === null || value === undefined ? null : String(value);
