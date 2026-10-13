@@ -16,6 +16,7 @@ The exit is nonzero on any FAIL.
 """
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import os
@@ -1209,6 +1210,10 @@ def setup(vc, volumes):
     two = B in vc.machines
     if two:
         vc.cli("server", "set", B, "--accepts-services=false", required=True)
+        pull = ThreadPoolExecutor(1).submit(
+            vc.sh, B, f"/usr/bin/docker pull -q {IMAGE}; /usr/bin/docker volume create -d ployz -o size=1g warm-move-seed && "
+                      "for i in $(seq 10); do /usr/bin/docker volume rm warm-move-seed && exit 0; sleep 1; done; exit 1",
+            timeout=900)
     vc.cli("project", "new", "verify", required=True)
     vc.cli("link", "--project", "verify", required=True)
     by_env = {}
@@ -1229,9 +1234,7 @@ def setup(vc, volumes):
             vc.cli("deploy", *env_flag(env), timeout=1500, required=True)
     if two:
         vc.cli("server", "set", B, "--accepts-services=true", required=True)
-        vc.sh(B, f"/usr/bin/docker pull -q {IMAGE}; /usr/bin/docker volume create -d ployz -o size=1g warm-move-seed && "
-                 "for i in $(seq 10); do /usr/bin/docker volume rm warm-move-seed && exit 0; sleep 1; done; exit 1",
-              timeout=900)
+        pull.result()
     for volume, env in volumes:
         phys = vc.physical(volume, env)
         if not vc.ready(A, phys, limit=300):
