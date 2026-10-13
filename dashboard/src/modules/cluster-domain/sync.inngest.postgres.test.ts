@@ -212,7 +212,12 @@ describe("sync-cluster-domain", () => {
     expect(output.result).toMatchObject({ observed: true, recordsPut: true });
     expect(hostedDns.requests[0]).toMatchObject({ body: { a: ["203.0.113.1"], aaaa: [] } });
     expect(await row()).toMatchObject({
-      traffic: { kind: "probed", unreachable: [{ machineId: idOf("c"), address: "203.0.113.3" }], taken: [] },
+      traffic: {
+        kind: "probed",
+        reachable: [{ machineId: idOf("a"), address: "203.0.113.1" }],
+        unreachable: [{ machineId: idOf("c"), address: "203.0.113.3" }],
+        taken: [],
+      },
     });
   });
 

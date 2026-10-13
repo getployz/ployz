@@ -58,4 +58,18 @@ describe("ClusterDomainSection", () => {
     expect(screen.getByText("Something else answers on port 80 of 203.0.113.1. Free the port for Ployz.")).toBeTruthy();
     expect(screen.getByText("Check again")).toBeTruthy();
   });
+
+  it("stays ready when one Server answers, and names the ones traffic skips", () => {
+    const degraded = { ...ready, traffic: {
+      kind: "probed",
+      reachable: [{ machineId: "a", address: "203.0.113.1" }],
+      unreachable: [{ machineId: "b", address: "203.0.113.2" }],
+      taken: [{ machineId: "c", address: "203.0.113.3" }],
+    } } as Omit<ClusterDomainRow, "id">;
+    render(<ClusterDomainSection organizationSlug="acme" domain={degraded} onCheck={vi.fn()} />);
+
+    expect(screen.getByText("Ready")).toBeTruthy();
+    expect(screen.getByText("Port 80 closed on 203.0.113.2. Port 80 taken on 203.0.113.3.")).toBeTruthy();
+    expect(screen.getByText("Check again")).toBeTruthy();
+  });
 });

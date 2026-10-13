@@ -29,12 +29,13 @@ const nothing: ConfigDomainEvidence = { cluster_domain: null, certificates: null
 /** The Cluster Domain as the Store reads it: its name and what the last sync found. */
 function clusterDomain(row: OrganizationClusterDomain | null): ConfigDomainEvidence["cluster_domain"] {
   if (row === null) return null;
-  const status = clusterDomainStatus(row, new Date());
-  const seen: StoreClusterDomainStatus = status.kind !== "attention"
-    ? { kind: status.kind }
-    : status.reason === "port_80" || status.reason === "port_80_taken"
-    ? { kind: status.reason, addresses: [...status.addresses] }
-    : { kind: status.reason };
+  // A Server left out while others carry traffic is the Cluster Domain section's to show, not every Domain's.
+  const { state } = clusterDomainStatus(row, new Date());
+  const seen: StoreClusterDomainStatus = state.kind !== "attention"
+    ? { kind: state.kind }
+    : state.reason === "port_80" || state.reason === "port_80_taken"
+    ? { kind: state.reason, addresses: [...state.addresses] }
+    : { kind: state.reason };
   return { name: row.name, status: seen };
 }
 

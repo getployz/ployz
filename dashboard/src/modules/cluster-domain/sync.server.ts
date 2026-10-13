@@ -42,12 +42,12 @@ export class ClusterDomainUnusable extends Data.TaggedError("ClusterDomainUnusab
 
 /**
  * What the sync found about the ingress Servers: the stored `ClusterDomainTraffic`, plus `unknown`
- * (a paired Cluster could not be reached or its frame could not be read) and the reachable Servers.
+ * (a paired Cluster could not be reached or its frame could not be read).
  */
 export type IngressProbe =
   | { kind: "unknown" }
   | Exclude<ClusterDomainTraffic, { kind: "probed" }>
-  | { kind: "probed"; reachable: IngressServerAddress[]; unreachable: IngressServerAddress[]; taken: IngressServerAddress[] };
+  | Required<Extract<ClusterDomainTraffic, { kind: "probed" }>>;
 
 /** Publishes Certificate Material to the Organization's Cluster. False when no Cluster is connected. */
 const publishToCluster = Effect.fn("ClusterDomain.publishToCluster")(function* (
@@ -103,19 +103,6 @@ export const probeIngressServers = Effect.fn("ClusterDomain.probeIngressServers"
   Effect.logWarning("No runtime frame for the Cluster Domain sync; records stay as published.", error)
     .pipe(Effect.as({ kind: "unknown" } as const))));
 
-/** What a probe leaves on the row. */
-function storedTraffic(probe: IngressProbe): ClusterDomainTraffic | null {
-  switch (probe.kind) {
-    case "unknown":
-      return null;
-    case "probed":
-      return { kind: "probed", unreachable: probe.unreachable, taken: probe.taken };
-    case "no_servers":
-    case "no_public_ip":
-      return probe;
-  }
-}
-
 /** Records what the probe found and when. An unknown probe clears the finding: an offline Cluster reads as ready. */
 export const recordClusterDomainCheck = Effect.fn("ClusterDomain.recordCheck")(function* (
   organizationId: string,
@@ -124,7 +111,7 @@ export const recordClusterDomainCheck = Effect.fn("ClusterDomain.recordCheck")(f
   const { drizzle } = yield* Database;
   const now = new Date();
   yield* drizzle.update(organizationClusterDomain).set({
-    traffic: storedTraffic(probe),
+    traffic: probe.kind === "unknown" ? null : probe,
     checkedAt: now,
     updatedAt: now,
   }).where(eq(organizationClusterDomain.organizationId, organizationId));
