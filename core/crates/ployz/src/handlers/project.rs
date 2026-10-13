@@ -174,7 +174,8 @@ fn rm(root: &ArgMatches) -> Result<(), Error> {
             "Project {name} and its Environments ({})",
             super::joined(&environments)
         ));
-    })
+    })?;
+    removed.ended(matches)
 }
 
 /// Refuse an unconfirmed `project rm`, naming every Environment with what goes

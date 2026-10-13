@@ -92,7 +92,7 @@ pub(super) fn following_args(matches: &ArgMatches) -> Vec<&str> {
 }
 
 /// How often `deploy` reads a Deployment Cloud runs while following it.
-const FOLLOW_POLL: Duration = Duration::from_secs(1);
+pub(super) const FOLLOW_POLL: Duration = Duration::from_secs(1);
 /// How long a followed Deployment may sit queued before the follow says why it waits.
 const UNCLAIMED: Duration = Duration::from_secs(30);
 

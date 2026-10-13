@@ -86,8 +86,10 @@ pub(super) fn with_accepted(accept: &[VolumeName]) -> Vec<&str> {
 /// `--expect-version` binds the review its refusal handed back. Then run each
 /// removal Deployment it admitted. In process, this CLI also moves the removal on
 /// (sweep, admit what is due, run it) until the Store deleted the target; over
-/// HTTPS, Cloud carries on after the first ones. `None` once a removal Deployment
-/// that didn't apply was reported (running the command again finishes it).
+/// HTTPS, Cloud carries on after the first ones and this waits until it deleted the
+/// target, or stops at once when a Server didn't answer the review. `None` once a
+/// removal Deployment that didn't apply was reported (running the command again
+/// finishes it).
 pub(super) fn remove(
     matches: &ArgMatches,
     store: &Store,
@@ -174,7 +176,16 @@ pub(super) fn remove(
                     .map(std::io::BufWriter::new);
                 let deploy::Shipped {
                     view, ran: outcome, ..
-                } = deploy::execute(matches, store, &deployment, None, writer)?;
+                } = match deploy::execute(matches, store, &deployment, None, writer) {
+                    Err(error) if swept(&error, || gone(store, project, environment)) => {
+                        let residuals = residuals(&ran, &names);
+                        return Ok(Some((
+                            Removal::Removed { residuals },
+                            std::mem::take(&mut ran),
+                        )));
+                    }
+                    shipped => shipped?,
+                };
                 if view.deployment.status != DeploymentStatus::Applied {
                     let reported = unfinished(matches, &view, &ran, outcome, &again);
                     ran.clear();
@@ -184,23 +195,32 @@ pub(super) fn remove(
                 ran.push(view.deployment);
             }
             if store.local().is_none() {
+                if matches.get_flag("detach") {
+                    return Ok(Some((
+                        Removal::Removing { left, waiting_on },
+                        std::mem::take(&mut ran),
+                    )));
+                }
+                // The review is the only word on `waiting_on`, and it skips an
+                // Environment once its removal applied, so it stays the freshest.
+                if waiting_on.is_empty() {
+                    swept_by_cloud(store, project, environment)?;
+                } else if !gone(store, project, environment)? {
+                    let left = applied(left, &ran);
+                    return Ok(Some((
+                        Removal::Removing { left, waiting_on },
+                        std::mem::take(&mut ran),
+                    )));
+                }
+                let residuals = residuals(&ran, &names);
                 return Ok(Some((
-                    Removal::Removing { left, waiting_on },
+                    Removal::Removed { residuals },
                     std::mem::take(&mut ran),
                 )));
             }
             store.sweep().map_err(|error| store.fail(error))?;
             if gone(store, project, environment)? {
-                let residuals = ran
-                    .iter()
-                    .filter(|deployment| left_on_old_servers(deployment))
-                    .filter_map(|deployment| {
-                        Some(Residual {
-                            environment: names.get(&deployment.environment_id)?.clone(),
-                            services: deployment.services.clone(),
-                        })
-                    })
-                    .collect();
+                let residuals = residuals(&ran, &names);
                 return Ok(Some((
                     Removal::Removed { residuals },
                     std::mem::take(&mut ran),
@@ -292,7 +312,84 @@ impl Removed {
             }
         }
     }
+
+    /// Exit 3 when Cloud is still removing it, unless `--detach` asked not to wait.
+    pub(super) fn ended(&self, matches: &ArgMatches) -> Result<(), Error> {
+        match (&self.removal, matches.get_flag("detach")) {
+            (Removal::Removing { .. }, false) => Err(Error::partial()),
+            _ => Ok(()),
+        }
+    }
 }
+
+/// What the removal Deployments `ran` left on old servers, by Environment name.
+fn residuals(
+    ran: &[DeploymentSummary],
+    names: &BTreeMap<EnvironmentId, EnvironmentName>,
+) -> Vec<Residual> {
+    ran.iter()
+        .filter(|deployment| left_on_old_servers(deployment))
+        .filter_map(|deployment| {
+            Some(Residual {
+                environment: names.get(&deployment.environment_id)?.clone(),
+                services: deployment.services.clone(),
+            })
+        })
+        .collect()
+}
+
+/// `left` with each admitted Deployment as it ended in `ran`.
+fn applied(mut left: Vec<Left>, ran: &[DeploymentSummary]) -> Vec<Left> {
+    for left in &mut left {
+        let Some(admitted) = left.deployment.as_mut() else {
+            continue;
+        };
+        if let Some(ended) = ran.iter().find(|ended| ended.id == admitted.id) {
+            admitted.clone_from(ended);
+        }
+    }
+    left
+}
+
+/// Whether following a removal Deployment failed only because Cloud already swept
+/// it with its Environment: the Deployment is `not_found` and the target is `gone`.
+fn swept(error: &Error, gone: impl FnOnce() -> Result<bool, Error>) -> bool {
+    error.report().code == RpcErrorCode::NotFound && matches!(gone(), Ok(true))
+}
+
+/// Wait until Cloud deleted the target once its removal Deployments applied: it
+/// sweeps after other cleanup, with no deadline.
+fn swept_by_cloud(
+    store: &Store,
+    project: &ProjectName,
+    environment: Option<&EnvironmentName>,
+) -> Result<(), Error> {
+    let signal = crate::cancellation::interrupted()?;
+    let runtime = super::runtime()?;
+    let mut slow = Some(std::time::Instant::now() + SLOW);
+    while !gone(store, project, environment)? {
+        if slow.is_some_and(|after| std::time::Instant::now() >= after) {
+            slow = None;
+            ui::note(format_args!(
+                "Cloud is still removing {}",
+                target(project, environment)
+            ));
+        }
+        runtime.block_on(async {
+            tokio::select! {
+                () = signal.cancelled() => {},
+                () = tokio::time::sleep(deploy::FOLLOW_POLL) => {},
+            }
+        });
+        if signal.is_cancelled() {
+            return Err(Error::cancelled());
+        }
+    }
+    Ok(())
+}
+
+/// How long `swept_by_cloud` waits before saying Cloud is still at it.
+const SLOW: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// What goes before an Environment of `project` the Store won't remove alone: its
 /// first Branch, or for a Default Environment another Default.
@@ -330,12 +427,17 @@ fn gone(
     Ok(environment.is_some_and(|name| !listing.environments.contains(name)))
 }
 
-/// A removal nothing more of can come off now.
-fn stalled(project: &ProjectName, environment: Option<&EnvironmentName>, left: &[Left]) -> Error {
-    let target = match environment {
+/// `PROJECT/ENV`, or the Project alone when the whole Project goes.
+fn target(project: &ProjectName, environment: Option<&EnvironmentName>) -> String {
+    match environment {
         Some(name) => format!("{project}/{name}"),
         None => project.to_string(),
-    };
+    }
+}
+
+/// A removal nothing more of can come off now.
+fn stalled(project: &ProjectName, environment: Option<&EnvironmentName>, left: &[Left]) -> Error {
+    let target = target(project, environment);
     let why = left
         .iter()
         .find_map(|left| {
@@ -440,5 +542,21 @@ impl Inventory {
         .filter(|(_, names)| !names.is_empty())
         .map(|(kind, names)| Tree::leaf(format!("{kind}: {names}")))
         .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_missing_deployment_is_swept_only_once_its_target_is_gone() {
+        let missing = || Error::not_found("No Deployment d1.");
+        assert!(swept(&missing(), || Ok(true)));
+        assert!(!swept(&missing(), || Ok(false)));
+        assert!(!swept(&missing(), || Err(Error::unavailable(
+            "Cloud is down."
+        ))));
+        assert!(!swept(&Error::unavailable("Cloud is down."), || Ok(true)));
     }
 }
