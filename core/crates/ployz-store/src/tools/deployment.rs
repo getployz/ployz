@@ -1,4 +1,5 @@
-//! Tools on Deployments: follow one to its end, cancel one.
+//! Tools on Deployments: list them, follow one to its end, retry, start or
+//! cancel one.
 
 use std::collections::BTreeMap;
 
@@ -10,11 +11,15 @@ use serde_json::{Value, json};
 use super::machine::{Cx, Stop, Tool, at, store};
 use super::refusal::{Call, Refusal};
 use super::release::place;
+use super::step::RequestKey;
 use crate::catalog::NODE_NAME;
 use crate::{
-    Cancel, DeployedNode, DeploymentView, DeploymentsQuery, EnvironmentName, EnvironmentRef,
-    NodeOutcome, NumberedDeploymentQuery, Outcome, ProjectName, RowState,
+    Admit, Cancel, DeployedNode, DeploymentSummary, DeploymentView, DeploymentsQuery,
+    EnvironmentName, EnvironmentRef, NodeOutcome, NumberedDeploymentQuery, Outcome, ProjectName,
+    Retry, RowState, Start,
 };
+
+const REQUEST_KEY: &str = "^[A-Za-z0-9_-]{8,64}$";
 
 /// The Deployment `number` names, or the latest when it names none.
 fn find(
@@ -129,10 +134,8 @@ fn diagnose(view: &DeploymentView, call: &Call) -> Option<[Call; 2]> {
     ])
 }
 
-fn show(view: &DeploymentView) -> Value {
-    let deployment = &view.deployment;
+fn summary(deployment: &DeploymentSummary) -> Value {
     json!({
-        "at": at(&view.environment),
         "deployment": deployment.number,
         "status": deployment.status,
         "in_flight": deployment.in_flight,
@@ -141,8 +144,82 @@ fn show(view: &DeploymentView) -> Value {
         "saved_revision": deployment.saved.0,
         "started_at": deployment.started_at,
         "ended_at": deployment.ended_at,
-        "nodes": view.nodes.iter().map(node).collect::<Vec<_>>(),
     })
+}
+
+fn show(view: &DeploymentView) -> Value {
+    let mut shown = summary(&view.deployment);
+    if let Value::Object(object) = &mut shown {
+        object.insert("at".into(), json!(at(&view.environment)));
+        object.insert(
+            "nodes".into(),
+            json!(view.nodes.iter().map(node).collect::<Vec<_>>()),
+        );
+    }
+    shown
+}
+
+/// `deployment_show` waiting on Deployment `number`, in the place `call` named.
+fn follow(call: &Call, number: u64) -> Call {
+    let mut input = place(call);
+    input.insert("deployment".into(), number.into());
+    input.insert("wait_seconds".into(), 120.into());
+    Call::new("deployment_show", Value::Object(input))
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DeploymentList {
+    #[serde(default)]
+    #[schemars(range(min = 1, max = 100))]
+    limit: Option<usize>,
+    #[serde(default)]
+    cursor: Option<String>,
+    /// Project name. Omit for the one you are in.
+    #[serde(default)]
+    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
+    project: Option<ProjectName>,
+    /// Environment name, e.g. staging. Omit for the one you are in.
+    #[serde(default)]
+    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
+    environment: Option<EnvironmentName>,
+}
+
+impl Tool for DeploymentList {
+    const NAME: &'static str = "deployment_list";
+    const DESCRIPTION: &'static str =
+        "An Environment's Deployments, newest first, with each one's status.";
+    const READ_ONLY: bool = true;
+
+    fn example() -> Value {
+        json!({ "environment": "staging", "limit": 10 })
+    }
+
+    fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
+        let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
+        let page = cx.one(&DeploymentsQuery {
+            environment: scope,
+            limit: self.limit,
+            cursor: self.cursor,
+        })?;
+        let mut listed = json!({
+            "at": at(&page.environment),
+            "deployments": page.deployments.iter().map(summary).collect::<Vec<_>>(),
+            "next_cursor": page.next_cursor,
+        });
+        if let (Some(cursor), Value::Object(object)) = (&page.next_cursor, &mut listed) {
+            let mut input = place(cx.call());
+            input.insert("cursor".into(), cursor.as_str().into());
+            if let Some(limit) = self.limit {
+                input.insert("limit".into(), limit.into());
+            }
+            object.insert(
+                "next".into(),
+                json!([Call::new(Self::NAME, Value::Object(input))]),
+            );
+        }
+        Ok(listed)
+    }
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -192,13 +269,10 @@ impl Tool for DeploymentShow {
             return Ok(shown);
         };
         if view.deployment.in_flight {
-            let mut input = place(cx.call());
-            input.insert("deployment".into(), view.deployment.number.into());
-            input.insert("wait_seconds".into(), 120.into());
             object.insert("progress".into(), progress(&view));
             object.insert(
                 "next".into(),
-                json!([Call::new(Self::NAME, Value::Object(input))]),
+                json!([follow(cx.call(), view.deployment.number)]),
             );
         } else if let Some(calls) = diagnose(&view, cx.call()) {
             object.insert("next".into(), json!(calls));
@@ -248,6 +322,97 @@ impl Tool for DeploymentCancel {
             "at": at(&view.environment),
             "deployment": cancelled.number,
             "status": cancelled.status,
+        }))
+    }
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DeploymentRetry {
+    /// The Deployment's number. Omit for the latest.
+    #[serde(default)]
+    #[schemars(range(min = 1))]
+    deployment: Option<u64>,
+    #[serde(default)]
+    #[schemars(with = "Option<String>", pattern(REQUEST_KEY))]
+    request_key: Option<RequestKey>,
+    /// Project name. Omit for the one you are in.
+    #[serde(default)]
+    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
+    project: Option<ProjectName>,
+    /// Environment name, e.g. staging. Omit for the one you are in.
+    #[serde(default)]
+    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
+    environment: Option<EnvironmentName>,
+}
+
+impl Tool for DeploymentRetry {
+    const NAME: &'static str = "deployment_retry";
+    const DESCRIPTION: &'static str = "Ship a failed, unknown or cancelled Deployment again as a new one; changes saved since wait for the next deploy.";
+    const READ_ONLY: bool = false;
+
+    fn example() -> Value {
+        json!({ "deployment": 12, "request_key": "r8Tq2wLm5XcV" })
+    }
+
+    fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
+        let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
+        let query = find(cx, scope, self.deployment)?;
+        let source = cx.one(&query)?;
+        let retry = Admit::Retry(Retry {
+            id: cx.mint(self.request_key)?,
+            deployment: source.deployment.id.clone(),
+        });
+        let retried = cx.write(&retry)?;
+        Ok(json!({
+            "at": at(&source.environment),
+            "deployment": retried.number,
+            "retries": source.deployment.number,
+            "status": retried.status,
+            "saved_revision": retried.saved.0,
+            "next": follow(cx.call(), retried.number),
+        }))
+    }
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DeploymentStart {
+    /// The Deployment's number. Omit for the latest.
+    #[serde(default)]
+    #[schemars(range(min = 1))]
+    deployment: Option<u64>,
+    /// Project name. Omit for the one you are in.
+    #[serde(default)]
+    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
+    project: Option<ProjectName>,
+    /// Environment name, e.g. staging. Omit for the one you are in.
+    #[serde(default)]
+    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
+    environment: Option<EnvironmentName>,
+}
+
+impl Tool for DeploymentStart {
+    const NAME: &'static str = "deployment_start";
+    const DESCRIPTION: &'static str = "Hand a queued Deployment to a runner now.";
+    const READ_ONLY: bool = false;
+
+    fn example() -> Value {
+        json!({ "deployment": 12 })
+    }
+
+    fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
+        let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
+        let query = find(cx, scope, self.deployment)?;
+        let queued = cx.one(&query)?;
+        let started = cx.write(&Start {
+            deployment: queued.deployment.id.clone(),
+        })?;
+        Ok(json!({
+            "at": at(&queued.environment),
+            "deployment": started.number,
+            "status": started.status,
+            "next": follow(cx.call(), started.number),
         }))
     }
 }

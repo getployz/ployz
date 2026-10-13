@@ -225,7 +225,10 @@ fn the_catalog_has_the_agreed_tools() {
             "discard",
             "publish",
             "deploy",
+            "deployment_list",
             "deployment_show",
+            "deployment_retry",
+            "deployment_start",
             "deployment_cancel",
             "environment_pr",
             "environment_setup",
@@ -1140,6 +1143,73 @@ fn a_succeeded_deployment_names_no_next_call() {
     assert_eq!(shown["in_flight"], false);
     assert_eq!(shown["nodes"][0]["outcome"], "deployed", "{shown}");
     assert!(shown.get("next").is_none(), "{shown}");
+}
+
+#[test]
+fn a_queued_deployment_starts_and_a_cancelled_one_retries_once_per_key() {
+    let (store, _) = deploying();
+
+    let started = call(&store, "deployment_start", json!({}), "start-1");
+    assert_eq!(started.writes, 1);
+    let started = started.ok();
+    assert_eq!(started["deployment"], 1);
+    assert_eq!(started["status"], "queued");
+    assert_eq!(
+        started["next"],
+        json!({ "tool": "deployment_show", "input": { "deployment": 1, "wait_seconds": 120 } })
+    );
+    let unended = call(&store, "deployment_retry", json!({}), "retry-1").refused();
+    assert_eq!(unended.code, RpcErrorCode::Conflict);
+    assert_eq!(unended.writes, Writes::None);
+
+    call(&store, "deployment_cancel", json!({}), "cancel-1").ok();
+    let ended = call(&store, "deployment_start", json!({}), "start-2").refused();
+    assert_eq!(ended.code, RpcErrorCode::Conflict);
+
+    let retry = json!({ "deployment": 1, "request_key": "retry-0001" });
+    let retried = call(&store, "deployment_retry", retry.clone(), "retry-2").ok();
+    assert_eq!(retried["deployment"], 2);
+    assert_eq!(retried["retries"], 1);
+    assert_eq!(retried["status"], "queued");
+    assert_eq!(retried["next"]["input"]["deployment"], 2);
+    let again = call(&store, "deployment_retry", retry, "retry-3").ok();
+    assert_eq!(again["deployment"], 2, "one key, one Deployment");
+
+    let numbers = |listed: &Value| {
+        listed["deployments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|deployment| deployment["deployment"].clone())
+            .collect::<Vec<_>>()
+    };
+    let all = call(&store, "deployment_list", json!({}), "list-1");
+    assert_eq!(all.writes, 0);
+    let all = all.ok();
+    assert_eq!(numbers(&all), [json!(2), json!(1)], "newest first");
+    assert_eq!(all["deployments"][1]["status"], "cancelled");
+    assert!(all.get("next").is_none(), "{all}");
+
+    let first = call(&store, "deployment_list", json!({ "limit": 1 }), "list-2").ok();
+    assert_eq!(numbers(&first), [json!(2)]);
+    let next = &first["next"][0];
+    assert_eq!(next["tool"], "deployment_list");
+    assert_eq!(next["input"]["limit"], 1);
+    let second = call(&store, "deployment_list", next["input"].clone(), "list-3").ok();
+    assert_eq!(numbers(&second), [json!(1)]);
+    assert!(second.get("next").is_none(), "{second}");
+}
+
+#[test]
+fn an_applied_deployment_has_nothing_to_retry() {
+    let (store, _) = ended(
+        json!({ "type": "completed" }),
+        json!({ "type": "success", "completed": [remove_container()] }),
+    );
+
+    let refused = call(&store, "deployment_retry", json!({}), "retry-1").refused();
+    assert_eq!(refused.code, RpcErrorCode::Conflict);
+    assert_eq!(refused.writes, Writes::None);
 }
 
 /// Cloud's metrics answer with `events`, one CPU row and nothing unanswered.
