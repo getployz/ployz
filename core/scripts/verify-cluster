@@ -24,6 +24,8 @@ CORE = Path(__file__).resolve().parents[1]
 DASHBOARD = CORE.parent / "dashboard"
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(CORE / "scripts" / "verify"))
+sys.path.insert(0, str(CORE / "scripts"))
+import artifacts  # noqa: E402
 import host  # noqa: E402
 import releases  # noqa: E402
 
@@ -83,35 +85,18 @@ def parallel(function, items):
 
 
 def build(run, commands, *, daemon=True):
+    """Put ployz, and ployzd with its uninstaller, into the run's artifacts, building only what no cache holds."""
     started = time.monotonic()
-    compiled = commands(["cargo", "build", "--locked", "--message-format=json-render-diagnostics",
-                         "-p", "ployz", *(["-p", "ployzd"] if daemon else []),
-                         *shlex.split(os.environ.get("PLOYZ_VERIFY_CARGO_ARGS", ""))], cwd=CORE, timeout=1800,
-                        # The binaries are stripped below, so DWARF is wasted work: a third of an edit rebuild.
-                        # CI builds with the same setting.
-                        env={**os.environ, "CARGO_PROFILE_DEV_DEBUG": "0"})
-    fresh = {event["target"]["name"] for line in compiled.stdout.splitlines()
-             if (event := json.loads(line)).get("reason") == "compiler-artifact"
-             and event["fresh"] and event.get("executable")}
-    metadata = commands(["cargo", "metadata", "--no-deps", "--format-version", "1"], cwd=CORE)
-    target = Path(json.loads(metadata.stdout)["target_directory"]) / "debug"
-    artifacts = Path(run["manifest"]).parent / "artifacts"
-    artifacts.mkdir(exist_ok=True)
-    hashes = {}
-    sources = [("ployz", target / "ployz")]
+    destination = Path(run["manifest"]).parent / "artifacts"
+    names = ["ployz", *(["ployzd"] if daemon else [])]
+    artifacts.binaries(destination, names, shlex.split(os.environ.get("PLOYZ_VERIFY_CARGO_ARGS", "")), commands)
     if daemon:
-        sources += [("ployzd", target / "ployzd"), ("ployz-uninstall", CORE / "scripts" / "uninstall.sh")]
-    for name, source in sources:
-        destination = artifacts / name
-        previous = run.get("client_sha256") if name == "ployz" else run.get("binaries", {}).get(name)
-        if name in fresh and destination.exists() and hashlib.sha256(destination.read_bytes()).hexdigest() == previous:
-            hashes[name] = previous
-            continue
-        shutil.copy2(source, destination)
-        destination.chmod(0o755)
-        if name != "ployz-uninstall":
-            commands(["strip", "--strip-debug", destination])
-        hashes[name] = hashlib.sha256(destination.read_bytes()).hexdigest()
+        shutil.copy2(CORE / "scripts" / "uninstall.sh", destination / "ployz-uninstall")
+        names.append("ployz-uninstall")
+    hashes = {}
+    for name in names:
+        (destination / name).chmod(0o755)
+        hashes[name] = hashlib.sha256((destination / name).read_bytes()).hexdigest()
     run["client_sha256"] = hashes["ployz"]
     if daemon:
         run["binaries"] = hashes
@@ -267,7 +252,7 @@ def runner(run, commands, on):
 
 
 def install(run, backend, node, daemon):
-    binaries, artifacts = daemon_binaries(run, daemon), daemon_artifacts(run, daemon)
+    binaries, directory = daemon_binaries(run, daemon), daemon_artifacts(run, daemon)
     backend.exec(node, ["install", "-d", "/opt/ployz-verify"])
     paths = ["/opt/ployz-verify/" + name for name in binaries]
     result = backend.exec(node, ["sha256sum", *paths], check=False)
@@ -275,7 +260,7 @@ def install(run, backend, node, daemon):
     for name in binaries:
         destination = "/opt/ployz-verify/" + name
         if staged.get(destination) != binaries[name]:
-            backend.push(node, artifacts / name, destination)
+            backend.push(node, directory / name, destination)
     backend.exec(node, ["bash", "-ec", """
 observe=
 if systemctl cat ployz-observe.service >/dev/null 2>&1; then observe=ployz-observe.service; fi
