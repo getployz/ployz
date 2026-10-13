@@ -60,12 +60,12 @@ describe("ClusterDomainSection", () => {
     expect(screen.getByText("Check again")).toBeTruthy();
   });
 
-  it("says no Server is online rather than asking for a new one", async () => {
+  it("says no Server receives traffic rather than asking for a new one", async () => {
     const domain = { ...ready, traffic: { kind: "no_servers" } } as const;
     const component = () => <ClusterDomainSection organizationSlug="acme" domain={domain} onCheck={vi.fn()} />;
     render(<RouterProvider router={createRouter({ routeTree: createRootRoute({ component }), history: createMemoryHistory() })} />);
 
-    expect(await screen.findByText("No server is online.")).toBeTruthy();
+    expect(await screen.findByText("No server receives traffic.")).toBeTruthy();
     expect(screen.getByText("Needs attention")).toBeTruthy();
   });
 

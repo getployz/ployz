@@ -237,6 +237,21 @@ describe("sync-cluster-domain", () => {
     expect(await row()).toMatchObject({ traffic: before?.traffic, checked_at: before?.checked_at });
   });
 
+  it("records that nothing answers even when renewing the lease fails", async () => {
+    frame = runtimeWatchFrameFixture({ machines: [machine("a", "203.0.113.1")] });
+    verify.set("203.0.113.1", idOf("a"));
+    await sync();
+    verify.delete("203.0.113.1");
+    hostedDns.state.failWith = 503;
+
+    const output = await sync();
+
+    expect(output.error).toBeDefined();
+    expect(await row()).toMatchObject({
+      traffic: { kind: "probed", reachable: [], unreachable: [{ machineId: idOf("a"), address: "203.0.113.1" }] },
+    });
+  });
+
   it("reads every ingress Server down as no Servers", async () => {
     frame = runtimeWatchFrameFixture({ machines: [machine("a", "203.0.113.1", true, "down"), machine("b", null)] });
     verify.set("203.0.113.1", idOf("a"));
