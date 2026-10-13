@@ -399,7 +399,7 @@ describe("volume runs", () => {
   };
   const settled = ["05-cut", "07-start", "03-start", "04-resume", "05-resume", "03-restore", "03-demote", "03-reset-forget-mirror", "03-reset-forget-writer", "04-forget"];
   const sleeps = [
-    ...["03-r0", "03-r1", "03-r2", "06-final"].flatMap((prefix) => Array.from({ length: 9 }, (_, poll) => `${prefix}-wait-${poll}`)),
+    ...["03-r0", "03-r1", "03-r2", "06-final"].flatMap((prefix) => Array.from({ length: 9 }, (_, poll) => `${prefix}-backoff-${poll}`)),
     ...[...settled, ...["03-r0", "03-r1", "03-r2"].flatMap((round) => [`${round}-snapshot`, `${round}-pull`]), "06-final-pull",
       ...["fsn-2", "fsn-3"].flatMap((server) => [`04-forget-${server}`, `03-forget-${server}`])]
       .flatMap((id) => Array.from({ length: 6 }, (_, check) => `${id}-wait-${check + 1}`)),
@@ -1409,12 +1409,25 @@ describe("volume runs", () => {
     it("mirror: a pull that never lands gives up after six hours of checks backing off to five minutes", async () => {
       machines[1] = { name: "fsn-2", pool: true, copy: null, pullFault: { target: "ployz-10", kind: "stall" } };
       const run = await requested({ kind: "mirror", args: { to: "fsn-2" } });
-      const waits = PATIENCE_WAITS.map((_, check) => ({ id: `03-r0-wait-${check}`, handler: () => undefined }));
+      const waits = PATIENCE_WAITS.map((_, check) => ({ id: `03-r0-backoff-${check}`, handler: () => undefined }));
 
       await execute(run.id, "run-1", waits);
 
       expect(verbs.filter((verb) => verb === "pull@fsn-2(ployz-10)")).toHaveLength(PATIENCE_WAITS.length + 1);
       expect(await rows()).toMatchObject([{ state: "failed", message: "data-fsn-2 has not finished ployz-10 after 6h" }]);
+    });
+
+    it("mirror: a pull the 5 s checks started replays none of its checks into the new schedule, so it lands instead of giving up", async () => {
+      const run = await requested({ kind: "mirror", args: { to: "fsn-2" } });
+      const pulling = { ok: true, copy: slotCopy(null, { target: "ployz-10", failure: null }) };
+      const old = Array.from({ length: 100 }, (_, poll) => [
+        { id: `03-r0-wait-${poll}`, handler: () => undefined },
+        { id: `03-r0-repull-${poll}`, handler: () => pulling },
+      ]).flat();
+
+      await execute(run.id, "run-1", old);
+
+      expect(await rows()).toMatchObject([{ state: "done" }]);
     });
 
     it("mirror: a Server without a Pool gets the mirror", async () => {

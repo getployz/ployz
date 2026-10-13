@@ -230,8 +230,9 @@ async function pull(steps: RunSteps, prefix: string, ctx: { readonly B: MachineR
     if (wait === undefined) throw new NonRetriableError(`${slot} has not finished ${target.name} after ${PATIENCE}`);
     // A landed pull still verifying keeps `pull` set, so only an idle copy skips the wait.
     const idle = copy?.kind === "slot" && copy.pull === null;
-    if (!idle) await step.sleep(`${prefix}-wait-${check}`, `${wait}s`);
-    copy = await askPullFollowingDrift(steps, `${prefix}-repull-${check}`, B, copy, want, still);
+    // Ids apart from the 5 s checks' `-wait-`/`-repull-`, so a run they started replays none of them into this schedule.
+    if (!idle) await step.sleep(`${prefix}-backoff-${check}`, `${wait}s`);
+    copy = await askPullFollowingDrift(steps, `${prefix}-ask-${check}`, B, copy, want, still);
   }
 }
 
@@ -529,9 +530,10 @@ async function seedVolume({ step, runEffect, run, runId }: RunSteps, phase: Phas
     if (poll > 0) {
       const wait = PATIENCE_WAITS[poll - 1];
       if (wait === undefined) return failed("03-too-long", `${args.into.name} has not finished copying after ${PATIENCE}`);
-      await step.sleep(`03-wait-${poll}`, `${wait}s`);
+      await step.sleep(`03-backoff-${poll}`, `${wait}s`);
     }
-    const copy = await step.run(`03-seed-${poll}`, () => runEffect(sendSwitch(run, runId, source, {
+    // Ids apart from the 5 s checks' `03-wait-`/`03-seed-`, as in `pull`.
+    const copy = await step.run(`03-ask-${poll}`, () => runEffect(sendSwitch(run, runId, source, {
       command: "seed_volume",
       payload: { name: run.dockerVolume, into: args.into.dockerVolume, guid: args.guid },
     }).pipe(
