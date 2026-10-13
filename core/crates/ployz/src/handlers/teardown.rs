@@ -7,9 +7,9 @@ use std::collections::BTreeMap;
 
 use ployz_store::{
     Admit, AdmitRemoval, DeploymentId, DeploymentStatus, DeploymentSummary, DeploymentView,
-    DueQuery, EnvironmentId, EnvironmentName, EnvironmentRef, EnvironmentSummary,
-    EnvironmentsQuery, Left, ProjectName, ProjectsQuery, Removal, RemovalsQuery, Remove, Residual,
-    ServicesQuery, ShutDown, VolumeName, VolumesQuery,
+    DueQuery, EnvironmentName, EnvironmentRef, EnvironmentSummary, EnvironmentsQuery, Left,
+    ProjectName, ProjectsQuery, Removal, RemovalsQuery, Remove, RemovedQuery, ServicesQuery,
+    ShutDown, VolumeName, VolumesQuery,
 };
 use serde_json::json;
 
@@ -153,16 +153,22 @@ pub(super) fn remove(
     })?;
     let mut ran = Vec::new();
     let result = (|| {
-        let (left, waiting_on) = match removal {
+        let (id, left, waiting_on) = match removal {
             Removal::Removed { residuals } => {
                 return Ok(Some((Removal::Removed { residuals }, Vec::new())));
             }
-            Removal::Removing { left, waiting_on } => (left, waiting_on),
+            Removal::Removing {
+                id,
+                left,
+                waiting_on,
+            } => (id, left, waiting_on),
         };
-        let mut names: BTreeMap<EnvironmentId, EnvironmentName> = left
-            .iter()
-            .map(|left| (left.environment.id.clone(), left.environment.name.clone()))
-            .collect();
+        // Cloud may admit a removal Deployment, or sweep one, before this follows
+        // it, so the finished mark says what was left on old servers.
+        let removed = |ran: &mut Vec<DeploymentSummary>| {
+            let residuals = store.read(&RemovedQuery { id: id.clone() })?.residuals;
+            Ok::<_, Error>(Some((Removal::Removed { residuals }, std::mem::take(ran))))
+        };
         let mut admitted: Vec<DeploymentSummary> = left
             .iter()
             .filter_map(|left| left.deployment.clone())
@@ -178,11 +184,7 @@ pub(super) fn remove(
                     view, ran: outcome, ..
                 } = match deploy::execute(matches, store, &deployment, None, writer) {
                     Err(error) if swept(&error, || gone(store, project, environment)) => {
-                        let residuals = residuals(&ran, &names);
-                        return Ok(Some((
-                            Removal::Removed { residuals },
-                            std::mem::take(&mut ran),
-                        )));
+                        return removed(&mut ran);
                     }
                     shipped => shipped?,
                 };
@@ -197,7 +199,11 @@ pub(super) fn remove(
             if store.local().is_none() {
                 if matches.get_flag("detach") {
                     return Ok(Some((
-                        Removal::Removing { left, waiting_on },
+                        Removal::Removing {
+                            id,
+                            left,
+                            waiting_on,
+                        },
                         std::mem::take(&mut ran),
                     )));
                 }
@@ -211,23 +217,19 @@ pub(super) fn remove(
                 } else if !gone(store, project, environment)? {
                     let left = applied(left, &ran);
                     return Ok(Some((
-                        Removal::Removing { left, waiting_on },
+                        Removal::Removing {
+                            id,
+                            left,
+                            waiting_on,
+                        },
                         std::mem::take(&mut ran),
                     )));
                 }
-                let residuals = residuals(&ran, &names);
-                return Ok(Some((
-                    Removal::Removed { residuals },
-                    std::mem::take(&mut ran),
-                )));
+                return removed(&mut ran);
             }
             store.sweep().map_err(|error| store.fail(error))?;
             if gone(store, project, environment)? {
-                let residuals = residuals(&ran, &names);
-                return Ok(Some((
-                    Removal::Removed { residuals },
-                    std::mem::take(&mut ran),
-                )));
+                return removed(&mut ran);
             }
             for due in store.read(&DueQuery {})? {
                 let summary = due.environment;
@@ -244,7 +246,6 @@ pub(super) fn remove(
                         }))
                         .map_err(|error| store.fail(error))?,
                 );
-                names.insert(summary.id, summary.name);
             }
             if admitted.is_empty() {
                 return Err(stalled(project, environment, &left).hint(Hint::Next(again.clone())));
@@ -292,7 +293,9 @@ impl Removed {
                 }
                 crate::ui::stream(format_args!("Removed {target}."));
             }
-            Removal::Removing { left, waiting_on } => {
+            Removal::Removing {
+                left, waiting_on, ..
+            } => {
                 for left in left {
                     let why = left
                         .why
@@ -325,22 +328,6 @@ impl Removed {
             _ => Ok(()),
         }
     }
-}
-
-/// What the removal Deployments `ran` left on old servers, by Environment name.
-fn residuals(
-    ran: &[DeploymentSummary],
-    names: &BTreeMap<EnvironmentId, EnvironmentName>,
-) -> Vec<Residual> {
-    ran.iter()
-        .filter(|deployment| left_on_old_servers(deployment))
-        .filter_map(|deployment| {
-            Some(Residual {
-                environment: names.get(&deployment.environment_id)?.clone(),
-                services: deployment.services.clone(),
-            })
-        })
-        .collect()
 }
 
 /// `left` with each admitted Deployment as it ended in `ran`.

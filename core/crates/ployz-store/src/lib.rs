@@ -85,7 +85,7 @@ pub use pull_request::{
 pub use query::*;
 pub use removal::{
     CancelRemoval, Due, DueQuery, Fix, Left, LeftStatus, Removal, RemovalCancelled, Remove,
-    RemovedVolume, Residual, VolumeLoss, Waiting, docker_volume,
+    RemovedQuery, RemovedView, RemovedVolume, Residual, VolumeLoss, Waiting, docker_volume,
 };
 pub use review::history::{HistoryAction, SavedRevision};
 pub use review::{DataEffect, DestructiveEffect, DestructiveKind, DiffView, NodeChange};

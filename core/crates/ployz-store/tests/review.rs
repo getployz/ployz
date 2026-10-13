@@ -854,7 +854,7 @@ fn stage_history(
     who: &Actor,
     revision: u64,
     action: ployz_store::HistoryAction,
-) {
+) -> ployz_store::HistoryStaged {
     let query = ployz_store::HistoryPreviewQuery {
         environment: EnvironmentRef::default(),
         revision: Revision(revision),
@@ -874,7 +874,7 @@ fn stage_history(
                 accept_overwrite: true,
             },
         )
-        .unwrap();
+        .unwrap()
 }
 
 fn stage_change(store: &ConfigStore, who: &Actor, revision: u64, change: &str) {
@@ -1363,8 +1363,17 @@ fn history_undo_of_a_sealed_rotation_by_delete_and_add_keeps_the_new_value() {
     assert!(!deployed.to_string().contains("old-private"));
 }
 
+/// The keys a History action brought back Not set, as `service.KEY`.
+fn not_set(staged: &ployz_store::HistoryStaged) -> Vec<String> {
+    staged
+        .not_set
+        .iter()
+        .map(|variable| format!("{}.{}", variable.service, variable.key))
+        .collect()
+}
+
 #[test]
-fn history_keeps_a_sealed_key_deleted_since_deleted() {
+fn history_brings_a_sealed_key_deleted_since_back_not_set() {
     let (store, who) = shop();
     set(
         &store,
@@ -1380,10 +1389,117 @@ fn history_keeps_a_sealed_key_deleted_since_deleted() {
         (2, ployz_store::HistoryAction::Undo),
     ] {
         let preview = history_preview(&store, &who, revision, action).unwrap();
-        assert_eq!(preview.total_count, 0, "#{revision} {action:?}");
-        stage_history(&store, &who, revision, action);
-        assert_eq!(value(&store, &who, "web.env.TOKEN"), None);
+        assert!(
+            !serde_json::to_string(&preview)
+                .unwrap()
+                .contains("private-value")
+        );
+        let staged = stage_history(&store, &who, revision, action);
+        assert_eq!(not_set(&staged), ["web.TOKEN"], "#{revision} {action:?}");
+        assert_eq!(
+            value(&store, &who, "web.env.TOKEN"),
+            Some(json!({ "secret": false })),
+            "#{revision} {action:?}"
+        );
+        discard_to_saved(&store, &who);
     }
+}
+
+#[test]
+fn history_brings_a_removed_service_back_with_its_sealed_keys_not_set() {
+    let (store, who) = shop();
+    set(&store, &who, "api.env.PLAIN", json!("kept"));
+    set(
+        &store,
+        &who,
+        "api.env.STRIPE_KEY",
+        json!({ "secret": "private-one" }),
+    );
+    set(
+        &store,
+        &who,
+        "api.env.WEBHOOK_SECRET",
+        json!({ "secret": "private-two" }),
+    );
+    publish(&store, &who, None).unwrap();
+    remove_service(&store, &who, "api");
+    publish(&store, &who, None).unwrap();
+    for (revision, action) in [
+        (1, ployz_store::HistoryAction::Restore),
+        (2, ployz_store::HistoryAction::Undo),
+    ] {
+        let staged = stage_history(&store, &who, revision, action);
+        assert_eq!(
+            not_set(&staged),
+            ["api.STRIPE_KEY", "api.WEBHOOK_SECRET"],
+            "#{revision} {action:?}"
+        );
+        assert_eq!(value(&store, &who, "api.env.PLAIN"), Some(json!("kept")));
+        for key in ["STRIPE_KEY", "WEBHOOK_SECRET"] {
+            assert_eq!(
+                value(&store, &who, &format!("api.env.{key}")),
+                Some(json!({ "secret": false })),
+                "#{revision} {action:?} {key}"
+            );
+        }
+        discard_to_saved(&store, &who);
+    }
+}
+
+#[test]
+fn a_deploy_leaves_out_a_variable_history_brought_back_not_set() {
+    let (store, who) = shop();
+    set(&store, &who, "web.env.PLAIN", json!("plain-value"));
+    set(
+        &store,
+        &who,
+        "web.env.TOKEN",
+        json!({ "secret": "private-value" }),
+    );
+    publish(&store, &who, None).unwrap();
+    unset(&store, &who, "web.env.TOKEN");
+    publish(&store, &who, None).unwrap();
+    stage_history(&store, &who, 2, ployz_store::HistoryAction::Undo);
+    let id = backend::admit(&store, &who, "production", 1);
+    let claimed = store
+        .claim(&id, &ployz_store::RunnerId::parse("runner").unwrap())
+        .unwrap();
+    let input = serde_json::to_value(&claimed.input).unwrap();
+    assert!(!input.to_string().contains("private-value"), "{input}");
+    let web = input["snapshots"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|snapshot| snapshot["config"]["privateDns"] == "web")
+        .unwrap();
+    assert_eq!(web["resolvedEnv"], json!({ "PLAIN": "plain-value" }));
+    assert_eq!(
+        serde_json::to_value(&claimed.deployment.warnings).unwrap(),
+        json!([{ "service": "web", "variable": "TOKEN" }])
+    );
+}
+
+#[test]
+fn undoing_a_service_creation_still_removes_it_with_its_sealed_keys() {
+    let (store, who) = shop();
+    publish(&store, &who, None).unwrap();
+    create_service(&store, &who, EnvironmentRef::default(), 31, "billing");
+    set(
+        &store,
+        &who,
+        "billing.env.STRIPE_KEY",
+        json!({ "secret": "private-value" }),
+    );
+    publish(&store, &who, None).unwrap();
+    let staged = stage_history(&store, &who, 2, ployz_store::HistoryAction::Undo);
+    assert!(staged.not_set.is_empty());
+    let working = working(&store, &who);
+    assert!(
+        working
+            .iter()
+            .all(|(path, _)| !path.starts_with("billing.")),
+        "{working:?}"
+    );
 }
 
 #[test]
@@ -1427,10 +1543,18 @@ fn history_never_brings_back_plain_text_of_a_key_once_sealed() {
     publish(&store, &who, None).unwrap();
     unset(&store, &who, "web.env.TOKEN");
     publish(&store, &who, None).unwrap();
-    let error = history_preview(&store, &who, 1, ployz_store::HistoryAction::Restore).unwrap_err();
-    assert_eq!(error.code, RpcErrorCode::Conflict);
-    assert_eq!(error.message, "TOKEN was sealed. Set it again.");
-    assert_eq!(value(&store, &who, "web.env.TOKEN"), None);
+    let preview = history_preview(&store, &who, 1, ployz_store::HistoryAction::Restore).unwrap();
+    assert!(
+        !serde_json::to_string(&preview)
+            .unwrap()
+            .contains("plain-value")
+    );
+    let staged = stage_history(&store, &who, 1, ployz_store::HistoryAction::Restore);
+    assert_eq!(not_set(&staged), ["web.TOKEN"]);
+    assert_eq!(
+        value(&store, &who, "web.env.TOKEN"),
+        Some(json!({ "secret": false }))
+    );
 }
 
 /// The value each History card shows for `path`, oldest first.

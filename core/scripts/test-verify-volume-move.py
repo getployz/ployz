@@ -14,6 +14,7 @@ Results land in the run's evidence/volume-move-<time>/, one JSON per case and su
 """
 
 import argparse
+from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
@@ -30,6 +31,9 @@ import urllib.request
 sys.dont_write_bytecode = True
 
 CORE = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(CORE / "scripts" / "verify"))
+from cloud_recovery import alive  # noqa: E402
+
 REPO = CORE.parent
 HELPER = CORE / "scripts" / "verify-cluster"
 CATALOG = CORE / "crates" / "ployz-core" / "src" / "rpc_catalog.rs"
@@ -134,10 +138,38 @@ def nth_after(lines, moment, nth):
 TERMINAL = {"done", "failed", "cancelled", "lost", "not_started"}
 AUXILIARY = "Failed to send signal SIGKILL to auxiliary processes"
 BUSY_LIMIT = 180
+# The barrier restart returns once the daemon is up, and a `docker stop` it already handed to dockerd still lands
+# within Docker's default 10 s; the trigger window opens past that.
+STOP_HOLD = 12
+# The kernel slews a clock by at most 500 ppm, so over the 900 s trigger limit drift moves an offset by at most
+# 0.45 s. Anything larger is a step.
+CLOCK_ALLOWANCE = 0.5
+RESTART = ("systemctl restart ployz.service; systemctl stop ployz-volume-plugin.service || true; "
+           "for i in $(seq 60); do systemctl is-active --quiet ployz.service && break; sleep 1; done; "
+           "systemctl is-active --quiet ployz.service")
 SNAPSHOT_BOUND = 8
 SERVICE = "db"
 VOLUME = "data"
 IMAGE = "postgres:16-alpine"
+
+
+def trigger_not_its(run, seen):
+    """Cloud lets one run act on a Volume at a time, so a trigger seen after the first run ended is a later run's.
+
+    Both times are on the host: the harness clock and the worker's finished_at. Seeing a trigger is never earlier
+    than it happened, so Machine clock skew cannot credit a later run's trigger to the first run.
+    """
+    if run.get("state") not in TERMINAL:
+        return None
+    if not run.get("finished_at"):
+        return (f"the first run {run.get('id')} ended {run.get('state')} with no finished_at, so the trigger "
+                "cannot be tied to it")
+    ended = datetime.fromisoformat(run["finished_at"].replace("Z", "+00:00")).timestamp()
+    if ended < seen:
+        when = datetime.fromtimestamp(seen, timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        return (f"the first run {run.get('id')} ended {run.get('state')} at {run['finished_at']}, before the trigger "
+                f"was seen at {when}, so the trigger evidence is not its")
+    return None
 
 
 def catalog_diff(text):
@@ -182,6 +214,10 @@ def parse_json(text):
         except json.JSONDecodeError:
             continue
     return None
+
+
+def clock_report(clocks):
+    return {machine: dict(offset=round(offset, 6), uncertainty=round(error, 6)) for machine, (offset, error) in clocks.items()}
 
 
 def run_rows(data):
@@ -331,10 +367,15 @@ class VolumeMove:
         self.case_name = None
         self.started_runs = set()
         self.busy_waits = []
+        # Machine name to (offset, uncertainty) in seconds: its clock reads offset ahead of the host's.
+        self.clocks = {}
 
     def command(self, *args, check=True, timeout=600):
         command = [str(HELPER), *map(str, args)]
-        result = self.runner(command, capture_output=True, text=True, timeout=timeout + 60)
+        try:
+            result = self.runner(command, capture_output=True, text=True, timeout=timeout + 60)
+        except OSError as error:
+            raise RuntimeError(f"Could not run {' '.join(command[1:8])}: {type(error).__name__}: {error}") from error
         print(json.dumps(dict(command=command[1:8], exit_code=result.returncode,
                               stdout=result.stdout[-600:], stderr=result.stderr[-600:])), flush=True)
         if check and result.returncode:
@@ -423,6 +464,52 @@ class VolumeMove:
             scale = max(1, round(self.size_gb * 1024 / 15))
             self.sh(machine, f"/usr/bin/docker exec {container} pgbench -i -q -s {scale} -U postgres postgres",
                     timeout=7200)
+        self.measure_clocks()
+
+    def measure_clocks(self):
+        self.clocks = self.read_clocks()
+        return clock_report(self.clocks)
+
+    def read_clocks(self, samples=3):
+        """Read each Machine's clock against the host's, keeping the sample with the shortest round trip.
+
+        The reading was taken somewhere between the host times before and after the exec, so the offset is
+        exact to within half the round trip.
+        """
+        clocks = {}
+        for machine in self.machines:
+            best = None
+            for _ in range(samples):
+                before = self.clock()
+                reading = self.sh(machine, "date +%s.%N", check=False).stdout.strip()
+                after = self.clock()
+                try:
+                    sample = (float(reading) - (before + after) / 2, (after - before) / 2)
+                except ValueError:
+                    raise RuntimeError(f"could not read the clock on {machine}: {reading[:200]!r}") from None
+                best = sample if best is None or sample[1] < best[1] else best
+            clocks[machine] = best
+        return clocks
+
+    def clock_moved(self, when, readings):
+        """Every stamp converts with the clean start's offsets, so a Machine whose offset moved since then fails the case."""
+        try:
+            clocks = self.read_clocks()
+        except RuntimeError as error:
+            return [f"{error} at {when}"]
+        readings.append(dict(at=when, clocks=clock_report(clocks)))
+        failures = []
+        for machine, (offset, error) in clocks.items():
+            start, start_error = self.clocks[machine]
+            bound = start_error + error + CLOCK_ALLOWANCE
+            if abs(offset - start) > bound:
+                failures.append(f"the clock on {machine} moved {offset - start:+.3f}s between the clean start and "
+                                f"{when}, past the {bound:.3f}s its readings and drift allow")
+        return failures
+
+    def window(self, machine, since):
+        """journalctl's --since for a host time, in machine's clock, with slack the host-side filter discards."""
+        return int(since + self.clocks[machine][0]) - 2
 
     def start_probe(self):
         evidence = self.manifest.parent / "evidence"
@@ -467,30 +554,31 @@ class VolumeMove:
         script = "touch /etc/default/ployz; sed -i '/^PLOYZD_FAULT=/d' /etc/default/ployz; "
         if value:
             script += f"echo {shlex.quote('PLOYZD_FAULT=' + value)} >> /etc/default/ployz; "
-        script += ("systemctl restart ployz.service; systemctl stop ployz-volume-plugin.service || true; "
-                   "for i in $(seq 60); do systemctl is-active --quiet ployz.service && break; sleep 1; done; "
-                   "systemctl is-active --quiet ployz.service")
+        script += RESTART
         targets = [machine] if machine else self.machines
         return [target for target in targets if self.sh(target, script, check=check).returncode]
 
     def fired(self, since):
         for machine in self.machines:
-            lines = self.sh(machine, f"journalctl -u ployz.service -u ployz-volume-plugin.service --since @{int(since) - 2} --no-pager -o cat "
-                                     "| grep -F 'fault:' || true", check=False).stdout.strip()
-            if lines:
-                return f"{machine}: {lines.splitlines()[0][:300]}"
+            if lines := self.fault_lines(machine, since):
+                return f"{machine}: {lines[0][1][:300]}"
         return None
 
     def fault_lines(self, machine, since):
-        return stamped(self.sh(machine, f"journalctl -u ployz.service -u ployz-volume-plugin.service --since @{int(since) - 2} --no-pager -o short-unix "
-                                        "| grep -F 'fault:' || true", check=False).stdout)
+        """machine's fault lines in host time, kept only when they are after since by more than its uncertainty."""
+        offset, error = self.clocks[machine]
+        output = self.sh(machine, f"journalctl -u ployz.service -u ployz-volume-plugin.service --since @{self.window(machine, since)} "
+                                  "--no-pager -o short-unix | grep -F 'fault:' || true", check=False).stdout
+        return [(at - offset, line) for at, line in stamped(output) if at - offset - error >= since]
 
     def stopped_at(self, machine, since):
+        """The first db stop on machine in host time, kept only when it is after since by more than its uncertainty."""
+        offset, error = self.clocks[machine]
         result = self.sh(machine, f"/usr/bin/docker ps -aq --filter volume={shlex.quote(self.physical)} --filter status=exited "
                                   "| xargs -r /usr/bin/docker inspect -f '{{.State.FinishedAt}}' | xargs -r -n1 date +%s.%N -d",
                          check=False)
-        times = [float(word) for word in result.stdout.split() if re.fullmatch(r"\d+\.\d+", word)]
-        times = [at for at in times if at >= since]
+        times = [float(word) - offset for word in result.stdout.split() if re.fullmatch(r"\d+\.\d+", word)]
+        times = [at for at in times if at - error >= since]
         return min(times) if times else None
 
     def stopped(self, writer, since):
@@ -498,54 +586,125 @@ class VolumeMove:
         return f"{writer}: db stopped at {at}" if at else None
 
     def fault_after_stop(self, writer, machine, since, nth):
+        """Each uncertainty counts against the trigger, so skew can delay crediting a fault but never move it past the stop."""
         stopped = self.stopped_at(writer, since)
-        line = None if stopped is None else nth_after(self.fault_lines(machine, since), stopped, nth)
+        if stopped is None:
+            return None
+        error = self.clocks[machine][1]
+        lines = [(at - error, line) for at, line in self.fault_lines(machine, since)]
+        line = nth_after(lines, stopped + self.clocks[writer][1], nth)
         return f"{machine}: {line[:300]}" if line else None
 
     def receiving(self, machine):
-        result = self.sh(machine, "pgrep -f 'zfs (recv|receive)' >/dev/null && echo yes || echo no", check=False)
+        """The receiving trigger: a receive into this Volume's mirror. An unread poll only withholds credit."""
+        pattern = shlex.quote(f"zfs (recv|receive) .*ployz-mirror/{self.physical}/fs")
+        result = self.sh(machine, f"pgrep -f {pattern} >/dev/null && echo yes || echo no", check=False)
         return result.stdout.strip() == "yes"
+
+    def busy_work(self, machine, op):
+        """What on machine could still act on a Volume: datasets with a `ployz:pull` set and zfs receive processes.
+
+        The plugin sets `pull` when it admits a pull or a seed, before any process exists, and clears it when the
+        work ends. A read that does not prove it ran skips the case, since it may have hidden either.
+        """
+        script = ("set +e; "
+                  f"pulls=$(zfs list -H -o name,ployz:pull -t filesystem -r {shlex.quote(self.pool)}); echo \"zfs $?\"; "
+                  "recv=$(pgrep -af 'zfs (recv|receive)'); echo \"pgrep $?\"; "
+                  "printf '%s\\n' \"$pulls\" | sed 's/^/pull /'; printf '%s\\n' \"$recv\" | sed '/^$/d; s/^/recv /'")
+        result = self.sh(machine, script, check=False)
+        lines = result.stdout.splitlines()
+        codes = dict(line.split(" ", 1) for line in lines[:2] if " " in line)
+        if result.returncode or set(codes) != {"zfs", "pgrep"}:
+            raise Skipped(f"could not read the pulls and receives on {machine} before {op}: "
+                          f"exit {result.returncode}, {result.stdout[:200]!r}")
+        pulls = [line[5:].split("\t") for line in lines[2:] if line.startswith("pull ")]
+        if codes["zfs"] != "0" or not any(fields[0] == self.pool for fields in pulls) or any(len(f) != 2 for f in pulls):
+            raise Skipped(f"could not read ployz:pull on {machine} before {op}: {result.stdout[:200]!r}")
+        if codes["pgrep"] not in ("0", "1"):
+            raise Skipped(f"could not read the zfs receives on {machine} before {op}: pgrep exited {codes['pgrep']}")
+        return ([("a pull", f"ployz:pull={value} on {name}") for name, value in pulls if value != "-"]
+                + [("a zfs receive", line[5:]) for line in lines[2:] if line.startswith("recv ")])
+
+    def barrier(self, op):
+        """Restart every Machine's daemon and stop its plugin, so no in-process task from earlier work outlives it,
+        then hold past any `docker stop` the daemon already handed to dockerd."""
+        for machine in self.machines:
+            if self.sh(machine, RESTART, check=False).returncode:
+                raise RuntimeError(f"the clean-start restart failed on {machine} before {op}")
+        self.sleep(STOP_HOLD)
 
     def runs(self):
         _, data = self.cli("volume", "runs", VOLUME, check=False)
         return run_rows(data)
 
-    def arming_runs(self, op):
+    def listed_runs(self, op):
         code, data = self.cli("volume", "runs", VOLUME, check=False)
         if code:
-            # An unread list would hide a run that crossed the armed fault.
-            raise Skipped(f"could not list the Volume's runs while arming the fault on {op}")
+            # An unread list would hide a run that crossed the clean start or the armed fault.
+            raise Skipped(f"could not list the Volume's runs before {op}")
         return run_rows(data)
 
-    def start_op(self, op, destination, arm=None):
+    def start_op(self, op, destination, arm=None, clean=False):
+        """Request op once the Volume is idle.
+
+        A clean start also waits out every admitted pull and zfs receive on every Machine, then restarts every
+        Machine so no earlier work survives in a process, checks quiet again and measures the clocks into since.
+        It skips the case when a run appears after that check."""
         args = dict(move=["volume", "move", VOLUME, "--to", destination],
                     mirror=["volume", "mirror", VOLUME, "--to", destination],
                     release=["volume", "release", VOLUME])
         args["mirror-rm"] = ["volume", "mirror", "rm", f"{VOLUME}-{destination}"]
         began = self.clock()
         deadline = began + BUSY_LIMIT
-        holder = skip = None
-        armed = False
+        holder = skip = receiver = waited_on = work = None
+        armed = checked = restarted = False
+        stale = set()
+        clean = clean or bool(arm)
         while True:
             holder = self.wait_idle(deadline) or holder
-            if arm and not armed:
-                if self.clock() >= deadline:
-                    skip = f"VolumeBusy past {BUSY_LIMIT}s before the fault was armed on {op}"
-                    break
-                listed = self.arming_runs(op)
-                if active := [row for row in listed if row.get("state") not in TERMINAL]:
-                    holder = active[0]
+            if clean and not checked:
+                listed = self.listed_runs(op)
+                active = [row for row in listed if row.get("state") not in TERMINAL]
+                found = [] if active else [(machine, item) for machine in self.machines
+                                           for item in self.busy_work(machine, op) if (machine, item) not in stale]
+                if active:
+                    holder, receiver = active[0], None
+                elif found:
+                    (receiver, work), waited_on = found[0], found[0][0]
+                else:
+                    receiver = None
+                if self.clock() >= deadline and (active or found or not restarted):
+                    # A restart leaves `pull` set until a run asks again, so a pull with no receive by the limit is
+                    # left to the barrier, which ends any task behind it.
+                    if found and not restarted and all(kind == "a pull" for _, (kind, _) in found):
+                        stale |= set(found)
+                    else:
+                        skip = (f"{work[0]} still ran on {receiver} past {BUSY_LIMIT}s before {op}: {work[1][:200]}"
+                                if receiver
+                                else f"VolumeBusy past {BUSY_LIMIT}s before the fault was armed on {op}" if arm
+                                else f"VolumeBusy past {BUSY_LIMIT}s before {op}")
+                        break
+                elif active or found:
+                    restarted = False
                     self.sleep(4)
                     continue
+                if not restarted:
+                    self.barrier(op)
+                    restarted = True
+                    continue
                 settled = {row["id"] for row in listed}
-                arm()
-                armed = True
-                # A run that started and ended while arm() restarted the daemon may have fired the fault, and
-                # wait_trigger would credit its fault line to this op.
-                if others := [row for row in self.arming_runs(op) if row["id"] not in settled]:
-                    holder = others[0]
-                    skip = f"a run took the Volume while the fault was armed on {op}"
-                    break
+                self.calibration = self.measure_clocks()
+                self.since = self.clock()
+                checked = True
+                if arm:
+                    arm()
+                    armed = True
+                    # A run that started and ended while arm() restarted the daemon may have fired the fault, and
+                    # wait_trigger would credit its fault line to this op.
+                    if others := [row for row in self.listed_runs(op) if row["id"] not in settled]:
+                        holder = others[0]
+                        skip = f"a run took the Volume while the fault was armed on {op}"
+                        break
             code, data = self.cli(*args[op], check=False)
             refused = busy(data)
             if refused and not (refused["id"] == "ended" and holder):
@@ -559,23 +718,26 @@ class VolumeMove:
             if self.clock() >= deadline:
                 skip = f"VolumeBusy past {BUSY_LIMIT}s on {op}"
                 break
+            # The run that refused this request may leave work behind, so start clean again after it.
+            checked = restarted = False
             self.sleep(4)
-        if armed and not skip:
+        if checked and not skip:
             accepted = {row["id"] for row in run_rows(data)} if code == 0 else set()
             self.started_runs |= accepted
-            others = [row for row in self.arming_runs(op) if row["id"] not in settled | accepted]
-            if others:
+            if others := [row for row in self.listed_runs(op) if row["id"] not in settled | accepted]:
                 holder = others[0]
-                skip = f"a run took the Volume while the fault was armed on {op}"
-        if holder:
-            record = dict(case=self.case_name, op=op, holder=holder.get("id"), kind=holder.get("kind"),
+                skip = (f"a run took the Volume while the fault was armed on {op}" if armed
+                        else f"a run took the Volume between the clean start and {op}")
+        if holder or waited_on:
+            holder_row = holder or {}
+            record = dict(case=self.case_name, op=op, holder=holder_row.get("id"), kind=holder_row.get("kind"),
+                          receive_on=waited_on, stale=sorted(f"{machine}: {detail}" for machine, (_, detail) in stale),
                           waited_seconds=round(self.clock() - began, 1),
-                          started_by_harness=holder.get("id") in self.started_runs)
+                          started_by_harness=holder_row.get("id") in self.started_runs)
             self.busy_waits.append(record)
             print(json.dumps(dict(volume_busy_wait=record)), flush=True)
         if skip:
-            holder = holder or {}
-            raise Skipped(f"{skip}: run {holder.get('id')} ({holder.get('kind')})")
+            raise Skipped(f"{skip}: run {holder.get('id')} ({holder.get('kind')})" if holder else skip)
         approval = self.approve(data) if op == "release" else None
         if approval:
             code, data = self.cli(*args[op], "--approval", approval, check=False)
@@ -598,12 +760,20 @@ class VolumeMove:
         error = reply.get("error") if isinstance(reply, dict) else None
         if not error or error.get("code") != "approval_required":
             return None
-        details = error["details"]
-        token = (self.manifest.parent / "private" / "cloud-token").read_text().strip()
+        details = error.get("details") or {}
+        missing = ["details"] if not details else [field for field in ("approval_id", "approval") if not details.get(field)]
+        if missing:
+            raise RuntimeError(f"Cloud asked to approve the release without {' or '.join(missing)}: {reply}")
+        token_file = self.manifest.parent / "private" / "cloud-token"
+        if not token_file.exists():
+            raise RuntimeError(f"Cloud asked to approve the release, but there is no Cloud token at {token_file}")
+        token = token_file.read_text().strip()
         status, text = http("POST", f"{self.run['cloud']['url']}/api/cli/approvals/{details['approval_id']}",
                             dict(approve=dict(digest=details["approval"])), token=token)
         print(json.dumps(dict(approve=details["approval_id"], status=status, reply=text[:200])), flush=True)
-        return details["approval_id"] if 200 <= status < 300 else None
+        if not 200 <= status < 300:
+            raise RuntimeError(f"Cloud refused the approval {details['approval_id']} with {status}: {text[:500]}")
+        return details["approval_id"]
 
     def wait_run(self, row, limit=1800):
         if row.get("state") in TERMINAL | {"refused"}:
@@ -645,33 +815,59 @@ class VolumeMove:
                  if "=" in line)
         return dict(pairs), "ployz-verify-" + hashlib.sha1(str(dashboard.parent).encode()).hexdigest()[:10]
 
-    def cancel(self, row):
-        environment, postgres = self.dashboard_env()
-        query = self.runner(["docker", "exec", postgres, "psql", "-U", "postgres", "-d", "ployz_cloud", "-Atc",
-                             f"select inngest_run_id from volume_run where id = '{row['id']}'"],
+    def inngest_run(self, row):
+        """Cloud records the Inngest run that claimed a request; a request no run picked up has none."""
+        _, postgres = self.dashboard_env()
+        sql = f"select inngest_run_id from volume_run where id = '{row['id']}'"
+        query = self.runner(["docker", "exec", postgres, "psql", "-U", "postgres", "-d", "ployz_cloud", "-Atc", sql],
                             capture_output=True, text=True, timeout=60)
-        run_id = query.stdout.strip()
-        base = environment["INNGEST_BASE_URL"]
+        if query.returncode:
+            raise RuntimeError(f"psql exited {query.returncode} on {sql!r}: {(query.stderr or '').strip()[:500]}")
+        return query.stdout.strip()
+
+    def unclaimed(self, run):
+        """A request no Inngest run claimed sent nothing to a Machine, so whatever the trigger saw is another run's."""
+        if self.inngest_run(run):
+            return None
+        return (f"the first run {run.get('id')} ended {run.get('state')} and no Inngest run claimed it, so the trigger "
+                "evidence is not its")
+
+    def cancel(self, row):
+        run_id = self.inngest_run(row)
+        base = self.dashboard_env()[0]["INNGEST_BASE_URL"]
         status, text = http("DELETE", f"{base}/v1/runs/{run_id}")
-        evidence = [f"DELETE {run_id} {status} {text[:200]}"]
-        if status not in (200, 202, 204):
+        attempts = [f"DELETE {run_id} {status} {text[:200]}"]
+        landed = 200 <= status < 300
+        if not landed:
             mutation = "mutation($envID: UUID!, $runID: ULID!) { cancelRun(envID: $envID, runID: $runID) { id } }"
             for env_id in ("00000000-0000-4000-b000-000000000000", "00000000-0000-0000-0000-000000000000"):
                 status, text = http("POST", f"{base}/v0/gql", dict(query=mutation, variables=dict(envID=env_id, runID=run_id)))
-                evidence.append(f"gql {env_id} {status} {text[:200]}")
-                if status == 200 and '"errors"' not in text:
+                attempts.append(f"gql {env_id} {status} {text[:200]}")
+                landed = status == 200 and '"errors"' not in text
+                if landed:
                     break
-        return evidence
+        return [dict(kill="cancel", attempts=attempts, landed=landed)]
+
+    def runner_kill(self):
+        """verify-cluster's runner kill succeeds without killing anything when the recorded worker is already dead."""
+        pid_file = Path(self.run["cloud"]["dashboard"]) / ".verify" / "run" / "worker.pid"
+        old = int(pid_file.read_text())
+        alive_before = alive(old)
+        self.runner_state("kill")
+        alive_after = alive(old)
+        self.sleep(5)
+        self.runner_state("start")
+        new = int(pid_file.read_text())
+        return [dict(kill="runner", pid=old, alive_before=alive_before, alive_after_kill=alive_after, new_pid=new,
+                     landed=alive_before and not alive_after and new != old and alive(new))]
 
     def act(self, action, machine, row):
         if action == "cancel":
             self.runner_state("kill")
             return self.cancel(row)
         if action == "runner-kill":
-            self.runner_state("kill")
-            self.sleep(5)
-            self.runner_state("start")
-        elif action in ("kill-ployz", "kill-docker"):
+            return self.runner_kill()
+        if action in ("kill-ployz", "kill-docker"):
             unit = "ployz.service" if action == "kill-ployz" else "docker.service"
             kill = self.sh(machine, f"""
 before=$(systemctl show -p MainPID --value {unit}); invocation=$(systemctl show -p InvocationID --value {unit})
@@ -695,7 +891,7 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
 
     def evidence(self, name, since):
         for machine in self.machines:
-            journal = self.sh(machine, f"journalctl -u ployz.service -u ployz-volume-plugin.service --since @{int(since) - 2} --no-pager -o short-iso",
+            journal = self.sh(machine, f"journalctl -u ployz.service -u ployz-volume-plugin.service --since @{self.window(machine, since)} --no-pager -o short-iso",
                               check=False, timeout=120).stdout
             (self.out / f"{name}-{machine}.journal").write_text(journal)
             listing = self.sh(machine, f"zfs list -t all -H -o name,used,refer,readonly -r {self.pool}",
@@ -709,15 +905,26 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
         side = dict(writer=writer, other=other)
         destination = other
         self.prepare(case, other)
+        clocks = self.measure_clocks()
         started = self.clock()
-        result = dict(case, writer_before=writer, destination=destination, started=started)
         # Arm only once the Volume is idle: a cron sync crosses the same SetVolumeCopy points and would trip it.
         arm = (lambda: self.fault(case["fault"], side.get(case.get("fault_on")))) if case["fault"] else None
-        row = self.start_op(case["op"], destination, arm)
+        # A trigger must be the first run's, so it starts behind the clean-start barrier on every Machine.
+        row = self.start_op(case["op"], destination, arm, clean=bool(case["trigger"]))
+        if case["trigger"]:
+            started, clocks = self.since, self.calibration
+        readings = [dict(at="the clean start", clocks=clocks)]
+        result = dict(case, writer_before=writer, destination=destination, started=started, clocks=readings)
+        moved = []
+        if row.get("state") == "refused":
+            # Busy refusals are skips and approvals are answered, so this is a defect; a rerun would pass it.
+            raise RuntimeError(f"{case['op']} was refused: {json.dumps(row.get('reply'))[:1500]}")
         result["run"] = row
         if case["trigger"]:
             result["triggered"] = self.wait_trigger(case, row, started, side)
             if result["triggered"]:
+                result["triggered_at"] = self.clock()
+                moved += self.clock_moved("the trigger", readings)
                 result["action_evidence"] = self.act(case["action"], side[case["machine"]], row)
         if case["fault"]:
             self.fault(None)
@@ -734,8 +941,30 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
         lost = self.lost()
         result["probe"] = dict(lost=lost)
         result["failures"] = assess(states, lost)
+        if case["trigger"]:
+            result["failures"] += moved + self.clock_moved("the case end", readings)
         if case["trigger"] and not result.get("triggered"):
             result["failures"].append("the trigger never fired before the run ended")
+        if result.get("triggered") and (unowned := trigger_not_its(result["run"], result["triggered_at"])
+                                        or self.unclaimed(result["run"])):
+            result["failures"].append(unowned)
+        evidence = result.get("action_evidence")
+        if result.get("triggered") and case["action"] != "none" and not (evidence and all(e["landed"] for e in evidence)):
+            result["failures"].append(f"no evidence the {case['action']} landed: {json.dumps(evidence)[:500]}")
+        if case["action"] == "cancel" and result.get("triggered") and result["run"].get("state") not in ("cancelled", "lost"):
+            result["failures"].append(f"the cancel did not land: the run ended {result['run'].get('state')}")
+        last = (result["recovery"] or [result["run"]])[-1]
+        if last.get("state") != "done":
+            result["failures"].append(f"the last run ended {last.get('state')}")
+        # A move or its rerun ends on the destination; a mirror op never moves the writer, and an undo's Release restores it.
+        expected = destination if case["op"] == "move" and case["recover"] == "rerun" else writer
+        if result["final_writer"] != expected:
+            result["failures"].append(f"the Volume ended on {result['final_writer']}, not {expected}")
+        if case["op"] in ("mirror", "mirror-rm"):
+            want = "present" if case["op"] == "mirror" else "absent"
+            got = "absent" if states[destination]["readonly"].get(self.fs()) in (None, "absent") else "present"
+            if got != want:
+                result["failures"].append(f"the mirror on {destination} ended {got}, not {want}")
         result["passed"] = not result["failures"]
         if not result["passed"]:
             result["heal"] = self.heal(destination)
@@ -763,10 +992,10 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
 
     def run_all(self, cases):
         self.out.mkdir(parents=True, exist_ok=True)
-        self.setup()
-        self.start_probe()
-        results = []
+        results, escaped = [], None
         try:
+            self.setup()
+            self.start_probe()
             for case in cases:
                 try:
                     result = self.run_case(case)
@@ -790,8 +1019,15 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
                 results.append(result)
                 if not heal["healed"]:
                     break
+        except BaseException as error:
+            escaped = f"{type(error).__name__}: {error}"[:2000]
+            raise
         finally:
             report = self.stop_probe()
+            summary = self.summarize(results, report, escaped)
+        return summary
+
+    def summarize(self, results, report, escaped):
         acks = read_acks(self.probe_log)
         for result in results:
             if "settled" in result:
@@ -802,7 +1038,9 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
             manifest=str(self.manifest), head=subprocess.run(["git", "-C", str(REPO), "rev-parse", "HEAD"],
                                                               capture_output=True, text=True).stdout.strip(),
             physical=self.physical, size_gb=self.size_gb, probe=report, downtime=downtime(results),
-            passed=all(result["passed"] for result in results) and bool(report) and not report.get("lost"),
+            passed=not escaped and all(result["passed"] for result in results) and bool(report)
+            and not report.get("lost"),
+            error=escaped,
             cases=[dict(name=result["name"], cell=result.get("cell"), step=result.get("step"),
                         passed=result["passed"], skipped=result.get("skipped"),
                         final_writer=result.get("final_writer"),

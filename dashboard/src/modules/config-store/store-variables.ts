@@ -37,14 +37,18 @@ export function serviceVariables(rows: ReadonlyMap<string, SettingRow>, serviceI
   }).sort((a, b) => a.key.localeCompare(b.key));
 }
 
+const leavesValueless = Schema.is(Schema.Struct({ after: Schema.Struct({ secret: Schema.Literal(false) }) }));
+
 /**
  * The keys of a Service's secrets without a value that no staged value change sets: deploys skip them until they
- * are set. Staging only `.exported` sets nothing.
+ * are set. Staging only `.exported` sets nothing, and neither does History bringing one back Not set.
  */
 export function notSetVariables(rows: ReadonlyMap<string, SettingRow>, changes: ReadonlyMap<string, unknown>) {
-  return serviceVariables(rows, "", changes)
-    .flatMap((variable) => variable.value.type === "sealed" && variable.value.notSet && !changes.has(`env.${variable.key}`)
-      ? [variable.key] : []);
+  return serviceVariables(rows, "", changes).flatMap((variable) => {
+    const change = changes.get(`env.${variable.key}`);
+    return variable.value.type === "sealed" && variable.value.notSet && (change === undefined || leavesValueless(change))
+      ? [variable.key] : [];
+  });
 }
 
 /**

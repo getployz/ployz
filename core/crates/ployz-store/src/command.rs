@@ -17,7 +17,7 @@ pub use crate::project::{
     CreateEnvironment, CreateProject, EnvironmentCreated, ProjectCreated, ProjectSummary,
     RenameProject,
 };
-pub use crate::review::history::{HistoryStaged, StageHistory};
+pub use crate::review::history::{HistoryStaged, NotSetVariable, StageHistory};
 pub use crate::review::publish::{Discard, DiscardTarget, Discarded, Publish, Published};
 pub use crate::service::{
     CreateService, RemoveService, RenameService, ServiceStaged, ServiceSummary,

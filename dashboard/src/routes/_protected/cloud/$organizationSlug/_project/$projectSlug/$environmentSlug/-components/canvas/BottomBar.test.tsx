@@ -27,6 +27,8 @@ const onPublish = vi.fn();
 let active: DeploymentSummary[] = [];
 let ended: DeploymentSummary[] | undefined = [];
 let storage: (deploymentId: string) => string | null = () => null;
+/** Secrets without a value the next Deploy leaves out. */
+let notSet = 0;
 /** Moves Deployments between in flight and ended while the bar stays mounted. */
 let settle: (lists: { active: DeploymentSummary[]; ended: DeploymentSummary[] | undefined }) => void = () => {};
 
@@ -34,6 +36,7 @@ beforeEach(() => {
   active = [];
   ended = [];
   storage = () => null;
+  notSet = 0;
   localStorage.clear();
   vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
 });
@@ -61,7 +64,7 @@ function open(url: string, groups: ChangeGroup[] = [], totalChanges = 0, canPubl
         {agent ? <aside aria-label="Agent"><div ref={setDock} /></aside> : null}
         <section aria-label="Canvas"><div ref={setSlot} /></section>
         <BottomBar groups={groups} totalChanges={totalChanges} canPublish={canPublish} onDeploy={onDeploy} onPublish={onPublish}
-          onDiscardAll={onDiscardAll} onDiscardNode={() => {}} onDiscardRow={() => {}} active={lists.active} ended={lists.ended} storage={storage} notes={{}}
+          onDiscardAll={onDiscardAll} onDiscardNode={() => {}} onDiscardRow={() => {}} active={lists.active} ended={lists.ended} storage={storage} notes={{}} notSet={notSet}
           proposals={{ included: [] }} />
         <Outlet />
       </HistoryStages.Provider>
@@ -105,6 +108,12 @@ it("shows changes to deploy first, in one row like Railway's: the count, Details
   await act(async () => { fireEvent.click(staged.getByRole("button", { name: "More change actions" })); });
   fireEvent.click(await screen.findByRole("menuitem", { name: "Discard all changes" }));
   expect(onDiscardAll).toHaveBeenCalledOnce();
+});
+
+it("counts the secrets the Deploy leaves out beside the changes", async () => {
+  notSet = 2;
+  open(canvasUrl, [replicas], 1);
+  expect((await bar()).getByText("1 change · 2 not set")).toBeTruthy();
 });
 
 it("keeps the review open through Discard all so its inverse draft stays reviewable", async () => {

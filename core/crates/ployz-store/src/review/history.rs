@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
-use ployz_core::RpcError;
 use ployz_core::config::{SavedEnvironmentIntent, SavedVariableIntent};
+use ployz_core::{RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
@@ -113,6 +113,16 @@ pub struct HistoryStaged {
     pub environment: EnvironmentSummary,
     pub saved: Option<Revision>,
     pub changed: bool,
+    /// Sealed variables the action brought back without a value.
+    pub not_set: Vec<NotSetVariable>,
+}
+
+/// A sealed variable History brought back sealed without a value: Deploys leave
+/// it out until someone sets it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct NotSetVariable {
+    pub service: ServiceName,
+    pub key: String,
 }
 
 pub(crate) fn history(
@@ -221,11 +231,13 @@ pub(crate) fn stage(
             json!({ "history_preview": preview_of(&environment, &reviewed, &prepared, &query) }),
         ));
     }
+    let not_set = prepared.not_set().to_vec();
     let (environment, changed) = prepared.persist(tx)?;
     Ok(HistoryStaged {
         environment,
         saved: reviewed.view.saved,
         changed,
+        not_set,
     })
 }
 
@@ -293,6 +305,7 @@ fn prepare(
     match super::authored::prepare_history(
         tx,
         environment,
+        scrub.ever(),
         reviewed.saved.as_ref().map(|saved| &saved.intent),
         &selected,
         previous.as_ref(),
