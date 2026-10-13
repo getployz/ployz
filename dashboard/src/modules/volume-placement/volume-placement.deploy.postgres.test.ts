@@ -131,6 +131,23 @@ describe("deploying a Volume placement", () => {
     }));
   });
 
+  it("keeps a move that failed after handover reached, and marks only the Volumes the Deploy never got to", async () => {
+    members = [member("web-1", "writer"), member("web-2", "mirror")];
+    await stageMove("web-2", ["web-2"]);
+    const started = await run(advancePlacement(organizationId, "dep-1", null, inspect, answered));
+    if (started.kind !== "wait") throw new Error("expected a run");
+    const untouched = { primary: web("web-1"), mirrors: [web("web-2")], deletes: [] };
+    await run(stagePlacement(organizationId, { environment, volumeId: "vol2", staged: untouched, mirrors: [] }));
+    await run(stampPlacements(organizationId, ["vol2"], "dep-1"));
+
+    await endRun(started.wait.runId, "failed", "web-2 did not start");
+    members = [member("web-2", "writer"), member("web-1", "mirror")];
+    expect(await run(advancePlacement(organizationId, "dep-1", started.wait, inspect, answered))).toEqual({ kind: "failed", message: "data: web-2 did not start" });
+    const rows = await run(listPlacements(organizationId));
+    expect(rows.find((row) => row.volumeId === volumeId)).toEqual(expect.objectContaining({ staged: { primary: web("web-2"), mirrors: [], deletes: [] }, unreached: false, deploymentId: null }));
+    expect(rows.find((row) => row.volumeId === "vol2")).toEqual(expect.objectContaining({ staged: untouched, unreached: true, deploymentId: null }));
+  });
+
   it("keeps a restore whose copy failed claimed, for the Store failure to take back", async () => {
     const source = [member("web-1", "writer"), member("web-2", "mirror")];
     const byVolume: MemberInspector = (_, _environment, id) => Effect.succeed(id === "vol2" ? [] : source);
