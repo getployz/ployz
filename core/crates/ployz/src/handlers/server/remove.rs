@@ -148,7 +148,7 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
             .map(DataLoss::name)
             .collect::<Vec<_>>(),
     );
-    let dead = matches!(held, Some(HeldCopies::Unanswered));
+    let dead = matches!(held, Some(HeldCopies::Dead));
     let unanswered = format!(
         "Server {} did not answer in {}s. Removing it without a reset leaves any Volume copies on it behind",
         selected.name,

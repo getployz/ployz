@@ -760,7 +760,7 @@ impl Client {
             return Err(cloud_holds_last(selected));
         }
         let held = match self.held_copies(observation).await? {
-            HeldCopies::Unanswered => BTreeSet::new(),
+            HeldCopies::Dead => BTreeSet::new(),
             HeldCopies::Answered(held) => held,
         };
         if !held.is_empty() {
@@ -773,18 +773,12 @@ impl Client {
         forget(self, selected).await
     }
 
-    /// What `machine` answers when asked for its storage: the Docker Volumes it holds a
-    /// copy of, as writer or any other role, which a removal without a reset leaves behind.
-    ///
-    /// # Errors
-    ///
-    /// Returns a generated [`RpcError`] when `machine` replies with an error.
     pub(crate) async fn held_copies(
         &self,
         machine: &MachineObservation,
     ) -> Result<HeldCopies, RpcError> {
         if !machine.invites_rpc() {
-            return Ok(HeldCopies::Unanswered);
+            return Ok(HeldCopies::Dead);
         }
         let mut client = self.clone();
         match client
@@ -797,7 +791,7 @@ impl Client {
             Ok(storage) => Ok(HeldCopies::Answered(
                 storage.roles().map(|(name, _)| name.clone()).collect(),
             )),
-            Err(error) if error.is_unanswered() => Ok(HeldCopies::Unanswered),
+            Err(error) if error.is_unanswered() => Ok(HeldCopies::Dead),
             Err(error) => {
                 let error = rpc_error(error);
                 Err(RpcError {
@@ -1140,11 +1134,9 @@ async fn remove_volumes_on(
     .await
 }
 
-/// Whether a Server answered the storage read a removal without a reset asks it.
 #[derive(Debug)]
 pub(crate) enum HeldCopies {
-    /// It sends no reply, or its membership invites no call.
-    Unanswered,
+    Dead,
     Answered(BTreeSet<DockerVolumeName>),
 }
 

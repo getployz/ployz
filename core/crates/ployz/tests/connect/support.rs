@@ -153,7 +153,6 @@ pub(super) struct DiscoveryService {
     pub(super) inspect_calls: Arc<AtomicUsize>,
     pub(super) storage: MachineStorageObservation,
     pub(super) storage_capacity: Option<ployz_core::StorageCapacity>,
-    /// InspectStorage never replies, as from a hung daemon whose membership stays Up.
     pub(super) storage_hangs: bool,
     pub(super) recover_volume_on_storage_inspect: Option<DockerVolume>,
     pub(super) container_list_calls: Arc<Mutex<BTreeMap<MachineId, usize>>>,
