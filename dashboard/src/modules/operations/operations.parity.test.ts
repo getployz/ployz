@@ -7,6 +7,8 @@ const AGENT_TOOLS = new URL("../../../../core/crates/ployz-store/tests/snapshots
 const CLI_HANDLER = new URL("../../routes/api/cli/-cli.handler.ts", import.meta.url);
 
 /** Fields that address or key a call rather than carry an option. */
+/** Store tools that edit a config, not run an operation; A8 registers them. */
+const CONFIG_STORE_TOOLS = new Set(["volume_add", "volume_update", "volume_remove"]);
 const ADDRESSING = {
   agent: new Set(["request_key"]),
   cli: new Set(["kind"]),
@@ -18,6 +20,7 @@ const AgentTools = Schema.fromJsonString(Schema.Struct({
   tools: Schema.Array(Schema.Struct({
     name: Schema.String,
     read_only: Schema.Boolean,
+    gate: Schema.Literals(["never", "store", "cloud"]),
     input_schema: Schema.Struct({ properties: Schema.optional(Schema.Record(Schema.String, Schema.Struct({}))) }),
   })),
 }));
@@ -95,8 +98,10 @@ function drift(): string[] {
     if (!idempotent.has(tool)) problems.push(`operation tool ${tool}: no operation is idempotent under it`);
   }
   const operationTools = new Set<string>(OPERATION_TOOLS);
+  const runsInCloud = ({ name, gate }: (typeof agentTools)[number]) =>
+    operationTools.has(name) || gate === "cloud" || /^(server|volume)_/.test(name);
   for (const tool of agentTools) {
-    if (tool.read_only || !operationTools.has(tool.name)) continue;
+    if (tool.read_only || CONFIG_STORE_TOOLS.has(tool.name) || !runsInCloud(tool)) continue;
     const claimed = agentClaims.get(tool.name);
     if (claimed === undefined) {
       problems.push(`agent tool ${tool.name}: no operation carries it`);
