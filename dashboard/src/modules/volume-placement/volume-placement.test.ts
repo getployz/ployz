@@ -393,6 +393,15 @@ describe("storageStep", () => {
     expect(storageStep("dep-1", [taken], [run("v1", "web-2 did not answer")])).toBe("pg-data · Moving to web-2 · web-2 did not answer");
   });
 
+  it("words a restore's run, which runs on the Volume it copies from", () => {
+    const restoring = { ...row(null), volumeId: "v2", deploymentId: "dep-1", staged: {
+      primary: id("web-1"), mirrors: [], deletes: [],
+      seed: { sourceVolumeId: "v1", sourceName: "pg-data", dockerVolume: "pg-copy", point: { guid: "11", name: "ployz-1", at: 1 } },
+    } };
+    const seeding: VolumeRunView = { ...run("v1", null), kind: "seed", args: { into: { volumeId: "v2", dockerVolume: "pg-copy", name: "pg-copy" }, guid: "11", name: "ployz-1" } };
+    expect(storageStep("dep-1", [restoring], [seeding])).toBe("pg-data · Restoring into pg-copy");
+  });
+
   it("ignores runs on Volumes another Deploy, or no Deploy, took", () => {
     expect(storageStep("dep-2", [taken], [run("v1", null)])).toBeNull();
     expect(storageStep("dep-1", [taken], [run("v9", null)])).toBeNull();

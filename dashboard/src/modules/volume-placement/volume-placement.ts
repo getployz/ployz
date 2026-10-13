@@ -667,7 +667,8 @@ export function restorePoints(members: readonly Member[]): RestorePoint[] {
 
 /** What Deploy `deploymentId` is doing to storage, from the run under way on a Volume it took: "pg-data · Moving to web-2". */
 export function storageStep(deploymentId: string, rows: readonly PlacementRow[], runs: readonly VolumeRunView[]): string | null {
-  const taken = new Set(rows.filter((row) => row.deploymentId === deploymentId).map((row) => row.volumeId));
+  // A restore runs on the Volume it copies from, not the one the Deploy took.
+  const taken = new Set(rows.filter((row) => row.deploymentId === deploymentId).flatMap((row) => [row.volumeId, row.staged?.seed?.sourceVolumeId ?? row.volumeId]));
   const run = runs.find((candidate) => taken.has(candidate.volume_id));
   return run === undefined ? null : [run.volume_name, runWords(run), run.message].filter((part) => part !== null).join(" · ");
 }
