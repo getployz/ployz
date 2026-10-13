@@ -35,6 +35,15 @@ CREATE TABLE volumes
     PRIMARY KEY (machine_id, name)
 );
 
+CREATE TABLE ingress_routes
+(
+    machine_id TEXT      NOT NULL,
+    service_id TEXT      NOT NULL,
+    deploy     TEXT      NOT NULL DEFAULT '',
+    containers TEXT      NOT NULL DEFAULT '[]' CHECK (json_valid(containers)),
+    PRIMARY KEY (machine_id, service_id)
+);
+
 CREATE INDEX idx_machines_name ON machines (name);
 CREATE INDEX idx_containers_machine_id ON containers (machine_id);
 CREATE INDEX idx_containers_service_id ON containers (service_id);

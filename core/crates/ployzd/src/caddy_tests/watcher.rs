@@ -10,7 +10,8 @@ use axum::{
     Router,
     body::{Body, Bytes},
     extract::State,
-    response::Response,
+    http::StatusCode,
+    response::{IntoResponse, Response},
     routing::post,
 };
 use futures_util::StreamExt;
@@ -515,6 +516,370 @@ async fn pointer_change_reloads_caddy_with_pointed_upstreams() {
     std::fs::remove_dir_all(directory).unwrap();
 }
 
+#[tokio::test]
+async fn ingress_never_reads_or_subscribes_to_ingress_routes() {
+    let WatcherFixture {
+        machine,
+        state,
+        address,
+        server,
+        directory,
+    } = watcher_fixture().await;
+    let first = state.api_container();
+    let key = ServingPointer::key(&first.identity());
+    state.write_pointer(&key, pointer("d1", &first));
+    let (load_tx, mut load_rx) = mpsc::unbounded_channel();
+    let admin = TestAdmin { loads: load_tx };
+    let shutdown = CancellationToken::new();
+    let watcher = tokio::spawn(watch_caddy(
+        machine.clone(),
+        ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        directory.join(CONFIG_FILE),
+        shutdown.clone(),
+        move || std::future::ready(Ok(Some(admin.clone()))),
+    ));
+
+    next_load(&mut load_rx).await;
+    state.wait_for_ack_transactions(1).await;
+    assert_eq!(state.last_acks(), vec![ack(&machine, "d1", &first)]);
+
+    let second = observation(
+        2,
+        &machine.id,
+        "api",
+        Some([10, 210, 1, 3]),
+        vec![ingress("example.com", 80, HttpProtocol::Http)],
+    );
+    state.containers.lock().unwrap().push(second.clone());
+    state.write_pointer(&key, pointer("d2", &second));
+    let flipped = next_load(&mut load_rx).await;
+    assert!(flipped.contains("10.210.1.3:80"), "{flipped}");
+    state.wait_for_ack_transactions(2).await;
+    assert_eq!(state.last_acks(), vec![ack(&machine, "d2", &second)]);
+
+    state.write_certificate("example.com", CHALLENGE);
+    let challenged = next_load(&mut load_rx).await;
+    assert!(challenged.contains("acme-challenge"), "{challenged}");
+
+    let queries = state.container_queries();
+    settle().await;
+    pause();
+    advance(Duration::from_secs(5)).await;
+    settle().await;
+    resume();
+    timeout(Duration::from_secs(1), async {
+        while state.container_queries() == queries {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("watcher did not resnapshot");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    assert_eq!(state.ack_transactions(), 2);
+    let statements = state.statements.lock().unwrap().clone();
+    assert!(
+        statements
+            .iter()
+            .any(|(kind, sql)| *kind == Sent::Transaction
+                && sql.starts_with("INSERT INTO ingress_routes")),
+        "{statements:?}"
+    );
+    for (kind, sql) in &statements {
+        assert!(
+            *kind == Sent::Transaction || !sql.contains("ingress_routes"),
+            "the ingress read its own acks: {kind:?} {sql}"
+        );
+    }
+
+    shutdown.cancel();
+    watcher.await.unwrap().unwrap();
+    server.abort();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
+async fn certificate_only_reload_writes_no_ack() {
+    let WatcherFixture {
+        machine,
+        state,
+        address,
+        server,
+        directory,
+    } = watcher_fixture().await;
+    let first = state.api_container();
+    state.write_pointer(
+        &ServingPointer::key(&first.identity()),
+        pointer("d1", &first),
+    );
+    let (load_tx, mut load_rx) = mpsc::unbounded_channel();
+    let admin = TestAdmin { loads: load_tx };
+    let shutdown = CancellationToken::new();
+    let watcher = tokio::spawn(watch_caddy(
+        machine,
+        ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        directory.join(CONFIG_FILE),
+        shutdown.clone(),
+        move || std::future::ready(Ok(Some(admin.clone()))),
+    ));
+    next_load(&mut load_rx).await;
+    state.wait_for_ack_transactions(1).await;
+
+    state.write_certificate("example.com", CHALLENGE);
+    let challenged = next_load(&mut load_rx).await;
+    assert!(challenged.contains("acme-challenge"), "{challenged}");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(state.ack_transactions(), 1);
+
+    shutdown.cancel();
+    watcher.await.unwrap().unwrap();
+    server.abort();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
+async fn ack_written_when_deploy_changes_with_same_routed_set() {
+    let WatcherFixture {
+        machine,
+        state,
+        address,
+        server,
+        directory,
+    } = watcher_fixture().await;
+    let first = state.api_container();
+    let key = ServingPointer::key(&first.identity());
+    state.write_pointer(&key, pointer("d1", &first));
+    let (load_tx, mut load_rx) = mpsc::unbounded_channel();
+    let admin = TestAdmin { loads: load_tx };
+    let shutdown = CancellationToken::new();
+    let watcher = tokio::spawn(watch_caddy(
+        machine.clone(),
+        ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        directory.join(CONFIG_FILE),
+        shutdown.clone(),
+        move || std::future::ready(Ok(Some(admin.clone()))),
+    ));
+    next_load(&mut load_rx).await;
+    state.wait_for_ack_transactions(1).await;
+
+    state.write_pointer(&key, pointer("d2", &first));
+    state.wait_for_ack_transactions(2).await;
+    assert_eq!(state.last_acks(), vec![ack(&machine, "d2", &first)]);
+
+    shutdown.cancel();
+    watcher.await.unwrap().unwrap();
+    server.abort();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
+async fn removed_service_pointer_deletes_its_ack() {
+    let WatcherFixture {
+        machine,
+        state,
+        address,
+        server,
+        directory,
+    } = watcher_fixture().await;
+    let first = state.api_container();
+    state.write_pointer(
+        &ServingPointer::key(&first.identity()),
+        pointer("d1", &first),
+    );
+    let (load_tx, mut load_rx) = mpsc::unbounded_channel();
+    let admin = TestAdmin { loads: load_tx };
+    let shutdown = CancellationToken::new();
+    let watcher = tokio::spawn(watch_caddy(
+        machine.clone(),
+        ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        directory.join(CONFIG_FILE),
+        shutdown.clone(),
+        move || std::future::ready(Ok(Some(admin.clone()))),
+    ));
+    next_load(&mut load_rx).await;
+    state.wait_for_ack_transactions(1).await;
+
+    state.remove_pointers();
+    state.wait_for_ack_transactions(2).await;
+    let transactions = state.transactions.lock().unwrap().clone();
+    let [_, deletes] = transactions.as_slice() else {
+        panic!("expected two ack transactions: {}", transactions.len());
+    };
+    let [deleted] = deletes.as_slice() else {
+        panic!("expected one delete statement: {}", deletes.len());
+    };
+    assert!(
+        deleted.query.starts_with("DELETE FROM ingress_routes"),
+        "{}",
+        deleted.query
+    );
+    assert_eq!(
+        deleted.params,
+        vec![json!(machine.id), json!(first.identity().to_string())]
+    );
+
+    shutdown.cancel();
+    watcher.await.unwrap().unwrap();
+    server.abort();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
+async fn committed_ack_with_a_lost_response_is_rewritten_when_the_pointer_returns() {
+    let WatcherFixture {
+        machine,
+        state,
+        address,
+        server,
+        directory,
+    } = watcher_fixture().await;
+    let first = state.api_container();
+    let key = ServingPointer::key(&first.identity());
+    state.write_pointer(&key, pointer("d1", &first));
+    let (load_tx, mut load_rx) = mpsc::unbounded_channel();
+    let admin = TestAdmin { loads: load_tx };
+    let shutdown = CancellationToken::new();
+    let watcher = tokio::spawn(watch_caddy(
+        machine.clone(),
+        ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        directory.join(CONFIG_FILE),
+        shutdown.clone(),
+        move || std::future::ready(Ok(Some(admin.clone()))),
+    ));
+    next_load(&mut load_rx).await;
+    state.wait_for_ack_transactions(1).await;
+
+    state
+        .lose_next_transaction_response
+        .store(true, Ordering::SeqCst);
+    state.write_pointer(&key, pointer("d2", &first));
+    state.wait_for_ack_transactions(2).await;
+    assert_eq!(state.last_acks(), vec![ack(&machine, "d2", &first)]);
+
+    state.write_pointer(&key, pointer("d1", &first));
+    state.wait_for_ack_transactions(3).await;
+    assert_eq!(state.last_acks(), vec![ack(&machine, "d1", &first)]);
+
+    shutdown.cancel();
+    watcher.await.unwrap().unwrap();
+    server.abort();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
+async fn ack_written_without_a_caddy_admin() {
+    let WatcherFixture {
+        machine,
+        state,
+        address,
+        server,
+        directory,
+    } = watcher_fixture().await;
+    let first = state.api_container();
+    state.write_pointer(
+        &ServingPointer::key(&first.identity()),
+        pointer("d1", &first),
+    );
+    let caddyfile = directory.join(CONFIG_FILE);
+    let shutdown = CancellationToken::new();
+    let watcher = tokio::spawn(run(
+        machine.clone(),
+        ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        caddyfile.clone(),
+        directory.join("missing-admin.sock"),
+        shutdown.clone(),
+    ));
+
+    wait_for_caddyfile(&caddyfile, "10.210.1.2:80").await;
+    state.wait_for_ack_transactions(1).await;
+    assert_eq!(state.last_acks(), vec![ack(&machine, "d1", &first)]);
+
+    shutdown.cancel();
+    watcher.await.unwrap().unwrap();
+    server.abort();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
+async fn no_ack_when_the_caddy_load_fails() {
+    let WatcherFixture {
+        machine,
+        state,
+        address,
+        server,
+        directory,
+    } = watcher_fixture().await;
+    let first = state.api_container();
+    state.write_pointer(
+        &ServingPointer::key(&first.identity()),
+        pointer("d1", &first),
+    );
+    let (load_tx, mut load_rx) = mpsc::unbounded_channel();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let admin = RetryAdmin {
+        attempts: Arc::clone(&attempts),
+        loads: load_tx,
+    };
+    let shutdown = CancellationToken::new();
+    let watcher = tokio::spawn(watch_caddy(
+        machine.clone(),
+        ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        directory.join(CONFIG_FILE),
+        shutdown.clone(),
+        move || std::future::ready(Ok(Some(admin.clone()))),
+    ));
+
+    timeout(Duration::from_millis(500), async {
+        while attempts.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("first load was not attempted");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(state.ack_transactions(), 0, "a failed load wrote an ack");
+
+    timeout(Duration::from_secs(2), load_rx.recv())
+        .await
+        .expect("failed load was not retried")
+        .unwrap();
+    state.wait_for_ack_transactions(1).await;
+    assert_eq!(state.last_acks(), vec![ack(&machine, "d1", &first)]);
+
+    shutdown.cancel();
+    watcher.await.unwrap().unwrap();
+    server.abort();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+const CHALLENGE: &str = r#"{"challenge_token":"LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0","challenge_response":"LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}"#;
+
+fn pointer(deploy: &str, container: &ContainerObservation) -> String {
+    serde_json::to_string(&ServingPointer {
+        deploy: DeploymentLogId::parse(deploy).unwrap(),
+        containers: vec![container.container_id],
+        previous: None,
+        retiring: Vec::new(),
+    })
+    .unwrap()
+}
+
+fn ack(machine: &Machine, deploy: &str, container: &ContainerObservation) -> Vec<Value> {
+    vec![
+        json!(machine.id),
+        json!(container.identity().to_string()),
+        json!(deploy),
+        json!(serde_json::to_string(&[&container.container_id]).unwrap()),
+    ]
+}
+
+async fn next_load(loads: &mut mpsc::UnboundedReceiver<String>) -> String {
+    timeout(Duration::from_secs(2), loads.recv())
+        .await
+        .expect("Caddy was not loaded")
+        .unwrap()
+}
+
 struct WatcherFixture {
     machine: Machine,
     state: WatchState,
@@ -557,6 +922,10 @@ async fn watcher_fixture() -> WatcherFixture {
         certificate_subscriptions: Arc::new(Mutex::new(Vec::new())),
         pointers: Arc::new(Mutex::new(Vec::new())),
         pointer_subscriptions: Arc::new(Mutex::new(Vec::new())),
+        certificates: Arc::new(Mutex::new(Vec::new())),
+        statements: Arc::new(Mutex::new(Vec::new())),
+        transactions: Arc::new(Mutex::new(Vec::new())),
+        lose_next_transaction_response: Arc::new(AtomicBool::new(false)),
     };
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -567,6 +936,7 @@ async fn watcher_fixture() -> WatcherFixture {
             Router::new()
                 .route("/v1/queries", post(query))
                 .route("/v1/subscriptions", post(subscribe))
+                .route("/v1/transactions", post(transact))
                 .with_state(server_state),
         )
         .await
@@ -641,6 +1011,10 @@ struct WatchState {
     certificate_subscriptions: Arc<Mutex<Vec<mpsc::UnboundedSender<Bytes>>>>,
     pointers: Arc<Mutex<Vec<(String, String)>>>,
     pointer_subscriptions: Arc<Mutex<Vec<mpsc::UnboundedSender<Bytes>>>>,
+    certificates: Arc<Mutex<Vec<(String, String)>>>,
+    statements: Arc<Mutex<Vec<(Sent, String)>>>,
+    transactions: Arc<Mutex<Vec<Vec<Statement>>>>,
+    lose_next_transaction_response: Arc<AtomicBool>,
 }
 
 impl WatchState {
@@ -651,6 +1025,15 @@ impl WatchState {
             .unwrap()
             .first_mut()
             .expect("watch fixture has an API container") = container;
+    }
+
+    fn api_container(&self) -> ContainerObservation {
+        self.containers
+            .lock()
+            .unwrap()
+            .first()
+            .expect("watch fixture has an API container")
+            .clone()
     }
 
     fn mutate(&self, mutate: impl FnOnce(&mut ployz_core::ContainerObservationParts)) {
@@ -682,6 +1065,15 @@ impl WatchState {
 
     fn write_pointer(&self, key: &str, value: String) {
         *self.pointers.lock().unwrap() = vec![(key.to_owned(), value)];
+        self.notify_pointers();
+    }
+
+    fn remove_pointers(&self) {
+        self.pointers.lock().unwrap().clear();
+        self.notify_pointers();
+    }
+
+    fn notify_pointers(&self) {
         self.pointer_subscriptions
             .lock()
             .unwrap()
@@ -692,6 +1084,52 @@ impl WatchState {
             });
     }
 
+    fn write_certificate(&self, hostname: &str, body: &str) {
+        *self.certificates.lock().unwrap() = vec![(hostname.to_owned(), body.to_owned())];
+        self.send_certificates(b"{\"change\":{}}\n");
+    }
+
+    fn container_queries(&self) -> usize {
+        self.statements
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(kind, sql)| *kind == Sent::Query && sql.contains("FROM containers"))
+            .count()
+    }
+
+    fn ack_transactions(&self) -> usize {
+        self.transactions.lock().unwrap().len()
+    }
+
+    fn last_acks(&self) -> Vec<Vec<Value>> {
+        self.transactions
+            .lock()
+            .unwrap()
+            .last()
+            .expect("an ack transaction was written")
+            .iter()
+            .map(|statement| {
+                assert!(
+                    statement.query.contains("ingress_routes"),
+                    "{}",
+                    statement.query
+                );
+                statement.params.clone()
+            })
+            .collect()
+    }
+
+    async fn wait_for_ack_transactions(&self, count: usize) {
+        timeout(Duration::from_secs(5), async {
+            while self.ack_transactions() < count {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("ack transaction {count} was never written"));
+    }
+
     fn send_certificates(&self, event: &'static [u8]) {
         self.certificate_subscriptions
             .lock()
@@ -700,15 +1138,26 @@ impl WatchState {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Sent {
+    Query,
+    Subscription,
+    Transaction,
+}
+
+#[derive(Clone, Deserialize)]
 struct Statement {
     query: String,
-    #[serde(rename = "params")]
-    _params: Vec<Value>,
+    params: Vec<Value>,
 }
 
 async fn query(State(state): State<WatchState>, body: Bytes) -> Bytes {
     let statement: Statement = serde_json::from_slice(&body).unwrap();
+    state
+        .statements
+        .lock()
+        .unwrap()
+        .push((Sent::Query, statement.query.clone()));
     if statement.query == "SELECT id, machine_id, container FROM containers ORDER BY id" {
         let containers = state.containers.lock().unwrap();
         events(
@@ -722,7 +1171,13 @@ async fn query(State(state): State<WatchState>, body: Bytes) -> Bytes {
             }),
         )
     } else if statement.query == "SELECT hostname, body FROM certificates ORDER BY hostname" {
-        events(&["hostname", "body"], [])
+        let certificates = state.certificates.lock().unwrap();
+        events(
+            &["hostname", "body"],
+            certificates
+                .iter()
+                .map(|(hostname, body)| vec![json!(hostname), json!(body)]),
+        )
     } else if statement.query
         == "SELECT key AS serving_key, value FROM cluster WHERE key LIKE 'serving/%'"
     {
@@ -740,6 +1195,11 @@ async fn query(State(state): State<WatchState>, body: Bytes) -> Bytes {
 
 async fn subscribe(State(state): State<WatchState>, body: Bytes) -> Response {
     let statement: Statement = serde_json::from_slice(&body).unwrap();
+    state
+        .statements
+        .lock()
+        .unwrap()
+        .push((Sent::Subscription, statement.query.clone()));
     let (columns, subscriptions, stall) =
         if statement.query == "SELECT id, machine_id, container FROM containers" {
             state.container_opens.fetch_add(1, Ordering::SeqCst);
@@ -778,6 +1238,26 @@ async fn subscribe(State(state): State<WatchState>, body: Bytes) -> Response {
     Response::new(Body::from_stream(
         UnboundedReceiverStream::new(receiver).map(Ok::<_, Infallible>),
     ))
+}
+
+async fn transact(State(state): State<WatchState>, body: Bytes) -> Response {
+    let statements: Vec<Statement> = serde_json::from_slice(&body).unwrap();
+    state.statements.lock().unwrap().extend(
+        statements
+            .iter()
+            .map(|statement| (Sent::Transaction, statement.query.clone())),
+    );
+    let results = vec![json!({"rows_affected": 1, "time": 0.0}); statements.len()];
+    state.transactions.lock().unwrap().push(statements);
+    if state
+        .lose_next_transaction_response
+        .swap(false, Ordering::SeqCst)
+    {
+        return StatusCode::GATEWAY_TIMEOUT.into_response();
+    }
+    serde_json::to_vec(&json!({ "results": results, "time": 0.0 }))
+        .unwrap()
+        .into_response()
 }
 
 async fn wait_for_caddyfile(path: &Path, expected: &str) -> String {

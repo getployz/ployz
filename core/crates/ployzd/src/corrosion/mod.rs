@@ -28,7 +28,10 @@ pub use publisher::{run_machine_publisher, wait_for_catch_up};
 pub use service::{
     CorrosionConfig, CorrosionPaths, DEFAULT_CONTAINER_NAME, RunningCorrosion, remove_retained,
 };
-pub(crate) use store::{LocalContainerSnapshot, LocalVolumeSnapshot, ServingPointers};
+pub(crate) use store::{
+    IngressRouteAck, IngressRouteChange, LocalContainerSnapshot, LocalVolumeSnapshot,
+    ServingPointers,
+};
 pub use store::{ReplicatedObservations, ReplicatedStore};
 
 use std::time::Duration;
