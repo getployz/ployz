@@ -220,7 +220,10 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
         Some(credential) => Some(approval::approved(
             &runtime,
             credential,
-            Verb::Remove,
+            match removal {
+                Removal::Reset => Verb::Remove,
+                Removal::Forget => Verb::Forget,
+            },
             matches.get_one::<String>("approval").cloned(),
             |id| {
                 let mut command = accepting.clone();

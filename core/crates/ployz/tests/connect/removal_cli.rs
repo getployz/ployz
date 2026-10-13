@@ -284,6 +284,7 @@ type Asked = std::sync::Arc<std::sync::Mutex<Vec<(String, serde_json::Value)>>>;
 type Reads = std::sync::Arc<std::sync::atomic::AtomicUsize>;
 
 const ASKED: &str = r#"{"error":{"code":"approval_required","message":"A human must approve this first: this removal takes Server two out","details":{"approval_id":"apr_9","approval":"remove:abc","effects":[{"kind":"removes_server","name":"two","node":"b","path":"servers/b"}],"operation":{"verb":"remove","name":"two"}}}}"#;
+const ASKED_FORGET: &str = r#"{"error":{"code":"approval_required","message":"A human must approve this first: this forget takes Server two out","details":{"approval_id":"apr_9","approval":"forget:abc","effects":[{"kind":"removes_server","name":"two","node":"b","path":"servers/b"}],"operation":{"verb":"forget","name":"two"}}}}"#;
 fn fake_cloud(settled: &'static str, gated: bool) -> (String, Asked, Reads) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let cloud = format!("http://{}", listener.local_addr().unwrap());
@@ -321,7 +322,8 @@ fn fake_cloud(settled: &'static str, gated: bool) -> (String, Asked, Reads) {
                 let body = serde_json::from_slice(&body).unwrap();
                 seen.lock().unwrap().push((line.trim().to_owned(), body));
                 if gated && !approved {
-                    ("409 Conflict", ASKED)
+                    let forgets = line.contains("/forget ");
+                    ("409 Conflict", if forgets { ASKED_FORGET } else { ASKED })
                 } else {
                     ("200 OK", r#"{"id":"r1"}"#)
                 }
