@@ -51,6 +51,8 @@ export function NewOrganizationDialog({ onOpenChange }: { onOpenChange: (open: b
               <Input
                 id="organization-name"
                 placeholder="Acme"
+                spellCheck={false}
+                autoComplete="off"
                 maxLength={64}
                 value={name}
                 onChange={(event) => setName(event.target.value)}
@@ -61,10 +63,11 @@ export function NewOrganizationDialog({ onOpenChange }: { onOpenChange: (open: b
               <FieldLabel htmlFor="organization-slug">URL</FieldLabel>
               <InputGroup>
                 <InputGroupAddon>
-                  <InputGroupText>{window.location.origin}/cloud/</InputGroupText>
+                  <InputGroupText>{window.location.host}/cloud/</InputGroupText>
                 </InputGroupAddon>
                 <InputGroupInput
                   id="organization-slug"
+                  className="pl-0.5!"
                   maxLength={64}
                   spellCheck={false}
                   value={slug}
