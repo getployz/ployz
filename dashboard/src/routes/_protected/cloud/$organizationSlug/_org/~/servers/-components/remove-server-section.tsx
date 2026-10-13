@@ -189,7 +189,7 @@ function ForgetServerRow({ machine, organizationSlug }: { machine: RuntimeMachin
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [asking, setAsking] = useState<{ readonly requestId: string; readonly approvalId: string } | null>(null);
-  const { data: approval } = useQuery({ ...approvalOptions(organizationSlug, asking?.approvalId ?? ""), enabled: asking !== null });
+  const { data: approval, isError } = useQuery({ ...approvalOptions(organizationSlug, asking?.approvalId ?? ""), enabled: asking !== null });
   const decided = asking !== null && approval?.id === asking.approvalId ? approval.status : null;
 
   const send = async (requestId: string, approvalId: string | null) => {
@@ -215,11 +215,16 @@ function ForgetServerRow({ machine, organizationSlug }: { machine: RuntimeMachin
   };
 
   useEffect(() => {
+    if (asking !== null && isError) {
+      setAsking(null);
+      toast.error(`Could not read the approval to forget ${machine.name}. Forget it again.`);
+      return;
+    }
     if (asking === null || decided === null || decided === "pending") return;
     setAsking(null);
     if (decided === "approved") void send(asking.requestId, asking.approvalId);
     else toast.info(decided === "denied" ? `Forgetting ${machine.name} was denied.` : `${machine.name} changed before it was approved. Forget it again.`);
-  }, [decided]);
+  }, [decided, isError]);
 
   return (
     <>
