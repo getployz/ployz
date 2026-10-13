@@ -29,7 +29,7 @@ export type VolumeRunArgs = {
   delete_mirror: { readonly slot: MachineName | null; readonly confirmed_name: string | null };
   move: Destination;
   release: { readonly plan?: ReleasePlan };
-  restore: { readonly from: MachineName };
+  restore: { readonly from: MachineName; readonly machine?: MachineId };
   seed: {
     readonly into: { readonly volumeId: string; readonly dockerVolume: string; readonly name: string };
     readonly guid: string;
