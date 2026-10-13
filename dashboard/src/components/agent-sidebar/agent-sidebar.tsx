@@ -26,14 +26,19 @@ export function AgentButton({ organizationSlug, chat, onChat }: {
   const { data: pending } = useQuery(pendingApprovalsOptions(organizationSlug));
   const waiting = chat === undefined ? pending?.length ?? 0 : 0;
   const toggle = () => onChat(chat === undefined ? localStorage.getItem(threadKey(organizationSlug)) ?? crypto.randomUUID() : undefined);
+  const waitingLabel = `${waiting} ${waiting === 1 ? "approval" : "approvals"} waiting`;
   return (
-    // Pressed wears the outline variant's own open look, which it keys to aria-expanded alone.
-    <Button variant="outline" size="sm" className="aria-pressed:bg-muted aria-pressed:text-foreground" aria-pressed={chat !== undefined} onClick={toggle} onPointerEnter={() => void loadPanel()}
-      aria-label={waiting > 0 ? `Agent, ${waiting} ${waiting === 1 ? "approval" : "approvals"} waiting` : "Agent"}>
-      <SparklesIcon data-icon="inline-start" aria-hidden />
-      <span className="max-wf-nav:hidden">Agent</span>
-      {waiting > 0 && <Badge variant="warning">{waiting}{" "}<span className="max-wf-nav:hidden">waiting</span></Badge>}
-    </Button>
+    <>
+      {/* Polling can add an approval while focus is elsewhere, and a changed button name isn't announced. */}
+      <span role="status" className="sr-only">{waiting > 0 ? waitingLabel : ""}</span>
+      {/* Pressed wears the outline variant's own open look, which it keys to aria-expanded alone. */}
+      <Button variant="outline" size="sm" className="aria-pressed:bg-muted aria-pressed:text-foreground" aria-pressed={chat !== undefined} onClick={toggle} onPointerEnter={() => void loadPanel()}
+        aria-label={waiting > 0 ? `Agent, ${waitingLabel}` : "Agent"}>
+        <SparklesIcon data-icon="inline-start" aria-hidden />
+        <span className="max-wf-nav:hidden">Agent</span>
+        {waiting > 0 && <Badge variant="warning">{waiting}{" "}<span className="max-wf-nav:hidden">waiting</span></Badge>}
+      </Button>
+    </>
   );
 }
 

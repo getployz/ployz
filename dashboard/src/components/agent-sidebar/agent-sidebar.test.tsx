@@ -45,10 +45,12 @@ function Agent({ client }: { client: QueryClient }) {
 it("counts the approvals waiting on a human on the Agent button", () => {
   show([waiting]);
   expect(screen.getByRole("button", { name: "Agent, 1 approval waiting" }).textContent).toBe("Agent1 waiting");
+  expect(screen.getByRole("status").textContent).toBe("1 approval waiting");
   cleanup();
 
   show([]);
   expect(screen.getByRole("button", { name: "Agent" }).textContent).toBe("Agent");
+  expect(screen.getByRole("status").textContent).toBe("");
 });
 
 it("opens into the conversation and closes from the same button", { timeout: 20_000 }, async () => {

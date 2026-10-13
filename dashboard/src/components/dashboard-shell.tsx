@@ -65,7 +65,8 @@ export function DashboardShell({
           </div>
         </header>
         <div className="relative flex min-h-0 flex-1">
-          <main className="flex min-h-0 min-w-0 flex-1 flex-col">
+          {/* On phones the open agent covers the page, so the page leaves the tab order and the screen reader with it. */}
+          <main className={`flex min-h-0 min-w-0 flex-1 flex-col ${chat === undefined ? "" : "max-wf-nav:invisible"}`}>
             {/* Over the canvas a page's sections have no room, and the rail shows none either. */}
             {canvas ? null : <PhoneSections places={places} />}
             <NavigationProgress />
