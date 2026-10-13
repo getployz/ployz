@@ -1066,7 +1066,7 @@ impl Client {
 /// Only a gRPC status can mean an old daemon lacks the route. An error body
 /// is the daemon's own answer, so it keeps the daemon's sentence.
 /// A Machine's own answer keeps its words. An unavailable call it never answered
-/// names the Machine, with the transport's words as the cause.
+/// names the Machine in the deepest line, which is the one progress shows.
 fn answered_by(machine_id: &MachineId, error: ConnectError) -> RpcError {
     if let ConnectError::Remote(answered) = error {
         return answered;
@@ -1075,13 +1075,15 @@ fn answered_by(machine_id: &MachineId, error: ConnectError) -> RpcError {
     if error.code != RpcErrorCode::Unavailable {
         return error;
     }
-    let mut cause = vec![error.message];
-    cause.extend(error.cause);
+    let transport = std::iter::once(error.message)
+        .chain(error.cause)
+        .collect::<Vec<_>>()
+        .join(": ");
     RpcError {
         code: RpcErrorCode::Unavailable,
-        message: format!("Machine {machine_id} did not answer"),
+        message: format!("Machine {machine_id} did not answer: {transport}"),
         details: Value::Null,
-        cause,
+        cause: Vec::new(),
     }
 }
 

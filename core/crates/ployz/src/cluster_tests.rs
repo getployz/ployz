@@ -24,15 +24,28 @@ fn unspecified_stop_timeout_has_no_rpc_deadline() {
 }
 
 #[test]
-fn an_unanswered_call_names_the_machine_with_the_transport_words_as_cause() {
+fn an_unanswered_call_names_the_machine_in_its_deepest_line() {
     let machine = machine_id('a');
     let lost = TransportError::from(tonic::Status::unavailable("deadline has elapsed"));
 
     let error = answered_by(&machine, ConnectError::Rpc(lost));
 
     assert_eq!(error.code, RpcErrorCode::Unavailable);
-    assert_eq!(error.message, format!("Machine {machine} did not answer"));
-    assert_eq!(error.cause, vec!["deadline has elapsed".to_owned()]);
+    assert_eq!(
+        error.message,
+        format!("Machine {machine} did not answer: deadline has elapsed")
+    );
+    assert!(error.cause.is_empty(), "{:?}", error.cause);
+    let row = ployz_store::Failure::from(&crate::deploy::ExecutionError::Machine {
+        action: ployz_core::MachineAction::CreateContainer,
+        error,
+    });
+    assert_eq!(
+        row.cause.last(),
+        Some(&format!(
+            "Machine {machine} did not answer: deadline has elapsed"
+        ))
+    );
 }
 
 #[test]

@@ -33,7 +33,7 @@ async fn a_machine_that_stops_answering_fails_the_start_and_discards_the_slot() 
     let lost = || {
         failed_unavailable(
             Call::Run(machine, ContainerKind::ServiceContainer),
-            &format!("Machine {machine} did not answer"),
+            &format!("Machine {machine} did not answer: deadline has elapsed"),
         )
     };
     let attempts =
@@ -57,7 +57,10 @@ async fn a_machine_that_stops_answering_fails_the_start_and_discards_the_slot() 
         panic!("a silent Machine fails the start as a Machine error, got {error:?}");
     };
     assert_eq!(error.code, RpcErrorCode::Unavailable);
-    assert_eq!(error.message, format!("Machine {machine} did not answer"));
+    assert_eq!(
+        error.message,
+        format!("Machine {machine} did not answer: deadline has elapsed")
+    );
     client.assert_done();
 }
 
