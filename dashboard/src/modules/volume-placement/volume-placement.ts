@@ -545,12 +545,11 @@ export function volumeLossItems(
   volumes: readonly { name: string; deletes: readonly { machine_id: string }[]; loss?: "data" | "writes"; after?: number }[],
   machineName: (id: string) => string | undefined,
 ): DeletionItem[] {
-  return volumes.map((volume) => ({
-    kind: "volume",
-    name: volume.name,
-    detail: volume.deletes.flatMap((held) => machineName(held.machine_id) ?? []).join(", ")
-      || (volume.after !== undefined ? `changes after ${lossTime(new Date(volume.after * 1000))}` : volume.loss === "writes" ? "recent changes" : undefined),
-  }));
+  return volumes.map((volume) => {
+    const servers = volume.deletes.flatMap((held) => machineName(held.machine_id) ?? []).join(", ");
+    const writes = volume.after !== undefined ? `changes after ${lossTime(new Date(volume.after * 1000))}` : volume.loss === "writes" ? "recent changes" : "";
+    return { kind: "volume", name: volume.name, detail: [servers, writes].filter(Boolean).join(" · ") || undefined };
+  });
 }
 
 const LOSS_MARK = "#loss-";

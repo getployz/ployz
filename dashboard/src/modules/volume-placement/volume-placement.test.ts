@@ -23,6 +23,7 @@ import {
   placementLoss,
   placementLosses,
   volumeLossItems,
+  lossTime,
   lossByVolume,
   lossVersion,
   type PlacementLost,
@@ -504,7 +505,7 @@ describe("placementLoss", () => {
 
   it("says a restore drops the unanswered primary's writes", () => {
     const members = [member("web-1", "unanswered"), mirrorAsOf("web-2", at)];
-    expect(lossOf(members, row(["web-2"], { primary: "web-2" }))).toEqual({ items: [{ kind: "volume", name: "pg-data", detail: "web-1" }], losesWrites: true, accept: ["pg-data"] });
+    expect(lossOf(members, row(["web-2"], { primary: "web-2" }))).toEqual({ items: [{ kind: "volume", name: "pg-data", detail: `web-1 · changes after ${lossTime(at)}` }], losesWrites: true, accept: ["pg-data"] });
   });
 
   it("asks before a restore no Server is known to have held, since it still drops writes", () => {
@@ -574,6 +575,12 @@ describe("two write losses on one Volume", () => {
       const earlier = new Date(at.getTime() - 60_000);
       expect(lossVersion("v1", order(restore(later), failover(earlier)))).not.toBe(lossVersion("v1", order(restore(later), failover(at))));
     });
+
+  it("names the Server losing a copy beside the writes it loses", () => {
+    const named = (lost: PlacementLost[]) => volumeLossItems(lossByVolume(lost), (machine) => machine.replace(/0+$/u, ""))[0]?.detail;
+    expect(named([failover(at)])).toBe(`web-1 · changes after ${lossTime(at)}`);
+    expect(named([failover(null)])).toBe("web-1 · recent changes");
+  });
 
   it.each([["restore first", false], ["failover first", true]])("takes an unknown cutoff over a known one, %s", (_, flipped) => {
     const lost = [restore(at), failover(null)];
