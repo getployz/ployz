@@ -1,6 +1,6 @@
 use super::{CONFIG_FILE, CaddyAdmin, Error, render_caddyfile};
 use crate::{
-    corrosion::{CertificateChallenge, CertificateRow},
+    corrosion::{CertificateChallenge, CertificateRow, ServingPointers},
     ingress::{
         IngressProjection, apply_caddy,
         tests::{renderer_projection, test_material},
@@ -52,6 +52,7 @@ fn projection(
             .map(ServiceContainer::into_observation)
             .collect::<Vec<_>>(),
         certificates,
+        &ServingPointers::default(),
     )
 }
 
@@ -75,7 +76,12 @@ async fn reconcile<A: CaddyAdmin>(
     config_file: &Path,
     admin: Option<&A>,
 ) -> Result<(), Error> {
-    let projection = IngressProjection::derive(machine, observations, certificates);
+    let projection = IngressProjection::derive(
+        machine,
+        observations,
+        certificates,
+        &ServingPointers::default(),
+    );
     apply_caddy(&projection, config_file, admin).await
 }
 

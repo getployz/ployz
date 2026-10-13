@@ -15,8 +15,8 @@ use axum::{
 };
 use futures_util::StreamExt;
 use ployz_core::{
-    AdvertisedEndpoint, ContainerId, ContainerObservation, HttpProtocol, MACHINE_API_PORT, Machine,
-    MachineId, MachineName, WireGuardPublicKey,
+    AdvertisedEndpoint, ContainerId, ContainerObservation, DeploymentLogId, HttpProtocol,
+    MACHINE_API_PORT, Machine, MachineId, MachineName, ServingPointer, WireGuardPublicKey,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -452,6 +452,69 @@ async fn transient_apply_failure_retries_without_a_replicated_event() {
     std::fs::remove_dir_all(directory).unwrap();
 }
 
+#[tokio::test]
+async fn pointer_change_reloads_caddy_with_pointed_upstreams() {
+    let WatcherFixture {
+        machine,
+        state,
+        address,
+        server,
+        directory,
+    } = watcher_fixture().await;
+    let pointed = observation(
+        1,
+        &machine.id,
+        "api",
+        Some([10, 210, 1, 2]),
+        vec![ingress("example.com", 80, HttpProtocol::Http)],
+    );
+    let mut newer = observation(
+        2,
+        &machine.id,
+        "api",
+        Some([10, 210, 1, 3]),
+        vec![ingress("example.com", 80, HttpProtocol::Http)],
+    );
+    newer
+        .try_update(|parts| {
+            parts.created_at_unix_nanos = 1;
+            parts.resolved_spec.container.image = "example.test/image:next".into();
+        })
+        .unwrap();
+    state.containers.lock().unwrap().push(newer);
+    let caddyfile = directory.join(CONFIG_FILE);
+    let shutdown = CancellationToken::new();
+    let watcher = tokio::spawn(run(
+        machine.clone(),
+        ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        caddyfile.clone(),
+        directory.join("missing-admin.sock"),
+        shutdown.clone(),
+    ));
+    let caddy = wait_for_caddyfile(&caddyfile, "10.210.1.3:80").await;
+    assert!(!caddy.contains("10.210.1.2:80"), "{caddy}");
+
+    let key = ServingPointer::key(&pointed.identity());
+    let pointer = ServingPointer {
+        deploy: DeploymentLogId::parse("d1").unwrap(),
+        containers: vec![pointed.container_id],
+        previous: None,
+        retiring: Vec::new(),
+    };
+    state.write_pointer(&key, serde_json::to_string(&pointer).unwrap());
+    let caddy = wait_for_caddyfile(&caddyfile, "10.210.1.2:80").await;
+    assert!(!caddy.contains("10.210.1.3:80"), "{caddy}");
+
+    state.write_pointer(&key, "{\"deploy\":".into());
+    let caddy = wait_for_caddyfile(&caddyfile, "10.210.1.3:80").await;
+    assert!(!caddy.contains("10.210.1.2:80"), "{caddy}");
+
+    shutdown.cancel();
+    watcher.await.unwrap().unwrap();
+    server.abort();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
 struct WatcherFixture {
     machine: Machine,
     state: WatchState,
@@ -492,6 +555,8 @@ async fn watcher_fixture() -> WatcherFixture {
         stall_container: Arc::new(AtomicBool::new(false)),
         container_subscriptions: Arc::new(Mutex::new(Vec::new())),
         certificate_subscriptions: Arc::new(Mutex::new(Vec::new())),
+        pointers: Arc::new(Mutex::new(Vec::new())),
+        pointer_subscriptions: Arc::new(Mutex::new(Vec::new())),
     };
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -574,6 +639,8 @@ struct WatchState {
     stall_container: Arc<AtomicBool>,
     container_subscriptions: Arc<Mutex<Vec<mpsc::UnboundedSender<Bytes>>>>,
     certificate_subscriptions: Arc<Mutex<Vec<mpsc::UnboundedSender<Bytes>>>>,
+    pointers: Arc<Mutex<Vec<(String, String)>>>,
+    pointer_subscriptions: Arc<Mutex<Vec<mpsc::UnboundedSender<Bytes>>>>,
 }
 
 impl WatchState {
@@ -613,6 +680,18 @@ impl WatchState {
             .retain(|subscription| subscription.send(Bytes::from_static(event)).is_ok());
     }
 
+    fn write_pointer(&self, key: &str, value: String) {
+        *self.pointers.lock().unwrap() = vec![(key.to_owned(), value)];
+        self.pointer_subscriptions
+            .lock()
+            .unwrap()
+            .retain(|subscription| {
+                subscription
+                    .send(Bytes::from_static(b"{\"change\":{}}\n"))
+                    .is_ok()
+            });
+    }
+
     fn send_certificates(&self, event: &'static [u8]) {
         self.certificate_subscriptions
             .lock()
@@ -644,6 +723,14 @@ async fn query(State(state): State<WatchState>, body: Bytes) -> Bytes {
         )
     } else if statement.query == "SELECT hostname, body FROM certificates ORDER BY hostname" {
         events(&["hostname", "body"], [])
+    } else if statement.query == "SELECT key, value FROM cluster WHERE key LIKE 'serving/%'" {
+        let pointers = state.pointers.lock().unwrap();
+        events(
+            &["key", "value"],
+            pointers
+                .iter()
+                .map(|(key, value)| vec![json!(key), json!(value)]),
+        )
     } else {
         panic!("unexpected query {}", statement.query);
     }
@@ -665,6 +752,8 @@ async fn subscribe(State(state): State<WatchState>, body: Bytes) -> Response {
                 &state.certificate_subscriptions,
                 false,
             )
+        } else if statement.query == "SELECT key, value FROM cluster WHERE key LIKE 'serving/%'" {
+            (&["key", "value"][..], &state.pointer_subscriptions, false)
         } else {
             panic!("unexpected subscription {}", statement.query);
         };

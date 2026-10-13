@@ -1,11 +1,12 @@
 //! Projection tests for Internal DNS answers.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use hickory_server::proto::op::{Edns, Query as WireQuery};
 use ployz_core::{
-    ContainerAddress, ContainerId, ContainerKind, ContainerRuntimeObservation, HealthObservation,
-    MachineId, Namespace, ResolvedServiceSpec, ServiceId, ServiceName,
+    ContainerAddress, ContainerId, ContainerKind, ContainerRuntimeObservation, DeploymentLogId,
+    HealthObservation, MachineId, Namespace, ResolvedServiceSpec, ServiceId, ServiceName,
+    ServingPointer,
 };
 use serde_json::json;
 use tokio::net::{TcpListener, UnixListener};
@@ -525,6 +526,8 @@ fn membership_filter_excludes_down_keeps_suspect_local_and_fails_open() {
     let mut inputs = ProjectionInputs {
         local_id: local,
         observations: observations.to_vec(),
+        pointers: ServingPointers::default(),
+        warned_pointers: BTreeSet::new(),
         down_machines: None,
     };
 
@@ -536,7 +539,12 @@ fn membership_filter_excludes_down_keeps_suspect_local_and_fails_open() {
 
     assert_eq!(
         addresses(plan(
-            &Projection::from_observations(&observations, &local, Some(&down_machines)),
+            &Projection::from_observations(
+                &observations,
+                &ServingPointers::default(),
+                &local,
+                Some(&down_machines)
+            ),
             "api.app.internal.",
             RecordType::A,
         )),
@@ -544,7 +552,12 @@ fn membership_filter_excludes_down_keeps_suspect_local_and_fails_open() {
     );
     assert_eq!(
         addresses(plan(
-            &Projection::from_observations(&observations, &local, None),
+            &Projection::from_observations(
+                &observations,
+                &ServingPointers::default(),
+                &local,
+                None
+            ),
             "api.app.internal.",
             RecordType::A,
         )),
@@ -554,6 +567,60 @@ fn membership_filter_excludes_down_keeps_suspect_local_and_fails_open() {
             Ipv4Addr::new(10, 210, 3, 2),
         ]
     );
+}
+
+#[test]
+fn pointed_set_wins_over_a_newer_unpointed_container() {
+    let machine = MachineId::parse("a".repeat(32)).unwrap();
+    let service = ServiceId::parse("b".repeat(32)).unwrap();
+    let name = ServiceName::parse("api").unwrap();
+    let pointed = observation(
+        1,
+        &machine,
+        &service,
+        &name,
+        ContainerKind::ServiceContainer,
+        running(HealthObservation::Healthy),
+        Some([10, 210, 1, 2]),
+    );
+    let mut newer = observation(
+        2,
+        &machine,
+        &service,
+        &name,
+        ContainerKind::ServiceContainer,
+        running(HealthObservation::Healthy),
+        Some([10, 210, 1, 3]),
+    );
+    newer
+        .try_update(|parts| {
+            parts.created_at_unix_nanos = 1;
+            parts.resolved_spec.container.image = "example.test/image:next".into();
+        })
+        .unwrap();
+    let observations = [pointed.clone(), newer];
+    let pointers = ServingPointers::from_iter([(
+        pointed.identity(),
+        ServingPointer {
+            deploy: DeploymentLogId::parse("d1").unwrap(),
+            containers: vec![pointed.container_id],
+            previous: None,
+            retiring: Vec::new(),
+        },
+    )]);
+
+    let answers = |pointers: &ServingPointers| {
+        addresses(plan(
+            &Projection::from_observations(&observations, pointers, &machine, None),
+            "api.app.internal.",
+            RecordType::A,
+        ))
+    };
+    assert_eq!(
+        answers(&ServingPointers::default()),
+        vec![Ipv4Addr::new(10, 210, 1, 3)]
+    );
+    assert_eq!(answers(&pointers), vec![Ipv4Addr::new(10, 210, 1, 2)]);
 }
 
 #[tokio::test]
@@ -700,6 +767,7 @@ pub(super) fn write_script(path: &std::path::Path, body: &str) {
 fn unfiltered_projection(observations: &[ContainerObservation]) -> Projection {
     Projection::from_observations(
         observations,
+        &ServingPointers::default(),
         &MachineId::parse("0".repeat(32)).unwrap(),
         None,
     )

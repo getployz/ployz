@@ -19,7 +19,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     corrosion::{
         CertificateChallenge, CertificateMaterial, CertificateRow, Error as CorrosionError,
-        ReplicatedStore, Subscription, published_cover,
+        ReplicatedStore, ServingPointers, Subscription, published_cover,
     },
     docker::LABEL_DEPLOYMENT,
     filesystem::{atomic_write, set_ployz_group},
@@ -192,6 +192,7 @@ impl IngressProjection {
         machine: &Machine,
         observations: &[ContainerObservation],
         certificates: &BTreeMap<CertificateHost, CertificateRow>,
+        pointers: &ServingPointers,
     ) -> Self {
         // TODO: keep the ingress projection membership-blind until the membership model is
         // intentionally changed across replicated projections.
@@ -219,7 +220,7 @@ impl IngressProjection {
             }
         }
 
-        let mut serving = serving_containers(&containers, |_| None);
+        let mut serving = serving_containers(&containers, |service| pointers.get(service));
         serving.sort_by_key(|serving| container_order(&machine.id, serving.as_container()));
         for serving in &serving {
             let observation = serving.as_observation();
@@ -378,18 +379,20 @@ where
     ConnectFuture: Future<Output = Result<Option<A>, caddy::Error>>,
 {
     let mut last_input = None;
+    let mut warned_pointers = BTreeSet::new();
     'watch: loop {
         let subscriptions = async {
             tokio::try_join!(
                 replicated.subscribe_container_changes(),
                 replicated.subscribe_certificate_changes(),
+                replicated.subscribe_serving_pointer_changes(),
             )
         };
         let changes = tokio::select! {
             changes = subscriptions => changes,
             () = shutdown.cancelled() => return Ok(()),
         };
-        let (mut container_changes, mut certificate_changes) = match changes {
+        let (mut container_changes, mut certificate_changes, mut pointer_changes) = match changes {
             Ok(changes) => changes,
             Err(error) => {
                 if wait_to_retry(&error, &shutdown).await {
@@ -402,12 +405,24 @@ where
             let input = match (
                 replicated.containers().await,
                 replicated.certificate_state().await,
+                replicated.serving_pointers().await,
             ) {
-                (Ok(containers), Ok(certificates)) => Ok((
-                    IngressProjection::derive(&machine, &containers.observations, &certificates),
-                    newest_local_ingress(&machine, &containers.observations),
-                )),
-                (Err(error), _) | (_, Err(error)) => Err(io::Error::other(error)),
+                (Ok(containers), Ok(certificates), Ok(pointers)) => {
+                    pointers.warn_malformed(&mut warned_pointers);
+                    Ok((
+                        IngressProjection::derive(
+                            &machine,
+                            &containers.observations,
+                            &certificates,
+                            &pointers,
+                        ),
+                        newest_local_ingress(&machine, &containers.observations),
+                        pointers,
+                    ))
+                }
+                (Err(error), _, _) | (_, Err(error), _) | (_, _, Err(error)) => {
+                    Err(io::Error::other(error))
+                }
             };
             match input {
                 Ok(input) if last_input.as_ref() != Some(&input) => {
@@ -444,6 +459,7 @@ where
             match wait_for_debounced_change(
                 &mut container_changes,
                 &mut certificate_changes,
+                &mut pointer_changes,
                 &shutdown,
             )
             .await
@@ -489,14 +505,17 @@ enum DebouncedChange {
 async fn wait_for_debounced_change(
     container_changes: &mut Subscription,
     certificate_changes: &mut Subscription,
+    pointer_changes: &mut Subscription,
     shutdown: &CancellationToken,
 ) -> Result<DebouncedChange, CorrosionError> {
     tokio::select! {
         changed = container_changes.changed() => changed?,
         changed = certificate_changes.changed() => changed?,
+        changed = pointer_changes.changed() => changed?,
         () = tokio::time::sleep(WATCH_RESNAPSHOT) => {
             return Ok(if container_changes.snapshot_in_progress()
                 || certificate_changes.snapshot_in_progress()
+                || pointer_changes.snapshot_in_progress()
             {
                 DebouncedChange::Resubscribe
             } else {
@@ -513,9 +532,11 @@ async fn wait_for_debounced_change(
             () = shutdown.cancelled() => return Ok(DebouncedChange::Shutdown),
             changed = container_changes.changed() => changed?,
             changed = certificate_changes.changed() => changed?,
+            changed = pointer_changes.changed() => changed?,
             () = &mut quiet => {
                 if !container_changes.snapshot_in_progress()
                     && !certificate_changes.snapshot_in_progress()
+                    && !pointer_changes.snapshot_in_progress()
                 {
                     return Ok(DebouncedChange::Changed);
                 }
@@ -523,6 +544,7 @@ async fn wait_for_debounced_change(
                     () = shutdown.cancelled() => return Ok(DebouncedChange::Shutdown),
                     changed = container_changes.changed() => changed?,
                     changed = certificate_changes.changed() => changed?,
+            changed = pointer_changes.changed() => changed?,
                     () = tokio::time::sleep(WATCH_RESNAPSHOT) => {
                         return Ok(DebouncedChange::Resubscribe);
                     }

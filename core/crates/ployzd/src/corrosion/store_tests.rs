@@ -1,13 +1,14 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     net::TcpListener,
     sync::{Arc, Mutex},
     time::SystemTime,
 };
 
 use ployz_core::{
-    CertificateHost, DockerVolume, DockerVolumeId, DockerVolumeName, IngressHost, IssuanceClock,
-    IssuanceFailure, Machine, MachineId,
+    CertificateHost, ContainerId, DeploymentLogId, DockerVolume, DockerVolumeId, DockerVolumeName,
+    IngressHost, IssuanceClock, IssuanceFailure, Machine, MachineId, QualifiedService,
+    ServingPointer,
 };
 use serde_json::json;
 
@@ -513,6 +514,50 @@ async fn machine_reads_reject_document_identity_different_from_row_key() {
     let (store, task) = identity_store(db).await;
     assert!(store.machine(key.as_str()).await.is_err());
     assert!(store.machines().await.is_err());
+    task.abort();
+}
+
+#[tokio::test]
+async fn serving_pointers_round_trip_and_set_aside_malformed_rows() {
+    let db = rusqlite::Connection::open_in_memory().unwrap();
+    db.execute_batch(include_str!("schema.sql")).unwrap();
+    let pointer = |deploy: &str, container: &str| ServingPointer {
+        deploy: DeploymentLogId::parse(deploy).unwrap(),
+        containers: vec![ContainerId::parse(container.repeat(64)).unwrap()],
+        previous: None,
+        retiring: Vec::new(),
+    };
+    let api = QualifiedService::parse("app/api").unwrap();
+    let web = QualifiedService::parse("app/web").unwrap();
+    let rows = [
+        (
+            ServingPointer::key(&api),
+            serde_json::to_string(&pointer("d1", "a")).unwrap(),
+        ),
+        (
+            ServingPointer::key(&web),
+            serde_json::to_string(&pointer("d2", "b")).unwrap(),
+        ),
+        ("serving/app/broken".to_owned(), "{".to_owned()),
+        ("network".to_owned(), "\"10.210.0.0/16\"".to_owned()),
+    ];
+    for (key, value) in rows {
+        db.execute(
+            "INSERT INTO cluster (key, value) VALUES (?, ?)",
+            rusqlite::params![key, value],
+        )
+        .unwrap();
+    }
+    let (store, task) = identity_store(db).await;
+
+    let pointers = store.serving_pointers().await.unwrap();
+    assert_eq!(pointers.get(&api), Some(&pointer("d1", "a")));
+    assert_eq!(pointers.get(&web), Some(&pointer("d2", "b")));
+    let broken = QualifiedService::parse("app/broken").unwrap();
+    assert_eq!(pointers.get(&broken), None);
+    let mut warned = BTreeSet::new();
+    pointers.warn_malformed(&mut warned);
+    assert_eq!(warned, BTreeSet::from(["serving/app/broken".to_owned()]));
     task.abort();
 }
 

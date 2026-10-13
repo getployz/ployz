@@ -26,8 +26,10 @@ struct ClusterKv {
     machines: BTreeMap<String, String>,
     containers: BTreeMap<String, (String, String)>,
     volumes: BTreeMap<(String, String), String>,
+    serving_pointers: BTreeMap<String, String>,
     container_changes: broadcast::Sender<()>,
     machine_changes: broadcast::Sender<()>,
+    pointer_changes: broadcast::Sender<()>,
     subscriptions: bool,
     snapshots_fail: bool,
     tokens: Vec<String>,
@@ -37,13 +39,16 @@ impl ClusterKv {
     fn new(subscriptions: bool) -> Self {
         let (container_changes, _) = broadcast::channel(16);
         let (machine_changes, _) = broadcast::channel(16);
+        let (pointer_changes, _) = broadcast::channel(16);
         Self {
             network: "10.210.0.0/16".into(),
             machines: BTreeMap::new(),
             containers: BTreeMap::new(),
             volumes: BTreeMap::new(),
+            serving_pointers: BTreeMap::new(),
             container_changes,
             machine_changes,
+            pointer_changes,
             subscriptions,
             snapshots_fail: false,
             tokens: Vec::new(),
@@ -153,6 +158,12 @@ impl FakeCluster {
         self.kv.lock().unwrap().snapshots_fail = fail;
     }
 
+    pub(crate) fn write_serving_pointer(&self, key: &str, value: &str) {
+        let mut kv = self.kv.lock().unwrap();
+        kv.serving_pointers.insert(key.to_owned(), value.to_owned());
+        let _ = kv.pointer_changes.send(());
+    }
+
     pub(crate) fn subscription_tokens(&self) -> Vec<String> {
         self.kv.lock().unwrap().tokens.clone()
     }
@@ -215,6 +226,10 @@ async fn subscriptions(
         "SELECT id, info FROM machines" => (
             kv.machine_changes.subscribe(),
             "{\"columns\":[\"id\",\"info\"]}\n{\"eoq\":{\"time\":0.0}}\n",
+        ),
+        "SELECT key, value FROM cluster WHERE key LIKE 'serving/%'" => (
+            kv.pointer_changes.subscribe(),
+            "{\"columns\":[\"key\",\"value\"]}\n{\"eoq\":{\"time\":0.0}}\n",
         ),
         query => panic!("unexpected subscription {query}"),
     };
@@ -299,6 +314,12 @@ fn query(kv: &Mutex<ClusterKv>, statement: Statement) -> Result<Bytes, StatusCod
         "SELECT value FROM cluster WHERE key = 'network'" => {
             events(&["value"], vec![vec![json!(kv.network)]])
         }
+        "SELECT key, value FROM cluster WHERE key LIKE 'serving/%'" => events(
+            &["key", "value"],
+            kv.serving_pointers
+                .iter()
+                .map(|(key, value)| vec![json!(key), json!(value)]),
+        ),
         "SELECT site_id, db_version FROM crsql_db_versions" => {
             events(&["site_id", "db_version"], Vec::new())
         }

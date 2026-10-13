@@ -1,7 +1,7 @@
 //! Observer-local Internal DNS serving and answer projection.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     fs, io,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::{Path, PathBuf},
@@ -37,7 +37,8 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use crate::corrosion::{
-    AdminClient, Error as CorrosionError, MachineView, membership_states_by_address,
+    AdminClient, Error as CorrosionError, MachineView, ServingPointers,
+    membership_states_by_address,
 };
 
 mod listeners;
@@ -73,9 +74,13 @@ struct Projection {
     caller_namespaces: HashMap<Ipv4Addr, Namespace>,
 }
 
+type Snapshot = (Vec<ContainerObservation>, ServingPointers);
+
 struct ProjectionInputs {
     local_id: MachineId,
     observations: Vec<ContainerObservation>,
+    pointers: ServingPointers,
+    warned_pointers: BTreeSet<String>,
     down_machines: Option<HashSet<MachineId>>,
 }
 
@@ -83,9 +88,16 @@ impl ProjectionInputs {
     fn build(&self) -> Projection {
         Projection::from_observations(
             &self.observations,
+            &self.pointers,
             &self.local_id,
             self.down_machines.as_ref(),
         )
+    }
+
+    fn replace_snapshot(&mut self, (observations, pointers): Snapshot) {
+        pointers.warn_malformed(&mut self.warned_pointers);
+        self.observations = observations;
+        self.pointers = pointers;
     }
 
     fn update_membership(&mut self, loaded: Result<HashSet<MachineId>, CorrosionError>) -> bool {
@@ -131,6 +143,7 @@ impl ServiceAddresses {
 impl Projection {
     fn from_observations(
         observations: &[ContainerObservation],
+        pointers: &ServingPointers,
         local_id: &MachineId,
         down_machines: Option<&HashSet<MachineId>>,
     ) -> Self {
@@ -138,7 +151,7 @@ impl Projection {
         let mut service_ids = HashMap::<ServiceId, Vec<Ipv4Addr>>::new();
         let mut identities = HashMap::<QualifiedService, ServiceAddresses>::new();
         let mut machine_identities = HashMap::<MachineServiceTarget, Vec<Ipv4Addr>>::new();
-        for serving in serving_containers(&containers, |_| None) {
+        for serving in serving_containers(&containers, |service| pointers.get(service)) {
             let observation = serving.as_observation();
             if observation.machine_id != *local_id
                 && down_machines.is_some_and(|down| down.contains(&observation.machine_id))

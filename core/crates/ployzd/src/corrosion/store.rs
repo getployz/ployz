@@ -16,7 +16,7 @@ use ipnet::Ipv4Net;
 use ployz_core::{
     CERTIFICATE_POLICY_CLUSTER_KEY, CertificateHost, ClusterRoute, ContainerId,
     ContainerObservation, DockerVolume, DockerVolumeId, DockerVolumeName, IngressHost,
-    IssuanceClock, Machine, MachineId,
+    IssuanceClock, Machine, MachineId, QualifiedService, ServingPointer,
 };
 use serde_json::json;
 
@@ -671,6 +671,44 @@ impl ReplicatedStore {
         Ok((!encoded.is_empty()).then(|| encoded.to_owned()))
     }
 
+    /// Every `serving/%` row. A row that does not decode is set aside in
+    /// [`ServingPointers`] so routing falls back for that Service alone.
+    ///
+    /// # Errors
+    ///
+    /// Returns if the rows cannot be read.
+    pub(crate) async fn serving_pointers(&self) -> Result<ServingPointers, Error> {
+        let query = self.api.query(Statement::new(SERVING_POINTERS, [])).await?;
+        let mut pointers = ServingPointers::default();
+        for [key, value] in query.rows(["key", "value"])? {
+            let key = text(&key, "Serving Pointer key")?;
+            let decoded = key
+                .strip_prefix("serving/")
+                .ok_or_else(|| format!("key {key} is outside serving/"))
+                .and_then(|service| QualifiedService::parse(service).map_err(|e| e.to_string()))
+                .and_then(|service| {
+                    let encoded = value.as_str().ok_or("value is not text")?;
+                    let pointer = serde_json::from_str(encoded).map_err(|e| e.to_string())?;
+                    Ok((service, pointer))
+                });
+            match decoded {
+                Ok((service, pointer)) => {
+                    pointers.by_service.insert(service, pointer);
+                }
+                Err(reason) => {
+                    pointers.malformed.insert(key.to_owned(), reason);
+                }
+            }
+        }
+        Ok(pointers)
+    }
+
+    pub(crate) async fn subscribe_serving_pointer_changes(&self) -> Result<Subscription, Error> {
+        self.api
+            .subscribe(Statement::new(SERVING_POINTERS, []))
+            .await
+    }
+
     pub async fn certificates(
         &self,
     ) -> Result<BTreeMap<CertificateHost, CertificateMaterial>, Error> {
@@ -939,6 +977,41 @@ fn volume_incomplete(machine_id: &MachineId, name: &DockerVolumeName) -> Stateme
             json!(INCOMPLETE_JSON_DOCUMENT),
         ],
     )
+}
+
+const SERVING_POINTERS: &str = "SELECT key, value FROM cluster WHERE key LIKE 'serving/%'";
+
+/// Decoded Serving Pointer rows, and the keys of rows that did not decode.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct ServingPointers {
+    by_service: BTreeMap<QualifiedService, ServingPointer>,
+    malformed: BTreeMap<String, String>,
+}
+
+impl ServingPointers {
+    #[must_use]
+    pub(crate) fn get(&self, service: &QualifiedService) -> Option<&ServingPointer> {
+        self.by_service.get(service)
+    }
+
+    /// Warn about each malformed row once, until it decodes or goes away.
+    pub(crate) fn warn_malformed(&self, warned: &mut BTreeSet<String>) {
+        warned.retain(|key| self.malformed.contains_key(key));
+        for (key, reason) in &self.malformed {
+            if warned.insert(key.clone()) {
+                eprintln!("ignoring malformed Serving Pointer {key}: {reason}");
+            }
+        }
+    }
+}
+
+impl FromIterator<(QualifiedService, ServingPointer)> for ServingPointers {
+    fn from_iter<I: IntoIterator<Item = (QualifiedService, ServingPointer)>>(pointers: I) -> Self {
+        Self {
+            by_service: pointers.into_iter().collect(),
+            malformed: BTreeMap::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
