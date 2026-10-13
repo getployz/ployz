@@ -14,6 +14,7 @@ Results land in the run's evidence/volume-move-<time>/, one JSON per case and su
 """
 
 import argparse
+from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
@@ -141,6 +142,25 @@ SNAPSHOT_BOUND = 8
 SERVICE = "db"
 VOLUME = "data"
 IMAGE = "postgres:16-alpine"
+
+
+def trigger_not_its(run, seen):
+    """Cloud lets one run act on a Volume at a time, so a trigger seen after the first run ended is a later run's.
+
+    Both times are on the host: the harness clock and the worker's finished_at. Seeing a trigger is never earlier
+    than it happened, so Machine clock skew cannot credit a later run's trigger to the first run.
+    """
+    if run.get("state") not in TERMINAL:
+        return None
+    if not run.get("finished_at"):
+        return (f"the first run {run.get('id')} ended {run.get('state')} with no finished_at, so the trigger "
+                "cannot be tied to it")
+    ended = datetime.fromisoformat(run["finished_at"].replace("Z", "+00:00")).timestamp()
+    if ended < seen:
+        when = datetime.fromtimestamp(seen, timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        return (f"the first run {run.get('id')} ended {run.get('state')} at {run['finished_at']}, before the trigger "
+                f"was seen at {when}, so the trigger evidence is not its")
+    return None
 
 
 def catalog_diff(text):
@@ -662,9 +682,11 @@ class VolumeMove:
     def inngest_run(self, row):
         """Cloud records the Inngest run that claimed a request; a request no run picked up has none."""
         _, postgres = self.dashboard_env()
-        query = self.runner(["docker", "exec", postgres, "psql", "-U", "postgres", "-d", "ployz_cloud", "-Atc",
-                             f"select inngest_run_id from volume_run where id = '{row['id']}'"],
+        sql = f"select inngest_run_id from volume_run where id = '{row['id']}'"
+        query = self.runner(["docker", "exec", postgres, "psql", "-U", "postgres", "-d", "ployz_cloud", "-Atc", sql],
                             capture_output=True, text=True, timeout=60)
+        if query.returncode:
+            raise RuntimeError(f"psql exited {query.returncode} on {sql!r}: {(query.stderr or '').strip()[:500]}")
         return query.stdout.strip()
 
     def cancel(self, row):
@@ -752,6 +774,7 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
         if case["trigger"]:
             result["triggered"] = self.wait_trigger(case, row, started, side)
             if result["triggered"]:
+                result["triggered_at"] = self.clock()
                 result["action_evidence"] = self.act(case["action"], side[case["machine"]], row)
         if case["fault"]:
             self.fault(None)
@@ -770,9 +793,8 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
         result["failures"] = assess(states, lost)
         if case["trigger"] and not result.get("triggered"):
             result["failures"].append("the trigger never fired before the run ended")
-        if result.get("triggered") and not self.inngest_run(row):
-            result["failures"].append(f"the first run {row.get('id')} ended {result['run'].get('state')} and no "
-                                      "Inngest run claimed it, so the trigger evidence is not its")
+        if result.get("triggered") and (unowned := trigger_not_its(result["run"], result["triggered_at"])):
+            result["failures"].append(unowned)
         evidence = result.get("action_evidence")
         if result.get("triggered") and case["action"] != "none" and not (evidence and all(e["landed"] for e in evidence)):
             result["failures"].append(f"no evidence the {case['action']} landed: {json.dumps(evidence)[:500]}")
