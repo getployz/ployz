@@ -61,6 +61,25 @@ it("Delete copy toasts only once the delete run ends, with the Server's words wh
   expect(success).toHaveBeenCalledTimes(1);
 });
 
+it("Delete copy watches each delete it starts, so a second one leaves the first its toast", async () => {
+  vi.spyOn(functions, "deleteCopyServerFn").mockResolvedValueOnce({ ok: true, run: { id: "run-1" } } as never)
+    .mockResolvedValueOnce({ ok: true, run: { id: "run-2" } } as never);
+  let ended = false;
+  vi.spyOn(runs, "getVolumeRunServerFn").mockImplementation(({ data }) => Promise.resolve(runView(data.id, ended ? "done" : "running")));
+  const success = vi.spyOn(toast, "success").mockReturnValue("");
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const invalidated = vi.spyOn(queryClient, "invalidateQueries");
+  const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
+  const { result } = renderHook(() => useDeleteCopy("acme", environment, { id: "v1", name: "data" }), { wrapper });
+
+  act(() => result.current("web-3"));
+  act(() => result.current("web-4"));
+  await waitFor(() => expect(functions.deleteCopyServerFn).toHaveBeenCalledTimes(2));
+  ended = true;
+  await waitFor(() => expect(success).toHaveBeenCalledTimes(2), { timeout: 5_000 });
+  expect(invalidated.mock.calls.filter(([filters]) => JSON.stringify(filters?.queryKey) === JSON.stringify(["volume-placement"]))).toHaveLength(2);
+}, 10_000);
+
 it("Delete copy toasts a refusal without watching anything", async () => {
   vi.spyOn(functions, "deleteCopyServerFn").mockResolvedValue({ ok: false, refusal: { message: "data is busy." } } as never);
   const read = vi.spyOn(runs, "getVolumeRunServerFn");
