@@ -672,6 +672,58 @@ async fn ack_written_when_deploy_changes_with_same_routed_set() {
 }
 
 #[tokio::test]
+async fn removed_service_pointer_deletes_its_ack() {
+    let WatcherFixture {
+        machine,
+        state,
+        address,
+        server,
+        directory,
+    } = watcher_fixture().await;
+    let first = state.api_container();
+    state.write_pointer(
+        &ServingPointer::key(&first.identity()),
+        pointer("d1", &first),
+    );
+    let (load_tx, mut load_rx) = mpsc::unbounded_channel();
+    let admin = TestAdmin { loads: load_tx };
+    let shutdown = CancellationToken::new();
+    let watcher = tokio::spawn(watch_caddy(
+        machine.clone(),
+        ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        directory.join(CONFIG_FILE),
+        shutdown.clone(),
+        move || std::future::ready(Ok(Some(admin.clone()))),
+    ));
+    next_load(&mut load_rx).await;
+    state.wait_for_ack_transactions(1).await;
+
+    state.remove_pointers();
+    state.wait_for_ack_transactions(2).await;
+    let transactions = state.transactions.lock().unwrap().clone();
+    let [_, deletes] = transactions.as_slice() else {
+        panic!("expected two ack transactions: {}", transactions.len());
+    };
+    let [deleted] = deletes.as_slice() else {
+        panic!("expected one delete statement: {}", deletes.len());
+    };
+    assert!(
+        deleted.query.starts_with("DELETE FROM ingress_routes"),
+        "{}",
+        deleted.query
+    );
+    assert_eq!(
+        deleted.params,
+        vec![json!(machine.id), json!(first.identity().to_string())]
+    );
+
+    shutdown.cancel();
+    watcher.await.unwrap().unwrap();
+    server.abort();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
 async fn ack_written_without_a_caddy_admin() {
     let WatcherFixture {
         machine,
@@ -968,6 +1020,15 @@ impl WatchState {
 
     fn write_pointer(&self, key: &str, value: String) {
         *self.pointers.lock().unwrap() = vec![(key.to_owned(), value)];
+        self.notify_pointers();
+    }
+
+    fn remove_pointers(&self) {
+        self.pointers.lock().unwrap().clear();
+        self.notify_pointers();
+    }
+
+    fn notify_pointers(&self) {
         self.pointer_subscriptions
             .lock()
             .unwrap()
