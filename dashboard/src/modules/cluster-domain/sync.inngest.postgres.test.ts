@@ -221,6 +221,22 @@ describe("sync-cluster-domain", () => {
     });
   });
 
+  it("keeps the last check when the records PUT fails, so a Server traffic still reaches stays named", async () => {
+    frame = runtimeWatchFrameFixture({ machines: [machine("a", "203.0.113.1"), machine("b", "203.0.113.2")] });
+    verify.set("203.0.113.2", idOf("b"));
+    await sync();
+    const before = await row();
+    verify.set("203.0.113.1", idOf("a"));
+    verify.delete("203.0.113.2");
+    hostedDns.state.failWith = 503;
+
+    const output = await sync();
+
+    expect(output.error).toBeDefined();
+    expect(before).toMatchObject({ traffic: { kind: "probed", unreachable: [{ machineId: idOf("a"), address: "203.0.113.1" }] } });
+    expect(await row()).toMatchObject({ traffic: before?.traffic, checked_at: before?.checked_at });
+  });
+
   it("reads every ingress Server down as no Servers", async () => {
     frame = runtimeWatchFrameFixture({ machines: [machine("a", "203.0.113.1", true, "down"), machine("b", null)] });
     verify.set("203.0.113.1", idOf("a"));
