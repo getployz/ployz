@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import type { ConfigWritten, EnvironmentRef, MachineId, MachineName } from "@ployz/sdk";
+import type { ConfigWritten, EnvironmentRef, MachineId, MachineName, VolumeListing } from "@ployz/sdk";
 import { toErrorMessage } from "#/lib/error-message";
 import { environmentKey, refetchAfterWrite } from "#/modules/config-store/store-view.queries";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
@@ -81,7 +81,7 @@ export type StagedPlacements = {
  * A Volume whose staged placement already holds counts nothing, and one a running Deploy took counts as that Deploy's.
  */
 export function useStagedPlacements(
-  organizationSlug: string, environment: EnvironmentRef, environmentId: string, volumes: readonly PlacementVolume[],
+  organizationSlug: string, environment: EnvironmentRef, environmentId: string, volumes: readonly (PlacementVolume & Pick<VolumeListing, "change">)[],
 ): StagedPlacements {
   const rows = (useVolumePlacements(organizationSlug).data ?? [])
     .filter((row) => row.environmentId === environmentId && row.staged !== null && row.deploymentId === null);
@@ -100,7 +100,8 @@ export function useStagedPlacements(
   const discardOf = (volumeId: string) => discardPlacementServerFn({ data: { organizationSlug, volumeId, environment } });
   return {
     groups,
-    loss: placementLoss(staged.flatMap(({ changes }) => changes)),
+    // A Volume the Deploy deletes loses every copy; the Store confirms that itself, with its own details.
+    loss: placementLoss(staged.filter(({ volume }) => volume.change !== "delete").flatMap(({ changes }) => changes)),
     count: groups.reduce((total, group) => total + group.changeCount, 0),
     discard: (volumeId) => settle([discardOf(volumeId)]),
     undo: (volumeId, path) => {

@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import { toast } from "sonner";
 import { afterEach, expect, it, vi } from "vitest";
 import * as runs from "#/modules/volume-run/volume-run.functions";
+import { member } from "#/modules/volume-run/volume-run.test-fixture";
 import * as functions from "./volume-placement.functions";
 import { useDeleteCopy, useStagedPlacements } from "./volume-placement.hooks";
 import type { PlacementRow } from "./volume-placement";
@@ -68,6 +69,26 @@ it("Discard all discards one restore at a time, so no sibling finds the Environm
   act(() => ends[1]?.());
   await waitFor(() => expect(result.current.count).toBe(0));
   expect(error).not.toHaveBeenCalled();
+});
+
+it("leaves a Volume the Deploy deletes out of the copy loss, so only the Store's own deletion confirm accepts it", async () => {
+  const id = (server: string) => server.padEnd(32, "0") as never;
+  const dropsMirror: PlacementRow = {
+    volumeId: "v1", environmentId: "env-1", mirrors: [id("web-2")], unreached: false, deploymentId: null,
+    staged: { primary: id("web-1"), mirrors: [], deletes: [] },
+  };
+  vi.spyOn(functions, "listPlacementsServerFn").mockResolvedValue([dropsMirror] as never);
+  vi.spyOn(runs, "inspectVolumeCopiesServerFn").mockResolvedValue([member("web-1", "writer"), member("web-2", "mirror")] as never);
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
+  const { result, rerender } = renderHook((change: "delete" | null) =>
+    useStagedPlacements("acme", environment, "env-1", [{ id: "v1", name: "pg-data", change }]), { wrapper, initialProps: null as "delete" | null });
+  await waitFor(() => expect(result.current.loss.accept).toEqual(["pg-data"]));
+
+  rerender("delete");
+  expect(result.current.loss.accept).toEqual([]);
+  expect(result.current.loss.items).toEqual([]);
+  expect(result.current.count).toBe(1);
 });
 
 const runView = (id: string, state: string, message: string | null = null) => ({ id, state, message }) as never;
