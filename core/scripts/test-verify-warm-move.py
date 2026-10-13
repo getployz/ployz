@@ -217,7 +217,7 @@ class Cluster:
             if found and not self.sh(machine, f"/usr/bin/docker exec {found[0]} pg_isready -U postgres",
                                      required=False).returncode:
                 return True
-            time.sleep(3)
+            time.sleep(1)
         return False
 
     def seed(self, machine, phys, value):
@@ -381,7 +381,7 @@ class Cluster:
             last = self.row(volume, run_id, env) or last
             if last.get("state") in TERMINAL:
                 return last
-            time.sleep(4)
+            time.sleep(1)
         return {**last, "id": run_id, "state": f"still {last.get('state', 'unseen')} after {limit}s"}
 
     def run_volume(self, *args, volume, env=None, limit=1500):
@@ -474,7 +474,7 @@ class Cluster:
                      and row.get("created_at", "") > earlier.get("created_at", "")]
             if later:
                 return min(later, key=lambda row: row["created_at"])
-            time.sleep(4)
+            time.sleep(1)
         return None
 
     def stop_move(self, volume, phys, source, target):
@@ -557,7 +557,7 @@ class Cluster:
         while time.monotonic() - started < limit:
             if not any(self.exists(machine, slot(phys)) for machine in self.machines):
                 return round(time.monotonic() - started)
-            time.sleep(10)
+            time.sleep(1)
         return None
 
     # Verdicts and evidence
@@ -926,7 +926,7 @@ def requeued_move(vc, volume, original, limit=120):
                  and row.get("created_at", "") > original.get("created_at", "")]
         if later:
             return min(later, key=lambda row: row["created_at"])
-        time.sleep(4)
+        time.sleep(1)
     return None
 
 
