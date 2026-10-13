@@ -22,6 +22,15 @@ spec.loader.exec_module(volume_move)
 
 PHYSICAL = "verify-production_vol-1"
 CALL_LIMIT = 6000
+# The cancel undos the table ran before release replaced them: the cancel and runner checks still hold to them.
+CANCEL_UNDOS = {
+    "undo-before-cut": dict(name="undo-before-cut", cell="Writer>Writer", step="3-cut", op="move", machine="writer",
+                            fault_on="writer", fault="kill-daemon:SetVolumeCopy.WriterToMirror", trigger="fault",
+                            action="cancel", recover="release"),
+    "undo-after-cut": dict(name="undo-after-cut", cell="Mirror>Writer", step="5-writer", op="move", machine="other",
+                           fault_on="other", fault="delay-rpc:SetVolumeCopy.MirrorToWriter:90",
+                           trigger="fault-after-stop", action="cancel", recover="release"),
+}
 
 
 class Runaway(Exception):
@@ -59,14 +68,31 @@ def healthy_states():
             "machine-2": state({"root": "absent", "fs": "on"}, [], 2)}
 
 
+STEP = 2.0
+PLAIN_DEPLOY = 12.0
+MOUNT_FAILURE = ("Error: invalid Docker Provisioned Volume observation: Provisioned Volume status has an invalid "
+                 "mountpoint\nrollback: Docker 500: error while mounting volume\n")
+
+
 class ClusterModel:
-    """Two Machines and a Cloud that moves the Volume's writer, with optional planted defects."""
+    """Two Machines and a Cloud whose moves run step by step on the test clock, with optional planted defects.
+
+    A move with no HOLD-second delay fault armed ends at once: failed with any fault armed, else done on the
+    destination. With a held case's delay fault armed it runs in a lane, step by step. A Deploy takes a warm lane (the move yields and is
+    requeued once) and follows a committed one to B; release takes a warm lane back to A and refuses a committed
+    one. A delay fault holds a step until the fault clears, since clearing it restarts the daemon; a kill fault
+    fails the row once cleared, and onFailure releases.
+    """
 
     def __init__(self, mutation=None):
         self.mutation = mutation
-        self.writer = "machine-1"
-        self.mirror = None
+        self.copies = {"machine-1": "writer", "machine-2": None}
+        self.running = {"machine-1": "v0"}
+        self.pending = "v0"
+        self.current = "v0"
         self.runs = []
+        self.lane = None
+        self.queued = []
         self.fault = {"machine-1": None, "machine-2": None}
         self.journal = []
         self.acks = []
@@ -96,6 +122,31 @@ class ClusterModel:
         # A clock that slews gains rate seconds per host second from the model's start, on top of its offset.
         self.rate = {"machine-1": 0.0, "machine-2": 0.0}
         self.stops = []
+
+    @property
+    def writer(self):
+        return next((machine for machine, copy in self.copies.items() if copy == "writer"), None)
+
+    @writer.setter
+    def writer(self, machine):
+        """A test that places the writer by hand also runs the app there."""
+        self.place("writer", machine)
+        self.running = {machine: self.current} if machine else {}
+
+    @property
+    def mirror(self):
+        return next((machine for machine, copy in self.copies.items() if copy == "mirror"), None)
+
+    @mirror.setter
+    def mirror(self, machine):
+        self.place("mirror", machine)
+
+    def place(self, kind, machine):
+        for held, copy in self.copies.items():
+            if copy == kind:
+                self.copies[held] = None
+        if machine:
+            self.copies[machine] = kind
 
     @property
     def fired(self):
@@ -161,11 +212,22 @@ class ClusterModel:
     def holder(self):
         return next((hold for hold in self.holds if self.clock() < hold["until"]), None)
 
+    def row(self, kind, state="done"):
+        row = dict(id=f"run-{len(self.runs)}", kind=kind, state=state, phase="warm",
+                   finished_at=None if state == "running" else self.now())
+        self.runs.append(row)
+        return row
+
+    def end(self, row, state):
+        row["state"], row["finished_at"] = state, self.now()
+
     def __call__(self, args, **kwargs):
         self.calls += 1
         if self.calls > CALL_LIMIT:
             raise Runaway(f"More than {CALL_LIMIT} helper commands; a wait loop is not sleeping")
         self.tick()
+        if self.clock:
+            self.advance()
         if args[0] == "docker":
             code, output = self.postgres(args[-1])
         elif args[1] == "cli":
@@ -179,8 +241,16 @@ class ClusterModel:
         return subprocess.CompletedProcess(args, code, output, "")
 
     def postgres(self, sql):
-        """Cloud records the Inngest run that claims a request; an unclaimed one has none."""
+        """Cloud records the Inngest run that claims a request, and the move row's phase.
+
+        A cancel looks up the lane's Inngest run while the runner is down, so the model ends the lane there."""
         run_id = re.search(r"id = '([^']+)'", sql)[1]
+        if "select phase" in sql:
+            return 0, next((row["phase"] for row in self.runs if row["id"] == run_id), "") + "\n"
+        if (self.lane and self.lane["row"]["id"] == run_id and self.pid_file.exists()
+                and int(self.pid_file.read_text()) not in self.workers):
+            self.take("cancelled")
+            self.running = {self.writer: self.current}
         return 0, "" if run_id in self.unclaimed else f"inngest-{run_id}\n"
 
     def worker(self, state):
@@ -193,12 +263,134 @@ class ClusterModel:
             self.pid_file.write_text(f"{pid + 1}\n")
         return 0, ""
 
+    def start_move(self, row, destination):
+        source = self.writer
+        if source == destination:
+            self.end(row, "done")
+            return
+        first = "MirrorToMirror" if self.copies[destination] == "mirror" else "NoneToMirror"
+        stages = [("snapshot", source, "WriterToSnapshot"), ("round", destination, first),
+                  ("round", destination, "MirrorToMirror"), ("cut", source, "WriterToMirror"),
+                  ("final", destination, "MirrorToMirror"), ("start", destination, "MirrorToWriter")]
+        self.lane = dict(row=row, source=source, destination=destination, stages=stages, index=-1,
+                         until=self.clock(), held=None, killed=None)
+
+    def advance(self):
+        while self.lane is None and self.queued:
+            self.start_move(*self.queued.pop(0))
+        while self.lane and not self.lane["killed"] and self.clock() >= self.lane["until"]:
+            lane = self.lane
+            if lane["index"] >= 0:
+                self.finish(lane)
+            lane["index"] += 1
+            if lane["index"] == len(lane["stages"]):
+                self.end(lane["row"], "done")
+                self.lane = None
+                while self.lane is None and self.queued:
+                    self.start_move(*self.queued.pop(0))
+            else:
+                self.enter(lane)
+
+    def enter(self, lane):
+        name, machine, transition = lane["stages"][lane["index"]]
+        at, fault = lane["until"], self.fault[machine] or ""
+        if name == "start":
+            lane["row"]["phase"] = "committed"
+        delay = re.fullmatch(r"delay-rpc:SetVolumeCopy\.(\w+):(\d+)", fault)
+        lane["held"] = None
+        if delay and delay[1] == transition:
+            self.log_fault(machine, at, "fault: delaying switch verb")
+            lane["until"], lane["held"] = at + int(delay[2]) + STEP, machine
+        elif fault and not fault.startswith("delay-rpc:") and (
+                fault == f"kill-daemon:SetVolumeCopy.{transition}" or not fault.startswith("kill-daemon:")):
+            self.log_fault(machine, at)
+            lane["killed"] = machine
+        else:
+            lane["until"] = at + STEP
+
+    def finish(self, lane):
+        name, machine, _ = lane["stages"][lane["index"]]
+        if name == "round":
+            self.copies[machine] = "mirror"
+        elif name == "cut":
+            self.running.pop(machine, None)
+            self.stop(machine, lane["until"])
+            self.copies[machine] = "mirror"
+        elif name == "start":
+            self.copies[machine] = "writer"
+            self.running[machine] = self.current
+
+    def take(self, state):
+        """End the lane's row as `state` in one step and put the app back on the source, promoting it if cut."""
+        lane, self.lane = self.lane, None
+        self.clock.now = self.clock() + STEP
+        if not (state == "yielded" and self.mutation == "yielded-running"):
+            self.end(lane["row"], state)
+        self.copies[lane["source"]] = "writer"
+        if self.copies[lane["destination"]] == "writer":
+            self.copies[lane["destination"]] = "mirror"
+        return lane
+
+    def disarm(self, machine):
+        """Clearing a fault restarts the daemon: a held step is dropped and Cloud resends it; a killed row fails."""
+        lane = self.lane
+        if lane and lane["held"] == machine:
+            lane["until"], lane["held"] = min(lane["until"], self.clock() + STEP), None
+        if lane and lane["killed"] == machine:
+            committed = lane["row"]["phase"] == "committed"
+            self.lane = None
+            self.end(lane["row"], "failed")
+            side = lane["destination"] if committed else lane["source"]
+            self.copies[side], self.copies[self.other(side)] = "writer", "mirror"
+            self.running = {side: self.current}
+            self.row("release")
+
+    def deploy(self):
+        lane, version = self.lane, self.pending
+        if lane and self.mutation == "mount-error":
+            self.running.clear()
+            return 1, MOUNT_FAILURE
+        if lane and lane["row"]["phase"] == "committed":
+            self.clock.now = max(self.clock(), lane["until"])
+            self.advance()
+        elif lane:
+            if self.mutation == "deploy-waits":
+                self.clock.now = max(self.clock(), lane["until"])
+            lane = self.take("yielded")
+            requeues = {"requeue-none": 0, "requeue-twice": 2}.get(self.mutation, 1)
+            self.queued += [(self.row("move", "running"), lane["destination"]) for _ in range(requeues)]
+        if lane or version != self.current:
+            # A Deploy with nothing new to roll out, like the setup's, returns at once.
+            self.clock.now += PLAIN_DEPLOY
+        self.current = version
+        self.running = {self.writer: version}
+        if lane and self.mutation == "deploy-two-machines":
+            self.running[lane["destination"]] = version
+        return 0, json.dumps(dict(deployed=version))
+
+    def release(self):
+        lane = self.lane
+        if lane and lane["row"]["phase"] == "committed":
+            if self.mutation == "release-changes-row":
+                self.row("release", "failed")
+            message = f"{volume_move.SERVICE} is starting on {lane['destination']}; it finishes there"
+            return 1, json.dumps(dict(error=dict(code="conflict", message=message)))
+        if lane:
+            self.take("cancelled")
+            self.running = {self.writer: self.current}
+        return 0, json.dumps(self.row("release"))
+
     def cli(self, args):
         if args[0] == "volume" and args[1] in self.asks and "--approval" not in args:
             details = dict(approval=f"{args[1]}:digest", approval_id="approval-1")
             return 1, json.dumps(dict(error=dict(code="approval_required", details=details)))
         if args[:2] != ["volume", "runs"]:
             self.started.append(args)
+        if args[0] == "set":
+            self.pending = next((arg.partition("=")[2] for arg in args if ".env.VC_DEPLOY=" in arg), self.pending)
+            return 0, "{}"
+        if args[0] == "deploy":
+            return self.deploy()
         if args[:2] == ["volume", "inspect"]:
             return 0, json.dumps(dict(id="1", environment=dict(project="verify", name="production")))
         held = self.holder() if self.clock else None
@@ -216,31 +408,29 @@ class ClusterModel:
             message = "A run on this Volume just ended. Try again."
             return 1, json.dumps(dict(error=dict(code="conflict", message=message, details=None)))
         if args[:2] == ["volume", "move"]:
-            destination = args[-1]
-            row = dict(id=f"run-{len(self.runs)}", kind="move", state="running", finished_at=self.now())
-            self.runs.append(row)
-            if any(self.fault.values()):
+            row = self.row("move", "running")
+            row["finished_at"] = self.now()
+            if any((fault or "").startswith("delay-rpc:") and fault.endswith(f":{volume_move.HOLD}")
+                   for fault in self.fault.values()) or self.lane:
+                self.queued.append((row, args[-1]))
+                self.advance()
+            elif any(self.fault.values()):
                 self.fired = True
                 row["state"] = "failed"
             else:
-                self.mirror, self.writer = self.writer, destination
+                if args[-1] != self.writer:
+                    self.mirror, self.writer = self.writer, args[-1]
                 row["state"] = "done"
             return 0, json.dumps(row)
         if args[:2] == ["volume", "mirror"]:
-            row = dict(id=f"run-{len(self.runs)}", kind="mirror", state="done", finished_at=self.now())
-            self.runs.append(row)
+            row = self.row("mirror")
             # The armed kill lands inside the effect and the resumed run finishes it.
             if any(self.fault.values()):
                 self.fired = True
-            if args[2] == "rm":
-                self.mirror = None
-            else:
-                self.mirror = args[-1]
+            self.mirror = None if args[2] == "rm" else args[-1]
             return 0, json.dumps(row)
         if args[:2] == ["volume", "release"]:
-            row = dict(id=f"run-{len(self.runs)}", kind="release", state="done", finished_at=self.now())
-            self.runs.append(row)
-            return 0, json.dumps(row)
+            return self.release()
         return 0, "{}"
 
     def guest(self, machine, script):
@@ -251,7 +441,8 @@ class ClusterModel:
         if "ployz:pull" in script:
             return self.quiet(machine)
         if "PLOYZD_FAULT" in script:
-            value = script.split("PLOYZD_FAULT=", 2)[-1].split("'", 1)[0] if "echo" in script else None
+            value = re.search(r"echo '?PLOYZD_FAULT=([^'\s]+)", script)
+            value = value and value[1]
             if value is None and self.disarm_fails:
                 return 255, ""
             held = self.holder() if self.clock else None
@@ -260,6 +451,8 @@ class ClusterModel:
                 self.tripped = held["id"]
                 self.fired = True
             self.fault[machine] = value
+            if value is None:
+                self.disarm(machine)
             return 0, ""
         if script == "date +%s.%N":
             self.clock.now += self.latency[machine] / 2
@@ -268,6 +461,8 @@ class ClusterModel:
             return 0, f"{reading:.9f}\n"
         if "FinishedAt" in script:
             return 0, "".join(f"{self.stamp(machine, at):.9f}\n" for where, at in self.stops if where == machine)
+        if "Config.Env" in script:
+            return 0, f"VC_DEPLOY={self.running[machine]}\n" if machine in self.running else ""
         if "fault:" in script:
             if "-u ployz-volume-plugin.service" not in script:
                 return 0, ""
@@ -280,16 +475,17 @@ class ClusterModel:
         if script.startswith("for d in"):
             lines = []
             two_writers = self.mutation == "two-writers"
-            root = "off" if machine == self.writer or (two_writers and machine == self.mirror) else "absent"
-            fs = "on" if machine == self.mirror and not two_writers else "absent"
+            copy = self.copies[machine]
+            root = "off" if copy == "writer" or (two_writers and copy == "mirror") else "absent"
+            fs = "on" if copy == "mirror" and not two_writers else "absent"
             lines += [f"ro ployz/ployz/{PHYSICAL} {root}", f"ro ployz/ployz-mirror/{PHYSICAL}/fs {fs}"]
             snapshots = 12 if self.mutation == "snapshots" else 2
             lines += [f"snap ployz/ployz/{PHYSICAL}@s{i}" for i in range(snapshots)]
-            if machine == self.writer and self.mutation != "elsewhere":
+            if machine in self.running and self.mutation != "elsewhere":
                 lines.append("ct abc running db-1")
-            elif machine != self.writer and self.mutation in ("elsewhere", "two-running"):
+            elif machine not in self.running and self.mutation in ("elsewhere", "two-running"):
                 lines.append("ct xyz running db-2")
-            elif self.mutation == "stopped" and machine == self.mirror:
+            elif self.mutation == "stopped" and copy == "mirror":
                 lines.append("ct def exited db-old")
             return 0, "\n".join(lines) + "\n"
         if "pgrep" in script:
@@ -299,7 +495,7 @@ class ClusterModel:
                 return 0, "no\n"
             return 0, "yes\n" if self.receiving_on(machine) else "no\n"
         if "pg_isready" in script:
-            return 0, ""
+            return (0 if machine in self.running else 1), ""
         if "systemctl kill" in script:
             after, invocation = ("2", "b") if self.kill_lands else ("1", "a")
             return 0, f"rc=0\nout=\nbefore=1\ninvocation=a\nafter={after}\ninvocation_after={invocation}\n"
@@ -307,7 +503,6 @@ class ClusterModel:
             present = self.acks[:-1] if self.mutation == "lost" else self.acks
             return 0, "\n".join(str(ack) for ack in present) + "\n"
         return 0, ""
-
 
     def quiet(self, machine):
         """The clean start's read: every dataset's `ployz:pull` and every zfs receive, each with its exit code."""
@@ -497,13 +692,14 @@ class VolumeMoveTests(unittest.TestCase):
     def test_rows_use_known_columns_and_no_retired_fault(self):
         for row in volume_move.CASES + volume_move.soak_cases():
             with self.subTest(row["name"]):
-                self.assertIn(row["op"], {"move", "mirror", "mirror-rm"})
+                self.assertIn(row["op"], {None, "move", "mirror", "mirror-rm"})
                 self.assertIn(row["machine"], {"writer", "other"})
                 self.assertIn(row.get("fault_on"), {None, "writer", "other"})
                 self.assertIn(row.get("mirror"), {None, "present", "absent"})
-                self.assertIn(row["action"], {"none", "cancel", "runner-kill", "kill-ployz", "kill-docker"})
+                self.assertIn(row["action"], {"none", "deploy", "release", "runner-kill", "kill-ployz", "kill-docker"})
                 self.assertIn(row["recover"], {"rerun", "release"})
-                self.assertIn(row["trigger"], {None, "fault", "receiving", "stopped", "fault-after-stop"})
+                self.assertIn(row["trigger"], {None, "fault", "receiving", "stopped", "fault-after-stop",
+                                               "warm-after-cut", "committed"})
                 self.assertTrue(row["step"])
                 self.assertNotIn("after-record", row["fault"] or "")
         self.assertEqual(len({row["name"] for row in volume_move.CASES}), len(volume_move.CASES))
@@ -515,18 +711,22 @@ class VolumeMoveTests(unittest.TestCase):
         self.assertEqual(ops["None>Mirror"], ("mirror", "absent"))
         self.assertEqual(ops["Mirror>Mirror"], ("move", "present"))
 
-    def test_undo_before_cut_cancels_inside_the_cut_after_the_container_stopped(self):
-        undo = {row["name"]: row for row in volume_move.CASES}
-        before = undo["undo-before-cut"]
-        self.assertEqual((before["fault_on"], before["fault"], before["trigger"], before["recover"]),
-                         ("writer", "kill-daemon:SetVolumeCopy.WriterToMirror", "fault", "release"))
-        after = undo["undo-after-cut"]
-        self.assertEqual((after["fault_on"], after["fault"], after["trigger"]),
-                         ("other", "delay-rpc:SetVolumeCopy.MirrorToWriter:90", "fault-after-stop"))
+    def test_held_cases_hold_the_lane_phase_their_action_needs_on_the_destination(self):
+        cases = {row["name"]: row for row in volume_move.CASES}
+        expected = {"deploy-warm": ("MirrorToMirror", "fault"), "undo-before-cut": ("MirrorToMirror", "fault"),
+                    "deploy-after-cut": ("MirrorToMirror", "warm-after-cut"),
+                    "deploy-committed": ("MirrorToWriter", "committed"), "undo-after-cut": ("MirrorToWriter", "committed")}
+        for name, (transition, trigger) in expected.items():
+            with self.subTest(name):
+                row = cases[name]
+                self.assertEqual((row["fault_on"], row["fault"], row["trigger"]),
+                                 ("other", f"delay-rpc:SetVolumeCopy.{transition}:{row['hold']}", trigger))
+                self.assertGreater(row["hold"], 17.5 + volume_move.DEPLOY_MARGIN)
 
-    def test_cases_keep_the_clean_move_both_undos_and_one_kill_per_cell(self):
+    def test_cases_keep_the_clean_move_the_deploys_both_undos_and_one_kill_per_cell(self):
         self.assertEqual([row["name"] for row in volume_move.CASES],
-                         ["clean", "undo-before-cut", "undo-after-cut", *(row["name"] for row in volume_move.KILLS)])
+                         ["clean", "deploy-plain", "deploy-warm", "deploy-after-cut", "deploy-committed",
+                          "undo-before-cut", "undo-after-cut", *(row["name"] for row in volume_move.KILLS)])
 
     def test_soak_runs_the_four_switch_steps_under_every_action(self):
         self.assertEqual([step[0] for step in volume_move.SOAK_STEPS], ["1-rounds", "3-cut", "4-final", "5-writer"])
@@ -807,20 +1007,27 @@ class VolumeMoveTests(unittest.TestCase):
         self.assertEqual([wait["holder"] for wait in checks.busy_waits], ["sync-1"])
 
         checks, model = self.checks()
-        model.hold(volume_move.BUSY_LIMIT - 2)
+        setup = checks.setup
+        def held_after_setup():
+            setup()
+            model.hold(volume_move.BUSY_LIMIT - 2)
+        checks.setup = held_after_setup
         with redirect_stdout(io.StringIO()):
             summary = checks.run_all([volume_move.KILLS[0]])
         self.assertIn("before the fault was armed", summary["cases"][0]["skipped"] or "", summary["cases"][0])
 
     def test_a_runs_reply_that_stalls_past_the_limit_skips_the_case_and_still_writes_the_summary(self):
         checks, model = self.checks()
-        cli, stalled = model.cli, []
+        cli, start_op, stalled, starting = model.cli, checks.start_op, [], []
         def stall(args):
-            if args[:2] == ["volume", "runs"] and checks.case_name == volume_move.KILLS[0]["name"] and not stalled:
+            if args[:2] == ["volume", "runs"] and starting == [volume_move.KILLS[0]["name"]] and not stalled:
                 stalled.append(True)
                 model.clock.now += volume_move.BUSY_LIMIT + 1
             return cli(args)
-        model.cli = stall
+        def starts(*args, **kwargs):
+            starting.append(checks.case_name)
+            return start_op(*args, **kwargs)
+        model.cli, checks.start_op = stall, starts
         with redirect_stdout(io.StringIO()):
             summary = checks.run_all([volume_move.KILLS[0], volume_move.CASES[0]])
         self.assertIn("before the fault was armed", summary["cases"][0]["skipped"] or "", summary["cases"][0])
@@ -833,7 +1040,7 @@ class VolumeMoveTests(unittest.TestCase):
         model.just_ended = 1
         checks.case_name = "clean"
         with redirect_stdout(io.StringIO()):
-            row = checks.start_op("move", "machine-2")
+            row = checks.wait_run(checks.start_op("move", "machine-2"))
         self.assertEqual(row["state"], "done")
         self.assertEqual([wait["holder"] for wait in checks.busy_waits], ["sync-a"])
 
@@ -899,7 +1106,7 @@ class VolumeMoveTests(unittest.TestCase):
         self.assertTrue((self.root / "out" / "summary.json").exists())
 
     def test_a_release_approval_missing_a_field_or_the_token_fails_its_case_and_still_writes_the_summary(self):
-        undo = next(case for case in volume_move.CASES if case["name"] == "undo-after-cut")
+        undo = CANCEL_UNDOS["undo-after-cut"]
         complete = dict(approval="release:digest", approval_id="approval-1")
         for name, error, token, missing in (
                 ("no details", dict(code="approval_required"), True, " without details:"),
@@ -1026,8 +1233,12 @@ class VolumeMoveTests(unittest.TestCase):
                     return 1, json.dumps(dict(error=dict(code="internal", message="placement exploded")))
                 return cli(args)
             return refusing
-        for case, plant, last in ((volume_move.CASES[0], every_move_fails, "failed"),
-                                  (kill, the_rerun_is_refused, "refused")):
+        # The clean case holds its own run to its expectation, so it names the move rather than the last run.
+        for case, plant, expected in (
+                (volume_move.CASES[0], every_move_fails,
+                 ["move run-0 is failed, expected done", "final writer machine-1, expected machine-2"]),
+                (kill, the_rerun_is_refused,
+                 ["the last run ended refused", "the Volume ended on machine-1, not machine-2"])):
             with self.subTest(case["name"]):
                 shutil.rmtree(self.root / "out", ignore_errors=True)
                 checks, model = self.checks()
@@ -1038,8 +1249,8 @@ class VolumeMoveTests(unittest.TestCase):
                 self.assertFalse(result["passed"], result)
                 self.assertFalse(summary["passed"])
                 self.assertEqual(result["final_writer"], "machine-1")
-                self.assertIn(f"the last run ended {last}", result["failures"])
-                self.assertIn("the Volume ended on machine-1, not machine-2", result["failures"])
+                for failure in expected:
+                    self.assertIn(failure, result["failures"])
 
     def test_a_move_that_ends_done_without_moving_the_writer_fails_on_where_the_volume_ended(self):
         checks, model = self.checks()
@@ -1056,10 +1267,10 @@ class VolumeMoveTests(unittest.TestCase):
             summary = checks.run_all([volume_move.CASES[0]])
         result = summary["cases"][0]
         self.assertFalse(result["passed"], result)
-        self.assertEqual(result["failures"], ["the Volume ended on machine-1, not machine-2"])
+        self.assertEqual(result["failures"], ["final writer machine-1, expected machine-2"])
 
     def test_mirror_cases_and_a_released_undo_pass_ending_on_the_writer_they_started_on(self):
-        undo = next(case for case in volume_move.CASES if case["name"] == "undo-after-cut")
+        undo = CANCEL_UNDOS["undo-after-cut"]
         cases = [case for case in volume_move.KILLS if case["op"] != "move"] + [undo]
         self.assertEqual([case["name"] for case in cases],
                          ["kill-first-pull", "kill-forget-mirror", "kill-forget-writer", "undo-after-cut"])
@@ -1105,7 +1316,7 @@ class VolumeMoveTests(unittest.TestCase):
                         self.assertEqual(model.mirror, "machine-2" if case["op"] == "mirror" else None)
 
     def test_a_release_approval_cloud_rejects_fails_the_case_and_names_the_status(self):
-        undo = next(case for case in volume_move.CASES if case["name"] == "undo-after-cut")
+        undo = CANCEL_UNDOS["undo-after-cut"]
         (self.root / "private").mkdir()
         (self.root / "private" / "cloud-token").write_text("token\n")
         checks, model = self.checks()
@@ -1119,7 +1330,7 @@ class VolumeMoveTests(unittest.TestCase):
         self.assertFalse([args for args in model.started if "--approval" in args], model.started)
 
     def test_an_undo_passes_only_when_its_cancel_ends_the_run(self):
-        undo = next(case for case in volume_move.CASES if case["name"] == "undo-before-cut")
+        undo = CANCEL_UNDOS["undo-before-cut"]
         for ended, failure in (("cancelled", None), ("lost", None),
                                ("done", "the cancel did not land: the run ended done"),
                                ("failed", "the cancel did not land: the run ended failed")):
@@ -1243,7 +1454,7 @@ class VolumeMoveTests(unittest.TestCase):
         self.assertIn("select inngest_run_id from volume_run where id = 'run-7'", str(raised.exception))
 
     def test_an_undo_passes_only_when_cloud_accepted_its_cancel(self):
-        undo = next(case for case in volume_move.CASES if case["name"] == "undo-before-cut")
+        undo = CANCEL_UNDOS["undo-before-cut"]
         errors = '{"errors":[{"message":"run not found"}]}'
         for name, replies, accepted in (
                 ("DELETE 200", [(200, "")], True),
@@ -1658,7 +1869,7 @@ class VolumeMoveTests(unittest.TestCase):
     def test_a_cancel_restarts_the_runner_exactly_once_even_when_its_lookup_raises(self):
         # Codex bot round 8: act kills the runner before cancel, and an inngest_run that raises inside cancel left
         # the runner dead for every later case.
-        undo = next(case for case in volume_move.CASES if case["name"] == "undo-before-cut")
+        undo = CANCEL_UNDOS["undo-before-cut"]
         clean = volume_move.CASES[0]
         for raises in (False, True):
             with self.subTest(raises=raises):
@@ -1765,6 +1976,45 @@ class VolumeMoveTests(unittest.TestCase):
         self.assertEqual(model.interrupted, [])
         self.assertGreaterEqual(min(at for _, at in model.restarts) - self.planted, volume_move.BUSY_LIMIT)
         self.assertEqual(model.pulls, {"machine-2"})
+
+    def test_each_planted_defect_fails_the_run(self):
+        for mutation in ("two-writers", "stopped", "snapshots", "lost"):
+            with self.subTest(mutation):
+                summary, _ = self.run_cases([volume_move.CASES[0]], mutation)
+                self.assertFalse(summary["passed"])
+
+    def test_each_deploy_and_undo_case_passes_against_a_correct_model(self):
+        summary, model = self.run_cases(volume_move.CASES[:7])
+        self.assertTrue(summary["passed"], json.dumps(summary["cases"], indent=1))
+        self.assertEqual(summary["deploy_baseline_seconds"], PLAIN_DEPLOY)
+        runs = {case["name"]: case["run"] for case in summary["cases"]}
+        self.assertEqual([runs[name] for name in ("deploy-warm", "deploy-after-cut", "deploy-committed",
+                                                  "undo-before-cut", "undo-after-cut")],
+                         ["yielded", "yielded", "done", "cancelled", "done"])
+        result = json.loads((self.root / "out" / "deploy-after-cut.json").read_text())
+        self.assertEqual(result["acted"]["running_after"], [result["writer_before"]])
+        self.assertEqual([row["state"] for row in result["later"] if row["kind"] == "move"], ["done"])
+        self.assertEqual(model.fault, {"machine-1": None, "machine-2": None})
+
+    def test_each_deploy_and_undo_defect_fails_with_a_message_naming_it(self):
+        cases = {row["name"]: row for row in volume_move.CASES}
+        planted = [
+            ("deploy-two-machines", "deploy-warm", "after the Deploy db runs on ['machine-1', 'machine-2']"),
+            ("deploy-waits", "deploy-warm", "past the 90s hold: it waited on the move"),
+            ("requeue-twice", "deploy-warm", "2 requeued moves, expected 1"),
+            ("requeue-none", "deploy-after-cut", "0 requeued moves, expected 1"),
+            ("release-changes-row", "undo-after-cut", "release on a committed lane changed rows"),
+            ("yielded-running", "deploy-warm", "is still running after 60s, expected yielded"),
+            ("mount-error", "deploy-after-cut",
+             "the Deploy printed 'Provisioned Volume status has an invalid mountpoint'"),
+        ]
+        for mutation, name, message in planted:
+            with self.subTest(mutation):
+                self.setUp()
+                summary, _ = self.run_cases([cases["deploy-plain"], cases[name]], mutation)
+                failures = summary["cases"][-1]["failures"]
+                self.assertFalse(summary["passed"])
+                self.assertTrue(any(message in failure for failure in failures), failures)
 
     def test_each_planted_defect_fails_the_run(self):
         for mutation in ("two-writers", "stopped", "snapshots", "lost"):
