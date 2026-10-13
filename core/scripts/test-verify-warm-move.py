@@ -944,15 +944,18 @@ def release_after_stopped_move(vc):
     ready = vc.ready(A, phys)
     marks = vc.psql(A, phys, "select note from marks", required=False) if ready else "no db"
     writable = vc.writable(phys)
+    b_copy = vc.inspect(B, phys) or {}
+    cut = (a_copy or {}).get("newest") or {}
     judged(vc, "release_after_stopped_move", {
         "the cancel starts a release": auto is not None,
         "no release left running": settled(auto) and (released is None or settled(released)),
         "a release ends done, the cancel's or the one run after it": done(auto) or done(released),
         f"db runs on {A} with the row from before the Move": ready and "pre-05" in marks,
         f"{A} root writable": vc.prop(A, root(phys), "readonly") == "off",
-        f"{B} keeps no slot": not vc.exists(B, slot(phys)),
+        f"{B} keeps no slot at the cut's snapshot": not vc.exists(B, slot(phys))
+        or (b_copy.get("kind") == "slot" and (b_copy.get("newest") or {}).get("guid") != cut.get("guid")),
         f"exactly one writable copy, on {A}": writable == [f"{A}:{root(phys)}"],
-    }, f"stopped {say(stopped)[:800]}; {A} copy when stopped {say(a_copy)[:300]}; "
+    }, f"stopped {say(stopped)[:800]}; {A} copy when stopped {say(a_copy)[:300]}; {B} copy {say(b_copy)[:300]}; "
        f"cancel's release {say(auto)[:500]}; release exit {code} {text_of(released, data)[:500]}; "
        f"marks {marks!r}; running {vc.live(phys)}; writable {writable}")
 
