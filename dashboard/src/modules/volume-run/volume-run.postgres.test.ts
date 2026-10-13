@@ -410,6 +410,14 @@ describe("volume runs", () => {
     transformCtx: (ctx) => ({ ...mockCtx(ctx), runId }),
     steps: [...(steps ?? []), ...sleeps],
   }).execute();
+  /** Runs the row as Inngest would from the event its request sent, `took` and all. */
+  const deliver = (runRowId: string, runId = "run-1") => {
+    const event = send.mock.calls.flatMap(([sent]) => [sent].flat()).find((sent) => sent.id === `volume-run-${runRowId}`);
+    if (event === undefined) throw new Error(`no event sent for ${runRowId}`);
+    // SAFETY: the event was built by createVolumeRunRequestedEvent.
+    const { took } = event.data as { took?: string };
+    return execute(runRowId, runId, undefined, volumeId, took);
+  };
   const rows = async () => (await harness.pool.query(
     `select id, kind, state, epoch, phase, current, inngest_run_id, message, orphan, volume_id, docker_volume, refquota_bytes, finished_at
      from volume_run order by created_at, id`,
@@ -784,12 +792,26 @@ describe("volume runs", () => {
       const released = await release();
       if (!released.ok) throw new Error(released.refusal.message);
 
-      const output = await execute(released.run.id, "run-2");
+      const output = await deliver(released.run.id, "run-2");
 
       expect(output.result).toEqual({ runId: released.run.id, released: "fsn-1" });
       expect(verbs).toEqual(["floor@fsn-1", "floor@fsn-2", "forget@fsn-2", "writer@fsn-1(kept)"]);
       expect(named("fsn-1").copy).toMatchObject({ kind: "root", readonly: false, newest: G });
       expect(containers).toEqual([{ machine: "fsn-1", id: "web-fsn-1", running: true }]);
+    });
+
+    it("a release that took a warm Move on a Volume with no Service floors and plans on its own, and ends done", async () => {
+      containers = [];
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
+      await move();
+      const released = await release();
+      if (!released.ok) throw new Error(released.refusal.message);
+
+      const output = await deliver(released.run.id, "run-2");
+
+      expect(output.error).toBeUndefined();
+      expect(verbs).toEqual(["floor@fsn-1", "floor@fsn-2", "writer@fsn-1(none)"]);
+      expect((await lanes()).find((lane) => lane.id === released.run.id)).toMatchObject({ state: "done" });
     });
 
     it("a release that took a warm Move before B got a copy floors B too, so the Move's late Mirror cannot land there", async () => {
@@ -811,14 +833,17 @@ describe("volume runs", () => {
       containers = [{ machine: "fsn-1", id: "web-fsn-1", running: false }];
       named("fsn-1").copy = slotCopy(G, null, "3");
       machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(G) };
-      const run = await requested({ kind: "mirror", args: { to: "fsn-2" } });
+      await move();
+      const staged = await runEffect(requestVolumeRun({ userId, organizationId }, { volumeId, environment, kind: "mirror", args: { to: "fsn-2" } }, { end: "yielded" }));
+      if (!staged.ok) throw new Error(staged.refusal.message);
+      const run = staged.run;
 
-      await execute(run.id, "run-2", undefined, volumeId, "move");
+      await deliver(run.id, "run-2");
 
       expect(verbs.slice(0, 2)).toEqual(["floor@fsn-1", "writer@fsn-1(none)"]);
       expect(sent[1]).toMatchObject({ expect: { kind: "mirror", newest: G.guid }, want: { kind: "writer", at: G.guid, start: null }, gen: sent[0]?.gen });
       expect(named("fsn-1").copy).toMatchObject({ kind: "root", readonly: false, newest: G });
-      expect(await rows()).toMatchObject([{ id: run.id, state: "done" }]);
+      expect(await lanes()).toMatchObject([{ kind: "move", state: "yielded" }, { id: run.id, state: "done" }]);
     });
   });
 

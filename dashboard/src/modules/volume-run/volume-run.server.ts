@@ -434,7 +434,8 @@ const takeLane = Effect.fn("VolumeRun.takeLane")(function* (caller: Caller, { in
       requestedByUserId: caller.userId,
     }).onConflictDoNothing().returning();
     if (inserted !== undefined) {
-      if (inngestRunId === null) yield* enqueueRun(inserted, taken?.kind);
+      // A release floors and plans on its own; only a yielding run fences the lane it took before it plans.
+      if (inngestRunId === null) yield* enqueueRun(inserted, end === "yielded" ? taken?.kind : undefined);
       if (taken !== undefined) yield* enqueueEvent(createVolumeRunTakenEvent({ runId: taken.id }));
       return { run: volumeRunView(inserted), ended: taken === undefined ? null : volumeRunView(taken) } satisfies LaneTake;
     }
