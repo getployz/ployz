@@ -50,13 +50,16 @@ const metrics = (history: Partial<MetricHistory> = {}): MetricRead => ({
 const range = { from: "1h", to: "now" };
 const store = { project: "shop", environment: "production" };
 
-async function open({ shown = uptime(), change, checker = true, read = metrics(), placedOn = 1, listed = "ready" }: {
+const settled = () => screen.findAllByRole("heading", { level: 3, name: /^(Disk|Upgrade .*|Your servers are offline)$/ });
+
+async function open({ shown = uptime(), change, checker = true, read = metrics(), placedOn = 1, listed = "ready", until = settled }: {
   shown?: ServiceUptime | null;
   change?: ServiceSettingChange;
   checker?: boolean;
   read?: MetricRead;
   placedOn?: number;
   listed?: "ready" | "loading";
+  until?: () => Promise<HTMLElement[]>;
 } = {}) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
   const scope = { queryClient, sessionId: "session", userId: "user" };
@@ -88,7 +91,7 @@ async function open({ shown = uptime(), change, checker = true, read = metrics()
     history: createMemoryHistory({ initialEntries: ["/cloud/acme/shop/production"] }),
   });
   render(<QueryClientProvider client={queryClient}><RouterProvider router={router} /></QueryClientProvider>);
-  await screen.findAllByRole("heading", { level: 3, name: /^(Disk|Upgrade .*|Your servers are offline)$/ });
+  await until();
   return { set, queryClient };
 }
 
@@ -195,6 +198,13 @@ it("names neither the Server nor its id when the list doesn't name it, and says 
   await open({ checker: false, read, listed: "loading" });
   expect(screen.queryByText(/didn’t answer/)).toBeNull();
   expect(document.body.textContent).not.toContain(WEB_3);
+});
+
+it("holds the upgrade copy until the list loads, so it never reads a server and then its name", async () => {
+  await open({ checker: false, read: metrics({ unanswered: [refused(WEB_2)] }), listed: "loading",
+    until: () => screen.findAllByRole("status", { name: "Checking your servers" }) });
+  expect(charts()).toEqual([]);
+  expect(document.body.textContent).not.toMatch(/Upgrade/);
 });
 
 it("asks to upgrade a server, not an id, when the list doesn't name the only one", async () => {

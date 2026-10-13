@@ -373,7 +373,7 @@ function Charts({ organizationSlug, scope, service, range, dimmed, uptime, uptim
           </ToggleGroup>
         ) : null} />
       {metrics.availability.type === "needs_upgrade" || metrics.availability.type === "offline"
-        ? <MetricsUnavailable organizationSlug={organizationSlug} availability={metrics.availability} />
+        ? <MetricsUnavailable organizationSlug={organizationSlug} availability={metrics.availability} named={named} />
         : RESOURCE_CHARTS.map((resource) => (
           <MetricChart key={resource.id} id={resource.id} title={resource.title} format={resource.format} axisFormat={"axisFormat" in resource ? resource.axisFormat : undefined} {...chart}
             value={valueText(resource.lines, metrics, window, resource.format)} series={lines(resource.lines)}
@@ -432,10 +432,19 @@ function AvailabilityLine({ organizationSlug, availability, toggle }: { organiza
   );
 }
 
-function MetricsUnavailable({ organizationSlug, availability }: {
+function MetricsUnavailable({ organizationSlug, availability, named }: {
   organizationSlug: string;
   availability: Extract<MetricAvailability, { type: "needs_upgrade" | "offline" }>;
+  named: boolean;
 }) {
+  if (availability.type === "needs_upgrade" && !named) {
+    return (
+      <Card size="sm" role="status" aria-label="Checking your servers" className="items-center gap-2 px-3 py-10">
+        <Skeleton className="h-4 w-48" />
+        <Skeleton className="h-4 w-24" />
+      </Card>
+    );
+  }
   const servers = availability.type === "needs_upgrade" ? availability.servers : [];
   const only = servers.length === 1 && servers[0]?.name != null ? { id: servers[0].id, name: servers[0].name } : null;
   const title = availability.type === "offline" ? "Your servers are offline"
