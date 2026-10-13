@@ -1155,7 +1155,7 @@ describe("volume runs", () => {
       await harness.pool.query("update volume_run set inngest_run_id = 'run-taker' where id = $1", [ctx.id]);
 
       expect(await runEffect(commitMove(ctx, "run-1", B))).toBe(false);
-      const answer = await runEffect(commitAndStart(ctx, "run-1", { to: { id: B, name: "fsn-2" }, expect: { kind: "none" }, at: base.guid, epoch: 1 }));
+      const answer = await runEffect(commitAndStart(ctx, "run-1", { to: { id: B, name: "fsn-2" }, from: null, expect: { kind: "none" }, at: base.guid, epoch: 1 }));
 
       expect(answer).toMatchObject({ ok: false, reason: "stale" });
       expect(verbs).toEqual([]);
@@ -1167,10 +1167,31 @@ describe("volume runs", () => {
       containers = [{ machine: "fsn-1", id: "web-fsn-1", running: false }];
       beforeStart = async () => { await harness.pool.query("update volume_run set inngest_run_id = 'run-taker' where id = $1", [ctx.id]); };
 
-      await expect(runEffect(commitAndStart(ctx, "run-1", { to: { id: B, name: "fsn-2" }, expect: { kind: "none" }, at: base.guid, epoch: 1 })))
+      await expect(runEffect(commitAndStart(ctx, "run-1", { to: { id: B, name: "fsn-2" }, from: null, expect: { kind: "none" }, at: base.guid, epoch: 1 })))
         .rejects.toThrow(/no longer owns/);
       expect(verbs).toEqual([]);
       expect(await rows()).toMatchObject([{ phase: "committed", current: B, inngest_run_id: "run-taker" }]);
+    });
+
+    it("starts B from A's stopped Container, not a newer one another Machine keeps", async () => {
+      const ctx = await owned();
+      machines.push({ name: "fsn-3", pool: true, copy: null });
+      containers = [{ machine: "fsn-1", id: "web-fsn-1", running: false, created: 1 }, { machine: "fsn-3", id: "web-fsn-3", running: false, created: 2 }];
+      const A = { id: idOf("fsn-1"), name: "fsn-1" };
+
+      await runEffect(commitAndStart(ctx, "run-1", { to: { id: B, name: "fsn-2" }, from: A, expect: { kind: "none" }, at: base.guid, epoch: 1 }));
+
+      expect(sent.at(-1)?.want).toMatchObject({ kind: "writer", start: { kind: "create", resolved_spec: { container: { environment: { POSTGRES_PASSWORD: "secret-fsn-1" } } } } });
+    });
+
+    it("with no source named, refuses to guess between stopped Containers on two Machines", async () => {
+      const ctx = await owned();
+      machines.push({ name: "fsn-3", pool: true, copy: null });
+      containers = [{ machine: "fsn-1", id: "web-fsn-1", running: false, created: 1 }, { machine: "fsn-3", id: "web-fsn-3", running: false, created: 2 }];
+
+      await expect(runEffect(commitAndStart(ctx, "run-1", { to: { id: B, name: "fsn-2" }, from: null, expect: { kind: "none" }, at: base.guid, epoch: 1 })))
+        .rejects.toThrow("data has 2 stopped Service containers on fsn-1 and fsn-3; starting it on fsn-2 needs exactly one");
+      expect(verbs).toEqual([]);
     });
   });
 
@@ -2294,7 +2315,7 @@ describe("volume runs", () => {
 
       expect(cut).toMatchObject({ ok: false, reason: "stale" });
       expect(await runEffect(commitMove(dead, "run-move", idOf("fsn-2")))).toBe(false);
-      expect(await runEffect(commitAndStart(dead, "run-move", { to: { id: idOf("fsn-2"), name: "fsn-2" }, expect: { kind: "none" }, at: base.guid, epoch: 1 })))
+      expect(await runEffect(commitAndStart(dead, "run-move", { to: { id: idOf("fsn-2"), name: "fsn-2" }, from: null, expect: { kind: "none" }, at: base.guid, epoch: 1 })))
         .toMatchObject({ ok: false, reason: "stale" });
       expect(verbs).toEqual(["floor@fsn-1", "snapshot@fsn-1(f-1)"]);
       expect(containers).toEqual([{ machine: "fsn-1", id: "web-fsn-1", running: true }]);

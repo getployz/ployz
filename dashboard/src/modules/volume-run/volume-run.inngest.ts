@@ -422,6 +422,7 @@ async function finishRelease(steps: RunSteps, members: readonly Member[], curren
   try {
     const started = await settle(steps, "03-start", commitAndStart(run, runId, {
       to: B.machine,
+      from: null,
       expect: expectOf(copy),
       at: at.guid,
       epoch: copy?.kind === "root" ? copy.epoch : epoch,
@@ -492,6 +493,7 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, epoch: number
     if (phase.start !== "start") copy = await pull(steps, "06-final", { B, copy, from: phase.writer.address, target: cut.newest });
     const started = await settle(steps, "07-start", commitAndStart(run, runId, {
       to: B,
+      from: A,
       expect: expectOf(copy),
       at: cut.newest.guid,
       epoch: copy?.kind === "root" ? copy.epoch : epoch,

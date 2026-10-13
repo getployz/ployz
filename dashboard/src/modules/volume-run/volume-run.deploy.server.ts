@@ -162,7 +162,7 @@ const fenceFollowed = Effect.fn("VolumeRun.fenceFollowed")(function* (lane: Extr
   if (epoch === null) return yield* Effect.fail(new Error(`${run.volumeName}'s run on ${machine.name} has not chosen an epoch yet`));
   const started = run.kind === "restore"
     ? yield* askCopy(run, machine, expectOf(copy), { kind: "writer", at: copy.newest.guid, epoch, start: null })
-    : yield* startWriter(run, null, { to: machine, expect: expectOf(copy), at: copy.newest.guid, epoch });
+    : yield* startWriter(run, null, { to: machine, from: null, expect: expectOf(copy), at: copy.newest.guid, epoch });
   if (!started.ok) return yield* Effect.fail(retriable(started.reason) ? new Error(started.message) : new NonRetriableError(started.message));
   return { on: machine.name };
 });

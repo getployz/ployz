@@ -808,14 +808,26 @@ export const commitMove = Effect.fn("VolumeRun.commit")(function* (ctx: Pick<Run
 });
 
 /**
- * The point of no return: the commit, then B becomes the writer at G and creates the Service from the newest stopped
- * Container elsewhere. One step, so B is never told to start by a run that does not own the commit, and the spec never
+ * Where B starts: `from` is the Machine whose stopped Container B copies, or null when the run does not know it, so the
+ * one stopped Container on any other Machine.
+ */
+type WriterStart = {
+  readonly to: MachineRef;
+  readonly from: MachineRef | null;
+  readonly expect: ExpectedCopy;
+  readonly at: SnapshotGuid;
+  readonly epoch: number;
+};
+
+/**
+ * The point of no return: the commit, then B becomes the writer at G and creates the Service from A's stopped
+ * Container. One step, so B is never told to start by a run that does not own the commit, and the spec never
  * lands in a step result. A B that already runs the Service is left alone.
  */
 export const commitAndStart = Effect.fn("VolumeRun.commitAndStart")(function* (
   ctx: RunContext,
   inngestRunId: string,
-  start: { readonly to: MachineRef; readonly expect: ExpectedCopy; readonly at: SnapshotGuid; readonly epoch: number },
+  start: WriterStart,
 ) {
   const { to } = start;
   if (!(yield* commitMove(ctx, inngestRunId, to.id))) {
@@ -826,25 +838,28 @@ export const commitAndStart = Effect.fn("VolumeRun.commitAndStart")(function* (
 });
 
 /**
- * B becomes the writer at G and creates the Service from the newest stopped Container elsewhere; a B already running it
- * is left alone. `ownedBy` is the Inngest run that must still own the row when B is told, or null for a Deploy
- * following another run's committed lane, which owns no row.
+ * B becomes the writer at G and creates the Service from the source's stopped Container; a B already running it is left
+ * alone. `ownedBy` is the Inngest run that must still own the row when B is told, or null for a Deploy following
+ * another run's committed lane, which owns no row.
  */
-export const startWriter = Effect.fn("VolumeRun.startWriter")(function* (
-  ctx: RunContext,
-  ownedBy: string | null,
-  start: { readonly to: MachineRef; readonly expect: ExpectedCopy; readonly at: SnapshotGuid; readonly epoch: number },
-) {
-  const { to } = start;
+export const startWriter = Effect.fn("VolumeRun.startWriter")(function* (ctx: RunContext, ownedBy: string | null, start: WriterStart) {
+  const { to, from } = start;
   const containers = yield* serviceContainers(ctx.organizationId, ctx.dockerVolume);
   if (containers.some((container) => container.machine_id === to.id && container.runtime.state === "running")) {
     const running: CopyAnswer = { ok: true, copy: null };
     return running;
   }
-  const [holder] = containers
-    .filter((container) => container.machine_id !== to.id && container.runtime.state !== "running")
-    .sort((a, b) => b.created_at_unix_nanos - a.created_at_unix_nanos);
-  if (holder === undefined) return yield* Effect.fail(new NonRetriableError(`${ctx.volumeName} has no stopped Service container to start on ${to.name}`));
+  const stopped = containers.filter((container) =>
+    container.runtime.state !== "running" && (from === null ? container.machine_id !== to.id : container.machine_id === from.id));
+  const [holder] = stopped;
+  if (holder === undefined) {
+    return yield* Effect.fail(new NonRetriableError(`${ctx.volumeName} has no stopped Service container${from === null ? "" : ` on ${from.name}`} to start on ${to.name}`));
+  }
+  if (stopped.length > 1) {
+    const named = yield* Effect.forEach(stopped, (container) => machineNamed(ctx.organizationId, container.machine_id));
+    const on = from?.name ?? named.map((machine) => machine.name ?? machine.id).join(" and ");
+    return yield* Effect.fail(new NonRetriableError(`${ctx.volumeName} has ${stopped.length} stopped Service containers on ${on}; starting it on ${to.name} needs exactly one`));
+  }
   const session = yield* openSession(ctx.organizationId);
   const { container } = yield* session.inspectContainer(holder.machine_id, holder.container_id).pipe(
     Effect.mapError((error) => new Error(`reading ${holder.resolved_spec.name}'s spec: ${sdkFailureMessage(error)}`)),
