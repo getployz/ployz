@@ -142,7 +142,12 @@ pub(crate) fn create_volume(
     create: &CreateVolume,
 ) -> Result<VolumeStaged, RpcError> {
     let mut environment = scope::lock(tx, who, &create.environment)?;
-    taken(&environment, &create.name)?;
+    crate::names::refuse_taken(
+        tx,
+        &environment,
+        crate::names::Name::Volume(create.name.as_str()),
+        None,
+    )?;
     let node = SavedVolumeIntent {
         resource_id: create.id.to_string(),
         // A new Volume starts its own lineage; Branch copies keep it.
@@ -201,7 +206,12 @@ pub(crate) fn rename_volume(
     let mut environment = scope::lock(tx, who, &rename.environment)?;
     let changed = rename.name != rename.volume;
     if changed {
-        taken(&environment, &rename.name)?;
+        crate::names::refuse_taken(
+            tx,
+            &environment,
+            crate::names::Name::Volume(rename.name.as_str()),
+            None,
+        )?;
         environment.volume_mut(&rename.volume)?.name = rename.name.to_string();
         scope::save_working(tx, &mut environment)?;
     }
@@ -222,20 +232,6 @@ pub(crate) fn set_storage(
         scope::save_working(tx, &mut environment)?;
     }
     staged(environment, &set.volume, changed)
-}
-
-/// Refuse a second Volume named `name`.
-fn taken(environment: &Environment, name: &VolumeName) -> Result<(), RpcError> {
-    if environment.volume(name).is_err() {
-        return Ok(());
-    }
-    Err(error::conflict(
-        format!(
-            "Environment {} already has a Volume named {name}",
-            environment.summary.name
-        ),
-        json!({ "volume": name }),
-    ))
 }
 
 /// What changing Volume `name` staged: the Volume, when anything changed.

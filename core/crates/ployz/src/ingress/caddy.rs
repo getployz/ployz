@@ -24,27 +24,24 @@ pub async fn latest_image() -> Result<String, IngressImageError> {
     let reference: Reference = "docker.io/library/caddy:latest"
         .parse()
         .expect("the built-in Caddy reference is valid");
-    let mut client = Client::new(ClientConfig {
+    let client = Client::new(ClientConfig {
         connect_timeout: Some(std::time::Duration::from_secs(5)),
         read_timeout: Some(std::time::Duration::from_secs(5)),
         ..ClientConfig::default()
     });
-    discover_image(&mut client, &reference).await
+    discover_image(client, reference).await
 }
 
-async fn discover_image(
-    client: &mut Client,
-    reference: &Reference,
-) -> Result<String, IngressImageError> {
+async fn discover_image(client: Client, reference: Reference) -> Result<String, IngressImageError> {
     let response = crate::setup_retry::run(
-        client,
+        &mut (client, reference),
         "Discovering Caddy image at Docker Hub",
         crate::setup_retry::WAIT,
         |error| {
             matches!(error, oci_client::errors::OciDistributionError::RequestError(error)
             if crate::setup_retry::transient_http(error))
         },
-        async |client| {
+        async |(client, reference): &mut (Client, Reference)| {
             client
                 .list_tags(reference, &RegistryAuth::Anonymous, None, None)
                 .await
@@ -113,14 +110,14 @@ mod tests {
                     let _ = socket.write_all(format!("HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await;
                 }
             });
-            let mut client = Client::new(ClientConfig {
+            let client = Client::new(ClientConfig {
                 protocol: oci_client::client::ClientProtocol::Http,
                 read_timeout: Some(std::time::Duration::from_millis(50)),
                 ..ClientConfig::default()
             });
             let result = tokio::time::timeout(
                 std::time::Duration::from_secs(5),
-                discover_image(&mut client, &reference),
+                discover_image(client, reference),
             )
             .await
             .unwrap();

@@ -4,26 +4,10 @@ import { and, eq } from "drizzle-orm";
 import { Data, Effect } from "effect";
 import { canonicalJson, projectJsonValue } from "#/lib/json";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
+import type { OperationTool } from "#/modules/operations/operations";
 import { operationRequest } from "#/modules/operations/tables";
 import { Database } from "#/server/database.server";
 import { uuidFrom } from "#/server/uuid-from";
-
-export const OPERATION_TOOLS = [
-  "server_drain",
-  "server_upgrade",
-  "server_clean",
-  "server_remove",
-  "volume_mirror",
-  "volume_move",
-  "volume_release",
-  "volume_mirror_remove",
-  "volume_restore",
-  "volume_seed",
-  "service_restart",
-  "service_start",
-  "service_stop",
-] as const;
-export type OperationTool = (typeof OPERATION_TOOLS)[number];
 
 export const REQUEST_KEY_HEADER = "x-ployz-request-key";
 const REQUEST_KEY = /^[A-Za-z0-9_-]{8,64}$/;

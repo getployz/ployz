@@ -2,7 +2,7 @@ use std::future::Future;
 
 use ployz_core::{
     ContainerDetails, ContainerId, DEFAULT_HEALTH_MONITOR, HEALTH_POLL_INTERVAL, HealthFailure,
-    HealthPoll, InspectContainerRequest, MachineId, MachineTarget, RpcError, op, ready_poll,
+    HealthPoll, InspectContainerRequest, MachineId, MachineTarget, ReadyWait, RpcError, op,
 };
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -21,13 +21,14 @@ async fn wait_until_ready<E, F: Future<Output = Result<ContainerDetails, E>>>(
     cancellation: &CancellationToken,
     mut inspect: impl FnMut() -> F,
 ) -> Result<(), HealthWaitError<E>> {
+    let mut wait = ReadyWait::new(None, DEFAULT_HEALTH_MONITOR);
     loop {
         if cancellation.is_cancelled() {
             return Err(HealthWaitError::Health(HealthFailure::Cancelled));
         }
         let details = inspect().await.map_err(HealthWaitError::Inspect)?;
         let elapsed = started.elapsed();
-        let wake = match ready_poll(None, DEFAULT_HEALTH_MONITOR, &details, elapsed).0 {
+        let wake = match wait.poll(&details, elapsed).0 {
             HealthPoll::Complete => return Ok(()),
             HealthPoll::PendingUntil(deadline) => deadline,
             HealthPoll::Failed(failure) => return Err(HealthWaitError::Health(failure)),
@@ -91,6 +92,7 @@ mod tests {
             environment: None,
             image_id: None,
             last_check: None,
+            run: None,
         }
     }
 
@@ -179,6 +181,28 @@ mod tests {
             Err(HealthWaitError::Health(HealthFailure::Runtime { .. }))
         ));
         assert_eq!(waited, Duration::from_secs(2));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_container_restarted_between_running_looks_fails_as_restarting() {
+        let (result, waited) = wait(|elapsed| {
+            let mut details = details(HealthObservation::NotConfigured, None);
+            let restarts = i64::try_from(elapsed.as_secs() / 3).unwrap();
+            details.run = Some(ployz_core::ContainerRun {
+                restart_count: restarts,
+                started_at_unix_nanos: restarts,
+            });
+            details
+        })
+        .await;
+        assert!(matches!(
+            result,
+            Err(HealthWaitError::Health(HealthFailure::Runtime {
+                observation: ContainerRuntimeObservation::Restarting,
+                ..
+            }))
+        ));
+        assert_eq!(waited, Duration::from_secs(3));
     }
 
     #[tokio::test(start_paused = true)]

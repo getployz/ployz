@@ -185,6 +185,7 @@ const FIXTURES = [
   ["service_remove", { service: "db" }],
   ["discard", {}],
   ["server_remove", { server: "web-1" }],
+  ["server_forget", { server: "web-1" }],
   ["environment_remove", { environment: "production", wait_seconds: 0 }, "unsupported"],
   ["project_remove", { project: "docs", wait_seconds: 0 }],
 ];

@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { Building2Icon, ChevronsUpDownIcon, HouseIcon, LogOutIcon } from "lucide-react";
+import { Building2Icon, ChevronsUpDownIcon, HouseIcon, LogOutIcon, PlusIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
 import {
   getSignOutErrorMessage,
@@ -30,6 +31,7 @@ import {
 import { useDashboardSection } from "#/components/use-dashboard-section";
 import { organizationStateQueryOptions } from "#/modules/organization/organization-state.queries";
 import { toast } from "sonner";
+import { NewOrganizationDialog } from "./new-organization-dialog";
 import { Result } from "effect";
 
 function getInitials(name: string) {
@@ -48,7 +50,7 @@ const themes = [
 ] as const;
 
 /**
- * The account menu: switching organization (Ployz support sees the Organizations that allow it apart), Theme, Home (the public page) and Log out. The organization's
+ * The account menu: switching or creating an organization (Ployz support sees the Organizations that allow it apart), Theme, Home (the public page) and Log out. The organization's
  * pages are places. As a `row` (the wide rail) its trigger names you and the organization beside the
  * avatar; otherwise it's the avatar alone.
  */
@@ -66,6 +68,7 @@ export default function DashboardAccountMenu({
   const navigate = useNavigate();
   const { userTheme, setTheme } = useTheme();
   const section = useDashboardSection();
+  const [creating, setCreating] = useState(false);
   const organizations = useQuery(organizationStateQueryOptions(scope.organizationSlug)).data?.organizations ?? [];
 
   const own = organizations.filter((candidate) => candidate.access === "member");
@@ -130,43 +133,44 @@ export default function DashboardAccountMenu({
           </div>
         </div>
 
-        {organizations.length > 1 ? (
-          <>
-            <DropdownMenuSeparator />
-            <DropdownMenuGroup>
-              <DropdownMenuSub>
-                <DropdownMenuSubTrigger>
-                  <Building2Icon />
-                  Switch organization
-                </DropdownMenuSubTrigger>
-                <DropdownMenuSubContent>
-                  <DropdownMenuRadioGroup value={scope.organizationSlug} onValueChange={switchTo}>
-                    {own.map((candidate) => (
-                      <DropdownMenuRadioItem key={candidate.id} value={candidate.slug}>
-                        {candidate.name}
-                      </DropdownMenuRadioItem>
-                    ))}
-                  </DropdownMenuRadioGroup>
-                  {supported.length > 0 ? (
-                    <>
-                      <DropdownMenuSeparator />
-                      <DropdownMenuGroup>
-                        <DropdownMenuLabel>Support</DropdownMenuLabel>
-                        <DropdownMenuRadioGroup value={scope.organizationSlug} onValueChange={switchTo}>
-                          {supported.map((candidate) => (
-                            <DropdownMenuRadioItem key={candidate.id} value={candidate.slug}>
-                              {candidate.name}
-                            </DropdownMenuRadioItem>
-                          ))}
-                        </DropdownMenuRadioGroup>
-                      </DropdownMenuGroup>
-                    </>
-                  ) : null}
-                </DropdownMenuSubContent>
-              </DropdownMenuSub>
-            </DropdownMenuGroup>
-          </>
-        ) : null}
+        <DropdownMenuSeparator />
+        <DropdownMenuGroup>
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger>
+              <Building2Icon />
+              Switch organization
+            </DropdownMenuSubTrigger>
+            <DropdownMenuSubContent>
+              <DropdownMenuRadioGroup value={scope.organizationSlug} onValueChange={switchTo}>
+                {own.map((candidate) => (
+                  <DropdownMenuRadioItem key={candidate.id} value={candidate.slug}>
+                    {candidate.name}
+                  </DropdownMenuRadioItem>
+                ))}
+              </DropdownMenuRadioGroup>
+              {supported.length > 0 ? (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuGroup>
+                    <DropdownMenuLabel>Support</DropdownMenuLabel>
+                    <DropdownMenuRadioGroup value={scope.organizationSlug} onValueChange={switchTo}>
+                      {supported.map((candidate) => (
+                        <DropdownMenuRadioItem key={candidate.id} value={candidate.slug}>
+                          {candidate.name}
+                        </DropdownMenuRadioItem>
+                      ))}
+                    </DropdownMenuRadioGroup>
+                  </DropdownMenuGroup>
+                </>
+              ) : null}
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={() => setCreating(true)}>
+                <PlusIcon />
+                New organization
+              </DropdownMenuItem>
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
+        </DropdownMenuGroup>
 
         <DropdownMenuSeparator />
 
@@ -193,6 +197,7 @@ export default function DashboardAccountMenu({
           Log out
         </DropdownMenuItem>
       </DropdownMenuContent>
+      {creating && <NewOrganizationDialog onOpenChange={setCreating} />}
     </DropdownMenu>
   );
 }

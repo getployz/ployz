@@ -317,6 +317,10 @@ case "$*" in
     if [ -e '{seed_fs}' ]; then echo 'filesystem has children' >&2; exit 1; fi
     rm -rf '{seed_slot}' '{props}/tank/ployz-mirror/seed'
     ;;
+  'destroy -r tank/ployz/seed')
+    require tank/ployz/seed
+    rm -rf '{seed_volume}' '{props}/tank/ployz/seed'
+    ;;
   'destroy -r tank/ployz-mirror/seed')
     rm -rf '{seed_slot}' '{seed_fs}' '{props}/tank/ployz-mirror/seed'
     ;;

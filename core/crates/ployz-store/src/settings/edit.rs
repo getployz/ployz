@@ -218,7 +218,12 @@ pub(crate) fn edit(
                     .and_then(|text| ployz_core::ServiceName::parse(text.trim()).ok())
                     .ok_or_else(|| setting.invalid("expected a lowercase DNS label"))?;
                 let id = environment.service(service)?.id.clone();
-                crate::service::refuse_taken(&environment, &name, Some(&id))?;
+                crate::names::refuse_taken(
+                    tx,
+                    &environment,
+                    crate::names::Name::Service(name.as_str()),
+                    Some(&id),
+                )?;
                 let config = &mut environment.service_mut(service)?.config;
                 let changed = config.private_dns != name;
                 config.private_dns = name;

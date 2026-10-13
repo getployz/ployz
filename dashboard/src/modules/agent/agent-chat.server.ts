@@ -76,6 +76,7 @@ const ACTS = {
   upgrade: "upgrade",
   clean: "cleanup",
   remove_server: "server removal",
+  forget_server: "server forget",
   volume: "Volume run",
 } as const satisfies Record<Act["action"]["action"], string>;
 

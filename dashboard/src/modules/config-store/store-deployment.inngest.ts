@@ -6,7 +6,7 @@ import { serversLackingEnsure } from "#/modules/runtime/daemon-compat.server";
 import type { PloyzInngest } from "#/modules/inngest/client";
 import { decodeInngestEnvelope } from "#/modules/inngest/envelope";
 import {
-  configDeploymentAdmittedEventType, configFirstServerJoinedEventType, createConfigDeploymentStartedEvent, githubBuildRunCompletedEvent, inngestFunctionCancelledEnvelopeSchema,
+  configDeploymentAdmittedEventType, configFirstServerJoinedEventType, createClusterDomainSyncRequestedEvent, createConfigDeploymentStartedEvent, githubBuildRunCompletedEvent, inngestFunctionCancelledEnvelopeSchema,
   inngestFunctionCancelledEventType, inngestFunctionFinishedEventType, type ConfigDeploymentAdmittedEventData,
 } from "#/modules/inngest/events";
 import {
@@ -17,7 +17,7 @@ import { followUp } from "#/modules/config-store/store-github.inngest";
 import { sweepStore } from "#/modules/config-store/store-pull-request.server";
 import { advancePlacement, type PlacementAdvance, type PlacementWait, refreshMirrors } from "#/modules/volume-placement/volume-placement.deploy.server";
 import { syncUptimeChecks } from "#/modules/uptime/uptime-sync.server";
-import { cleanOrphanSlots } from "#/modules/volume-run/volume-run.server";
+import { cleanOrphans } from "#/modules/volume-run/volume-run.server";
 import { runInngestEffect } from "#/server/run.server";
 
 export const RUN_STORE_DEPLOYMENT_FUNCTION_ID = "run-store-deployment";
@@ -65,13 +65,17 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Store
       await step.run("sync-uptime", () =>
         runEffect(syncUptimeChecks(event.data.organizationId, event.data.environmentId, applied ? event.data.deploymentId : undefined)));
       await step.run("forget-run", () => runEffect(forgetStoreDeploymentRun(runId)));
-      // An applied Deployment can drop a Volume or an Environment, leaving its mirrors orphaned.
-      if (applied) {
-        await step.run("delete-orphan-mirrors", () => runEffect(cleanOrphanSlots(event.data.organizationId)));
+      if ("ran" in ran && ran.ran.ingress?.length) {
+        await step.sendEvent("sync-cluster-domain", createClusterDomainSyncRequestedEvent({ organizationId: event.data.organizationId }));
       }
       // A closed Branch whose removal applied goes now, without its closer coming back for it.
       if (applied && ran.ran.remove) {
         await followUp(step, await step.run("sweep", () => runEffect(sweepStore(event.data.organizationId, new Date()))), runEffect);
+      }
+      // An applied Deployment can drop a Volume or an Environment, leaving its mirrors orphaned. A removed Environment
+      // holds its Volumes' names until the sweep deletes it, so the scan comes after.
+      if (applied) {
+        await step.run("delete-orphan-mirrors", () => runEffect(cleanOrphans(event.data.organizationId)));
       }
       return ran;
     },

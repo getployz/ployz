@@ -94,9 +94,9 @@ async fn deploy_scale_and_rename_execute_through_the_sdk_and_cli() {
 #[tokio::test]
 #[ignore = "informing: requires the privileged Ployz testkit image"]
 async fn machine_rm_warns_when_replicated_services_are_left_under_replicated() {
-    for no_reset in [false, true] {
+    for verb in ["rm", "forget"] {
         let plan = ClusterPlan::new(
-            &format!("l3-machine-rm-warning-{no_reset}-{}", std::process::id()),
+            &format!("l3-machine-{verb}-warning-{}", std::process::id()),
             2,
         )
         .unwrap();
@@ -148,8 +148,7 @@ async fn machine_rm_warns_when_replicated_services_are_left_under_replicated() {
 
         let mut command = Command::new(env!("CARGO_BIN_EXE_ployz"));
         command
-            .args(["--connect", &format!("tcp://{address}"), "server", "rm"])
-            .args(no_reset.then_some("--no-reset"))
+            .args(["--connect", &format!("tcp://{address}"), "server", verb])
             .args(["--confirm", "machine-2", "machine-2"]);
         let removed = command.output().unwrap();
         assert!(

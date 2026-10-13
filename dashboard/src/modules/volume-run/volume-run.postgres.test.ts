@@ -39,6 +39,7 @@ import {
   volumeBusyMessage,
 } from "#/modules/volume-run/volume-run.server";
 import type { VolumeRunInput } from "#/modules/volume-run/volume-run";
+import { member } from "#/modules/volume-run/volume-run.test-fixture";
 import type { Caller } from "#/modules/identity/actor";
 import { runVolume } from "#/modules/operations/operations.server";
 import type { Database } from "#/server/database.server";
@@ -87,8 +88,9 @@ class RawFault {
 const at = 1_790_000_000;
 const snap = (guid: string, name = `ployz-${guid}`): Snapshot => ({ name, guid, created_unix_seconds: at });
 const base = snap("10");
+const seedCopy: VolumeCopy = { kind: "root", readonly: false, newest: null, epoch: 0, seed: true };
 const writerCopy = (newest: Snapshot | null = base, epoch = 0, readonly = false): VolumeCopy =>
-  ({ kind: "root", readonly, newest, epoch });
+  ({ kind: "root", readonly, newest, epoch, seed: false });
 const slotCopy = (newest: Snapshot | null, pull: { target: string; failure: string | null } | null = null, slot = "1"): VolumeCopy =>
   ({ kind: "slot", slot, readonly: true, newest, resume_token: null, pull });
 const idOf = (name: string) => name.padEnd(32, "0") as MachineId;
@@ -213,6 +215,7 @@ describe("volume runs", () => {
           }
           return null;
         case "forget":
+          if (copy.seed) fake.copy = null;
           return null;
         case "writer":
           if (copy.epoch > want.epoch) return "no_transition";
@@ -636,15 +639,15 @@ describe("volume runs", () => {
       expect(await rows()).toMatchObject([{ state: "failed", message: "data-fsn-2 could not receive ployz-10: disk full" }]);
     });
 
-    it("mirror: a Server without a Pool is refused before any epoch", async () => {
+    it("mirror: a Server without a Pool gets the mirror", async () => {
       machines[1] = { name: "fsn-2", pool: false, copy: null };
       const run = await requested({ kind: "mirror", args: { to: "fsn-2" } });
 
       const output = await execute(run.id);
 
-      expect(output.result).toMatchObject({ refused: { code: "no_pool" } });
-      expect(verbs).toEqual([]);
-      expect(await rows()).toMatchObject([{ state: "failed", message: "fsn-2 has no managed volume storage yet", epoch: null }]);
+      expect(output.result).toEqual({ runId: run.id, rounds: 1 });
+      expect(verbs).toEqual(["snapshot@fsn-1(w-1-0)", "pull@fsn-2(ployz-10)", "pull@fsn-2(ployz-10)", "snapshot@fsn-1(w-1-1)"]);
+      expect(await rows()).toMatchObject([{ state: "done", message: null }]);
     });
 
     it("sync: a mirror already at the writer's newest needs no pull", async () => {
@@ -1390,6 +1393,44 @@ describe("volume runs", () => {
         id: `volume-run-${first[0]}`,
         data: expect.objectContaining({ organizationId, volumeId: "a", runId: first[0] }),
       }));
+    });
+
+    it("starts a run for a seed root Docker never adopted only when no config entry holds its name", async () => {
+      const answers = new Map([
+        [dockerVolume, [member("fsn-1", "seed")]],
+        ["gone-production_vol-s", [member("fsn-1", "seed")]],
+        ["gone-production_vol-w", [member("fsn-1", "seed"), member("fsn-2", "writer")]],
+        ["gone-production_vol-o", [member("fsn-1", "rootWithoutSeed")]],
+      ]);
+      const inspect = vi.fn((_: string, name: string) => Effect.succeed(answers.get(name) ?? [member("fsn-1", "empty")]));
+      const observe = () => Effect.succeed(copies(
+        ["fsn-1", dockerVolume, "writer"],
+        ["fsn-1", "gone-production_vol-s", "writer"],
+        ["fsn-1", "gone-production_vol-w", "writer"],
+        ["fsn-1", "gone-production_vol-o", "switching"],
+      ));
+
+      await runEffect(startOrphanDeletes(organizationId, observe, inspect).pipe(Effect.orDie));
+
+      expect((await rows()).map((row) => [row.docker_volume, row.orphan, row.kind])).toEqual([
+        ["gone-production_vol-s", true, "delete_mirror"],
+      ]);
+      expect(inspect).not.toHaveBeenCalledWith(organizationId, dockerVolume);
+    });
+
+    it("an orphan run destroys a seed root Docker never adopted", async () => {
+      machines = [{ name: "fsn-1", pool: true, copy: seedCopy }];
+      const observe = () => Effect.succeed(copies(["fsn-1", "gone-production_vol-a", "writer"]));
+      const inspect = () => Effect.succeed([member("fsn-1", "seed")]);
+
+      const [runId] = await runEffect(startOrphanDeletes(organizationId, observe, inspect).pipe(Effect.orDie));
+      if (runId === undefined) throw new Error("no orphan run started");
+      const output = await execute(runId, "run-1", undefined, "a");
+
+      expect(output.result).toEqual({ runId, destroyed: ["fsn-1"] });
+      expect(verbs).toEqual(["forget@fsn-1"]);
+      expect(machines[0]?.copy).toBeNull();
+      expect(await rows()).toMatchObject([{ state: "done" }]);
     });
 
     it("keeps the slot of a Volume whose removal is staged but not yet deployed", async () => {

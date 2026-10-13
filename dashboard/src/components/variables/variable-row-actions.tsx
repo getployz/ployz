@@ -24,7 +24,6 @@ export function VariableRowActions({
   editing,
   exported,
   isSealed,
-  notSet,
   plainValue,
   showMetadata,
   onCancelEdit,
@@ -40,8 +39,6 @@ export function VariableRowActions({
   editing: boolean;
   exported: boolean;
   isSealed: boolean;
-  /** A secret still without a value: offers Set value. */
-  notSet: boolean;
   plainValue: string;
   showMetadata: boolean;
   onCancelEdit: () => void;
@@ -94,12 +91,6 @@ export function VariableRowActions({
       />
       <DropdownMenuContent align="end">
         <DropdownMenuGroup>
-          {notSet ? (
-            <DropdownMenuItem onClick={() => onOpenEdit("")}>
-              <PencilIcon />
-              Set value
-            </DropdownMenuItem>
-          ) : null}
           {!isSealed ? (
             <DropdownMenuItem onClick={() => onOpenEdit(plainValue)}>
               <PencilIcon />

@@ -152,7 +152,9 @@ Catch-up rejects partial Live Observations before planning, reads fresh target
 storage evidence, reports unknown eligibility or
 incomplete placement, and stops; it does not leave work for a background loop.
 Deleted slots, later eligibility changes, and transient failures require an
-explicit redeploy.
+explicit redeploy. A Deploy of any Project also fills the Ingress Proxy's
+missing or stopped slots on every ingress Server. It creates or starts them, and
+never replaces, upgrades or removes one.
 
 **Why.** Imperative errors surface predictably at the caller that can act on them.
 Declarative reconciliation decouples components but multiplies edge cases and
@@ -484,8 +486,9 @@ Like a pull, this is behavior that continues after its command returns, which
 bet 3 flags. It is bounded: the task ends when Docker answers, it never retries
 or starts other work, and the Volume Run that asked keeps asking until it does.
 
-**Serving outlives the daemon.** Corrosion and Internal DNS are daemon-owned but
-not daemon-hosted: a daemon stop, restart, crash or upgrade never stops them. The
+**Serving outlives the daemon.** Corrosion, Internal DNS and the Observe Store
+are daemon-owned but not daemon-hosted: a daemon stop, restart, crash or upgrade
+never stops them. The
 daemon derives what they run from the Machine record and converges them on every
 start. Corrosion is a Docker container carrying a digest of everything it was
 created from, replaced only when that digest changes. Internal DNS is `ployzd
@@ -494,6 +497,11 @@ spec the daemon publishes in `/run/ployz/dns.json` and parking its port-53
 sockets in systemd's fd store, so its own restarts queue queries rather than
 refuse them. The daemon restarts it onto new software only after its own
 Corrosion is ready. Reset and uninstall are the only paths that stop either one.
+The Observe Store is `ployzd observe` under a second runtime unit, which the
+daemon starts on every start and restarts when it runs other software. Only
+uninstall stops it, since it holds no Membership state. The daemon owns it
+because an Upgrade runs the previous release's installer, so a Machine upgraded
+from a release that never installed the Observe Store would otherwise run none.
 If the installed binary cannot serve DNS (`ployzd dns --probe` fails), the
 running DNS process hands port 53 back and stops. This is a process that
 continues after the command that started it returns, which bet 3 flags. It is

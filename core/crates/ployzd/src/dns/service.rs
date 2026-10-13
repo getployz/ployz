@@ -14,45 +14,14 @@ use super::{
     process::{InstalledExe, identity_of},
     spec::{DnsSpec, SpecFile},
 };
-use crate::{filesystem::atomic_write, machine::LocalMachineRecord};
+use crate::{
+    machine::LocalMachineRecord,
+    runtime_unit::{self, UNIT_DIR, UnitSupervision, restart_needed, systemctl},
+};
 
 const UNIT_NAME: &str = "ployz-dns.service";
-const HOST_UNIT_NAME: &str = "ployz.service";
-const UNIT_DIR: &str = "/run/systemd/system";
 const PROBE_BOUND: Duration = Duration::from_secs(2);
-const SYSTEMCTL_BOUND: Duration = Duration::from_secs(5);
 const STOP_BOUND: Duration = Duration::from_secs(5);
-
-/// Who starts and restarts `ployzd dns`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DnsSupervision {
-    /// The daemon writes `ployz-dns.service` and drives it with `systemctl`.
-    Systemd,
-    /// Something else runs `ployzd dns`; the daemon only publishes the spec.
-    External,
-}
-
-impl DnsSupervision {
-    /// Systemd only when this process runs as `ployz.service`. `NOTIFY_SOCKET`
-    /// and `INVOCATION_ID` are inherited by anything a unit starts, tests
-    /// included, so the cgroup decides.
-    #[must_use]
-    pub fn detect() -> Self {
-        let cgroup = fs::read_to_string("/proc/self/cgroup").unwrap_or_default();
-        if runs_as_host_unit(&cgroup) {
-            Self::Systemd
-        } else {
-            Self::External
-        }
-    }
-}
-
-fn runs_as_host_unit(cgroup: &str) -> bool {
-    cgroup
-        .lines()
-        .filter_map(|line| line.rsplit('/').next())
-        .any(|unit| unit.trim_end() == HOST_UNIT_NAME)
-}
 
 #[derive(Clone)]
 pub struct DnsService {
@@ -60,7 +29,7 @@ pub struct DnsService {
 }
 
 struct Inner {
-    supervision: DnsSupervision,
+    supervision: UnitSupervision,
     data_dir: PathBuf,
     run_dir: PathBuf,
     upstreams: Vec<SocketAddr>,
@@ -78,7 +47,7 @@ impl DnsService {
     /// Returns an error when the daemon's own binary cannot be identified or the
     /// spec or unit cannot be written.
     pub async fn start(
-        supervision: DnsSupervision,
+        supervision: UnitSupervision,
         data_dir: &Path,
         run_dir: &Path,
         socket: &Path,
@@ -113,7 +82,7 @@ impl DnsService {
         mut records: watch::Receiver<Arc<LocalMachineRecord>>,
         shutdown: CancellationToken,
     ) -> io::Result<()> {
-        if self.inner.supervision == DnsSupervision::Systemd {
+        if self.inner.supervision == UnitSupervision::Systemd {
             self.move_onto_own_binary().await;
         }
         loop {
@@ -168,22 +137,13 @@ impl DnsService {
         match spec {
             Some(spec) => {
                 self.inner.spec_file.publish(Some(spec))?;
-                if self.inner.supervision == DnsSupervision::Systemd {
-                    if fs::read_to_string(&self.inner.unit_file).ok().as_deref()
-                        != Some(&self.inner.unit_text)
-                    {
-                        atomic_write(
-                            &self.inner.unit_file,
-                            self.inner.unit_text.as_bytes(),
-                            0o644,
-                        )?;
-                        systemctl(&["daemon-reload"]).await;
-                    }
+                if self.inner.supervision == UnitSupervision::Systemd {
+                    runtime_unit::install(&self.inner.unit_file, &self.inner.unit_text).await?;
                     systemctl(&["start", "--no-block", UNIT_NAME]).await;
                 }
             }
             None => {
-                if self.inner.supervision == DnsSupervision::Systemd {
+                if self.inner.supervision == UnitSupervision::Systemd {
                     systemctl(&["stop", "--no-block", UNIT_NAME]).await;
                     match fs::remove_file(&self.inner.unit_file) {
                         Ok(()) => {
@@ -200,51 +160,8 @@ impl DnsService {
     }
 
     async fn move_onto_own_binary(&self) {
-        let Some(output) = systemctl(&["show", "-p", "MainPID", "--value", UNIT_NAME]).await else {
-            return;
-        };
-        let pid = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-        if pid.is_empty() || pid == "0" {
-            return;
-        }
-        let theirs = identity_of(&PathBuf::from(format!("/proc/{pid}/exe"))).ok();
-        if restart_needed(theirs, self.inner.own_exe.identity()) {
+        if runtime_unit::runs_other_software(UNIT_NAME, &self.inner.own_exe).await {
             systemctl(&["restart", "--no-block", UNIT_NAME]).await;
-        }
-    }
-}
-
-pub(crate) fn restart_needed(theirs: Option<(u64, u64)>, ours: Option<(u64, u64)>) -> bool {
-    matches!((theirs, ours), (Some(theirs), Some(ours)) if theirs != ours)
-}
-
-async fn systemctl(args: &[&str]) -> Option<std::process::Output> {
-    let run = Command::new("systemctl")
-        .args(args)
-        .env_remove("NOTIFY_SOCKET")
-        .stdin(Stdio::null())
-        .kill_on_drop(true)
-        .output();
-    match tokio::time::timeout(SYSTEMCTL_BOUND, run).await {
-        Ok(Ok(output)) if output.status.success() => Some(output),
-        Ok(Ok(output)) => {
-            eprintln!(
-                "systemctl {} failed: {}",
-                args.join(" "),
-                String::from_utf8_lossy(&output.stderr).trim()
-            );
-            None
-        }
-        Ok(Err(error)) => {
-            eprintln!("systemctl {} could not run: {error}", args.join(" "));
-            None
-        }
-        Err(_) => {
-            eprintln!(
-                "systemctl {} did not finish within {SYSTEMCTL_BOUND:?}",
-                args.join(" ")
-            );
-            None
         }
     }
 }
@@ -343,24 +260,6 @@ mod tests {
         assert!(text.contains("SuccessExitStatus=78\n"));
         assert!(text.contains("Type=notify\n"));
         assert!(!text.contains("[Install]"));
-    }
-
-    #[test]
-    fn systemd_supervision_means_running_as_the_host_unit() {
-        assert!(runs_as_host_unit("0::/system.slice/ployz.service\n"));
-        assert!(!runs_as_host_unit(
-            "0::/user.slice/user-1000.slice/user@1000.service/app.slice/t3code.service\n"
-        ));
-        assert!(!runs_as_host_unit("0::/system.slice/ployz-dns.service\n"));
-        assert!(!runs_as_host_unit(""));
-    }
-
-    #[test]
-    fn restart_needed_only_for_other_software() {
-        assert!(restart_needed(Some((1, 2)), Some((1, 3))));
-        assert!(!restart_needed(Some((1, 2)), Some((1, 2))));
-        assert!(!restart_needed(None, Some((1, 2))));
-        assert!(!restart_needed(Some((1, 2)), None));
     }
 
     #[tokio::test]

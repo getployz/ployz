@@ -275,19 +275,20 @@ observe=
 if systemctl cat ployz-observe.service >/dev/null 2>&1; then observe=ployz-observe.service; fi
 systemctl stop ployz.socket ployz.service ployz-volume-plugin.socket ployz-volume-plugin.service $observe
 # Releases before 0.2.4 have no observer; a newer daemon's unit would outlive its binary.
-if [ -n "$observe" ]; then systemctl disable ployz-observe.service; fi
-rm -f /etc/systemd/system/ployz-observe.service
+if [ -e /etc/systemd/system/ployz-observe.service ]; then systemctl disable ployz-observe.service; fi
+rm -f /etc/systemd/system/ployz-observe.service /run/systemd/system/ployz-observe.service
 install -d -m 750 -o ployz -g ployz /run/ployz
 for binary in "$@"; do
     if cmp -s "/opt/ployz-verify/$binary" "/usr/local/bin/$binary"; then continue; fi
     install -m 755 "/opt/ployz-verify/$binary" "/usr/local/bin/$binary.next"
     mv "/usr/local/bin/$binary.next" "/usr/local/bin/$binary"
 done
-# The exact installed version retains these binaries and writes their own units.
+# The exact installed version retains these binaries and writes their own units. Releases that
+# install the observer in /etc need it enabled; later daemons start it themselves.
 ployzd install --version "$(ployzd version)" --install-only
 systemctl daemon-reload
 observe=
-if systemctl cat ployz-observe.service >/dev/null 2>&1; then observe=ployz-observe.service; fi
+if [ -e /etc/systemd/system/ployz-observe.service ]; then observe=ployz-observe.service; fi
 systemctl enable --now ployz.socket ployz-volume-plugin.socket ployz.service $observe
 """, "install", *binaries])
 
@@ -595,7 +596,7 @@ def up(args):
                     # The release and its units are already installed in this image.
                     backend.exec(node, ["bash", "-ec", """
 observe=
-if systemctl cat ployz-observe.service >/dev/null 2>&1; then observe=ployz-observe.service; fi
+if [ -e /etc/systemd/system/ployz-observe.service ]; then observe=ployz-observe.service; fi
 systemctl enable --now ployz.socket ployz-volume-plugin.socket ployz.service $observe
 """])
                 node["address"] = backend.address(node)

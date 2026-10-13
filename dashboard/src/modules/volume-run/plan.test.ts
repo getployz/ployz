@@ -85,9 +85,8 @@ describe("observedEpoch", () => {
 
 describe("plan_from_copies_table", () => {
   it.each<[string, PlanInput, Member[], string]>([
-    ["mirror onto an empty Server", mirror("b"), [member("a", "writer"), member("b", "empty", { pool: true })], "mirror a->b"],
+    ["mirror onto an empty Server", mirror("b"), [member("a", "writer"), member("b", "empty")], "mirror a->b"],
     ["mirror onto its mirror", mirror("b"), [member("a", "writer"), member("b", "mirror")], "mirror a->b"],
-    ["mirror onto a Server with no Pool", mirror("b"), [member("a", "writer"), member("b", "empty", { pool: false })], "refuse no_pool"],
     ["mirror onto the writer", mirror("a"), [member("a", "writer"), member("b", "empty")], "refuse invalid"],
     ["mirror onto a Server not in the cluster", mirror("z"), [member("a", "writer"), member("b", "empty")], "refuse invalid"],
     ["mirror with a mirror elsewhere", mirror("c"), [member("a", "writer"), member("b", "mirror"), member("c", "empty")], "refuse second_mirror"],
@@ -117,20 +116,23 @@ describe("plan_from_copies_table", () => {
     ["delete with an old writer beside the restored one", remove("c"), [member("a", "writer", { epoch: 3 }), member("b", "writer", { epoch: 8 }), member("c", "mirror")], "refuse two_writers"],
     ["delete while a cut holds the root", remove("b"), [member("a", "cut"), member("b", "mirror")], "refuse volume_switching"],
     ["delete with a Server unanswered", remove("b"), [member("a", "writer"), member("b", "mirror"), member("c", "unanswered")], "refuse unanswered"],
-    ["orphan delete destroys every slot", orphan, [member("b", "mirror"), member("c", "pulling"), member("d", "empty", { pool: true })], "delete b,c forget none"],
+    ["orphan delete destroys every slot", orphan, [member("b", "mirror"), member("c", "pulling"), member("d", "empty")], "delete b,c forget none"],
     ["orphan delete ignores an unanswered Server", orphan, [member("b", "mirror"), member("c", "unanswered")], "delete b forget none"],
     ["orphan delete of a name with a writer", orphan, [member("a", "writer"), member("b", "mirror")], "refuse invalid"],
     ["orphan delete of a name with a cut root", orphan, [member("a", "cut"), member("b", "mirror")], "refuse invalid"],
+    ["orphan delete destroys an unadopted seed root and its slots", orphan, [member("a", "seed"), member("b", "mirror")], "delete a,b forget none"],
+    ["orphan delete of a name with a seed root beside a writer", orphan, [member("a", "seed"), member("b", "writer")], "refuse invalid"],
+    ["orphan delete of a root an older daemon reports", orphan, [member("a", "rootWithoutSeed")], "refuse invalid"],
     ["orphan delete with no slot left", orphan, [member("b", "empty")], "refuse no_mirror"],
 
-    ["move from a writer onto an empty Server runs rounds", move("b"), [member("a", "writer"), member("b", "empty", { pool: true })], "move a->b at rounds"],
+    ["move from a writer onto an empty Server runs rounds", move("b"), [member("a", "writer"), member("b", "empty")], "move a->b at rounds"],
     ["move from a writer onto its mirror runs rounds", move("b"), [member("a", "writer"), member("b", "mirror")], "move a->b at rounds"],
     ["move from a writer onto a mirror mid-pull runs rounds", move("b"), [member("a", "writer"), member("b", "pulling")], "move a->b at rounds"],
     ["move again once the root is read-only continues the cut", move("b"), [member("a", "cut"), member("b", "mirror")], "move a->b at cut"],
     ["move again once the root is read-only and the target behind continues the cut", move("b"), [member("a", "cut"), member("b", "behind")], "move a->b at cut"],
     ["move again once only slots remain and the target is behind pulls the final", move("b"), [member("a", "mirror"), member("b", "behind")], "move a->b at final"],
     ["move again once only slots remain and the target is mid-pull pulls the final", move("b"), [member("a", "mirror"), member("b", "pulling")], "move a->b at final"],
-    ["move again once only the source slot remains pulls the final", move("b"), [member("a", "mirror"), member("b", "empty", { pool: true })], "move a->b at final"],
+    ["move again once only the source slot remains pulls the final", move("b"), [member("a", "mirror"), member("b", "empty")], "move a->b at final"],
     ["move again once the target slot holds the source's newest starts", move("b"), [member("a", "mirror"), member("b", "mirror")], "move a->b at start"],
     ["move again once the target writes at the source's newest leaves the run to find the cut source", move("b"), [member("a", "final"), member("b", "writer")], "landed on b behind a"],
     ["move to the writer beside mirrors at its newest names them all, not only a final snapshot", move("b"), [member("a", "mirror"), member("b", "writer"), member("c", "final")], "landed on b behind a,c"],
@@ -139,9 +141,7 @@ describe("plan_from_copies_table", () => {
     ["move onto a root mid-cut", move("a"), [member("a", "cut"), member("b", "mirror")], "refuse volume_switching"],
     ["move with a mirror elsewhere", move("c"), [member("a", "writer"), member("b", "mirror"), member("c", "empty")], "refuse second_mirror"],
     ["move a cut toward another Server", move("c"), [member("a", "cut"), member("b", "mirror"), member("c", "empty")], "refuse second_mirror"],
-    ["move with two slots besides the target", move("b"), [member("a", "mirror"), member("b", "empty", { pool: true }), member("c", "behind")], "refuse second_mirror"],
-    ["move onto a Server with no Pool", move("b"), [member("a", "writer"), member("b", "empty", { pool: false })], "refuse no_pool"],
-    ["move the final onto a Server with no Pool", move("b"), [member("a", "mirror"), member("b", "empty", { pool: false })], "refuse no_pool"],
+    ["move with two slots besides the target", move("b"), [member("a", "mirror"), member("b", "empty"), member("c", "behind")], "refuse second_mirror"],
     ["move onto a Server not in the cluster", move("z"), [member("a", "writer")], "refuse invalid"],
     ["move with a Server unanswered", move("b"), [member("a", "cut"), member("b", "mirror"), member("c", "unanswered")], "refuse unanswered"],
     ["move with no copy", move("b"), [member("a", "empty"), member("b", "mirror")], "refuse no_writer"],
@@ -200,8 +200,8 @@ describe("plan_from_copies_table", () => {
   });
 
   it("sends a pinned mirror or move to its Machine when another Server took the name", () => {
-    const renamed = { ...member("fsn-3", "empty", { pool: true }), machine: { id: "fsn-2".padEnd(32, "0") as MachineId, name: "fsn-3" } };
-    const reused = { ...member("fsn-2", "empty", { pool: true }), machine: { id: "fsn-9".padEnd(32, "0") as MachineId, name: "fsn-2" } };
+    const renamed = { ...member("fsn-3", "empty"), machine: { id: "fsn-2".padEnd(32, "0") as MachineId, name: "fsn-3" } };
+    const reused = { ...member("fsn-2", "empty"), machine: { id: "fsn-9".padEnd(32, "0") as MachineId, name: "fsn-2" } };
     const pinned = { to: "fsn-2", machine: "fsn-2".padEnd(32, "0") as MachineId };
     const members = [member("fsn-1", "writer"), reused, renamed];
     expect(outcome({ kind: "mirror", args: pinned, volumeName: "data", orphan: false }, members)).toBe("mirror fsn-1->fsn-3");
@@ -243,12 +243,5 @@ describe("plan_from_copies_table", () => {
     });
     expect(planFromCopies(remove("fsn-2"), members)).toMatchObject({ ok: false, refusal: { code: "server_lacks" } });
     expect(planFromCopies(move("fsn-2"), members)).toMatchObject({ ok: false, refusal: { code: "server_lacks" } });
-  });
-
-  it("names the Server without managed storage", () => {
-    expect(planFromCopies(mirror("fsn-2"), [member("fsn-1", "writer"), member("fsn-2", "empty", { pool: false })])).toEqual({
-      ok: false,
-      refusal: { code: "no_pool", message: "fsn-2 has no managed volume storage yet" },
-    });
   });
 });

@@ -189,6 +189,30 @@ fn closing_stdout_stops_the_server_and_the_call_it_is_running() {
     );
 }
 
+#[test]
+fn closing_stdout_before_initialize_stops_the_server_quietly() {
+    let home = tempfile::tempdir().unwrap();
+    let mut server = mcp("http://127.0.0.1:9", home.path());
+    drop(server.stdout.take());
+    let mut stdin = server.stdin.take().unwrap();
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": { "name": "test", "version": "0" },
+            },
+        }),
+    );
+    let status = exited_within(&mut server, Duration::from_secs(5))
+        .expect("the server stops once its stdout is closed");
+    assert_eq!(status.code(), Some(0), "{status}");
+}
+
 /// `ployz` run in `dir` on the in-process Store in `home`, away from any ambient scope.
 fn local(home: &std::path::Path, dir: &std::path::Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_ployz"));

@@ -977,6 +977,9 @@ pub struct ContainerDetails {
     /// The newest healthcheck result; `None` without one, or from older daemons.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_check: Option<crate::LastHealthCheck>,
+    /// Which run of the Container this is; `None` from older daemons.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<crate::ContainerRun>,
 }
 
 /// The Machine's answer to `EnsureContainer`: the Container as now observed, and
@@ -1406,6 +1409,22 @@ impl RpcError {
             cause: crate::error_chain::causes(error),
         }
     }
+}
+
+/// Metadata an entry Machine's router puts on a status it made because the target
+/// Machine did not answer the forwarded call. A status the target sent never has it.
+pub const TARGET_UNANSWERED_KEY: &str = "ployz-target-unanswered";
+
+/// [`caused_status`] as `Unavailable`, marked [`TARGET_UNANSWERED_KEY`].
+#[cfg(not(target_arch = "wasm32"))]
+#[must_use]
+pub fn target_unanswered_status(error: &(dyn std::error::Error + 'static)) -> tonic::Status {
+    let mut status = caused_status(tonic::Code::Unavailable, error);
+    status.metadata_mut().insert(
+        TARGET_UNANSWERED_KEY,
+        tonic::metadata::MetadataValue::from_static("1"),
+    );
+    status
 }
 
 /// A gRPC status with `error`'s own sentence as the message and its sources in

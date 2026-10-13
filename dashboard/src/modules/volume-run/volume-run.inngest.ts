@@ -13,7 +13,7 @@ import { alreadyOn, epochOf, expectOf, observedEpoch, type PlanInput, type Plann
 import { type AnsweredMember, copyName, type Member, type VolumeRunArgs } from "#/modules/volume-run/volume-run";
 import {
   claimVolumeRun,
-  cleanOrphanSlots,
+  cleanOrphans,
   closeStaleVolumeRuns,
   closeVolumeRun,
   type CopyAnswer,
@@ -571,7 +571,7 @@ async function sweepOrphans(step: Pick<PloyzStepTools, "run">, runEffect: Effect
   let orphanRuns = 0;
   for (const organizationId of organizations) {
     const started = await step.run(`orphans-${organizationId}`, () =>
-      runEffect(cleanOrphanSlots(organizationId)));
+      runEffect(cleanOrphans(organizationId)));
     orphanRuns += started.length;
   }
   return { orphanRuns };

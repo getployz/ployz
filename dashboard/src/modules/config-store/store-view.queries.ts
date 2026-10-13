@@ -42,6 +42,7 @@ const refreshedBy = {
   configs: ["store_environment", "store_deployment"],
   config: ["store_environment", "store_deployment"],
   removals: ["store_environment", "store_deployment"],
+  removed: ["store_environment", "store_deployment"],
   // A Branch's Live Nodes follow what its Parent and ancestors run; a PR Environment counts toward its pull
   // request's Destination.
   branch: ["store_environment", "store_deployment", "store_pull_request"],

@@ -176,7 +176,11 @@ pub(super) fn go_on(
             residuals: mark.residuals.clone(),
         });
     }
-    Ok(Removal::Removing { left, waiting_on })
+    Ok(Removal::Removing {
+        id: mark.id.clone(),
+        left,
+        waiting_on,
+    })
 }
 
 fn services(environment: &Environment) -> Result<Vec<ServiceName>, RpcError> {

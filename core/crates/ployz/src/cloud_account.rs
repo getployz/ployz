@@ -718,14 +718,13 @@ enum RemovalRun {
     Succeeded(CloudRemoval),
 }
 
-/// How long `server rm` waits on Cloud's removal before it stops watching.
+/// How long `server rm` and `server forget` wait on Cloud's removal before it stops watching.
 const REMOVAL_WAIT: std::time::Duration = std::time::Duration::from_secs(600);
 
-/// Have Cloud remove Server `machine` of the credential's Organization: resetting it
-/// and accepting exactly `reset`'s Data Loss, or with none, only taking it out of the
-/// Cluster. It is the same durable removal the dashboard starts, which Cloud runs under
-/// its own connection; [`follow_removal`] waits for it. `approval` is the id of the
-/// human's approval, when Cloud asked for one.
+/// Have Cloud remove Server `machine` of the credential's Organization, resetting it
+/// and accepting exactly `confirmation`'s Data Loss. It is the same durable removal the
+/// dashboard starts, which Cloud runs under its own connection; [`follow_removal`]
+/// waits for it. `approval` is the id of the human's approval, when Cloud asked for one.
 ///
 /// # Errors
 ///
@@ -734,18 +733,38 @@ const REMOVAL_WAIT: std::time::Duration = std::time::Duration::from_secs(600);
 pub(crate) async fn start_removal(
     credential: &Credential,
     machine: &MachineId,
-    reset: Option<&ployz_core::DataLossConfirmation>,
+    confirmation: &ployz_core::DataLossConfirmation,
     approval: Option<&str>,
 ) -> Result<String, StoreCallError> {
-    let body = match reset {
-        Some(confirmation) => serde_json::json!({ "confirm_data_loss": confirmation }),
-        None => serde_json::json!({ "no_reset": true }),
-    };
     start_run(
         credential,
         Method::DELETE,
         &format!("servers/{machine}"),
-        &body,
+        &serde_json::json!({ "confirm_data_loss": confirmation }),
+        approval,
+    )
+    .await
+}
+
+/// Have Cloud forget Server `machine` of the credential's Organization: take it out of
+/// the Cluster without a reset. Cloud runs it as the same durable removal
+/// [`follow_removal`] waits for. `approval` is the id of the human's approval, when
+/// Cloud asked for one.
+///
+/// # Errors
+///
+/// Returns Cloud's refusal (`not_found` for a Server it doesn't reach,
+/// `approval_required`), or a Cloud failure.
+pub(crate) async fn start_forget(
+    credential: &Credential,
+    machine: &MachineId,
+    approval: Option<&str>,
+) -> Result<String, StoreCallError> {
+    start_run(
+        credential,
+        Method::POST,
+        &format!("servers/{machine}/forget"),
+        &serde_json::json!({}),
         approval,
     )
     .await

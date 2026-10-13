@@ -705,7 +705,7 @@ mod set_volume_copy {
 
     fn writer_root(epoch: u32, newest: Option<Value>) -> Value {
         json!({"Ok": {"kind":"root", "readonly":false,
-            "newest":newest, "epoch":epoch}})
+            "newest":newest, "epoch":epoch, "seed":false}})
     }
 
     fn slot(newest: Option<Value>) -> Value {
