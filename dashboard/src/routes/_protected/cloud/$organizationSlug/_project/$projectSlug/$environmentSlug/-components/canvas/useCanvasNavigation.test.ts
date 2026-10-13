@@ -43,7 +43,7 @@ it("widens a node's box by the copies hung under it, so revealing it keeps every
   const server = { id: "web-2" as MachineId, name: "web-2" };
   const copies: VolumeCopies = {
     volume: { id: "v", name: "v" }, live: { server, restore: null, moveTo: null, busy: null, snapshots: null },
-    elsewhere: [1, 2, 3].map((n) => ({ kind: "mirror", id: `m${n}`, server, name: `m${n}`, refreshedAt: null, skipped: false, staged: null, busy: null })),
+    elsewhere: [1, 2, 3].map((n) => ({ kind: "mirror", id: `m${n}`, server, name: `m${n}`, refreshedAt: null, skipped: null, staged: null, busy: null })),
   };
   const node = (hang: readonly VolumeCopies[]) =>
     asTestDouble<CanvasResourceNode>()({ position: { x: 100, y: 50 }, measured: { width: 288, height: 300 }, data: { hang } });

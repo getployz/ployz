@@ -1,14 +1,13 @@
 import { type ReactNode, useState } from "react";
-import { ChevronLeftIcon, ChevronRightIcon, PlusIcon, Trash2Icon, TriangleAlertIcon, XIcon } from "lucide-react";
+import { ChevronLeftIcon, ChevronRightIcon, PlusIcon, RefreshCwIcon, Trash2Icon, TriangleAlertIcon, XIcon } from "lucide-react";
 import type { EnvironmentRef, MachineId, MachineName } from "@ployz/sdk";
 import { ConfirmDialog } from "#/components/confirm-dialog";
-import { RelativeTime } from "#/components/relative-time";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "#/components/ui/dialog";
 import { Empty, EmptyDescription } from "#/components/ui/empty";
-import { Field, FieldContent, FieldTitle } from "#/components/ui/field";
+import { Field, FieldContent, FieldDescription, FieldTitle } from "#/components/ui/field";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "#/components/ui/item";
 import { Spinner } from "#/components/ui/spinner";
 import { cn } from "#/lib/utils";
@@ -18,7 +17,9 @@ import {
   addableCopies, cardLine, COPY_WORDS, isStale, type MirrorCopy, type OldCopy, safetyLine, STAGED_WORDS, type StagedCopy,
   type VolumeCopies, type VolumeCopy,
 } from "#/modules/volume-copies/volume-copies";
+import { useRefreshMirror } from "#/modules/volume-copies/volume-copies.hooks";
 import { copiesFromPlacement } from "#/modules/volume-copies/volume-copies.placement";
+import { MIRROR_ROUND_MINUTES, mirrorLast, skippedWords } from "#/modules/volume-copies/volume-copies.refresh";
 import { placementBlockers, placementServers, restoreOpen } from "#/modules/volume-placement/daemon-release";
 import {
   appliedMirrors, editPlacement, failover, lossTime, mirrorPanel, observePlacement, type Placement, type PlacementEdit, type PlacementRow,
@@ -46,8 +47,10 @@ export function useVolumeCopies(organizationSlug: string, environment: Environme
   const restore = useStageRestore(organizationSlug, environment, volume);
   const deleteCopy = useDeleteCopy(organizationSlug, environment, volume);
   const inFlight = useInFlightDeployments(organizationSlug, environment);
+  const mirror = useRefreshMirror(organizationSlug, environment, volume.id);
   const row = rows.find((entry) => entry.volumeId === volume.id) ?? null;
-  const copies = members === undefined ? null : copiesFromPlacement({ volume, members, row, active: running, lastSync: null, lastDone: null });
+  const copies = members === undefined ? null
+    : copiesFromPlacement({ volume, members, row, active: running, lastSync: mirror.lastSync, lastDone: mirror.lastDone });
   const accepting = placementServers(lens.machines);
   return {
     volume,
@@ -64,6 +67,8 @@ export function useVolumeCopies(organizationSlug: string, environment: Environme
     stage: placement.stage,
     restore: restore.restore,
     deleteCopy,
+    refresh: mirror.refresh,
+    refreshing: mirror.pending,
   };
 }
 
@@ -87,6 +92,9 @@ export type CopiesPanelProps = {
   stage: (staged: Placement | null, mirrors: readonly MachineId[]) => void;
   restore: (point: RestorePoint) => void;
   deleteCopy: (server: MachineName) => void;
+  refresh: () => void;
+  /** From the Refresh now click until its round ends. */
+  refreshing: boolean;
   open: MachineId | null;
   onOpen: (copy: MachineId | null) => void;
   now?: Date;
@@ -299,8 +307,9 @@ function AddCopyDialog({ open, onOpenChange, volume, live, servers, mirrorOn, on
   </Dialog>;
 }
 
-/** Both actions stage the same placement the list would; only Details discards it. */
-function CopyView({ volume, members, row, rows, copies, copy, accepting, upgrade, seeds, disabled, deploying, stage, restore, onBack, now = new Date() }:
+/** Its staged actions build the same placement the list would; only Details discards them. */
+function CopyView({ volume, members, row, rows, copies, copy, accepting, upgrade, seeds, disabled, deploying, stage, restore, refresh, refreshing,
+  onBack, now = new Date() }:
   Resolved & { copy: MirrorCopy; onBack: () => void }) {
   const blocked = upgrade.length > 0;
   const panel = mirrorPanel(volume, members, row, copy.server.id, accepting);
@@ -311,6 +320,9 @@ function CopyView({ volume, members, row, rows, copies, copy, accepting, upgrade
   const live = copies.live.server?.name ?? "the live server";
   const services = [...new Set(volume.mounts.map((mount) => mount.service))].join(", ") || volume.name;
   const stale = isStale(copy, now);
+  const shown = refreshing && copy.busy === null ? { ...copy, busy: "Refreshing" } : copy;
+  const last = mirrorLast(shown, now);
+  const skipped = skippedWords(shown, now);
   const offer = restoreOffer(volume, members, rows, copy.server.id, locked, restore);
 
   return <div className="flex flex-col gap-4">
@@ -321,14 +333,15 @@ function CopyView({ volume, members, row, rows, copies, copy, accepting, upgrade
       {copy.staged ? <Badge variant={STAGED_STATE[copy.staged]}>{STAGED_WORDS[copy.staged]}</Badge> : null}
     </div>
     <Row title="Server">{copy.server.name}</Row>
-    <Row title="Refresh">Every 15 min · on deploy</Row>
+    <Row title="Refresh">Every {MIRROR_ROUND_MINUTES} min · on deploy</Row>
     <Row title="Last">
-      {copy.busy ? <Busy words={copy.busy} />
-        : copy.refreshedAt && copy.staged !== "new" ? <span className={cn(stale && "text-warning")}>
-          {stale ? <TriangleAlertIcon className="mr-1 inline size-3.5" /> : null}<RelativeTime date={copy.refreshedAt} />
-        </span>
-        : "Not yet"}
+      {last.spin ? <Busy words={last.words} />
+        : <span className={cn(last.stale && "text-warning")}>{last.stale ? <TriangleAlertIcon className="mr-1 inline size-3.5" /> : null}{last.words}</span>}
     </Row>
+    {skipped === null ? null : <Field orientation="responsive">
+      <FieldContent><FieldTitle>Status</FieldTitle><FieldDescription>{skipped}</FieldDescription></FieldContent>
+      <Badge variant="warning">Refresh skipped</Badge>
+    </Field>}
     {offer ? <Row title="Restore point">
       <span className="flex items-center gap-2">
         {lossTime(offer.point.at)}
@@ -337,6 +350,9 @@ function CopyView({ volume, members, row, rows, copies, copy, accepting, upgrade
       </span>
     </Row> : null}
     <div data-slot="copy-actions" className="flex flex-wrap gap-2">
+      {copy.staged === "new" ? null : <Button variant="outline" disabled={disabled || last.spin} onClick={refresh}>
+        {last.spin ? <Spinner role="presentation" aria-hidden="true" data-icon="inline-start" /> : <RefreshCwIcon data-icon="inline-start" />}Refresh now
+      </Button>}
       {promote ? <Button variant="outline" disabled={locked} onClick={() => stage(promote, applied)}>Make primary</Button> : null}
     </div>
     {promote ? <p className="text-sm text-muted-foreground">

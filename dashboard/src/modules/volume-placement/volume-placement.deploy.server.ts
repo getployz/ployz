@@ -168,7 +168,7 @@ export const readPlacementBlockers: BlockerReader = (organizationId) => firstRun
   }))))),
 );
 
-const UNANSWERED: StoreRefusal = { code: "unanswered", message: "Your servers aren't answering. Try again once they are.", details: null };
+export const UNANSWERED: StoreRefusal = { code: "unanswered", message: "Your servers aren't answering. Try again once they are.", details: null };
 
 /** Why the organization can't stage a placement or restore yet, or null when it can. */
 export const placementRefusal = Effect.fn("VolumePlacement.refusal")(function* (organizationId: string, read: BlockerReader = readPlacementBlockers) {
@@ -206,6 +206,16 @@ const environmentVolumes = Effect.fn("VolumePlacement.environmentVolumes")(funct
 });
 
 /**
+ * A Volume the mirror rounds refresh, from the copies `held` of it: one on a mirror's Server (the row's mirrors, else every
+ * slot, as the CLI makes them), or two primaries, which the sync settles by demoting the one that came back.
+ */
+export function refreshesMirror(row: { readonly mirrors: readonly MachineId[] | null } | undefined, held: CopyObservation["copies"]) {
+  const slots = held.filter((copy) => copy.role === "slot").map((copy) => copy.machine_id);
+  const mirrors = row?.mirrors ?? slots;
+  return held.filter((copy) => copy.role === "writer").length > 1 || slots.some((id) => mirrors.includes(id));
+}
+
+/**
  * Refresh every mirror in the organization (or one Environment): a sync for each Volume with a copy on a mirror's
  * Server, or with two primaries, which the sync settles by demoting the one that came back. A detached copy is never
  * refreshed. A Volume a Deploy is moving, or with a run already going, waits for the next refresh.
@@ -227,13 +237,9 @@ export const refreshMirrors = Effect.fn("VolumePlacement.refreshMirrors")(functi
   const rows = yield* drizzle.select().from(volumePlacement).where(eq(volumePlacement.organizationId, organizationId));
   const requested: string[] = [];
   for (const volume of yield* environmentVolumes(organizationId, onlyEnvironmentId)) {
-    const held = copies.filter((copy) => copy.name === volume.dockerVolume);
-    const slots = held.filter((copy) => copy.role === "slot").map((copy) => copy.machine_id);
     const row = rows.find((entry) => entry.volumeId === volume.volumeId);
     if (row?.deploymentId != null) continue;
-    const mirrors = row?.mirrors ?? slots;
-    const twoPrimaries = held.filter((copy) => copy.role === "writer").length > 1;
-    if (!twoPrimaries && !slots.some((id) => mirrors.includes(id))) continue;
+    if (!refreshesMirror(row, copies.filter((copy) => copy.name === volume.dockerVolume))) continue;
     const run = yield* requestVolumeRun(CLOUD(organizationId), { volumeId: volume.volumeId, environment: volume.environment, kind: "sync", args: { full: false } });
     if (run.ok) requested.push(run.run.id);
   }
