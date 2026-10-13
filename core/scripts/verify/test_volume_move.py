@@ -1629,6 +1629,26 @@ class VolumeMoveTests(unittest.TestCase):
                 self.assertEqual(model.interrupted, [])
                 self.assertEqual(model.pulls, set())
 
+    def test_a_pull_a_restart_left_set_is_ended_by_the_barrier_at_the_limit(self):
+        # A restart stops a pull's task but leaves `pull` set until a run asks again; waiting on it would skip every
+        # later case.
+        def stale(model):
+            model.pulls.add("machine-2")
+
+        def receive_in_run(begun, model=None):
+            model = self.model
+            model.at(begun + 0.5, lambda: setattr(model, "receiving", {"machine-2"}))
+            model.at(begun + 2, lambda: setattr(model, "receiving", False))
+
+        def before(model):
+            self.model, self.planted = model, model.clock()
+            stale(model)
+        result, model = self.run_with("soak-1-rounds-runner-kill", before, 2, receive_in_run)
+        self.assertTrue(result["passed"], result)
+        self.assertEqual(model.interrupted, [])
+        self.assertGreaterEqual(min(at for _, at in model.restarts) - self.planted, volume_move.BUSY_LIMIT)
+        self.assertEqual(model.pulls, {"machine-2"})
+
     def test_each_planted_defect_fails_the_run(self):
         for mutation in ("two-writers", "stopped", "snapshots", "lost"):
             with self.subTest(mutation):
