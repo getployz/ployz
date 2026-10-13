@@ -19,16 +19,16 @@ export function ingressAwakeOn(frame: Pick<RuntimeWatchView, "services">): Set<s
   return ingressOn(frame, (state) => !AT_REST.has(state));
 }
 
-/** Passes the frames through, and calls `changed` each time the Machines running the Ingress Proxy differ from the frame before. */
+/** Passes the frames through, and calls `changed` each time the Machines running, or awake with, the Ingress Proxy differ from the frame before. */
 export async function* onIngressChange<Frame extends Pick<RuntimeWatchView, "services">>(
   frames: AsyncIterable<Frame>,
   changed: () => void,
 ): AsyncGenerator<Frame> {
   let before: string | undefined;
   for await (const frame of frames) {
-    const running = [...ingressRunningOn(frame)].sort().join(",");
-    if (before !== undefined && running !== before) changed();
-    before = running;
+    const now = `${[...ingressRunningOn(frame)].sort().join(",")}|${[...ingressAwakeOn(frame)].sort().join(",")}`;
+    if (before !== undefined && now !== before) changed();
+    before = now;
     yield frame;
   }
 }
