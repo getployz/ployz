@@ -44,6 +44,7 @@ impl RetireClient for FakeRetireClient {
         &mut self,
         _machine_id: &MachineId,
         slot: &ObservedGlobalSlotSpec,
+        _cancellation: &CancellationToken,
     ) -> Result<(), RpcError> {
         self.retire_calls.push(slot.identity().clone());
         if let Some(cancellation) = &self.cancel_on_retire {
@@ -264,6 +265,7 @@ async fn a_pointed_global_retires_through_the_pointer_and_waits_for_its_copies_t
         &MachineId::parse("b".repeat(32)).unwrap(),
         &service,
         Duration::from_secs(30),
+        &CancellationToken::new(),
     )
     .await
     .unwrap();
@@ -282,6 +284,7 @@ async fn a_pointed_global_still_there_after_the_wait_is_not_retired() {
         &MachineId::parse("b".repeat(32)).unwrap(),
         &QualifiedService::parse("app/api").unwrap(),
         Duration::from_secs(30),
+        &CancellationToken::new(),
     )
     .await
     .unwrap_err();
@@ -297,9 +300,92 @@ async fn a_global_with_no_pointer_is_left_to_today_s_removal() {
         &MachineId::parse("b".repeat(32)).unwrap(),
         &QualifiedService::parse("app/api").unwrap(),
         Duration::from_secs(30),
+        &CancellationToken::new(),
     )
     .await
     .unwrap();
     assert!(!pointed);
     assert_eq!(*row.row.lock().unwrap(), None);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_cancelled_drain_stops_waiting_for_a_pointed_global_at_once() {
+    let row = FakeRow::default();
+    *row.row.lock().unwrap() = Some(pointer('a', &['1', '2'], &[]));
+    let mut server = pointed_server(&row, None);
+    let cancellation = CancellationToken::new();
+    let machine = MachineId::parse("b".repeat(32)).unwrap();
+    let service = QualifiedService::parse("app/api").unwrap();
+    let started = tokio::time::Instant::now();
+    let (outcome, ()) = tokio::join!(
+        retire_pointed(
+            &mut server,
+            &machine,
+            &service,
+            POINTED_RETIRE_WAIT,
+            &cancellation,
+        ),
+        async {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            cancellation.cancel();
+        },
+    );
+    let error = outcome.unwrap_err();
+    assert!(error.message.contains("cancelled"), "{error:?}");
+    assert!(started.elapsed() < Duration::from_secs(6), "{:?}", started.elapsed());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_pointed_global_lists_no_copies_past_its_deadline() {
+    let row = FakeRow::default();
+    *row.row.lock().unwrap() = Some(pointer('a', &['1', '2'], &[]));
+    let mut server = SlowLister {
+        server: pointed_server(&row, None),
+        listings: 0,
+    };
+    let error = retire_pointed(
+        &mut server,
+        &MachineId::parse("b".repeat(32)).unwrap(),
+        &QualifiedService::parse("app/api").unwrap(),
+        Duration::from_secs(30),
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.message.contains("still retiring"), "{error:?}");
+    assert_eq!(server.listings, 2, "the first listing ran past the deadline");
+}
+
+/// Each listing takes 20 s, so a 30 s wait has time for the first two only.
+struct SlowLister {
+    server: PointedServer,
+    listings: u32,
+}
+
+impl PointerClient for SlowLister {
+    async fn read_pointer(
+        &mut self,
+        service: &QualifiedService,
+    ) -> Result<Option<ployz_core::ServingPointer>, RpcError> {
+        self.server.read_pointer(service).await
+    }
+
+    async fn publish_pointer(
+        &mut self,
+        request: ployz_core::PublishServingPointerRequest,
+    ) -> Result<ployz_core::ServingPointerPublication, RpcError> {
+        self.server.publish_pointer(request).await
+    }
+}
+
+impl CopyLister for SlowLister {
+    async fn copies_on(
+        &mut self,
+        machine_id: &MachineId,
+        service: &QualifiedService,
+    ) -> Result<Vec<ployz_core::ContainerId>, RpcError> {
+        self.listings += 1;
+        tokio::time::sleep(Duration::from_secs(20)).await;
+        self.server.copies_on(machine_id, service).await
+    }
 }

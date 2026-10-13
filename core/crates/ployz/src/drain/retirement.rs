@@ -37,6 +37,7 @@ pub(crate) trait RetireClient {
         &mut self,
         machine_id: &MachineId,
         slot: &ObservedGlobalSlotSpec,
+        cancellation: &CancellationToken,
     ) -> Result<(), RpcError>;
 }
 
@@ -59,11 +60,12 @@ impl RetireClient for Client {
         &mut self,
         machine_id: &MachineId,
         slot: &ObservedGlobalSlotSpec,
+        cancellation: &CancellationToken,
     ) -> Result<(), RpcError> {
         let identity = slot.identity();
         match slot_eligibility(self, machine_id, &identity.namespace, slot.resolved_spec()).await? {
             ServicePlacementEligibility::Ineligible(_) => {
-                if retire_pointed(self, machine_id, identity, POINTED_RETIRE_WAIT).await? {
+                if retire_pointed(self, machine_id, identity, POINTED_RETIRE_WAIT, cancellation).await? {
                     Ok(())
                 } else {
                     remove_slot(self, machine_id, &identity.namespace, &identity.name).await
@@ -120,24 +122,26 @@ impl CopyLister for Client {
 /// Move the Service's Containers on `machine_id` into its Serving Pointer's `retiring` and
 /// wait up to `wait` for the Server's retire loop to stop them, which it does once every
 /// up Machine stopped routing to them. Answers `false`, having written nothing, when the
-/// Service has no pointer.
+/// Service has no pointer. Cancellation ends every listing and pause at once; the
+/// amendment itself, once sent, is let finish.
 pub(crate) async fn retire_pointed<C: CopyLister>(
     client: &mut C,
     machine_id: &MachineId,
     service: &QualifiedService,
     wait: Duration,
+    cancellation: &CancellationToken,
 ) -> Result<bool, RpcError> {
-    let copies = client.copies_on(machine_id, service).await?;
+    let deadline = tokio::time::Instant::now() + wait;
+    let copies = cancellable(cancellation, client.copies_on(machine_id, service)).await?;
+    if cancellation.is_cancelled() {
+        return Err(cancelled());
+    }
     if amend_pointer(client, service, |current| rotated(current, &[], &copies)).await?
         == Amendment::NoPointer
     {
         return Ok(false);
     }
-    let deadline = tokio::time::Instant::now() + wait;
     loop {
-        if client.copies_on(machine_id, service).await?.is_empty() {
-            return Ok(true);
-        }
         if tokio::time::Instant::now() >= deadline {
             return Err(RpcError {
                 code: RpcErrorCode::Unavailable,
@@ -149,7 +153,36 @@ pub(crate) async fn retire_pointed<C: CopyLister>(
                 cause: Vec::new(),
             });
         }
-        tokio::time::sleep(POINTED_RETIRE_POLL).await;
+        if cancellable(cancellation, client.copies_on(machine_id, service))
+            .await?
+            .is_empty()
+        {
+            return Ok(true);
+        }
+        cancellable(cancellation, async {
+            tokio::time::sleep(POINTED_RETIRE_POLL).await;
+            Ok(())
+        })
+        .await?;
+    }
+}
+
+async fn cancellable<T>(
+    cancellation: &CancellationToken,
+    work: impl Future<Output = Result<T, RpcError>>,
+) -> Result<T, RpcError> {
+    tokio::select! {
+        result = work => result,
+        () = cancellation.cancelled() => Err(cancelled()),
+    }
+}
+
+fn cancelled() -> RpcError {
+    RpcError {
+        code: RpcErrorCode::Unavailable,
+        message: "the drain was cancelled while it retired".into(),
+        details: serde_json::Value::Null,
+        cause: Vec::new(),
     }
 }
 
@@ -200,7 +233,7 @@ pub(crate) async fn retire_globals<C: RetireClient>(
                     None => Retirement::NotRetired(
                         "its newest Container is not Global; deploy it first".into(),
                     ),
-                    Some(slot) => match client.retire_slot(&server.id, &slot).await {
+                    Some(slot) => match client.retire_slot(&server.id, &slot, cancellation).await {
                         Ok(()) => Retirement::Retired,
                         Err(error) => Retirement::NotRetired(crate::ui::row(&error)),
                     },
