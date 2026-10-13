@@ -5,7 +5,7 @@
 <h1 align="center">Ployz</h1>
 
 <p align="center">
-  Every change at its own link, with its own database. On servers you or your client own.
+  Rent a server. Get a cloud.
   <br>
   <a href="https://ployz.dev">Website</a> · <a href="#quick-start">Quick start</a> · <a href="#self-hosting-the-dashboard">Self-host</a>
 </p>
