@@ -21,10 +21,11 @@ use ployz_core::{
     HealthObservation, HealthVerdict, HealthcheckSpec, LocalMachinePhase,
     MACHINE_STORAGE_OBSERVATION_CAPABILITY, Machine, MachineDetails, MachineId, MachineImages,
     MachineList, MachineName, MachineObservation, MachineRpc, MachineRpcServer,
-    MembershipObservation, Namespace, OpaquePayload, PROTOCOL_MAJOR, RequestedServiceSpec,
-    ResolvedServiceSpec, ResolvedUpdateConfig, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
-    RunTarget, ServiceId, ServiceMount, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference,
-    UpdateOrder, VolumeInventory, WireGuardPublicKey,
+    MembershipObservation, Namespace, OpaquePayload, PROTOCOL_MAJOR, QualifiedService,
+    RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig, RpcError, RpcErrorCode,
+    RpcRequestBody, RpcResponse, RunTarget, ServiceId, ServiceMount, ServiceVolume,
+    ServiceVolumeGraph, ServiceVolumeReference, ServingPointer, ServingPointerPublication,
+    ServingPointerRead, UpdateOrder, VolumeInventory, WireGuardPublicKey,
 };
 use serde_json::Value;
 use tokio::net::TcpListener;
@@ -70,6 +71,8 @@ pub(super) struct DeployService {
     pub(super) volumes: Arc<Mutex<Vec<DockerVolume>>>,
     /// Volume copies every Machine reports from storage.
     pub(super) copies: Arc<Mutex<BTreeMap<DockerVolumeName, ployz_core::ProvisionedCopy>>>,
+    /// Serving Pointers published so far; every Machine acks a pointer as soon as it lands.
+    pointers: Arc<Mutex<BTreeMap<QualifiedService, ServingPointer>>>,
 }
 
 impl DeployService {
@@ -101,6 +104,7 @@ impl DeployService {
             listing_blocked: None,
             volumes: Arc::new(Mutex::new(Vec::new())),
             copies: Arc::new(Mutex::new(BTreeMap::new())),
+            pointers: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
 
@@ -132,6 +136,7 @@ impl DeployService {
             listing_blocked: None,
             volumes: Arc::new(Mutex::new(Vec::new())),
             copies: Arc::new(Mutex::new(BTreeMap::new())),
+            pointers: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
 
@@ -843,15 +848,42 @@ impl MachineRpc for DeployService {
     }
     async fn publish_serving_pointer(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
+        let RpcRequestBody::PublishServingPointer(publish) =
+            request.into_inner().decode_request().unwrap().body
+        else {
+            panic!("expected pointer publication");
+        };
+        let mut pointers = self.pointers.lock().unwrap();
+        let current = pointers.get(&publish.service).cloned();
+        let publication = if current == publish.read {
+            pointers.insert(publish.service, publish.pointer);
+            ServingPointerPublication::Published
+        } else {
+            ServingPointerPublication::Superseded { current }
+        };
+        encoded(RpcResponse::from(publication))
     }
     async fn read_serving_pointer(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
+        let RpcRequestBody::ReadServingPointer(read) =
+            request.into_inner().decode_request().unwrap().body
+        else {
+            panic!("expected pointer read");
+        };
+        let pointer = self.pointers.lock().unwrap().get(&read.service).cloned();
+        let acks = pointer
+            .iter()
+            .flat_map(|pointer| {
+                self.machines
+                    .iter()
+                    .map(move |observed| (observed.machine.id, pointer.deploy.clone()))
+            })
+            .collect();
+        encoded(RpcResponse::from(ServingPointerRead { pointer, acks }))
     }
     async fn prune_images(
         &self,
