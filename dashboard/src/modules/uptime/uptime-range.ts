@@ -19,8 +19,10 @@ const INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
  * UTC instant ("2026-10-11T14:00:00.000Z"). Relative edges resolve against the reader's clock, so the server and the
  * client never need to agree on a time zone; only `parseEdge` does, and it runs where the person types.
  */
-export const RangeEdge = Schema.String.check(Schema.makeFilter((edge: string) =>
-  edge === "now" || AGO.test(edge) || (INSTANT.test(edge) && !Number.isNaN(Date.parse(edge)) && instantEdge(Date.parse(edge)) === edge)));
+export const isRangeEdge = Schema.makeFilter((edge: string) =>
+  edge === "now" || AGO.test(edge) || (INSTANT.test(edge) && !Number.isNaN(Date.parse(edge)) && instantEdge(Date.parse(edge)) === edge));
+
+export const RangeEdge = Schema.String.check(isRangeEdge);
 
 export type UptimeRange = { readonly from: string; readonly to: string };
 

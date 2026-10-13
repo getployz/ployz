@@ -170,12 +170,13 @@ export const readServiceUptime = Effect.fn("Uptime.readService")(function* (acto
   ])];
   const named = yield* drizzle.select({ region: uptimeRegion.region, name: uptimeRegion.name }).from(uptimeRegion);
   const regions = { ...Object.fromEntries(codes.map((code) => [code, null])), ...Object.fromEntries(named.map((row) => [row.region, row.name])) };
+  const latest = (yield* Effect.forEach(Object.keys(regions), (region) => readLatest(of, region, rawFrom, to), { concurrency: 4 })).flat();
   const probe = probeRequestedAt === null || now.getTime() - probeRequestedAt.getTime() > probeShownMs(timeoutMs) ? null : {
     requestedAt: probeRequestedAt.toISOString(),
     // Both read to the millisecond, the precision the checker answers with.
     answered: probeAnsweredAt !== null && probeAnsweredAt >= probeRequestedAt,
   };
-  return { check, status, uptime, points, checks, incidents, regions, probe } satisfies ServiceUptime;
+  return { check, status, uptime, points, checks, latest, incidents, regions, probe } satisfies ServiceUptime;
 });
 
 /**
@@ -197,17 +198,33 @@ export const requestUptimeProbe = Effect.fn("Uptime.requestProbe")(function* (ac
   return null;
 });
 
+const resultFields = {
+  at: uptimeResult.scheduledAt, region: uptimeResult.region, kind: uptimeResult.kind,
+  verdict: uptimeResult.verdict, status: uptimeResult.status, ms: uptimeResult.totalMs,
+};
+
 /** The newest results of every kind between `from` and `to`, oldest first. */
 const readChecks = Effect.fn("Uptime.readChecks")(function* (of: ReturnType<typeof ofCheck>, from: Date, to: Date) {
   const { drizzle } = yield* Database;
   const rows = yield* drizzle
-    .select({ at: uptimeResult.scheduledAt, region: uptimeResult.region, kind: uptimeResult.kind,
-      verdict: uptimeResult.verdict, status: uptimeResult.status, ms: uptimeResult.totalMs })
+    .select(resultFields)
     .from(uptimeResult)
     .where(and(of(uptimeResult), between(uptimeResult.scheduledAt, from, to)))
     .orderBy(desc(uptimeResult.scheduledAt), desc(uptimeResult.region), desc(uptimeResult.kind))
     .limit(MAX_CHECK_BARS);
   return rows.reverse().map((row): UptimeCheckResult => ({ ...row, at: row.at.toISOString() }));
+});
+
+/** The region's newest result of any kind between `from` and `to`, as a list of none or one. */
+const readLatest = Effect.fn("Uptime.readLatest")(function* (of: ReturnType<typeof ofCheck>, region: string, from: Date, to: Date) {
+  const { drizzle } = yield* Database;
+  const rows = yield* drizzle
+    .select(resultFields)
+    .from(uptimeResult)
+    .where(and(of(uptimeResult), eq(uptimeResult.region, region), between(uptimeResult.scheduledAt, from, to)))
+    .orderBy(desc(uptimeResult.scheduledAt), desc(uptimeResult.kind))
+    .limit(1);
+  return rows.map((row): UptimeCheckResult => ({ ...row, at: row.at.toISOString() }));
 });
 
 /** Every routine and triggered probe between `from` and `to`, each as its own point. */

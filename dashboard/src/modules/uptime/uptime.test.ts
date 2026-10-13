@@ -34,6 +34,7 @@ const uptime = (patch: Partial<ServiceUptime>): ServiceUptime => ({
   uptime: null,
   points: [],
   checks: null,
+  latest: [],
   incidents: [],
   regions: {},
   probe: null,
