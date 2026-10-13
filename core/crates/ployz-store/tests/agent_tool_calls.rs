@@ -223,6 +223,7 @@ fn the_catalog_has_the_agreed_tools() {
             "config_remove",
             "review",
             "discard",
+            "history",
             "publish",
             "deploy",
             "deployment_list",
