@@ -952,14 +952,43 @@ const CLOSED_BY = {
 type Closing = ReturnType<typeof ended>;
 
 /**
+ * The move a Deploy took over is requested again once its row ends, in the same transaction as the end: a retry finds
+ * no running row and requests nothing. A refusal is logged; the lane that refused owns the Volume now.
+ */
+export const requeueTakenMoves = Effect.fn("VolumeRun.requeueTakenMoves")(function* (rows: readonly VolumeRunRow[]) {
+  const requeued: string[] = [];
+  const refused: string[] = [];
+  for (const row of rows) {
+    if (row.kind !== "deploy") continue;
+    // SAFETY: a deploy row's args were written from a VolumeRunArgs["deploy"].
+    const { resume } = row.args as VolumeRunArgs["deploy"];
+    if (resume === null) continue;
+    const again = yield* insertRun(
+      { userId: null, organizationId: row.organizationId },
+      { volumeId: row.volumeId, kind: "move", args: resume },
+      { environmentId: row.environmentId, volumeName: row.volumeName, dockerVolume: row.dockerVolume, refquotaBytes: row.refquotaBytes },
+      crypto.randomUUID(),
+    );
+    if (again.ok) {
+      requeued.push(again.run.id);
+      continue;
+    }
+    refused.push(again.refusal.message);
+    yield* Effect.logWarning(`${row.volumeName}'s move to ${resume.to} was not requested again after its Deploy: ${again.refusal.message}`);
+  }
+  return { requeued, refused };
+});
+
+/**
  * Ends the running row `owned` picks. A Move it ended hands the Volume to a release run: back to A while warm, forward
- * to B once committed. A release never starts another.
+ * to B once committed. A release never starts another. A Deploy it ended requests the move it took over again.
  */
 const endAndRelease = Effect.fn("VolumeRun.endAndRelease")(function* (owned: SQL | undefined, closing: Closing) {
   const database = yield* Database;
   return yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
     const rows = yield* drizzle.update(volumeRun).set(closing).where(and(owned, eq(volumeRun.state, "running"))).returning();
+    yield* requeueTakenMoves(rows);
     for (const row of rows.filter((ended) => ended.kind === "move")) {
       const [release] = yield* drizzle.insert(volumeRun).values({
         organizationId: row.organizationId,

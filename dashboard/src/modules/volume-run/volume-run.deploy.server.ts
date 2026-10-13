@@ -9,12 +9,12 @@ import { ACTIVE_VOLUME_RUN_STATES, type AnsweredMember, type Member, type Volume
 import {
   contextOf,
   ended,
-  insertRun,
   keptOn,
   laneTarget,
   type MachineRef,
   observeVolumeMembers,
   pastReturn,
+  requeueTakenMoves,
   type RunContext,
   sendSetCopy,
   setVolumeCopy,
@@ -146,10 +146,7 @@ export const fenceDeployVolume = (lane: DeployLane, inngestRunId: string) =>
 
 const DEPLOY_ENDS = { done: null, failed: "the Deploy failed", cancelled: "the Deploy was cancelled" } as const;
 
-/**
- * The Deploy's own rows end, whichever way the Deploy did. A move it took over is requested again in the same
- * transaction, once: a retry finds no running row and requests nothing.
- */
+/** The Deploy's own rows end, whichever way the Deploy did, and a move it took over is requested again, once. */
 export const finishDeployVolumes = Effect.fn("VolumeRun.finishDeploy")(function* (inngestRunId: string, state: keyof typeof DEPLOY_ENDS) {
   const database = yield* Database;
   return yield* database.transaction(Effect.gen(function* () {
@@ -157,21 +154,7 @@ export const finishDeployVolumes = Effect.fn("VolumeRun.finishDeploy")(function*
     const rows = yield* drizzle.update(volumeRun).set(ended(state, DEPLOY_ENDS[state]))
       .where(and(eq(volumeRun.inngestRunId, inngestRunId), eq(volumeRun.kind, "deploy"), eq(volumeRun.state, "running")))
       .returning();
-    const requeued: string[] = [];
-    const refused: string[] = [];
-    for (const row of rows) {
-      // SAFETY: a deploy row's args were written from a VolumeRunArgs["deploy"].
-      const { resume } = row.args as VolumeRunArgs["deploy"];
-      if (resume === null) continue;
-      const again = yield* insertRun(
-        CLOUD(row.organizationId),
-        { volumeId: row.volumeId, kind: "move", args: resume },
-        { environmentId: row.environmentId, volumeName: row.volumeName, dockerVolume: row.dockerVolume, refquotaBytes: row.refquotaBytes },
-        crypto.randomUUID(),
-      );
-      if (again.ok) requeued.push(again.run.id);
-      else refused.push(again.refusal.message);
-    }
+    const { requeued, refused } = yield* requeueTakenMoves(rows);
     return { ended: rows.length, requeued, refused };
   }));
 });

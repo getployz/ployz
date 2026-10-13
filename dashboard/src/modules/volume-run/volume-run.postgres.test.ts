@@ -989,6 +989,27 @@ describe("volume runs", () => {
         { kind: "release", state: "requested", phase: "committed", current: idOf("fsn-2"), epoch: "3" },
       ]);
     });
+
+    it("a Deploy whose Inngest run is over ends and requests the move it took over again, once", async () => {
+      const deploy = (volume: string, resume: string) => harness.pool.query(
+        `insert into volume_run (organization_id, environment_id, volume_id, volume_name, docker_volume, kind, args, state, inngest_run_id, created_at, updated_at)
+         values ($1, 'env-1', $2, 'data', 'd', 'deploy', $3, 'running', 'r-deploy', ${old}, ${old})`,
+        [organizationId, volume, `{"deployment":"d-1","resume":${resume}}`]);
+      await deploy("v-took", '{"to":"fsn-2"}');
+      await deploy("v-plain", "null");
+
+      const swept = await runEffect(closeStaleVolumeRuns(() => Effect.succeed("failed" as const)));
+
+      expect(swept).toEqual({ not_started: 0, closed: 2 });
+      expect(await lane("v-took")).toEqual([
+        { kind: "deploy", state: "failed", phase: "warm", current: null, epoch: null },
+        { kind: "move", state: "requested", phase: "warm", current: null, epoch: null },
+      ]);
+      expect(await lane("v-plain")).toEqual([{ kind: "deploy", state: "failed", phase: "warm", current: null, epoch: null }]);
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(send).toHaveBeenCalledWith(expect.objectContaining({ name: "volume/run.requested", data: expect.objectContaining({ volumeId: "v-took" }) }));
+      expect(await runEffect(closeStaleVolumeRuns(() => Effect.succeed("failed" as const)))).toEqual({ not_started: 0, closed: 0 });
+    });
   });
 
   describe("stale", () => {
