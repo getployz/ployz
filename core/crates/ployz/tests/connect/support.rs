@@ -155,6 +155,8 @@ pub(super) struct DiscoveryService {
     pub(super) storage_capacity: Option<ployz_core::StorageCapacity>,
     pub(super) storage_hangs_after: Option<usize>,
     pub(super) storage_reads: Arc<AtomicUsize>,
+    /// The first reads answer Unavailable, as a daemon that is not participating does.
+    pub(super) storage_unavailable_for: usize,
     pub(super) recover_volume_on_storage_inspect: Option<DockerVolume>,
     pub(super) container_list_calls: Arc<Mutex<BTreeMap<MachineId, usize>>>,
     pub(super) container_list_outcomes: Arc<Mutex<ContainerListOutcomes>>,
@@ -221,6 +223,7 @@ impl DiscoveryService {
             storage_capacity: None,
             storage_hangs_after: None,
             storage_reads: Arc::new(AtomicUsize::new(0)),
+            storage_unavailable_for: 0,
             recover_volume_on_storage_inspect: None,
             container_list_calls: Arc::new(Mutex::new(BTreeMap::new())),
             container_list_outcomes: Arc::new(Mutex::new(BTreeMap::new())),
@@ -780,6 +783,9 @@ impl MachineRpc for DiscoveryService {
         _request: tonic::Request<ployz_core::OpaquePayload>,
     ) -> Result<tonic::Response<ployz_core::OpaquePayload>, tonic::Status> {
         let read = self.storage_reads.fetch_add(1, Ordering::SeqCst);
+        if read < self.storage_unavailable_for {
+            return Err(Status::unavailable("Machine is not participating"));
+        }
         if self
             .storage_hangs_after
             .is_some_and(|replies| read >= replies)

@@ -637,6 +637,22 @@ async fn remove_machine_membership_refuses_a_server_whose_storage_cannot_be_read
 }
 
 #[tokio::test]
+async fn remove_machine_membership_refuses_a_server_that_answered_before_going_quiet() {
+    let (_description, peer, mut service) = cluster_with_a_held_peer(MembershipObservation::Up);
+    service.storage_unavailable_for = 1;
+    service.storage_hangs_after = Some(1);
+    let (mut client, server, _) = connected_client(service.clone()).await;
+
+    let error = client
+        .remove_machine_membership(&ployz_core::MachineTarget::from(&peer.machine.id))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::Unavailable);
+    assert!(service.removed_machines.lock().unwrap().is_empty());
+    server.abort();
+}
+
+#[tokio::test]
 async fn remove_machine_membership_removes_a_server_that_does_not_answer() {
     let (_description, peer, service) = cluster_with_a_held_peer(MembershipObservation::Down);
     let (mut client, server, _) = connected_client(service.clone()).await;

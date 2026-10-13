@@ -276,6 +276,8 @@ impl Client {
         // One budget across retries: fast failures retry inside it, and a vanished
         // Machine costs the budget once instead of once per attempt.
         let deadline = timeout.map(|timeout| tokio::time::Instant::now() + timeout);
+        // A reply on an earlier attempt means the target was not silent throughout.
+        let mut earlier: Option<ConnectError> = None;
         loop {
             let outcome = match deadline {
                 Some(deadline) => {
@@ -287,22 +289,26 @@ impl Client {
                         .await
                 }
             };
-            match outcome {
+            let error = match outcome {
                 Ok(response) => return Ok(response),
-                Err(error) if error.is_retryable() => {
-                    let Some(delay) = delays.next() else {
-                        return Err(error);
-                    };
-                    if deadline
-                        .is_some_and(|deadline| tokio::time::Instant::now() + delay >= deadline)
-                    {
-                        return Err(error);
-                    }
-                    tokio::time::sleep(delay).await;
-                    redial = true;
-                }
-                Err(error) => return Err(error),
+                Err(error) => error,
+            };
+            let error = match earlier.take() {
+                Some(earlier) if error.target_unanswered() => earlier,
+                _ => error,
+            };
+            if !error.is_retryable() {
+                return Err(error);
             }
+            let Some(delay) = delays.next() else {
+                return Err(error);
+            };
+            if deadline.is_some_and(|deadline| tokio::time::Instant::now() + delay >= deadline) {
+                return Err(error);
+            }
+            tokio::time::sleep(delay).await;
+            redial = true;
+            earlier = Some(error);
         }
     }
 
