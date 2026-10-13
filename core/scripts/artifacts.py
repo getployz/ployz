@@ -174,14 +174,15 @@ def gh(*args, **kwargs):
 
 
 def lookup(found):
-    """found's newest live CI upload. Fork pull requests upload here too, so only this repository's branches count."""
+    """found's newest live CI upload from main. Any branch or fork pull request can upload under a key's name, unreviewed."""
     try:
         listing = gh(f"repos/{REPOSITORY}/actions/artifacts?name={found.artifact}&per_page=100", capture_output=True)
     except (OSError, subprocess.SubprocessError):
         return None  # no gh, not signed in, or offline: a miss
     for artifact in json.loads(listing.stdout)["artifacts"]:
         run = artifact.get("workflow_run") or {}
-        if not artifact["expired"] and run.get("head_repository_id") == run.get("repository_id"):
+        if (not artifact["expired"] and run.get("head_branch") == "main"
+                and run.get("head_repository_id") == run.get("repository_id")):
             return artifact
     return None
 
@@ -216,7 +217,7 @@ def fetch(found, destination):
     if downloaded and not download(found):
         return None
     meta = json.loads((entry / "meta.json").read_text())
-    origin = f"github run {meta['run']}" if downloaded else f"local {found.value[:8]}"
+    origin = f"github run {meta.get('run')}" if downloaded else f"local {found.value[:8]}"
     print(f"{found.kind}: hit {origin} ({meta.get('revision', 'unknown')[:12]})", file=sys.stderr)
     destination.mkdir(parents=True, exist_ok=True)
     for name in KINDS[found.kind].files:

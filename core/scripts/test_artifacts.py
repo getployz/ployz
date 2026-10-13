@@ -97,7 +97,7 @@ class Cache(unittest.TestCase):
             self.addCleanup(patch.stop)
         self.uploads = []
 
-    def upload(self, found, content, *, run, fork=False, expired=False, digest=None):
+    def upload(self, found, content, *, run, fork=False, branch="main", expired=False, digest=None):
         """Record a CI upload of found, newest first, as the artifacts API lists them."""
         archive = io.BytesIO()
         with zipfile.ZipFile(archive, "w") as files:
@@ -106,7 +106,7 @@ class Cache(unittest.TestCase):
         archive = archive.getvalue()
         row = {"id": len(self.uploads), "name": found.artifact, "expired": expired,
                "digest": digest or "sha256:" + hashlib.sha256(archive).hexdigest(),
-               "workflow_run": {"id": run, "head_sha": f"sha{run}", "repository_id": 1,
+               "workflow_run": {"id": run, "head_sha": f"sha{run}", "head_branch": branch, "repository_id": 1,
                                 "head_repository_id": 2 if fork else 1}}
         self.uploads.insert(0, (row, archive))
 
@@ -154,12 +154,13 @@ class Cache(unittest.TestCase):
         self.assertEqual(sorted(entry.name for entry in (self.root / "cache" / "sdk").iterdir()),
                          sorted([used.value, new.value]))
 
-    def test_a_miss_downloads_the_newest_live_upload_from_this_repository_and_keeps_it(self):
+    def test_a_miss_downloads_the_newest_live_upload_from_main_and_keeps_it(self):
         found = artifacts.Key("sdk", "1" * 32, {})
         self.upload(found, b"old", run=10)
         self.upload(found, b"main", run=11)
         self.upload(found, b"expired", run=12, expired=True)
         self.upload(found, b"fork", run=13, fork=True)
+        self.upload(found, b"branch", run=14, branch="feature")
         meta = artifacts.fetch(found, self.root / "out")
         self.assertEqual((meta["run"], meta["revision"]), (11, "sha11"))
         self.assertEqual((self.root / "out" / "ployz-sdk.node").read_bytes(), b"main")
@@ -170,6 +171,12 @@ class Cache(unittest.TestCase):
     def test_only_fork_uploads_is_a_miss(self):
         found = artifacts.Key("sdk", "2" * 32, {})
         self.upload(found, b"fork", run=20, fork=True)
+        self.assertIsNone(artifacts.fetch(found, self.root / "out"))
+
+    def test_only_uploads_from_other_branches_of_this_repository_is_a_miss(self):
+        found = artifacts.Key("sdk", "5" * 32, {})
+        self.upload(found, b"branch", run=50, branch="feature")
+        self.upload(found, b"tag", run=51, branch="v0.3.0")
         self.assertIsNone(artifacts.fetch(found, self.root / "out"))
 
     def test_a_download_that_does_not_match_its_digest_is_not_cached(self):
