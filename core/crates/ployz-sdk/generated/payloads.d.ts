@@ -1984,7 +1984,11 @@ export type HistoryQuery = { environment: EnvironmentRef,
  */
 limit?: number, };
 
-export type HistoryStaged = { environment: EnvironmentSummary, saved: Revision | null, changed: boolean, };
+export type HistoryStaged = { environment: EnvironmentSummary, saved: Revision | null, changed: boolean,
+/**
+ * Sealed variables the action brought back without a value.
+ */
+not_set: Array<NotSetVariable>, };
 
 export type HistoryStream = "stdout" | "stderr";
 
@@ -2753,6 +2757,12 @@ export type NodeOutcome = { outcome: NodeStatus,
 rows: Array<ServerRow>, } & ({ "type": "service", id: ServiceLineageId, name: ServiceName, } | { "type": "volume", id: VolumeId, name: VolumeName, } | { "type": "config", id: ConfigId, name: ConfigName, });
 
 export type NodeStatus = "pending" | "deployed" | "removed" | "failed" | "not_attempted" | "unchanged" | "unknown";
+
+export type NotSetVariable = {
+/**
+ * The Service's name.
+ */
+service: string, key: string, };
 
 export type NumberedDeploymentQuery = { environment: EnvironmentRef, number: number, };
 

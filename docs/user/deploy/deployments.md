@@ -78,15 +78,19 @@ Undo and Roll back pass the same checks as an edit made by hand. One that would 
 reference to a deleted Service, reuse a name or hostname another Service took since, or break a
 rule is refused with the reason, and nothing is staged.
 
-History restores configuration references. It never changes a sealed variable: a sealed value
-keeps its current value, a sealed variable you deleted stays deleted, one added since stays, and a
-variable that was ever sealed can't come back as plain text. It does not recover deleted Volume data or undo
-private-image credential rotations.
+History restores configuration references. It never brings back a sealed value. A sealed
+variable that still exists keeps its current value, and one added since stays. A sealed variable
+deleted since, or one inside a Service that comes back, comes back **Sealed** and **Not set**. A
+toast names those variables, the Service shows **· N not set**, and its Variables tab offers
+**Set value** on each. Deploys leave a Not set variable out of the container until you set it.
+A variable that was ever sealed can't come back as plain text. A version that only set sealed
+values has nothing to undo, so its Undo is disabled and says **Sealed. Nothing to undo.** History does not recover deleted Volume data or undo private-image credential rotations.
 An accepted deployment and its retries keep their original snapshot while you edit the draft.
 
 From the CLI, `ployz history` lists versions. `ployz history restore 2 --preview` reviews a
 Restore without writing. `ployz history undo 2` stages an Undo; use `--accept-overwrite` only
-after reviewing the named draft fields.
+after reviewing the named draft fields. Both list each variable that came back Not set, and
+`--json` carries them as `not_set`.
 
 ## When another deployment is running
 

@@ -1,3 +1,4 @@
+use super::history::NotSetVariable;
 use super::publish::DiscardTarget;
 use super::sealed::{EverSealed, sealed};
 use super::{NodeChange, Review};
@@ -2096,6 +2097,7 @@ pub(super) fn compare(
 pub(super) struct Prepared {
     preview: Summary,
     overwritten: Vec<String>,
+    not_set: Vec<NotSetVariable>,
     state: PreparedState,
 }
 enum PreparedState {
@@ -2111,6 +2113,9 @@ impl Prepared {
     }
     pub(super) fn overwritten(&self) -> &[String] {
         &self.overwritten
+    }
+    pub(super) fn not_set(&self) -> &[NotSetVariable] {
+        &self.not_set
     }
     pub(super) fn persist(self, tx: &mut dyn Tx) -> Result<(EnvironmentSummary, bool), RpcError> {
         match self.state {
@@ -2170,6 +2175,7 @@ impl Prepared {
         Ok(Self {
             preview,
             overwritten: overwritten.into_iter().collect(),
+            not_set: Vec::new(),
             state,
         })
     }
@@ -2213,28 +2219,37 @@ pub(super) fn prepare_history(
     } else {
         selected.clone()
     };
-    keep_sealed(tx, environment, &mut target)?;
+    let not_set = keep_sealed(tx, environment, &mut target)?;
     crate::names::refuse_new_taken(tx, environment, &target)?;
-    Prepared::from_target(tx, environment, saved, target, None)
+    let mut prepared = Prepared::from_target(tx, environment, saved, target, None)?;
+    prepared.not_set = not_set;
+    Ok(prepared)
 }
-/// History never changes a sealed value: a key sealed now keeps its value, a
-/// sealed key deleted since stays deleted, and a key once sealed never comes
-/// back as plain text.
+/// History never brings a sealed value back: a key sealed now keeps its value,
+/// and a sealed key History must bring back, deleted since or in a Service that
+/// comes back, comes back sealed without a value. A key once sealed never comes
+/// back as plain text. Returns the keys that came back without a value.
 fn keep_sealed(
     tx: &mut dyn Tx,
     environment: &Environment,
     target: &mut SavedEnvironmentIntent,
-) -> Result<(), RpcError> {
-    let mut plain = Vec::new();
+) -> Result<Vec<NotSetVariable>, RpcError> {
+    let ever = EverSealed::load(tx, environment.summary.id.as_str())?;
+    let mut not_set = Vec::new();
     for service in &mut target.services {
         let current = environment
             .working
             .services
             .iter()
             .find(|current| current.id == service.id);
-        service.variables.retain_mut(|variable| {
-            let now = current
-                .and_then(|current| current.variables.iter().find(|now| now.key == variable.key));
+        for variable in &mut service.variables {
+            let now = current.and_then(|current| {
+                current
+                    .variables
+                    .iter()
+                    .find(|now| now.key == variable.key)
+                    .or_else(|| current.variables.iter().find(|now| now.id == variable.id))
+            });
             match now {
                 Some(now) if sealed(&now.value) || sealed(&variable.value) => {
                     variable.id.clone_from(&now.id);
@@ -2242,39 +2257,41 @@ fn keep_sealed(
                         .value_fingerprint
                         .clone_from(&now.value_fingerprint);
                     variable.value = now.value.clone();
-                    true
                 }
-                Some(now) if now.value == variable.value => true,
-                None if sealed(&variable.value) => current.is_none(),
-                Some(_) | None => {
-                    plain.push((service.id.clone(), service.slug.clone(), variable.clone()));
-                    true
+                Some(now) if now.value == variable.value => {}
+                Some(_) if ever.holds(&service.id, variable) => {
+                    let key = &variable.key;
+                    return Err(error::conflict(
+                        format!("{key} was sealed. Set it again."),
+                        json!({ "path": format!("{}.env.{key}", service.slug) }),
+                    ));
                 }
+                None if sealed(&variable.value) || ever.holds(&service.id, variable) => {
+                    variable.value = SavedVariableValue::SecretWithoutValue;
+                    variable.value_fingerprint.clear();
+                    not_set.push(NotSetVariable {
+                        service: service.slug.clone(),
+                        key: variable.key.clone(),
+                    });
+                }
+                Some(_) | None => {}
             }
-        });
+        }
         if let Some(current) = current {
             for now in &current.variables {
-                if sealed(&now.value) && !service.variables.iter().any(|kept| kept.key == now.key) {
+                if sealed(&now.value)
+                    && !service
+                        .variables
+                        .iter()
+                        .any(|kept| kept.key == now.key || kept.id == now.id)
+                {
                     service.variables.push(now.clone());
                 }
             }
         }
     }
-    if plain.is_empty() {
-        return Ok(());
-    }
-    let ever = EverSealed::load(tx, environment.summary.id.as_str())?;
-    if let Some((_, slug, variable)) = plain
-        .iter()
-        .find(|(id, _, variable)| ever.holds(id, variable))
-    {
-        let key = &variable.key;
-        return Err(error::conflict(
-            format!("{key} was sealed. Set it again."),
-            json!({ "path": format!("{slug}.env.{key}") }),
-        ));
-    }
-    Ok(())
+    not_set.sort_by(|a, b| (&a.service, &a.key).cmp(&(&b.service, &b.key)));
+    Ok(not_set)
 }
 /// An inverse puts a removed route back by its old neighbours, so undoing a
 /// revision that reordered common routes would not restore their order.
