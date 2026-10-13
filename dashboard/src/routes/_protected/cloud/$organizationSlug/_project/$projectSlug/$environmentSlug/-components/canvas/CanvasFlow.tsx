@@ -1,22 +1,25 @@
-import { Suspense, use, useState } from "react";
+import { Suspense, use, useEffect, useRef, useState } from "react";
 import {
   Background,
   BackgroundVariant,
   type Edge,
   MarkerType,
   ReactFlow,
+  useReactFlow,
+  useStore,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { Link, useLoaderData, useNavigate, useParams } from "@tanstack/react-router";
 import { HistoryIcon, PlusIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
+import { prefersReducedMotion } from "#/lib/motion";
 import { BottomBar } from "./BottomBar";
 import { storeHintNotes } from "./store-hints";
 import { CANVAS_MAX_ZOOM, CANVAS_MIN_ZOOM, SNAP_GRID } from "./constants";
 import { canvasNodeTypes } from "./canvas-node-types";
 import { CanvasNodeList } from "./CanvasServiceList";
 import { useCanvasPositionMutation } from "./useCanvasPositionMutation";
-import { useCanvasNavigation } from "./useCanvasNavigation";
+import { fitViewport, useCanvasNavigation } from "./useCanvasNavigation";
 import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
 import { useDeploymentFocus } from "../deployment-page";
 import { useServiceCreator } from "./useServiceCreator";
@@ -95,6 +98,7 @@ export function CanvasFlow({
       : picking ? { key: "new-branch", nodeIds: canvasNodes.map((node) => node.id) } : null,
   );
   useKeyboardFocusModality();
+  useRefitOnWidthChange(flowReady && !focusNode);
   const creator = useServiceCreator(params, environmentId, getViewportCenter);
   const volumeCreator = useVolumeCreator(
     params,
@@ -203,6 +207,29 @@ export function CanvasFlow({
       <ConfigCreatorDialog open={configCreator.creatorOpen} onOpenChange={configCreator.setCreatorOpen} onCreate={configCreator.createConfig} />
     </LitVolumeProvider>
   );
+}
+
+/**
+ * Opening or closing the agent narrows or widens the canvas, and React Flow keeps its viewport. Each time it measures a
+ * new width, fit the canvas again, unless a node holds the view. Keyed on the width alone: a quick open and close can
+ * land before React Flow measures, so the agent's state says nothing about which width the view was fitted to. Not
+ * `fitView`: over controlled nodes it waits for a node change that never comes.
+ */
+function useRefitOnWidthChange(enabled: boolean) {
+  const width = useStore((state) => state.width);
+  const height = useStore((state) => state.height);
+  const flow = useReactFlow<CanvasResourceNode>();
+  const fittedWidth = useRef(width);
+  useEffect(() => {
+    // Below the desktop breakpoint the canvas is hidden and measures 0; keep the last real width so the way back refits.
+    if (!width) return;
+    const previous = fittedWidth.current;
+    fittedWidth.current = width;
+    if (!previous || previous === width || !enabled) return;
+    const nodes = flow.getNodes();
+    if (!nodes.length) return;
+    void flow.setViewport(fitViewport(nodes, width, height), { duration: prefersReducedMotion() ? 0 : 360 });
+  }, [width, height, enabled, flow]);
 }
 
 /**

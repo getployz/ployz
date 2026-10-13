@@ -1,8 +1,9 @@
-import { Suspense, type ReactNode } from "react";
+import { Suspense, useState, type ReactNode } from "react";
 import { useQueryErrorResetBoundary } from "@tanstack/react-query";
 import { CatchBoundary, Link, type ErrorComponentProps } from "@tanstack/react-router";
 import { useOrgStoreGate } from "#/collections/org-store";
 import { useCollectionScope } from "#/collections/use-collection-scope";
+import { AgentDock } from "./agent-sidebar/agent-dock";
 import { AgentButton, AgentColumn } from "./agent-sidebar/agent-sidebar";
 import { useAgentPage } from "./agent-sidebar/use-agent-page";
 import { getDashboardDestination, getDashboardSectionLabel, type DashboardScope } from "./dashboard-navigation-model";
@@ -36,9 +37,11 @@ export function DashboardShell({
   const { places, organization } = useDashboardNavigation(scope);
   const canvas = useCanvasShowing();
   const page = useAgentPage(scope);
+  const [dock, setDock] = useState<HTMLElement | null>(null);
   // The top bar names the place, so Billing, a section of Organization, reads Organization like its siblings.
   const placeLabel = places.find((place) => place.current)?.label ?? getDashboardSectionLabel(section);
   return (
+    <AgentDock.Provider value={dock}>
     <div className="flex h-dvh min-h-0 overflow-hidden">
       <Rail organizationSlug={scope.organizationSlug} places={places} organization={organization} narrow={canvas}
         account={<DashboardAccountMenu scope={scope} side="right" variant={canvas ? "avatar" : "row"} />} />
@@ -86,11 +89,12 @@ export function DashboardShell({
               </CatchBoundary>
             </div>
           </main>
-          <AgentColumn organizationSlug={scope.organizationSlug} collectionScope={collectionScope} page={page} chat={chat} onChat={onChat} />
+          <AgentColumn organizationSlug={scope.organizationSlug} collectionScope={collectionScope} page={page} chat={chat} onChat={onChat} dock={setDock} />
         </div>
         <PhoneTabBar places={places} />
       </div>
     </div>
+    </AgentDock.Provider>
   );
 }
 

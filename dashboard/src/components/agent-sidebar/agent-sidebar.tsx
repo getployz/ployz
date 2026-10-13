@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type Ref } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { SparklesIcon } from "lucide-react";
 import type { CollectionScope } from "#/collections/scope";
@@ -49,12 +49,14 @@ export function AgentButton({ organizationSlug, chat, onChat }: {
  * The panel loads on first hover or open and renders as soon as it arrives. A lazy Suspense boundary would hold it back
  * for React's 300 ms reveal throttle.
  */
-export function AgentColumn({ organizationSlug, collectionScope, page, chat, onChat }: {
+export function AgentColumn({ organizationSlug, collectionScope, page, chat, onChat, dock }: {
   organizationSlug: string;
   collectionScope: CollectionScope;
   page: PageContext;
   chat: string | undefined;
   onChat: (thread: string | undefined) => void;
+  /** Receives the element above the composer where the page's bottom bar docks. */
+  dock?: Ref<HTMLDivElement>;
 }) {
   const [AgentPanel, setAgentPanel] = useState<Panel | null>(null);
 
@@ -68,7 +70,7 @@ export function AgentColumn({ organizationSlug, collectionScope, page, chat, onC
   return (
     <aside className="z-30 flex min-h-0 flex-col bg-background max-wf-nav:absolute max-wf-nav:inset-0 min-wf-nav:w-96 min-wf-nav:shrink-0 min-wf-nav:border-l">
       {AgentPanel && (
-        <AgentPanel organizationSlug={organizationSlug} scope={collectionScope} page={page} threadId={chat}
+        <AgentPanel organizationSlug={organizationSlug} scope={collectionScope} page={page} threadId={chat} dock={dock}
           onChat={onChat} />
       )}
     </aside>
