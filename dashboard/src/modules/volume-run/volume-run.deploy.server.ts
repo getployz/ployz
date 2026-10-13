@@ -31,13 +31,12 @@ export type DeployLane =
 
 const CLOUD = (organizationId: string) => ({ userId: null, organizationId });
 
-/** A lane that never touches the writer; the Deploy runs beside it. */
-const PLAIN: ReadonlySet<VolumeRunKind> = new Set<VolumeRunKind>(["mirror", "sync", "seed", "delete_mirror"]);
+const BESIDE_WRITER: ReadonlySet<VolumeRunKind> = new Set<VolumeRunKind>(["mirror", "sync", "seed", "delete_mirror"]);
 
 const FENCE_ROUNDS = 3;
 
 /**
- * D1. One transaction over the Environment's lanes, each locked: a warm move, release or another Deploy yields to this
+ * One transaction over the Environment's lanes, each locked: a warm move, release or another Deploy yields to this
  * Deploy's own row; a lane past its return is followed to its Server; the rest are plain. A row already running under
  * this Inngest run is the step's own earlier attempt.
  */
@@ -56,7 +55,7 @@ export const placeDeployVolumes = Effect.fn("VolumeRun.placeDeploy")(function* (
       .for("update");
     const placed: DeployLane[] = [];
     for (const lane of lanes) {
-      if (PLAIN.has(lane.kind)) continue;
+      if (BESIDE_WRITER.has(lane.kind)) continue;
       if (lane.kind === "deploy" && lane.inngestRunId === inngestRunId) {
         // SAFETY: a deploy row's args were written from a VolumeRunArgs["deploy"].
         placed.push({ kind: "took", run: contextOf(lane), resume: (lane.args as VolumeRunArgs["deploy"]).resume });
@@ -86,7 +85,6 @@ const answered = (members: readonly Member[]) => members.filter((member): member
 // SAFETY: a took lane is the Deploy's own row, written from a VolumeRunArgs["deploy"].
 const observeMembers = (run: RunContext) => observeVolumeMembers(run.organizationId, run.dockerVolume, { kind: "deploy", args: run.args as VolumeRunArgs["deploy"] });
 
-/** The Server a took lane fences: the root, else the slot that kept the stopped Service after a cut. */
 const writerOf = Effect.fn("VolumeRun.writerOf")(function* (run: RunContext, members: readonly AnsweredMember[]) {
   const root = members.find((member) => member.view.copy?.kind === "root");
   if (root !== undefined) return root;
@@ -97,11 +95,6 @@ const writerOf = Effect.fn("VolumeRun.writerOf")(function* (run: RunContext, mem
   return held;
 });
 
-/**
- * D2 and D3 for a took lane. The Floor on A with the Deploy's gen makes every older run's verb stale there. A root reply
- * is the writer; a slot reply is a cut that finished before the floor rose, promoted back to the writer with the next
- * epoch before any Service mounts it.
- */
 const fenceTaken = Effect.fn("VolumeRun.fenceTaken")(function* (run: RunContext, inngestRunId: string) {
   for (let round = 1; ; round++) {
     const members = yield* observeMembers(run);
@@ -118,6 +111,7 @@ const fenceTaken = Effect.fn("VolumeRun.fenceTaken")(function* (run: RunContext,
     if (copy?.kind !== "slot" || copy.newest === null) {
       return yield* Effect.fail(new NonRetriableError(`${run.volumeName} has no copy to deploy on ${writer.machine.name}`));
     }
+    // Core refuses a plain mount of a slot, so the promote lands before any Service mounts the Volume.
     const { epoch } = yield* takeEpoch(run, inngestRunId, observedEpoch(replied));
     const promoted = yield* setVolumeCopy(run, inngestRunId, writer.machine, expectOf(copy), { kind: "writer", at: copy.newest.guid, epoch, start: null });
     if (!promoted.ok) return yield* Effect.fail(retriable(promoted.reason) ? new Error(promoted.message) : new NonRetriableError(promoted.message));
@@ -127,7 +121,6 @@ const fenceTaken = Effect.fn("VolumeRun.fenceTaken")(function* (run: RunContext,
 
 const retriable = (reason: string) => reason === "busy" || reason === "mismatch";
 
-/** D2 for a followed lane: the other run's idempotent Writer on B, with its gen, so the Deploy runs where the Volume now lives. */
 const fenceFollowed = Effect.fn("VolumeRun.fenceFollowed")(function* (lane: Extract<DeployLane, { kind: "follow" }>) {
   const { run, to } = lane;
   const members = answered(yield* observeVolumeMembers(run.organizationId, run.dockerVolume));
@@ -149,7 +142,7 @@ const fenceFollowed = Effect.fn("VolumeRun.fenceFollowed")(function* (lane: Extr
 export const fenceDeployVolume = (lane: DeployLane, inngestRunId: string) =>
   lane.kind === "took" ? fenceTaken(lane.run, inngestRunId) : fenceFollowed(lane);
 
-/** D4. The Deploy's own rows end done; a move it took over is requested again, once, by the attempt that ended the row. */
+/** The Deploy's own rows end done; a move it took over is requested again, once, by the attempt that ended the row. */
 export const finishDeployVolumes = Effect.fn("VolumeRun.finishDeploy")(function* (lanes: readonly DeployLane[], environmentId: string, inngestRunId: string) {
   let ended = 0;
   const requeued: string[] = [];

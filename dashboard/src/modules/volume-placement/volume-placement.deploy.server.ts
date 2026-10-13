@@ -17,7 +17,7 @@ import { ACTIVE_VOLUME_RUN_STATES, dockerVolumeName, type VolumeRunState } from 
 import { type CopyObserver, getVolumeRun, inspectVolumeCopies, observeOrganizationCopies, requestVolumeRun } from "#/modules/volume-run/volume-run.server";
 import { Database } from "#/server/database.server";
 
-/** A run of the Deploy's own, the one it started for `step`. It never waits on a run it did not start. */
+/** A run of the Deploy's own, the one it started for `step`. */
 export type PlacementWait = { readonly runId: string; readonly volumeId: string; readonly step: PlacementStep };
 
 export type PlacementAdvance =

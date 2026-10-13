@@ -147,10 +147,8 @@ const PLACEMENT_PULLS = 144;
 const PLACEMENT_PULL_WAIT = "10m";
 
 /**
- * The Deploy's storage, before its Services: one run of its own at a time, each awaited until it finishes. A run already
- * on a Volume never holds the Deploy: a warm one yields to the Deploy's run, and one past its return keeps the Volume
- * while the Deploy goes on to follow it. The finished event names how the run ended, so the Deploy closes the row itself
- * rather than wait for the closer; a wait that times out looks at the row again, since the event can be lost.
+ * The finished event names how the run ended, so the Deploy closes the row itself rather than wait for the closer; a wait
+ * that times out looks at the row again, since the event can be lost.
  */
 async function walkPlacement(data: ConfigDeploymentAdmittedEventData, step: Step, runEffect: StoreEffectRunner): Promise<PlacementAdvance> {
   let waited: PlacementWait | null = null;

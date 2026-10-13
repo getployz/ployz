@@ -140,7 +140,6 @@ export const finishesThere = (volumeName: string, server: string) => `${volumeNa
 /** A lane past its point of no return: a Move that committed, or a restore, which commits from its first step. */
 export const pastReturn = (lane: Pick<VolumeRunRow, "phase" | "kind">) => lane.phase === "committed" || lane.kind === "restore";
 type LaneEnd = "cancelled" | "yielded";
-/** The lane stays: past its return, or a Deploy's own lane that only another Deploy may yield. */
 const keepsLane = (lane: VolumeRunRow, end: LaneEnd) => pastReturn(lane) || (lane.kind === "deploy" && end === "cancelled");
 
 // SAFETY: the row's kind and args were written together from one VolumeRunInput.
@@ -388,23 +387,19 @@ const TAKEN_BY = {
   yielded: "a Deploy took this run over",
 } satisfies Record<LaneEnd, string>;
 
-/** `busy` is the lane that refused the take, so a caller can step aside without a second read. */
 class LaneRefused extends Data.TaggedError("LaneRefused")<{ readonly refusal: StoreRefusal; readonly busy: VolumeRunView }> {}
 
-/** Lanes landed and ended through every round; a retry of the caller's step finds the Volume free or taken. */
-export class LaneChurn extends Data.TaggedError("LaneChurn")<{ readonly message: string }> {}
+class LaneChurn extends Data.TaggedError("LaneChurn")<{ readonly message: string }> {}
 
 type Caller = { readonly userId: string | null; readonly organizationId: string };
 
 const TAKE_ROUNDS = 3;
 
 /**
- * Takes the Volume's lane. With `end`, an active warm lane ends as `end` first, under its row lock. The insert waits on
- * any lane committing concurrently, so a conflict means a lane landed between the read and the insert; the next round
- * reads it under the lock and takes it over too. `owner` is the Inngest run that already runs the row, so it starts
- * `running` and is never enqueued.
+ * The insert waits on any lane committing concurrently, so a conflict means a lane landed between the read and the
+ * insert; the next round reads it under the lock and takes it over too.
  */
-const takeLane = Effect.fn("VolumeRun.takeLane")(function* (caller: Caller, { input, volume, id }: LaneTaker, end: LaneEnd | null, owner: string | null = null) {
+const takeLane = Effect.fn("VolumeRun.takeLane")(function* (caller: Caller, { input, volume, id }: LaneTaker, end: LaneEnd | null, inngestRunId: string | null = null) {
   const { drizzle } = yield* Database;
   for (let round = 1; ; round++) {
     const lane = end === null ? undefined : yield* activeLane(input.volumeId, true);
@@ -425,12 +420,12 @@ const takeLane = Effect.fn("VolumeRun.takeLane")(function* (caller: Caller, { in
       refquotaBytes: volume.refquotaBytes,
       kind: input.kind,
       args: input.args,
-      state: owner === null ? "requested" : "running",
-      inngestRunId: owner,
+      state: inngestRunId === null ? "requested" : "running",
+      inngestRunId,
       requestedByUserId: caller.userId,
     }).onConflictDoNothing().returning();
     if (inserted !== undefined) {
-      if (owner === null) yield* enqueueRun(inserted);
+      if (inngestRunId === null) yield* enqueueRun(inserted);
       if (taken !== undefined) yield* enqueueEvent(createVolumeRunTakenEvent({ runId: taken.id }));
       return { run: volumeRunView(inserted), ended: taken === undefined ? null : volumeRunView(taken) } satisfies LaneTake;
     }
