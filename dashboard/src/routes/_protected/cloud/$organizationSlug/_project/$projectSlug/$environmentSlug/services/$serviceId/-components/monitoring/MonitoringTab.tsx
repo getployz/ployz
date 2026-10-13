@@ -1,20 +1,25 @@
-import { Suspense, useDeferredValue, useEffect, useState, type ReactNode } from "react";
-import { useQueryErrorResetBoundary } from "@tanstack/react-query";
-import { CatchBoundary, useHydrated, useLoaderData, type ErrorComponentProps } from "@tanstack/react-router";
-import { createChartCursor, type ChartCursorController } from "@tanstack/charts/cursor";
-import { XIcon } from "lucide-react";
-import type { ServiceListing } from "@ployz/sdk";
+import { Suspense, useDeferredValue, useState, type ReactNode } from "react";
+import { useQueryErrorResetBoundary, useSuspenseQuery } from "@tanstack/react-query";
+import { CatchBoundary, Link, useLoaderData, type ErrorComponentProps } from "@tanstack/react-router";
+import { InfoIcon, XIcon } from "lucide-react";
+import type { DeploymentSummary, ServiceListing, VolumeListing } from "@ployz/sdk";
+import { MetricChart, atFormat, useMetricCursor, type ChartLimit, type ChartMarker, type MetricCursor, type MetricSeries, type TimeBand, type TimeSpan } from "#/components/metrics/metric-chart";
 import { RouteErrorAlert } from "#/components/route-error-alert";
 import { Button } from "#/components/ui/button";
 import { Card, CardContent } from "#/components/ui/card";
 import { Popover, PopoverContent, PopoverTitle } from "#/components/ui/popover";
 import { Skeleton } from "#/components/ui/skeleton";
 import { Spinner } from "#/components/ui/spinner";
+import { ToggleGroup, ToggleGroupItem } from "#/components/ui/toggle-group";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "#/components/ui/tooltip";
 import { cn } from "#/lib/utils";
 import { admission } from "#/modules/config-store/store-deployments";
 import { useStoreDeployments } from "#/modules/config-store/store-view.queries";
-import { LIMITS, previewMetrics } from "#/modules/uptime/metrics-preview";
+import { volumeStorageText } from "#/modules/config-store/store-volumes";
+import { useServerList } from "#/modules/machines/use-servers";
+import { bytesText, cpuText, onGrid, rateText } from "#/modules/metrics/metric-chart-data";
+import { serviceMetrics, type Marker, type MetricAvailability, type ServerRef, type ServiceMetrics, type ServiceSeries } from "#/modules/metrics/metrics-model";
+import { serviceMetricsQueryOptions } from "#/modules/metrics/metrics.queries";
 import {
   causeText,
   chartWindow,
@@ -38,30 +43,24 @@ import {
 import { checkWindow, instantEdge, resolveRange, type UptimeRange } from "#/modules/uptime/uptime-range";
 import type { RegionNames, ServiceUptime, UptimeCheckResult, UptimeIncidentEntry } from "#/modules/uptime/uptime-status";
 import { type UptimeScope, usePrefetchServiceUptime, useRequestUptimeProbe, useServiceUptime } from "#/modules/uptime/uptime.queries";
+import { useTimeZone } from "#/utils/time-zone";
 import { ENVIRONMENT_ROUTE_FROM } from "../../../../-components/environment-route-paths";
 import { HealthcheckField, type HealthcheckSetting } from "../HealthcheckField";
-import { useTimeZone } from "#/utils/time-zone";
-import { atFormat, MetricChart, type MetricSeries, type TimeBand } from "./MetricChart";
-import type { MonitoringSection } from "./monitoring-sections";
 import { RangePicker } from "./RangePicker";
 import { ResponseTooltip } from "./ResponseTooltip";
 
 type MonitoringProps = {
   organizationSlug: string;
-  /** Not empty: without a section there is no tab. */
-  sections: readonly MonitoringSection[];
+  checksUptime: boolean;
   service: ServiceListing;
   range: UptimeRange;
   onRange: (range: UptimeRange) => void;
-  addDomain: ReactNode;
   /** Edited in place while the check's path answers with a 4xx. */
   healthcheck: HealthcheckSetting;
+  vcpuLimit: number | null;
+  volume: VolumeListing | null;
 };
 
-/**
- * A Service's Monitoring tab: one layout in every state. The status line says what the check sees; the strip and charts
- * stay put and fill in as results arrive. Checks follow each Deploy and run after it; Check now runs one on demand.
- */
 export function MonitoringTab(props: MonitoringProps) {
   const { environmentId } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const scope = { organizationSlug: props.organizationSlug, environmentId };
@@ -69,7 +68,7 @@ export function MonitoringTab(props: MonitoringProps) {
   const toggle = <RangePicker range={props.range} onRange={props.onRange} onHover={prefetch} />;
   return (
     <CatchBoundary getResetKey={() => props.service.id} errorComponent={MonitoringError}>
-      <Suspense fallback={<MonitoringSkeleton toggle={toggle} uptime={props.sections.includes("uptime")} />}>
+      <Suspense fallback={<MonitoringSkeleton toggle={toggle} />}>
         <Monitoring {...props} scope={scope} toggle={toggle} />
       </Suspense>
     </CatchBoundary>
@@ -79,7 +78,7 @@ export function MonitoringTab(props: MonitoringProps) {
 function MonitoringError({ reset }: ErrorComponentProps) {
   const queries = useQueryErrorResetBoundary();
   return (
-    <RouteErrorAlert title="Monitoring couldn’t load" description="This service’s uptime is unavailable right now. Try loading it again."
+    <RouteErrorAlert title="Monitoring couldn’t load" description="This service’s monitoring is unavailable right now. Try loading it again."
       onRetry={() => { queries.reset(); reset(); }} />
   );
 }
@@ -103,25 +102,19 @@ function StripEnds({ from, to }: { from: ReactNode; to: ReactNode }) {
   );
 }
 
-/** The tab's shape before its first read lands: a quiet header, grey bars, and the Response time card's outline. */
-function MonitoringSkeleton({ toggle, uptime }: { toggle: ReactNode; uptime: boolean }) {
+function MonitoringSkeleton({ toggle }: { toggle: ReactNode }) {
   return (
     <div className="flex flex-col gap-6" aria-busy>
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        {uptime ? <StatusLine tone="quiet"><Skeleton className="h-4 w-40" /></StatusLine> : null}
-        <div className="ml-auto">{toggle}</div>
-      </div>
-      {uptime ? (
-        <>
-          <div className="flex flex-col gap-1.5">
-            <div className="flex h-7 items-stretch gap-px">
-              {Array.from({ length: 30 }, (_, index) => <div key={index} className="flex-1 rounded-[1px] bg-muted" />)}
-            </div>
-            <StripEnds from={null} to={null} />
-          </div>
-          <EmptyChartCard title="Response time" />
-        </>
-      ) : null}
+      <div className="flex justify-end">{toggle}</div>
+      <ChartsSkeleton titles={["CPU", "Memory"]} />
+    </div>
+  );
+}
+
+function ChartsSkeleton({ titles }: { titles: readonly string[] }) {
+  return (
+    <div className="flex flex-col gap-3" aria-busy>
+      {titles.map((title) => <EmptyChartCard key={title} title={title}><Skeleton className="h-30" /></EmptyChartCard>)}
     </div>
   );
 }
@@ -135,9 +128,6 @@ function EmptyChartCard({ title, children }: { title: string; children?: ReactNo
   );
 }
 
-
-const unit = (suffix: string, digits = 0) => (value: number) => `${value.toFixed(digits)}${suffix}`;
-const latest = (values: readonly (number | null)[]) => values.filter((value) => value !== null).at(-1) ?? null;
 function average(values: readonly (number | null)[]) {
   const present = values.flatMap((value) => value === null ? [] : [value]);
   return present.length === 0 ? null : present.reduce((sum, value) => sum + value, 0) / present.length;
@@ -155,13 +145,9 @@ type Zoom = { readonly incident: UptimeIncidentEntry; readonly range: UptimeRang
 
 type ViewProps = MonitoringProps & { scope: UptimeScope; toggle: ReactNode; shown: UptimeRange };
 
-/**
- * Status, history, then every metric on one time axis, all over one range. Incidents shade each chart; a click tells the
- * story. A new range keeps the old one, dimmed, until its read lands.
- */
 function Monitoring(props: MonitoringProps & { scope: UptimeScope; toggle: ReactNode }) {
   const shown = useDeferredValue(props.range);
-  return props.sections.includes("uptime") ? <UptimeMonitoring {...props} shown={shown} /> : <MonitoringView {...props} shown={shown} read={null} />;
+  return props.checksUptime ? <UptimeMonitoring {...props} shown={shown} /> : <MonitoringView {...props} shown={shown} read={null} />;
 }
 
 function UptimeMonitoring(props: ViewProps) {
@@ -169,8 +155,7 @@ function UptimeMonitoring(props: ViewProps) {
   return <MonitoringView {...props} read={{ uptime: data, at: dataUpdatedAt }} />;
 }
 
-/** `read`: the uptime read and when Cloud answered it, or null on a Cloud without the uptime checker. */
-function MonitoringView({ organizationSlug, service, sections, range: chosen, shown: range, addDomain, healthcheck, scope, toggle, read }: ViewProps & {
+function MonitoringView({ organizationSlug, service, range: chosen, shown: range, healthcheck, vcpuLimit, volume, scope, toggle, read }: ViewProps & {
   read: { uptime: ServiceUptime | null; at: number } | null;
 }) {
   const uptime = read?.uptime ?? null;
@@ -181,89 +166,38 @@ function MonitoringView({ organizationSlug, service, sections, range: chosen, sh
   const deployments = useStoreDeployments(organizationSlug, store).data.pages.flatMap((page) => page.deployments);
   const [zoom, setZoom] = useState<Zoom | null>(null);
   const [picked, setPicked] = useState<Picked | null>(null);
-  const [cursor] = useState(() => createChartCursor<Date, number>());
-  // The library leaves a pinned shared cursor up on outside clicks, so a tap elsewhere or Escape lets it go here.
-  useEffect(() => {
-    const release = (event: PointerEvent | KeyboardEvent) => {
-      if (!cursor.getState()?.pinned) return;
-      if (event instanceof KeyboardEvent ? event.key !== "Escape"
-        : event.target instanceof Element && event.target.closest("[data-metric-chart], .metric-tooltip")) return;
-      cursor.setState(null);
-    };
-    document.addEventListener("pointerdown", release, true);
-    document.addEventListener("keydown", release);
-    return () => {
-      document.removeEventListener("pointerdown", release, true);
-      document.removeEventListener("keydown", release);
-    };
-  }, [cursor]);
-  // When Cloud answered, so the page renders the same on server and client and moves on with each poll.
   const now = read?.at ?? mountedAt;
   const at = atFormat(useTimeZone());
   const state = checkState(uptime);
-  const incidents = uptime?.incidents ?? [];
   const checked = checkWindow(resolveRange(range, now));
   // Capped per-result bars begin at the oldest result shown, not at the range.
   const bars = historyBars(checked, uptime);
-  const charted = zoom?.range ?? range;
-  const window = chartWindow(resolveRange(charted, now), now, (uptime?.check.intervalSeconds ?? 60) * 1000);
-  const times = steps(window);
-  const hydrated = useHydrated();
-  // Without an uptime read the clock is this render's own, so the charts wait for the client to match the server.
-  const showMetrics = sections.includes("metrics") && (read !== null || hydrated);
-  const metrics = showMetrics ? previewMetrics(incidents, window, now) : [];
-  const deploys = deployments.flatMap((deployment) => {
-    const ended = admission(deployment).ended?.getTime();
-    const touched = deployment.services.length === 0 || deployment.services.includes(service.name);
-    return deployment.status === "applied" && touched && ended !== undefined && ended >= window.from && ended < window.to ? [ended] : [];
-  });
   const share = uptimePercent(uptime?.uptime ?? null);
-  const open = openIncident(incidents);
+  const open = openIncident(uptime?.incidents ?? []);
   const wrongPath = uptime ? wrongPathIncident(uptime) : null;
   const zoomTo = (incident: UptimeIncidentEntry) => {
     const shown = incidentRange(incident, now);
     setPicked(null);
     setZoom({ incident, range: { from: instantEdge(shown.from), to: shown.to >= now ? "now" : instantEdge(shown.to) } });
   };
-  // A chart frame shows the incidents of the read it draws: a zoom reads its own range.
-  const frame = (shownIncidents: readonly UptimeIncidentEntry[]): ChartFrame => ({
-    times, deploys, from: window.from, to: window.to, cursor,
-    bands: shownIncidents.flatMap((incident) => {
-      const span = incidentSpan(incident, now);
-      return span.to > window.from && span.from < window.to ? [{ id: incident.id, ...span }] : [];
-    }),
-    incidentAt: (at) => {
-      const incident = shownIncidents.find((candidate) => {
-        const span = incidentSpan(candidate, now);
-        return at >= span.from - window.stepMs && at <= span.to;
-      });
-      return incident ? (x, y) => setPicked({ incident, x, y }) : null;
-    },
-  });
-  const chart = frame(incidents);
-  const column = (key: keyof (typeof metrics)[number]) => metrics.map((row) => row[key]);
-  const requests = average(metrics.map((row) => row.ok + row.errors));
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        {read ? <StatusLine tone={STATUS_TONES[state]}>
+        {uptime ? <StatusLine tone={STATUS_TONES[state]}>
           <span className="shrink-0">{STATUS_WORDS[state]}</span>
           <span className="flex min-w-0 items-center gap-1 whitespace-nowrap font-normal text-muted-foreground tabular-nums">
-            {state === "no_domain" ? <span className="truncate">· Needs a public domain</span> : null}
             {state === "up" && share !== null ? <span>· {share}</span> : null}
             {open ? (
               <Button variant="link" size="sm" className="min-w-0 shrink text-muted-foreground"
                 onClick={(event) => setPicked({ incident: open, x: event.clientX, y: event.clientY })}>
                 · {formatSpan(now - Date.parse(open.openedAt))} ·
-                {uptime ? <span className="truncate font-mono">{checkedUrl(uptime.check.url)}</span> : null}
+                <span className="truncate font-mono">{checkedUrl(uptime.check.url)}</span>
                 → {causeText(open)}
               </Button>
-            ) : null}
-            {uptime && !open ? <span className="truncate font-mono">· {checkedUrl(uptime.check.url)}</span> : null}
+            ) : <span className="truncate font-mono">· {checkedUrl(uptime.check.url)}</span>}
           </span>
         </StatusLine> : null}
         <div className="ml-auto flex shrink-0 items-center gap-2">
-          {read && state === "no_domain" ? addDomain : null}
           {uptime ? (
             <Button variant="outline" size="sm" disabled={checking} onClick={() => checkNow.mutate()}>
               {checking ? <Spinner data-icon="inline-start" /> : null}
@@ -286,39 +220,15 @@ function MonitoringView({ organizationSlug, service, sections, range: chosen, sh
           </CardContent>
         </Card>
       ) : null}
-      {read ? <HistoryStrip bars={bars} regions={uptime?.regions ?? {}} at={at} zoomed={zoom?.incident ?? null} onZoom={zoomTo}
+      {uptime ? <HistoryStrip bars={bars} regions={uptime.regions} at={at} zoomed={zoom?.incident ?? null} onZoom={zoomTo}
         from={at.format(bars[0]?.result ? bars[0].start : checked.from)} to={checked.to >= now ? "Now" : at.format(checked.to)} /> : null}
-      <div className={cn("grid gap-3 sm:grid-cols-2", range !== chosen && "opacity-60")}>
-        {read ? <div className="sm:col-span-2">
-          {uptime === null ? (
-            <MetricChart id="response" title="Response time" format={formatMs} {...chart} value="–" series={[]} />
-          ) : (
-            <CatchBoundary getResetKey={() => `${service.id}:${charted.from}:${charted.to}`} errorComponent={ResponseTimeError}>
-              <Suspense fallback={<MetricChart id="response" title="Response time" format={formatMs} {...chart} value="" series={[]} />}>
-                <ResponseTime scope={scope} serviceId={service.id} range={charted} window={window}
-                  pending={state === "pending" ? `First check within ${formatSpan(uptime.check.intervalSeconds * 1000)}` : null}
-                  edge={showMetrics ? column("edgeMs") : null} frame={frame} />
-              </Suspense>
-            </CatchBoundary>
-          )}
-        </div> : null}
-        {showMetrics ? (
-          <>
-            <div className="sm:col-span-2">
-              <MetricChart id="requests" title="Requests" value={requests === null ? "–" : `${Math.round(requests)}/min`} format={unit("/min")} {...chart}
-                series={[{ label: "2xx", color: "var(--chart-3)", values: column("ok") }, { label: "5xx", color: "var(--chart-5)", values: column("errors") }]} />
-            </div>
-            <MetricChart id="cpu" title="CPU" value={unit(" vCPU", 2)(latest(column("cpu")) ?? 0)} format={unit("", 1)} limit={LIMITS.cpu} {...chart}
-              series={[{ label: "CPU", color: "var(--chart-1)", values: column("cpu") }]} />
-            <MetricChart id="memory" title="Memory" value={unit(" GB", 2)(latest(column("memoryGb")) ?? 0)} format={unit(" GB", 1)} limit={LIMITS.memoryGb} {...chart}
-              series={[{ label: "Memory", color: "var(--chart-4)", values: column("memoryGb") }]} />
-            <MetricChart id="network" title="Network" value={`${Math.round(latest(column("outKbps")) ?? 0)} KB/s`} format={unit(" KB/s")} {...chart}
-              series={[{ label: "In", color: "var(--chart-2)", values: column("inKbps") }, { label: "Out", color: "var(--chart-1)", values: column("outKbps") }]} />
-            <MetricChart id="disk" title="Disk" value={unit(" GB", 1)(latest(column("diskGb")) ?? 0)} format={unit(" GB")} limit={LIMITS.diskGb} {...chart}
-              series={[{ label: "Disk", color: "var(--chart-3)", values: column("diskGb") }]} />
-          </>
-        ) : null}
-      </div>
+      <CatchBoundary getResetKey={() => service.id} errorComponent={ChartsError}>
+        <Suspense fallback={<ChartsSkeleton titles={uptime ? ["Response time", "CPU"] : ["CPU", "Memory"]} />}>
+          <Charts organizationSlug={organizationSlug} scope={scope} service={service} range={zoom?.range ?? range}
+            dimmed={range !== chosen} uptime={uptime} uptimeAt={read?.at ?? null} deployments={deployments}
+            vcpuLimit={vcpuLimit} volume={volume} onPick={setPicked} />
+        </Suspense>
+      </CatchBoundary>
       <Popover open={picked !== null} onOpenChange={(next) => { if (!next) setPicked(null); }}>
         {picked ? (
           <PopoverContent side="bottom" align="start"
@@ -331,28 +241,219 @@ function MonitoringView({ organizationSlug, service, sections, range: chosen, sh
   );
 }
 
+function ChartsError({ reset }: ErrorComponentProps) {
+  const queries = useQueryErrorResetBoundary();
+  return (
+    <RouteErrorAlert title="Metrics couldn’t load" description="Try loading them again."
+      onRetry={() => { queries.reset(); reset(); }} />
+  );
+}
+
 type ChartFrame = {
   times: readonly number[];
   bands: readonly TimeBand[];
+  gaps: readonly TimeSpan[];
+  markers: readonly ChartMarker[];
   deploys: readonly number[];
   from: number;
   to: number;
-  cursor: ChartCursorController<Date, number>;
+  cursor: MetricCursor;
   incidentAt: (at: number) => ((x: number, y: number) => void) | null;
 };
+
+type SeriesKey = keyof ServiceSeries;
+type ChartLine = { readonly key: SeriesKey; readonly label: string; readonly color: string };
+
+const RESOURCE_CHARTS = [
+  { id: "cpu", title: "CPU", format: (vcpus: number) => `${cpuText(vcpus)} vCPU`, lines: [{ key: "cpu", label: "CPU", color: "var(--chart-1)" }] },
+  { id: "memory", title: "Memory", format: bytesText, lines: [{ key: "memory", label: "Memory", color: "var(--chart-4)" }] },
+  { id: "network", title: "Network", format: rateText, lines: [{ key: "netIn", label: "In", color: "var(--chart-2)" }, { key: "netOut", label: "Out", color: "var(--chart-1)" }] },
+  { id: "disk", title: "Disk", format: rateText, lines: [{ key: "diskRead", label: "Read", color: "var(--chart-3)" }, { key: "diskWrite", label: "Write", color: "var(--chart-5)" }] },
+] as const satisfies readonly { id: string; title: string; format: (value: number) => string; lines: readonly ChartLine[] }[];
+
+const MARKER_WORDS = {
+  oom: () => "OOM",
+  exit: (marker: Marker) => marker.exitCode === undefined ? "Exit" : `Exit ${marker.exitCode}`,
+  restart: () => "Restart",
+} satisfies Record<Marker["kind"], (marker: Marker) => string>;
+
+const latestOf = (values: readonly (number | null)[]) => values.filter((value) => value !== null).at(-1) ?? null;
+
+const sameRange = (left: UptimeRange, right: UptimeRange) => left.from === right.from && left.to === right.to;
+
+function Charts({ organizationSlug, scope, service, range, dimmed, uptime, uptimeAt, deployments, vcpuLimit, volume, onPick }: {
+  organizationSlug: string;
+  scope: UptimeScope;
+  service: ServiceListing;
+  range: UptimeRange;
+  dimmed: boolean;
+  uptime: ServiceUptime | null;
+  uptimeAt: number | null;
+  deployments: readonly DeploymentSummary[];
+  vcpuLimit: number | null;
+  volume: VolumeListing | null;
+  onPick: (picked: Picked) => void;
+}) {
+  const shown = useDeferredValue(range);
+  const { data: read, dataUpdatedAt } = useSuspenseQuery(serviceMetricsQueryOptions({
+    organizationSlug, environmentId: scope.environmentId, service: service.name, from: shown.from, to: shown.to,
+  }));
+  const names = new Map(useServerList(organizationSlug).servers.map((row) => [row.machine.id, row.name]));
+  const metrics = serviceMetrics(read, names);
+  const cursor = useMetricCursor();
+  const [split, setSplit] = useState(false);
+  const answeredAt = uptimeAt ?? dataUpdatedAt;
+  const coarserStepMs = Math.max((uptime?.check.intervalSeconds ?? 60) * 1000, metrics.stepMs ?? 0);
+  const window = chartWindow(resolveRange(range, answeredAt), answeredAt, coarserStepMs);
+  const times = steps(window);
+  const deploys = deployments.flatMap((deployment) => {
+    const ended = admission(deployment).ended?.getTime();
+    const touched = deployment.services.length === 0 || deployment.services.includes(service.name);
+    return deployment.status === "applied" && touched && ended !== undefined && ended >= window.from && ended < window.to ? [ended] : [];
+  });
+  const markers = metrics.markers.map((marker): ChartMarker => ({ at: marker.at, kind: marker.kind, label: `${MARKER_WORDS[marker.kind](marker)} · ${marker.server.name}` }));
+  const frame = (incidents: readonly UptimeIncidentEntry[]): ChartFrame => ({
+    times, deploys, markers, gaps: metrics.allGaps, from: window.from, to: window.to, cursor,
+    bands: incidents.flatMap((incident) => {
+      const span = incidentSpan(incident, answeredAt);
+      return span.to > window.from && span.from < window.to ? [{ id: incident.id, ...span }] : [];
+    }),
+    incidentAt: (at) => {
+      const incident = incidents.find((candidate) => {
+        const span = incidentSpan(candidate, answeredAt);
+        return at >= span.from - window.stepMs && at <= span.to;
+      });
+      return incident ? (x, y) => onPick({ incident, x, y }) : null;
+    },
+  });
+  const chart = frame(uptime?.incidents ?? []);
+  const perServer = split && metrics.byServer.length > 1;
+  const memoryLimit = latestOf(metrics.all.memoryLimit.map((sample) => sample.value));
+  const limits = {
+    cpu: vcpuLimit === null ? null : { value: vcpuLimit, label: `Limit ${cpuText(vcpuLimit)} vCPU` },
+    memory: memoryLimit === null || memoryLimit <= 0 ? null : { value: memoryLimit, label: `Limit ${bytesText(memoryLimit)}` },
+    network: null,
+    disk: null,
+  } satisfies Record<(typeof RESOURCE_CHARTS)[number]["id"], ChartLimit | null>;
+  const lines = (chartLines: readonly ChartLine[]): MetricSeries[] => perServer
+    ? metrics.byServer.flatMap((entry, index) => chartLines.map((line) => ({
+      label: chartLines.length > 1 ? `${entry.server.name} ${line.label.toLowerCase()}` : entry.server.name,
+      color: line.color, dashed: index > 0, values: onGrid(entry.series[line.key], window),
+    })))
+    : chartLines.map((line) => ({ label: line.label, color: line.color, values: onGrid(metrics.all[line.key], window) }));
+  const isDimmed = dimmed || !sameRange(shown, range);
+  return (
+    <div className={cn("flex flex-col gap-3", isDimmed && "opacity-60")}>
+      {uptime ? (
+        <CatchBoundary getResetKey={() => `${service.id}:${range.from}:${range.to}`} errorComponent={ResponseTimeError}>
+          <Suspense fallback={<MetricChart id="response" title="Response time" subtitle="from uptime checks" format={formatMs} {...chart} value="" series={[]} empty={null} />}>
+            <ResponseTime scope={scope} serviceId={service.id} range={range} window={window}
+              pending={checkState(uptime) === "pending" ? `First check within ${formatSpan(uptime.check.intervalSeconds * 1000)}` : null}
+              frame={frame} />
+          </Suspense>
+        </CatchBoundary>
+      ) : null}
+      <AvailabilityLine organizationSlug={organizationSlug} availability={metrics.availability}
+        toggle={metrics.byServer.length > 1 ? (
+          <ToggleGroup variant="outline" size="sm" spacing={0} value={[perServer ? "server" : "all"]}
+            onValueChange={([next]) => { if (next === "all" || next === "server") setSplit(next === "server"); }}>
+            <ToggleGroupItem value="all">All</ToggleGroupItem>
+            <ToggleGroupItem value="server">By server</ToggleGroupItem>
+          </ToggleGroup>
+        ) : null} />
+      {metrics.availability.type === "needs_upgrade" || metrics.availability.type === "offline"
+        ? <MetricsUnavailable organizationSlug={organizationSlug} availability={metrics.availability} />
+        : RESOURCE_CHARTS.map((resource) => (
+          <MetricChart key={resource.id} id={resource.id} title={resource.title} format={resource.format} {...chart}
+            value={valueText(resource.lines, metrics, window, resource.format)} series={lines(resource.lines)}
+            limit={perServer ? null : limits[resource.id]} />
+        ))}
+      {volume?.storage.kind === "provisioned" ? (
+        <Card size="sm" className="flex-row items-baseline justify-between gap-3 px-3">
+          <h3 className="text-sm font-medium">Managed volume</h3>
+          <span className="flex min-w-0 gap-2 text-sm text-muted-foreground">
+            <span className="truncate font-mono">{volume.name}</span>
+            <span className="shrink-0">· {volumeStorageText(volume.storage)}</span>
+          </span>
+        </Card>
+      ) : null}
+    </div>
+  );
+}
+
+function valueText(chartLines: readonly ChartLine[], metrics: ServiceMetrics, window: TimeWindow, format: (value: number) => string) {
+  const values = chartLines.map((line) => ({ label: line.label, value: latestOf(onGrid(metrics.all[line.key], window)) }));
+  if (values.every((entry) => entry.value === null)) return "–";
+  return values.length === 1
+    ? format(values[0]?.value ?? 0)
+    : values.map((entry) => `${entry.label} ${entry.value === null ? "–" : format(entry.value)}`).join(" · ");
+}
+
+const LINK_CLASS = "underline underline-offset-4";
+
+function ServersText({ organizationSlug, servers }: { organizationSlug: string; servers: readonly ServerRef[] }) {
+  const [only] = servers;
+  if (only === undefined) return null;
+  if (servers.length > 1) {
+    return <Link to="/cloud/$organizationSlug/~/servers" params={{ organizationSlug }} className={LINK_CLASS}>{servers.length} servers</Link>;
+  }
+  return <Link to="/cloud/$organizationSlug/~/servers/$serverId" params={{ organizationSlug, serverId: only.id }} className={LINK_CLASS}>{only.name}</Link>;
+}
+
+function AvailabilityLine({ organizationSlug, availability, toggle }: { organizationSlug: string; availability: MetricAvailability; toggle: ReactNode }) {
+  const lacking = availability.type === "mixed" || availability.type === "unanswered" ? availability.needsUpgrade : [];
+  const silent = availability.type === "mixed" ? availability.unanswered : availability.type === "unanswered" ? availability.servers : [];
+  if (lacking.length === 0 && silent.length === 0 && toggle === null) return null;
+  return (
+    <div className="flex min-h-7 flex-wrap items-center justify-between gap-3">
+      <p className="flex min-w-0 flex-wrap items-center gap-x-1.5 text-xs text-muted-foreground">
+        {lacking.length > 0 || silent.length > 0 ? <InfoIcon aria-hidden className="size-3.5 shrink-0" /> : null}
+        {lacking.length > 0 ? (
+          <span>
+            <ServersText organizationSlug={organizationSlug} servers={lacking} />
+            {lacking.length > 1 ? " need an upgrade to show their metrics." : " needs an upgrade to show its metrics."}
+          </span>
+        ) : null}
+        {silent.length > 0 ? <span><ServersText organizationSlug={organizationSlug} servers={silent} /> didn’t answer.</span> : null}
+      </p>
+      {toggle}
+    </div>
+  );
+}
+
+function MetricsUnavailable({ organizationSlug, availability }: {
+  organizationSlug: string;
+  availability: Extract<MetricAvailability, { type: "needs_upgrade" | "offline" }>;
+}) {
+  const servers = availability.type === "needs_upgrade" ? availability.servers : [];
+  const [only] = servers;
+  const title = availability.type === "offline" ? "Your servers are offline"
+    : only !== undefined && servers.length === 1 ? `Upgrade ${only.name} to see its metrics`
+    : `Upgrade ${servers.length} servers to see their metrics`;
+  const link = availability.type === "offline"
+    ? <Link to="/cloud/$organizationSlug/~/servers" params={{ organizationSlug }} className={LINK_CLASS}>Check your servers</Link>
+    : only !== undefined && servers.length === 1
+      ? <Link to="/cloud/$organizationSlug/~/servers/$serverId" params={{ organizationSlug, serverId: only.id }} className={LINK_CLASS}>Open {only.name}</Link>
+      : <Link to="/cloud/$organizationSlug/~/servers" params={{ organizationSlug }} className={LINK_CLASS}>Open Servers</Link>;
+  return (
+    <Card size="sm" className="items-center gap-1 px-3 py-10 text-center">
+      <h3 className="text-sm font-medium">{title}</h3>
+      <p className="text-sm text-muted-foreground">{link}</p>
+    </Card>
+  );
+}
 
 /**
  * The check's response time, the median across regions, with each region's on hover. A zoom reads its own range, and
  * keeps the old line, dimmed, until that read lands.
  */
-function ResponseTime({ scope, serviceId, range, window, pending, edge, frame }: {
+function ResponseTime({ scope, serviceId, range, window, pending, frame }: {
   scope: UptimeScope;
   serviceId: string;
   range: UptimeRange;
   window: TimeWindow;
   /** The value while the check has no result yet. */
   pending: string | null;
-  edge: readonly (number | null)[] | null;
   frame: (incidents: readonly UptimeIncidentEntry[]) => ChartFrame;
 }) {
   const shown = useDeferredValue(range);
@@ -361,19 +462,15 @@ function ResponseTime({ scope, serviceId, range, window, pending, edge, frame }:
   const check = checked.map((step) => step.medianMs);
   const checkMs = average(check);
   const byAt = new Map(checked.map((step, index) => [step.at, index]));
-  const series: MetricSeries[] = [
-    ...(edge ? [{ label: "Edge", color: "var(--chart-1)", values: edge }] : []),
-    { label: "Check", color: "var(--chart-2)", values: check },
-  ];
   return (
-    <MetricChart id="response" title="Response time" format={formatMs} {...frame(data?.incidents ?? [])} dimmed={shown !== range}
-      value={pending ?? (checkMs === null ? "–" : formatMs(checkMs))} series={series}
+    <MetricChart id="response" title="Response time" subtitle="from uptime checks" format={formatMs} {...frame(data?.incidents ?? [])}
+      gaps={[]} empty={pending === null ? "No readings" : null} dimmed={!sameRange(shown, range)} value={pending ?? (checkMs === null ? "–" : formatMs(checkMs))}
+      series={[{ label: "Check", color: "var(--chart-2)", values: check }]}
       focusAt={checked.flatMap((step) => step.medianMs === null && step.regions.length > 0 ? [step.at] : [])}
       renderTooltip={(at) => {
         const index = byAt.get(at);
         const step = index === undefined ? undefined : checked[index];
-        return step ? <ResponseTooltip step={step} end={checked[(index ?? 0) + 1]?.at ?? window.to} edgeMs={edge?.[index ?? -1] ?? null}
-          regions={data?.regions ?? {}} /> : null;
+        return step ? <ResponseTooltip step={step} end={checked[(index ?? 0) + 1]?.at ?? window.to} regions={data?.regions ?? {}} /> : null;
       }} />
   );
 }
