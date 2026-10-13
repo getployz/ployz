@@ -52,7 +52,7 @@ function StatusMark({ tone }: { tone: Tone }) {
 }
 
 /** "OOM" alone, "OOM +1" beside other issues, else the count. */
-const issuesText = ({ count, trouble }: NodeIssues) => trouble === null ? String(count) : count > 1 ? `${trouble} +${count - 1}` : trouble;
+export const issuesText = ({ count, trouble }: NodeIssues) => trouble === null ? String(count) : count > 1 ? `${trouble} +${count - 1}` : trouble;
 
 /** What runs now, in one word (grey with its age when it isn't current), ending in the node's ⚠. */
 export function StatusLine({ status, issues, onIssues, className }: {

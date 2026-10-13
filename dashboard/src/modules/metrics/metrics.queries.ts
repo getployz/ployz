@@ -35,5 +35,6 @@ export function serviceMarkersQueryOptions(scope: { organizationSlug: string; en
     queryFn: () => readServiceMetricsServerFn({ data: input }),
     staleTime: 60_000,
     refetchInterval: 300_000,
+    refetchOnWindowFocus: false,
   });
 }

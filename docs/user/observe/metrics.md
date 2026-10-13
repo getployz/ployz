@@ -48,10 +48,12 @@ Below the table, Ployz counts the OOM kills, exits and restarts in the range. Wh
 
 ## Spot trouble on the canvas
 
-The canvas shows no numbers. When a service's replicas were OOM killed in the last hour, its card
-shows an amber **⚠ OOM**. A restart without an OOM kill shows **⚠ Restarting**. Click the ⚠ to
-open the service's Monitoring tab. A server that needs an upgrade or doesn't answer adds nothing
-to the card.
+When a service's replicas were OOM killed in the last hour, its card shows **⚠ OOM**. When one
+replica restarted two or more times in the last hour without an OOM kill, the card shows
+**⚠ Restarting**. A single restart, such as `ployz service restart` or a rollback, shows nothing.
+When other issues share the card, the badge adds their count, as in **⚠ OOM +1**. The badge is
+amber, or red when the service is down. Click the ⚠ to open the service's Monitoring tab. A
+server that needs an upgrade or doesn't answer adds nothing to the card.
 
 ## See a server's metrics
 

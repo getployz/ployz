@@ -79,9 +79,15 @@ export function runtimeLine(
 /** What a Service's containers went through in the last hour, as its ⚠ says it. An OOM kill outranks a restart. */
 export type ContainerTrouble = "OOM" | "Restarting";
 
-export function containerTrouble(markers: readonly Pick<Marker, "kind">[]): ContainerTrouble | null {
+export function containerTrouble(markers: readonly Pick<Marker, "kind" | "server" | "replica">[]): ContainerTrouble | null {
   if (markers.some((marker) => marker.kind === "oom")) return "OOM";
-  return markers.some((marker) => marker.kind === "restart") ? "Restarting" : null;
+  const restarted = new Set<string>();
+  for (const marker of markers.filter((marker) => marker.kind === "restart")) {
+    const replica = `${marker.server.id}/${marker.replica}`;
+    if (restarted.has(replica)) return "Restarting";
+    restarted.add(replica);
+  }
+  return null;
 }
 
 /**
@@ -93,7 +99,7 @@ export type NodeIssues = { count: number; tone: "bad" | "warn"; monitoring: bool
 
 /**
  * What on a node the user can fix: a Service that's down or struggling, a failing healthcheck, domains that need them,
- * the hostname of an open uptime incident (`unreachable`), which is red, and an OOM kill or restart in the last hour
+ * the hostname of an open uptime incident (`unreachable`), which is red, and an OOM kill or crash loop in the last hour
  * (`trouble`), which is amber. Uptime adds nothing when the Service is already down, and shares one issue with a domain
  * needing attention on the same hostname.
  */

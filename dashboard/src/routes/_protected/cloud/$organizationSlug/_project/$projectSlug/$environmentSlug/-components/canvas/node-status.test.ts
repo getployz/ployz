@@ -131,10 +131,26 @@ describe("nodeIssues", () => {
 });
 
 describe("containerTrouble", () => {
-  it("names an OOM kill over a restart, and nothing for exits alone", () => {
-    expect(containerTrouble([{ kind: "restart" }, { kind: "oom" }])).toBe("OOM");
-    expect(containerTrouble([{ kind: "exit" }, { kind: "restart" }])).toBe("Restarting");
-    expect(containerTrouble([{ kind: "exit" }])).toBeNull();
+  const web1 = { id: "m1", name: "web-1" };
+  const web2 = { id: "m2", name: "web-2" };
+  const marker = (kind: "oom" | "exit" | "restart", replica: string, server = web1) => ({ kind, replica, server });
+
+  it("says nothing when each replica restarted once, as a requested restart or rollback does", () => {
+    expect(containerTrouble([marker("restart", "web-1"), marker("restart", "web-2"), marker("restart", "web-3")])).toBeNull();
+  });
+
+  it("says Restarting when one replica restarted twice", () => {
+    expect(containerTrouble([marker("restart", "web-1"), marker("restart", "web-2"), marker("restart", "web-1")])).toBe("Restarting");
+  });
+
+  it("tells apart same-named replicas on different Servers", () => {
+    expect(containerTrouble([marker("restart", "web-1", web1), marker("restart", "web-1", web2)])).toBeNull();
+  });
+
+  it("says OOM for one OOM kill, over any restarts, and nothing for exits alone", () => {
+    expect(containerTrouble([marker("oom", "web-1")])).toBe("OOM");
+    expect(containerTrouble([marker("restart", "web-1"), marker("restart", "web-1"), marker("oom", "web-2")])).toBe("OOM");
+    expect(containerTrouble([marker("exit", "web-1"), marker("exit", "web-1")])).toBeNull();
     expect(containerTrouble([])).toBeNull();
   });
 });
