@@ -9,6 +9,7 @@ export const nodeName = (node: string) => node.replace(/^(volumes|configs)\./, "
 /** A Setting `name`'s value as the Sync dialog and hints show it: a secret is hidden, a source in its own words. */
 export function rowText(value: JsonValue, name: string | null): string {
   if (name === "source") return sourceText(value);
+  if (name === "source.branch") return branchText(value);
   if (value === null) return "";
   if (Array.isArray(value)) return value.map((one) => rowText(one, null)).join(", ");
   const record = asRecord(value);
@@ -20,7 +21,7 @@ export function rowText(value: JsonValue, name: string | null): string {
 export function settingName(name: string) {
   const title = name.startsWith("env.") ? name.slice("env.".length)
     : name.startsWith("mounts.") ? `Mount of ${name.slice("mounts.".length)}`
-    : name === "name" ? "Name" : name === "source" ? "Source" : settingTitle(name) ?? name;
+    : name === "name" ? "Name" : name === "source" ? "Source" : name === "source.branch" ? "Branch" : settingTitle(name) ?? name;
   return { name: title, variable: name.startsWith("env.") };
 }
 
@@ -31,14 +32,24 @@ export const SOURCE_FIELDS = [["image", "image"], ["repository", "repository"], 
  * A Service's source as the Store shows it, without its repository's ID, authority or stored version. History holds
  * the credentials themselves; a change row holds them by presence and leaves the branch to its own row.
  */
+const Branch = Schema.Union([
+  Schema.Struct({ type: Schema.Literal("connected"), name: Schema.String }),
+  Schema.Struct({ type: Schema.Literal("disconnected") }),
+]);
+const decodeBranch = Schema.decodeUnknownOption(Branch);
+const branchName = (branch: typeof Branch.Type) => branch.type === "connected" ? branch.name : "no branch";
+
+/** The `source.branch` row's value in words: the branch a repository follows, or none. */
+export function branchText(value: JsonValue): string {
+  if (value === null) return "";
+  return Option.match(decodeBranch(value), { onNone: () => JSON.stringify(value), onSome: branchName });
+}
+
 const Source = Schema.Union([
   Schema.Struct({ type: Schema.Literal("image"), image: Schema.String,
     credentials: Schema.optional(Schema.Union([Schema.Boolean, Schema.Struct({ type: Schema.Literals(["none", "configured"]) })])) }),
   Schema.Struct({ type: Schema.Literal("git"), repository: Schema.String, rootDir: Schema.optional(Schema.String),
-    branch: Schema.optional(Schema.Union([
-      Schema.Struct({ type: Schema.Literal("connected"), name: Schema.String }),
-      Schema.Struct({ type: Schema.Literal("disconnected") }),
-    ])) }),
+    branch: Schema.optional(Branch) }),
   Schema.Struct({ type: Schema.Literal("empty"), rootDir: Schema.optional(Schema.String) }),
 ]);
 const decodeSource = Schema.decodeUnknownOption(Source);
@@ -59,7 +70,7 @@ function sourceParts(source: typeof Source.Type) {
     }
     case "git":
       if (source.branch === undefined) return { from: source.repository, part: "", rest: inRoot(source.rootDir) };
-      return { from: `${source.repository} · `, part: source.branch.type === "connected" ? source.branch.name : "no branch", rest: inRoot(source.rootDir) };
+      return { from: `${source.repository} · `, part: branchName(source.branch), rest: inRoot(source.rootDir) };
     case "empty":
       return { from: "None", part: "", rest: inRoot(source.rootDir) };
   }

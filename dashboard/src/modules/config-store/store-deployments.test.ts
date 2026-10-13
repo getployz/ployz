@@ -82,6 +82,13 @@ it("lets a deployed Volume's row discard alone when the Store can restore it", (
   expect(volume?.rows.map((row) => [row.path, row.canDiscard])).toEqual([["volumes.store.name", true], ["volumes.store.storage", false]]);
 });
 
+it("words a branch change as the branch, not its stored object", () => {
+  const [web] = changeGroups({ ...diff, changes: [{ type: "service", id: "s1", row: "s1:node" as RowId, name: "web", lifecycle: "update", comparison: "head", data: null, restarts: [], settings: [
+    { path: "web.source.branch", kind: "update", before: { type: "connected", name: "main" }, after: { type: "connected", name: "release" }, canRestore: true, row: null },
+  ] }] }, services);
+  expect(web?.rows.map((row) => [row.label, row.currentValue, row.newValue])).toEqual([["Branch", "main", "release"]]);
+});
+
 it("words a source change readably, repeating only the tag when that is all that moved", () => {
   // A row's cell, as core's `source_cell` writes it: credentials by presence, the branch on its own row.
   const source = (before: JsonValue, after: JsonValue) => ({ path: "web.source", kind: "update" as const, before, after, canRestore: true, row: null });

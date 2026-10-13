@@ -33,6 +33,11 @@ describe("the Sync dialog over the Store", () => {
     ]);
   });
 
+  it("words a branch row as the branch, not its stored object", () => {
+    const branch = row("a:source.branch", "api", "source.branch", { from: { type: "connected", name: "release" }, into: { type: "disconnected" } });
+    expect(syncLine(branch, "production")).toEqual({ name: "Branch", variable: false, badge: null, before: "no branch", after: "release" });
+  });
+
   it("groups the rows by node in the Store's order", () => {
     expect(syncSections([image, cache, logLevel, cacheMode]).map(({ node, rows }) => [node, rows.map((one) => one.row)])).toEqual([
       ["api", ["a:source", "a:variables.LOG_LEVEL"]],

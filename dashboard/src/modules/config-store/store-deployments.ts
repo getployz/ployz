@@ -5,7 +5,7 @@ import type {
 import { Option, Schema } from "effect";
 import { settingTitle } from "./catalog";
 import { healthcheckOf } from "./healthcheck";
-import { sourceChange } from "./store-branches";
+import { branchText, sourceChange } from "./store-branches";
 import { volumeStorageText } from "./store-volumes";
 
 /** A Config file in a change. `content` is missing where the reader may not see it: Ployz support, unless the Organization shows it. */
@@ -97,9 +97,10 @@ export function changeGroups(diff: DiffView, services: readonly ServiceListing[]
       const title = settingTitle(setting);
       const label = row.configName ? `Config mount ${row.configName}`
         : setting.startsWith("configs.@") ? "Config mount"
-        : setting === "name" ? "Name" : title ?? untitledLabel(node.type, setting);
+        : setting === "name" ? "Name" : setting === "source.branch" ? "Branch" : title ?? untitledLabel(node.type, setting);
       const variable = node.type === "service" && setting.startsWith("env.");
-      const [before, after] = setting === "source" ? sourceChange(row.before, row.after) : [shownValue(row.before), shownValue(row.after)];
+      const [before, after] = setting === "source" ? sourceChange(row.before, row.after)
+        : setting === "source.branch" ? [branchText(row.before), branchText(row.after)] : [shownValue(row.before), shownValue(row.after)];
       const file = (value: JsonValue) => value === null ? null : Option.getOrThrowWith(decodeFile(value),
         () => new Error(`Could not read Config file comparison for ${row.path}.`));
       const configFile = node.type === "config" && setting.startsWith("files.") ? { before: file(row.before), after: file(row.after) } : undefined;
