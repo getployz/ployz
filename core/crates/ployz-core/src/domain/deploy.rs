@@ -754,6 +754,10 @@ impl Display for MachineAction {
 pub enum HealthFailure {
     Cancelled,
     TimedOut {
+        /// The wait the Container had to pass its first check in.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        deadline_millis: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         last_check: Option<LastHealthCheck>,
@@ -770,8 +774,18 @@ impl Display for HealthFailure {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let last_check = match self {
             Self::Cancelled => return f.write_str("cancelled"),
-            Self::TimedOut { last_check } => {
-                f.write_str("timed out")?;
+            Self::TimedOut {
+                deadline_millis,
+                last_check,
+            } => {
+                match deadline_millis {
+                    Some(millis) => write!(
+                        f,
+                        "did not become healthy within {:?}",
+                        std::time::Duration::from_millis(*millis)
+                    )?,
+                    None => f.write_str("timed out")?,
+                }
                 last_check
             }
             Self::Runtime {

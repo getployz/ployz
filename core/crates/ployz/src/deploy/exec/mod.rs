@@ -7,7 +7,7 @@ use ployz_core::{
     HealthFailure, HealthVerdict, HookFailure, InspectContainerRequest, ListContainersRequest,
     MachineAction, MachineId, MachineTarget, MembershipObservation, Namespace, NewContainer,
     OperationPhase, QualifiedService, RemoveVolumeRequest, ResolvedServiceSpec, RpcError,
-    RpcErrorCode, RunTarget, SlotKey, StopOptions, UpdateOrder, op, settle_deadline,
+    RpcErrorCode, RunTarget, SlotKey, StopOptions, UpdateOrder, op,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc::UnboundedSender;
@@ -722,7 +722,8 @@ pub(in crate::deploy) async fn move_container<C: MachineOperations>(
     let new = match started_container(started, cancellation) {
         Ok(new) => new,
         Err(error) => {
-            let replacement_removed = !global && discard_attempt(&client, to, slot).await;
+            let retry_adopts = global && !cancellation.is_cancelled();
+            let replacement_removed = !retry_adopts && discard_attempt(&client, to, slot).await;
             return Err(MoveContainerError::NotServing {
                 error,
                 replacement_removed,
@@ -777,7 +778,8 @@ async fn start<C: MachineOperations>(
         // A slot held by another spec never held this attempt's Container.
         Err(error) => error.code != RpcErrorCode::Conflict,
     };
-    if cleanup && !keyed_by_spec {
+    let retry_adopts = keyed_by_spec && !cancellation.is_cancelled();
+    if cleanup && !retry_adopts {
         discard_attempt(client, machine_id, slot).await;
     }
     started_container(started, cancellation)
@@ -801,9 +803,6 @@ async fn discard_attempt<C: MachineOperations>(
         Ok(Ok(_))
     )
 }
-
-/// How long a Settled creation may spend pulling its image before the health wait.
-const IMAGE_PULL_BUDGET: Duration = Duration::from_secs(300);
 
 #[expect(
     clippy::too_many_arguments,
@@ -831,25 +830,17 @@ async fn run_new<C: MachineOperations>(
     };
     let ensured = client.ensure_container(machine_id, want);
     let ensured = match answer {
-        AnswerWhen::Started => ensured.await?,
+        AnswerWhen::Started => ensured.await,
         // A cancel abandons the Machine's health wait; the caller then discards
         // whatever the slot holds.
-        AnswerWhen::Settled => {
-            let budget = IMAGE_PULL_BUDGET + settle_deadline(spec) + TARGET_RPC_TIMEOUT;
-            let answered = tokio::select! {
-                answered = tokio::time::timeout(budget, ensured) => answered.ok(),
-                () = cancellation.cancelled() => return Err(unavailable(format!(
-                    "the Deploy was cancelled while Machine {machine_id} waited on health"
-                ))),
-            };
-            answered.ok_or_else(|| {
-                unavailable(format!(
-                    "Machine {machine_id} did not answer within {}s",
-                    budget.as_secs()
-                ))
-            })??
-        }
-    };
+        AnswerWhen::Settled => tokio::select! {
+            answered = ensured => answered,
+            () = cancellation.cancelled() => return Err(unavailable(format!(
+                "the Deploy was cancelled while Machine {machine_id} waited on health"
+            ))),
+        },
+    }
+    .map_err(|error| did_not_answer(machine_id, error))?;
     match ensured {
         (ContainerNow::Present(observed), health) => {
             progress.set_display_name(index, observed.display_name.clone());
@@ -864,6 +855,18 @@ async fn run_new<C: MachineOperations>(
             details: serde_json::Value::Null,
             cause: Vec::new(),
         }),
+    }
+}
+
+fn did_not_answer(machine_id: &MachineId, error: RpcError) -> RpcError {
+    if error.code != RpcErrorCode::Unavailable {
+        return error;
+    }
+    let mut cause = vec![error.message];
+    cause.extend(error.cause);
+    RpcError {
+        cause,
+        ..unavailable(format!("Machine {machine_id} did not answer"))
     }
 }
 

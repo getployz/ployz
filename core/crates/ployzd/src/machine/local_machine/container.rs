@@ -496,11 +496,20 @@ impl LocalMachine {
                         last_check,
                     });
                 }
-                HealthPoll::Failed(HealthFailure::TimedOut { last_check }) => {
-                    return Ok(HealthVerdict::TimedOut { last_check });
+                HealthPoll::Failed(HealthFailure::TimedOut {
+                    deadline_millis,
+                    last_check,
+                }) => {
+                    return Ok(HealthVerdict::TimedOut {
+                        deadline_millis,
+                        last_check,
+                    });
                 }
                 HealthPoll::Failed(HealthFailure::Cancelled) => {
-                    return Ok(HealthVerdict::TimedOut { last_check: None });
+                    return Ok(HealthVerdict::TimedOut {
+                        deadline_millis: None,
+                        last_check: None,
+                    });
                 }
             };
             tokio::time::sleep_until(started + (elapsed + HEALTH_POLL_INTERVAL).min(wake)).await;
@@ -509,6 +518,15 @@ impl LocalMachine {
 
     async fn converge_container(&self, want: ContainerWant) -> Result<EnsuredContainer, Error> {
         let locator = want_locator(&want);
+        if matches!(
+            want,
+            ContainerWant::Gone {
+                container: ContainerLocator::Key(_),
+                ..
+            }
+        ) {
+            self.wait_for_admitted_work().await;
+        }
         let now = self.container_now(&locator).await?;
         let refusal = match plan_container(want, &now, &self.record().phase()) {
             ContainerStep::Done => {
@@ -593,6 +611,10 @@ impl LocalMachine {
             None => EnsuredContainer::Ensured { now, health: None },
             Some(refusal) => EnsuredContainer::Refused { now, refusal },
         })
+    }
+
+    async fn wait_for_admitted_work(&self) {
+        drop(self.owner.admission_lock().write_owned().await);
     }
 
     async fn container_now(&self, locator: &ContainerLocator) -> Result<ContainerNow, Error> {

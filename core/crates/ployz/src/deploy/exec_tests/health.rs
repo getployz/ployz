@@ -1,24 +1,49 @@
 use super::*;
 
 #[tokio::test(start_paused = true)]
-async fn a_settled_start_on_a_machine_that_never_answers_fails_within_its_budget() {
+async fn a_settled_start_waits_out_a_slow_pull() {
     let machine = machine('1');
-    let started_spec = spec(Some(0), Some(healthcheck()), None);
-    let budget = Duration::from_secs(300)
-        + ployz_core::settle_deadline(&started_spec)
-        + crate::connect::TARGET_RPC_TIMEOUT;
-    let plan = vec![run(&machine, started_spec, false)];
-    let client = Scripted::new(vec![
-        Step(
+    let plan = vec![run(
+        &machine,
+        spec(Some(0), Some(healthcheck()), None),
+        false,
+    )];
+    let client = Scripted::new(vec![Step(
+        Call::Run(machine, ContainerKind::ServiceContainer),
+        Reply::CreatedAfter(container('a'), Duration::from_secs(30 * 60)),
+    )]);
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    client.assert_done();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_machine_that_stops_answering_fails_the_start_naming_the_machine() {
+    let machine = machine('1');
+    let plan = vec![run(
+        &machine,
+        spec(Some(0), Some(healthcheck()), None),
+        false,
+    )];
+    let lost = || {
+        failed_unavailable(
             Call::Run(machine, ContainerKind::ServiceContainer),
-            Reply::Pending,
-        ),
-        Step(
-            Call::DiscardSlot(machine, ContainerKind::ServiceContainer),
-            Reply::Pending,
-        ),
-    ]);
-    let started = tokio::time::Instant::now();
+            "deadline has elapsed",
+        )
+    };
+    let attempts =
+        usize::try_from(RESTART_WAIT.as_millis() / RESTART_POLL.as_millis()).unwrap() + 1;
+    let mut steps: Vec<Step> = std::iter::repeat_with(lost).take(attempts).collect();
+    steps.push(ok(Call::DiscardSlot(
+        machine,
+        ContainerKind::ServiceContainer,
+    )));
+    let client = Scripted::new(steps);
 
     let DeployOutcome::Failed {
         failed: FailedOperation::Operation { error, .. },
@@ -28,20 +53,12 @@ async fn a_settled_start_on_a_machine_that_never_answers_fails_within_its_budget
         panic!("the deploy should fail");
     };
 
-    assert_eq!(
-        started.elapsed(),
-        budget + crate::connect::TARGET_RPC_TIMEOUT,
-        "the silent Machine gets its budget, then one bounded cleanup attempt"
-    );
     let ExecutionError::Machine { error, .. } = error else {
         panic!("a silent Machine fails the start as a Machine error, got {error:?}");
     };
     assert_eq!(error.code, RpcErrorCode::Unavailable);
-    assert!(
-        error.message.contains(&machine.to_string()),
-        "{}",
-        error.message
-    );
+    assert_eq!(error.message, format!("Machine {machine} did not answer"));
+    assert_eq!(error.cause, vec!["deadline has elapsed".to_owned()]);
     client.assert_done();
 }
 
@@ -340,7 +357,13 @@ async fn a_timed_out_verdict_fails_the_start() {
     )];
     let client = Scripted::new(vec![Step(
         Call::Run(machine, ContainerKind::ServiceContainer),
-        Reply::Settled(new, HealthVerdict::TimedOut { last_check: None }),
+        Reply::Settled(
+            new,
+            HealthVerdict::TimedOut {
+                deadline_millis: None,
+                last_check: None,
+            },
+        ),
     )]);
 
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
@@ -351,7 +374,10 @@ async fn a_timed_out_verdict_fails_the_start() {
             failed: FailedOperation::Operation {
                 error: ExecutionError::Health {
                     container_id,
-                    failure: HealthFailure::TimedOut { last_check: None },
+                    failure: HealthFailure::TimedOut {
+                        deadline_millis: None,
+                        last_check: None,
+                    },
                 },
                 ..
             },

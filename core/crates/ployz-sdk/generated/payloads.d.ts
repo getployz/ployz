@@ -1942,11 +1942,15 @@ truncated: boolean, };
 
 export type Health = "starting" | "healthy" | "unhealthy";
 
-export type HealthFailure = { "type": "cancelled" } | { "type": "timed_out", last_check?: LastHealthCheck, } | { "type": "runtime", observation: ContainerRuntimeObservation, last_check?: LastHealthCheck, };
+export type HealthFailure = { "type": "cancelled" } | { "type": "timed_out",
+/**
+ * The wait the Container had to pass its first check in.
+ */
+deadline_millis?: number, last_check?: LastHealthCheck, } | { "type": "runtime", observation: ContainerRuntimeObservation, last_check?: LastHealthCheck, };
 
 export type HealthObservation = "not_configured" | "starting" | "healthy" | "unhealthy" | "failing" | "stopping" | string;
 
-export type HealthVerdict = { "verdict": "healthy" } | { "verdict": "failed", observation: ContainerRuntimeObservation, last_check?: LastHealthCheck, } | { "verdict": "timed_out", last_check?: LastHealthCheck, };
+export type HealthVerdict = { "verdict": "healthy" } | { "verdict": "failed", observation: ContainerRuntimeObservation, last_check?: LastHealthCheck, } | { "verdict": "timed_out", deadline_millis?: number, last_check?: LastHealthCheck, };
 
 export type HealthcheckCommand = [string, ...string[]];
 

@@ -1023,6 +1023,9 @@ pub enum HealthVerdict {
     TimedOut {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
+        deadline_millis: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         last_check: Option<crate::LastHealthCheck>,
     },
 }
@@ -1040,7 +1043,13 @@ impl HealthVerdict {
                 observation,
                 last_check,
             }),
-            Self::TimedOut { last_check } => Some(crate::HealthFailure::TimedOut { last_check }),
+            Self::TimedOut {
+                deadline_millis,
+                last_check,
+            } => Some(crate::HealthFailure::TimedOut {
+                deadline_millis,
+                last_check,
+            }),
         }
     }
 }

@@ -119,3 +119,72 @@ async fn cancelled_create_waits_for_the_one_shot_then_removes() {
     ));
     client.assert_done();
 }
+
+async fn cancel_while_creating(
+    plan: Vec<DeployOperation>,
+    client: &Scripted,
+) -> DeployOutcome<ExecutionError> {
+    let cancellation = CancellationToken::new();
+    let execute = execute_with(&plan, client, &cancellation);
+    tokio::pin!(execute);
+    tokio::select! {
+        outcome = &mut execute => panic!("create returned before cancel: {outcome:?}"),
+        () = tokio::time::sleep(std::time::Duration::from_millis(1)) => {}
+    }
+    cancellation.cancel();
+    tokio::time::timeout(std::time::Duration::from_secs(1), execute)
+        .await
+        .expect("a cancelled Settled create returns without its answer")
+}
+
+fn cancelled(outcome: &DeployOutcome<ExecutionError>) -> bool {
+    matches!(
+        outcome,
+        DeployOutcome::Failed {
+            failed: FailedOperation::Operation {
+                error: ExecutionError::Cancelled,
+                ..
+            },
+            ..
+        }
+    )
+}
+
+#[tokio::test(start_paused = true)]
+async fn cancelled_settled_create_removes_its_slot() {
+    let machine = machine('1');
+    let created_id = container('a');
+    let plan = vec![run(&machine, spec(None, None, None), false)];
+    let client = Scripted::new(vec![
+        created_later(
+            Call::Run(machine, ContainerKind::ServiceContainer),
+            &created_id,
+        ),
+        ok(Call::DiscardSlot(machine, ContainerKind::ServiceContainer)),
+    ]);
+
+    let outcome = cancel_while_creating(plan, &client).await;
+
+    assert!(cancelled(&outcome), "{outcome:?}");
+    client.assert_done();
+}
+
+#[tokio::test(start_paused = true)]
+async fn cancelled_global_health_wait_removes_the_new_container() {
+    let machine = machine('1');
+    let mut global = spec(None, Some(healthcheck()), None);
+    global.mode = ployz_core::ServiceMode::Global;
+    let plan = vec![run(&machine, global, false)];
+    let client = Scripted::new(vec![
+        Step(
+            Call::Run(machine, ContainerKind::ServiceContainer),
+            Reply::Pending,
+        ),
+        ok(Call::DiscardSlot(machine, ContainerKind::ServiceContainer)),
+    ]);
+
+    let outcome = cancel_while_creating(plan, &client).await;
+
+    assert!(cancelled(&outcome), "{outcome:?}");
+    client.assert_done();
+}

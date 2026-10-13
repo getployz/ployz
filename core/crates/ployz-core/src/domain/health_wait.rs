@@ -111,12 +111,17 @@ pub fn classify_health(
                 });
             };
             if elapsed >= health_deadline {
-                HealthPoll::Failed(HealthFailure::TimedOut {
-                    last_check: last_check.cloned(),
-                })
+                timed_out(health_deadline, last_check)
             } else {
                 HealthPoll::PendingUntil(health_deadline)
             }
+        }
+        ContainerRuntimeObservation::Running {
+            health: HealthObservation::Unhealthy,
+        } if let Some(health_deadline) = health_deadline
+            && elapsed >= health_deadline =>
+        {
+            timed_out(health_deadline, last_check)
         }
         ContainerRuntimeObservation::Restarting | ContainerRuntimeObservation::Exited { .. }
             if expectation == HealthExpectation::ContainerReady =>
@@ -146,6 +151,13 @@ pub fn classify_health(
             }
         }
     }
+}
+
+fn timed_out(deadline: Duration, last_check: Option<&LastHealthCheck>) -> HealthPoll {
+    HealthPoll::Failed(HealthFailure::TimedOut {
+        deadline_millis: u64::try_from(deadline.as_millis()).ok(),
+        last_check: last_check.cloned(),
+    })
 }
 
 #[must_use]
@@ -311,14 +323,154 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn the_spec_healthcheck_sets_the_deadline_without_a_start_clock() {
-        let healthcheck = HealthcheckSpec::Http(crate::HttpHealthcheck {
+    fn http_check(timeout_seconds: u16) -> HealthcheckSpec {
+        HealthcheckSpec::Http(crate::HttpHealthcheck {
             path: "/health".into(),
             port: std::num::NonZeroU16::new(8080).unwrap(),
-            timeout_seconds: 300,
-        });
-        assert_eq!(healthcheck.deadline(), Some(Duration::from_secs(300)));
-        assert_eq!(HealthcheckSpec::Disabled.deadline(), None);
+            timeout_seconds,
+        })
+    }
+
+    fn configured_check(deadline_millis: u64) -> HealthcheckSpec {
+        HealthcheckSpec::Configured(crate::ConfiguredHealthcheck {
+            test: crate::HealthcheckCommand::parse(["CMD", "true"]).unwrap(),
+            interval_millis: None,
+            timeout_millis: None,
+            start_period_millis: None,
+            start_interval_millis: None,
+            retries: None,
+            deadline_millis: Some(deadline_millis),
+        })
+    }
+
+    fn service_spec(
+        healthcheck: Option<HealthcheckSpec>,
+        monitor_millis: Option<u64>,
+    ) -> ResolvedServiceSpec {
+        serde_json::from_value(serde_json::json!({
+            "service_id": crate::ServiceId::random(),
+            "name": "api",
+            "mode": { "mode": "replicated", "replicas": 1 },
+            "container": {
+                "image": "example.test/api",
+                "pull_policy": "missing",
+                "healthcheck": healthcheck,
+            },
+            "update": { "order": "start_first", "monitor_millis": monitor_millis },
+        }))
+        .unwrap()
+    }
+
+    fn details(
+        runtime: ContainerRuntimeObservation,
+        effective_healthcheck: Option<HealthcheckSpec>,
+        last_check: Option<LastHealthCheck>,
+    ) -> ContainerDetails {
+        let container = ContainerObservation::try_from(crate::ContainerObservationParts {
+            container_id: crate::ContainerId::parse("a".repeat(64)).unwrap(),
+            display_name: "api".into(),
+            created_at_unix_nanos: 0,
+            machine_id: crate::MachineId::random(),
+            namespace: crate::Namespace::parse("app").unwrap(),
+            kind: crate::ContainerKind::ServiceContainer,
+            runtime,
+            effective_healthcheck,
+            resolved_spec: service_spec(None, None),
+            address: None,
+            labels: Default::default(),
+        })
+        .unwrap();
+        ContainerDetails {
+            container,
+            environment: None,
+            image_id: None,
+            last_check,
+        }
+    }
+
+    #[test]
+    fn an_http_check_never_passed_by_its_deadline_times_out_naming_the_deadline() {
+        let check = http_check(30);
+        let last_check = LastHealthCheck::HttpStatus { status: 404 };
+        let overdue = details(
+            running(HealthObservation::Unhealthy),
+            Some(check.clone()),
+            Some(last_check.clone()),
+        );
+        assert_eq!(
+            ready_poll(Some(&check), MONITOR, &overdue, Duration::from_secs(10)),
+            (
+                HealthPoll::PendingUntil(Duration::from_secs(30)),
+                Duration::from_secs(30)
+            )
+        );
+        let (poll, _) = ready_poll(Some(&check), MONITOR, &overdue, Duration::from_secs(30));
+        assert_eq!(
+            poll,
+            HealthPoll::Failed(HealthFailure::TimedOut {
+                deadline_millis: Some(30_000),
+                last_check: Some(last_check),
+            })
+        );
+    }
+
+    #[test]
+    fn a_docker_check_reported_unhealthy_fails_once_the_monitor_window_ends() {
+        let check = configured_check(60_000);
+        let unhealthy = details(
+            running(HealthObservation::Unhealthy),
+            Some(check.clone()),
+            None,
+        );
+        assert_eq!(
+            ready_poll(Some(&check), MONITOR, &unhealthy, Duration::from_secs(1)),
+            (HealthPoll::PendingUntil(MONITOR), DEADLINE)
+        );
+        assert!(matches!(
+            ready_poll(Some(&check), MONITOR, &unhealthy, MONITOR).0,
+            HealthPoll::Failed(HealthFailure::Runtime { .. })
+        ));
+    }
+
+    #[test]
+    fn without_a_healthcheck_the_wait_is_the_monitor_window() {
+        let unchecked = details(running(HealthObservation::NotConfigured), None, None);
+        assert_eq!(
+            ready_poll(None, MONITOR, &unchecked, Duration::from_secs(1)),
+            (HealthPoll::PendingUntil(MONITOR), MONITOR)
+        );
+        assert_eq!(
+            ready_poll(None, MONITOR, &unchecked, MONITOR),
+            (HealthPoll::Complete, MONITOR)
+        );
+    }
+
+    #[test]
+    fn an_image_check_without_timings_gets_the_default_deadline() {
+        let starting = details(running(HealthObservation::Starting), None, None);
+        assert_eq!(
+            ready_poll(None, MONITOR, &starting, Duration::ZERO).1,
+            healthcheck_deadline(None)
+        );
+    }
+
+    #[test]
+    fn settle_deadline_is_the_longer_of_the_health_deadline_and_the_monitor() {
+        assert_eq!(
+            settle_deadline(&service_spec(Some(http_check(300)), None)),
+            Duration::from_secs(300)
+        );
+        assert_eq!(
+            settle_deadline(&service_spec(Some(configured_check(2_000)), Some(10_000))),
+            Duration::from_secs(10)
+        );
+        assert_eq!(
+            settle_deadline(&service_spec(Some(HealthcheckSpec::Disabled), None)),
+            DEFAULT_HEALTH_MONITOR
+        );
+        assert_eq!(
+            settle_deadline(&service_spec(None, None)),
+            healthcheck_deadline(None)
+        );
     }
 }

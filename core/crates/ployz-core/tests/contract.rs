@@ -1605,6 +1605,10 @@ fn ensure_container_names_the_want_the_observation_and_the_refusal_on_the_wire()
         panic!("a new running want decodes as one");
     };
     assert_eq!(settled.answer, AnswerWhen::Settled);
+    assert_eq!(
+        serde_json::to_value(&settled).unwrap(),
+        json!({ "slot": slot_json, "resolved_spec": spec, "answer": "settled" })
+    );
     let request = op::EnsureContainer::into_request(running);
     assert_eq!(request.encode().unwrap().decode_request().unwrap(), request);
 
@@ -1660,6 +1664,15 @@ fn ensure_container_names_the_want_the_observation_and_the_refusal_on_the_wire()
     );
     let response = RpcResponse::from(refused.clone());
     assert_eq!(response.decode::<op::EnsureContainer>().unwrap(), refused);
+    let before_health: EnsuredContainer = serde_json::from_value(json!({
+        "status": "ensured",
+        "now": { "is": "absent", "of": { "key": slot_json } }
+    }))
+    .unwrap();
+    let EnsuredContainer::Ensured { health, .. } = before_health else {
+        panic!("an ensured answer decodes as one");
+    };
+    assert_eq!(health, None);
     let later: ContainerRefusal = serde_json::from_value(json!({
         "reason": "quota_exhausted",
         "message": "a reason this build does not know"

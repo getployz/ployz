@@ -71,6 +71,7 @@ enum Reply {
     Created(ContainerId),
     Settled(ContainerId, HealthVerdict),
     CreatedLater(ContainerId),
+    CreatedAfter(ContainerId, std::time::Duration),
     Observed(
         ContainerRuntimeObservation,
         Option<ployz_core::HealthcheckSpec>,
@@ -148,6 +149,7 @@ impl MachineOperations for Scripted {
             | Reply::Created(_)
             | Reply::Settled(..)
             | Reply::CreatedLater(_)
+            | Reply::CreatedAfter(..)
             | Reply::Observed(..)
             | Reply::ObservedIngress(_)
             | Reply::Pending => {
@@ -218,6 +220,10 @@ impl MachineOperations for Scripted {
                 tokio::time::sleep(std::time::Duration::from_millis(5)).await;
                 Ok((present(&container_id), healthy))
             }
+            Reply::CreatedAfter(container_id, delay) => {
+                tokio::time::sleep(delay).await;
+                Ok((present(&container_id), healthy))
+            }
             Reply::Ok => Ok((ContainerNow::Absent { of }, None)),
             Reply::Error(error) => Err(error),
             Reply::Pending => std::future::pending().await,
@@ -266,7 +272,8 @@ impl MachineOperations for Scripted {
             | Reply::Listed(_)
             | Reply::Created(_)
             | Reply::Settled(..)
-            | Reply::CreatedLater(_) => {
+            | Reply::CreatedLater(_)
+            | Reply::CreatedAfter(..) => {
                 panic!("scripted inspect requires Observed or Error")
             }
         }
@@ -285,6 +292,7 @@ fn unit(reply: Reply) -> Result<(), RpcError> {
         | Reply::Created(_)
         | Reply::Settled(..)
         | Reply::CreatedLater(_)
+        | Reply::CreatedAfter(..)
         | Reply::Observed(..)
         | Reply::ObservedIngress(_)
         | Reply::Pending => {

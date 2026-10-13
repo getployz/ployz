@@ -769,13 +769,23 @@ mod settled {
         }
     }
 
-    fn settled_run(deadline_millis: u64) -> ContainerWant {
-        let mut new: NewContainer = serde_json::from_value(json!({
+    fn new_container(answer: &str) -> NewContainer {
+        serde_json::from_value(json!({
             "slot": {"namespace":"app", "kind":"service_container", "creation_key":"s1"},
             "resolved_spec": spec_with_sources(vec![]),
-            "answer": "settled",
+            "answer": answer,
         }))
-        .unwrap();
+        .unwrap()
+    }
+
+    fn run(new: NewContainer) -> ContainerWant {
+        ContainerWant::Running {
+            container: RunTarget::New(new),
+        }
+    }
+
+    fn settled_run(deadline_millis: u64) -> ContainerWant {
+        let mut new = new_container("settled");
         new.resolved_spec.update.monitor_millis = Some(0);
         new.resolved_spec.container.healthcheck =
             Some(HealthcheckSpec::Configured(ConfiguredHealthcheck {
@@ -787,9 +797,7 @@ mod settled {
                 retries: Some(1),
                 deadline_millis: Some(deadline_millis),
             }));
-        ContainerWant::Running {
-            container: RunTarget::New(new),
-        }
+        run(new)
     }
 
     async fn report_once_started(fake: &FakeDocker, state: Value) {
@@ -810,15 +818,16 @@ mod settled {
         }
     }
 
-    async fn ensure_reporting(deadline_millis: u64, state: Value) -> EnsuredContainer {
+    async fn ensure_reporting(want: ContainerWant, state: Value) -> (EnsuredContainer, Duration) {
         let Settling {
             local,
             fake,
             data_dir,
         } = settling().await;
+        let started = std::time::Instant::now();
         let ensure = tokio::spawn({
             let local = local.clone();
-            async move { local.ensure_container(settled_run(deadline_millis)).await }
+            async move { local.ensure_container(want).await }
         });
         report_once_started(&fake, state).await;
         let reply = tokio::time::timeout(Duration::from_secs(10), ensure)
@@ -826,14 +835,147 @@ mod settled {
             .expect("a Settled ensure answers by its deadline")
             .unwrap()
             .unwrap();
+        let waited = started.elapsed();
         std::fs::remove_dir_all(data_dir).unwrap();
-        reply
+        (reply, waited)
+    }
+
+    #[tokio::test]
+    async fn ensure_settled_answers_healthy_once_the_check_passes() {
+        let (reply, _) = ensure_reporting(
+            settled_run(60_000),
+            json!({"Status":"running", "Health":{"Status":"healthy"}}),
+        )
+        .await;
+
+        assert!(
+            matches!(
+                reply,
+                EnsuredContainer::Ensured {
+                    now: ContainerNow::Present(_),
+                    health: Some(HealthVerdict::Healthy),
+                }
+            ),
+            "expected a Healthy verdict, got {reply:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn ensure_started_answers_without_waiting_for_health() {
+        let Settling {
+            local, data_dir, ..
+        } = settling().await;
+        let mut new = new_container("started");
+        new.resolved_spec.update.monitor_millis = Some(60_000);
+
+        let reply = tokio::time::timeout(Duration::from_secs(5), local.ensure_container(run(new)))
+            .await
+            .expect("a Started ensure answers without waiting out the monitor")
+            .unwrap();
+
+        assert!(
+            matches!(
+                reply,
+                EnsuredContainer::Ensured {
+                    now: ContainerNow::Present(_),
+                    health: None,
+                }
+            ),
+            "expected no verdict, got {reply:?}"
+        );
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn ensure_settled_without_a_healthcheck_waits_the_default_monitor() {
+        let (reply, waited) =
+            ensure_reporting(run(new_container("settled")), json!({"Status":"running"})).await;
+
+        assert!(
+            matches!(
+                reply,
+                EnsuredContainer::Ensured {
+                    now: ContainerNow::Present(_),
+                    health: Some(HealthVerdict::Healthy),
+                }
+            ),
+            "expected a Healthy verdict, got {reply:?}"
+        );
+        assert!(
+            waited >= Duration::from_secs(5) && waited < Duration::from_secs(6),
+            "waited {waited:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn removal_by_slot_waits_for_the_create_that_fills_it() {
+        let Settling {
+            local,
+            fake,
+            data_dir,
+        } = settling().await;
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let held = tokio::spawn({
+            let local = local.clone();
+            let (started, release) = (Arc::clone(&started), Arc::clone(&release));
+            async move { local.hold_mutation_for_test(started, release).await }
+        });
+        started.notified().await;
+        let create = tokio::spawn({
+            let local = local.clone();
+            async move { local.ensure_container(run(new_container("started"))).await }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let new = new_container("started");
+        let gone = tokio::spawn({
+            let local = local.clone();
+            async move {
+                local
+                    .ensure_container(ContainerWant::Gone {
+                        container: ployz_core::ContainerLocator::Key(new.slot),
+                        drain: ployz_core::Drain::NONE,
+                        anonymous_volumes: ployz_core::AnonymousVolumes::Remove,
+                    })
+                    .await
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            !gone.is_finished(),
+            "the removal answered before the create ran"
+        );
+
+        release.notify_one();
+        held.await.unwrap().unwrap();
+        create.await.unwrap().unwrap();
+        let reply = gone.await.unwrap().unwrap();
+
+        assert!(
+            matches!(
+                reply,
+                EnsuredContainer::Ensured {
+                    now: ContainerNow::Absent { .. },
+                    ..
+                }
+            ),
+            "expected the slot empty, got {reply:?}"
+        );
+        assert!(
+            fake.named_containers
+                .as_ref()
+                .unwrap()
+                .lock()
+                .unwrap()
+                .is_empty()
+        );
+        std::fs::remove_dir_all(data_dir).unwrap();
     }
 
     #[tokio::test]
     async fn ensure_settled_answers_failed_when_health_fails() {
-        let reply = ensure_reporting(
-            60_000,
+        let (reply, _) = ensure_reporting(
+            settled_run(60_000),
             json!({"Status":"running", "Health":{"Status":"unhealthy"}}),
         )
         .await;
@@ -855,9 +997,8 @@ mod settled {
 
     #[tokio::test]
     async fn ensure_settled_answers_timed_out_at_deadline() {
-        let started = std::time::Instant::now();
-        let reply = ensure_reporting(
-            1_500,
+        let (reply, waited) = ensure_reporting(
+            settled_run(1_500),
             json!({"Status":"running", "Health":{"Status":"starting"}}),
         )
         .await;
@@ -872,6 +1013,9 @@ mod settled {
             ),
             "expected a TimedOut verdict, got {reply:?}"
         );
-        assert!(started.elapsed() >= Duration::from_millis(1_500));
+        assert!(
+            waited >= Duration::from_millis(1_500) && waited < Duration::from_millis(2_500),
+            "waited {waited:?}"
+        );
     }
 }
