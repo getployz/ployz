@@ -80,6 +80,8 @@ const ON_DEMAND_READS = {
   strayNamespacesQueryOptions: "asks about the Namespaces the Servers report live, known only once the Runtime Watch answers",
   pendingApprovalsOptions: "polled by the agent sidebar, which every Organization page mounts; no page owns it",
   approvalOptions: "named by an agent conversation's interrupt, known only once the chat hydrates",
+  serviceMetricsQueryOptions: "asks every Server live, so a slow Server would hold the page; no page reads it yet",
+  serverMetricsQueryOptions: "asks a Server live, so a slow Server would hold the page; no page reads it yet",
 };
 
 /** Hook files outside data files that await the server without making UI wait on it. */
