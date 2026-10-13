@@ -29,6 +29,7 @@ import type { InngestRunStatus } from "#/modules/inngest/client";
 import { createCloseFinishedVolumeRun, createCloseStaleVolumeRuns, createRunVolume } from "#/modules/volume-run/volume-run.inngest";
 import { operationsOn } from "#/modules/operations/operation-history.server";
 import {
+  askCopy,
   closeStaleVolumeRuns,
   closeVolumeRun,
   commitAndStart,
@@ -39,7 +40,6 @@ import {
   requestVolumeRun,
   requireOwner,
   type RunContext,
-  sendSetCopy,
   sendSwitch,
   setVolumeCopy,
   startOrphanDeletes,
@@ -2270,7 +2270,7 @@ describe("volume runs", () => {
       const [old] = await lanes();
       const dead: RunContext = { ...context(taken.id), kind: "move", args: { to: "fsn-2" }, gen: Number(old?.gen) };
 
-      const cut = await runEffect(sendSetCopy(dead, A, { kind: "writer", epoch: 0 }, { kind: "snapshot", name: "f-1" }));
+      const cut = await runEffect(askCopy(dead, A, { kind: "writer", epoch: 0 }, { kind: "snapshot", name: "f-1" }));
 
       expect(cut).toMatchObject({ ok: false, reason: "stale" });
       expect(await runEffect(commitMove(dead, "run-move", idOf("fsn-2")))).toBe(false);

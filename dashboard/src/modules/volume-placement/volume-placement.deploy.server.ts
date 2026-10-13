@@ -13,8 +13,11 @@ import {
   appliedMirrors, changeKey, drainPlacement, dropChange, nextPlacementStep, observePlacement, type Placement, placementChanges, type PlacementStep, type PlacementVolume,
   sameChange,
 } from "#/modules/volume-placement/volume-placement";
+import { type CopyAsk, type MemberObserver, type MirrorSyncAnswer, syncMirrors } from "#/modules/volume-placement/mirror-sync.server";
 import { ACTIVE_VOLUME_RUN_STATES, dockerVolumeName, type VolumeRunState } from "#/modules/volume-run/volume-run";
-import { type CopyObserver, getVolumeRun, inspectVolumeCopies, observeOrganizationCopies, requestVolumeRun } from "#/modules/volume-run/volume-run.server";
+import {
+  askCopy, type CopyObserver, getVolumeRun, inspectVolumeCopies, observeOrganizationCopies, observeVolumeMembers, requestVolumeRun,
+} from "#/modules/volume-run/volume-run.server";
 import { Database } from "#/server/database.server";
 
 /** A run of the Deploy's own, the one it started for `step`. */
@@ -308,24 +311,17 @@ const environmentVolumes = Effect.fn("VolumePlacement.environmentVolumes")(funct
   return found;
 });
 
-/**
- * A Volume the mirror rounds refresh, from the copies `held` of it: one on a mirror's Server (the row's mirrors, else every
- * slot, as the CLI makes them), or two primaries, which the sync settles by demoting the one that came back.
- */
-export function refreshesMirror(row: { readonly mirrors: readonly MachineId[] | null } | undefined, held: CopyObservation["copies"]) {
-  const slots = held.filter((copy) => copy.role === "slot").map((copy) => copy.machine_id);
-  const mirrors = row?.mirrors ?? slots;
-  return held.filter((copy) => copy.role === "writer").length > 1 || slots.some((id) => mirrors.includes(id));
-}
+/** A Volume a sync has something to say about: one with a slot anywhere, or with two primaries to settle. */
+const syncs = (held: CopyObservation["copies"]) =>
+  held.some((copy) => copy.role === "slot") || held.filter((copy) => copy.role === "writer").length > 1;
 
 /**
- * Refresh every mirror in the organization (or one Environment): a sync for each Volume with a copy on a mirror's
- * Server, or with two primaries, which the sync settles by demoting the one that came back. A detached copy is never
- * refreshed. A Volume a Deploy is moving, or with a run already going, waits for the next refresh.
+ * Refresh every mirror in the organization (or one Environment): one mirror sync for each Volume with a slot or with
+ * two primaries. Every sync logs what it did; a Volume whose sync could not run logs why.
  */
 export const refreshMirrors = Effect.fn("VolumePlacement.refreshMirrors")(function* (
   organizationId: string, onlyEnvironmentId: string | null, observe: CopyObserver = observeOrganizationCopies,
-  read: BlockerReader = readPlacementBlockers,
+  read: BlockerReader = readPlacementBlockers, members: MemberObserver = observeVolumeMembers, ask: CopyAsk = askCopy,
 ) {
   const copies = yield* observe(organizationId).pipe(
     Effect.catch((error) => Effect.logWarning("Mirror refresh could not observe the copies.", { organizationId, error }).pipe(Effect.as(NO_COPIES))),
@@ -336,17 +332,15 @@ export const refreshMirrors = Effect.fn("VolumePlacement.refreshMirrors")(functi
     yield* Effect.logInfo("Mirror refresh skipped.", { organizationId, reason: refusal.message });
     return [];
   }
-  const { drizzle } = yield* Database;
-  const rows = yield* drizzle.select().from(volumePlacement).where(eq(volumePlacement.organizationId, organizationId));
-  const requested: string[] = [];
+  const synced: MirrorSyncAnswer[] = [];
   for (const volume of yield* environmentVolumes(organizationId, onlyEnvironmentId)) {
-    const row = rows.find((entry) => entry.volumeId === volume.volumeId);
-    if (row?.deploymentId != null) continue;
-    if (!refreshesMirror(row, copies.filter((copy) => copy.name === volume.dockerVolume))) continue;
-    const run = yield* requestVolumeRun(CLOUD(organizationId), { volumeId: volume.volumeId, environment: volume.environment, kind: "sync", args: { full: false } });
-    if (run.ok) requested.push(run.run.id);
+    if (!syncs(copies.filter((copy) => copy.name === volume.dockerVolume))) continue;
+    const answer = yield* syncMirrors(organizationId, volume, members, ask).pipe(
+      Effect.catch((error) => Effect.logWarning(`could not sync ${volume.name}`, { organizationId, volumeId: volume.volumeId, error }).pipe(Effect.as(null))),
+    );
+    if (answer !== null) synced.push(answer);
   }
-  return requested;
+  return synced;
 });
 
 /**

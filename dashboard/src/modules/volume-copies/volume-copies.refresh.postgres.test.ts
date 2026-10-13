@@ -1,4 +1,4 @@
-import type { ConfigStore, CopyObservation, MachineId } from "@ployz/sdk";
+import type { ConfigStore, MachineId, WantedCopy } from "@ployz/sdk";
 import { Effect } from "effect";
 import { Inngest } from "inngest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -6,11 +6,12 @@ import { asTestDouble } from "#/lib/test-double";
 import { CloudStore } from "#/modules/config-store/store-sdk.server";
 import { InngestClient } from "#/modules/inngest/client";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
-import { lastMirrorRefresh, refreshMirror } from "#/modules/volume-copies/volume-copies.refresh.server";
+import { mirrorStatuses, refreshMirror } from "#/modules/volume-copies/volume-copies.refresh.server";
+import type { CopyAsk } from "#/modules/volume-placement/mirror-sync.server";
 import { stagePlacement, stampPlacements } from "#/modules/volume-placement/volume-placement.server";
 import type { Member } from "#/modules/volume-run/volume-run";
-import { requestVolumeRun } from "#/modules/volume-run/volume-run.server";
-import { member } from "#/modules/volume-run/volume-run.test-fixture";
+import { type CopyAnswer, requestVolumeRun } from "#/modules/volume-run/volume-run.server";
+import { COPIES, member } from "#/modules/volume-run/volume-run.test-fixture";
 import type { Database } from "#/server/database.server";
 import type { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
@@ -28,8 +29,8 @@ describe("Refresh now", () => {
   let blockers: string[];
   // Runs at each Volume read, so a test can act between Refresh's mirror check and its request.
   let between: (() => Promise<void>) | null;
-  let copies: CopyObservation["copies"];
   let members: Member[];
+  let asked: WantedCopy["kind"][];
 
   const run = <A, E>(operation: Effect.Effect<A, E, Database | SecretEncryption | CloudStore | InngestClient | OrganizationRuntime>) => harness.runEffect(operation.pipe(
     Effect.provideService(InngestClient, inngest),
@@ -48,18 +49,20 @@ describe("Refresh now", () => {
       })),
     }),
   ));
-  const copy = (server: string, role: "writer" | "slot") => ({ machine_id: web(server), name: "shop-production_vol-vol1", role });
-  const refresh = () => run(refreshMirror(caller, environment, volumeId, () => Effect.succeed(blockers), () => Effect.succeed(copies), () => Effect.succeed(members)));
+  const ask: CopyAsk = (_asker, _machine, _expect, want: WantedCopy) => {
+    asked.push(want.kind);
+    const newest = { name: "w-1-5", guid: "12", created_unix_seconds: 1_790_000_100 };
+    return Effect.succeed<CopyAnswer>(want.kind === "snapshot" ? { ok: true, copy: { ...COPIES.writer, newest } } : { ok: true, copy: COPIES.pulling });
+  };
+  const refresh = () => run(refreshMirror(caller, environment, volumeId, () => Effect.succeed(blockers), () => Effect.succeed(members), () => Effect.succeed(members), ask));
   const runs = async () => (await harness.pool.query(`select kind, state from volume_run order by created_at`)).rows;
-  const endRun = (id: string, state: string, finishedAt = "now()") =>
-    harness.pool.query(`update volume_run set state = $2, finished_at = ${finishedAt} where id = $1`, [id, state]);
 
   beforeAll(async () => { harness = await startPostgresTestHarness(); }, 60_000);
   afterAll(async () => { await harness?.stop(); });
   beforeEach(async () => {
     blockers = [];
     between = null;
-    copies = [copy("web-1", "writer"), copy("web-2", "slot")];
+    asked = [];
     members = [member("web-1", "writer"), member("web-2", "mirror")];
     await harness.pool.query(`
       truncate table organization cascade;
@@ -68,108 +71,80 @@ describe("Refresh now", () => {
     `);
   });
 
-  it("requests one mirror round at once", async () => {
-    expect(await refresh()).toMatchObject({ ok: true, run: { kind: "sync", state: "requested", args: { full: false } } });
-    expect(await runs()).toEqual([{ kind: "sync", state: "requested" }]);
+  it("snapshots the writer and hands the pull to the mirror, with no run", async () => {
+    expect(await refresh()).toEqual({ ok: true, lines: ["data-web-2 is pulling w-1-5"] });
+    expect(asked).toEqual(["snapshot", "mirror"]);
+    expect(await runs()).toEqual([]);
   });
 
-  it("answers busy while a round runs, and queues no second", async () => {
-    await refresh();
-    expect(await refresh()).toEqual({ ok: false, refusal: { code: "conflict", message: "Already refreshing", details: null } });
-    expect(await runs()).toHaveLength(1);
+  it("says the mirror is still pulling instead of snapshotting again", async () => {
+    members = [member("web-1", "writer"), member("web-2", "pulling")];
+    expect(await refresh()).toEqual({ ok: true, lines: ["still pulling w-1-4 on data-web-2"] });
+    expect(asked).toEqual([]);
   });
 
-  it("answers busy with what else runs on the Volume", async () => {
-    await run(requestVolumeRun(caller, { volumeId, environment, kind: "move", args: { to: "web-2" } }));
-    expect(await refresh()).toEqual({ ok: false, refusal: { code: "conflict", message: "Busy. Moving to web-2.", details: null } });
+  it("names the run that covers the Volume and takes no snapshot", async () => {
+    const move = await run(requestVolumeRun(caller, { volumeId, environment, kind: "move", args: { to: "web-2" } }));
+    if (!move.ok) throw new Error("expected a run");
+    expect(await refresh()).toEqual({ ok: false, refusal: { code: "conflict", message: `data refresh is covered by move run ${move.run.id}`, details: null } });
+    expect(asked).toEqual([]);
     expect(await runs()).toEqual([{ kind: "move", state: "requested" }]);
   });
 
   it("leaves a Volume a Deploy is moving to that Deploy", async () => {
     await run(stagePlacement(organizationId, { environment, volumeId, staged: { primary: web("web-2"), mirrors: [], deletes: [] }, mirrors: [web("web-2")] }));
     await run(stampPlacements(organizationId, [volumeId], "dep-1"));
-    expect(await refresh()).toMatchObject({ ok: false, refusal: { code: "conflict", message: "A Deploy is moving this Volume. Wait for it to finish." } });
-    expect(await runs()).toEqual([]);
+    expect(await refresh()).toMatchObject({ ok: false, refusal: { code: "conflict", message: "skipped data: A Deploy is moving this Volume. Wait for it to finish." } });
+    expect(asked).toEqual([]);
   });
 
-  it("refuses when a Deploy stamps the Volume between the mirror check and the request", async () => {
+  it("refuses when a Deploy stamps the Volume while the sync reads it", async () => {
     await run(stagePlacement(organizationId, { environment, volumeId, staged: { primary: web("web-2"), mirrors: [], deletes: [] }, mirrors: [web("web-2")] }));
     between = async () => { await run(stampPlacements(organizationId, [volumeId], "dep-1")); };
-    expect(await refresh()).toMatchObject({ ok: false, refusal: { message: "A Deploy is moving this Volume. Wait for it to finish." } });
-    expect(await runs()).toEqual([]);
+    expect(await refresh()).toMatchObject({ ok: false, refusal: { message: "skipped data: A Deploy is moving this Volume. Wait for it to finish." } });
+    expect(asked).toEqual([]);
   });
 
-  it("refreshes a mirror the CLI made, with no placement row, as the 15-minute rounds do", async () => {
+  it("refreshes a mirror the CLI made, with no placement row, as the 15-minute sync does", async () => {
     await harness.pool.query(`delete from volume_placement`);
-    expect(await refresh()).toMatchObject({ ok: true, run: { kind: "sync" } });
-    expect(await runs()).toEqual([{ kind: "sync", state: "requested" }]);
+    expect(await refresh()).toEqual({ ok: true, lines: ["data-web-2 is pulling w-1-5"] });
+    expect(await runs()).toEqual([]);
   });
 
   it("refuses when the Servers can't say where the Volume's copies are", async () => {
-    expect(await run(refreshMirror(caller, environment, volumeId, () => Effect.succeed(blockers), () => Effect.fail("down"), () => Effect.fail(new Error("down")))))
+    expect(await run(refreshMirror(caller, environment, volumeId, () => Effect.succeed(blockers), () => Effect.fail(new Error("down")), () => Effect.fail(new Error("down")), ask)))
       .toMatchObject({ ok: false, refusal: { code: "unanswered" } });
-    expect(await runs()).toEqual([]);
   });
 
   it("names the mirror's Server when it is silent", async () => {
-    copies = [copy("web-1", "writer")];
     members = [member("web-1", "writer"), member("web-2", "unanswered")];
     expect(await refresh()).toEqual({ ok: false, refusal: { code: "unanswered", message: "web-2 isn't answering", details: null } });
-    expect(await run(refreshMirror(caller, environment, volumeId, () => Effect.succeed(blockers), () => Effect.fail("down"), () => Effect.succeed(members))))
-      .toEqual({ ok: false, refusal: { code: "unanswered", message: "web-2 isn't answering", details: null } });
-    expect(await runs()).toEqual([]);
   });
 
   it("names the silent Server when the runtime can't say which Servers answer", async () => {
     members = [member("web-1", "writer"), member("web-2", "unanswered")];
-    expect(await run(refreshMirror(caller, environment, volumeId, () => Effect.fail("down"), () => Effect.succeed(copies), () => Effect.succeed(members))))
+    expect(await run(refreshMirror(caller, environment, volumeId, () => Effect.fail("down"), () => Effect.succeed(members), () => Effect.succeed(members), ask)))
       .toEqual({ ok: false, refusal: { code: "unanswered", message: "web-2 isn't answering", details: null } });
-    expect(await runs()).toEqual([]);
   });
 
   it("refuses a Volume with no mirror", async () => {
     await harness.pool.query(`update volume_placement set mirrors = '[]'`);
-    expect(await refresh()).toEqual({ ok: false, refusal: { code: "conflict", message: "No mirror", details: null } });
+    expect(await refresh()).toEqual({ ok: false, refusal: { code: "conflict", message: "data has no mirror", details: null } });
     await harness.pool.query(`delete from volume_placement`);
-    copies = [copy("web-1", "writer")];
-    expect(await refresh()).toEqual({ ok: false, refusal: { code: "conflict", message: "No mirror", details: null } });
+    members = [member("web-1", "writer")];
+    expect(await refresh()).toEqual({ ok: false, refusal: { code: "conflict", message: "data has no mirror", details: null } });
     expect(await runs()).toEqual([]);
   });
 
   it("refuses while a Server with storage runs an older daemon", async () => {
     blockers = ["db-old"];
     expect(await refresh()).toMatchObject({ ok: false, refusal: { code: "upgrade_required", details: { servers: ["db-old"] } } });
-    expect(await runs()).toEqual([]);
   });
 
-  it("runs again once the last round ended", async () => {
-    const first = await refresh();
-    if (!first.ok) throw new Error("expected a run");
-    await endRun(first.run.id, "failed");
-    expect(await refresh()).toMatchObject({ ok: true });
-  });
-
-  it("reads the newest round that ended, failed or not, and the newest that ended done", async () => {
-    expect(await run(lastMirrorRefresh(organizationId, volumeId))).toEqual({ ended: null, done: null });
-    const first = await refresh();
-    if (!first.ok) throw new Error("expected a run");
-    await endRun(first.run.id, "done", "now() - interval '2 hours'");
-    const second = await refresh();
-    if (!second.ok) throw new Error("expected a run");
-    expect(await run(lastMirrorRefresh(organizationId, volumeId))).toMatchObject({ ended: { id: first.run.id }, done: { id: first.run.id } });
-    await endRun(second.run.id, "lost");
-    expect(await run(lastMirrorRefresh(organizationId, volumeId))).toMatchObject({ ended: { id: second.run.id, state: "lost" }, done: { id: first.run.id } });
-  });
-
-  it("finds the last good round behind more than 50 newer runs", async () => {
-    const first = await refresh();
-    if (!first.ok) throw new Error("expected a run");
-    await endRun(first.run.id, "done", "now() - interval '2 hours'");
-    await harness.pool.query(`
-      insert into volume_run (id, organization_id, environment_id, volume_id, volume_name, docker_volume, kind, args, state, finished_at, created_at)
-      select gen_random_uuid(), organization_id, environment_id, volume_id, volume_name, docker_volume, 'sync', args, 'failed', now(), now() + n * interval '1 second'
-      from volume_run, generate_series(1, 51) as n where id = $1
-    `, [first.run.id]);
-    expect(await run(lastMirrorRefresh(organizationId, volumeId))).toMatchObject({ ended: { state: "failed" }, done: { id: first.run.id } });
+  it("reads what the syncs saw of each mirror", async () => {
+    expect(await run(mirrorStatuses(organizationId, volumeId))).toEqual([]);
+    members = [member("web-1", "writer"), member("web-2", "failed")];
+    expect(await refresh()).toMatchObject({ ok: true, lines: ["data-web-2 could not receive w-1-4: no space", "data-web-2 is pulling w-1-5"] });
+    expect(await run(mirrorStatuses(organizationId, volumeId))).toMatchObject([{ machine: web("web-2"), failure: "no space", okAt: null }]);
   });
 });

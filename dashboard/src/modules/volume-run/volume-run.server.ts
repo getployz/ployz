@@ -689,24 +689,18 @@ export type CopyAnswer =
   | { readonly ok: false; readonly reason: CopyRefusal; readonly copy: VolumeCopy | null; readonly message: string };
 
 /**
- * One SetVolumeCopy. A refusal is an answer, since the run decides what follows it; only a failure to ask fails the
- * attempt, so the step retries.
+ * Who a SetVolumeCopy is for: a run, a Deploy following another run's lane without owning its row, or the rowless
+ * mirror sync at the Volume's newest gen.
  */
-export const setVolumeCopy = Effect.fn("VolumeRun.setVolumeCopy")(function* (
-  ctx: RunContext,
-  inngestRunId: string,
-  machine: MachineRef,
-  expect: ExpectedCopy,
-  want: WantedCopy,
-) {
-  yield* requireOwner(ctx.id, inngestRunId);
-  return yield* sendSetCopy(ctx, machine, expect, want);
-});
+export type CopyAsker = Pick<RunContext, "organizationId" | "dockerVolume" | "volumeName" | "gen">;
 
-/** SetVolumeCopy with the run's gen, for a run that follows another run's lane and so does not own its row. */
-export const sendSetCopy = Effect.fn("VolumeRun.sendSetCopy")(function* (ctx: RunContext, machine: MachineRef, expect: ExpectedCopy, want: WantedCopy) {
-  const session = yield* openSession(ctx.organizationId);
-  return yield* session.volumeSwitch(machine.id, { command: "set_volume_copy", payload: { name: ctx.dockerVolume, expect, want, gen: ctx.gen } }).pipe(
+/**
+ * One SetVolumeCopy. A refusal is an answer, since the caller decides what follows it; only a failure to ask fails,
+ * so a run's step retries.
+ */
+export const askCopy = Effect.fn("VolumeRun.askCopy")(function* (asker: CopyAsker, machine: MachineRef, expect: ExpectedCopy, want: WantedCopy) {
+  const session = yield* openSession(asker.organizationId);
+  return yield* session.volumeSwitch(machine.id, { command: "set_volume_copy", payload: { name: asker.dockerVolume, expect, want, gen: asker.gen } }).pipe(
     Effect.map((reply): CopyAnswer => ({ ok: true, copy: reply.copy })),
     Effect.catch((error) => {
       const refused = decodeCopyRefused("cause" in error ? error.cause : undefined);
@@ -716,11 +710,22 @@ export const sendSetCopy = Effect.fn("VolumeRun.sendSetCopy")(function* (ctx: Ru
       const { reason } = refused.value.details;
       // SAFETY: the Machine sends the copy it holds, as the SDK's VolumeCopy.
       const copy = refused.value.details.copy as VolumeCopy | null;
-      const message = switchFailureMessage(reason, ctx, machine) ?? `${machine.name} is busy with ${ctx.volumeName}`;
+      const message = switchFailureMessage(reason, asker, machine) ?? `${machine.name} is busy with ${asker.volumeName}`;
       return Effect.succeed<CopyAnswer>({ ok: false, reason, copy, message });
     }),
   );
 }, Effect.scoped);
+
+export const setVolumeCopy = Effect.fn("VolumeRun.setVolumeCopy")(function* (
+  ctx: RunContext,
+  inngestRunId: string,
+  machine: MachineRef,
+  expect: ExpectedCopy,
+  want: WantedCopy,
+) {
+  yield* requireOwner(ctx.id, inngestRunId);
+  return yield* askCopy(ctx, machine, expect, want);
+});
 
 export const inspectCopy = (ctx: RunContext, inngestRunId: string, machine: MachineRef) =>
   sendSwitch(ctx, inngestRunId, machine, { command: "inspect_volume_copy", payload: { name: ctx.dockerVolume } }).pipe(
@@ -840,7 +845,7 @@ export const startWriter = Effect.fn("VolumeRun.startWriter")(function* (
     Effect.mapError((error) => new Error(`reading ${holder.resolved_spec.name}'s spec: ${sdkFailureMessage(error)}`)),
   );
   const spec = container.resolved_spec;
-  return yield* sendSetCopy(ctx, to, start.expect, {
+  return yield* askCopy(ctx, to, start.expect, {
     kind: "writer",
     at: start.at,
     epoch: start.epoch,

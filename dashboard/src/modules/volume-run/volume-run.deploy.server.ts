@@ -7,6 +7,7 @@ import { expectOf, observedEpoch, oldCopy } from "#/modules/volume-run/plan";
 import { volumeRun } from "#/modules/volume-run/tables";
 import { ACTIVE_VOLUME_RUN_STATES, type AnsweredMember, copyName, type Member, type VolumeRunArgs, type VolumeRunKind } from "#/modules/volume-run/volume-run";
 import {
+  askCopy,
   contextOf,
   ended,
   keptOn,
@@ -16,7 +17,6 @@ import {
   pastReturn,
   requeueTakenMoves,
   type RunContext,
-  sendSetCopy,
   setVolumeCopy,
   startWriter,
   takeDeployLane,
@@ -154,7 +154,7 @@ const fenceFollowed = Effect.fn("VolumeRun.fenceFollowed")(function* (lane: Extr
   if (epoch === null) return yield* Effect.fail(new Error(`${run.volumeName}'s run on ${to} has not chosen an epoch yet`));
   const machine: MachineRef = b.machine;
   const started = run.kind === "restore"
-    ? yield* sendSetCopy(run, machine, expectOf(copy), { kind: "writer", at: copy.newest.guid, epoch, start: null })
+    ? yield* askCopy(run, machine, expectOf(copy), { kind: "writer", at: copy.newest.guid, epoch, start: null })
     : yield* startWriter(run, { to: machine, expect: expectOf(copy), at: copy.newest.guid, epoch });
   if (!started.ok) return yield* Effect.fail(retriable(started.reason) ? new Error(started.message) : new NonRetriableError(started.message));
   return { on: to };

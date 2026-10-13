@@ -1,6 +1,18 @@
 import type { MachineId } from "@ployz/sdk";
 import { sql } from "drizzle-orm";
-import { bigint, boolean, check, index, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import {
+  bigint,
+  boolean,
+  check,
+  index,
+  jsonb,
+  pgTable,
+  primaryKey,
+  text,
+  timestamp,
+  uniqueIndex,
+  uuid,
+} from "drizzle-orm/pg-core";
 import { createdAt, sqlStringLiterals, updatedAt } from "#/db/tables";
 import { user } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
@@ -57,4 +69,27 @@ export const volumeRun = pgTable(
     check("volume_run_phase_check", sql`${table.phase} in (${sqlStringLiterals(VOLUME_RUN_PHASES)})`),
     check("volume_run_message_check", sql`${table.message} is null or length(${table.message}) between 1 and 1024`),
   ],
+);
+
+/**
+ * What the mirror syncs saw of one mirror. The last pull that landed and the last that failed are kept apart, so a newer
+ * success never hides an older failure; `matchedAt` is the last sync that found the mirror at the writer's newest.
+ */
+export const volumeMirrorStatus = pgTable(
+  "volume_mirror_status",
+  {
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    volumeId: text("volume_id").notNull(),
+    machineId: text("machine_id").notNull().$type<MachineId>(),
+    okAt: timestamp("ok_at", { mode: "date", withTimezone: true }),
+    okSnapshot: text("ok_snapshot"),
+    matchedAt: timestamp("matched_at", { mode: "date", withTimezone: true }),
+    failedAt: timestamp("failed_at", { mode: "date", withTimezone: true }),
+    failedSnapshot: text("failed_snapshot"),
+    failure: text("failure"),
+    updatedAt,
+  },
+  (table) => [primaryKey({ columns: [table.volumeId, table.machineId] })],
 );

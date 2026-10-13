@@ -1,22 +1,14 @@
 import "@tanstack/react-start/server-only";
 import type { EnvironmentRef } from "@ployz/sdk";
-import { and, desc, eq, isNotNull, type SQL } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { Effect, Option } from "effect";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
-import { volumePlacement } from "#/modules/volume-placement/tables";
-import {
-  type BlockerReader, placementRefusal, readPlacementBlockers, refreshesMirror, UNANSWERED,
-} from "#/modules/volume-placement/volume-placement.deploy.server";
-import { requestUnclaimedRun } from "#/modules/volume-placement/volume-placement.server";
-import { volumeRun } from "#/modules/volume-run/tables";
-import { runWords } from "#/modules/volume-run/volume-copies";
-import { ACTIVE_VOLUME_RUN_STATES } from "#/modules/volume-run/volume-run";
-import {
-  type CopyObserver, inspectVolumeCopies, listVolumeRuns, observeOrganizationCopies, resolveVolume, volumeRunView,
-} from "#/modules/volume-run/volume-run.server";
+import { type CopyAsk, type MemberObserver, syncMirrors } from "#/modules/volume-placement/mirror-sync.server";
+import { type BlockerReader, placementRefusal, readPlacementBlockers, UNANSWERED } from "#/modules/volume-placement/volume-placement.deploy.server";
+import { volumeMirrorStatus } from "#/modules/volume-run/tables";
+import type { MirrorStatusView } from "#/modules/volume-copies/volume-copies.placement";
+import { askCopy, inspectVolumeCopies, observeVolumeMembers, resolveVolume } from "#/modules/volume-run/volume-run.server";
 import { Database } from "#/server/database.server";
-
-const busy = (message: string): StoreRefusal => ({ code: "conflict", message, details: null });
 
 const silent = (names: readonly string[]): StoreRefusal => ({
   code: "unanswered",
@@ -25,16 +17,17 @@ const silent = (names: readonly string[]): StoreRefusal => ({
 });
 
 /**
- * Refresh now: one mirror round for the Volume, the same sync the 15-minute cron requests for the same Volumes. A run
- * already going on the Volume answers busy instead of queueing a second, and a Volume a Deploy is moving stays that Deploy's.
+ * Refresh now and a user's sync: the one mirror sync, as the 15-minute cron runs it. It answers once the mirror has the
+ * pull, without waiting for it to land; a sync that could do nothing answers why.
  */
 export const refreshMirror = Effect.fn("VolumeCopies.refreshMirror")(function* (
   caller: { readonly userId: string | null; readonly organizationId: string },
   environment: EnvironmentRef,
   volumeId: string,
   read: BlockerReader = readPlacementBlockers,
-  observe: CopyObserver = observeOrganizationCopies,
   inspect: typeof inspectVolumeCopies = inspectVolumeCopies,
+  observe: MemberObserver = observeVolumeMembers,
+  ask: CopyAsk = askCopy,
 ) {
   const named = (fallback: StoreRefusal) => Effect.map(
     inspect(caller.organizationId, environment, volumeId).pipe(Effect.orElseSucceed(() => [])),
@@ -46,32 +39,26 @@ export const refreshMirror = Effect.fn("VolumeCopies.refreshMirror")(function* (
   const refusal = yield* placementRefusal(caller.organizationId, read);
   if (refusal === UNANSWERED) return yield* named(UNANSWERED);
   if (refusal !== null) return { ok: false, refusal } as const;
-  const { dockerVolume } = yield* resolveVolume(caller.organizationId, environment, volumeId);
-  const copies = yield* observe(caller.organizationId).pipe(Effect.option);
-  if (Option.isNone(copies)) return yield* named(UNANSWERED);
-  const { drizzle } = yield* Database;
-  const [row] = yield* drizzle.select({ mirrors: volumePlacement.mirrors }).from(volumePlacement)
-    .where(and(eq(volumePlacement.organizationId, caller.organizationId), eq(volumePlacement.volumeId, volumeId)));
-  if (!refreshesMirror(row, copies.value.filter((copy) => copy.name === dockerVolume))) return yield* named(busy("No mirror"));
-  const requested = yield* requestUnclaimedRun(caller, { volumeId, environment, kind: "sync", args: { full: false } });
-  if (requested.ok) return requested;
-  const runs = yield* listVolumeRuns(caller.organizationId, volumeId);
-  const active = runs.find((run) => ACTIVE_VOLUME_RUN_STATES.some((state) => state === run.state));
-  if (active === undefined) return requested;
-  return { ok: false, refusal: busy(active.kind === "sync" ? "Already refreshing" : `Busy. ${runWords(active)}.`) } as const;
+  const volume = yield* resolveVolume(caller.organizationId, environment, volumeId);
+  const answer = yield* syncMirrors(caller.organizationId, { volumeId, name: volume.volumeName, dockerVolume: volume.dockerVolume, environment }, observe, ask)
+    .pipe(Effect.option);
+  if (Option.isNone(answer)) return yield* named(UNANSWERED);
+  const { sync, lines } = answer.value;
+  if (sync.kind === "synced" || sync.kind === "demoting") return { ok: true, lines } as const;
+  if (sync.kind === "unanswered") return { ok: false, refusal: silent(sync.servers) } as const;
+  return { ok: false, refusal: { code: "conflict", message: lines.join("; "), details: null } satisfies StoreRefusal } as const;
 });
 
-/**
- * The Volume's newest mirror round that ended, whatever its end, for the mirror's skipped state, and the newest that
- * ended done, which ages a mirror whose Server stopped answering.
- */
-export const lastMirrorRefresh = Effect.fn("VolumeCopies.lastMirrorRefresh")(function* (organizationId: string, volumeId: string) {
+/** What the mirror syncs saw of each of the Volume's mirrors. */
+export const mirrorStatuses = Effect.fn("VolumeCopies.mirrorStatuses")(function* (organizationId: string, volumeId: string) {
   const { drizzle } = yield* Database;
-  const newest = (filter: SQL) => Effect.map(
-    drizzle.select().from(volumeRun)
-      .where(and(eq(volumeRun.organizationId, organizationId), eq(volumeRun.volumeId, volumeId), eq(volumeRun.kind, "sync"), filter))
-      .orderBy(desc(volumeRun.createdAt), desc(volumeRun.id)).limit(1),
-    ([row]) => row === undefined ? null : volumeRunView(row),
-  );
-  return yield* Effect.all({ ended: newest(isNotNull(volumeRun.finishedAt)), done: newest(eq(volumeRun.state, "done")) });
+  const rows = yield* drizzle.select().from(volumeMirrorStatus)
+    .where(and(eq(volumeMirrorStatus.organizationId, organizationId), eq(volumeMirrorStatus.volumeId, volumeId)));
+  return rows.map((row): MirrorStatusView => ({
+    machine: row.machineId,
+    okAt: row.okAt?.toISOString() ?? null,
+    matchedAt: row.matchedAt?.toISOString() ?? null,
+    failedAt: row.failedAt?.toISOString() ?? null,
+    failure: row.failure,
+  }));
 });
