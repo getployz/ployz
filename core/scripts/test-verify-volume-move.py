@@ -612,7 +612,9 @@ class VolumeMove:
         status, text = http("POST", f"{self.run['cloud']['url']}/api/cli/approvals/{details['approval_id']}",
                             dict(approve=dict(digest=details["approval"])), token=token)
         print(json.dumps(dict(approve=details["approval_id"], status=status, reply=text[:200])), flush=True)
-        return details["approval_id"] if 200 <= status < 300 else None
+        if not 200 <= status < 300:
+            raise RuntimeError(f"Cloud refused the approval {details['approval_id']} with {status}: {text[:500]}")
+        return details["approval_id"]
 
     def wait_run(self, row, limit=1800):
         if row.get("state") in TERMINAL | {"refused"}:
@@ -748,6 +750,15 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
         result["failures"] = assess(states, lost)
         if case["trigger"] and not result.get("triggered"):
             result["failures"].append("the trigger never fired before the run ended")
+        if case["action"] == "cancel" and result.get("triggered") and result["run"].get("state") not in ("cancelled", "lost"):
+            result["failures"].append(f"the cancel did not land: the run ended {result['run'].get('state')}")
+        last = (result["recovery"] or [result["run"]])[-1]
+        if last.get("state") != "done":
+            result["failures"].append(f"the last run ended {last.get('state')}")
+        # A move or its rerun ends on the destination; a mirror op never moves the writer, and an undo's Release restores it.
+        expected = destination if case["op"] == "move" and case["recover"] == "rerun" else writer
+        if result["final_writer"] != expected:
+            result["failures"].append(f"the Volume ended on {result['final_writer']}, not {expected}")
         result["passed"] = not result["failures"]
         if not result["passed"]:
             result["heal"] = self.heal(destination)
