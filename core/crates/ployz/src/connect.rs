@@ -812,9 +812,10 @@ impl ConnectError {
         ) || matches!(self, Self::Rpc(error) if error.is_unavailable())
     }
 
-    pub(crate) fn is_unanswered(&self) -> bool {
-        self.is_unreachable()
-            || matches!(self, Self::Rpc(error) if error.is_retryable() || error.unanswered)
+    /// The entry was reached, but the target Machine sent no reply in time.
+    /// Failures reaching the entry itself say nothing about the target.
+    pub(crate) fn target_unanswered(&self) -> bool {
+        matches!(self, Self::Rpc(error) if error.is_retryable() && !error.unanswered)
     }
 }
 

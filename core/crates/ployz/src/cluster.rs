@@ -791,7 +791,7 @@ impl Client {
             Ok(storage) => Ok(HeldCopies::Answered(
                 storage.roles().map(|(name, _)| name.clone()).collect(),
             )),
-            Err(error) if error.is_unanswered() => Ok(HeldCopies::Dead),
+            Err(error) if error.target_unanswered() => Ok(HeldCopies::Dead),
             Err(error) => {
                 let error = rpc_error(error);
                 Err(RpcError {

@@ -241,6 +241,39 @@ fn deadline_exceeded_is_retryable_not_unreachable() {
     assert!(!error.is_unreachable());
 }
 
+#[test]
+fn only_a_reached_entry_reports_the_target_unanswered() {
+    let dropped = io::Error::new(io::ErrorKind::BrokenPipe, "connection closed");
+    for (error, unanswered) in [
+        (
+            ConnectError::from(tonic::Status::deadline_exceeded(
+                "target Machine RPC timed out",
+            )),
+            true,
+        ),
+        (
+            ConnectError::from(tonic::Status::unavailable("route failed")),
+            true,
+        ),
+        // The client made this status: the entry dropped, not the target.
+        (
+            ConnectError::from(tonic::Status::from_error(Box::new(dropped))),
+            false,
+        ),
+        (
+            ConnectError::Io(io::Error::new(io::ErrorKind::ConnectionRefused, "refused")),
+            false,
+        ),
+        (ConnectError::EntryNotReady, false),
+        (
+            ConnectError::from(tonic::Status::unimplemented("older daemon")),
+            false,
+        ),
+    ] {
+        assert_eq!(error.target_unanswered(), unanswered, "{error}");
+    }
+}
+
 #[tokio::test]
 async fn cancelling_ssh_establishment_returns_without_waiting_for_ssh() {
     let root = std::env::temp_dir().join(format!("ployz-ssh-cancel-{}", std::process::id()));
