@@ -14,7 +14,8 @@ flowchart LR
 ```
 
 Start with your domain's status in the service's **Settings → Networking**: it names most of
-the problems below. Your app's own errors are in the service's **Logs**.
+the problems below. Your app's own errors are in the service's **Logs**. To see which server
+answered and what it knows about your service, [trace a request](trace.md).
 
 When Ployz can't hand a request to your app, your server answers with its own page. Its title is
 a heading below, and its code (like `502 · NO_RESPONSE`) is on the page and in the `ployz-error`
