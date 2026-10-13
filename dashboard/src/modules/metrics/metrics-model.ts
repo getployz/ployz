@@ -118,7 +118,7 @@ function answers(read: Extract<MetricRead, { type: "history" }>, names: Names) {
 
 const toGap = (gap: MetricGap): Gap => ({ from: toMs(gap.from), to: toMs(gap.to), reason: gap.reason });
 
-function mergeGaps(gaps: readonly Gap[]): Gap[] {
+export function mergeGaps(gaps: readonly Gap[]): Gap[] {
   const merged: Gap[] = [];
   for (const gap of [...gaps].sort((left, right) => left.from - right.from)) {
     const last = merged.at(-1);

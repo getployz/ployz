@@ -1,9 +1,10 @@
-import type { ConfigCommand, DiffView, DomainRow, EnvironmentRef, EnvironmentView, JsonValue, ProjectListing, ServiceId, ServiceListing, ServiceSettingChange } from "@ployz/sdk";
+import type { ConfigCommand, DiffView, DomainRow, EnvironmentRef, EnvironmentView, JsonValue, ProjectListing, ServiceId, ServiceListing, ServiceSettingChange, SettingRow } from "@ployz/sdk";
 import { Option, Schema } from "effect";
 import { adjectives, animals, uniqueNamesGenerator } from "unique-names-generator";
 import { asRecord } from "#/lib/json";
 import { slugifySegment } from "#/utils/slug";
 import { SOURCE_FIELDS } from "./store-branches";
+import { replicaCount } from "./volume-sharing";
 
 /** Where a new Service's image comes from. */
 export type NewServiceSource =
@@ -114,6 +115,17 @@ export function serviceChanges(diff: DiffView, id: string): Map<string, ServiceS
 /** A scalar Setting's value as a field shows it: blank when it has none. */
 export function settingText(value: JsonValue | undefined) {
   return value === null || value === undefined ? "" : String(value);
+}
+
+/** A Setting as deployed: what the next Deploy changes it from, else what it holds. */
+const deployedValue = (row: SettingRow | undefined, change: ServiceSettingChange | undefined) =>
+  (change ? change.before : row?.value) ?? row?.default ?? null;
+
+/** The vCPUs a Service's deployed replicas may use together; null when it has no limit or no replicas. */
+export function deployedVcpuLimit(rows: ReadonlyMap<string, SettingRow>, changes: ReadonlyMap<string, ServiceSettingChange>) {
+  const cpus = Number(settingText(deployedValue(rows.get("cpuLimit"), changes.get("cpuLimit"))));
+  const limit = cpus * replicaCount({ value: deployedValue(rows.get("replicas"), changes.get("replicas")), default: null });
+  return limit > 0 ? limit : null;
 }
 
 /** The pink trail's props for a field whose staged change is `change`: changed, and what is deployed. */

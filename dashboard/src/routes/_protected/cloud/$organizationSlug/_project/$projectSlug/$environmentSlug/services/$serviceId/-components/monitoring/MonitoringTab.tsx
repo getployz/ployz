@@ -18,7 +18,7 @@ import { useStoreDeployments } from "#/modules/config-store/store-view.queries";
 import { volumeStorageText } from "#/modules/config-store/store-volumes";
 import { useServerList } from "#/modules/machines/use-servers";
 import { bytesText, cpuText, onGrid, rateText } from "#/modules/metrics/metric-chart-data";
-import { serviceMetrics, type Marker, type MetricAvailability, type ServerRef, type ServiceMetrics, type ServiceSeries } from "#/modules/metrics/metrics-model";
+import { mergeGaps, serviceMetrics, type Marker, type MetricAvailability, type ServerRef, type ServiceMetrics, type ServiceSeries } from "#/modules/metrics/metrics-model";
 import { serviceMetricsQueryOptions } from "#/modules/metrics/metrics.queries";
 import {
   causeText,
@@ -338,9 +338,10 @@ function Charts({ organizationSlug, scope, service, range, dimmed, uptime, uptim
   const lines = (chartLines: readonly ChartLine[]): MetricSeries[] => perServer
     ? metrics.byServer.flatMap((entry, index) => chartLines.map((line) => ({
       label: chartLines.length > 1 ? `${entry.server.name} ${line.label.toLowerCase()}` : entry.server.name,
-      color: line.color, dashed: index > 0, values: onGrid(entry.series[line.key], window),
+      color: line.color, dashed: index > 0, gaps: entry.gaps, values: onGrid(entry.series[line.key], window),
     })))
     : chartLines.map((line) => ({ label: line.label, color: line.color, values: onGrid(metrics.all[line.key], window) }));
+  const resourceGaps = perServer ? mergeGaps(metrics.byServer.flatMap((entry) => entry.gaps)) : metrics.allGaps;
   const isDimmed = dimmed || !sameRange(shown, range);
   return (
     <div className={cn("flex flex-col gap-3", isDimmed && "opacity-60")}>
@@ -364,7 +365,7 @@ function Charts({ organizationSlug, scope, service, range, dimmed, uptime, uptim
       {metrics.availability.type === "needs_upgrade" || metrics.availability.type === "offline"
         ? <MetricsUnavailable organizationSlug={organizationSlug} availability={metrics.availability} />
         : RESOURCE_CHARTS.map((resource) => (
-          <MetricChart key={resource.id} id={resource.id} title={resource.title} format={resource.format} {...chart}
+          <MetricChart key={resource.id} id={resource.id} title={resource.title} format={resource.format} {...chart} gaps={resourceGaps}
             value={valueText(resource.lines, metrics, window, resource.format)} series={lines(resource.lines)}
             limit={perServer ? null : limits[resource.id]} />
         ))}

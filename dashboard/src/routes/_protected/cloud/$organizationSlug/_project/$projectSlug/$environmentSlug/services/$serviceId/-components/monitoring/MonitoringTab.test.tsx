@@ -189,3 +189,13 @@ it("offers All and By server only when more than one Server answered", async () 
   await open({ checker: false, read: metrics({ points: sampled, machines: [answered(WEB_1), answered(WEB_2)] }) });
   expect(screen.getByRole("button", { name: "By server" })).toBeDefined();
 });
+
+it("hatches a silent Server's own gap in By server, where All still has the other Server's line", async () => {
+  const gap = { from: nanos(now - 3_000_000), to: nanos(now - 600_000), reason: "timeout" as const };
+  const quiet = { machine_id: WEB_2, value: { points: sampled, step_nanos: nanos(60_000), gaps: [gap] } };
+  await open({ checker: false, read: metrics({ points: sampled, machines: [answered(WEB_1), quiet] }) });
+  expect(screen.queryAllByText("Not measured")).toHaveLength(0);
+
+  fireEvent.click(screen.getByRole("button", { name: "By server" }));
+  expect(screen.getAllByText("Not measured")).toHaveLength(4);
+});

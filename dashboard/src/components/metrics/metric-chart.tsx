@@ -17,6 +17,7 @@ export type MetricSeries = {
   readonly color: string;
   readonly values: readonly (number | null)[];
   readonly dashed?: boolean;
+  readonly gaps?: readonly TimeSpan[];
 };
 export type TimeSpan = { readonly from: number; readonly to: number };
 export type TimeBand = TimeSpan & { readonly id: string };
@@ -142,10 +143,10 @@ export function MetricChart({
       formatGroup: (points) => {
         const row = points[0]?.datum;
         if (!row || !("values" in row)) return "";
-        const missing = inSpan(row.at.getTime(), gaps) ? "Not measured" : "–";
+        const missing = (line: MetricSeries) => inSpan(row.at.getTime(), line.gaps ?? gaps) ? "Not measured" : "–";
         return [at.format(row.at), ...series.map((line, index) => {
           const point = row.values[index];
-          return `${line.label}  ${point === null || point === undefined ? missing : format(point)}`;
+          return `${line.label}  ${point === null || point === undefined ? missing(line) : format(point)}`;
         })].join("\n");
       },
     },

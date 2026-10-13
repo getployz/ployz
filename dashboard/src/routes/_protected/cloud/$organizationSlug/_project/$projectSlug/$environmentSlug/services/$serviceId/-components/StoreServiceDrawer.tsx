@@ -21,7 +21,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
 import { scalarSetting, serviceSetting, settingChange, settingError, type ServiceSettingName, type SettingSchema } from "#/modules/config-store/catalog";
 import { templateLabel } from "#/modules/config-store/database-presets";
-import { changedProps, dnsLabelError, serviceChanges, serviceSettingRows, settingText } from "#/modules/config-store/store-services";
+import { changedProps, deployedVcpuLimit, dnsLabelError, serviceChanges, serviceSettingRows, settingText } from "#/modules/config-store/store-services";
 import { diffQuery, environmentSettingsQuery, namespaceQuery, requireView, servicesQuery, useStoreViews, volumesQuery } from "#/modules/config-store/store-view.queries";
 import type { Persistable } from "#/collections/query-collection";
 import { useStoreWriter } from "#/modules/config-store/store-write";
@@ -144,8 +144,7 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
   const capped = cap && replicasOf(service.name) <= 1 ? cap : null;
   const hasVolume = volumes.some((volume) => volume.mounts.some((mount) => mount.service === service.name));
   const managedVolume = volumes.find((volume) => volume.storage.kind === "provisioned" && volume.mounts.some((mount) => mount.service === service.name)) ?? null;
-  const cpus = Number(settingText(rows.get("cpuLimit")?.value ?? rows.get("cpuLimit")?.default));
-  const vcpuLimit = cpus > 0 ? cpus * replicasOf(service.name) : null;
+  const vcpuLimit = deployedVcpuLimit(rows, state.changes);
   const rename = state.changes.get("name");
   const restartPolicy = state.rows.get("restartPolicy");
   const buildMethod = settingText(state.rows.get("buildMethod")?.value ?? state.rows.get("buildMethod")?.default);
