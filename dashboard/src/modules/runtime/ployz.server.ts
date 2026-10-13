@@ -20,6 +20,8 @@ import type {
   MachineUpdate,
   MachineUpgradeAttempt,
   MachineUpgradeAttemptId,
+  MetricHistory,
+  MetricHistoryInput,
   ObservedDataLoss,
   PublishCertificateMaterialRequest,
   RuntimeWatchView,
@@ -74,6 +76,7 @@ export type PloyzSdkError =
 export interface PloyzSession {
   readonly logs: (options: LogOptions) => Effect.Effect<AsyncIterable<LogEvent>, PloyzSdkError>;
   readonly logHistory: (options: LogHistoryOptions) => Effect.Effect<LogHistoryPage, PloyzSdkError>;
+  readonly metricHistory: (input: MetricHistoryInput) => Effect.Effect<MetricHistory, PloyzSdkError>;
   readonly inspect: () => Effect.Effect<MachineDetails, PloyzSdkError>;
   /** Resolves to the secret `ployz1:` Management Capability for `label`. */
   readonly setManagementClient: (label: string) => Effect.Effect<string, PloyzSdkError>;
@@ -255,6 +258,7 @@ function wrapClient(client: Client): PloyzSession {
   return {
     logs: (options) => Effect.try({ try: () => client.runtime.logs(options), catch: (cause) => asSdkFailure("logs", cause) }),
     logHistory: (options) => sdkPromise("log history", (signal) => client.runtime.logHistory({ ...options, signal })),
+    metricHistory: (input) => sdkPromise("metric history", () => client.runtime.metricHistory(input)),
     inspect: () => sdkPromise("inspect", () => client.inspect()),
     setManagementClient: (label) => sdkPromise("set Management Client", () => client.setManagementClient(label)),
     clearManagementClient: (label) => sdkPromise("clear Management Client", () => client.clearManagementClient(label)),

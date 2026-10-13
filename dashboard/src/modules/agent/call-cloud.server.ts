@@ -3,6 +3,7 @@ import type { Act, AcceptedLoss, CloudQuery, CopiesAnswer, EnvironmentRef, Machi
 import { Effect } from "effect";
 import { type StoreRefusal, StoreRefused, type StoreResult } from "#/modules/config-store/store.contract";
 import { readStore } from "#/modules/config-store/config-store.server";
+import { findService, owners } from "#/modules/config-store/store-lookup.server";
 import { githubBranches, githubConnection, GithubRepositories } from "#/modules/github/github-cli.server";
 import type { Caller } from "#/modules/identity/actor";
 import { loadOrganizationConnections } from "#/modules/machines/connections.server";
@@ -48,19 +49,6 @@ const runtimeAsk = (organizationId: string, query: CloudQuery) =>
       Effect.catch((error) => Effect.succeed(refusal(rpcErrorCode(error) ?? "unavailable", sdkFailureMessage(error)))),
     );
   }).pipe(Effect.scoped);
-
-const owners = (organizationId: string) =>
-  readStore(organizationId, { query: "namespaces" }).pipe(Effect.map(({ namespaces }) => namespaces));
-
-const findService = Effect.fn("CallCloud.findService")(function* (organizationId: string, environmentId: string, service: string) {
-  for (const owned of yield* owners(organizationId)) {
-    const view = yield* readStore(organizationId, { query: "namespace", environment: { project: owned.project, environment: owned.environment } });
-    if (view.environment.id !== environmentId) continue;
-    const runtime = view.services[service];
-    return runtime === undefined ? null : { namespace: owned.namespace, runtime };
-  }
-  return null;
-});
 
 const findVolume = Effect.fn("CallCloud.findVolume")(function* (organizationId: string, volumeId: string) {
   for (const owned of yield* owners(organizationId)) {
