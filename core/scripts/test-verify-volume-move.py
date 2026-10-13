@@ -404,9 +404,10 @@ class VolumeMove:
         self.cli("project", "new", "verify")
         self.cli("link", "--project", "verify")
         self.cli("service", "add", SERVICE, "--image", IMAGE)
-        self.cli("set", f"{SERVICE}.env.POSTGRES_PASSWORD=vc-only-password", f"{SERVICE}.env.PGDATA=/data/pgdata")
+        self.cli("set", f"{SERVICE}.env.POSTGRES_PASSWORD=vc-only-password")
         size = f"{self.size_gb * 2 + 2}GB" if self.size_gb else "2GB"
-        self.cli("volume", "add", VOLUME, "--size", size, "--mount", f"{SERVICE}:/data")
+        # The image ships files at this path, so every move makes Docker populate at the handover (#1626).
+        self.cli("volume", "add", VOLUME, "--size", size, "--mount", f"{SERVICE}:/var/lib/postgresql/data")
         self.cli("deploy", timeout=1500)
         self.cli("server", "set", second, "--accepts-services=true")
         _, inspect = self.cli("volume", "inspect", VOLUME)
