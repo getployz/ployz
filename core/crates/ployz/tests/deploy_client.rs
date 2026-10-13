@@ -826,8 +826,7 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
         DeploymentStatus::Applied
     );
 
-    // Cancelled while it runs, the runner stops it. Health never settles on this
-    // Machine, so only the cancel can end the run.
+    // Cancelled while it runs, the runner stops it.
     let (held, held_server) =
         listening(DeployService::new(machine('a', "one")).hold_health()).await;
     let second = DeploymentId::parse("00000000-0000-4000-8000-000000000102").unwrap();
