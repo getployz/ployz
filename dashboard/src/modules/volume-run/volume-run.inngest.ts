@@ -82,7 +82,10 @@ export async function runVolume(
   const run = claim.run as RunContext;
 
   // SAFETY: step output is the JSON of the Member list, and a Member holds only JSON values.
-  const members = (await step.run("01-observe", () => runEffect(observeMembers(run, runId)))) as Member[];
+  const observed = (await step.run("01-observe", () => runEffect(observeMembers(run, runId)))) as Member[];
+  const steps: RunSteps = { step, runEffect, run, runId };
+  const forward = run.kind === "release" && run.phase === "committed" && run.current !== null;
+  const members = run.kind === "release" && !forward ? await floor(steps, observed) : observed;
   // SAFETY: the row's kind and args were written together from one VolumeRunInput.
   const input = { kind: run.kind, args: run.args, volumeName: run.volumeName, orphan: run.orphan } as PlanInput;
   const plan = planFromCopies(input, members);
@@ -90,8 +93,7 @@ export async function runVolume(
     await step.run("02-refuse", () => runEffect(refuseRun(run, runId, plan.refusal)));
     return { runId: run.id, refused: plan.refusal };
   }
-  const steps: RunSteps = { step, runEffect, run, runId };
-  if (run.kind === "release" && run.phase === "committed" && run.current !== null) return finishRelease(steps, members, run.current);
+  if (forward && run.current !== null) return finishRelease(steps, members, run.current);
   const { phase } = plan;
   if (phase.kind === "seed") return seedVolume(steps, phase);
   if (phase.kind === "delete_mirror") return deleteMirror(steps, phase);
@@ -110,6 +112,25 @@ export async function runVolume(
     case "sync":
       return mirrorVolume(steps, phase, epoch);
   }
+}
+
+/**
+ * A release raises every copy's floor to its own gen before it plans, so the run it took over can switch nothing more.
+ * Each reply is the copy as it settled: a cut caught before its flip is still the root, one past it is the slot.
+ */
+async function floor({ step, runEffect, run, runId }: RunSteps, members: readonly Member[]): Promise<Member[]> {
+  const floored: Member[] = [];
+  for (const member of members) {
+    const copy = member.answered ? member.view.copy : null;
+    if (!member.answered || copy === null) {
+      floored.push(member);
+      continue;
+    }
+    const answer = await step.run(`01-floor-${member.machine.name}`, () => runEffect(setVolumeCopy(run, runId, member.machine, expectOf(copy), { kind: "floor" })));
+    // SAFETY: step output is the JSON of a VolumeCopy, which holds only JSON values.
+    floored.push({ ...member, view: { ...member.view, copy: answer.copy as VolumeCopy | null } });
+  }
+  return floored;
 }
 
 const fail = ({ step, runEffect, run, runId }: RunSteps, id: string, message: string): Promise<never> =>
