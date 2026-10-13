@@ -95,11 +95,14 @@ export const probeIngressServers = Effect.fn("ClusterDomain.probeIngressServers"
   if (servers.length === 0) return { kind: "no_servers" } satisfies IngressProbe;
   const running = ingressRunningOn(frame);
   const unobserved = new Set<string>(frame.incomplete_ids.machines);
+  // An incomplete container row carries no Machine id, so it could be the Ingress Proxy on any Server.
+  const containersUnobserved = frame.incomplete_ids.containers.length > 0;
   const probed = yield* Effect.forEach(servers, (server) =>
     probeIngress(`http://${isIPv6(server.address) ? `[${server.address}]` : server.address}`, server.machineId)
       .pipe(Effect.map((answer) => ({ server, answer }))), { concurrency: "unbounded" });
   const answering = (wanted: IngressAnswer) => probed.flatMap(({ server, answer }) => answer === wanted ? [server] : []);
-  const isDown = ({ machineId }: IngressServerAddress) => !running.has(machineId) && !unobserved.has(machineId);
+  const isDown = ({ machineId }: IngressServerAddress) =>
+    !containersUnobserved && !running.has(machineId) && !unobserved.has(machineId);
   const closed = answering("closed");
   return {
     kind: "probed",

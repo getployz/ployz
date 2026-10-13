@@ -1,6 +1,6 @@
 import { testConfigEnvironment } from "#/test/config-environment";
 import { createPrivateKey, X509Certificate } from "node:crypto";
-import type { MachineId, PublishCertificateMaterialRequest, RuntimeWatchView, ServiceId } from "@ployz/sdk";
+import type { ContainerId, MachineId, PublishCertificateMaterialRequest, RuntimeWatchView, ServiceId } from "@ployz/sdk";
 import { InngestTestEngine } from "@inngest/test";
 import { ConfigProvider, Effect, Layer } from "effect";
 import { Inngest } from "inngest";
@@ -323,6 +323,19 @@ describe("sync-cluster-domain", () => {
     frame = runtimeWatchFrameFixture({
       machines: [machine("a", "203.0.113.1")],
       incomplete_ids: { machines: [idOf("a")], containers: [], volumes: [], certificates: [] },
+    });
+
+    await sync();
+
+    expect(await row()).toMatchObject({
+      traffic: { kind: "probed", unreachable: [{ machineId: idOf("a"), address: "203.0.113.1" }], down: [] },
+    });
+  });
+
+  it("calls a Server closed rather than down when any container went unobserved", async () => {
+    frame = runtimeWatchFrameFixture({
+      machines: [machine("a", "203.0.113.1")],
+      incomplete_ids: { machines: [], containers: ["c".repeat(64) as ContainerId], volumes: [], certificates: [] },
     });
 
     await sync();
