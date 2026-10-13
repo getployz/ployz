@@ -391,7 +391,7 @@ pub fn no_writer_message(name: &str, copies: &[KnownCopy]) -> String {
         .join(", ");
     if copies.iter().any(|copy| copy.role == CopyRole::Switching) {
         return format!(
-            "Volume {name} is mid-Move; it is held as {listed}. Wait for the Move to finish, or run ployz volume release {name}"
+            "Volume {name} is mid-Move; it is held as {listed}; ployz volume release {name} stops it"
         );
     }
     match copies {
@@ -537,7 +537,7 @@ mod tests {
             );
             assert!(message.contains("hel-1 (switching)"), "{message}");
             assert!(
-                message.ends_with("Wait for the Move to finish, or run ployz volume release data"),
+                message.ends_with("; ployz volume release data stops it"),
                 "{message}"
             );
             assert!(!message.contains("restore"), "{message}");
