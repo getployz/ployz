@@ -114,6 +114,7 @@ export const createCancelStoreDeployment = (inngest: PloyzInngest, runEffect: St
     async ({ event, step }) => {
       // Only the worker's runs are recorded, so any other function's cancellation finds nothing to stop.
       const cancelled = decodeInngestEnvelope(inngestFunctionCancelledEnvelopeSchema)(event);
+      await step.run("finish-volumes", () => runEffect(finishDeployVolumes(cancelled.data.run_id, "cancelled")));
       return step.run("stop-run", () => runEffect(cancelStoreDeploymentRun(cancelled.data.run_id)));
     },
   );

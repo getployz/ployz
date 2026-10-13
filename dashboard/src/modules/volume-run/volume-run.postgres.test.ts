@@ -24,7 +24,7 @@ import { InngestClient } from "#/modules/inngest/client";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { requirements, ServerLacks } from "#/modules/runtime/daemon-compat";
 import { PloyzProviderError, type PloyzSdkError, type PloyzSession } from "#/modules/runtime/ployz.server";
-import { createRunStoreDeployment } from "#/modules/config-store/store-deployment.inngest";
+import { createCancelStoreDeployment, createRunStoreDeployment } from "#/modules/config-store/store-deployment.inngest";
 import type { InngestRunStatus } from "#/modules/inngest/client";
 import { createCloseFinishedVolumeRun, createCloseStaleVolumeRuns, createRunVolume } from "#/modules/volume-run/volume-run.inngest";
 import { operationsOn } from "#/modules/operations/operation-history.server";
@@ -2248,6 +2248,31 @@ describe("volume runs", () => {
       expect(send).toHaveBeenCalledWith(expect.objectContaining({ name: "volume/run.requested" }));
 
       await failed();
+
+      expect((await lanes()).filter((lane) => lane.kind === "move")).toHaveLength(2);
+      expect(send).toHaveBeenCalledTimes(1);
+    });
+
+    it("a Deploy cancelled after taking a move over ends its row cancelled and requests the move again, once", async () => {
+      const taken = await moving();
+      const [placed] = await place();
+      await fence(placed);
+      const cancel = () => new InngestTestEngine({
+        function: createCancelStoreDeployment(new Inngest({ id: "test" }), runEffect),
+        events: [{ name: "inngest/function.cancelled", data: { function_id: "run-store-deployment", run_id: DEPLOY } }],
+      }).execute();
+      send.mockClear();
+
+      expect((await cancel()).error).toBeUndefined();
+
+      expect(await lanes()).toMatchObject([
+        { id: taken.id, state: "yielded" },
+        { kind: "deploy", state: "cancelled", message: "the Deploy was cancelled", inngest_run_id: DEPLOY },
+        { kind: "move", state: "requested", args: { to: "fsn-2" } },
+      ]);
+      expect(send).toHaveBeenCalledTimes(1);
+
+      expect((await cancel()).error).toBeUndefined();
 
       expect((await lanes()).filter((lane) => lane.kind === "move")).toHaveLength(2);
       expect(send).toHaveBeenCalledTimes(1);

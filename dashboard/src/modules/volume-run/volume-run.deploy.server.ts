@@ -142,15 +142,17 @@ const fenceFollowed = Effect.fn("VolumeRun.fenceFollowed")(function* (lane: Extr
 export const fenceDeployVolume = (lane: DeployLane, inngestRunId: string) =>
   lane.kind === "took" ? fenceTaken(lane.run, inngestRunId) : fenceFollowed(lane);
 
+const DEPLOY_ENDS = { done: null, failed: "the Deploy failed", cancelled: "the Deploy was cancelled" } as const;
+
 /**
  * The Deploy's own rows end, whichever way the Deploy did. A move it took over is requested again in the same
  * transaction, once: a retry finds no running row and requests nothing.
  */
-export const finishDeployVolumes = Effect.fn("VolumeRun.finishDeploy")(function* (inngestRunId: string, state: "done" | "failed") {
+export const finishDeployVolumes = Effect.fn("VolumeRun.finishDeploy")(function* (inngestRunId: string, state: keyof typeof DEPLOY_ENDS) {
   const database = yield* Database;
   return yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
-    const rows = yield* drizzle.update(volumeRun).set(ended(state, state === "done" ? null : "the Deploy failed"))
+    const rows = yield* drizzle.update(volumeRun).set(ended(state, DEPLOY_ENDS[state]))
       .where(and(eq(volumeRun.inngestRunId, inngestRunId), eq(volumeRun.kind, "deploy"), eq(volumeRun.state, "running")))
       .returning();
     const requeued: string[] = [];
