@@ -285,6 +285,11 @@ it("marks a node the Working State has back since the Saved version as coming ba
   const added = { ...head, lifecycle: "create" as const, settings: [] };
   const [created] = reviewGroups({ ...diff, changes: [added], draft_changes: [restored] }, services);
   expect(created?.comesBack).toBeUndefined();
+
+  const changed = { ...head, lifecycle: "update" as const };
+  const [merged] = reviewGroups({ ...diff, changes: [changed], draft_changes: [restored] }, services);
+  expect(merged?.lifecycle).toBe("create");
+  expect(merged?.comesBack).toBe(true);
 });
 
 it("lets a whole runtime lifecycle dominate draft children and counts its node marker", () => {

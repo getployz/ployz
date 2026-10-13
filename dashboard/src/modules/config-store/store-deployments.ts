@@ -138,6 +138,7 @@ export function reviewGroups(diff: DiffView, services: readonly ServiceListing[]
     if (draft.lifecycle !== "update") {
       runtime.lifecycle = draft.lifecycle;
       runtime.discardTarget = "saved";
+      if (draft.lifecycle === "create") runtime.comesBack = true;
     }
     runtime.changeCount = runtime.rows.length + (runtime.lifecycle === "update" ? 0 : 1);
   }
