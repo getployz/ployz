@@ -3049,6 +3049,41 @@ describe("volume runs", () => {
       expect(containers.filter((container) => container.running)).toEqual([{ machine: "fsn-2", id: `created-${volumeId}-${cut.guid}`, running: true }]);
     });
 
+    describe("after a Deploy followed the commitment, its placement removed A's Container, and the Service on B was stopped", () => {
+      let cut: Snapshot;
+      const followedThenStopped = async () => {
+        cut = afterCut();
+        const taken = await moving("committed");
+        await harness.pool.query("update volume_run set state = 'failed', finished_at = now() where id = $1", [taken.id]);
+        await fence((await place())[0]);
+        containers = containers.filter((container) => container.machine !== "fsn-1");
+        for (const container of containers) container.running = false;
+        verbs = [];
+      };
+
+      it("a Deploy follows it again, keeps B the writer and starts nothing", async () => {
+        await followedThenStopped();
+
+        const placed = await place();
+
+        expect(placed).toMatchObject([{ kind: "follow", to: "fsn-2" }]);
+        expect(await fence(placed[0])).toEqual({ on: "fsn-2" });
+        expect(verbs).toEqual(["writer@fsn-2(none)"]);
+        expect(containers).toEqual([{ machine: "fsn-2", id: `created-${volumeId}-${cut.guid}`, running: false }]);
+      });
+
+      it("a release settles it done", async () => {
+        await followedThenStopped();
+        const id = (await requested({ kind: "release", args: {} })).id;
+
+        const output = await execute(id, "run-3");
+
+        expect(output.result).toMatchObject({ moved: "fsn-2" });
+        expect(verbs).toEqual(["writer@fsn-2(none)"]);
+        expect((await rows()).at(-1)).toMatchObject({ id, kind: "release", state: "done" });
+      });
+    });
+
     it("on a committed lane whose B was renamed since the commit: it follows B by id and starts the app there", async () => {
       const cut = afterCut();
       await moving("committed");
