@@ -1748,6 +1748,25 @@ describe("volume runs", () => {
         expect((await rows()).at(-1)).toMatchObject({ id, state: "done" });
       });
 
+      it("waits when the Servers cannot be reached at all, then finishes on B once they answer", async () => {
+        await pending();
+        const id = (await requested({ kind: "release", args: {} })).id;
+        const unreachable = frames + 1;
+        frameFault = (read) => read === unreachable;
+
+        const paused = await execute(id, "run-3", [{ id: "01-observe-1", handler: () => { throw new Error("paused"); } }]);
+
+        expect(paused.error).toBeDefined();
+        expect(verbs).toEqual([]);
+        expect((await rows()).at(-1)).toMatchObject({ id, state: "running", message: "waiting for the Servers to answer (check 1 of 8)" });
+
+        const output = await execute(id, "run-3");
+
+        expect(output.result).toMatchObject({ moved: "fsn-2" });
+        expect(verbs).toEqual(["writer@fsn-2(create)", "remove@fsn-1(web-fsn-1)"]);
+        expect((await rows()).at(-1)).toMatchObject({ id, state: "done" });
+      });
+
       it("fails once A stays silent past fifteen minutes of checks, keeping the commitment for the next release", async () => {
         await pending();
         const id = (await requested({ kind: "release", args: {} })).id;
