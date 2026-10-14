@@ -70,25 +70,55 @@ export function withPageContext(message: ModelMessage, block: string): ModelMess
 export type Listing = { project: string; environments: ReadonlyArray<{ id: string; name: string }> };
 
 /**
- * The Project and Environment `block` names, by their current names. The dashboard keeps a page's old names after a
- * rename, and a new Project can take an old name, so a block's Environment id decides; its names are only where to look
- * first. An id no Environment has names no place, since the old names may now belong to another Project.
+ * Where the page puts the agent. The dashboard keeps a page's old names after a rename, and a new Project can take an
+ * old name, so the page's Environment id decides and its names are only where to look first.
  */
+export type PagePlace =
+  /** No page, or one outside any Environment: a tool takes the Organization's defaults. */
+  | { readonly at: "organization" }
+  /** The page's Environment, by its current names. */
+  | { readonly at: "here"; readonly project: string; readonly environment: string }
+  /** No Environment has the page's id any more; the names are what the page showed. */
+  | { readonly at: "gone"; readonly project: string | null; readonly environment: string | null }
+  /** The Store did not answer where the page's Environment is. */
+  | { readonly at: "unread" };
+
+const ORGANIZATION: PagePlace = { at: "organization" };
+
+/** Where `block` puts the agent, by current names. */
 export const placeOfPage = <E, R>(
   block: string | undefined,
   projects: Effect.Effect<ReadonlyArray<string>, E, R>,
   environmentsOf: (project: string) => Effect.Effect<Listing, E, R>,
-) => Effect.gen(function* () {
+): Effect.Effect<PagePlace, never, R> => Effect.gen(function* () {
   const at = block === undefined ? new Map<string, string>() : readPageContext(block);
-  const named = { project: at.get("project") ?? null, environment: at.get("environment") ?? null };
+  const project = at.get("project");
+  const environment = at.get("environment");
   const id = at.get("environment_id");
-  if (id === undefined) return named;
-  const listed = yield* projects;
-  const order = [...listed.filter((project) => project === named.project), ...listed.filter((project) => project !== named.project)];
-  for (const project of order) {
-    const listing = yield* environmentsOf(project);
-    const environment = listing.environments.find((candidate) => candidate.id === id);
-    if (environment !== undefined) return { project: listing.project, environment: environment.name };
+  if (id === undefined) {
+    return project === undefined || environment === undefined ? ORGANIZATION : { at: "here", project, environment } as const;
   }
-  return { project: null, environment: null };
-});
+  const listed = yield* projects;
+  const order = [...listed.filter((name) => name === project), ...listed.filter((name) => name !== project)];
+  for (const name of order) {
+    const listing = yield* environmentsOf(name);
+    const found = listing.environments.find((candidate) => candidate.id === id);
+    if (found !== undefined) return { at: "here", project: listing.project, environment: found.name } as const;
+  }
+  return { at: "gone", project: project ?? null, environment: environment ?? null } as const;
+}).pipe(Effect.catch(() => Effect.succeed({ at: "unread" } as const)));
+
+/** The Project and Environment a tool call runs in, or why it may not run. */
+export type CallPlace =
+  | { readonly ok: true; readonly project: string | null; readonly environment: string | null }
+  | { readonly ok: false; readonly code: "not_found" | "unavailable"; readonly message: string };
+
+export function placeForCall(page: PagePlace, call: { readonly scoped: boolean; readonly namesProject: boolean }): CallPlace {
+  if (page.at === "here") return { ok: true, project: page.project, environment: page.environment };
+  if (page.at === "organization" || !call.scoped || call.namesProject) return { ok: true, project: null, environment: null };
+  if (page.at === "unread") {
+    return { ok: false, code: "unavailable", message: "Ployz could not read which environment this page shows. Try again, or name the project and environment to act in." };
+  }
+  const shown = page.project === null || page.environment === null ? "" : ` ${page.project}/${page.environment}`;
+  return { ok: false, code: "not_found", message: `The environment${shown} this page showed no longer exists. Name the project and environment to act in.` };
+}
