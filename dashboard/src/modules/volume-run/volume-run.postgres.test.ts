@@ -2354,7 +2354,7 @@ describe("volume runs", () => {
         .then(() => null, (error: Error) => error);
 
       expect(failure).toBeInstanceOf(NonRetriableError);
-      expect(await rows()).toMatchObject([{ state: "failed", message: "data is mid-run; ployz volume release data stops it" }]);
+      expect(await rows()).toMatchObject([{ state: "failed", message: "data on fsn-1 is mid-run; try again once the run ends" }]);
     });
   });
 
