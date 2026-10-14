@@ -58,10 +58,11 @@ claude mcp add -s user ployz -- ployz mcp
 ```
 
 For Codex, run `codex mcp add ployz -- ployz mcp`. The tools act signed in as you. They create
-Projects, read and stage changes in them, review, publish and deploy them, show Services, Servers
+Projects, read and stage changes in them, review, publish and deploy them, restore or undo a
+saved version, list, follow, redeploy, start and cancel their deployments, show Services, Servers
 and Volumes, and read a Service's recent logs. The agent can resend a call after a lost reply
-without running it twice. Each call acts where the agent's directory is linked when the call starts, so after
-`ployz link` or `ployz org use` the next call follows it.
+without running it twice. Each call acts where the agent's directory is linked when the call
+starts, so after `ployz link` or `ployz org use` the next call follows it.
 
 Some things are not tools. Run these yourself in a terminal:
 
@@ -73,7 +74,7 @@ Some things are not tools. Run these yourself in a terminal:
 
 Tools that can remove something are marked destructive: `publish`, `deploy`,
 `environment_remove`, `project_remove`, the server commands that drain, clean or remove a
-server, and the Volume commands that move, mirror or release a copy. When one of them needs your
+server, and the Volume commands that move, mirror, release or restore a copy. When one of them needs your
 approval (see
 [Destructive actions ask first](../account/organizations.md#destructive-actions-ask-first)),
 the agent's app shows you what it would remove and asks you to approve or deny it. Removing a
@@ -91,6 +92,20 @@ that approval.
 started keeps going in Cloud, and the error names the tool that shows where it stands. A call
 stopped while Cloud had not yet answered its change says the change may have landed, and the
 agent can resend it without running it twice.
+
+## Search the docs
+
+`ployz docs` searches these docs from your terminal, offline. Ask a question and it prints the
+five sections that match best, each with its page and an excerpt:
+
+```sh
+ployz docs add a custom domain
+```
+
+Name a page instead to print it whole, as Markdown: `ployz docs services/domains.md`, or just
+`ployz docs domains.md`. With `--json`, a search returns `results` with each section's `path`,
+`anchor` and `excerpt`, and a page returns its `content`. Your coding agent gets the same search
+as the `docs` tool from `ployz mcp`.
 
 ## Commands from Ployz Cloud
 

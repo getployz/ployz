@@ -1,6 +1,6 @@
 import type { MachineUpgradeAttempt, MachineUpgradeAttemptId, RuntimeWatchView } from "@ployz/sdk";
 import { InngestTestEngine } from "@inngest/test";
-import { Effect } from "effect";
+import { ConfigProvider, Effect, Layer } from "effect";
 import { Inngest } from "inngest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
@@ -14,7 +14,12 @@ import {
   runtimeWatchMachineFixture,
   runtimeWatchMachineObservationFixture,
 } from "#/modules/runtime/runtime-watch-frame.test-fixture";
-import { createCancelServerUpgrade, createRollOutServerUpgrade, createScheduleServerUpgrades } from "#/modules/server-upgrade/server-upgrade.inngest";
+import {
+  createCancelServerUpgrade,
+  createRollOutServerUpgrade,
+  createScheduleServerUpgrades,
+  executeRollOutServerUpgrade,
+} from "#/modules/server-upgrade/server-upgrade.inngest";
 import {
   listLatestServerUpgrades,
   readCliServerUpgrade,
@@ -23,8 +28,10 @@ import {
   setServerUpgradeSettings,
 } from "#/modules/server-upgrade/server-upgrade.server";
 import { admitOperation } from "#/modules/operations/keyed.server";
+import { AppConfig } from "#/server/config.server";
 import type { Database } from "#/server/database.server";
 import { makeInngestEffectRunner, type runInngestEffect } from "#/server/run.server";
+import { testConfigEnvironment } from "#/test/config-environment";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
 
 const organizationId = "00000000-0000-4000-8000-000000000c01";
@@ -79,13 +86,17 @@ describe("roll-out-server-upgrade", () => {
     if (answer.outcome !== "running") log.push(`${answer.outcome} ${machine}`);
     return Effect.andThen(outlive, Effect.succeed(attempt(attemptId, answer)));
   };
-  const runEffect = makeInngestEffectRunner(<A, E>(operation: Effect.Effect<A, E, Database | OrganizationRuntime | InngestClient>) =>
+  const runEffect = makeInngestEffectRunner(<A, E>(operation: Effect.Effect<A, E, Database | OrganizationRuntime | InngestClient | AppConfig>) =>
     harness.runEffect(operation.pipe(
+      Effect.provide(AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({
+        env: { ...testConfigEnvironment(), APP_URL: "https://cloud.example.com", DATABASE_URL: harness.databaseUrl },
+      }))))),
       Effect.provideService(InngestClient, inngest),
       Effect.provideService(PostHog, {
         capture: (input) => Effect.sync(() => void captured.push(input)),
         identify: (distinctId, properties) => Effect.sync(() => void identified.push([distinctId, properties])),
         identifyOrganization: () => Effect.void,
+        toolCall: () => Effect.void,
       }),
       Effect.provideService(OrganizationRuntime, {
         cancel: () => Effect.void,
@@ -546,6 +557,148 @@ describe("roll-out-server-upgrade", () => {
         event: "server_upgrade_unknown",
         properties: expect.objectContaining({ trigger: "automatic", stage: "restarting" }),
       })]);
+    });
+
+    describe("failure mail", () => {
+      const otherUserId = "00000000-0000-4000-8000-000000000c03";
+      /** Each `mail/send` event queued, as recipient, key, subject and plain text. */
+      const mails = () => send.mock.calls.flatMap(([event]) => [event].flat())
+        .filter((event) => event.name === "mail/send")
+        .map((event) => ({
+          to: event.data["to"],
+          id: event.id,
+          subject: event.data["subject"],
+          text: String(event.data["text"]),
+        }));
+
+      beforeEach(async () => {
+        await harness.pool.query(`
+          insert into "user" (id, email, name) values ('${otherUserId}', 'other@example.com', 'Other');
+          insert into member (id, organization_id, user_id, role, created_at)
+          values (gen_random_uuid(), '${organizationId}', '${otherUserId}', 'member', now());
+        `);
+      });
+
+      it("an automatic rollout that fails mails every member once, naming the Server, its versions, stage and error", async () => {
+        pollAnswersFor[serverId("2")] = [failure];
+
+        await rollOut(null, "automatic");
+
+        const queued = mails();
+        expect(new Set(queued.map(({ to }) => to))).toEqual(new Set(["member@example.com", "other@example.com"]));
+        expect(queued).toHaveLength(2);
+        const runIds = new Set(queued.map(({ id }) => /^mail-upgrade-rollout:(.+):[^:]+$/u.exec(id ?? "")?.[1]));
+        expect(runIds.size).toBe(1);
+        const [runId] = [...runIds];
+        expect(new Set(queued.map(({ id }) => id))).toEqual(new Set([`mail-upgrade-rollout:${runId}:${userId}`, `mail-upgrade-rollout:${runId}:${otherUserId}`]));
+        expect(queued[0]?.subject).toBe("web-2 didn't upgrade to 0.2.2");
+        expect(queued[0]?.text).toContain("web-2: Rolled back to 0.2.1");
+        expect(queued[0]?.text).toContain(`View server: https://cloud.example.com/cloud/acme/~/servers/${serverId("2")}`);
+        expect(queued[0]?.text).not.toContain("web-1");
+      });
+
+      it("an automatic attempt that ends unknown mails it as unknown with the last stage seen", async () => {
+        frame = runtimeWatchFrameFixture({ machines: [server("1", "web-1", "0.2.1")] });
+        pollAnswers = [running("activating"), "unreadable"];
+        outliveAfterPolls = 3;
+
+        await rollOut(null, "automatic");
+
+        const queued = mails();
+        expect(queued).toHaveLength(2);
+        expect(queued[0]?.text).toContain("web-1: Stopped reporting partway through");
+      });
+
+      it("an automatic rollout that succeeds mails nobody", async () => {
+        await rollOut(null, "automatic");
+
+        expect(requests).toHaveLength(3);
+        expect(mails()).toEqual([]);
+      });
+
+      it("a manual Upgrade that fails mails nobody", async () => {
+        pollAnswersFor[serverId("2")] = [failure];
+
+        await rollOut(null);
+        await rollOut(serverId("2"));
+
+        expect(await rows()).toMatchObject([{ outcome: "succeeded" }, { outcome: "failed" }, { outcome: "failed" }]);
+        expect(mails()).toEqual([]);
+      });
+
+      it("skips a member who chose None for failed upgrades", async () => {
+        await harness.pool.query(`
+          insert into notification_preference (user_id, type, channel) values ('${otherUserId}', 'upgrade-failed', 'none');
+        `);
+        pollAnswersFor[serverId("2")] = [failure];
+
+        await rollOut(null, "automatic");
+
+        expect(mails().map(({ to }) => to)).toEqual(["member@example.com"]);
+      });
+
+      it("a retried mail step queues the same key per member, so each gets one email", async () => {
+        pollAnswersFor[serverId("2")] = [failure];
+        const memo = new Map<string, Promise<object | undefined>>();
+        const step = {
+          run: (id: string, handler: () => Promise<object | undefined>) => {
+            const memoized = memo.get(id) ?? handler();
+            memo.set(id, memoized);
+            return memoized;
+          },
+          sleep: async () => undefined,
+        };
+        const event = { data: { organizationId, machineId: null, trigger: "automatic", userId: null } };
+
+        await executeRollOutServerUpgrade({ event, step: asTestDouble<Parameters<typeof executeRollOutServerUpgrade>[0]["step"]>()(step), runId: "run-1" }, runEffect);
+        memo.delete("mail-upgrade-failures");
+        await executeRollOutServerUpgrade({ event, step: asTestDouble<Parameters<typeof executeRollOutServerUpgrade>[0]["step"]>()(step), runId: "run-1" }, runEffect);
+
+        const keys = mails().map(({ id }) => id);
+        expect(keys).toHaveLength(4);
+        expect(new Set(keys)).toEqual(new Set([`mail-upgrade-rollout:run-1:${userId}`, `mail-upgrade-rollout:run-1:${otherUserId}`]));
+        expect(requests).toHaveLength(2);
+      });
+
+      it("a cancelled automatic run mails its attempt as unknown, named from the Runtime Watch", async () => {
+        await harness.pool.query(`
+          insert into server_upgrade_attempt (organization_id, machine_id, attempt_id, trigger, channel, from_version, target_version, stage, inngest_run_id, started_at)
+          values ('${organizationId}', '${serverId("2")}', '${"b".repeat(32)}', 'automatic', 'stable', '0.2.1', '0.2.2', 'restarting', 'run-9', now());
+        `);
+
+        await new InngestTestEngine({
+          function: createCancelServerUpgrade(new Inngest({ id: "test" }), runEffect),
+          events: [{ name: "inngest/function.cancelled", data: { function_id: "test-roll-out-server-upgrade", run_id: "run-9" } }],
+        }).execute();
+
+        const queued = mails();
+        expect(new Set(queued.map(({ id }) => id))).toEqual(new Set([`mail-upgrade-rollout:run-9:${userId}`, `mail-upgrade-rollout:run-9:${otherUserId}`]));
+        expect(queued[0]?.text).toContain("web-2: Stopped reporting partway through");
+      });
+
+      it("the hourly sweep mails an automatic attempt it closes for a lost run", async () => {
+        await harness.pool.query(`
+          insert into server_upgrade_attempt (organization_id, machine_id, attempt_id, trigger, channel, from_version, target_version, stage, inngest_run_id, started_at)
+          values ('${organizationId}', '${serverId("3")}', '${"b".repeat(32)}', 'automatic', 'stable', '0.2.1', '0.2.2', 'activating', 'run-7', now() - interval '21 minutes');
+        `);
+
+        expect((await schedule()).result).toMatchObject({ closed: 1 });
+
+        const queued = mails();
+        expect(new Set(queued.map(({ id }) => id))).toEqual(new Set([`mail-upgrade-rollout:run-7:${userId}`, `mail-upgrade-rollout:run-7:${otherUserId}`]));
+        expect(queued[0]?.text).toContain("web-3: Stopped reporting partway through");
+      });
+
+      it("a sweep retried after its send failed mails the Rollout it already closed", async () => {
+        await harness.pool.query(`
+          insert into server_upgrade_attempt (organization_id, machine_id, attempt_id, trigger, channel, from_version, target_version, stage, outcome, inngest_run_id, started_at, ended_at)
+          values ('${organizationId}', '${serverId("3")}', '${"c".repeat(32)}', 'automatic', 'stable', '0.2.1', '0.2.2', 'activating', 'unknown', 'run-8', now() - interval '25 minutes', now() - interval '1 minute');
+        `);
+
+        expect((await schedule()).result).toMatchObject({ closed: 0 });
+
+        expect(new Set(mails().map(({ id }) => id))).toEqual(new Set([`mail-upgrade-rollout:run-8:${userId}`, `mail-upgrade-rollout:run-8:${otherUserId}`]));
+      });
     });
   });
 

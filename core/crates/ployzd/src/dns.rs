@@ -210,8 +210,6 @@ impl Projection {
         source: IpAddr,
     ) -> ResponsePlan {
         if record_type != RecordType::A {
-            // TODO: internal records remain A-only; other types return an authoritative
-            // empty NOERROR response until a product decision adds them.
             return ResponsePlan::Internal {
                 code: ResponseCode::NoError,
                 answers: Vec::new(),
@@ -264,7 +262,6 @@ impl Projection {
                 answers: Vec::new(),
             };
         }
-        // TODO: keep TTL zero rather than adding a DNS cache without a product decision.
         let answers = addresses
             .into_iter()
             .map(|address| Record::from_rdata(name.clone(), 0, RData::A(A(address))))

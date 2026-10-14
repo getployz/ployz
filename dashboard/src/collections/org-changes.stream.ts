@@ -9,7 +9,9 @@ import { useCollectionScope } from "./use-collection-scope";
 import { organizationKeys } from "#/modules/organization/organization-state.queries";
 import { refetchStoreViews, storeViewPrefix } from "#/modules/config-store/store-view.queries";
 import { serverDrainKeys } from "#/modules/machines/server-drain.queries";
+import { serverWebTrafficKeys } from "#/modules/machines/server-web-traffic.queries";
 import { volumeRunKeys } from "#/modules/volume-run/volume-run.queries";
+import { serviceActKeys } from "#/modules/service-act/service-act.queries";
 import { volumePlacementKeys } from "#/modules/volume-placement/volume-placement.queries";
 import { serverUpgradeKeys } from "#/modules/server-upgrade/server-upgrade.queries";
 import { liveStream } from "#/lib/live.stream";
@@ -35,7 +37,9 @@ const refetches = {
   organization: (_organizationSlug: string, scope: CollectionScope) => void scope.queryClient.invalidateQueries({ queryKey: organizationKeys.all }),
   server_upgrade: (_organizationSlug: string, scope: CollectionScope) => void scope.queryClient.invalidateQueries({ queryKey: serverUpgradeKeys.all }),
   server_drain: (_organizationSlug: string, scope: CollectionScope) => void scope.queryClient.invalidateQueries({ queryKey: serverDrainKeys.all }),
+  server_web_traffic: (_organizationSlug: string, scope: CollectionScope) => void scope.queryClient.invalidateQueries({ queryKey: serverWebTrafficKeys.all }),
   volume_run: (_organizationSlug: string, scope: CollectionScope) => void scope.queryClient.invalidateQueries({ queryKey: volumeRunKeys.all }),
+  service_act: (_organizationSlug: string, scope: CollectionScope) => void scope.queryClient.invalidateQueries({ queryKey: serviceActKeys.all }),
   volume_placement: (_organizationSlug: string, scope: CollectionScope) => void scope.queryClient.invalidateQueries({ queryKey: volumePlacementKeys.all }),
 } satisfies Record<Exclude<ChangeName, StoreViewName>, Refetch>;
 

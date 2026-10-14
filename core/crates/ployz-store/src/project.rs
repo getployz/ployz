@@ -19,7 +19,8 @@ const DEFAULT_ENVIRONMENT: &str = "production";
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct CreateProject {
-    /// The new Project's ID.
+    /// Minted by the caller: sending the same command again with it returns the first
+    /// result.
     pub id: ProjectId,
     /// Its name, unique in the Organization.
     pub name: ProjectName,
@@ -30,18 +31,14 @@ pub struct CreateProject {
 /// The new Project and its Default Environment.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct ProjectCreated {
-    /// The Project.
     pub project: ProjectSummary,
-    /// Its Default Environment.
     pub environment: EnvironmentSummary,
 }
 
 /// A Project as results name it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct ProjectSummary {
-    /// Its durable identity.
     pub id: ProjectId,
-    /// Its name.
     pub name: ProjectName,
 }
 
@@ -59,7 +56,8 @@ pub struct RenameProject {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct CreateEnvironment {
-    /// The new Environment's ID.
+    /// Minted by the caller: sending the same command again with it returns the first
+    /// result.
     pub id: EnvironmentId,
     /// The Project to create it in; omitted means the Organization's only Project.
     #[serde(default)]
@@ -71,7 +69,6 @@ pub struct CreateEnvironment {
 /// The new, empty Environment.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct EnvironmentCreated {
-    /// The Environment.
     pub environment: EnvironmentSummary,
 }
 
@@ -147,7 +144,6 @@ pub(crate) fn create_environment(
     Ok(EnvironmentCreated { environment })
 }
 
-/// Insert an empty Environment.
 pub(crate) fn insert_environment(
     tx: &mut dyn Tx,
     who: &Actor,

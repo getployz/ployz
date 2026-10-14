@@ -92,7 +92,7 @@ pub struct LowerDeploymentSnapshot {
 pub struct LowerDeploymentVolume {
     /// The authored Volume's ID, as mounts name it.
     pub volume_resource_id: String,
-    /// Its fixed storage.
+    /// Fixed once the Volume's first Deployment is requested.
     pub storage: VolumeKind,
 }
 

@@ -153,7 +153,6 @@ describe("Details", () => {
 
     expect(screen.getByText("1 change in fix-api, not yet saved.")).toBeTruthy();
     expect(screen.getByText("nginx · will be added").className).toContain("text-success");
-    // One Environment's own changes alone need no heading.
     expect(screen.queryByRole("heading", { level: 3 })).toBeNull();
     fireEvent.click((await menuOf("nginx")).getByRole("menuitem", { name: "Discard" }));
     expect(test.onDiscardNode).toHaveBeenCalledWith(nginx);
@@ -184,7 +183,6 @@ describe("Details", () => {
     expect(incoming.getByText(fromProduction.description)).toBeTruthy();
     expect(incoming.getByText("CACHE_TTL").className).toContain("font-mono");
     expect(incoming.queryByText(/^From production$/u)).toBeNull();
-    // The node in muted text, and old → new with the new value in the changed colour.
     const line = lineOf("CACHE_TTL");
     expect(line.getByText("api").className).toContain("text-muted-foreground");
     expect(line.getByText("300").className).toContain("text-changed-deep");

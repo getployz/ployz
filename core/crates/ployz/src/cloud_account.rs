@@ -5,6 +5,8 @@
 //! Every call carries one credential: `PLOYZ_TOKEN` when set, else this device's
 //! approved sign-in. Either acts in exactly one Organization.
 
+use std::time::Duration;
+
 use ployz_core::{MachineId, MachineName, RpcError};
 use reqwest::{Method, StatusCode};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -13,6 +15,11 @@ use crate::cloud_enroll::cloud_origin;
 use crate::cloud_login::{
     self, CredentialStore, DEFAULT_CLOUD, LoginError, Organization, Secret, SignedIn,
 };
+
+/// How long a call that can start an operation waits for Cloud's answer. Cloud plans
+/// before it answers, asking the Servers for their copies (up to about 20s when one is
+/// slow), so the client's 15s default would give up on a run Cloud goes on to start.
+const OPERATION_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// What a Cloud call acts with.
 pub(crate) enum Credential {
@@ -153,13 +160,11 @@ pub(crate) struct RevokingEntry {
     pub(crate) unconfirmed: Vec<MachineId>,
 }
 
-/// What a credential is.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum CredentialKind {
     /// An Organization Token (`PLOYZ_TOKEN`).
     Token,
-    /// A signed-in device.
     Device,
 }
 
@@ -357,7 +362,7 @@ async fn send_approved(
     approval: Option<&str>,
     request_key: Option<&str>,
 ) -> Result<reqwest::Response, LoginError> {
-    let mut request = request(credential, method, url, Some(body))?;
+    let mut request = request(credential, method, url, Some(body))?.timeout(OPERATION_TIMEOUT);
     if let Some(approval) = approval {
         request = request.header("x-ployz-approval", approval);
     }

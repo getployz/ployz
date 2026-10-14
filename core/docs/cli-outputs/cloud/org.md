@@ -2,7 +2,7 @@
 
 Captured by cloud/run.sh against a seeded local Ployz Cloud (dashboard verify), signed in as ada@example.com unless noted. Cloud URL varies per run.
 
-## org ls / use (second Organization babbage created through the auth API)
+## org ls / use (second Organization babbage, owned by Ada)
 
 ### org ls
 

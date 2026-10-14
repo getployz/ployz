@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 
-import { Data, Effect, Schema } from "effect";
+import { Effect, Schema } from "effect";
 import { Minimatch } from "minimatch";
 import {
   createGithubRepositoriesSyncRequestedEvent,
@@ -10,13 +10,14 @@ import {
 import { sendInngestEvent } from "#/modules/inngest/client";
 import { listGithubRepositoryFiles, listGithubRepositoryBranches } from "#/modules/github/github.api";
 import {
-  deleteCachedGithubRepositories,
   deleteCachedGithubRepositoriesById,
-  deleteGithubInstallationsByProviderId,
-  findUserIdByGithubAccountId,
-  getCachedGithubRepositoryForUser,
-  listGithubInstallationsForUser,
-  listGithubInstallationUserIds,
+  deleteCachedGithubRepositoriesForInstallation,
+  deleteGithubInstallation,
+  getCachedGithubRepositoryForOrganization,
+  listCachedGithubRepositoriesForOrganization,
+  listGithubInstallationsForOrganization,
+  listLinkedOrganizationIds,
+  suspendGithubInstallation,
   upsertCachedGithubRepositories,
   upsertGithubInstallation,
 } from "#/modules/github/github.repository";
@@ -24,21 +25,16 @@ import type {
   GithubRepository,
 } from "#/modules/github/github";
 import type { Actor } from "#/modules/identity/actor";
+import { requireAccess } from "#/modules/organization/access.server";
+import { accessFor, type GithubAccess } from "./github-access";
 import { GithubApi, resolveGithubRepository } from "./github-observation.api";
 import { githubIdSchema, githubRepositoryFullNameSchema } from "./github-ingestion.contracts";
 import { normalizePublicGithubRepository } from "./public-repository";
-import { AppConfig } from "#/server/config.server";
+import { AppConfig, type GithubOrigins } from "#/server/config.server";
 import { Validation, NotFound } from "#/server/public-error";
 
-export class GithubAccountNotLinked extends Data.TaggedError(
-  "GithubAccountNotLinked",
-)<{ readonly accountId: string }> {
-  readonly publicErrorCategory = "internal" as const;
-  readonly retriable = false as const;
-}
-
-export function getGithubAppInstallUrl(input: { readonly slug: string }) {
-  return `https://github.com/apps/${input.slug}/installations/new`;
+export function getGithubAppInstallUrl(github: { readonly appSlug: string; readonly origins: GithubOrigins }) {
+  return `${github.origins.web}/apps/${github.appSlug}/installations/new`;
 }
 
 function isUsableInstallationAction(
@@ -50,22 +46,6 @@ function isUsableInstallationAction(
     action === "new_permissions_accepted"
   );
 }
-
-const getGithubWebhookAffectedUserIds = Effect.fn(
-  "Github.getWebhookAffectedUserIds",
-)(function* (payload: GithubInstallationRepositoriesWebhookEventData) {
-  const [installationUserIds, senderUserId] = yield* Effect.all([
-    listGithubInstallationUserIds(payload.installation.id),
-    findUserIdByGithubAccountId(String(payload.sender.id)),
-  ]);
-  return Array.from(
-    new Set(
-      senderUserId === null
-        ? installationUserIds
-        : [...installationUserIds, senderUserId],
-    ),
-  );
-});
 
 function githubRepositoryFromWebhook(
   repository: GithubInstallationRepositoriesWebhookEventData["repositories_added"][number],
@@ -81,23 +61,17 @@ function githubRepositoryFromWebhook(
   };
 }
 
+/**
+ * An installation webhook records what GitHub told us and grants nothing: only an Organization's link row does.
+ * `suspend` marks the installation suspended and empties its repository cache, keeping every Organization's link, so
+ * `unsuspend` brings it back; `deleted` forgets the installation, which cascades to its cache and every link. Both
+ * name the Organizations that were linked, whose builds through it must stop now.
+ */
 export const processGithubInstallationEvent = Effect.fn(
   "Github.processInstallationEvent",
 )(function* (payload: GithubInstallationWebhookEventData) {
   if (isUsableInstallationAction(payload.action)) {
-    const senderId = String(payload.sender.id);
-    const userId = yield* findUserIdByGithubAccountId(senderId);
-    if (userId === null) {
-      yield* Effect.logError("GitHub installation sender is not linked", {
-        deliveryId: payload.deliveryId,
-        senderId,
-        senderLogin: payload.sender.login,
-        installationId: payload.installation.id,
-      });
-      return yield* new GithubAccountNotLinked({ accountId: senderId });
-    }
     yield* upsertGithubInstallation({
-      userId,
       installationId: payload.installation.id,
       accountLogin: payload.installation.account.login,
       accountType: payload.installation.account.type,
@@ -106,16 +80,19 @@ export const processGithubInstallationEvent = Effect.fn(
     return {
       installationId: payload.installation.id,
       shouldSyncRepositories: true,
+      stopBuildsFor: [],
     };
   }
 
-  yield* Effect.all([
-    deleteGithubInstallationsByProviderId(payload.installation.id),
-    deleteCachedGithubRepositories(payload.installation.id),
-  ], { concurrency: "unbounded" });
+  const stopBuildsFor = yield* listLinkedOrganizationIds(payload.installation.id);
+  if (payload.action === "suspend") {
+    yield* suspendGithubInstallation(payload.installation.id);
+    yield* deleteCachedGithubRepositoriesForInstallation(payload.installation.id);
+  } else yield* deleteGithubInstallation(payload.installation.id);
   return {
     installationId: payload.installation.id,
     shouldSyncRepositories: false,
+    stopBuildsFor,
   };
 });
 
@@ -128,17 +105,8 @@ export const processGithubInstallationRepositoriesEvent = Effect.fn(
   const removedRepositoryIds = payload.repositories_removed.map(
     (repository) => repository.id,
   );
-  if (addedRepositories.length === 0 && removedRepositoryIds.length === 0) {
-    return {
-      installationId: payload.installation.id,
-      shouldSyncRepositories: false,
-    };
-  }
-
-  const userIds = yield* getGithubWebhookAffectedUserIds(payload);
   if (addedRepositories.length > 0) {
     yield* upsertCachedGithubRepositories({
-      userIds,
       installationId: payload.installation.id,
       repositories: addedRepositories,
       syncedAt: new Date(),
@@ -156,23 +124,31 @@ export const processGithubInstallationRepositoriesEvent = Effect.fn(
   };
 });
 
-export const getGithubRepoAccessState = Effect.fn(
-  "Github.getRepoAccessState",
-)(function* (actor: Actor) {
-  const installations = yield* listGithubInstallationsForUser(actor.userId);
-  return { hasInstallations: installations.length > 0 };
-});
-
-export const getGithubInstallUrl = Effect.fn("Github.getInstallUrl")(
-  function* () {
-    const config = yield* AppConfig;
-    return { url: getGithubAppInstallUrl({ slug: config.github.appSlug }) };
+export const listGithubRepositories = Effect.fn("Github.listRepositories")(
+  function* (actor: Actor, organizationSlug: string) {
+    const { organization } = yield* requireAccess(actor, organizationSlug, "operate");
+    return yield* listCachedGithubRepositoriesForOrganization(organization.id);
   },
 );
 
+export const getGithubRepoAccessState = Effect.fn(
+  "Github.getRepoAccessState",
+)(function* (actor: Actor, organizationSlug: string) {
+  const { organization } = yield* requireAccess(actor, organizationSlug, "operate");
+  const installations = yield* listGithubInstallationsForOrganization(organization.id);
+  return { hasInstallations: installations.length > 0 };
+});
+
+/** Where browser links to GitHub go: github.com, or a verify lab's fake. */
+export const getGithubWeb = Effect.fn("Github.getWeb")(function* () {
+  const config = yield* AppConfig;
+  return { origin: config.github.origins.web, installUrl: getGithubAppInstallUrl(config.github) };
+});
+
 export const requestGithubRepoSync = Effect.fn("Github.requestRepoSync")(
-  function* (actor: Actor) {
-    const installations = yield* listGithubInstallationsForUser(actor.userId);
+  function* (actor: Actor, organizationSlug: string) {
+    const { organization } = yield* requireAccess(actor, organizationSlug, "operate");
+    const installations = yield* listGithubInstallationsForOrganization(organization.id);
     if (installations.length === 0) {
       return { requestedInstallationCount: 0, hasInstallations: false };
     }
@@ -191,23 +167,32 @@ export const requestGithubRepoSync = Effect.fn("Github.requestRepoSync")(
   },
 );
 
+type RepositoryInput = {
+  readonly organizationSlug: string;
+  readonly repositoryId: number;
+  readonly installationId: number | null;
+};
+
+const readableRepository = Effect.fn("Github.readableRepository")(function* (actor: Actor, input: RepositoryInput) {
+  const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
+  const access: GithubAccess = accessFor(organization.id, input.installationId);
+  const repository = input.installationId === null
+    // A private repository reads as absent to the public API.
+    ? yield* resolveGithubRepository(access, input.repositoryId).pipe(Effect.catchTag("GithubObservationError",
+      (error) => error.code === "not_found" ? Effect.succeed(null) : Effect.fail(error)))
+    : yield* getCachedGithubRepositoryForOrganization({
+      organizationId: organization.id, installationId: input.installationId, repositoryId: input.repositoryId,
+    });
+  if (repository === null) {
+    return yield* new NotFound({ message: "The GitHub repository installation was not found." });
+  }
+  return { access, fullName: repository.fullName };
+});
+
 export const listGithubBranches = Effect.fn("Github.listBranches")(
-  function* (
-    actor: Actor,
-    input: { readonly repositoryId: number; readonly installationId: number | null },
-  ) {
-    const repository = input.installationId === null
-      ? yield* resolveGithubRepository(null, input.repositoryId)
-      : yield* getCachedGithubRepositoryForUser({ userId: actor.userId, repositoryId: input.repositoryId, installationId: input.installationId });
-    if (repository === null) {
-      return yield* new NotFound({
-        message: "The GitHub repository installation was not found.",
-      });
-    }
-    const branches = yield* listGithubRepositoryBranches(
-      input.installationId,
-      repository.fullName,
-    );
+  function* (actor: Actor, input: RepositoryInput) {
+    const repository = yield* readableRepository(actor, input);
+    const branches = yield* listGithubRepositoryBranches(repository.access, repository.fullName);
     return { branches };
   },
 );
@@ -215,19 +200,9 @@ export const listGithubBranches = Effect.fn("Github.listBranches")(
 export { verifyWebhookSignature } from "#/modules/github/github.api";
 
 export const searchGithubFiles = Effect.fn("Github.searchFiles")(
-  function* (actor: Actor, input: {
-    repositoryId: number;
-    installationId: number | null;
-    ref: string;
-    pattern: string;
-  }) {
-    const repository = input.installationId === null
-      ? yield* resolveGithubRepository(null, input.repositoryId)
-      : yield* getCachedGithubRepositoryForUser({ userId: actor.userId, repositoryId: input.repositoryId, installationId: input.installationId });
-    if (repository === null) {
-      return yield* new NotFound({ message: "The GitHub repository installation was not found." });
-    }
-    const files = yield* listGithubRepositoryFiles(input.installationId, repository.fullName, input.ref);
+  function* (actor: Actor, input: RepositoryInput & { readonly ref: string; readonly pattern: string }) {
+    const repository = yield* readableRepository(actor, input);
+    const files = yield* listGithubRepositoryFiles(repository.access, repository.fullName, input.ref);
     const matcher = basicGlob(input.pattern);
     const paths = files.paths.filter((path) => matcher.match(path)).sort();
     return {
@@ -248,7 +223,7 @@ export const resolvePublicGithubRepository = Effect.fn("Github.resolvePublicRepo
   const name = normalizePublicGithubRepository(input);
   if (!name) return yield* new Validation({ message: "Enter owner/repo or a GitHub repository URL. Select the branch separately." });
   const api = yield* GithubApi;
-  const repo = yield* api.json({ installationId: null, url: `https://api.github.com/repos/${name}`, operation: "resolve_repository",
+  const repo = yield* api.json({ access: { type: "public" }, path: `/repos/${name}`, operation: "resolve_repository",
     schema: Schema.Struct({ id: githubIdSchema, full_name: githubRepositoryFullNameSchema, private: Schema.Literal(false), default_branch: Schema.NonEmptyString }) });
   return { fullName: repo.full_name, repositoryId: repo.id, access: { type: "public" as const }, defaultBranch: repo.default_branch };
 });

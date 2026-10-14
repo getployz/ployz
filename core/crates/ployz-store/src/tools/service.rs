@@ -24,11 +24,11 @@ use ployz_core::{RpcError, RpcErrorCode, ServiceName};
 pub(crate) struct ServiceInspect {
     #[schemars(with = "String", pattern(NODE_NAME))]
     service: ServiceName,
-    /// Project name. Omit for the one you are in.
+    /// Project name.
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(NODE_NAME))]
     project: Option<ProjectName>,
-    /// Environment name, e.g. staging. Omit for the one you are in.
+    /// Environment name, e.g. staging.
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(NODE_NAME))]
     environment: Option<EnvironmentName>,
@@ -113,11 +113,11 @@ pub(crate) struct ServiceAdd {
     /// Write only if the place is still at this revision. Omit unless you just read it.
     #[serde(default)]
     expect_revision: Option<u64>,
-    /// Project name. Omit for the one you are in.
+    /// Project name.
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(NODE_NAME))]
     project: Option<ProjectName>,
-    /// Environment name, e.g. staging. Omit for the one you are in.
+    /// Environment name, e.g. staging.
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(NODE_NAME))]
     environment: Option<EnvironmentName>,
@@ -210,11 +210,11 @@ pub(crate) struct ServiceUpdate {
     /// Write only if the place is still at this revision. Omit unless you just read it.
     #[serde(default)]
     expect_revision: Option<u64>,
-    /// Project name. Omit for the one you are in.
+    /// Project name.
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(NODE_NAME))]
     project: Option<ProjectName>,
-    /// Environment name, e.g. staging. Omit for the one you are in.
+    /// Environment name, e.g. staging.
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(NODE_NAME))]
     environment: Option<EnvironmentName>,
@@ -402,7 +402,7 @@ fn refuse_referenced_rename(mut error: RpcError, call: &Call, writes: Writes) ->
         .with_retry(Call::new(&call.tool, retry))
 }
 
-/// `value` without its null fields.
+/// `value` with its top-level null fields removed.
 pub(crate) fn drop_nulls(mut value: Value) -> Value {
     if let Value::Object(fields) = &mut value {
         fields.retain(|_, field| !field.is_null());
@@ -421,11 +421,11 @@ pub(crate) struct ServiceRename {
     /// Write only if the place is still at this revision. Omit unless you just read it.
     #[serde(default)]
     expect_revision: Option<u64>,
-    /// Project name. Omit for the one you are in.
+    /// Project name.
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(NODE_NAME))]
     project: Option<ProjectName>,
-    /// Environment name, e.g. staging. Omit for the one you are in.
+    /// Environment name, e.g. staging.
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(NODE_NAME))]
     environment: Option<EnvironmentName>,
@@ -466,11 +466,11 @@ pub(crate) struct ServiceRemove {
     /// Write only if the place is still at this revision. Omit unless you just read it.
     #[serde(default)]
     expect_revision: Option<u64>,
-    /// Project name. Omit for the one you are in.
+    /// Project name.
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(NODE_NAME))]
     project: Option<ProjectName>,
-    /// Environment name, e.g. staging. Omit for the one you are in.
+    /// Environment name, e.g. staging.
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(NODE_NAME))]
     environment: Option<EnvironmentName>,

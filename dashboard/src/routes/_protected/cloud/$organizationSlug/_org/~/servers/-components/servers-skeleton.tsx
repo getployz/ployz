@@ -1,19 +1,16 @@
-import { Item, ItemActions, ItemContent, ItemGroup, ItemMedia } from "#/components/ui/item";
 import { Skeleton } from "#/components/ui/skeleton";
+import { SERVER_LIST, SERVER_ROW_GRID } from "./server-row";
 
 export function ServersSkeleton() {
   return (
-    <ItemGroup role="status" aria-label="Servers loading">
+    <div role="status" aria-label="Servers loading" className={SERVER_LIST}>
       {[0, 1, 2].map((row) => (
-        <Item key={row} variant="outline" size="sm">
-          <ItemMedia variant="icon"><Skeleton className="size-8" /></ItemMedia>
-          <ItemContent>
-            <Skeleton className="h-4 w-32" />
-            <Skeleton className="h-3 w-64 max-w-full" />
-          </ItemContent>
-          <ItemActions><Skeleton className="h-4 w-16" /></ItemActions>
-        </Item>
+        <div key={row} className={SERVER_ROW_GRID}>
+          <Skeleton className="size-2 rounded-full" />
+          <Skeleton className="h-4 w-32 max-w-full" />
+          <Skeleton className="col-2 row-2 h-4 w-40 max-w-full @xl:col-auto @xl:row-auto" />
+        </div>
       ))}
-    </ItemGroup>
+    </div>
   );
 }

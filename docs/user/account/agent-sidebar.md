@@ -7,10 +7,17 @@ The Ployz agent opens from the **Agent** button at the right end of the top bar,
 and deployments, or ask it to change something and deploy. Before a deploy removes
 anything, it stops and asks you.
 
-The agent works in the project and environment you're looking at, unless you name another. It
-can create a project, add and change services, [configs](../services/configs.md), volumes and
-domains, review what's staged, publish and deploy. It can also read your GitHub repositories and
-work on your servers. It doesn't create environments.
+The agent works in the project and environment you're looking at, unless you name another, and
+keeps working in them after either is renamed. If the environment you're looking at is gone, or
+Ployz can't read where it is, the agent won't fall back to another environment. It refuses and asks
+you to name the project and environment to act in. It
+can create or rename a project, add, change and rename services, [configs](../services/configs.md)
+and volumes, add and change domains, check a domain and list the DNS records it still needs,
+review what's staged, restore or undo a saved version, publish and deploy. It can list an
+environment's deployments, follow one to its end, redeploy a failed, cancelled or unknown one, start
+a queued one now, and cancel one, like the
+[deployment page](../deploy/deployments.md#redeploy-or-cancel-a-deployment)'s buttons. It can also
+read your GitHub repositories and work on your servers. It doesn't create environments.
 
 ## What it can do on your servers
 
@@ -22,15 +29,21 @@ replied. It can:
 - Read a service's recent logs from each server that ran it, with secrets from the container's
   environment replaced (**service logs**). Ployz support sees them only if your organization
   shows its logs to support. It reads the latest lines and doesn't follow new ones.
+- Read a server's own recent logs from the Ployz daemon, Docker or Corrosion, up to 200 lines,
+  with secret-shaped values replaced (**server logs**). Ployz support can't read them.
 - Read a service's or a server's [metrics](../observe/metrics.md), with the OOM kills, exits and
   restarts in the range (**service metrics**, **server metrics**). Name a deployment and it reads
   from that deployment's start and keeps only its events.
 - Restart, start or stop a service (**service restart**, **service start**, **service stop**).
 - Drain, upgrade, clean up after or remove a server (**server drain**, **server upgrade**,
   **server clean**, **server remove**).
-- Mirror a volume to another server, refresh that mirror, move a volume, release it, or remove a
-  mirror (**volume mirror**, **volume move**, **volume release**, **volume mirror remove**). To
-  refresh a mirror, ask for a **volume mirror** to the same server again.
+- Change what a server takes: builds, services and web traffic, and how many builds it runs at
+  once (**server set**). It can turn web traffic off but not on; that takes
+  `ployz server set web-1 --accepts-ingress=true` in your terminal.
+- Mirror a volume to another server, refresh that mirror, move a volume, release it, remove a
+  mirror, or restore a volume from a server's copy (**volume mirror**, **volume move**,
+  **volume release**, **volume mirror remove**, **volume restore**). To refresh a mirror, ask for a
+  **volume mirror** to the same server again.
 - Read a connected GitHub repository, or tell you how to connect one (**github ls**,
   **github connect**).
 
@@ -61,10 +74,10 @@ deployment's status, like **Deploying** and then **Deployed**, and a link to the
 When it starts a run on a server or volume, like a restart or a mirror, the card shows the run's
 name and its state when Cloud took it, like **Queued · restart web**. Ask the agent how the run
 went to see where it got to.
-A restart goes one server at a time and starts each container again, even when stopping it
-failed. A container counts as back once it passes its healthcheck, like a deploy waits for.
-If a server's containers don't come back, the restart stops there and leaves the other servers
-alone. Stopping or restarting a service also stops its pre-deploy hook containers, and no
+A restart goes one container at a time, across every server, and starts each container again,
+even when stopping it failed. A container counts as back once it passes its healthcheck, like a
+deploy waits for. If a container doesn't come back, the restart stops there and leaves the rest
+untouched. Stopping or restarting a service also stops its pre-deploy hook containers, and no
 restart or start runs them again. Restarting or stopping the same service from here and from the
 CLI at once can leave it either running or stopped.
 
@@ -101,7 +114,12 @@ server, like **Remove fra-1**.
   "publish, accepting the volume loss", and only in the same project and environment.
 - **Only removals ask.** Deploys that roll out a new image, change variables or scale a service
   go ahead without a card. Under such a deploy you'll see **Didn't ask. Nothing destroyed.**
-  Restarting, starting or stopping a service never asks, and neither does upgrading a server.
+  Restarting, starting or stopping a service never asks, and neither does upgrading a server or
+  changing what it takes, unless turning web traffic off leaves no online server with a public IP to
+  serve your domains. Then the card lists the domains that go dark and everything else the change sets,
+  and approving it covers only that change. Redeploying a deployment doesn't ask either, because it ships exactly
+  what that deployment did and you already approved anything it removes. Starting a queued one
+  doesn't ask.
 - **One at a time.** The agent runs at most one command that might ask per reply, so you never
   get two cards for one message.
 - **You approve one plan.** If the change moves on before you answer, the card says the plan

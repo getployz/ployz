@@ -155,6 +155,9 @@ class Provider:
             raise RuntimeError(f"{node['name']}: guest has no IPv4 address")
         return address
 
+    def ssh(self, node):
+        return "root@" + node["address"]
+
     def destroy(self):
         # Verify ownership on the server as well as in the local manifest.
         self.incus("info", project="default")

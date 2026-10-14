@@ -165,8 +165,27 @@ describe("runtimeSnapshotFromWatchFrame", () => {
         volumes: [{ machineId: "machine-a", name: "data" }],
         certificates: ["api.example.test"],
       },
+      published: [],
       observedAt: OBSERVED_AT,
     });
+  });
+
+  it("lists the hostnames Service containers publish through ingress, certificate or not", () => {
+    const withPorts = (id: string, kind: "service_container" | "pre_deploy_hook", ports: ReturnType<typeof runtimeWatchContainerFixture>["resolved_spec"]["ports"]) => {
+      const container = runtimeWatchContainerFixture("machine-a", id);
+      return { ...container, kind, resolved_spec: { ...container.resolved_spec, ports } };
+    };
+    const ingress = (hostname: string) => ({ mode: "ingress" as const, hostname, load_balancer_port: 80, container_port: 8080, http_protocol: "http" as const });
+    const frame = runtimeWatchFrameForTransport(runtimeWatchFrameFixture({
+      containers: [
+        withPorts("ctr-api-1", "service_container", [ingress("api.example.test"), { mode: "host", bind: { kind: "all" }, published_port: 5432, container_port: 5432, transport_protocol: "tcp" }]),
+        withPorts("ctr-api-2", "service_container", [ingress("api.example.test"), ingress("plain.example.test")]),
+        withPorts("ctr-hook", "pre_deploy_hook", [ingress("hook.example.test")]),
+      ],
+      certificates: [runtimeWatchCertificateFixture("*.acme.ployz.app")],
+    }));
+
+    expect(runtimeSnapshotFromWatchFrame(frame).published).toEqual(["api.example.test", "plain.example.test"]);
   });
 
   it("carries each managed Volume copy's role and nothing else of the Volume", () => {

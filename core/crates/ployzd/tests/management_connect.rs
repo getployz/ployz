@@ -167,13 +167,11 @@ async fn rotating_or_clearing_one_slot_revokes_only_its_holder() {
         .unwrap();
     let machine_id = describe(cli_channel.clone()).await.unwrap();
 
-    // Rotating `cloud` revokes the old cloud key only.
     let cloud_new = set(cloud()).await;
     revoked(cloud_channel).await;
     assert_eq!(describe(cli_channel.clone()).await.unwrap(), machine_id);
     let cloud_channel = connector.connect(&connection(&cloud_new)).await.unwrap();
 
-    // Clearing `cli` revokes the cli key only.
     local
         .set_management_client(SetManagementClientRequest::Clear { label: cli })
         .await
@@ -204,7 +202,6 @@ async fn rotating_or_clearing_one_slot_revokes_only_its_holder() {
         Err(ConnectError::ClientRefused)
     ));
 
-    // Set replaces the tombstone with a working capability.
     let cloud_again = set(cloud()).await;
     let channel = connector.connect(&connection(&cloud_again)).await.unwrap();
     assert_eq!(describe(channel).await.unwrap(), machine_id);
@@ -259,7 +256,6 @@ async fn contract() {
         ManagementCapability::new(*capability.machine(), SecretKey::generate().to_bytes());
     assert_refused(connector.connect(&connection(&stranger)).await);
 
-    // Fifty concurrent RPC streams over one accepted connection all complete.
     let channel = connector.connect(&connection(&capability)).await.unwrap();
     let surviving_connection = observed.recv().await.unwrap();
     activate(channel.clone()).await;
@@ -484,7 +480,6 @@ async fn contract() {
         Err(ConnectError::ClientCleared)
     ));
 
-    // Shutdown drains every remaining connection and closes the endpoint.
     shutdown.cancel();
     tokio::time::timeout(Duration::from_secs(10), server)
         .await
@@ -561,7 +556,6 @@ async fn tunnel_contract() {
     }
     activate(connector.connect(&managed).await.unwrap()).await;
 
-    // Bytes round-trip unchanged, binary included.
     let mut tunnel = dial(target.clone()).await.unwrap();
     let payload = [0_u8, 0xff, b'\n', 7];
     tunnel.write_all(&payload).await.unwrap();
@@ -736,8 +730,6 @@ async fn a_build_grant_records_an_image_the_machine_already_holds() {
 async fn already_held_contract() {
     let machine = GrantMachine::start().await;
     let http = reqwest::Client::new();
-    // Mint a grant, HEAD `reference` through it, and hand back the grant and its
-    // manifests base.
     let head = async |reference: String| {
         let minted = machine.mint();
         let registry = open_grant_registry(&minted.grant, &machine.relay)

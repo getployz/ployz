@@ -2,14 +2,8 @@
 //! (`ployz::sdk::typescript_declarations`).
 //!
 //! This crate is the workspace's only `unsafe_code` exception (napi-rs).
-//! The handwritten façade is connect / session observation and registration /
-//! about / runtime.watch / runtime.metricHistory / prepare / build / preview / run /
-//! previewNamespaceRemoval /
-//! remove_volumes / pruneImages / dataLossIfMachineRemoved / removeMachine /
-//! requestMachineUpgrade /
-//! dataLossIfNamespaceDestroyed / destroyNamespace / dataLossIfClusterDestroyed /
-//! destroyCluster / close, the Config Store's openConfigStore / read / write, and the
-//! agent tools' agentTools / agentStart / agentResume / agentAsk.
+//! The handwritten façade wraps the native Cloud session, the Config Store, and the
+//! agent tools.
 pub mod agent;
 pub mod config_store;
 
@@ -497,6 +491,23 @@ impl Client {
         to_json(&report)
     }
 
+    /// Start the Ingress Proxy on `machine` once its ingress role is on.
+    #[napi]
+    pub async fn start_ingress(&self, machine: String) -> Result<serde_json::Value> {
+        let check = self
+            .inner
+            .start_ingress(&machine)
+            .await
+            .map_err(rpc_to_napi)?;
+        to_json(&check)
+    }
+
+    /// Stop and remove the Ingress Proxy on `machine` once its ingress role is off.
+    #[napi]
+    pub async fn stop_ingress(&self, machine: String) -> Result<()> {
+        self.inner.stop_ingress(&machine).await.map_err(rpc_to_napi)
+    }
+
     /// Take `machine` out of the Cluster without resetting it.
     ///
     /// # Errors
@@ -854,9 +865,6 @@ fn to_json(value: &impl serde::Serialize) -> Result<serde_json::Value> {
     serde_json::to_value(value).map_err(|error| Error::from_reason(error.to_string()))
 }
 
-/// napi hands every JavaScript number above `u32::MAX` over as a float, even a whole one:
-/// `5_000_000_000` arrives as `5000000000.0`, which `u64` fields such as byte counts refuse.
-/// Give whole floats their integer form back before any payload is parsed.
 /// Decode JSON JavaScript sent. Napi hands a JS whole number above `u32::MAX` over
 /// as a float, which no integer field accepts, so every decode of a JS value goes
 /// through here.

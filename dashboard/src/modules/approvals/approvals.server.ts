@@ -107,6 +107,7 @@ export type OperationDigest<R> = (
   subject: string,
   verb: OperationVerb,
   stored: string,
+  preview: JsonValue,
 ) => Effect.Effect<string | null, never, R>;
 
 const freshen = <R>(row: ApprovalRow, operationDigest?: OperationDigest<R>) => Effect.gen(function* () {
@@ -115,7 +116,7 @@ const freshen = <R>(row: ApprovalRow, operationDigest?: OperationDigest<R>) => E
   if ("diff" in review) {
     yield* recordAndSweep(row.organizationId, row.subject, Effect.void, staleEnvironment(row.organizationId, review.diff.environment));
   } else if (operationDigest !== undefined) {
-    const fresh = yield* operationDigest(row.organizationId, row.subject, review.operation.verb, row.digest);
+    const fresh = yield* operationDigest(row.organizationId, row.subject, review.operation.verb, row.digest, review.operation.preview);
     yield* recordAndSweep(row.organizationId, row.subject, Effect.void, staleOperation(review.operation.verb, fresh));
   }
   return (yield* readRow(row.organizationId, row.id)) ?? row;
@@ -266,6 +267,8 @@ export const gateOperation = Effect.fn("Approvals.gateOperation")(function* (
   approvalId: string | null,
   asked: OperationAsked,
 ): Effect.fn.Return<Gated, never, Database> {
+  // A person who confirmed it in the dashboard already approved it; only `ployz` and agents wait on one.
+  if (caller.via === "dashboard") return { ok: true, approvalId: null };
   const trusted = yield* trustedApproval(caller.organization.id, approvalId);
   if (!trusted.ok) return trusted;
   if (asked.effects.length === 0) return { ok: true, approvalId: null };

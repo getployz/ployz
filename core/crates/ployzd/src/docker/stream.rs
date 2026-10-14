@@ -428,7 +428,6 @@ mod tests {
             match ExecResponseFrame::decode(&payload.unwrap()).unwrap() {
                 ExecResponseFrame::Stdout(output) => {
                     bytes.extend(output);
-                    // The downstream reader takes longer than the old entire-drain deadline.
                     tokio::time::sleep(Duration::from_millis(150)).await;
                 }
                 ExecResponseFrame::Exit(code) => exit = Some(code),

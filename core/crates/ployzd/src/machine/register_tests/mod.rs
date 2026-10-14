@@ -1,7 +1,7 @@
 use ployz_core::{LocalMachinePhase, MachineId, RegisterRequest, RpcErrorCode, WireGuardPublicKey};
 
 use super::{LocalMachine, LocalMachineError, LocalMachineStore, RecordOwner};
-use crate::corrosion::{AdminClient, fake_cluster};
+use crate::corrosion::{AdminClient, MachineView, fake_cluster, run_machine_publisher};
 
 mod harness;
 mod policy;
@@ -184,4 +184,135 @@ async fn register_requires_a_valid_assignment_and_preserves_the_row_on_refusal()
     server.abort();
     drop(service);
     let _ = std::fs::remove_dir_all(data_dir);
+}
+
+#[tokio::test]
+async fn replayed_enroll_republishes_runtime_over_a_register_row() {
+    let (replicated, server) = fake_cluster::store_with_subscriptions().await;
+    let cluster = || {
+        Some((
+            replicated.clone(),
+            AdminClient::new("/no/such/ployz-admin.sock"),
+        ))
+    };
+    let (entry_dir, entry_store, founder) = open_store("ployzd-register-republish");
+    replicated.publish_local_machine(&founder).await.unwrap();
+    let entry = LocalMachine::new(entry_store.clone()).with_cluster(cluster());
+
+    let target_dir = std::env::temp_dir().join(format!(
+        "ployzd-register-republish-target-{}",
+        MachineId::random()
+    ));
+    let target_store = RecordOwner::spawn(LocalMachineStore::open(&target_dir).unwrap()).unwrap();
+    let mut identity = request(
+        "joiner",
+        target_store.record().wireguard_private_key.public_key(),
+    );
+    identity.machine_id = target_store.record().id();
+    let target = LocalMachine::new(target_store.clone()).with_cluster(cluster());
+    let enroll = |registration| ployz_core::EnrollRequest {
+        role: ployz_core::EnrollAs::Member { registration },
+        wireguard_mtu: None,
+    };
+    target
+        .enroll(enroll(entry.register(identity.clone()).await.unwrap()))
+        .await
+        .unwrap();
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let view = MachineView::start(replicated.clone(), shutdown.clone());
+    let publisher = tokio::spawn(run_machine_publisher(
+        Some((replicated.clone(), view.clone())),
+        target_store,
+        tokio::sync::watch::channel(0).1,
+        shutdown.clone(),
+    ));
+    // The founder publishes the Cluster network; a Machines view change for
+    // another Machine's row must not make it write again.
+    let entry_publisher = tokio::spawn(run_machine_publisher(
+        Some((replicated.clone(), view.clone())),
+        entry_store,
+        tokio::sync::watch::channel(0).1,
+        shutdown.clone(),
+    ));
+    let network: ipnet::Ipv4Net = "10.210.0.0/16".parse().unwrap();
+    let marker: ipnet::Ipv4Net = "10.0.0.0/8".parse().unwrap();
+    replicated.publish_cluster_network(marker).await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while replicated.cluster_network().await.unwrap() != network {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("the founder publishes the Cluster network");
+    let served = ployz_core::served_capabilities();
+    assert!(!served.is_empty());
+    let capabilities = || async {
+        replicated
+            .machine(identity.machine_id.as_str())
+            .await
+            .unwrap()
+            .map(|machine| machine.runtime.capabilities)
+    };
+    let republished = || async {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while capabilities().await.as_ref() != Some(&served) {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        })
+        .await
+    };
+    republished()
+        .await
+        .expect("the joined Machine publishes itself");
+    // Settle the way a live cluster has: the Machines view holds the served row.
+    let mut settled = view.watch();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        settled.wait_for(|snapshot| {
+            snapshot.as_ref().is_some_and(|snapshot| {
+                snapshot.observations.iter().any(|machine| {
+                    machine.id == identity.machine_id && machine.runtime.capabilities == served
+                })
+            })
+        }),
+    )
+    .await
+    .expect("the Machines view sees the served row")
+    .unwrap();
+    assert_eq!(target.record().phase(), LocalMachinePhase::Participating);
+    replicated.publish_cluster_network(marker).await.unwrap();
+
+    // `ployz server add` registers through the entry with an empty runtime,
+    // then resends Enroll to a Machine that already participates.
+    let registration = entry.register(identity.clone()).await.unwrap();
+    assert!(
+        registration
+            .assigned_machine
+            .runtime
+            .capabilities
+            .is_empty()
+    );
+    let replayed = target.enroll(enroll(registration)).await.unwrap();
+    assert!(matches!(replayed, ployz_core::Enrolled::Enrolled { .. }));
+    assert!(
+        republished().await.is_ok(),
+        "the row kept the Register runtime: {:?}",
+        capabilities().await
+    );
+    // The founder saw the Register and restore as Machines view changes too.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    assert_eq!(
+        replicated.cluster_network().await.unwrap(),
+        marker,
+        "a Machines view change rewrote the Cluster network"
+    );
+
+    shutdown.cancel();
+    publisher.await.unwrap().unwrap();
+    entry_publisher.await.unwrap().unwrap();
+    server.abort();
+    drop(entry);
+    drop(target);
+    let _ = std::fs::remove_dir_all(entry_dir);
+    let _ = std::fs::remove_dir_all(target_dir);
 }

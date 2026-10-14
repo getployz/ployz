@@ -246,14 +246,11 @@ mod tests {
             "automatic 3 admitted a fourth"
         );
 
-        // Raising the limit admits the queued Build without a new arrival.
         runner.resize(limit("4"));
         let Poll::Ready(Ok(fourth)) = poll!(&mut fourth) else {
             panic!("raised limit did not admit the queued Build")
         };
 
-        // Lowering it lets running Builds finish and admits nothing until
-        // fewer than the new limit remain.
         runner.resize(limit("2"));
         let mut fifth = Box::pin(waiting(&runner));
         drop(first);

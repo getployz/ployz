@@ -1,25 +1,11 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useRef, useState, type ReactNode } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useStillHere } from "#/hooks/use-still-here";
 import { Trash2Icon, UnplugIcon } from "lucide-react";
 import { toast } from "sonner";
-import { approvalOptions } from "#/components/agent-sidebar/approvals.queries";
 import { DeletionDialog, type DeletionItem } from "#/components/deletion-dialog";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "#/components/ui/alert-dialog";
 import { Button } from "#/components/ui/button";
 import { ForgetServersDialog } from "../../../-components/forget-servers-dialog";
-import { Spinner } from "#/components/ui/spinner";
-import { toErrorMessage } from "#/lib/error-message";
 import {
   enqueueMachineRemoveServerFn,
   forgetServerServerFn,
@@ -180,51 +166,29 @@ function ForgetLastServerRow({ machine, organizationSlug }: { machine: RuntimeMa
 }
 
 /**
- * Forgetting takes a Server that is gone for good out of the cluster without resetting it. It asks for approval in the
- * sidebar when volumes go with it, sends the same request again once a human approves, then waits on the removal.
+ * Forgetting takes a Server that is gone for good out of the cluster without resetting it, then waits on the removal.
+ * A Server that doesn't answer can't list its volumes, so the list is often empty; the sentence still says they're lost.
  */
 function ForgetServerRow({ machine, organizationSlug }: { machine: RuntimeMachineRecord; organizationSlug: string }) {
   const navigate = useNavigate();
   const markHere = useStillHere();
   const [open, setOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [asking, setAsking] = useState<{ readonly requestId: string; readonly approvalId: string } | null>(null);
-  const { data: approval, isError } = useQuery({ ...approvalOptions(organizationSlug, asking?.approvalId ?? ""), enabled: asking !== null });
-  const decided = asking !== null && approval?.id === asking.approvalId ? approval.status : null;
 
-  const send = async (requestId: string, approvalId: string | null) => {
-    setBusy(true);
-    const stillHere = markHere();
-    try {
-      const answer = await forgetServerServerFn({ data: { organizationSlug, machineId: machine.id, requestId, approvalId } });
-      if (answer.asking !== undefined) {
-        setAsking({ requestId, approvalId: answer.asking.approvalId });
-        toast.info(`Forgetting ${machine.name} waits for approval in the sidebar.`);
-        return;
-      }
-      const result = await waitForMachineRemoveAttempt(organizationSlug, answer.id, () => !stillHere());
-      if (result === "aborted") return;
-      if ("missing" in result) throw new Error(`${machine.name} changed while it was being forgotten. Try again.`);
-      toast(`${machine.name} forgotten`);
-      void navigate({ to: "/cloud/$organizationSlug/~/servers", params: { organizationSlug } });
-    } catch (error) {
-      toast.error(toErrorMessage(error, `Could not forget ${machine.name}`));
-    } finally {
-      setBusy(false);
-    }
+  const load = async () => {
+    const lost = await loadMachineDataLossServerFn({ data: { organizationSlug, machineId: machine.id } })
+      .then(({ rust }) => volumes(rust), () => []);
+    return { items: lost, evidence: null };
   };
 
-  useEffect(() => {
-    if (asking !== null && isError) {
-      setAsking(null);
-      toast.error(`Could not read the approval to forget ${machine.name}. Forget it again.`);
-      return;
-    }
-    if (asking === null || decided === null || decided === "pending") return;
-    setAsking(null);
-    if (decided === "approved") void send(asking.requestId, asking.approvalId);
-    else toast.info(decided === "denied" ? `Forgetting ${machine.name} was denied.` : `${machine.name} changed before it was approved. Forget it again.`);
-  }, [decided, isError]);
+  const forget = async () => {
+    const stillHere = markHere();
+    const answer = await forgetServerServerFn({ data: { organizationSlug, machineId: machine.id, requestId: crypto.randomUUID() } });
+    const result = await waitForMachineRemoveAttempt(organizationSlug, answer.id, () => !stillHere());
+    if (result === "aborted") return;
+    if ("missing" in result) throw new Error(`${machine.name} changed while it was being forgotten. Try again.`);
+    toast(`${machine.name} forgotten`);
+    void navigate({ to: "/cloud/$organizationSlug/~/servers", params: { organizationSlug } });
+  };
 
   return (
     <>
@@ -232,27 +196,22 @@ function ForgetServerRow({ machine, organizationSlug }: { machine: RuntimeMachin
         title={`Forget ${machine.name}`}
         description="It's gone. Ployz stops waiting for it; its volumes can't be recovered."
         action={
-          <Button variant="destructive" disabled={busy || asking !== null} onClick={() => setOpen(true)}>
-            {busy ? <Spinner data-icon="inline-start" /> : <UnplugIcon data-icon="inline-start" />}
+          <Button variant="destructive" onClick={() => setOpen(true)}>
+            <UnplugIcon data-icon="inline-start" />
             Forget server
           </Button>
         }
       />
-      <AlertDialog open={open} onOpenChange={setOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Forget {machine.name}?</AlertDialogTitle>
-            <AlertDialogDescription>
-              Ployz takes it out of the cluster without reaching it. Its volumes{" "}
-              <span className="text-destructive">can't be recovered</span>.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction variant="destructive" onClick={() => { setOpen(false); void send(crypto.randomUUID(), null); }}>Forget</AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <DeletionDialog
+        open={open}
+        onOpenChange={setOpen}
+        title={`Forget ${machine.name}?`}
+        place={machine.name}
+        confirmLabel="Forget"
+        sentence={<>Ployz takes it out of the cluster without reaching it. Its volumes{" "}
+          <span className="text-destructive">can't be recovered</span>.</>}
+        callbacks={{ load, confirm: forget }}
+      />
     </>
   );
 }

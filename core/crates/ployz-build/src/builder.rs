@@ -54,7 +54,6 @@ impl<'a> Builder<'a> {
         Ok(builder)
     }
 
-    /// Buildx name of this slot's builder.
     pub(crate) fn name(&self) -> &str {
         &self.name
     }
@@ -360,7 +359,6 @@ impl Lock {
             .filter(|&slot| slot == 0 || directory.join(lock_file(slot)).exists())
     }
 
-    /// Buildx name of this slot's builder.
     pub(crate) fn name(&self) -> String {
         slot_name(self.slot)
     }

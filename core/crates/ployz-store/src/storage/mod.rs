@@ -81,7 +81,6 @@ const MIGRATIONS: &[(&str, Step)] = &[
     ),
 ];
 
-/// One migration.
 enum Step {
     /// A script of parameterless statements.
     Sql(&'static str),
@@ -211,9 +210,7 @@ pub(crate) trait Tx {
 pub(crate) enum Param<'text> {
     Text(&'text str),
     Int(i64),
-    /// NULL in a text column.
     NullText,
-    /// NULL in an integer column.
     NullInt,
 }
 
@@ -241,7 +238,6 @@ impl From<Option<i64>> for Param<'_> {
     }
 }
 
-/// One result cell.
 #[derive(Clone, Debug)]
 pub(crate) enum Cell {
     Null,
@@ -327,7 +323,6 @@ impl Row {
             .map_err(|_| error::corrupt(what))
     }
 
-    /// A text column that may be NULL.
     pub(crate) fn optional_text(&self, index: usize) -> Result<Option<&str>, RpcError> {
         match self.0.get(index) {
             Some(Cell::Null) => Ok(None),
@@ -336,7 +331,6 @@ impl Row {
         }
     }
 
-    /// An integer column that may be NULL.
     pub(crate) fn optional_int(&self, index: usize) -> Result<Option<i64>, RpcError> {
         match self.0.get(index) {
             Some(Cell::Null) => Ok(None),

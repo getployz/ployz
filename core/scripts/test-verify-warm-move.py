@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Prove Warm Move end to end on real Machines paired with Cloud: Restore, removal, demotion, deletion,
-stale SetVolumeCopy replays, deploys held mid-Move, Release, mirror reuse and slow or failing starts.
+stale SetVolumeCopy replays, deploys mid-Move, Moves mid-Deploy, Release, mirror reuse and slow or failing starts.
 
   python3 scripts/test-verify-warm-move.py --list
   python3 scripts/test-verify-warm-move.py [--manifest M] [check ...]
@@ -16,14 +16,17 @@ The exit is nonzero on any FAIL.
 """
 
 import argparse
+from concurrent.futures import Future
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
 import shlex
 import subprocess
 import sys
+import threading
 import time
 import traceback
 import urllib.error
@@ -38,13 +41,24 @@ FAULT_BUILD = "--features ployz/verify-faults,ployzd/verify-faults"
 A, B = "machine-1", "machine-2"
 POOL = "ployz"
 IMAGE = "postgres:16-alpine"
-TERMINAL = {"done", "failed", "cancelled", "lost", "not_started"}
+TERMINAL = {"done", "failed", "cancelled", "lost", "not_started", "yielded"}
 STOPPED = {"cancelled", "lost"}
 DOOMED = "doomed"
+MIRROR_CRON = 15 * 60
+MIRROR_CRON_RUNS = 90
+MOVE_PLAN = 30
 
 
 class CheckError(Exception):
     pass
+
+
+def mirror_cron_wait(into, span):
+    """Whole seconds to sleep, `into` seconds past a quarter hour, until the mirror cron has run and the next `span`
+    seconds miss its next run."""
+    if MIRROR_CRON_RUNS < into < MIRROR_CRON - span:
+        return 0
+    return math.ceil((MIRROR_CRON_RUNS - into) % MIRROR_CRON)
 
 
 def parse_json(text):
@@ -94,6 +108,13 @@ def say(data):
     return json.dumps(data)
 
 
+TIMED_OUT = "timed out after"
+
+
+def holding(held):
+    return bool(held) and not held.startswith(TIMED_OUT)
+
+
 def done(row):
     return row is not None and row.get("state") == "done"
 
@@ -123,7 +144,10 @@ class Cluster:
     def __init__(self, manifest):
         self.manifest = Path(manifest)
         self.run = json.loads(self.manifest.read_text())
-        self.address = {node["name"]: node["address"] for node in self.run["machines"]}
+        self.nodes = {node["name"]: node for node in self.run["machines"]}
+        for node in self.nodes.values():
+            node.setdefault("ssh", "root@" + node["address"])
+            node.setdefault("endpoint", f"[{node['address']}]:51820" if ":" in node["address"] else node["address"] + ":51820")
         self.machines = [node["name"] for node in self.run["machines"]]
         self.out = self.manifest.parent / "evidence" / f"warm-move-{time.strftime('%Y%m%dT%H%M%S')}"
         self.out.mkdir(parents=True, exist_ok=True)
@@ -171,8 +195,6 @@ class Cluster:
         if result.returncode:
             raise CheckError(f"runner {state}: {result.stdout[-400:]} {result.stderr[-400:]}")
 
-    # Machine state
-
     def physical(self, volume, env=None):
         if (volume, env) not in self.physicals:
             _, inspect = self.cli("volume", "inspect", volume, *env_flag(env), required=True)
@@ -215,7 +237,7 @@ class Cluster:
             if found and not self.sh(machine, f"/usr/bin/docker exec {found[0]} pg_isready -U postgres",
                                      required=False).returncode:
                 return True
-            time.sleep(3)
+            time.sleep(1)
         return False
 
     def seed(self, machine, phys, value):
@@ -252,8 +274,6 @@ class Cluster:
         text = say(listed)
         return {machine for machine in self.machines if f'"{machine}"' in text}
 
-    # Faults
-
     def fault(self, machine, value):
         """Arm or disarm without a restart: the daemons read /run/ployz/fault on every check."""
         if value:
@@ -282,7 +302,7 @@ class Cluster:
         times = [at for at in times if at >= since]
         return min(times) if times else None
 
-    def wait_held(self, volume, row, phys, source, target, cell, since, limit=900):
+    def wait_held(self, volume, row, phys, source, target, cell, since, limit=300):
         """Wait until `target` logs that its fault delays `cell`, after the db on `source` stopped for the cut."""
         deadline = time.monotonic() + limit
         while time.monotonic() < deadline:
@@ -294,7 +314,7 @@ class Cluster:
             if self.row(volume, row["id"]).get("state") in TERMINAL:
                 return None
             time.sleep(1)
-        return None
+        return f"{TIMED_OUT} {limit}s"
 
     def wrap_runc(self, machine, tag, phys, body):
         """Replace the Machine's runc with a wrapper that runs `body` before creating a container that mounts `phys`.
@@ -319,7 +339,7 @@ class Cluster:
     def start_log(self, machine, tag):
         return self.sh(machine, f"cat /tmp/{tag}-start.log 2>/dev/null || true", required=False).stdout.strip()
 
-    def wait_start_log(self, machine, tag, limit=600):
+    def wait_start_log(self, machine, tag, limit=150):
         deadline = time.monotonic() + limit
         while time.monotonic() < deadline:
             began = self.sh(machine, f"grep -m1 '^begin' /tmp/{tag}-start.log 2>/dev/null || true",
@@ -327,9 +347,7 @@ class Cluster:
             if began:
                 return began
             time.sleep(1)
-        return None
-
-    # Cloud runs
+        return f"{TIMED_OUT} {limit}s"
 
     def approve(self, reply):
         """Approve as the operator would in Cloud and return the approval id, or None when nothing asked."""
@@ -379,7 +397,7 @@ class Cluster:
             last = self.row(volume, run_id, env) or last
             if last.get("state") in TERMINAL:
                 return last
-            time.sleep(4)
+            time.sleep(1)
         return {**last, "id": run_id, "state": f"still {last.get('state', 'unseen')} after {limit}s"}
 
     def run_volume(self, *args, volume, env=None, limit=1500):
@@ -388,7 +406,17 @@ class Cluster:
             row = self.wait_run(volume, row["id"], env, limit)
         return code, row, data
 
+    def clear_of_mirror_cron(self, span):
+        """Cloud's mirror cron syncs every Volume in turn at each quarter hour. Its snapshot can land between a check's
+        writes, and a Move planned while it ran found a Machine not answering. Sleep until the next `span` seconds miss it."""
+        wait = mirror_cron_wait(time.time() % MIRROR_CRON, span)
+        if wait:
+            print(f"waiting {wait}s for the mirror cron", flush=True)
+            time.sleep(wait)
+        return wait
+
     def move(self, volume, to, limit=1500):
+        self.clear_of_mirror_cron(MOVE_PLAN)
         return self.run_volume("volume", "move", volume, "--to", to, volume=volume, limit=limit)
 
     def mirror(self, volume, to, env=None):
@@ -472,7 +500,7 @@ class Cluster:
                      and row.get("created_at", "") > earlier.get("created_at", "")]
             if later:
                 return min(later, key=lambda row: row["created_at"])
-            time.sleep(4)
+            time.sleep(1)
         return None
 
     def stop_move(self, volume, phys, source, target):
@@ -491,10 +519,8 @@ class Cluster:
         finally:
             self.fault(target, None)
             self.runner("start")
-        stopped = self.wait_run(volume, row["id"], limit=600)
+        stopped = self.wait_run(volume, row["id"], limit=300)
         return dict(held=held, cancel=cancelled, run=stopped)
-
-    # Removal and rejoin
 
     def remove_dead(self, machine, limit=900):
         """`server forget --confirm dead`, retried while the entry Server still lists it as answering:
@@ -506,10 +532,11 @@ class Cluster:
             attempts.append(f"exit {code} {say(data)[:300]}")
             if code == 0:
                 return attempts
-            retry = "does not match" in say(data) or find_key(data, "code") == "unavailable"
+            retry = ("does not match" in say(data) or "aren't answering" in say(data)
+                     or find_key(data, "code") == "unavailable")
             if not retry or time.monotonic() > deadline:
                 raise CheckError(f"server forget {machine} --confirm dead refused: {attempts[-3:]}")
-            time.sleep(10)
+            time.sleep(2)
 
     def daemon_up(self, machine):
         self.sh(machine, "for i in $(seq 180); do systemctl is-active --quiet ployz.service && exit 0; sleep 1; done; "
@@ -521,9 +548,9 @@ class Cluster:
             return "still a member"
         started = time.time()
         key = self.manifest.parent / "private" / "id_ed25519"
-        code, data = self.cli("server", "add", "root@" + self.address[machine], "--no-install", "--storage", "none",
+        code, data = self.cli("server", "add", self.nodes[machine]["ssh"], "--no-install", "--storage", "none",
                               "--yes", "--name", machine, "--ssh-key", key, "--public-ip", "none",
-                              "--wg-endpoint", self.address[machine] + ":51820", "--wg-mtu", "1420", timeout=900)
+                              "--wg-endpoint", self.nodes[machine]["endpoint"], "--wg-mtu", "1420", timeout=900)
         joined_partly = code and "Server joined" in say(data)
         if code and not joined_partly:
             raise CheckError(f"server add {machine} after its removal failed: {say(data)[:800]}")
@@ -537,7 +564,7 @@ class Cluster:
                 return f"joined with catch-up incomplete; the redeploy it asks for finished {round(time.time() - started)}s later"
             if time.time() > deadline:
                 raise CheckError(f"{machine} joined but redeploy still fails after 600s: {say(deployed)[:800]}")
-            time.sleep(30)
+            time.sleep(5)
 
     def accept_services(self, machine):
         """The entry Server may not route to a fresh add over the mesh for some seconds; retry as a user would."""
@@ -548,17 +575,15 @@ class Cluster:
                 return
             if find_key(data, "code") != "unavailable" or time.time() > deadline:
                 raise CheckError(f"server set {machine} --accepts-services=true after its add failed: {say(data)[:800]}")
-            time.sleep(5)
+            time.sleep(2)
 
     def wait_gone(self, phys, limit=480):
         started = time.monotonic()
         while time.monotonic() - started < limit:
             if not any(self.exists(machine, slot(phys)) for machine in self.machines):
                 return round(time.monotonic() - started)
-            time.sleep(10)
+            time.sleep(1)
         return None
-
-    # Verdicts and evidence
 
     def verdict(self, name, ok, evidence):
         self.verdicts.append((name, ok))
@@ -598,12 +623,12 @@ class Recorder:
         for machine in self.cluster.machines:
             self.cluster.sh(machine, f"rm -f /tmp/rec-{self.tag}.log; nohup setsid bash -c {shlex.quote(loop)} "
                                      f"> /tmp/rec-{self.tag}.log 2>&1 < /dev/null & echo $! > /tmp/rec-{self.tag}.pid")
-        time.sleep(2)
         for machine in self.cluster.machines:
-            alive = self.cluster.sh(machine, f"kill -0 $(cat /tmp/rec-{self.tag}.pid) && wc -l < /tmp/rec-{self.tag}.log",
+            alive = self.cluster.sh(machine, f"for i in $(seq 100); do kill -0 $(cat /tmp/rec-{self.tag}.pid) || exit 1; "
+                                             f"[ -s /tmp/rec-{self.tag}.log ] && exit 0; sleep 0.1; done; exit 1",
                                     required=False)
             if alive.returncode:
-                raise CheckError(f"recorder on {machine} did not survive: {alive.stdout} {alive.stderr}")
+                raise CheckError(f"recorder on {machine} wrote no sample within 10s: {alive.stdout} {alive.stderr}")
         return self
 
     def __exit__(self, *_):
@@ -671,6 +696,7 @@ def restore_only_holder(vc):
     if not done(moved) or not vc.ready(B, phys):
         raise CheckError(f"move india to {B}: {text_of(moved, data)[:600]}")
     vc.psql(B, phys, "insert into kept values (2)")
+    waited = vc.clear_of_mirror_cron(300)
     vc.synced("india", A)
     vc.psql(B, phys, "insert into kept values (3)")
     refusals = {}
@@ -690,7 +716,8 @@ def restore_only_holder(vc):
         "rows up to the last sync survive and the later write is lost": rows == "1,2",
         f"exactly one writable copy, on {A}": len(writable) == 1 and writable[0].startswith(A + ":"),
     }, f"refusals {say(refusals)[:1200]}; rm exit {code_rm} {say(removed)[:300]}; restore exit {code_r} "
-       f"{say(restored)[:500]}; deploy exit {code_d}; rows on {A} {rows!r}; writable {writable}")
+       f"{say(restored)[:500]}; deploy exit {code_d}; rows on {A} {rows!r}; writable {writable}; "
+       f"waited {waited}s for the mirror cron")
     rejoin_verdict(vc, "C9")
 
 
@@ -731,7 +758,7 @@ def rm_target_then_readd(vc):
     rows = vc.rows(B, phys) if vc.ready(B, phys, limit=300) else "no db"
     writable = vc.writable(phys)
     judged(vc, "rm_target_after_accept_then_readd", {
-        f"{B} held MirrorToWriter after the cut": bool(held),
+        f"{B} held MirrorToWriter after the cut": holding(held),
         "first move did not finish before the removal": first.get("state") in TERMINAL - {"done"},
         f"restore on {A} succeeded": code_r == 0,
         f"{B} added back without a reset": bool(joined),
@@ -899,54 +926,150 @@ def stale_replay_refused(vc):
                f"running {live}; writable {writable}")
 
 
-# A plain deploy is refused while a Move holds the Volume
+# A deploy mid-Move takes the Move over or follows it, and never leaves two containers on the Volume
 
-def deploy_refused_mid_move(vc):
+# The target is read before the source, so a source stop followed by a target start between the two reads never
+# looks like two running containers.
+def sample_running(vc, phys, order, samples, stop):
+    while not stop.is_set():
+        try:
+            samples.append((round(time.time(), 1), {machine: vc.containers(machine, phys) for machine in order}))
+        except Exception as error:
+            samples.append((round(time.time(), 1), f"{type(error).__name__}: {error}"[:200]))
+        stop.wait(1)
+
+
+def overlaps(samples):
+    return [(at, live) for at, live in samples if isinstance(live, dict) and sum(map(len, live.values())) > 1]
+
+
+def requeued_move(vc, volume, original, limit=120):
+    deadline = time.monotonic() + limit
+    while time.monotonic() < deadline:
+        _, data = vc.cli("volume", "runs", volume)
+        later = [row for row in run_rows(data) if row.get("kind") == "move" and row.get("id") != original["id"]
+                 and row.get("created_at", "") > original.get("created_at", "")]
+        if later:
+            return min(later, key=lambda row: row["created_at"])
+        time.sleep(1)
+    return None
+
+
+def deploy_mid_move(vc):
     phys = vc.physical("charlie")
     plan = [(A, B, "delay-rpc:SetVolumeCopy.MirrorToMirror:20", "MirrorToMirror"),
             (B, A, "delay-rpc:SetVolumeCopy.MirrorToWriter:20", "MirrorToWriter"),
             (A, B, None, "start")]
-    holds = []
+    legs = []
     for source, target, value, cell in plan:
         if value:
             vc.fault(target, value)
         else:
             vc.slow_runc(target, "charlie", phys, 30)
         since = time.time()
+        samples, stop = [], threading.Event()
+        sampler = threading.Thread(target=sample_running, args=(vc, phys, (target, source), samples, stop),
+                                   daemon=True)
+        requeued = None
         try:
             _, row, data = vc.start_run("volume", "move", "charlie", "--to", target)
             if row is None:
                 raise CheckError(f"move refused: {say(data)[:600]}")
             held = (vc.wait_held("charlie", row, phys, source, target, cell, since) if value
                     else vc.wait_start_log(target, "charlie"))
-            before = vc.containers(target, phys, every=True)
-            code_d, deployed = vc.plain_deploy("charliedb")
-            time.sleep(5)
-            after = vc.containers(target, phys, every=True)
-            final = vc.wait_run("charlie", row["id"])
+            sampler.start()
+            code_d, _ = vc.plain_deploy("charliedb")
+            original = {**row, **vc.wait_run("charlie", row["id"])}
+            if original.get("state") == "yielded":
+                found = requeued_move(vc, "charlie", original)
+                requeued = vc.wait_run("charlie", found["id"]) if found else {"state": "no requeued move run"}
         finally:
+            stop.set()
+            if sampler.is_alive():
+                sampler.join()
             if value:
                 vc.fault(target, None)
             else:
                 vc.plain_runc(target, "charlie")
-        ready = vc.ready(target, phys)
-        outcome = deployed.get("outcome") if isinstance(deployed, dict) else None
-        reason = str(outcome["reason"]) if isinstance(outcome, dict) and outcome.get("reason") else say(deployed)[:400]
-        holds.append(dict(hold=cell, to=target, held=held, deploy_exit=code_d, reason=reason, target_before=before,
-                          target_after=after, move=final.get("state"), message=final.get("message"), ready=ready,
-                          running=vc.live(phys)))
-    ok = all(h["held"] and h["deploy_exit"] != 0 and h["target_before"] == h["target_after"] and h["move"] == "done"
-             and h["ready"] for h in holds) and sum(len(v) for v in holds[-1]["running"].values()) == 1
-    vc.verdict("deploy_refused_mid_move", ok,
+        final = requeued or original
+        to = (final.get("args") or {}).get("to", target)
+        ready = vc.ready(to, phys)
+        running = vc.live(phys)
+        counted = [sum(map(len, live.values())) for _, live in samples if isinstance(live, dict)]
+        legs.append(dict(hold=cell, to=target, held=held, deploy_exit=code_d, original=row["id"],
+                         original_state=original.get("state"), original_message=original.get("message"),
+                         requeued=requeued and requeued.get("id"), requeued_state=requeued and requeued.get("state"),
+                         waited=[row["id"]] + ([requeued["id"]] if requeued and requeued.get("id") else []),
+                         samples=len(samples), max_running=max(counted, default=0), overlaps=overlaps(samples),
+                         blind=[(at, live) for at, live in samples if not isinstance(live, dict)],
+                         final_to=to, running=running, ready=ready))
+    ok = all(holding(leg["held"]) and leg["deploy_exit"] == 0 and leg["samples"] and not leg["blind"] and not leg["overlaps"]
+             and (leg["original_state"] == "done"
+                  or (leg["original_state"] == "yielded" and leg["requeued_state"] == "done"))
+             and sum(map(len, leg["running"].values())) == 1 and len(leg["running"][leg["final_to"]]) == 1
+             and leg["ready"] for leg in legs)
+    vc.verdict("deploy_mid_move", ok,
                "MirrorToMirror and MirrorToWriter held 20 s by delay-rpc on the target after the cut, the target's "
-               f"runc create held 30 s; {say(holds)}")
-    reasons = [h["reason"] for h in holds]
-    vc.verdict("refusal_names_authored_volume",
-               all("Volume charlie" in r for r in reasons) and not any("_vol-" in r for r in reasons),
-               f"refusal reasons {say(reasons)}")
+               "runc create held 30 s; each deploy exits 0, every once-a-second sample succeeds and none shows more "
+               "than one running container across both Machines, the move ends done or yielded with a requeued move "
+               "that ends done, "
+               f"and one ready container runs on the final target; {say(legs)}")
 
 
 # Release after a stopped Move
+
+# A Move asked for during a Deploy's run is refused, the Deploy ends on one Machine, and the Move runs once it ends
+
+def move_mid_deploy(vc):
+    phys = vc.physical("mike")
+    vc.seed(A, phys, 1)
+    probe_out = vc.out / "move_mid_deploy-probe.txt"
+    with probe_out.open("w") as output:
+        probe = subprocess.Popen([str(HELPER), "probe", str(vc.manifest), "mikedb"], stdout=output,
+                                 stderr=subprocess.STDOUT)
+    try:
+        time.sleep(10)
+        vc.slow_runc(A, "mike", phys, 30)
+        samples, stop = [], threading.Event()
+        sampler = threading.Thread(target=sample_running, args=(vc, phys, (B, A), samples, stop), daemon=True)
+        sampler.start()
+        try:
+            deploying = background(vc.plain_deploy, "mikedb")
+            held = vc.wait_start_log(A, "mike")
+            code_m, asked, data = vc.start_run("volume", "move", "mike", "--to", B)
+            asked = asked and vc.wait_run("mike", asked["id"])
+            code_d, deployed = deploying.result()
+        finally:
+            stop.set()
+            sampler.join()
+            vc.plain_runc(A, "mike")
+        after_deploy = vc.live(phys)
+        _, again, again_data = vc.move("mike", B)
+        ready = vc.ready(B, phys)
+        rows = vc.rows(B, phys)
+        running = vc.live(phys)
+        probing = probe.poll() is None
+    finally:
+        probe.send_signal(2)
+        probe.wait(timeout=600)
+    report = next((found for found in map(parse_json, reversed(probe_out.read_text().splitlines()))
+                   if isinstance(found, dict) and "lost" in found), None)
+    _, listed = vc.cli("volume", "runs", "mike")
+    open_rows = [row for row in run_rows(listed) if row.get("state") not in TERMINAL]
+    refusal = text_of(asked, data)
+    vc.verdict("move_mid_deploy",
+               holding(held) and code_m != 0 and asked is None and "mike is deploying; the Deploy ends its run" in refusal
+               and code_d == 0 and samples and not overlaps(samples)
+               and not [at for at, live in samples if not isinstance(live, dict)]
+               and len(after_deploy[A]) == 1 and not after_deploy[B]
+               and done(again) and ready and len(running[B]) == 1 and not running[A] and rows.split(",")[:1] == ["1"]
+               and report is not None and report["lost"] == [] and report["acked"] > 0 and not open_rows,
+               f"runc create held on {A}: {held}; move asked during the Deploy exit {code_m}: {refusal[:400]}; "
+               f"deploy exit {code_d} {say(deployed)[:300]}; samples {len(samples)}, overlaps {overlaps(samples)}; "
+               f"after the Deploy {after_deploy}; move again {text_of(again, again_data)[:300]}; ready on {B}={ready}; "
+               f"running {running}; kept rows {rows!r}; probe running until stopped={probing} {say(report)[:600]}; "
+               f"open runs {open_rows}")
+
 
 def settled(row):
     return row is not None and row.get("state") in TERMINAL
@@ -966,7 +1089,7 @@ def release_after_stopped_move(vc):
     phys = vc.physical("bravo")
     vc.psql(A, phys, "create table if not exists marks (note text); insert into marks values ('pre-05')")
     stopped = vc.stop_move("bravo", phys, A, B)
-    if stopped["run"].get("state") not in STOPPED or not stopped["held"]:
+    if stopped["run"].get("state") not in STOPPED or not holding(stopped["held"]):
         raise CheckError(f"the Move did not stop after the cut: {say(stopped)[:1200]}")
     a_copy = vc.inspect(A, phys)
     auto, code, released, data = release_after_cancel(vc, "bravo", stopped["run"])
@@ -997,7 +1120,7 @@ def thaw_takes_15_seconds(vc):
     try:
         with Recorder(vc, "thaw", phys) as recorder:
             stopped = vc.stop_move("bravo", phys, source, target)
-            if stopped["run"].get("state") not in STOPPED or not stopped["held"]:
+            if stopped["run"].get("state") not in STOPPED or not holding(stopped["held"]):
                 raise CheckError(f"the Move did not stop after the cut: {say(stopped)[:1200]}")
             auto, code, released, data = release_after_cancel(vc, "bravo", stopped["run"], limit=900)
             first = dict(auto=auto, exit=code, run=released, delay=vc.start_log(source, "thaw"))
@@ -1082,6 +1205,7 @@ def start_takes_15_seconds(vc):
     began = int(time.time())
     vc.slow_runc(target, "echo15", phys, 15)
     try:
+        vc.clear_of_mirror_cron(MOVE_PLAN)
         with Recorder(vc, "echo15", phys) as recorder:
             started = time.monotonic()
             _, row, data = vc.move("echo", target, limit=900)
@@ -1113,6 +1237,7 @@ def start_takes_150_seconds(vc):
     source = other(target)
     vc.slow_runc(target, "echo150", phys, 150)
     try:
+        vc.clear_of_mirror_cron(MOVE_PLAN)
         with Recorder(vc, "echo150", phys) as recorder:
             started = time.monotonic()
             _, row, data = vc.move("echo", target, limit=1200)
@@ -1150,7 +1275,8 @@ CHECKS = [
     ("delete_mirrored_volume", 2, [("hotel", None)], delete_mirrored_volume),
     ("delete_mirrored_environment", 2, [("foxtrot", DOOMED)], delete_mirrored_environment),
     ("stale_set_volume_copy_refused", 2, [("delta", None)], stale_replay_refused),
-    ("deploy_refused_mid_move", 2, [("charlie", None)], deploy_refused_mid_move),
+    ("deploy_mid_move", 2, [("charlie", None)], deploy_mid_move),
+    ("move_mid_deploy", 2, [("mike", None)], move_mid_deploy),
     ("release_after_stopped_move", 2, [("bravo", None)], release_after_stopped_move),
     ("thaw_takes_15_seconds", 2, [("bravo", None)], thaw_takes_15_seconds),
     ("move_twice_reuses_mirror", 2, [("golf", None)], move_twice_reuses_mirror),
@@ -1161,10 +1287,26 @@ CHECKS = [
 ]
 
 
+def background(function, *args, **kwargs):
+    future = Future()
+
+    def run():
+        try:
+            future.set_result(function(*args, **kwargs))
+        except Exception as error:
+            future.set_exception(error)
+    threading.Thread(target=run, daemon=True).start()
+    return future
+
+
 def setup(vc, volumes):
     two = B in vc.machines
     if two:
         vc.cli("server", "set", B, "--accepts-services=false", required=True)
+        pull = background(
+            vc.sh, B, f"/usr/bin/docker pull -q {IMAGE}; /usr/bin/docker volume create -d ployz -o size=1g warm-move-seed && "
+                      "for i in $(seq 10); do /usr/bin/docker volume rm warm-move-seed && exit 0; sleep 1; done; exit 1",
+            timeout=900)
     vc.cli("project", "new", "verify", required=True)
     vc.cli("link", "--project", "verify", required=True)
     by_env = {}
@@ -1185,9 +1327,7 @@ def setup(vc, volumes):
             vc.cli("deploy", *env_flag(env), timeout=1500, required=True)
     if two:
         vc.cli("server", "set", B, "--accepts-services=true", required=True)
-        vc.sh(B, f"/usr/bin/docker pull -q {IMAGE}; /usr/bin/docker volume create -d ployz -o size=1g warm-move-seed && "
-                 "for i in $(seq 10); do /usr/bin/docker volume rm warm-move-seed && exit 0; sleep 1; done; exit 1",
-              timeout=900)
+        pull.result()
     for volume, env in volumes:
         phys = vc.physical(volume, env)
         if not vc.ready(A, phys, limit=300):
@@ -1221,11 +1361,11 @@ def run_checks(manifest, selected):
     return vc
 
 
-def boot(machines):
+def boot(machines, provider):
     env = dict(os.environ)
     if FAULT_BUILD not in env.get("PLOYZ_VERIFY_CARGO_ARGS", ""):
         env["PLOYZ_VERIFY_CARGO_ARGS"] = (env.get("PLOYZ_VERIFY_CARGO_ARGS", "") + " " + FAULT_BUILD).strip()
-    result = subprocess.run([str(HELPER), "up", "--machines", str(machines), "--daemon", "checkout", "--cloud"],
+    result = subprocess.run([str(HELPER), "up", "--provider", provider, "--machines", str(machines), "--daemon", "checkout", "--cloud"],
                             cwd=CORE, env=env, stdout=subprocess.PIPE, text=True, timeout=7200)
     lines = result.stdout.strip().splitlines()
     manifest = Path(lines[-1]) if lines else None
@@ -1240,6 +1380,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("checks", nargs="*", help="check names; all when none")
     parser.add_argument("--manifest", type=Path, help="a ready run started with --cloud and the fault build")
+    parser.add_argument("--provider", choices=["incus", "boat"], default="boat", help="where a booted run's Machines live")
     parser.add_argument("--list", action="store_true")
     args = parser.parse_args()
     names = [name for name, *_ in CHECKS]
@@ -1252,12 +1393,12 @@ def main():
         parser.error(f"no check named {unknown}; --list shows them")
     selected = [check for check in CHECKS if not args.checks or check[0] in args.checks]
     needed = max(machines for _, machines, _, _ in selected)
-    manifest = args.manifest or boot(needed)
+    manifest = args.manifest or boot(needed, args.provider)
     try:
         run = json.loads(manifest.read_text())
-        if run.get("provider") != "incus" or run.get("state") != "ready" or "cloud" not in run \
+        if run.get("provider") not in ["incus", "boat"] or run.get("state") != "ready" or "cloud" not in run \
                 or len(run["machines"]) < needed:
-            raise CheckError(f"use a ready Incus run started with --cloud and at least {needed} Machines")
+            raise CheckError(f"use a ready Incus or Boat run started with --cloud and at least {needed} Machines")
         vc = run_checks(manifest, selected)
     finally:
         if not args.manifest:

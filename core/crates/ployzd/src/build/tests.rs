@@ -285,8 +285,6 @@ async fn build_concurrency_bounds_simultaneous_builds_on_separate_slots() {
         )
         .await
         .unwrap();
-    // The next arrival reads the explicit limit: the queued Build is admitted
-    // first, on its own build slot, and the arrival waits for a third slot.
     let (third, mut third_response) = fixture.request(Output::Load).await;
     assert!(matches!(
         event(&mut second_response).await,
@@ -352,8 +350,6 @@ async fn active_build_refuses_upgrade_but_not_machine_mutations() {
         crate::machine::LocalMachineError::Admission(crate::mutation::Error::Busy)
     ));
 
-    // A Build holds only its build slot, never the Machine mutation lock, so
-    // deploys and ordinary mutations on the building Machine proceed.
     tokio::time::timeout(
         Duration::from_secs(2),
         fixture.local.update(
@@ -936,7 +932,6 @@ async fn dropping_completed_build_releases_only_its_temporary_tags() {
             )
             .await
             .unwrap();
-        // Holding completed images must not occupy the Machine's active Build slot.
         let next = tokio::time::timeout(
             Duration::from_secs(5),
             fixture.capture().execute_remote_images(

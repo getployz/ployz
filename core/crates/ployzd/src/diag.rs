@@ -57,18 +57,19 @@ where
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod test_support {
     use std::{
         io::{self, Write},
         sync::{Arc, Mutex},
     };
 
+    use tracing::subscriber::DefaultGuard;
     use tracing_subscriber::fmt::MakeWriter;
 
     use super::{directive, subscriber};
 
     #[derive(Clone, Default)]
-    struct Capture(Arc<Mutex<Vec<u8>>>);
+    pub(crate) struct Capture(Arc<Mutex<Vec<u8>>>);
 
     impl Write for Capture {
         fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
@@ -90,10 +91,24 @@ mod tests {
     }
 
     impl Capture {
-        fn text(&self) -> String {
+        pub(crate) fn text(&self) -> String {
             String::from_utf8_lossy(&self.0.lock().expect("capture")).into_owned()
         }
     }
+
+    /// The journal subscriber at its default level, as this thread's default until the
+    /// guard drops, writing into the returned capture.
+    pub(crate) fn capture() -> (Capture, DefaultGuard) {
+        let capture = Capture::default();
+        let filter = directive(None, None).expect("default filter");
+        let guard = tracing::subscriber::set_default(subscriber(filter, capture.clone()));
+        (capture, guard)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{directive, subscriber, test_support::Capture};
 
     fn emit(cli: Option<&str>, env: Option<&str>, body: impl FnOnce()) -> String {
         let capture = Capture::default();

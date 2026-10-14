@@ -26,6 +26,7 @@ export function VariableRowDialogs({
       }
       actionLabel="Seal variable"
       pendingLabel="Sealing…"
+      variant="destructive"
       onConfirm={onConfirmSeal}
     />
   );

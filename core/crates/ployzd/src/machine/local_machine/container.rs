@@ -176,7 +176,6 @@ impl LocalMachine {
         deployment_id: Option<ployz_core::DeploymentLogId>,
         registry_auth: Option<ployz_core::RegistryAuth>,
     ) -> Result<ContainerCreated, Error> {
-        // Once admitted, caller cancellation must not let reset overtake a Docker request.
         let (local, namespace, spec) = (self.clone(), namespace.clone(), spec.clone());
         self.finish_mutation(async move {
             local
@@ -298,7 +297,9 @@ impl LocalMachine {
     /// With a `fence`, the Container holds that Volume and the gen is checked against
     /// its floor under the turn, after the drain: a Deploy that raised the floor
     /// meanwhile may already have answered Done on this holder, so a raised floor
-    /// drops the Withdrawal and stops nothing. A start ordered after that check waits for
+    /// drops the Withdrawal and stops nothing. The floor lock is held from that check
+    /// through the stop, so a floor raised mid-stop waits and its Deploy reads the
+    /// holder stopped, not still running. A start ordered after that check waits for
     /// the turn, so it runs after the stop.
     ///
     /// Polls no proxy and reads no other Machine.
@@ -320,11 +321,16 @@ impl LocalMachine {
         let _withdrawal = containers.withdraw(*container);
         tokio::time::sleep(drain.as_duration()).await;
         let turn = self.owner.admission_lock().write_owned().await;
-        if let Some((name, r#gen)) = fence
-            && let Err(floor) = containers.floor_turn().await.admit(name, r#gen).await?
-        {
-            return Ok(Err(floor));
-        }
+        let floor = match fence {
+            Some((name, r#gen)) => {
+                let mut floor = containers.floor_turn().await;
+                if let Err(floor) = floor.admit(name, r#gen).await? {
+                    return Ok(Err(floor));
+                }
+                Some(floor)
+            }
+            None => None,
+        };
         let stopped = containers
             .stop(
                 container,
@@ -332,6 +338,7 @@ impl LocalMachine {
                 stop.grace_period_seconds.map(i32::from),
             )
             .await;
+        drop(floor);
         drop(turn);
         stopped?;
         Ok(Ok(containers

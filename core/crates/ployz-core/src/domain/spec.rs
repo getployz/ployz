@@ -235,7 +235,7 @@ impl HealthcheckCommand {
         Ok(Self(test))
     }
 
-    /// Borrow the command tokens.
+    /// The command tokens: never empty, never starting with `NONE`.
     #[must_use]
     pub fn as_slice(&self) -> &[String] {
         &self.0
@@ -348,7 +348,7 @@ impl PreDeployCommand {
         Ok(Self(command))
     }
 
-    /// Borrow the command arguments.
+    /// The command and its arguments, never empty.
     #[must_use]
     pub fn as_slice(&self) -> &[String] {
         &self.0

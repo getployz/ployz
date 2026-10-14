@@ -774,6 +774,16 @@ mod set_volume_copy {
         error.clone()
     }
 
+    /// The lines the cut logged once every holder stopped, as the journal shows them.
+    fn cut_lines(capture: &crate::diag::test_support::Capture) -> Vec<String> {
+        capture
+            .text()
+            .lines()
+            .filter(|line| line.contains("cut: holders stopped"))
+            .map(str::to_owned)
+            .collect()
+    }
+
     fn cut(expect: Value) -> Value {
         json!({"name":VOLUME, "expect":expect,
             "want":{"kind":"mirror", "from":null, "target":"f-1", "drain":0}})
@@ -1052,6 +1062,7 @@ mod set_volume_copy {
         let service = service.with_volume_plugin(socket);
         running_holder(&service, &fake).await;
 
+        let (capture, _logging) = crate::diag::test_support::capture();
         let first = reply(&set_copy(&service, cut(json!({"kind":"writer", "epoch":0}))).await);
         assert_eq!(
             serde_json::to_value(&first).unwrap(),
@@ -1068,6 +1079,10 @@ mod set_volume_copy {
         assert_eq!(
             plugin.routes_called(),
             vec![INSPECT_ROUTE, CUT_ROUTE, INSPECT_ROUTE, INSPECT_ROUTE]
+        );
+        assert_eq!(
+            cut_lines(&capture),
+            vec![" INFO cut: holders stopped volume=app_data target=f-1 gen=0"]
         );
         server.abort();
         std::fs::remove_dir_all(data_dir).unwrap();
@@ -1172,6 +1187,7 @@ mod set_volume_copy {
         let service = service.with_volume_plugin(socket);
         running_holder(&service, &fake).await;
 
+        let (capture, _logging) = crate::diag::test_support::capture();
         let error = refusal(&set_copy(&service, cut(json!({"kind":"writer", "epoch":0}))).await);
         assert_eq!(error.code, RpcErrorCode::Internal, "{error:?}");
         assert!(
@@ -1183,6 +1199,7 @@ mod set_volume_copy {
         );
         assert_eq!(holder_status(&fake), vec![json!("running")]);
         assert_eq!(plugin.routes_called(), vec![INSPECT_ROUTE]);
+        assert_eq!(cut_lines(&capture), Vec::<String>::new());
         server.abort();
         std::fs::remove_dir_all(data_dir).unwrap();
     }
@@ -1199,12 +1216,14 @@ mod set_volume_copy {
         let service = service.with_volume_plugin(socket);
         running_holder(&service, &fake).await;
 
+        let (capture, _logging) = crate::diag::test_support::capture();
         let error = refusal(&set_copy(&service, cut(json!({"kind":"writer", "epoch":0}))).await);
         assert_eq!(error.code, RpcErrorCode::Conflict, "{error:?}");
         assert_eq!(error.details["reason"], json!("busy"));
         assert_eq!(error.details["copy"], writer_root(0, None)["Ok"]);
         assert_eq!(holder_status(&fake), vec![json!("running")]);
         assert_eq!(plugin.routes_called(), vec![INSPECT_ROUTE, INSPECT_ROUTE]);
+        assert_eq!(cut_lines(&capture), Vec::<String>::new());
         server.abort();
         std::fs::remove_dir_all(data_dir).unwrap();
     }
@@ -1375,6 +1394,85 @@ mod set_volume_copy {
     }
 
     #[tokio::test]
+    async fn a_machine_outside_the_cluster_refuses_a_cut_forget_or_floor_and_raises_no_floor() {
+        let data_dir =
+            std::env::temp_dir().join(format!("ployzd-copy-outside-{}", MachineId::random()));
+        let store = RecordOwner::spawn(LocalMachineStore::open(&data_dir).unwrap()).unwrap();
+        let (runtime, _fake) =
+            crate::docker::test_support::fake_runtime_with(FakeDocker::default()).await;
+        let service =
+            MachineService::with_cluster(store, None).with_optional_containers(Some(runtime));
+
+        for request in [
+            at_gen(draining_cut(0), 5),
+            at_gen(forget(json!({"kind":"writer", "epoch":0})), 5),
+            floor(5),
+        ] {
+            let error = refusal(&set_copy(&service, request).await);
+            assert_eq!(error.message, "Machine is not participating", "{error:?}");
+        }
+        let lower = service
+            .containers()
+            .unwrap()
+            .floor_turn()
+            .await
+            .admit(&VOLUME.parse().unwrap(), ployz_core::VolumeGen::new(0))
+            .await
+            .unwrap();
+        assert_eq!(lower, Ok(()), "a refused request left a floor behind");
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_machine_outside_the_cluster_without_docker_says_it_is_not_participating() {
+        let data_dir =
+            std::env::temp_dir().join(format!("ployzd-copy-bare-{}", MachineId::random()));
+        let store = RecordOwner::spawn(LocalMachineStore::open(&data_dir).unwrap()).unwrap();
+        let service = MachineService::with_cluster(store, None);
+
+        for request in [
+            at_gen(draining_cut(0), 5),
+            at_gen(forget(json!({"kind":"writer", "epoch":0})), 5),
+            floor(5),
+        ] {
+            let error = refusal(&set_copy(&service, request).await);
+            assert_eq!(error.message, "Machine is not participating", "{error:?}");
+        }
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_floor_queued_on_the_floor_lock_across_a_reset_refuses_and_raises_no_floor() {
+        let (data_dir, store, service, _fake) = fake_docker_service("ployzd-copy-reset").await;
+        let turn = service.containers().unwrap().floor_turn().await;
+        let mut queued = std::pin::pin!(set_copy(&service, floor(5)));
+        assert!(
+            futures_util::poll!(queued.as_mut()).is_pending(),
+            "the Floor did not queue on the floor lock"
+        );
+        store
+            .mutate(LocalMachineStore::begin_reset)
+            .await
+            .unwrap()
+            .unwrap();
+        drop(turn);
+
+        let response = queued.await;
+        let lower = service
+            .containers()
+            .unwrap()
+            .floor_turn()
+            .await
+            .admit(&VOLUME.parse().unwrap(), ployz_core::VolumeGen::new(0))
+            .await
+            .unwrap();
+        assert_eq!(lower, Ok(()), "the Floor raised a floor after the reset");
+        let error = refusal(&response);
+        assert_eq!(error.message, "Machine is not participating", "{error:?}");
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
     #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
     async fn a_floor_want_answers_the_root_while_a_cut_drains_then_the_slot() {
         let (data_dir, _store, service, fake) = fake_docker_service("ployzd-copy-floor").await;
@@ -1443,6 +1541,50 @@ mod set_volume_copy {
                 .iter()
                 .any(|route| route == CUT_ROUTE)
         );
+        server.abort();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    /// A Deploy that floors the Volume while the cut stops its holder reads the holder
+    /// next and keeps a running one, so the floor must wait for the stop to land.
+    #[tokio::test]
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    async fn a_floor_raised_during_the_holder_stop_waits_for_it_and_sees_the_holder_stopped() {
+        let (data_dir, _store, service, fake) =
+            fake_docker_service("ployzd-copy-fenced-stop").await;
+        let plugin = cutting_plugin();
+        let (socket, server) = plugin.serve(&data_dir);
+        let service = service.with_volume_plugin(socket);
+        let holder = running_holder(&service, &fake).await;
+        let stop = format!("/containers/{holder}/stop");
+        let held = fake.stop_gate.write().await;
+
+        let (refused, seen_by_floor) =
+            tokio::join!(set_copy(&service, at_gen(draining_cut(0), 1)), async {
+                while !fake
+                    .requests
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|(method, path)| *method == http::Method::POST && path.ends_with(&stop))
+                {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                let floored = async {
+                    reply(&set_copy(&service, floor(2)).await);
+                    holder_status(&fake)
+                };
+                let release = async {
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    drop(held);
+                };
+                tokio::join!(floored, release).0
+            });
+        assert_eq!(seen_by_floor, vec![json!("exited")]);
+        let error = refusal(&refused);
+        assert_eq!(error.details["reason"], json!("stale"), "{error:?}");
+        assert_eq!(error.details["floor"], json!(2));
+        assert_eq!(error.details["copy"], writer_root(0, None)["Ok"]);
         server.abort();
         std::fs::remove_dir_all(data_dir).unwrap();
     }
@@ -1811,6 +1953,170 @@ mod set_volume_copy {
         assert_eq!(creates, 1);
         server.abort();
         std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    /// Each child re-runs this binary armed through its own fault file, since a kill aborts
+    /// the whole process.
+    #[cfg(feature = "verify-faults")]
+    mod fault_lines {
+        use std::os::unix::process::ExitStatusExt;
+
+        use super::*;
+
+        const SIGABRT: i32 = 6;
+
+        /// Runs the ignored test `child` of this module alone, under `fault`.
+        fn run(child: &str, fault: &str) -> (std::process::Output, String) {
+            let child = format!("machine_api::local::tests::set_volume_copy::fault_lines::{child}");
+            let armed = tempfile::tempdir().unwrap();
+            let path = armed.path().join("fault");
+            std::fs::write(&path, fault).unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &child, "--ignored", "--nocapture"])
+                .env(crate::faults::PATH_ENV, &path)
+                .env_remove(crate::diag::ENV)
+                .output()
+                .unwrap();
+            (output, child)
+        }
+
+        fn fault_lines(text: &str) -> Vec<&str> {
+            text.lines()
+                .filter(|line| line.contains("fault:"))
+                .collect()
+        }
+
+        #[test]
+        fn a_switch_fault_line_names_the_volume_and_the_want() {
+            let (output, child) = run(
+                "a_cut_under_a_switch_delay",
+                "delay-rpc:SetVolumeCopy.WriterToMirror:0",
+            );
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success() && stdout.contains("1 passed"),
+                "{child}:\n{stdout}\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                fault_lines(&stdout),
+                vec![
+                    r#" WARN fault: delaying switch verb verb="SetVolumeCopy.WriterToMirror" secs=0 volume=app_data target=f-1 gen=6"#,
+                    r#" WARN fault: releasing switch verb verb="SetVolumeCopy.WriterToMirror" by=limit volume=app_data target=f-1 gen=6"#,
+                ]
+            );
+        }
+
+        #[test]
+        fn an_admission_fault_line_names_the_volume_and_the_want() {
+            let (output, child) = run("a_cut_under_a_switch_delay", "delay-rpc:SetVolumeCopy:0");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success() && stdout.contains("1 passed"),
+                "{child}:\n{stdout}\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                fault_lines(&stdout),
+                vec![
+                    r#" WARN fault: delaying switch verb verb="SetVolumeCopy" secs=0 volume=app_data target=f-1 gen=6"#,
+                    r#" WARN fault: releasing switch verb verb="SetVolumeCopy" by=limit volume=app_data target=f-1 gen=6"#,
+                ]
+            );
+        }
+
+        /// A Floor only raises the gen floor, outside the switch lock, so an armed switch
+        /// fault never holds it.
+        #[test]
+        fn a_floor_passes_an_armed_switch_fault_without_a_line() {
+            let (output, child) = run("a_floor_under_a_switch_delay", "delay-rpc:SetVolumeCopy:30");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success() && stdout.contains("1 passed"),
+                "{child}:\n{stdout}\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(fault_lines(&stdout), Vec::<&str>::new());
+        }
+
+        /// The kill aborts the child, so its line is read from the child's stderr.
+        #[test]
+        fn a_promote_kill_line_names_the_volume_and_the_want() {
+            let (output, child) = run(
+                "a_promote_under_a_kill",
+                "kill-daemon:SetVolumeCopy.MirrorToWriter",
+            );
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert_eq!(
+                output.status.signal(),
+                Some(SIGABRT),
+                "{child} was not aborted:\n{}\n{stderr}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+            assert_eq!(
+                fault_lines(&stderr),
+                vec![
+                    r#" WARN fault: killing daemon inside the effect verb="SetVolumeCopy.MirrorToWriter" volume=app_data at=900 epoch=1 gen=6"#
+                ]
+            );
+        }
+
+        #[tokio::test]
+        #[ignore = "a child of a_promote_kill_line_names_the_volume_and_the_want"]
+        async fn a_promote_under_a_kill() {
+            crate::diag::init(None).unwrap();
+            let (data_dir, _store, service, _fake) = fake_docker_service("ployzd-copy-kill").await;
+            let plugin = FakePlugin::default();
+            plugin.reply(INSPECT_ROUTE, slot(Some(snapshot("f-1", 900))));
+            plugin.reply(WRITER_ROUTE, writer_root(1, Some(snapshot("f-1", 900))));
+            let (socket, _server) = plugin.serve(&data_dir);
+            let service = service.with_volume_plugin(socket);
+            let promote = json!({"name":VOLUME,
+                "expect":{"kind":"mirror", "newest":"900", "slot":"1"},
+                "want":{"kind":"writer", "at":"900", "epoch":1, "start":null}, "gen":6});
+
+            let answered = set_copy(&service, promote).await;
+            panic!("the promote outlived its kill: {answered:?}");
+        }
+
+        #[tokio::test]
+        #[ignore = "a child of a_floor_passes_an_armed_switch_fault_without_a_line"]
+        async fn a_floor_under_a_switch_delay() {
+            let (data_dir, _store, service, _fake) =
+                fake_docker_service("ployzd-floor-fault").await;
+            let plugin = FakePlugin::default();
+            plugin.reply(INSPECT_ROUTE, writer_root(0, None));
+            let (socket, server) = plugin.serve(&data_dir);
+            let service = service.with_volume_plugin(socket);
+
+            let (capture, _logging) = crate::diag::test_support::capture();
+            reply(&set_copy(&service, floor(6)).await);
+            print!("{}", capture.text());
+            server.abort();
+            std::fs::remove_dir_all(data_dir).unwrap();
+        }
+
+        #[tokio::test]
+        #[ignore = "a child of a_switch_fault_line_names_the_volume_and_the_want"]
+        async fn a_cut_under_a_switch_delay() {
+            let (data_dir, _store, service, _fake) = fake_docker_service("ployzd-copy-fault").await;
+            let plugin = FakePlugin::default();
+            plugin.reply(INSPECT_ROUTE, writer_root(0, None));
+            plugin.reply(CUT_ROUTE, slot(Some(snapshot("f-1", 7))));
+            let (socket, server) = plugin.serve(&data_dir);
+            let service = service.with_volume_plugin(socket);
+
+            let request = at_gen(cut(json!({"kind":"writer", "epoch":0})), 6);
+            let (capture, _logging) = crate::diag::test_support::capture();
+            reply(&set_copy(&service, request).await);
+            print!("{}", capture.text());
+            assert_eq!(
+                plugin.routes_called(),
+                vec![INSPECT_ROUTE, CUT_ROUTE, INSPECT_ROUTE]
+            );
+            server.abort();
+            std::fs::remove_dir_all(data_dir).unwrap();
+        }
     }
 }
 

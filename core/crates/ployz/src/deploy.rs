@@ -318,7 +318,6 @@ pub struct DeploySnapshot {
     pub container_failures: Vec<MachineFailure<RpcError>>,
     /// Required Container queries that produced no terminal response.
     pub container_omissions: Vec<MachineId>,
-    /// Fresh targeted bridge observations used only for capacity admission.
     /// Fresh telemetry by Machine, or `None` for snapshot paths that cannot create endpoints.
     pub capacity: Option<BTreeMap<MachineId, BridgeEndpointCapacity>>,
 }
@@ -678,7 +677,6 @@ pub enum PlanError {
         "Volume {name} on Server '{machine}' already uses Docker storage. Automatic conversion to managed storage is unavailable"
     )]
     ExistingPlainVolume {
-        /// Existing machine-local Docker Volume name.
         name: DockerVolumeName,
         /// Machine holding the existing Volume.
         machine: MachineName,
@@ -688,7 +686,6 @@ pub enum PlanError {
         "Managed volume {name} on Server '{machine}' has a different size limit; a Volume's size is fixed once deployed, so its data is neither resized nor replaced (requested {maximum_bytes})"
     )]
     ExistingProvisionedVolumeMismatch {
-        /// Existing machine-local Docker Volume name.
         name: DockerVolumeName,
         /// Machine holding the existing Volume.
         machine: MachineName,

@@ -1,3 +1,4 @@
+import { Schema, SchemaGetter } from "effect";
 import type {
   AttachConfig, ConfigCommand, ConfigFileSummary, ConfigItemView, ConfigListing, CreateConfig, DiffView, EnvironmentRef, EnvironmentView,
   PutConfigFile, ServiceListing,
@@ -18,12 +19,16 @@ export function createConfigCommand(id: string, environment: EnvironmentRef, nam
   return { command: "create_config", id, environment, name, mounts: [] };
 }
 
-/** Writes one file's text; `mode` only when the user flipped Executable, so a CLI-set owner stays. */
-export function putConfigFileCommand(environment: EnvironmentRef, config: string, file: string, content: string, mode?: string):
+/** A file's permission bits and owner, as the Store keeps them. */
+export type FileAccess = Pick<ConfigFileSummary, "mode" | "uid" | "gid">;
+
+/** What a new file gets: read-only, owned by root. */
+export const DEFAULT_ACCESS: FileAccess = { mode: READ_ONLY_MODE, uid: 0, gid: 0 };
+
+/** Writes one file's text, and only the access fields the user changed, so the Store keeps the rest. */
+export function putConfigFileCommand(environment: EnvironmentRef, config: string, file: string, content: string, access: Partial<FileAccess> = {}):
   { command: "put_config_file" } & PutConfigFile {
-  const put: { command: "put_config_file" } & PutConfigFile = { command: "put_config_file", environment, config, file, content };
-  if (mode !== undefined) put.mode = mode;
-  return put;
+  return { command: "put_config_file", environment, config, file, content, ...definedAccess(access) };
 }
 
 export function attachConfigCommand(environment: EnvironmentRef, service: string, config: string, dir: string):
@@ -33,24 +38,44 @@ export function attachConfigCommand(environment: EnvironmentRef, service: string
 
 /** One Save: every edited file of a Config in one batch, so they stage as one change or not at all. */
 export function saveConfigCommand(environment: EnvironmentRef, config: string,
-  edits: readonly { file: string; content: string; mode?: string }[]): ConfigCommand {
-  return { command: "batch", environment, commands: edits.map((edit) => putConfigFileCommand(environment, config, edit.file, edit.content, edit.mode)) };
+  edits: readonly ({ file: string } & FileDraft)[]): ConfigCommand {
+  return { command: "batch", environment, commands: edits.map(({ file, content, ...access }) => putConfigFileCommand(environment, config, file, content, access)) };
 }
 
-/**
- * What the Executable toggle can say about a file: read-only (0444) or executable (0555) as root, which it flips
- * between; anything else was set through the CLI or SDK, and shows as a fixed label.
- */
-export type FileAccess =
-  | { kind: "toggle"; executable: boolean }
-  | { kind: "fixed"; label: string };
-
-export function fileAccess(file: Pick<ConfigFileSummary, "mode" | "uid" | "gid">): FileAccess {
-  if (file.uid === 0 && file.gid === 0 && (file.mode === READ_ONLY_MODE || file.mode === EXECUTABLE_MODE)) {
-    return { kind: "toggle", executable: file.mode === EXECUTABLE_MODE };
-  }
-  return { kind: "fixed", label: `${file.mode} · ${file.uid}:${file.gid}` };
+/** The Executable toggle flips only root-owned 0444 and 0555; any other access is custom and shows its owner too. */
+export function executableToggle(access: FileAccess): { executable: boolean } | null {
+  return access.uid === 0 && access.gid === 0 && (access.mode === READ_ONLY_MODE || access.mode === EXECUTABLE_MODE)
+    ? { executable: access.mode === EXECUTABLE_MODE }
+    : null;
 }
+
+export function fileAccessLabel(access: FileAccess) {
+  return executableToggle(access) ? access.mode : `${access.mode} · ${access.uid}:${access.gid}`;
+}
+
+/** The largest user or group ID a file can take: u32::MAX means "leave unchanged" to chown. */
+const MAX_ID = 4_294_967_294;
+
+const modeText = Schema.Trim.check(Schema.makeFilter<string>((mode) => /^0?[0-7]{3}$/u.test(mode)
+  ? undefined : "Mode is three octal digits, like 0644.")).pipe(
+  Schema.decodeTo(Schema.String, {
+    decode: SchemaGetter.transform((mode) => mode.padStart(4, "0")),
+    encode: SchemaGetter.transform((mode) => mode),
+  }),
+);
+
+const idText = (label: string) => Schema.Trim.check(Schema.makeFilter<string>((id) => /^\d{1,10}$/u.test(id) && Number(id) <= MAX_ID
+  ? undefined : `${label} is a whole number, like 1000.`)).pipe(
+  Schema.decodeTo(Schema.Int, {
+    decode: SchemaGetter.transform(Number),
+    encode: SchemaGetter.transform(String),
+  }),
+);
+
+/** The Permissions dialog's three text fields, parsed into a file's access; encoding a file's access prefills them. */
+export const fileAccessDraftSchema = Schema.Struct({ mode: modeText, uid: idText("User ID"), gid: idText("Group ID") });
+
+export type FileAccessDraft = typeof fileAccessDraftSchema.Encoded;
 
 /** Bytes as the Size row says them: 812 B, 12.4 KB. */
 export function configBytesText(bytes: number) {
@@ -95,17 +120,37 @@ export function detachedConfigMounts(diff: DiffView, configId: string) {
       : []));
 }
 
-/** A file's unsaved text and, when the user flipped Executable, its mode. */
-export type FileDraft = { content: string; mode?: string };
+/** A file's unsaved text and whichever access fields the user changed. */
+export type FileDraft = { content: string } & Partial<FileAccess>;
+
+/** A file's access as the drawer shows it: its draft's fields over the stored ones, a new file's defaults under both. */
+export function draftAccess(stored: FileAccess | undefined, draft: FileDraft | undefined): FileAccess {
+  return { ...DEFAULT_ACCESS, ...definedAccess(stored ?? {}), ...definedAccess(draft ?? {}) };
+}
+
+const ACCESS_FIELDS = ["mode", "uid", "gid"] as const;
+
+/** The fields of `after` that differ from `before`, so a stale prefill never overwrites an owner set elsewhere. */
+export function changedAccess(before: FileAccess, after: FileAccess): Partial<FileAccess> {
+  return definedAccess({
+    mode: after.mode === before.mode ? undefined : after.mode,
+    uid: after.uid === before.uid ? undefined : after.uid,
+    gid: after.gid === before.gid ? undefined : after.gid,
+  });
+}
+
+function definedAccess({ mode, uid, gid }: Partial<FileAccess>): Partial<FileAccess> {
+  return { ...(mode !== undefined && { mode }), ...(uid !== undefined && { uid }), ...(gid !== undefined && { gid }) };
+}
 
 /** A stored file whose contents the viewer may not read: Ployz support, while its Organization keeps Config files hidden. */
 export const hiddenFile = (config: Pick<ConfigItemView, "files" | "contents">, file: string) =>
   config.files.some((one) => one.name === file) && !Object.hasOwn(config.contents, file);
 
 /**
- * What one Save writes: each drafted file whose text or mode differs from the Store's, that is new, or whose last save
+ * What one Save writes: each drafted file whose text or access differs from the Store's, that is new, or whose last save
  * failed (a failed rollback read can leave the optimistic contents cached). A hidden file is written only once it has new
- * text, so neither a mode change nor a retry ever empties it.
+ * text, so neither an access change nor a retry ever empties it.
  */
 export function configEdits(
   config: Pick<ConfigItemView, "files" | "contents">, drafts: ReadonlyMap<string, FileDraft>, failed: ReadonlySet<string> = new Set(),
@@ -114,7 +159,7 @@ export function configEdits(
     if (hiddenFile(config, file) && draft.content === "") return [];
     const stored = config.files.find((one) => one.name === file);
     const changed = stored === undefined || failed.has(file) || config.contents[file] !== draft.content
-      || (draft.mode !== undefined && draft.mode !== stored.mode);
+      || ACCESS_FIELDS.some((field) => draft[field] !== undefined && draft[field] !== stored[field]);
     return changed ? [{ file, ...draft }] : [];
   });
 }

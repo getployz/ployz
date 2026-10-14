@@ -24,11 +24,10 @@ const LOG_LIMIT: usize = 256 * 1024;
 /// A Git Service a Deployment builds, and the commit it is pinned to.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct GitSource {
-    /// Its runtime Service name.
+    /// Its Private DNS name, which a rename keeps.
     pub service: ServiceName,
     /// The GitHub repository, as `owner/name`.
     pub repository: RepositoryName,
-    /// GitHub's ID for it.
     pub repository_id: RepositoryId,
     /// How Cloud reads it.
     pub access: ServiceGitAccess,
@@ -68,7 +67,7 @@ pub enum BuildStatus {
 /// last report.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct BuildReport {
-    /// The runtime Service it builds.
+    /// Its Private DNS name, which a rename keeps.
     pub service: ServiceName,
     pub status: BuildStatus,
     /// Why it failed. Users read it: it holds no secret.
@@ -88,12 +87,13 @@ pub struct BuildView {
     pub message: Option<String>,
 }
 
-/// One build's log.
+/// Ask for the log of `service`'s build in `deployment`; `not_found` when that
+/// Deployment built no such Service.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct BuildLogQuery {
     pub deployment: DeploymentId,
-    /// The Service it built.
+    /// Its name when admitted, or its Private DNS name.
     pub service: ServiceName,
 }
 
@@ -401,7 +401,7 @@ fn trimmed(message: &str) -> String {
 #[ts(as = "String")]
 pub struct GithubBuildId {
     pub deployment: DeploymentId,
-    /// Its runtime Service name.
+    /// Its Private DNS name, which a rename keeps.
     pub service: ServiceName,
 }
 
@@ -632,7 +632,6 @@ pub(crate) fn github_dispatched(
     save_github(tx, id, BuildStatus::Building, None, &log, Some(&github))
 }
 
-/// The GitHub build `id`.
 pub(crate) fn github_build(tx: &mut dyn Tx, id: &GithubBuildId) -> Result<GithubBuild, RpcError> {
     let stored = deployment::load(tx, &id.deployment)?;
     github_row(tx, &stored, id)?

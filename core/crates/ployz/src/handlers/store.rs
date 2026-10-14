@@ -313,7 +313,6 @@ impl<'m> Store<'m> {
             .map_err(|error| self.fail(error))
     }
 
-    /// Where this Store is.
     pub(crate) const fn backend(&self) -> &Backend {
         &self.backend
     }
