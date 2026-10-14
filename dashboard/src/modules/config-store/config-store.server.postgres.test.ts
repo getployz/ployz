@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { eq, sql } from "drizzle-orm";
 import * as tar from "tar";
-import { Cause, Effect, Exit, Layer } from "effect";
+import { Cause, Effect, Exit, Layer, Schema } from "effect";
 import { Inngest } from "inngest";
 import type { PolarService } from "#/modules/billing/polar-provider.server";
 import { startFakeHostedDns } from "#/modules/cluster-domain/hosted-dns.test-fixture";
@@ -73,16 +73,28 @@ const cloudLayer = Effect.fn(function* (
 });
 
 /** The fields these tests read from Store results and refusals. */
-type Reply = {
-  readonly written?: string;
-  readonly view?: string;
-  readonly staged?: ReadonlyArray<string>;
-  readonly settings?: ReadonlyArray<{ readonly path: string; readonly value: number; readonly default: number; readonly apply: string }>;
-  readonly values?: Readonly<Record<string, string | number>>;
-  readonly error?: { readonly code: string; readonly details: { readonly revision?: number; readonly next?: string } | null };
-  readonly domain?: { readonly kind: string; readonly prefix?: string; readonly hostname: string | null };
-  readonly domains?: ReadonlyArray<{ readonly hostname: string | null; readonly status: string; readonly action: { readonly type: string } | null }>;
-};
+const Reply = Schema.Struct({
+  written: Schema.optionalKey(Schema.String),
+  view: Schema.optionalKey(Schema.String),
+  staged: Schema.optionalKey(Schema.Array(Schema.String)),
+  settings: Schema.optionalKey(Schema.Array(Schema.Struct({
+    path: Schema.String, value: Schema.Unknown, default: Schema.Unknown, apply: Schema.String,
+  }))),
+  values: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
+  error: Schema.optionalKey(Schema.Struct({
+    code: Schema.String,
+    details: Schema.NullOr(Schema.Struct({ revision: Schema.optionalKey(Schema.Number), next: Schema.optionalKey(Schema.String) })),
+  })),
+  domain: Schema.optionalKey(Schema.Struct({
+    kind: Schema.String, prefix: Schema.optionalKey(Schema.String), hostname: Schema.NullOr(Schema.String),
+  })),
+  domains: Schema.optionalKey(Schema.Array(Schema.Struct({
+    hostname: Schema.NullOr(Schema.String), status: Schema.String, action: Schema.NullOr(Schema.Struct({ type: Schema.String })),
+  }))),
+});
+type Reply = typeof Reply.Type;
+/** Checks the fields the tests read and keeps the rest, so whole-reply assertions still see every field. */
+const decodeReply = (text: string) => Schema.decodeUnknownSync(Reply)(JSON.parse(text), { onExcessProperty: "preserve" });
 
 /** One CLI request; `json` is the Store's result, or its refusal under `error`. */
 const request = Effect.fn(function* (path: string, cookie: string | undefined, body: Body | undefined, method = "POST") {
@@ -96,8 +108,7 @@ const request = Effect.fn(function* (path: string, cookie: string | undefined, b
     return { status: statusForPublicError(encodePublicError(Cause.squash(exit.cause))), json: empty };
   }
   const text = yield* Effect.promise(() => exit.value.text());
-  // SAFETY: test-only view of the Store's JSON; assertions check every field read.
-  return { status: exit.value.status, json: JSON.parse(text) as Reply };
+  return { status: exit.value.status, json: decodeReply(text) };
 });
 
 const signUp = Effect.fn(function* (name: string) {
@@ -678,8 +689,7 @@ const upload = Effect.fn(function* (deploymentId: string, cookie: string, body: 
   const response = yield* handleConfigRequest(new Request(`${origin}/api/config/upload/${deploymentId}`, {
     method: "POST", headers: { cookie, "content-type": "application/gzip" }, body: new Blob([new Uint8Array(body)]),
   }));
-  // SAFETY: test-only view of Cloud's JSON; assertions check every field read.
-  return { status: response.status, json: (yield* Effect.promise(() => response.json())) as Reply };
+  return { status: response.status, json: decodeReply(yield* Effect.promise(() => response.text())) };
 });
 
 it.live(
