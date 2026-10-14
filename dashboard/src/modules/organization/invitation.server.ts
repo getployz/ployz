@@ -7,7 +7,7 @@ import { organization } from "#/modules/organization/tables";
 import { Database } from "#/server/database.server";
 import { Conflict, NotFound } from "#/server/public-error";
 
-const INVITE_DAYS = 7;
+export const INVITE_DAYS = 7;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 type InviteRole = typeof invitation.$inferSelect.role;

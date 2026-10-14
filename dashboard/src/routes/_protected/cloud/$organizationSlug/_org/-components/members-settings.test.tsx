@@ -22,7 +22,7 @@ describe("InviteDialog", () => {
       link: "https://cloud.test/invite/t",
       expires_at: "2026-10-21T00:00:00Z",
       emailed_to,
-      message,
+      message: `${message}\nhttps://cloud.test/invite/t`,
     });
     render(
       <QueryClientProvider client={new QueryClient()}>

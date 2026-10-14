@@ -7,7 +7,7 @@ use serde::Serialize;
 
 use super::store::Next;
 use super::{Error, config_path, leaf_matches, runtime};
-use crate::cli::{positional, value};
+use crate::cli::{positional, switch, value};
 use ployz_core::RpcErrorCode;
 
 use crate::cloud_account::{self, Credential, ServerClears};
@@ -61,6 +61,16 @@ pub(crate) fn org_command() -> Command {
                 ])),
         )
         .subcommand(
+            Command::new("leave")
+                .about("Leave the Organization you act in; this device moves to another of yours")
+                .long_about(
+                    "Leave the Organization you act in. Its last owner cannot leave. A signed-in \
+                     device moves to another of your Organizations. Asks first; --yes skips that.",
+                )
+                .after_help("Examples:\n  ployz org leave\n  ployz org leave --yes")
+                .arg(switch("yes", Some('y')).help("Leave without asking")),
+        )
+        .subcommand(
             Command::new("rm")
                 .about("Delete the Organization you act in, once it has no Project")
                 .long_about(
@@ -93,6 +103,7 @@ pub(super) fn org_handler(path: &str) -> Option<Runnable> {
         "ls" => cloud(Never, org_list),
         "use" => cloud(Never, org_use),
         "build-order" => cloud(Depends, org_build_order),
+        "leave" => cloud(Always, org_leave),
         "rm" => cloud(Always, org_remove),
         _ => return None,
     })
@@ -319,6 +330,80 @@ fn org_use(root: &ArgMatches) -> Result<(), Error> {
             "This device now acts in Organization {}.",
             organization.slug
         ))
+    })
+}
+
+/// Leave the Organization through Cloud's `org_leave`. Cloud refuses a device everything
+/// in an Organization it left, so a signed-in device lists the others first and moves to
+/// one, as `org rm` does.
+fn org_leave(root: &ArgMatches) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let store = CredentialStore::beside(&config_path(matches)?);
+    let runtime = runtime()?;
+    let credential = runtime.block_on(cloud_account::from_env(&store))?;
+    let organization = runtime.block_on(cloud_account::acting_in(&credential))?;
+    if !matches.get_flag("yes") {
+        ui::confirm(
+            &format!("Leave Organization {}?", organization.slug),
+            || {
+                Error::coded(
+                    RpcErrorCode::ConfirmationRequired,
+                    format!(
+                        "Leaving Organization {} needs confirmation. Nothing changed.",
+                        organization.slug
+                    ),
+                )
+                .hint(Hint::Retry("ployz org leave --yes".to_owned()))
+            },
+            "Cancelled. Nothing changed.",
+        )?;
+    }
+    let (acting, organization) = runtime.block_on(async {
+        let others: Vec<cloud_account::OrganizationEntry> = match &credential {
+            Credential::Device(_) => cloud_account::organizations(&credential)
+                .await?
+                .into_iter()
+                .filter(|other| other.slug != organization.slug)
+                .collect(),
+            Credential::Token { .. } => Vec::new(),
+        };
+        let key = uuid::Uuid::new_v4().to_string();
+        // Cloud leaves the Organization named here, not the session's active one, which a
+        // browser may have moved since this device last acted.
+        let input = serde_json::json!({ "organization": organization.slug });
+        crate::published::run_on(&credential, "org_leave", input, None, &key)
+            .await
+            .0?;
+        let acting = match others.first() {
+            Some(other) => Some(
+                cloud_account::use_organization(&store, &credential, &other.slug)
+                    .await
+                    .map(|organization| organization.slug)
+                    .map_err(|error| (other.slug.clone(), error)),
+            ),
+            None => None,
+        };
+        Ok::<_, Error>((acting, organization.slug))
+    })?;
+    let value = serde_json::json!({
+        "organization": organization,
+        "acting": acting.as_ref().and_then(|acting| acting.as_ref().ok()),
+    });
+    ui::finish(&value, || {
+        ui::stream(format_args!("Left Organization {organization}."));
+        match &acting {
+            Some(Ok(slug)) => {
+                ui::note(format_args!("This device now acts in Organization {slug}."))
+            }
+            Some(Err((slug, error))) => {
+                ui::warn_cause(
+                    format_args!("Could not move this device to Organization {slug}"),
+                    error,
+                );
+                ui::hint(&Hint::Next(format!("ployz org use {slug}")));
+            }
+            None => {}
+        }
     })
 }
 

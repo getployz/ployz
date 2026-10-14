@@ -41,9 +41,17 @@ fn fake_cloud(browser: Arc<Mutex<Browser>>, routes: Arc<Mutex<Vec<String>>>) -> 
                     length = value.trim().parse().unwrap();
                 }
             }
-            reader.read_exact(&mut vec![0; length]).unwrap();
+            let mut sent = vec![0; length];
+            reader.read_exact(&mut sent).unwrap();
             let route = request_line.rsplit_once(' ').unwrap().0.to_owned();
             routes.lock().unwrap().push(route.clone());
+            if route == "POST /api/cli/run/org_leave" {
+                let sent: Value = serde_json::from_slice(&sent).unwrap();
+                routes
+                    .lock()
+                    .unwrap()
+                    .push(format!("org_leave input {}", sent.get("input").unwrap()));
+            }
             let (status, body) = match route.as_str() {
                 "POST /api/auth/device/code" => (
                     200,
@@ -98,6 +106,19 @@ fn fake_cloud(browser: Arc<Mutex<Browser>>, routes: Arc<Mutex<Vec<String>>>) -> 
                         "devices": [], "revoking": [],
                     }),
                 ),
+                "GET /api/cli/organizations" => (
+                    200,
+                    json!({ "organizations": [
+                        { "id": "o1", "slug": "acme", "name": "Acme", "current": true },
+                        { "id": "o2", "slug": "dev", "name": "Dev", "current": false },
+                    ] }),
+                ),
+                "POST /api/cli/run/org_leave" => {
+                    (200, json!({ "output": { "organization": "acme" } }))
+                }
+                "POST /api/auth/organization/set-active" => {
+                    (200, json!({ "id": "o2", "slug": "dev" }))
+                }
                 _ => (404, json!({})),
             };
             let body = body.to_string();
@@ -322,5 +343,82 @@ fn a_cloud_without_cli_sign_in_is_unsupported() {
     assert_eq!(
         json_of(&output).pointer("/error/code").unwrap(),
         "unsupported"
+    );
+}
+
+fn signed_in(routes: Arc<Mutex<Vec<String>>>) -> (tempfile::TempDir, std::path::PathBuf) {
+    let cloud = fake_cloud(Arc::new(Mutex::new(Browser::Approved)), routes);
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("config.yaml");
+    for args in [
+        vec!["login", "--json", "--cloud-url", &cloud],
+        vec!["login", "--json"],
+    ] {
+        assert!(ployz(&config, &args).status.success());
+    }
+    (dir, config)
+}
+
+#[test]
+fn org_leave_with_yes_leaves_then_moves_the_device_to_another_organization() {
+    let routes = Arc::new(Mutex::new(Vec::new()));
+    let (_dir, config) = signed_in(routes.clone());
+    routes.lock().unwrap().clear();
+
+    let left = ployz(&config, &["org", "leave", "--yes", "--json"]);
+
+    assert!(
+        left.status.success(),
+        "{}",
+        String::from_utf8_lossy(&left.stderr)
+    );
+    assert_eq!(
+        json_of(&left),
+        json!({ "organization": "acme", "acting": "dev" })
+    );
+    let routes = routes.lock().unwrap().clone();
+    let at = |route: &str| {
+        routes
+            .iter()
+            .position(|seen| seen == route)
+            .unwrap_or_else(|| panic!("{route} in {routes:?}"))
+    };
+    assert!(
+        at("GET /api/cli/organizations") < at("POST /api/cli/run/org_leave"),
+        "lists the others while still a member"
+    );
+    assert!(
+        at("POST /api/cli/run/org_leave") < at("POST /api/auth/organization/set-active"),
+        "moves only once it left"
+    );
+    at(r#"org_leave input {"organization":"acme"}"#);
+    let human = ployz(&config, &["org", "leave", "--yes"]);
+    assert!(
+        String::from_utf8_lossy(&human.stderr)
+            .contains("This device now acts in Organization dev."),
+        "{}",
+        String::from_utf8_lossy(&human.stderr)
+    );
+}
+
+#[test]
+fn org_leave_without_yes_and_no_terminal_refuses_before_cloud_hears_of_it() {
+    let routes = Arc::new(Mutex::new(Vec::new()));
+    let (_dir, config) = signed_in(routes.clone());
+
+    let refused = ployz(&config, &["org", "leave", "--json"]);
+
+    assert!(!refused.status.success());
+    assert!(
+        String::from_utf8_lossy(&refused.stdout).contains("confirmation_required"),
+        "{}",
+        String::from_utf8_lossy(&refused.stdout)
+    );
+    assert!(
+        !routes
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|route| route.contains("org_leave"))
     );
 }
