@@ -98,7 +98,7 @@ def shortfalls(machines, memory, available, total, running, pool_free, pool_tota
     usable = pool_free - disk_reserve
     if need > usable:
         problems.append(f"Disk: need {gib(need)} for {machines} Machine(s), {gib(max(usable, 0))} usable "
-                        f"({gib(pool_free)} free in the pool, {gib(disk_reserve)} reserve)")
+                        f"({gib(pool_free)} free for VM roots, {gib(disk_reserve)} reserve)")
     return problems
 
 
