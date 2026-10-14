@@ -581,10 +581,14 @@ class Provider:
     def boat(self, *args, **kwargs):
         return self.commands([*cli(), *args, "--json"], **kwargs)
 
-    def record(self, update=None):
-        """The run's registry; `update` changes it under a host-wide lock, since another process can park or remove it."""
+    def record(self, update=None, missing_ok=False):
+        """The run's registry; `update` changes it under a host-wide lock, since another process can park or remove it.
+
+        An update to a registry `down` already removed raises, unless `missing_ok` makes it a no-op."""
         with locked("registry.lock"):
             record = read(self.registry)
+            if update and record is None and not missing_ok:
+                raise RuntimeError(f"Boat registry for this run is gone: {self.registry}")
             if update and record is not None:
                 update(record)
                 write(self.registry, record)
@@ -798,7 +802,7 @@ systemctl enable --now {PLOYZ_UNITS} $observe
         if failed:
             print(f"Could not extend the auto-stop of {', '.join(failed)}; they stop on their earlier deadline.", file=sys.stderr)
         else:
-            self.record(lambda record: record.update(extended=int(now)))
+            self.record(lambda record: record.update(extended=int(now)), missing_ok=True)
 
     def wait_agent(self, node):
         deadline = time.monotonic() + 180

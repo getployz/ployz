@@ -178,9 +178,15 @@ class Registry(unittest.TestCase):
         self.provider.record(lambda record: record.update(extended=0))
         boat.registry("run1").unlink()
         self.provider.refresh()
-        self.provider.mark("machine-1", state="parked")
         self.assertFalse(boat.registry("run1").exists())
         self.assertEqual(self.calls, [])
+
+    def test_recording_a_sandbox_after_down_removed_the_registry_fails_instead_of_losing_it(self):
+        self.registered()
+        boat.registry("run1").unlink()
+        with self.assertRaisesRegex(RuntimeError, "registry for this run is gone"):
+            self.provider.mark("machine-1", id="bx_a", state="running")
+        self.assertFalse(boat.registry("run1").exists())
 
     def test_down_deletes_every_registered_sandbox_and_forgets_the_run(self):
         self.registered(**{"machine-1": dict(id="bx_a", state="running"), "machine-2": dict(id="bx_b", state="running")})
