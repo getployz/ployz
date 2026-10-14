@@ -336,7 +336,6 @@ pub(crate) enum Protection {
 }
 
 impl Protection {
-    /// What the row just read says about `copy`.
     pub(crate) fn of(read: Option<ServingPointer>, copy: &ContainerId) -> Self {
         match read {
             Some(pointer) if pointer.containers.contains(copy) => Self::Pointed(pointer),

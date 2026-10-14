@@ -347,8 +347,6 @@ async fn a_removal_of_a_copy_the_row_still_points_at_is_refused() {
     client.assert_done();
 }
 
-/// The two groups planning builds for a Service that only sheds copies: the
-/// Service's own flip over `kept`, then its rollout removals.
 fn scale_down_groups(kept: &[ContainerId]) -> Vec<crate::deploy::schedule::ServiceGroup> {
     let service = ServiceName::parse("api").unwrap();
     vec![
@@ -1078,6 +1076,54 @@ async fn a_labelled_first_deploy_starts_nothing_until_its_pin_is_routed() {
     );
     assert_eq!(client.pins().len(), 1);
     assert!(client.publications().is_empty());
+    client.assert_done();
+}
+
+#[tokio::test]
+async fn a_stop_of_a_copy_another_deploy_now_points_at_is_superseded() {
+    let machine = machine('1');
+    let old = container('a');
+    let older = DeploymentLogId::parse("older").unwrap();
+    let plan = vec![DeployOperation::StopContainer {
+        machine_id: machine,
+        container_id: old,
+        purpose: ployz_core::StopContainerPurpose::FreeHostPorts,
+    }];
+    let winner = ServingPointer {
+        deploy: DeploymentLogId::parse("winner").unwrap(),
+        containers: vec![old],
+        previous: Some(older.clone()),
+        retiring: Vec::new(),
+    };
+    let client = Scripted {
+        rival: Some(winner.clone()),
+        ..Scripted::new(Vec::new())
+    };
+    client.pointers.lock().unwrap().insert(
+        api(),
+        ServingPointer {
+            deploy: older,
+            containers: vec![old],
+            previous: None,
+            retiring: Vec::new(),
+        },
+    );
+    let mut groups = scale_down_groups(&[]);
+    groups.truncate(1);
+    groups.first_mut().unwrap().steps = vec![crate::deploy::schedule::Step::Serial(0)];
+
+    let outcome = execute_groups(&plan, groups, &client).await;
+
+    assert_eq!(
+        outcome,
+        DeployOutcome::Superseded {
+            completed: Vec::new(),
+            service: api(),
+            unexecuted: plan,
+        }
+    );
+    assert!(client.publications().is_empty());
+    assert_eq!(client.pointers.lock().unwrap().get(&api()), Some(&winner));
     client.assert_done();
 }
 

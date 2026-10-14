@@ -337,6 +337,11 @@ enum OperationFailure {
         error: ExecutionError,
         compensation: Box<ReplacementCompensation<ExecutionError>>,
     },
+    /// Another Deploy's row points at the copy this one was about to stop.
+    Superseded {
+        service: QualifiedService,
+        current: ServingPointer,
+    },
 }
 
 #[derive(Clone, Copy)]
@@ -717,19 +722,29 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                         }
                         schedule.apply(Event::Completed(index));
                     }
-                    Err(failure) => {
-                        let (error, compensation) = match failure {
-                            OperationFailure::Ordinary(error) => (error, None),
-                            OperationFailure::Replacement {
-                                error,
-                                compensation,
-                            } => (error, Some(*compensation)),
-                        };
+                    Err(OperationFailure::Superseded { service, current }) => {
+                        retain_unpointed(started.entry(group).or_default(), Some(&current));
+                        stop.get_or_insert(Stop::Superseded(service));
+                        schedule.apply(Event::Failed(index));
+                    }
+                    Err(OperationFailure::Ordinary(error)) => {
                         progress.fail(index, error.clone());
                         stop.get_or_insert(Stop::Failed {
                             index,
                             error,
-                            compensation,
+                            compensation: None,
+                        });
+                        schedule.apply(Event::Failed(index));
+                    }
+                    Err(OperationFailure::Replacement {
+                        error,
+                        compensation,
+                    }) => {
+                        progress.fail(index, error.clone());
+                        stop.get_or_insert(Stop::Failed {
+                            index,
+                            error,
+                            compensation: Some(*compensation),
                         });
                         schedule.apply(Event::Failed(index));
                     }
@@ -1081,10 +1096,6 @@ fn strength(policy: PullPolicy) -> u8 {
     }
 }
 
-/// Points the Service at the Containers it keeps plus the ones this Deploy
-/// started; `succession` retires the rest. The CAS value is `current`, the row
-/// this Deploy admitted (amended only by its own stops), so a row another
-/// Deploy wrote since answers Superseded.
 async fn publish_group<C: MachineOperations>(
     client: &C,
     run: &DeploymentLogId,
@@ -1110,9 +1121,6 @@ async fn publish_group<C: MachineOperations>(
         .map_err(|error| machine_error(MachineAction::PublishServingPointer, error))
 }
 
-/// The rows this Deploy admitted, one per publishing group. A stop of an
-/// admitted copy amends its group's row first, under the lock, so the flip's
-/// compare-and-set reads the amended row.
 struct Rows<'a> {
     namespace: &'a Namespace,
     groups: &'a [ServiceGroup],
@@ -1120,9 +1128,6 @@ struct Rows<'a> {
 }
 
 impl Rows<'_> {
-    /// The Service whose row a stop or removal in `group` must read: the
-    /// group's own, or for rollout removals the Service they follow. Copies of
-    /// a Service the Deploy removes have no row to read here.
     fn service_of(&self, group: usize, operation: &DeployOperation) -> Option<QualifiedService> {
         let group = self.groups.get(group)?;
         let name = match (&group.service, group.dependencies.as_slice()) {
@@ -1133,7 +1138,6 @@ impl Rows<'_> {
         Some(QualifiedService::new(self.namespace.clone(), name.clone()))
     }
 
-    /// Refuses a removal of a copy the row read now points at.
     async fn unpointed<C: MachineOperations>(
         &self,
         client: &C,
@@ -1150,21 +1154,17 @@ impl Rows<'_> {
             .map_err(|error| machine_error(MachineAction::ReadServingPointer, error))?;
         match Protection::of(read.pointer, copy) {
             Protection::Unnamed | Protection::Retiring => Ok(()),
-            Protection::Pointed(row) => Err(pointed(MachineAction::RemoveContainer, copy, &row)),
+            Protection::Pointed(row) => Err(pointed(copy, &row)),
         }
     }
 
-    /// Moves `copy` from the admitted row's `containers` into `retiring` before
-    /// a stop, so no Machine routes to a stopped copy by right of the row. Each
-    /// lost compare-and-set re-reads, as `amend_pointer` does; a row of another
-    /// Deploy means this one was superseded.
     async fn retire_before_stop<C: MachineOperations>(
         &self,
         client: &C,
         group: usize,
         operation: &DeployOperation,
         copy: &ContainerId,
-    ) -> Result<(), ExecutionError> {
+    ) -> Result<(), OperationFailure> {
         let Some(service) = self.service_of(group, operation) else {
             return Ok(());
         };
@@ -1183,7 +1183,10 @@ impl Rows<'_> {
                 .get(&group)
                 .is_some_and(|admitted| admitted.deploy != row.deploy)
             {
-                return Err(pointed(MachineAction::StopContainer, copy, &row));
+                return Err(OperationFailure::Superseded {
+                    service,
+                    current: row,
+                });
             }
             let Applied::Next(next) = Rotation::leaving([*copy]).apply(&row) else {
                 return Ok(());
@@ -1215,17 +1218,18 @@ impl Rows<'_> {
                 details: serde_json::Value::Null,
                 cause: Vec::new(),
             },
-        ))
+        )
+        .into())
     }
 }
 
-fn pointed(action: MachineAction, copy: &ContainerId, row: &ServingPointer) -> ExecutionError {
+fn pointed(copy: &ContainerId, row: &ServingPointer) -> ExecutionError {
     machine_error(
-        action,
+        MachineAction::RemoveContainer,
         RpcError {
             code: RpcErrorCode::Conflict,
             message: format!(
-                "Container {copy} is pointed at by Deploy {}; it leaves the Serving Pointer before it stops",
+                "Container {copy} is pointed at by Deploy {}; a pointed copy is not removed",
                 row.deploy
             ),
             details: serde_json::Value::Null,
