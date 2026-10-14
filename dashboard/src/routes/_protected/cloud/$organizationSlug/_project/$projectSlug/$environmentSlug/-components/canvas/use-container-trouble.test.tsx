@@ -19,17 +19,18 @@ const scope = { organizationSlug: "acme", environmentId: "env" };
 const machine = "a".repeat(32);
 
 // SAFETY: test ids only need to be distinct strings.
-const oomAt = (atMs: number): MetricMarker => ({
+const markerAt = (kind: MetricMarker["kind"], atMs: number): MetricMarker => ({
   machine_id: machine as MachineId, container_id: "c" as ContainerId, service_id: "s" as ServiceId,
-  service: "ns/web", replica: "web-1", ts: atMs * 1e6, kind: "oom",
+  service: "ns/web", replica: "web-1", ts: atMs * 1e6, kind,
 });
-const readWith = (marker: MetricMarker): MetricRead => ({
+const oomAt = (atMs: number) => markerAt("oom", atMs);
+const readWith = (first: MetricMarker, ...rest: MetricMarker[]): MetricRead => ({
   type: "history",
-  window: { from: marker.ts / 1e6 - MINUTE, to: marker.ts / 1e6 + MINUTE },
-  at: marker.ts / 1e6,
+  window: { from: first.ts / 1e6 - MINUTE, to: (rest.at(-1) ?? first).ts / 1e6 + MINUTE },
+  at: (rest.at(-1) ?? first).ts / 1e6,
   history: {
     step_nanos: 60 * MINUTE * 1e6, points: { service: [] }, unanswered: [],
-    machines: [{ machine_id: machine as MachineId, value: { points: { service: [] }, step_nanos: 60 * MINUTE * 1e6, gaps: [], markers: [marker] } }],
+    machines: [{ machine_id: machine as MachineId, value: { points: { service: [] }, step_nanos: 60 * MINUTE * 1e6, gaps: [], markers: [first, ...rest] } }],
   },
 });
 
@@ -56,5 +57,20 @@ it("shows a fresh OOM, then drops it an hour after it happened without another r
   act(() => vi.advanceTimersByTime(29 * MINUTE));
   expect(result.current).toBe("OOM");
   act(() => vi.advanceTimersByTime(2 * MINUTE));
+  expect(result.current).toBeNull();
+});
+
+it("drops Restarting ten minutes after a crash loop's latest restart without another read", () => {
+  vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+  const now = Date.now();
+  const crashed = (ago: number) => [{ ...markerAt("exit", now - ago * MINUTE), exit_code: 1 }, markerAt("restart", now - ago * MINUTE + 1_000)];
+  const { result } = render(readWith(markerAt("restart", now - 20 * MINUTE), ...crashed(8), ...crashed(6)), now);
+  expect(result.current).toBe("Restarting");
+  const minutes = (count: number) => {
+    for (let minute = 0; minute < count; minute++) act(() => vi.advanceTimersByTime(MINUTE));
+  };
+  minutes(3);
+  expect(result.current).toBe("Restarting");
+  minutes(2);
   expect(result.current).toBeNull();
 });
