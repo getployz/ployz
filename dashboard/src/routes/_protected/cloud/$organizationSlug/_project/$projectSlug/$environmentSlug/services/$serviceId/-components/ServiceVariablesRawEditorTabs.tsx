@@ -1,7 +1,10 @@
+import { Schema } from "effect";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
 import { VariableValueTextarea } from "#/components/variables/VariableValueTextarea";
 import type { ReferenceTarget } from "#/modules/variables/variable-autocomplete";
-import type { RawEditorMode } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceVariablesRawEditorTypes";
+import { RawEditorMode } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceVariablesRawEditorTypes";
+
+const isRawEditorMode = Schema.is(RawEditorMode);
 
 export function ServiceVariablesRawEditorTabs({
   mode,
@@ -25,8 +28,7 @@ export function ServiceVariablesRawEditorTabs({
       className="min-w-0"
       value={mode}
       onValueChange={(value) => {
-        // SAFETY: the tab triggers are only "env" | "json".
-        onModeChange(value as RawEditorMode);
+        if (isRawEditorMode(value)) onModeChange(value);
       }}
     >
       <TabsList variant="line">

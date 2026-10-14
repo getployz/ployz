@@ -1,11 +1,12 @@
 import "@tanstack/react-start/server-only";
 import { eq } from "drizzle-orm";
 import { Effect } from "effect";
+import * as EffectRecord from "effect/Record";
 import type { Actor } from "#/modules/identity/actor";
 import { user } from "#/modules/identity/tables";
 import {
   DEFAULT_NOTIFICATION_CHANNEL,
-  NOTIFICATION_TYPE_IDS,
+  NOTIFICATION_TYPES,
   type NotificationChannel,
   type NotificationSettings,
   type NotificationType,
@@ -23,10 +24,7 @@ export const getNotificationSettings = Effect.fn("Notifications.getSettings")(fu
     .from(notificationPreference)
     .where(eq(notificationPreference.userId, actor.userId));
   const chosen = new Map(rows.map((row) => [row.type, row.channel]));
-  // SAFETY: the entries hold exactly one channel for each notification type.
-  const channels = Object.fromEntries(
-    NOTIFICATION_TYPE_IDS.map((type) => [type, chosen.get(type) ?? DEFAULT_NOTIFICATION_CHANNEL]),
-  ) as Record<NotificationType, NotificationChannel>;
+  const channels = EffectRecord.map(NOTIFICATION_TYPES, (_, type) => chosen.get(type) ?? DEFAULT_NOTIFICATION_CHANNEL);
   return { mailOn: config.mail !== null, channels } satisfies NotificationSettings;
 });
 
