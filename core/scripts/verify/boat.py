@@ -36,6 +36,7 @@ BAKED = "ployz-verify-boat-"
 # Boat restores containers after boot, so the holders stay; tmpfs over each image VOLUME keeps them volume-free.
 # Boat keeps 10 named snapshots per account; bakes past the newest few are removed.
 KEEP_BAKED = 3
+NAMED = 10
 BAKE_NAME = re.compile(re.escape(BAKED) + "[0-9a-f]{10}")
 # Bakes this host made; another host or person may share the account and the name prefix.
 BAKES = REGISTRY / "bakes.ledger"
@@ -163,7 +164,9 @@ def stale_bakes(named, current, ours, in_use):
     older = sorted((snapshot for snapshot in named if snapshot["name"] in ours and BAKE_NAME.fullmatch(snapshot["name"])
                     and snapshot["name"] != current and snapshot["name"] not in in_use),
                    key=lambda snapshot: snapshot["createdAt"])
-    return [snapshot["name"] for snapshot in older[:max(len(older) - (KEEP_BAKED - 1), 0)]]
+    # The account keeps at most NAMED snapshots, so a full account gives up more of our older bakes.
+    surplus = max(len(older) - (KEEP_BAKED - 1), len(named) - (NAMED - 1), 0)
+    return [snapshot["name"] for snapshot in older[:surplus]]
 
 
 def images_in_use():

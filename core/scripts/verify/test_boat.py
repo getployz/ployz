@@ -99,6 +99,12 @@ class Bakes(unittest.TestCase):
                  *(dict(name=name, createdAt=f"2026-10-{name[-10:-8]}") for name in bakes)]
         self.assertEqual(boat.stale_bakes(named, self.bake("14"), bakes, set()), [self.bake("10"), self.bake("11")])
 
+    def test_a_full_account_prunes_older_bakes_to_make_room(self):
+        others = [dict(name=f"other-{n}", createdAt="2026-01-01") for n in range(8)]
+        bakes = [self.bake(day) for day in ["10", "11"]]
+        named = [*others, *(dict(name=name, createdAt=f"2026-10-{name[-10:-8]}") for name in bakes)]
+        self.assertEqual(boat.stale_bakes(named, self.bake("14"), bakes, set()), [self.bake("10")])
+
     def test_the_current_bake_is_never_pruned(self):
         bakes = [self.bake(day) for day in ["10", "11", "12", "13"]]
         named = [dict(name=name, createdAt=f"2026-10-{name[-10:-8]}") for name in bakes]
