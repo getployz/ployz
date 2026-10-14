@@ -60,8 +60,8 @@ export function runtimeLine(
   runtime: Pick<RuntimeServiceRecord, "containers"> | null,
   { lens, desiredReplicas, deploying }: { lens: RuntimeLens; desiredReplicas: number | null; deploying: boolean },
 ): RuntimeLine {
-  // A new Service a failed Deploy still started has containers: say what they do.
-  if (service.change === "create" && !runtime) return line("Not deployed", "idle");
+  // A new Service a failed Deploy still started has containers, and one a Deploy is starting has none yet: say what they do.
+  if (service.change === "create" && !runtime && !deploying) return line("Not deployed", "idle");
   if (service.source === "empty") return line("No source", "idle");
   if (lens.noServers) return line("Needs a server", "idle");
   switch (lens.status) {
