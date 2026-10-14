@@ -2,10 +2,12 @@ import { ConfirmDialog } from "#/components/confirm-dialog";
 import { Item, ItemContent, ItemGroup, ItemTitle } from "#/components/ui/item";
 
 /** The confirm before web traffic goes off: which domains this affects, and whether another Server keeps serving them. */
-export function WebTrafficDialog({ serverName, domains, last, open, onOpenChange, onConfirm }: {
+export function WebTrafficDialog({ serverName, domains, partial, last, open, onOpenChange, onConfirm }: {
   serverName: string;
   /** Every domain pointed at your Servers. */
   domains: readonly string[];
+  /** Some domains weren't observed, so the list may be short. */
+  partial: boolean;
   /** No other Server takes web traffic: these stop working. */
   last: boolean;
   open: boolean;
@@ -35,6 +37,7 @@ export function WebTrafficDialog({ serverName, domains, last, open, onOpenChange
               </ItemGroup>
             </>
           )}
+          {partial ? <p>Some servers haven’t reported their domains yet, so this may affect more.</p> : null}
         </div>
       }
       actionLabel="Stop"

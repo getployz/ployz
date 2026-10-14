@@ -162,7 +162,7 @@ function ServerSettings({ organizationSlug, server, servers, stale }: {
         )}
       />
       <DrainDialog serverName={server.name} rows={drainDialogRows(drain.view, server.machine.id, server.services, strays)} {...drain.dialog} />
-      <WebTrafficDialog serverName={server.name} domains={webTraffic.domains} last={webTraffic.last} {...webTraffic.dialog} />
+      <WebTrafficDialog serverName={server.name} domains={webTraffic.domains} partial={webTraffic.partial} last={webTraffic.last} {...webTraffic.dialog} />
     </>
   );
 }

@@ -54,7 +54,7 @@ export function ServerWebTrafficSection({ view, onTurnOn, onAskOff, unavailable 
 function WebTrafficLine({ view }: { view: WebTrafficView }) {
   switch (view.kind) {
     case "on":
-      return view.address === null ? <>Your domains point here.</> : <>Your domains point at {view.address}.</>;
+      return view.address === null ? <>No public IP yet, so your domains don’t point here.</> : <>Your domains point at {view.address}.</>;
     case "starting":
       return <><Spinner className="inline-block size-3 align-[-2px]" /> Starting the web server…</>;
     case "stopping":
@@ -62,6 +62,6 @@ function WebTrafficLine({ view }: { view: WebTrafficView }) {
     case "off":
       return <>Your domains don’t point here.</>;
     case "failed":
-      return view.on ? <>Your domains point at {view.address ?? "this server"}.</> : <>Your domains don’t point here.</>;
+      return view.on && view.address !== null ? <>Your domains point at {view.address}.</> : <>Your domains don’t point here.</>;
   }
 }
