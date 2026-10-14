@@ -427,6 +427,58 @@ async fn departure_keeps_a_completed_seed_of_a_departure_snapshot() {
     );
 }
 
+/// A seed's receive can exit whole while its run never marks or lands it: the daemon stops,
+/// or a later zfs call fails. Its source may since have pruned the point.
+#[tokio::test]
+async fn departure_keeps_a_seed_whose_receive_exited_before_its_run_finished() {
+    let test = TestDir::new();
+    fs::create_dir_all(test.0.join("props")).unwrap();
+    fs::write(
+        test.0.join("props/fail-command"),
+        "set ployz:seed=77 tank/ployz-mirror/seed/fs",
+    )
+    .unwrap();
+    fs::write(
+        test.0.join("props/stall-command"),
+        "set readonly=on tank/ployz-mirror/seed/fs",
+    )
+    .unwrap();
+    for marker in ["root", "volume"] {
+        fs::write(test.0.join(marker), "").unwrap();
+    }
+    set_property(&test, "tank/ployz/data", "snapshots", POINT);
+    let (socket, _server) = start(&test, USABLE_POOL, &[]);
+    post(&socket, "/Volume.Seed", seed(77)).await;
+    let landed = test.0.join("props/tank/ployz-mirror/seed/fs/snapshots");
+    for _ in 0..300 {
+        if fs::read_to_string(&landed).is_ok_and(|snapshots| snapshots.contains("@w-1-1")) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    set_property(
+        &test,
+        "tank/ployz/data",
+        "snapshots",
+        "tank/ployz/data@w-1-2\t78\t1700000100",
+    );
+
+    let departure = tokio::spawn({
+        let socket = socket.clone();
+        async move { post(&socket, "/Storage.Demote", json!(null)).await }
+    });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let _ = fs::remove_file(test.0.join("props/stall-command"));
+    let reply = departure.await.unwrap();
+    assert_eq!(reply, json!({"Ok": {"demoted": ["data"], "stuck": []}}));
+    assert!(test.0.join("seed-fs").exists(), "the seed is kept");
+    assert_eq!(
+        snapshot_names(&test, "tank/ployz-mirror/seed/fs"),
+        vec!["w-1-1"],
+        "it holds the only copy of the point"
+    );
+}
+
 #[tokio::test]
 async fn departure_keeps_a_seed_whose_landing_stopped_before_the_rename() {
     let test = TestDir::new();
@@ -438,8 +490,9 @@ async fn departure_keeps_a_seed_whose_landing_stopped_before_the_rename() {
         "snapshots",
         "tank/ployz-mirror/seed/fs@w-1-1\t77\t1700000000",
     );
+    // A landing sets its seed mark before its promote mark, so a stop between them
+    // leaves only the seed mark.
     set_property(&test, "tank/ployz-mirror/seed/fs", "ployz:seed", "77");
-    set_property(&test, "tank/ployz-mirror/seed/fs", "ployz:promote", "on");
     let (socket, _server) = start(
         &test,
         USABLE_POOL,

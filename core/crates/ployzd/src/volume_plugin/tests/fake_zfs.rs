@@ -194,9 +194,20 @@ case "$*" in
     require "$6"
     prop "$6" guid 1
     ;;
+  'get -H -s local -o value '*)
+    require "$8"
+    check_property "$7"
+    f='{props}'/"$8/$7"
+    [ ! -e "$f" ] || prop "$8" "$7" -
+    ;;
   'get -H -o value '*)
     require "$6"
-    prop "$6" "$5" -
+    # props/inherited/<dataset>/<property> stands for a value the dataset inherits.
+    if [ -e '{props}'/"$6/$5" ] || [ ! -e '{props}'/inherited/"$6/$5" ]; then
+      prop "$6" "$5" -
+    else
+      cat '{props}'/inherited/"$6/$5"
+    fi
     ;;
   'get -Hp -o value written@'*)
     require "$6"
