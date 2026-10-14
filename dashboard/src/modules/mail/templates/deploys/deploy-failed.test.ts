@@ -60,11 +60,13 @@ it("names Services as authored, not by their Private DNS names", () => {
   expect(failed.facts).toContainEqual({ label: "Services", value: "web, api" });
 });
 
-it("counts several Services and falls back to the Environment when the deploy had no Git source", () => {
+it("counts several Services, names no source when no build failed, and falls back to the Environment when the deploy had no Git source", () => {
   expect(mail({}, [source("web"), source("api"), source("web")])).toMatchObject({
     subject: "Deploy failed: 2 services in shop / pr 7",
+    paragraphs: ["GitHub started this deploy, and it failed. The logs show why."],
     facts: expect.arrayContaining([{ label: "Services", value: "web, api" }]),
   });
+  expect(mail({}, [source("web"), source("api")]).facts?.map((fact) => fact.label)).toEqual(["Services", "Environment", "Failed with"]);
   const bare = mail({}, []);
   expect(bare).toMatchObject({ subject: "Deploy failed in shop / pr 7", title: "A deploy to pr 7 failed", preview: "The logs show why." });
   expect(bare.facts?.map((fact) => fact.label)).toEqual(["Environment", "Failed with"]);

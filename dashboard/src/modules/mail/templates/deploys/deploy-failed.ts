@@ -20,7 +20,7 @@ export function deployFailedMail({ origin, organization, deployment, sources }: 
   const failure = outcomeReason(deployment.outcome) ?? failedBuild?.message ?? (deployment.status === "unknown"
     ? "Cloud lost track of it partway, so some of it may have applied."
     : "It failed before it reported why.");
-  const source = sources.find((found) => serviceOf(found) === failedBuild?.service) ?? sources[0];
+  const source = sources.find((found) => serviceOf(found) === failedBuild?.service) ?? (sources.length === 1 ? sources[0] : undefined);
   const commit = source?.commit?.slice(0, 7);
   const segment = (value: string) => encodeURIComponent(value);
   const failedNode = deployment.nodes.find((node) => node.type === "service" && node.name === failedBuild?.service);
