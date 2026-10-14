@@ -682,8 +682,11 @@ class VolumeMoveTests(unittest.TestCase):
         results.append(dict(op="mirror", probe=dict(longest_gap_seconds=99.0)))
         self.assertEqual(volume_move.downtime(results), dict(moves=3, p50=3.0, max=9.0))
 
+    CELLS = ["Writer>Mirror", "Writer>Snapshot", "Writer>Forget", "Mirror>Writer", "Mirror>Mirror", "Mirror>Forget",
+             "None>Mirror"]
+
     def test_kill_table_covers_every_cell_once_with_its_own_fault_point(self):
-        self.assertEqual(sorted(row["cell"] for row in volume_move.KILLS), sorted(volume_move.CELLS))
+        self.assertEqual(sorted(row["cell"] for row in volume_move.KILLS), sorted(self.CELLS))
         for row in volume_move.KILLS:
             with self.subTest(row["name"]):
                 self.assertEqual(row["fault"], "kill-daemon:SetVolumeCopy." + row["cell"].replace(">", "To"))
@@ -729,8 +732,8 @@ class VolumeMoveTests(unittest.TestCase):
     def test_every_fault_names_a_point_the_daemon_defines(self):
         source = (volume_move.CORE / "crates/ployzd/src/machine_api/local_volume_copy.rs").read_text()
         points = set(re.findall(r'"SetVolumeCopy\.(\w+)"', source))
-        # CELLS lists the cells a case kills; no case kills the Writer raise or a restore seed's forget.
-        self.assertEqual(points, {cell.replace(">", "To") for cell in volume_move.CELLS} | {"WriterToWriter", "SeedToForget"})
+        # No case kills the Writer raise or a restore seed's forget.
+        self.assertEqual(points, {cell.replace(">", "To") for cell in self.CELLS} | {"WriterToWriter", "SeedToForget"})
         point = "SetVolumeCopy\\.(" + "|".join(sorted(points)) + ")"
         for row in volume_move.CASES + volume_move.soak_cases():
             with self.subTest(row["name"]):

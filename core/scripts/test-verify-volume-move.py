@@ -53,9 +53,6 @@ LEASE_PATTERNS = {
 }
 LEASE_FILE = "le" + "ase.rs"
 
-CELLS = ["Writer>Mirror", "Writer>Snapshot", "Writer>Forget", "Mirror>Writer", "Mirror>Mirror", "Mirror>Forget",
-         "None>Mirror"]
-
 # `machine` is the side the effect runs on: the Volume's writer before the case, or the other Machine.
 # `fault` is a daemon fault point, set on `fault_on` or on both Machines; only the side that serves it fires it.
 # `mirror` is whether the other Machine must hold a mirror before the case starts.
