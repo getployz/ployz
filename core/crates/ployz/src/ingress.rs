@@ -217,6 +217,18 @@ async fn slot_repairs(client: &mut Client) -> Result<Slots, Failure> {
                 ),
                 None,
             ),
+            SlotAction::Restarting(container_id) => (
+                shown(
+                    IngressAction::Start,
+                    Some(IngressFailure::Failed {
+                        cause: format!(
+                            "its Ingress Proxy keeps crashing and Docker keeps restarting it; \
+                             see why there with `docker logs {container_id}`"
+                        ),
+                    }),
+                ),
+                None,
+            ),
             SlotAction::Create(Ok(plan)) => {
                 (shown(IngressAction::Create, None), Some(Work::Create(plan)))
             }

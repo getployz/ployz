@@ -719,11 +719,19 @@ fn plan(matches: &ArgMatches, store: &Store, services: Vec<ServiceName>) -> Resu
             super::review::restarts(change);
         }
         for repair in shown.ingress.iter().flatten() {
-            crate::ui::stream(format_args!(
-                "ingress on {}: would {}",
-                repair.server,
-                progress::ingress_verb(repair.action)
-            ));
+            let verb = progress::ingress_verb(repair.action);
+            match &repair.failure {
+                None => {
+                    crate::ui::stream(format_args!("ingress on {}: would {verb}", repair.server))
+                }
+                Some(
+                    ployz_store::IngressFailure::Failed { cause }
+                    | ployz_store::IngressFailure::PortTaken { cause },
+                ) => crate::ui::stream(format_args!(
+                    "ingress on {}: won't {verb}: {cause}",
+                    repair.server
+                )),
+            }
         }
         for cause in &shown.ingress_unchecked {
             crate::ui::stream(format_args!(

@@ -1,4 +1,4 @@
-import type { IngressCheck, MachineId } from "@ployz/sdk";
+import type { IngressCheck } from "@ployz/sdk";
 import { Effect, Fiber } from "effect";
 import { TestClock } from "effect/testing";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -7,11 +7,12 @@ import { WEB_TRAFFIC_RUNNING_LIMIT_MS } from "#/modules/machines/server-web-traf
 import { closeStaleWebTraffic, executeWebTrafficOnce } from "#/modules/machines/server-web-traffic.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { PloyzProviderError, type PloyzSdkError, type PloyzSession } from "#/modules/runtime/ployz.server";
+import * as ids from "#/test/ids";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
 
 const organizationId = "00000000-0000-4000-8000-000000000e01";
 const userId = "00000000-0000-4000-8000-000000000e02";
-const machineId = "a".repeat(32);
+const machineId = ids.machineId("a");
 const attemptId = "00000000-0000-4000-8000-0000000000e1";
 const request = { attemptId, organizationId, machineId };
 
@@ -75,7 +76,7 @@ describe("executeWebTrafficOnce", () => {
   it("puts the role back when the start refuses", async () => {
     role = false;
     startAnswer = () => Effect.succeed({
-      repairs: [{ machine: machineId as MachineId, server: "web-1", action: "create", failure: { type: "port_taken", cause: "0.0.0.0:80: bind: address already in use" } }],
+      repairs: [{ machine: machineId, server: "web-1", action: "create", failure: { type: "port_taken", cause: "0.0.0.0:80: bind: address already in use" } }],
       unchecked: [],
     });
     await pending("on");

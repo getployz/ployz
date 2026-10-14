@@ -762,6 +762,16 @@ fn a_healthcheck_sets_by_path_command_or_object_and_unsets_to_none() {
         value(&store, &who, "web.healthcheck"),
         json!({ "path": "/live", "timeoutSeconds": 30 })
     );
+    // `set web.healthcheck={...}` sends the object as text.
+    write(set(
+        "web.healthcheck",
+        json!(r#"{"path":"/health","timeoutSeconds":30}"#),
+    ))
+    .unwrap();
+    assert_eq!(
+        value(&store, &who, "web.healthcheck"),
+        json!({ "path": "/health", "timeoutSeconds": 30 })
+    );
     write(set("web.healthcheck", json!({ "command": " pg_isready " }))).unwrap();
     assert_eq!(
         value(&store, &who, "web.healthcheck"),

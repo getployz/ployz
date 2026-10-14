@@ -19,6 +19,7 @@ import { notificationPreference } from "#/modules/notifications/tables";
 import { volumePlacement } from "#/modules/volume-placement/tables";
 import { Database } from "#/server/database.server";
 import { makeInngestEffectRunner } from "#/server/run.server";
+import { invokeOnFailure } from "#/test/inngest-failure";
 import { enrollStoreServer, seedStoreOrganization, seedStoreGitService, storeTestCloud } from "#/test/store-cloud";
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000a001";
@@ -96,11 +97,7 @@ it.live(
 
       // A failed run that never claimed its Deployment leaves it to the runner that did.
       yield* claim(DEPLOYED);
-      const onFailure = worker.opts.onFailure;
-      if (onFailure === undefined) return expect.fail("the worker records abandoned runs");
-      const abandoned = yield* Effect.promise(() =>
-        // SAFETY: the failure handler reads only the failed run's ID and its triggering event.
-        Promise.resolve(onFailure({ event: { data: { run_id: "never-claimed", event: admitted(DEPLOYED) } } } as never)));
+      const abandoned = yield* Effect.promise(() => invokeOnFailure(worker, "never-claimed", admitted(DEPLOYED)));
       expect(abandoned).toMatchObject({ nothingToRun: expect.any(String) });
       // A Deployment that ended leaves its Volumes staged for the next one.
       expect(yield* claimOn(DEPLOYED)).toBeNull();
@@ -302,11 +299,7 @@ it.live(
       send.mockClear();
       expect((yield* run(DEPLOYED, "github")).result).toMatchObject({ nothingToRun: expect.any(String) });
       expect(mails()).toEqual([]);
-      const onFailure = worker.opts.onFailure;
-      if (onFailure === undefined) return expect.fail("the worker records abandoned runs");
-      yield* Effect.promise(() =>
-        // SAFETY: the failure handler reads only the failed run's ID and its triggering event.
-        Promise.resolve(onFailure({ event: { data: { run_id: "never-claimed", event: admitted(DEPLOYED, "github") } } } as never)));
+      yield* Effect.promise(() => invokeOnFailure(worker, "never-claimed", admitted(DEPLOYED, "github")));
       expect(new Set(mails().map((again) => again.id))).toEqual(new Set(told.map((first) => first.id)));
 
       send.mockClear();

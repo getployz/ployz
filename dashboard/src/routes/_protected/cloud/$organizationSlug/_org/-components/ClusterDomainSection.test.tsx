@@ -4,6 +4,7 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { createMemoryHistory, createRootRoute, createRouter, RouterProvider } from "@tanstack/react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ClusterDomainRow } from "#/modules/cluster-domain/cluster-domain";
+import { machineId } from "#/test/ids";
 import { ClusterDomainSection } from "./ClusterDomainSection";
 
 const ready: Omit<ClusterDomainRow, "id"> = {
@@ -36,7 +37,7 @@ describe("ClusterDomainSection", () => {
   });
 
   it("checks again until the sync records a newer check", async () => {
-    const blocked = { ...ready, traffic: { kind: "probed", unreachable: [{ machineId: "a", address: "203.0.113.1" }] } } as Omit<ClusterDomainRow, "id">;
+    const blocked = { ...ready, traffic: { kind: "probed", unreachable: [{ machineId: machineId("a"), address: "203.0.113.1" }] } } as Omit<ClusterDomainRow, "id">;
     const onCheck = vi.fn(() => Promise.resolve());
     const { rerender } = render(<ClusterDomainSection organizationSlug="acme" domain={blocked} onCheck={onCheck} />);
 
@@ -52,7 +53,7 @@ describe("ClusterDomainSection", () => {
   });
 
   it("says when something else answers on port 80", () => {
-    const taken = { ...ready, traffic: { kind: "probed", unreachable: [], taken: [{ machineId: "a", address: "203.0.113.1" }] } } as Omit<ClusterDomainRow, "id">;
+    const taken = { ...ready, traffic: { kind: "probed", unreachable: [], taken: [{ machineId: machineId("a"), address: "203.0.113.1" }] } } as Omit<ClusterDomainRow, "id">;
     render(<ClusterDomainSection organizationSlug="acme" domain={taken} onCheck={vi.fn()} />);
 
     expect(screen.getByText("Needs attention")).toBeTruthy();
@@ -72,10 +73,10 @@ describe("ClusterDomainSection", () => {
   it("stays ready when one Server answers, and names the ones traffic skips", () => {
     const degraded = { ...ready, traffic: {
       kind: "probed",
-      reachable: [{ machineId: "a", address: "203.0.113.1" }],
-      unreachable: [{ machineId: "b", address: "203.0.113.2" }],
-      taken: [{ machineId: "c", address: "203.0.113.3" }],
-      down: [{ machineId: "d", address: "203.0.113.4", name: "web-4" }],
+      reachable: [{ machineId: machineId("a"), address: "203.0.113.1" }],
+      unreachable: [{ machineId: machineId("b"), address: "203.0.113.2" }],
+      taken: [{ machineId: machineId("c"), address: "203.0.113.3" }],
+      down: [{ machineId: machineId("d"), address: "203.0.113.4", name: "web-4" }],
     } } as Omit<ClusterDomainRow, "id">;
     render(<ClusterDomainSection organizationSlug="acme" domain={degraded} onCheck={vi.fn()} />);
 
@@ -85,7 +86,7 @@ describe("ClusterDomainSection", () => {
   });
 
   it("names the Server whose ingress isn't running", () => {
-    const down = { ...ready, traffic: { kind: "probed", unreachable: [], down: [{ machineId: "a", address: "203.0.113.1", name: "web-1" }] } } as Omit<ClusterDomainRow, "id">;
+    const down = { ...ready, traffic: { kind: "probed", unreachable: [], down: [{ machineId: machineId("a"), address: "203.0.113.1", name: "web-1" }] } } as Omit<ClusterDomainRow, "id">;
     render(<ClusterDomainSection organizationSlug="acme" domain={down} onCheck={vi.fn()} />);
 
     expect(screen.getByText("Needs attention")).toBeTruthy();

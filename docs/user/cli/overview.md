@@ -158,9 +158,11 @@ ployz up --project my-app --env production
 Always pass `--project` in CI, or `ployz up` creates a new project named after the checkout.
 
 The token acts as you in this organization: whoever holds it can deploy and run commands in your
-services. It expires after 90 days unless you pass `--expires-in` (1 to 365 days). To revoke it,
+services. It expires after 90 days unless you pass `--expires-in` (1 to 365 days), and stops
+working at once if you leave the organization or are removed from it. To revoke it,
 find its ID with `ployz token ls`, then run `ployz token rm ID`. If it names a server that's
-offline, run it again once that server is back.
+offline, run it again once that server is back. Owners and admins see and can revoke every
+organization token in the organization, not only their own. Members see only theirs.
 
 When a command fails, Ployz prints what went wrong, then a `cause:` line with the underlying
 error, such as the operating system's or the server's own message.
@@ -189,7 +191,7 @@ Scripts can tell failures apart by exit code:
 | 1 | It failed: something wasn't found, a server couldn't be reached, Ployz refused, or the server or Cloud doesn't support what you asked. |
 | 2 | Fix the command: a bad argument, a flag the command doesn't take, a missing `--confirm`, or a name that matches more than one thing. |
 | 3 | You got a result, but some servers didn't answer, so part of it is missing. Run it again once they're back. |
-| 130 | You cancelled: pressed Ctrl-C, didn't confirm a prompt, or stopped waiting for an approval. Before the work starts, nothing changes. Once Ployz Cloud runs it, as with a `server rm` or `server upgrade` it's following, Ctrl-C only stops the following: the work goes on in Cloud and finishes on its own. |
+| 130 | You cancelled: pressed Ctrl-C, didn't confirm a prompt, or stopped waiting for an approval. Before the work starts, nothing changes. A `ployz deploy` cancelled after its services applied keeps them, and its `--json` says `applied`. Once Ployz Cloud runs it, as with a `server rm` or `server upgrade` it's following, Ctrl-C only stops the following: the work goes on in Cloud and finishes on its own. |
 
 `ployz exec` exits with your command's own exit code.
 

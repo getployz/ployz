@@ -3,8 +3,9 @@ import type { AddressInfo } from "node:net";
 import { Effect } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 import { probeIngress } from "#/modules/cluster-domain/ingress-probe.server";
+import { machineId } from "#/test/ids";
 
-const machineId = "a".repeat(32);
+const machine = machineId("a");
 const servers: ReturnType<typeof createServer>[] = [];
 
 async function listen(handler: RequestListener) {
@@ -23,10 +24,10 @@ describe("probeIngress", () => {
 
   it("hears Ployz when the verify path answers with the Machine id", async () => {
     const origin = await listen((request, response) => {
-      response.end(request.url === "/.ployz-verify" ? `${machineId}\n` : "");
+      response.end(request.url === "/.ployz-verify" ? `${machine}\n` : "");
     });
 
-    expect(await Effect.runPromise(probeIngress(origin, machineId))).toBe("ployz");
+    expect(await Effect.runPromise(probeIngress(origin, machine))).toBe("ployz");
   });
 
   it.each([
@@ -39,7 +40,7 @@ describe("probeIngress", () => {
       response.writeHead(status, headers).end(body);
     });
 
-    expect(await Effect.runPromise(probeIngress(origin, machineId))).toBe("taken");
+    expect(await Effect.runPromise(probeIngress(origin, machine))).toBe("taken");
   });
 
   it("hears something else when a response is cut off mid-body", async () => {
@@ -48,13 +49,13 @@ describe("probeIngress", () => {
       response.write("partial", () => response.socket?.destroy());
     });
 
-    expect(await Effect.runPromise(probeIngress(origin, machineId))).toBe("taken");
+    expect(await Effect.runPromise(probeIngress(origin, machine))).toBe("taken");
   });
 
   it("hears nothing when the port refuses the connection", async () => {
     const origin = await listen(() => {});
     await Promise.all(servers.splice(0).map(close));
 
-    expect(await Effect.runPromise(probeIngress(origin, machineId))).toBe("closed");
+    expect(await Effect.runPromise(probeIngress(origin, machine))).toBe("closed");
   });
 });

@@ -1,15 +1,12 @@
 import "@tanstack/react-start/server-only";
 import { randomUUID } from "node:crypto";
-import { createRequire } from "node:module";
-import type * as PloyzSdk from "@ployz/sdk";
-import type { Act, Answer, Ask, ConfigCommand, ConfigWritten, DiffView, JsonValue, Place, Write } from "@ployz/sdk";
+import { type Act, agentResume, agentStart, type Answer, type Ask, type ConfigCommand, type ConfigWritten, type DiffView, type JsonValue, type Place, type Write } from "@ployz/sdk";
 import {
   type AnyTextAdapter,
   chat,
   type chatParamsFromRequest,
   defineChatMiddleware,
   EventType,
-  type Interrupt,
   isTerminalRunStatus,
   type JSONSchema,
   maxIterations,
@@ -50,9 +47,6 @@ import type { Caller } from "#/modules/identity/actor";
 import { answerForSupport, refusalForSupport } from "#/modules/support-access/support-view";
 import { projectJsonValue } from "#/lib/json";
 import { uuidFrom } from "#/server/uuid-from";
-
-// SAFETY: the package exports this named CommonJS SDK surface at runtime.
-const { agentResume, agentStart } = createRequire(import.meta.url)("@ployz/sdk") as Pick<typeof PloyzSdk, "agentResume" | "agentStart">;
 
 type Gated = { outcome: ToolOutcome } | { asking: { approvalId: string; message: string } };
 type Run = <A, E>(effect: Effect.Effect<A, E, AgentServices>) => Promise<A>;
@@ -423,6 +417,18 @@ const added = (request: ChatRequest) => {
 
 type Persistence = Effect.Success<ReturnType<typeof agentPersistence>>;
 
+const StoredInterrupt = Schema.Struct({
+  subagentRunId: Schema.optionalKey(Schema.String),
+  id: Schema.String,
+  reason: Schema.String,
+  message: Schema.optionalKey(Schema.String),
+  toolCallId: Schema.optionalKey(Schema.String),
+  responseSchema: Schema.optionalKey(Schema.Record(Schema.String, Schema.Any)),
+  expiresAt: Schema.optionalKey(Schema.String),
+  metadata: Schema.optionalKey(Schema.Record(Schema.String, Schema.Any)),
+});
+const storedInterrupt = Schema.decodeUnknownSync(StoredInterrupt, { onExcessProperty: "preserve" });
+
 /**
  * The turn another request already took for this answer, replayed instead of run again: the thread as it now stands,
  * and the approvals that turn left waiting.
@@ -437,8 +443,7 @@ async function* replayed(persistence: Persistence, request: ChatRequest): AsyncG
     messages: uiMessagesToWire(modelMessagesToUIMessages(withIds), { includeSnapshotStructuredOutput: true, includeActivity: true }),
   };
   const waiting = await persistence.stores.interrupts.listPending(threadId);
-  // SAFETY: the interrupt store keeps each interrupt exactly as the run that raised it published it.
-  const interrupts = waiting.map((record) => record.payload as Interrupt);
+  const interrupts = waiting.map((record) => storedInterrupt(record.payload));
   yield interrupts.length === 0
     ? { type: EventType.RUN_FINISHED, threadId, runId, finishReason: "stop", timestamp: Date.now() }
     : { type: EventType.RUN_FINISHED, threadId, runId, outcome: { type: "interrupt", interrupts }, timestamp: Date.now() };

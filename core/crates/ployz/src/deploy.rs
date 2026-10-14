@@ -289,14 +289,14 @@ fn newest(containers: Vec<&ContainerObservation>) -> Option<&ContainerObservatio
     })
 }
 
-/// An ingress Server with no active Ingress Proxy.
+/// An ingress Server with no running Ingress Proxy.
 #[derive(Clone, Copy, Debug)]
 pub struct EmptyIngress<'snapshot> {
     pub machine: &'snapshot MachineObservation,
     pub held: HeldIngress<'snapshot>,
 }
 
-/// The Ingress Proxy containers an [`EmptyIngress`] Server holds, all at rest.
+/// The Ingress Proxy containers an [`EmptyIngress`] Server holds, all at rest or restarting.
 #[derive(Clone, Copy, Debug)]
 pub enum HeldIngress<'snapshot> {
     /// None, so one is created.
@@ -306,6 +306,9 @@ pub enum HeldIngress<'snapshot> {
     /// Only dead ones, the newest given: Docker starts none of them, and one may still
     /// hold the name a created one needs.
     Dead(&'snapshot ContainerObservation),
+    /// The newest one crash-looping under Docker's restart policy, which keeps retrying
+    /// it, with none running beside it.
+    Restarting(&'snapshot ContainerObservation),
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -326,7 +329,7 @@ pub struct DeploySnapshot {
 
 impl DeploySnapshot {
     /// The ingress Servers whose Ingress Proxy a Deploy brings back: eligible for the
-    /// Ingress Proxy's placement, observed in full, and holding no active one.
+    /// Ingress Proxy's placement, observed in full, and holding none running.
     #[must_use]
     pub fn empty_ingress(&self) -> Vec<EmptyIngress<'_>> {
         self.ingress_eligible()
@@ -340,8 +343,18 @@ impl DeploySnapshot {
                             && crate::ingress::is_system_ingress(container)
                     })
                     .collect();
+                let (restarting, held): (Vec<_>, Vec<_>) =
+                    held.into_iter().partition(|container| {
+                        container.runtime == ContainerRuntimeObservation::Restarting
+                    });
                 if !held.iter().all(|container| is_at_rest(&container.runtime)) {
                     return None;
+                }
+                if let Some(restarting) = newest(restarting) {
+                    return Some(EmptyIngress {
+                        machine,
+                        held: HeldIngress::Restarting(restarting),
+                    });
                 }
                 let (dead, startable): (Vec<_>, Vec<_>) = held
                     .into_iter()
@@ -404,7 +417,12 @@ impl DeploySnapshot {
     pub fn ingress_returning(&self) -> Vec<Option<std::net::IpAddr>> {
         self.empty_ingress()
             .into_iter()
-            .filter(|empty| !matches!(empty.held, HeldIngress::Dead(_)))
+            .filter(|empty| {
+                !matches!(
+                    empty.held,
+                    HeldIngress::Dead(_) | HeldIngress::Restarting(_)
+                )
+            })
             .map(|empty| empty.machine.machine.public_ip)
             .collect()
     }

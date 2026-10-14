@@ -39,7 +39,6 @@ import { DATABASE_PRESETS, type DatabasePreset } from "#/modules/config-store/da
 import { newProjectName, randomName, type NewServiceSource } from "#/modules/config-store/store-services";
 import { environmentsQuery, fetchStoreView, projectsQuery } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
-import type { EnvironmentId, ProjectId } from "@ployz/sdk";
 
 type Panel = { kind: CreatePanel };
 type CreateMode = "project" | "service";
@@ -248,10 +247,8 @@ function useServiceCreateActions({
    */
   async function createProjectTarget(source?: NewServiceSource): Promise<CreationTarget> {
     const made = createdProjectRef.current ?? await (async (): Promise<CreationTarget> => {
-      // SAFETY: Project and Environment ids are UUIDs the caller mints; the Store checks them.
-      const id = crypto.randomUUID() as ProjectId;
-      // SAFETY: as above.
-      const environment = crypto.randomUUID() as EnvironmentId;
+      const id = crypto.randomUUID();
+      const environment = crypto.randomUUID();
       const name = source?.type === "git" || source?.type === "image"
         ? newProjectName(source, (await fetchStoreView(props.organizationSlug, collectionScope, projectsQuery())).projects)
         : randomName();

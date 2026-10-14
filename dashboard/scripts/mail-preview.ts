@@ -9,6 +9,7 @@ import { type MailContent, renderMail } from "#/modules/mail/layout";
 import { makePostShibaMailer } from "#/modules/mail/mailer.server";
 import { sampleMail } from "#/modules/mail/sample";
 import { deployFailedMail } from "#/modules/mail/templates/deploys/deploy-failed";
+import { inviteSamples } from "#/modules/mail/templates/organizations/invite";
 import { upgradeFailedSamples } from "#/modules/mail/templates/servers/upgrade-failed";
 import { NOTIFICATION_TYPES } from "#/modules/notifications/notification-types";
 import { uptimeAlertSamples } from "#/modules/uptime/alert-mail";
@@ -46,6 +47,7 @@ export async function run() {
     sample: sampleMail(origin),
     ...Object.fromEntries(Object.entries(uptimeAlertSamples(origin)).map(([name, content]) => [name, { ...content, unsubscribe }])),
     "deploy-failed": deployFailedSample(origin),
+    ...inviteSamples(origin),
     ...Object.fromEntries(
       Object.entries(upgradeFailedSamples(origin)).map(([name, content]) => [
         name,
@@ -76,6 +78,7 @@ export async function run() {
       teamId: required("POSTSHIBA_TEAM_ID"),
       clusterId: required("POSTSHIBA_CLUSTER_ID"),
       from: required("MAIL_FROM"),
+      verifyOrigin: null,
     },
     globalThis.fetch,
   );

@@ -1,12 +1,13 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { describe, it } from "@effect/vitest";
-import { Effect, Exit, Result } from "effect";
-import { blockers, markdown, type Summary, summarize, type Trial, trialOf } from "./metrics";
+import { Effect, Exit, Result, Schema } from "effect";
+import { readJson } from "./json";
+import { blockers, markdown, Summary, summarize, Trial, trialOf } from "./metrics";
 import { model, MODELS } from "./models";
 import { simulated } from "./simulator";
 import { type Golden, Recorder, recording } from "./tape";
 import { TASKS } from "./tasks";
-import { runTrial, type Turn } from "./trial";
+import { runTrial, Turn } from "./trial";
 
 const TRIALS = Number(process.env["PLOYZ_EVAL_TRIALS"] ?? 8);
 const CONCURRENCY = Number(process.env["PLOYZ_EVAL_CONCURRENCY"] ?? 12);
@@ -18,7 +19,8 @@ const TRIALS_DIR = new URL("trials/", RESULTS);
 const GOLDEN = new URL("./golden/", import.meta.url);
 
 /** One finished trial as saved on disk: its grade, plus the transcript that earned it. */
-type Saved = { readonly trial: Trial; readonly transcript: ReadonlyArray<Turn> };
+const Saved = Schema.Struct({ trial: Trial, transcript: Schema.Array(Turn) });
+type Saved = typeof Saved.Type;
 
 const saved = (name: string, task: string, index: number) => new URL(`${encodeURIComponent(name)}/${task}-${index}.json`, TRIALS_DIR);
 
@@ -29,8 +31,7 @@ const broken = (transcript: ReadonlyArray<Turn>) => transcript.flatMap((turn) =>
 const read = (name: string): ReadonlyArray<Saved> => {
   const dir = new URL(`${encodeURIComponent(name)}/`, TRIALS_DIR);
   if (!existsSync(dir)) return [];
-  // SAFETY: only this runner writes these files, each one a Saved record.
-  return readdirSync(dir).filter((file) => file.endsWith(".json")).map((file) => JSON.parse(readFileSync(new URL(file, dir), "utf8")) as Saved);
+  return readdirSync(dir).filter((file) => file.endsWith(".json")).map((file) => readJson(new URL(file, dir), Saved));
 };
 
 describe.skipIf(process.env["PLOYZ_EVAL_LIVE"] !== "1")("live agent eval", () => {
@@ -84,8 +85,7 @@ describe.skipIf(process.env["PLOYZ_EVAL_LIVE"] !== "1")("live agent eval", () =>
     writeFileSync(new URL("baseline.md", RESULTS), `${markdown(summary)}\nMissing trials: ${missing}.\n`);
     writeFileSync(new URL("summary.json", RESULTS), `${JSON.stringify(summary, null, 2)}\n`);
     const last = process.env["PLOYZ_EVAL_LAST"];
-    // SAFETY: PLOYZ_EVAL_LAST names the summary.json an earlier run of this runner wrote.
-    const before = last === undefined || last === "" ? undefined : (JSON.parse(readFileSync(last, "utf8")) as Summary);
+    const before = last === undefined || last === "" ? undefined : readJson(last, Summary);
     writeFileSync(new URL("gate.json", RESULTS), `${JSON.stringify({ blockers: blockers(summary, MODELS, before) }, null, 2)}\n`);
     yield* Effect.logInfo(`${missing} trials missing\n${markdown(summary)}`);
   }), 24 * 60 * 60 * 1000);

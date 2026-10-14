@@ -4,7 +4,7 @@ import { vi } from "vitest";
 import { createHash } from "node:crypto";
 import type { Client, DockerVolumeName, MachineId, RuntimeWatchView } from "@ployz/sdk";
 import { and, eq, sql } from "drizzle-orm";
-import { Cause, ConfigProvider, Effect, Exit, Layer } from "effect";
+import { Cause, ConfigProvider, Effect, Exit, Layer, Schema } from "effect";
 import { Inngest } from "inngest";
 import { Polar } from "#/modules/billing/polar-provider.server";
 import { GithubRepositoriesLive } from "#/modules/github/github-cli.server";
@@ -38,6 +38,7 @@ import { AppConfig } from "#/server/config.server";
 import { Database, DatabaseLive } from "#/server/database.server";
 import { encodePublicError, statusForPublicError } from "#/server/public-error";
 import { fakeGithubApi } from "#/test/fake-github";
+import * as ids from "#/test/ids";
 import { postgresTestDatabase } from "#/test/postgres";
 
 const origin = "http://localhost:3000";
@@ -90,7 +91,7 @@ function fakeServers() {
 const pairingSecret = "ppair_fixture_server_access";
 
 /** Pair the Organization with Cloud and enroll one Server. */
-const enroll = Effect.fn(function* (organizationId: string, machineId: string, first: boolean) {
+const enroll = Effect.fn(function* (organizationId: string, machineId: MachineId, first: boolean) {
   const database = yield* Database;
   if (first) {
     yield* database.drizzle.insert(organizationPairing).values({
@@ -139,54 +140,64 @@ const cliLayer = Effect.fn(function* (
 });
 
 /** The fields these tests read from `/api/cli` replies. */
-type Reply = {
-  readonly run?: { readonly id: string; readonly state: string };
-  readonly organizations?: ReadonlyArray<{ readonly id: string; readonly slug: string; readonly current: boolean }>;
-  readonly token?: { readonly id: string; readonly secret: string; readonly organization: string };
-  readonly tokens?: ReadonlyArray<{ readonly id: string; readonly current: boolean; readonly expired: boolean }>;
-  readonly devices?: ReadonlyArray<{ readonly id: string; readonly current: boolean }>;
-  readonly removed?: boolean | { readonly id: string; readonly kind: string };
-  readonly connections?: ReadonlyArray<{ readonly machine_id: string; readonly management: string }>;
-  readonly unreachable?: ReadonlyArray<string>;
-  readonly servers?: { readonly confirmed: ReadonlyArray<string>; readonly unconfirmed: ReadonlyArray<string> };
-  readonly signed_out?: { readonly id: string };
-  readonly linked?: boolean;
-  readonly ready?: boolean;
-  readonly install_url?: string;
-  readonly installations?: ReadonlyArray<{ readonly id: number; readonly account: string; readonly repositories: number }>;
-  readonly repositories?: ReadonlyArray<{ readonly repository: string; readonly installation: number }>;
-  readonly branches?: ReadonlyArray<string>;
-  readonly access?: string;
-  readonly disconnected?: { readonly id: number; readonly account: string };
-  readonly uninstall_url?: string;
-  readonly ref?: string;
-  readonly paths?: ReadonlyArray<string>;
-  readonly repository?: string;
-  readonly path?: string;
-  readonly size?: number;
-  readonly truncated?: boolean;
-  readonly content?: string | null;
-  readonly organization?: string;
-  readonly namespace?: string;
-  readonly volumes?: ReadonlyArray<unknown>;
-  readonly approval?: { readonly id: string; readonly status: string; readonly digest: string };
-  readonly error?: {
-    readonly code: string;
-    readonly message: string;
-    readonly details: {
-      readonly next?: string | { readonly tool: string; readonly input: Readonly<Record<string, string>> };
-      readonly approval?: string;
-      readonly approval_id?: string;
-      readonly channel?: string;
-      readonly effects?: ReadonlyArray<{ readonly kind: string; readonly name: string }>;
-      readonly operation?: { readonly verb: string; readonly name: string };
-      readonly valid_children?: ReadonlyArray<string>;
-    };
-  };
-  readonly id?: string;
-  readonly state?: string;
-  readonly revoking?: ReadonlyArray<{ readonly id: string; readonly kind: string; readonly unconfirmed: ReadonlyArray<string> }>;
-};
+const Named = Schema.Struct({ id: Schema.String, kind: Schema.String });
+const Approval = Schema.Struct({ id: Schema.String, status: Schema.String, digest: Schema.String });
+const Reply = Schema.Struct({
+  run: Schema.optionalKey(Schema.Struct({ id: Schema.String, state: Schema.String })),
+  organizations: Schema.optionalKey(Schema.Array(Schema.Struct({ id: Schema.String, slug: Schema.String, current: Schema.Boolean }))),
+  token: Schema.optionalKey(Schema.Struct({ id: Schema.String, secret: Schema.String, organization: Schema.String })),
+  tokens: Schema.optionalKey(Schema.Array(Schema.Struct({ id: Schema.String, current: Schema.Boolean, expired: Schema.Boolean }))),
+  devices: Schema.optionalKey(Schema.Array(Schema.Struct({ id: Schema.String, current: Schema.Boolean }))),
+  removed: Schema.optionalKey(Schema.Union([Schema.Boolean, Named])),
+  connections: Schema.optionalKey(Schema.Array(Schema.Struct({ machine_id: Schema.String, management: Schema.String }))),
+  unreachable: Schema.optionalKey(Schema.Array(Schema.String)),
+  servers: Schema.optionalKey(Schema.Struct({ confirmed: Schema.Array(Schema.String), unconfirmed: Schema.Array(Schema.String) })),
+  signed_out: Schema.optionalKey(Schema.Struct({ id: Schema.String })),
+  linked: Schema.optionalKey(Schema.Boolean),
+  ready: Schema.optionalKey(Schema.Boolean),
+  install_url: Schema.optionalKey(Schema.String),
+  installations: Schema.optionalKey(Schema.Array(Schema.Struct({ id: Schema.Number, account: Schema.String, repositories: Schema.Number }))),
+  repositories: Schema.optionalKey(Schema.Array(Schema.Struct({ repository: Schema.String, installation: Schema.Number }))),
+  branches: Schema.optionalKey(Schema.Array(Schema.String)),
+  access: Schema.optionalKey(Schema.String),
+  disconnected: Schema.optionalKey(Schema.Struct({ id: Schema.Number, account: Schema.String })),
+  uninstall_url: Schema.optionalKey(Schema.String),
+  ref: Schema.optionalKey(Schema.String),
+  paths: Schema.optionalKey(Schema.Array(Schema.String)),
+  repository: Schema.optionalKey(Schema.String),
+  path: Schema.optionalKey(Schema.String),
+  size: Schema.optionalKey(Schema.Number),
+  truncated: Schema.optionalKey(Schema.Boolean),
+  content: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  organization: Schema.optionalKey(Schema.String),
+  namespace: Schema.optionalKey(Schema.String),
+  volumes: Schema.optionalKey(Schema.Array(Schema.Unknown)),
+  approval: Schema.optionalKey(Approval),
+  error: Schema.optionalKey(Schema.Struct({
+    code: Schema.String,
+    message: Schema.String,
+    details: Schema.NullOr(Schema.Struct({
+      next: Schema.optionalKey(Schema.Union([
+        Schema.String,
+        Schema.Struct({ tool: Schema.String, input: Schema.Record(Schema.String, Schema.String) }),
+      ])),
+      approval: Schema.optionalKey(Schema.Union([Schema.String, Approval])),
+      approval_id: Schema.optionalKey(Schema.String),
+      channel: Schema.optionalKey(Schema.String),
+      effects: Schema.optionalKey(Schema.Array(Schema.Struct({ kind: Schema.String, name: Schema.String }))),
+      operation: Schema.optionalKey(Schema.Struct({ verb: Schema.String, name: Schema.String })),
+      valid_children: Schema.optionalKey(Schema.Array(Schema.String)),
+    })),
+  })),
+  id: Schema.optionalKey(Schema.String),
+  state: Schema.optionalKey(Schema.String),
+  revoking: Schema.optionalKey(Schema.Array(Schema.Struct({
+    id: Schema.String, kind: Schema.String, unconfirmed: Schema.Array(Schema.String),
+  }))),
+});
+type Reply = typeof Reply.Type;
+/** Checks the fields the tests read and keeps the rest, so whole-reply assertions still see every field. */
+const decodeReply = (text: string) => Schema.decodeUnknownSync(Reply)(JSON.parse(text), { onExcessProperty: "preserve" });
 
 type As = { readonly cookie?: string; readonly bearer?: string; readonly approval?: string; readonly key?: string };
 
@@ -203,12 +214,11 @@ const cli = Effect.fn(function* (method: string, path: string, as: As, body?: Cl
   const exit = yield* Effect.exit(handleCliRequest(new Request(`${origin}/api/cli/${path}`, init)));
   if (Exit.isSuccess(exit) && exit.value instanceof Response) {
     const text = yield* Effect.promise(() => (exit.value as Response).text());
-    // SAFETY: test-only view of the handler's JSON; assertions check every field read.
-    return { status: exit.value.status, json: JSON.parse(text) as Reply, text };
+    return { status: exit.value.status, json: decodeReply(text), text };
   }
   if (Exit.isSuccess(exit)) {
-    // SAFETY: test-only view of the handler's JSON; assertions check every field read.
-    return { status: 200, json: JSON.parse(JSON.stringify(exit.value)) as Reply, text: JSON.stringify(exit.value) };
+    const text = JSON.stringify(exit.value);
+    return { status: 200, json: decodeReply(text), text };
   }
   const empty: Reply = {};
   const error = encodePublicError(Cause.squash(exit.cause));
@@ -414,8 +424,8 @@ it.live(
       const layer = yield* cliLayer(fake.layer);
       yield* Effect.gen(function* () {
         const database = yield* Database;
-        const first = "00000000000000000000000000001239";
-        const later = "00000000000000000000000000001240";
+        const first = ids.machineId("00000000000000000000000000001239");
+        const later = ids.machineId("00000000000000000000000000001240");
         const alice = yield* signUp("alice");
         const device = (yield* cli("GET", "tokens", alice)).json.devices?.[0]?.id ?? assert.fail("no device");
         const token = (yield* cli("POST", "tokens", alice, { name: "ci", expires_in_days: 30 })).json.token
@@ -581,7 +591,7 @@ it.live(
       const layer = yield* cliLayer(fake.layer);
       yield* Effect.gen(function* () {
         const database = yield* Database;
-        const machine = "00000000000000000000000000001260";
+        const machine = ids.machineId("00000000000000000000000000001260");
         const alice = yield* signUp("alice");
         const slug = alice.organization.slug;
         const [owner] = yield* database.drizzle.select({ userId: member.userId }).from(member)
@@ -597,7 +607,7 @@ it.live(
         // Only the Organization the credential acts in.
         const other = yield* cli("DELETE", "organizations/elsewhere", alice);
         assert.strictEqual(other.status, 422);
-        assert.strictEqual(other.json.error?.details.next, "ployz org use elsewhere");
+        assert.strictEqual(other.json.error?.details?.next, "ployz org use elsewhere");
 
         // A Project must go first, through its own teardown; nothing is unpaired meanwhile.
         const write = (command: Parameters<typeof callStore>[2]) => callStore(alice.organization.id, userId, command);
@@ -608,7 +618,7 @@ it.live(
         assert.isTrue(created.ok);
         const refused = yield* cli("DELETE", `organizations/${slug}`, alice);
         assert.strictEqual(refused.status, 409);
-        assert.deepStrictEqual(refused.json.error?.details.next, { tool: "remove", input: { project: "shop" } });
+        assert.deepStrictEqual(refused.json.error?.details?.next, { tool: "remove", input: { project: "shop" } });
         assert.isTrue(server.slots.has("cloud"));
         assert.isTrue((yield* write({ operation: "write", command: { command: "remove", project: "shop" } })).ok);
 
@@ -759,8 +769,8 @@ it.live(
   60_000,
 );
 
-const fra1 = "f".repeat(32);
-const leftBehind = { kind: "docker_volume" as const, id: { machine_id: fra1 as MachineId, name: "left-behind_data" as DockerVolumeName } };
+const fra1 = ids.machineId("f");
+const leftBehind = { kind: "docker_volume" as const, id: { machine_id: fra1, name: "left-behind_data" as DockerVolumeName } };
 
 type LeftBehind = { observesFra1: boolean; sessionsOpened: number };
 
@@ -816,7 +826,7 @@ it.live(
 
         const pending = yield* cli("POST", "namespaces/left-behind/clean", { ...alice, approval: approvalId });
         assert.strictEqual(pending.status, 409);
-        assert.strictEqual(pending.json.error?.details.approval_id, approvalId);
+        assert.strictEqual(pending.json.error?.details?.approval_id, approvalId);
 
         const approved = yield* cli("POST", `approvals/${approvalId}`, alice, { approve: { digest: details.approval ?? "" } });
         assert.strictEqual(approved.status, 200);
@@ -833,7 +843,7 @@ it.live(
 
         const removal = yield* cli("POST", `servers/${fra1}/forget`, alice, {});
         assert.strictEqual(removal.status, 409);
-        assert.deepStrictEqual(removal.json.error?.details.operation, { verb: "forget", name: "fra-1" });
+        assert.deepStrictEqual(removal.json.error?.details?.operation, { verb: "forget", name: "fra-1" });
 
         const drain = yield* cli("POST", `servers/${fra1}/drain`, alice);
         assert.strictEqual(drain.status, 202);
@@ -903,7 +913,7 @@ it.live(
 
         const reset = yield* cli("DELETE", `servers/${fra1}`, { ...alice, approval: approvalId }, { confirm_data_loss: { confirmed: [] } });
         assert.strictEqual(reset.json.error?.code, "approval_required");
-        assert.notStrictEqual(reset.json.error?.details.approval_id, approvalId);
+        assert.notStrictEqual(reset.json.error?.details?.approval_id ?? assert.fail("no approval id"), approvalId);
 
         const started = yield* cli("POST", `servers/${fra1}/forget`, { ...alice, approval: approvalId }, {});
         const removalId = started.json.id ?? assert.fail("no removal id");
@@ -1078,10 +1088,10 @@ for (const operation of operations) {
             plan.destroys = true;
             const asked = yield* cli(operation.method, operation.path, alice, operation.body);
             assert.strictEqual(asked.status, 409, reason);
-            const approvalId = asked.json.error?.details.approval_id ?? assert.fail("no approval id");
+            const approvalId = asked.json.error?.details?.approval_id ?? assert.fail("no approval id");
             const denied = yield* cli("POST", `approvals/${approvalId}`, alice, { reject: { reason } });
             assert.strictEqual(denied.json.approval?.status, "denied", reason);
-            const approvedLate = yield* cli("POST", `approvals/${approvalId}`, alice, { approve: { digest: asked.json.error?.details.approval ?? "" } });
+            const approvedLate = yield* cli("POST", `approvals/${approvalId}`, alice, { approve: { digest: asked.json.error?.details?.approval ?? "" } });
             assert.deepStrictEqual(
               [approvedLate.status, approvedLate.json.error?.code, approvedLate.json.error?.message],
               [409, "conflict", "This approval was already decided elsewhere (denied)."],
@@ -1198,16 +1208,16 @@ it.live(
         const alice = yield* signUp("alice");
         const removal = operations[0];
         const clean = operations[1];
-        const removalId = (yield* cli(removal.method, removal.path, alice, removal.body)).json.error?.details.approval_id
+        const removalId = (yield* cli(removal.method, removal.path, alice, removal.body)).json.error?.details?.approval_id
           ?? assert.fail("no approval id");
-        const cleanId = (yield* cli(clean.method, clean.path, alice)).json.error?.details.approval_id
+        const cleanId = (yield* cli(clean.method, clean.path, alice)).json.error?.details?.approval_id
           ?? assert.fail("no approval id");
         const waiting = yield* cli(removal.method, removal.path, { ...alice, approval: removalId }, removal.body);
-        assert.deepStrictEqual([waiting.status, waiting.json.error?.details.approval_id], [409, removalId]);
+        assert.deepStrictEqual([waiting.status, waiting.json.error?.details?.approval_id], [409, removalId]);
         assert.lengthOf(sent.mock.calls, 0);
 
         const unnamed = yield* cli(removal.method, removal.path, alice, removal.body);
-        assert.deepStrictEqual([unnamed.status, unnamed.json.error?.details.approval_id], [409, removalId]);
+        assert.deepStrictEqual([unnamed.status, unnamed.json.error?.details?.approval_id], [409, removalId]);
 
         plan.destroys = false;
         const emptied = yield* cli(clean.method, clean.path, { ...alice, approval: cleanId });

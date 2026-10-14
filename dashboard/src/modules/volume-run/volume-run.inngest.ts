@@ -12,8 +12,8 @@ import {
 } from "#/modules/inngest/events";
 import { PATIENCE, PATIENCE_WAITS } from "#/modules/volume-run/patience";
 import { fenceTaken } from "#/modules/volume-run/volume-run.deploy.server";
-import { alreadyOn, epochOf, expectOf, observedEpoch, type PlanInput, type Planned, planFromCopies } from "#/modules/volume-run/plan";
-import { type AnsweredMember, copyName, type Member, type VolumeRunArgs } from "#/modules/volume-run/volume-run";
+import { alreadyOn, epochOf, expectOf, observedEpoch, type Planned, planFromCopies } from "#/modules/volume-run/plan";
+import { type AnsweredMember, copyName, type Member } from "#/modules/volume-run/volume-run";
 import {
   claimVolumeRun,
   cleanOrphans,
@@ -81,18 +81,15 @@ export async function runVolume(
   if (request === null) return { skipped: "invalid" as const };
   const claim = await step.run("00-claim", () => runEffect(claimVolumeRun(request, runId)));
   if (claim.kind === "settled") return { runId: request.runId, settled: claim.state };
-  // SAFETY: step output is the JSON of a RunContext, and a RunContext holds only JSON values.
-  const run = claim.run as RunContext;
+  const run: RunContext = claim.run;
 
   if (request.took !== undefined) await step.run("01-fence", () => runEffect(fenceTaken(run, runId)));
-  // SAFETY: step output is the JSON of the Member list, and a Member holds only JSON values.
-  const observed = (await step.run("01-observe", () => runEffect(observeMembers(run, runId)))) as Member[];
+  const observed: Member[] = await step.run("01-observe", () => runEffect(observeMembers(run, runId)));
   const steps: RunSteps = { step, runEffect, run, runId };
   const forward = run.kind === "release" && run.phase === "committed" && run.current !== null;
   const members = run.kind === "release" && !forward ? await floor(steps, observed) : observed;
-  // SAFETY: the row's kind and args were written together from one VolumeRunInput.
-  const input = { kind: run.kind, args: run.args, volumeName: run.volumeName, orphan: run.orphan } as PlanInput;
-  const plan = planFromCopies(input, members);
+  if (run.kind === "deploy") throw new NonRetriableError(`run ${run.id} is a Deploy's lane, not a volume run`);
+  const plan = planFromCopies(run, members);
   if (!plan.ok) {
     await step.run("02-refuse", () => runEffect(refuseRun(run, runId, plan.refusal)));
     return { runId: run.id, refused: plan.refusal };
@@ -384,8 +381,7 @@ async function releaseVolume(steps: RunSteps, phase: PhaseOf<"release">, epoch: 
     }
     const A = owner.machine;
     const at = cut.newest;
-    // SAFETY: the run's kind is release, so its args are release's.
-    const { plan } = run.args as VolumeRunArgs["release"];
+    const { plan } = from;
     const changed = () => new NonRetriableError(
       `${run.volumeName}'s copies changed since this release was planned; nothing was forgotten and ${run.volumeName}'s Service stays stopped on ${A.name}. `
         + `Run ployz volume release ${run.volumeName} again`,
@@ -529,8 +525,7 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, epoch: number
  * request until the copy it answers is a root.
  */
 async function seedVolume({ step, runEffect, run, runId }: RunSteps, phase: PhaseOf<"seed">) {
-  // SAFETY: the run's kind is seed, so its args are seed's.
-  const args = run.args as VolumeRunArgs["seed"];
+  const { args } = phase;
   const source = phase.source.machine;
   const failed = async (id: string, message: string): Promise<never> => {
     await step.run(id, () => runEffect(failRun(run, runId, message)));

@@ -57,13 +57,22 @@ pub enum NameMatches<T> {
     None,
     One(T),
     Ambiguous {
-        // Require both fields even when T can deserialize a missing value (e.g. Option).
-        #[serde(deserialize_with = "Deserialize::deserialize")]
+        #[serde(deserialize_with = "required")]
         first: T,
-        #[serde(deserialize_with = "Deserialize::deserialize")]
+        #[serde(deserialize_with = "required")]
         second: T,
         rest: Vec<T>,
     },
+}
+
+/// Deserialize a field that must be present even when `T` is `Option`. Serde lets a
+/// missing `Option` field default to `None` unless the field names its own deserializer.
+fn required<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer)
 }
 
 impl<T> NameMatches<T> {

@@ -27,7 +27,7 @@ import { buildStoreEdges, buildStoreNodes, volumeTrays } from "./canvas/nodes";
 import type { StoreCanvas } from "./canvas/types";
 import { configTrays } from "#/modules/config-store/store-configs";
 import { branchQuery, configsQuery, diffQuery, domainsQuery, environmentSettingsQuery, namespaceQuery, requireView, servicesQuery, useStoreViews, volumesQuery } from "#/modules/config-store/store-view.queries";
-import { liveNodes } from "#/modules/config-store/store-branches";
+import { isBranch, liveNodes } from "#/modules/config-store/store-branches";
 import { serviceChangeCount, serviceChanges, serviceSettingRows, settingText } from "#/modules/config-store/store-services";
 import { notSetVariables } from "#/modules/config-store/store-variables";
 import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
@@ -74,7 +74,6 @@ function CanvasWithData() {
   const { organizationSlug, projectSlug, environmentSlug } = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const { store: ref, environmentId } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const { organizationId } = useLoaderData({ from: "/_protected/cloud/$organizationSlug" });
-  // The branch view is refused unless this is a Branch.
   const [servicesResult, settingsResult, diffResult, volumesResult, branch, namespace, domainsResult, configsResult] = useStoreViews(organizationSlug,
     [servicesQuery(ref), environmentSettingsQuery(ref), diffQuery(ref), volumesQuery(ref), branchQuery(ref), namespaceQuery(ref), domainsQuery(ref),
       configsQuery(ref)] as const);
@@ -123,7 +122,7 @@ function CanvasWithData() {
     unmountedVolumes: unmounted,
     unmountedConfigs: configs.unmounted,
     copies,
-    live: branch.ok ? liveNodes(branch.value.live, services.services) : [],
+    live: isBranch(branch) ? liveNodes(branch.value.live, services.services) : [],
     diff,
   };
   const initialNodes = buildStoreNodes(store, canvasPositions, environmentId);

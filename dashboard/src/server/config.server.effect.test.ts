@@ -165,6 +165,26 @@ describe("AppConfig", () => {
     }),
   );
 
+  it.effect("points PostShiba at a verify lab's origin, outside production only", () =>
+    Effect.gen(function* () {
+      const real = yield* load({ ...requiredEnvironment, ...postShibaMail });
+      assert.strictEqual(real.mail?.verifyOrigin, null);
+
+      const lab = { ...requiredEnvironment, ...postShibaMail, NODE_ENV: "development" };
+      const fake = yield* load({ ...lab, PLOYZ_VERIFY_POSTSHIBA_ORIGIN: "http://127.0.0.1:4556" });
+      assert.strictEqual(fake.mail?.verifyOrigin, "http://127.0.0.1:4556");
+
+      const refused = [
+        { ...requiredEnvironment, ...postShibaMail, PLOYZ_VERIFY_POSTSHIBA_ORIGIN: "http://127.0.0.1:4556" },
+        { ...lab, PLOYZ_VERIFY_POSTSHIBA_ORIGIN: "http://127.0.0.1:4556/api" },
+      ];
+      for (const environment of refused) {
+        const failure = yield* Effect.flip(load(environment));
+        assert.instanceOf(failure, InvalidConfiguration, environment.PLOYZ_VERIFY_POSTSHIBA_ORIGIN);
+      }
+    }),
+  );
+
   it.effect("rejects malformed startup values", () =>
     Effect.gen(function* () {
       const invalid: ReadonlyArray<Record<string, string>> = [

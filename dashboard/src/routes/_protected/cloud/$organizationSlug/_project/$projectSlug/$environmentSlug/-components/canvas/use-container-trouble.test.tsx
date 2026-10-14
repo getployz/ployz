@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import type { ContainerId, MachineId, MetricMarker, ServiceId } from "@ployz/sdk";
+import type { MetricMarker } from "@ployz/sdk";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
@@ -7,6 +7,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import type { MetricRead } from "#/modules/metrics/metrics";
 import * as functions from "#/modules/metrics/metrics.functions";
 import { serviceMarkersQueryOptions } from "#/modules/metrics/metrics.queries";
+import { containerId, machineId, serviceId } from "#/test/ids";
 import { useContainerTrouble } from "./use-container-trouble";
 
 afterEach(() => {
@@ -16,11 +17,10 @@ afterEach(() => {
 
 const MINUTE = 60_000;
 const scope = { organizationSlug: "acme", environmentId: "env" };
-const machine = "a".repeat(32);
+const machine = machineId("a");
 
-// SAFETY: test ids only need to be distinct strings.
 const markerAt = (kind: MetricMarker["kind"], atMs: number): MetricMarker => ({
-  machine_id: machine as MachineId, container_id: "c" as ContainerId, service_id: "s" as ServiceId,
+  machine_id: machine, container_id: containerId("c"), service_id: serviceId("s"),
   service: "ns/web", replica: "web-1", ts: atMs * 1e6, kind,
 });
 const oomAt = (atMs: number) => markerAt("oom", atMs);
@@ -30,7 +30,7 @@ const readWith = (first: MetricMarker, ...rest: MetricMarker[]): MetricRead => (
   at: (rest.at(-1) ?? first).ts / 1e6,
   history: {
     step_nanos: 60 * MINUTE * 1e6, points: { service: [] }, unanswered: [],
-    machines: [{ machine_id: machine as MachineId, value: { points: { service: [] }, step_nanos: 60 * MINUTE * 1e6, gaps: [], markers: [first, ...rest] } }],
+    machines: [{ machine_id: machine, value: { points: { service: [] }, step_nanos: 60 * MINUTE * 1e6, gaps: [], markers: [first, ...rest] } }],
   },
 });
 

@@ -231,8 +231,7 @@ describe("diffVariables", () => {
       ].join("\n"),
     );
     const diff = diffVariables(parsed, current);
-    expect(diff.creates).toMatchObject([{ key: "ADDED", value: "fresh" }]);
-    expect(diff.creates[0]?.id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(diff.creates).toEqual([{ key: "ADDED", value: "fresh" }]);
     expect(diff.updates).toEqual([
       { variableId: "id-CHANGE", key: "CHANGE", value: "new" },
     ]);
@@ -244,7 +243,7 @@ describe("diffVariables", () => {
       plain("FOO", "old", "variable-1"),
     ]);
 
-    expect(diff.creates).toMatchObject([{ key: "BAR", value: "new" }]);
+    expect(diff.creates).toEqual([{ key: "BAR", value: "new" }]);
     expect(diff.updates).toEqual([]);
     expect(diff.deletes).toEqual(["variable-1"]);
   });

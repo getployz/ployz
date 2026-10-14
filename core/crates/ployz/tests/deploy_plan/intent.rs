@@ -402,6 +402,7 @@ enum Repair {
     Create,
     Start(ContainerId),
     Dead(ContainerId),
+    Restarting(ContainerId),
     Unchecked,
 }
 
@@ -419,6 +420,7 @@ fn ingress_repairs(snapshot: &DeploySnapshot) -> Vec<(MachineId, Repair)> {
                 }
                 SlotAction::Start(container_id) => Repair::Start(container_id),
                 SlotAction::Dead(container_id) => Repair::Dead(container_id),
+                SlotAction::Restarting(container_id) => Repair::Restarting(container_id),
                 SlotAction::Unchecked(_) => Repair::Unchecked,
             };
             (repair.machine_id, shown)
@@ -517,6 +519,33 @@ fn a_dead_ingress_proxy_is_never_started_and_never_returns() {
 }
 
 #[test]
+fn a_crash_looping_ingress_proxy_is_reported_not_repaired_and_never_returns() {
+    let restarting = || ContainerRuntimeObservation::Restarting;
+    let mut looping = machine('1', "looping");
+    looping.machine.public_ip = Some(std::net::IpAddr::from([192, 0, 2, 1]));
+    let snapshot = DeploySnapshot {
+        machines: vec![looping, machine('2', "running-beside-looping")],
+        containers: vec![
+            ingress_container('a', '1', "caddy:test", restarting()),
+            ingress_container(
+                'b',
+                '1',
+                "caddy:test",
+                ContainerRuntimeObservation::Exited { code: 0 },
+            ),
+            ingress_container('c', '2', "caddy:test", restarting()),
+            ingress_container('d', '2', "caddy:test", running()),
+        ],
+        ..Default::default()
+    };
+    assert_eq!(
+        ingress_repairs(&snapshot),
+        [(machine_id('1'), Repair::Restarting(container_id('a')))]
+    );
+    assert!(snapshot.ingress_returning().is_empty());
+}
+
+#[test]
 fn a_created_ingress_proxy_joins_the_service_its_siblings_run() {
     let snapshot = DeploySnapshot {
         machines: vec![machine('1', "serving"), machine('2', "missing")],
@@ -580,19 +609,12 @@ fn ingress_repair_starts_a_stopped_older_proxy_and_leaves_active_or_unwanted_one
             machine('1', "older"),
             machine('2', "older-stopped"),
             no_ingress,
-            machine('4', "restarting"),
             machine('5', "paused"),
         ],
         containers: vec![
             ingress_container('a', '1', "caddy:old", running()),
             ingress_container('b', '2', "caddy:old", exited.clone()),
             ingress_container('c', '3', "caddy:test", running()),
-            ingress_container(
-                'd',
-                '4',
-                "caddy:test",
-                ContainerRuntimeObservation::Restarting,
-            ),
             ingress_container('e', '5', "caddy:test", ContainerRuntimeObservation::Paused),
             ingress_container('f', '5', "caddy:test", exited),
         ],
@@ -616,7 +638,10 @@ fn ingress_repair_that_cannot_admit_on_one_server_still_plans_the_other() {
         .iter()
         .map(|repair| match &repair.action {
             SlotAction::Create(plan) => (repair.machine_id, plan.as_ref().ok()),
-            other @ (SlotAction::Start(_) | SlotAction::Dead(_) | SlotAction::Unchecked(_)) => {
+            other @ (SlotAction::Start(_)
+            | SlotAction::Dead(_)
+            | SlotAction::Restarting(_)
+            | SlotAction::Unchecked(_)) => {
                 panic!("expected a create, got {other:?}")
             }
         })

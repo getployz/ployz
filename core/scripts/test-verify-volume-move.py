@@ -48,8 +48,8 @@ REPO = CORE.parent
 HELPER = CORE / "scripts" / "verify-cluster"
 CATALOG = CORE / "crates" / "ployz-core" / "src" / "rpc_catalog.rs"
 
-DOCKER_VOLUME_VERBS = {"CreateVolume", "InspectStorage", "PrepareVolumes", "ListVolumes", "InspectVolume", "RemoveVolume"}
-KEPT_VERBS = DOCKER_VOLUME_VERBS - {"CreateVolume", "InspectVolume"} | {"MetricHistory"}
+DOCKER_VOLUME_VERBS = {"InspectStorage", "PrepareVolumes", "ListVolumes", "RemoveVolume"}
+KEPT_VERBS = DOCKER_VOLUME_VERBS | {"MetricHistory"}
 MOVE_VERBS = {"InspectVolumeCopy", "SetVolumeCopy", "SeedVolume"}
 
 LEASE_ROOTS = ["core/crates", "core/scripts", "dashboard/src"]
