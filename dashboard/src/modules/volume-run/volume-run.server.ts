@@ -482,7 +482,9 @@ const owedTarget = Effect.fn("VolumeRun.owedTarget")(function* (pending: Owed, m
     ?? { id: pending.current, name: (yield* laneTarget(pending)) ?? pending.current };
 });
 
-/** A release that finishes a committed Move on its new Server, pinned to the commitment and the Servers it previewed. */
+/**
+ * A release that finishes a committed Move on its new Server, pinned to the commitment and the Servers it previewed.
+ */
 const planForward = Effect.fn("VolumeRun.planForward")(function* (volume: ResolvedVolume, input: PlanRequest, pending: Owed, members: readonly Member[]) {
   const to = yield* owedTarget(pending, members);
   const forward = planForwardRelease(volume.volumeName, to, members);
@@ -606,6 +608,8 @@ const takeLane = Effect.fn("VolumeRun.takeLane")(function* (caller: Caller, { in
 /**
  * Read after the insert, under the lane it holds: a release inherits a commitment still owed its finish, and a run
  * that would undo it is refused. A user's release must have previewed that same commitment; Cloud's carries no plan.
+ * The commitment stays locked until the transaction commits, so a removal's clear waits for the release that inherits
+ * it, and the removal's select then finds that release.
  */
 const admitOwed = Effect.fn("VolumeRun.admitOwed")(function* (inserted: VolumeRunRow, input: VolumeLaneInput) {
   const { newest, owed: pending } = yield* commitmentHeldAgainstRemoval(inserted.volumeId);
@@ -736,19 +740,31 @@ export const releaseLanesOff = Effect.fn("VolumeRun.releaseLanesOff")(function* 
   return released;
 });
 
-/** Every commitment to `machine` that ended unfinished stops naming it, so nothing is owed a finish there. */
+/**
+ * Every commitment to `machine` that ended unfinished stops naming it, so nothing is owed a finish there. Each Volume
+ * clears on its own: a Deploy holds one Volume's commitment while it reaches for the next, so one statement holding
+ * several could deadlock against it.
+ */
 const forgetUnfinishedCommitments = Effect.fn("VolumeRun.forgetUnfinishedCommitments")(function* (organizationId: string, machine: MachineId) {
   const { drizzle } = yield* Database;
-  yield* drizzle.update(volumeRun).set({ current: null }).where(and(
+  const unfinished = and(
     eq(volumeRun.organizationId, organizationId),
     inArray(volumeRun.kind, ["move", "release"]),
     eq(volumeRun.phase, "committed"),
     eq(volumeRun.current, machine),
     notInArray(volumeRun.state, [...ACTIVE_VOLUME_RUN_STATES, "done"]),
-  ));
+  );
+  const volumes = yield* drizzle.selectDistinct({ volumeId: volumeRun.volumeId }).from(volumeRun).where(unfinished);
+  for (const { volumeId } of volumes) {
+    yield* drizzle.update(volumeRun).set({ current: null }).where(and(unfinished, eq(volumeRun.volumeId, volumeId)));
+  }
 });
 
-/** Ends every committed lane whose writer-to-be is `machine`, cancelling its Inngest run, until a pass finds none. */
+/**
+ * Ends every committed lane whose writer-to-be is `machine`, cancelling its Inngest run, until a pass finds none. A
+ * committed Move failing meanwhile hands its lane to a release bound here, and admitOwed locks the commitment, so the
+ * select after a clear sees any admission that read it first.
+ */
 const endLanesTo = Effect.fn("VolumeRun.endLanesTo")(function* (
   organizationId: string,
   machine: { readonly id: MachineId; readonly name: MachineName | null },

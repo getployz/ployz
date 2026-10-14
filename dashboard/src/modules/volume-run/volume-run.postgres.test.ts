@@ -166,7 +166,10 @@ describe("volume runs", () => {
    */
   let frameFault: ((read: number) => boolean | RpcFault) | null;
   let frames: number;
-  /** Fails a session open, counted from 1 in `opens`: an Error as Cloud failing on its own side, or a Cluster it cannot reach. */
+  /**
+   * Fails a session open, counted from 1 in `opens`: an Error as Cloud failing on its own side, or a Cluster it cannot
+   * reach.
+   */
   let openFault: ((open: number) => Error | "unreachable" | null) | null;
   let opens: number;
   let sent: SetVolumeCopyRequest[];
@@ -3174,13 +3177,13 @@ describe("volume runs", () => {
         try {
           await deploy.query("begin");
           await deploy.query("select id from volume_run where id = $1 for update", [owedSecond?.id]);
-          const removing = runEffect(releaseLanesOff(organizationId, { id: idOf("fsn-2"), name: "fsn-2" }, [])).catch((error: unknown) => error);
+          const removing = runEffect(Effect.exit(releaseLanesOff(organizationId, { id: idOf("fsn-2"), name: "fsn-2" }, [])));
           await waitingOnLock();
           const reaching = deploy.query("select id from volume_run where id = $1 for update", [owedFirst?.id]);
 
           await expect(reaching).resolves.toMatchObject({ rowCount: 1 });
           await deploy.query("commit");
-          await expect(removing).resolves.toEqual([]);
+          await expect(removing).resolves.toMatchObject({ _tag: "Success", value: [] });
         } finally {
           deploy.release(true);
         }

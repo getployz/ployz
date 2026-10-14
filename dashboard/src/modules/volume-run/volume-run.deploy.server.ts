@@ -117,6 +117,8 @@ export const placeDeployVolumes = Effect.fn("VolumeRun.placeDeploy")(function* (
     }
     if (beside.length > 0) yield* drizzle.update(volumeRun).set({ heldBy: inngestRunId }).where(inArray(volumeRun.id, beside));
     const laned = new Set(lanes.map((lane) => lane.volumeId));
+    // Each hold locks its Volume's commitment until this transaction ends. No two Deploys hold the same Volumes at once
+    // only because store-deployment.inngest.ts runs one Deploy per Environment and a Volume belongs to one.
     for (const id of targets) {
       const volume = laned.has(id) ? undefined : volumes.find((entry) => entry.id === id);
       if (volume === undefined) continue;
