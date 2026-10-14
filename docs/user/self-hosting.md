@@ -119,9 +119,7 @@ its URL `github.com/apps/<slug>`.
    To turn on the [Ployz agent](account/agent-sidebar.md), set `ANTHROPIC_API_KEY`.
    Email is optional too. Ployz Cloud sends none while `POSTSHIBA_API_KEY`, `POSTSHIBA_TEAM_ID`,
    `POSTSHIBA_CLUSTER_ID`, and `MAIL_FROM` are unset. Set all four to send through
-   PostShiba. With only some of them set, `web` and `worker` stop at startup. With email on,
-   invites are emailed to the address they were made for; without it, whoever invites copies
-   the link and sends it themselves.
+   PostShiba. With only some of them set, `web` and `worker` stop at startup.
 
 > [!WARNING]
 > Keep `APP_ENCRYPTION_SECRET` the same forever, and back it up with the Postgres volume
