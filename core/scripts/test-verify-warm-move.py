@@ -16,7 +16,7 @@ The exit is nonzero on any FAIL.
 """
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future
 import hashlib
 import json
 import os
@@ -94,6 +94,10 @@ def run_rows(data):
 
 def say(data):
     return json.dumps(data)
+
+
+def holding(held):
+    return bool(held) and not held.startswith("timed out after")
 
 
 def done(row):
@@ -296,7 +300,7 @@ class Cluster:
             if self.row(volume, row["id"]).get("state") in TERMINAL:
                 return None
             time.sleep(1)
-        return None
+        return f"timed out after {limit}s"
 
     def wrap_runc(self, machine, tag, phys, body):
         """Replace the Machine's runc with a wrapper that runs `body` before creating a container that mounts `phys`.
@@ -329,7 +333,7 @@ class Cluster:
             if began:
                 return began
             time.sleep(1)
-        return None
+        return f"timed out after {limit}s"
 
     # Cloud runs
 
@@ -734,7 +738,7 @@ def rm_target_then_readd(vc):
     rows = vc.rows(B, phys) if vc.ready(B, phys, limit=300) else "no db"
     writable = vc.writable(phys)
     judged(vc, "rm_target_after_accept_then_readd", {
-        f"{B} held MirrorToWriter after the cut": bool(held),
+        f"{B} held MirrorToWriter after the cut": holding(held),
         "first move did not finish before the removal": first.get("state") in TERMINAL - {"done"},
         f"restore on {A} succeeded": code_r == 0,
         f"{B} added back without a reset": bool(joined),
@@ -979,7 +983,7 @@ def deploy_mid_move(vc):
                          samples=len(samples), max_running=max(counted, default=0), overlaps=overlaps(samples),
                          blind=[(at, live) for at, live in samples if not isinstance(live, dict)],
                          final_to=to, running=running, ready=ready))
-    ok = all(leg["held"] and leg["deploy_exit"] == 0 and leg["samples"] and not leg["blind"] and not leg["overlaps"]
+    ok = all(holding(leg["held"]) and leg["deploy_exit"] == 0 and leg["samples"] and not leg["blind"] and not leg["overlaps"]
              and (leg["original_state"] == "done"
                   or (leg["original_state"] == "yielded" and leg["requeued_state"] == "done"))
              and sum(map(len, leg["running"].values())) == 1 and len(leg["running"][leg["final_to"]]) == 1
@@ -1012,7 +1016,7 @@ def release_after_stopped_move(vc):
     phys = vc.physical("bravo")
     vc.psql(A, phys, "create table if not exists marks (note text); insert into marks values ('pre-05')")
     stopped = vc.stop_move("bravo", phys, A, B)
-    if stopped["run"].get("state") not in STOPPED or not stopped["held"]:
+    if stopped["run"].get("state") not in STOPPED or not holding(stopped["held"]):
         raise CheckError(f"the Move did not stop after the cut: {say(stopped)[:1200]}")
     a_copy = vc.inspect(A, phys)
     auto, code, released, data = release_after_cancel(vc, "bravo", stopped["run"])
@@ -1043,7 +1047,7 @@ def thaw_takes_15_seconds(vc):
     try:
         with Recorder(vc, "thaw", phys) as recorder:
             stopped = vc.stop_move("bravo", phys, source, target)
-            if stopped["run"].get("state") not in STOPPED or not stopped["held"]:
+            if stopped["run"].get("state") not in STOPPED or not holding(stopped["held"]):
                 raise CheckError(f"the Move did not stop after the cut: {say(stopped)[:1200]}")
             auto, code, released, data = release_after_cancel(vc, "bravo", stopped["run"], limit=900)
             first = dict(auto=auto, exit=code, run=released, delay=vc.start_log(source, "thaw"))
@@ -1207,11 +1211,23 @@ CHECKS = [
 ]
 
 
+def background(function, *args, **kwargs):
+    future = Future()
+
+    def run():
+        try:
+            future.set_result(function(*args, **kwargs))
+        except Exception as error:
+            future.set_exception(error)
+    threading.Thread(target=run, daemon=True).start()
+    return future
+
+
 def setup(vc, volumes):
     two = B in vc.machines
     if two:
         vc.cli("server", "set", B, "--accepts-services=false", required=True)
-        pull = ThreadPoolExecutor(1).submit(
+        pull = background(
             vc.sh, B, f"/usr/bin/docker pull -q {IMAGE}; /usr/bin/docker volume create -d ployz -o size=1g warm-move-seed && "
                       "for i in $(seq 10); do /usr/bin/docker volume rm warm-move-seed && exit 0; sleep 1; done; exit 1",
             timeout=900)

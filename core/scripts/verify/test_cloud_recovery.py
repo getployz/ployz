@@ -61,7 +61,7 @@ class SlowDeploy:
         self.now = 20
         self.returncode = 0
         self.deployment["status"] = "applied"
-        return "1 updated · 2 unchanged · across 1 servers", None
+        return "", None
 
 
 class Recovery(unittest.TestCase):
@@ -106,6 +106,19 @@ class Recovery(unittest.TestCase):
 
         self.deploy.communicate = replace
         with self.assertRaisesRegex(AssertionError, "interrupted Deploy did not apply"):
+            self.recover()
+
+    def test_a_failed_deploy_is_not_recovery(self):
+        communicate = self.deploy.communicate
+
+        def fail(timeout):
+            output = communicate(timeout)
+            self.deploy.returncode = 3
+            self.deploy.deployment["status"] = "failed"
+            return output
+
+        self.deploy.communicate = fail
+        with self.assertRaisesRegex(AssertionError, "The Deploy did not complete"):
             self.recover()
 
 
