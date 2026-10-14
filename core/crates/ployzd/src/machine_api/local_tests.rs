@@ -2329,13 +2329,14 @@ mod ensure_container {
 }
 
 mod serving_pointer {
+    use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
 
     use futures_util::{SinkExt, StreamExt};
     use ployz_core::{
-        DeploymentLogId, Machine, NotPointerPublisher, OpaquePayload, PublishServingPointerRequest,
-        QualifiedService, ReadServingPointerRequest, Rpc, RpcError, ServingPointer,
-        ServingPointerPublication, ServingPointerRead,
+        ContainerId, DeploymentLogId, Machine, NotPointerPublisher, OpaquePayload,
+        PublishServingPointerRequest, QualifiedService, ReadServingPointerRequest, Rpc, RpcError,
+        ServingPointer, ServingPointerPublication, ServingPointerRead,
     };
     use serde_json::{Value, json};
     use tokio::net::UnixListener;
@@ -2654,107 +2655,61 @@ mod serving_pointer {
         high_task.abort();
         std::fs::remove_dir_all(dir).ok();
     }
-}
 
-#[tokio::test]
-async fn serving_pointer_read_acks_only_machines_routing_every_pointed_container() {
-    use crate::corrosion::{
-        AdminClient, IngressRouteAck, IngressRouteChange,
-        store_tests::{corrosion_db, identity_store},
-    };
-    use ployz_core::{
-        ContainerId, DeploymentLogId, QualifiedService, ReadServingPointerRequest, ServingPointer,
-    };
-    use std::collections::BTreeMap;
+    #[tokio::test]
+    async fn read_acks_only_machines_routing_every_pointed_container() {
+        use crate::corrosion::{IngressRouteAck, IngressRouteChange};
 
-    let data_dir =
-        std::env::temp_dir().join(format!("ployzd-serving-acks-{}", MachineId::random()));
-    let mut local = LocalMachineStore::open(&data_dir).unwrap();
-    local
-        .enroll(ployz_core::EnrollRequest {
-            role: ployz_core::EnrollAs::Founder {
-                initial_policy: Default::default(),
-                name: ployz_core::MachineName::parse("local").unwrap(),
-                cluster_network: "10.210.0.0/16".parse().unwrap(),
-                public_ip: None,
-                advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(
-                    "192.0.2.1:51820".parse().unwrap(),
-                )],
-            },
-            wireguard_mtu: None,
-        })
-        .unwrap();
-    let (replicated, task) = identity_store(corrosion_db()).await;
-    let api = QualifiedService::parse("app/api").unwrap();
-    let web = QualifiedService::parse("app/web").unwrap();
-    let first = MachineId::random();
-    let second = MachineId::random();
-    let third = MachineId::random();
-    let pointed = ContainerId::parse("a".repeat(64)).unwrap();
-    let pointer = ServingPointer {
-        deploy: DeploymentLogId::parse("d1").unwrap(),
-        containers: vec![pointed],
-        previous: None,
-        retiring: Vec::new(),
-    };
-    replicated
-        .compare_and_set_serving_pointer(&api, None, &pointer)
-        .await
-        .unwrap();
-    let ack = |deploy: &str, containers: &[ContainerId]| {
-        IngressRouteChange::Upsert(IngressRouteAck {
-            deploy: DeploymentLogId::parse(deploy).unwrap(),
-            containers: containers.iter().copied().collect(),
-        })
-    };
-    replicated
-        .publish_ingress_routes(
-            &first,
-            &BTreeMap::from([
-                (api.clone(), ack("d1", &[pointed])),
-                (web.clone(), ack("w1", &[pointed])),
-            ]),
-        )
-        .await
-        .unwrap();
-    replicated
-        .publish_ingress_routes(
-            &second,
-            &BTreeMap::from([(api.clone(), ack("d1", &[])), (web, ack("w2", &[pointed]))]),
-        )
-        .await
-        .unwrap();
-    replicated
-        .publish_ingress_routes(
-            &third,
-            &BTreeMap::from([(api.clone(), ack("d0", &[pointed]))]),
-        )
-        .await
-        .unwrap();
-    let service = MachineService::with_cluster(
-        RecordOwner::spawn(local).unwrap(),
-        Some((replicated, AdminClient::new("/no/such/admin.sock"))),
-    );
+        let dir = std::env::temp_dir().join(format!("ployzd-pointer-{}", MachineId::random()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (service, task) = machine(&dir, &[], Vec::new()).await;
+        let local = service.local();
+        let replicated = local.replicated().unwrap();
+        let web = QualifiedService::parse("app/web").unwrap();
+        let first = MachineId::random();
+        let second = MachineId::random();
+        let third = MachineId::random();
+        let pointed = ContainerId::parse("a".repeat(64)).unwrap();
+        replicated
+            .compare_and_set_serving_pointer(&api(), None, &pointer("d1", "a"))
+            .await
+            .unwrap();
+        let ack = |deploy: &str, containers: &[ContainerId]| {
+            IngressRouteChange::Upsert(IngressRouteAck {
+                deploy: DeploymentLogId::parse(deploy).unwrap(),
+                containers: containers.iter().copied().collect(),
+            })
+        };
+        replicated
+            .publish_ingress_routes(
+                &first,
+                &BTreeMap::from([
+                    (api(), ack("d1", &[pointed])),
+                    (web.clone(), ack("w1", &[pointed])),
+                ]),
+            )
+            .await
+            .unwrap();
+        replicated
+            .publish_ingress_routes(
+                &second,
+                &BTreeMap::from([(api(), ack("d1", &[])), (web, ack("w2", &[pointed]))]),
+            )
+            .await
+            .unwrap();
+        replicated
+            .publish_ingress_routes(&third, &BTreeMap::from([(api(), ack("d0", &[pointed]))]))
+            .await
+            .unwrap();
 
-    let read = service
-        .read_serving_pointer(Request::new(
-            op::ReadServingPointer::into_request(ReadServingPointerRequest { service: api })
-                .encode()
-                .unwrap(),
-        ))
-        .await
-        .unwrap()
-        .into_inner()
-        .decode_response()
-        .unwrap()
-        .decode::<op::ReadServingPointer>()
-        .unwrap();
-    assert_eq!(read.pointer, Some(pointer));
-    assert_eq!(
-        read.acks,
-        BTreeMap::from([(first, DeploymentLogId::parse("d1").unwrap())]),
-        "second routes none of the pointed copies, third routes the fallback"
-    );
-    task.abort();
-    std::fs::remove_dir_all(data_dir).ok();
+        let read = read(&service).await.unwrap();
+        assert_eq!(read.pointer, Some(pointer("d1", "a")));
+        assert_eq!(
+            read.acks,
+            BTreeMap::from([(first, DeploymentLogId::parse("d1").unwrap())]),
+            "second routes none of the pointed copies, third routes the fallback"
+        );
+        task.abort();
+        std::fs::remove_dir_all(dir).ok();
+    }
 }
