@@ -906,8 +906,8 @@ def sample_running(vc, phys, samples, stop):
     while not stop.is_set():
         try:
             samples.append((round(time.time(), 1), vc.live(phys)))
-        except CheckError as error:
-            samples.append((round(time.time(), 1), str(error)[:200]))
+        except Exception as error:
+            samples.append((round(time.time(), 1), f"{type(error).__name__}: {error}"[:200]))
         stop.wait(1)
 
 
@@ -972,16 +972,18 @@ def deploy_mid_move(vc):
                          requeued=requeued and requeued.get("id"), requeued_state=requeued and requeued.get("state"),
                          waited=[row["id"]] + ([requeued["id"]] if requeued and requeued.get("id") else []),
                          samples=len(samples), max_running=max(counted, default=0), overlaps=overlaps(samples),
+                         blind=[(at, live) for at, live in samples if not isinstance(live, dict)],
                          final_to=to, running=running, ready=ready))
-    ok = all(leg["held"] and leg["deploy_exit"] == 0 and leg["samples"] and not leg["overlaps"]
+    ok = all(leg["held"] and leg["deploy_exit"] == 0 and leg["samples"] and not leg["blind"] and not leg["overlaps"]
              and (leg["original_state"] == "done"
                   or (leg["original_state"] == "yielded" and leg["requeued_state"] == "done"))
              and sum(map(len, leg["running"].values())) == 1 and len(leg["running"][leg["final_to"]]) == 1
              and leg["ready"] for leg in legs)
     vc.verdict("deploy_mid_move", ok,
                "MirrorToMirror and MirrorToWriter held 20 s by delay-rpc on the target after the cut, the target's "
-               "runc create held 30 s; each deploy exits 0, no once-a-second sample shows more than one running "
-               "container across both Machines, the move ends done or yielded with a requeued move that ends done, "
+               "runc create held 30 s; each deploy exits 0, every once-a-second sample succeeds and none shows more "
+               "than one running container across both Machines, the move ends done or yielded with a requeued move "
+               "that ends done, "
                f"and one ready container runs on the final target; {say(legs)}")
 
 
