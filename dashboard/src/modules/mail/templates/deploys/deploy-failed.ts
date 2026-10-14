@@ -18,10 +18,11 @@ export function deployFailedMail({ origin, organization, deployment, sources }: 
   const failure = outcomeReason(deployment.outcome) ?? failedBuild?.message ?? (deployment.status === "unknown"
     ? "Cloud lost track of it partway, so some of it may have applied."
     : "It failed before it reported why.");
-  const source = sources[0];
+  const source = sources.find((found) => found.service === failedBuild?.service) ?? sources[0];
   const commit = source?.commit?.slice(0, 7);
   const segment = (value: string) => encodeURIComponent(value);
-  const logs = failedBuild ? "build" : "deploy";
+  const failedNode = deployment.nodes.find((node) => node.type === "service" && node.name === failedBuild?.service);
+  const logs = failedBuild ? `build${failedNode ? `&service=${segment(failedNode.id)}` : ""}` : "deploy";
   const url = `${origin}/cloud/${segment(organization.slug)}/${segment(project)}/${segment(environment)}/deployments/${segment(deployment.id)}?logs=${logs}`;
   const facts: MailFact[] = [];
   if (source) facts.push({ label: "Repository", value: source.repository, mono: true });
@@ -33,7 +34,7 @@ export function deployFailedMail({ origin, organization, deployment, sources }: 
     subject: named ? `Deploy failed: ${named} in ${place}` : `Deploy failed in ${place}`,
     preview: commit && source?.branch ? `${commit} on ${source.branch} failed. The logs show why.` : "The logs show why.",
     title: named ? `${named} failed to deploy to ${environment}` : `A deploy to ${environment} failed`,
-    paragraphs: [source?.branch ? `A push to ${source.branch} started this deploy, and it failed. The logs show why.` : "GitHub started this deploy, and it failed. The logs show why."],
+    paragraphs: [source?.branch ? `GitHub started this deploy from ${source.branch}, and it failed. The logs show why.` : "GitHub started this deploy, and it failed. The logs show why."],
     action: { label: "View logs", url },
     facts,
     reason: `You're getting this because you're a member of ${organization.name} on Ployz.`,
