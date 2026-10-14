@@ -31,7 +31,8 @@ import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.serv
 import { type Requirement, requirementFor, requirements, serverSupports } from "#/modules/runtime/daemon-compat";
 import { observeVolumeCopies, type PloyzSdkError, sdkFailureMessage, setVolumeCopyRefusal } from "#/modules/runtime/ployz.server";
 import {
-  alreadyOn, newestGuid, type PlanInput, type Planned, planFromCopies, type Refusal, type RefusalCode, type ReleaseFrom, restoreSource, writerRemovedMessage,
+  alreadyOn, newestGuid, type PlanInput, type Planned, planForwardRelease, planFromCopies, type Refusal, type RefusalCode, type ReleaseFrom, restoreSource,
+  writerRemovedMessage,
 } from "#/modules/volume-run/plan";
 import { isBehind, isCurrent, releaseLine } from "#/modules/server-upgrade/server-upgrade";
 import { channelRelease, organizationReleaseChannel } from "#/modules/server-upgrade/server-upgrade.server";
@@ -191,6 +192,53 @@ const laneRefusal = Effect.fn("VolumeRun.laneRefusal")(function* (lane: VolumeRu
   return refuse(finishes);
 });
 
+/**
+ * The rows that change whether a committed Move is still owed its finish: a commitment, a move or release that ended
+ * done, and a restore that took an epoch. The newest of them by gen decides.
+ */
+const MEANINGFUL = or(
+  and(inArray(volumeRun.kind, ["move", "release"]), or(and(eq(volumeRun.phase, "committed"), isNotNull(volumeRun.current)), eq(volumeRun.state, "done"))),
+  and(eq(volumeRun.kind, "restore"), or(isNotNull(volumeRun.epoch), eq(volumeRun.state, "done"))),
+);
+
+type Owed = VolumeRunRow & { readonly current: MachineId };
+
+/** A commitment no run holds any more: its Volume finishes on `current` once a release or a Deploy starts it there. */
+const owed = (row: VolumeRunRow | undefined): Owed | null =>
+  row !== undefined && row.phase === "committed" && row.current !== null && row.state !== "done" && !ACTIVE_VOLUME_RUN_STATES.some((active) => active === row.state)
+    ? { ...row, current: row.current }
+    : null;
+
+export const commitment = Effect.fn("VolumeRun.commitment")(function* (volumeId: string) {
+  const { drizzle } = yield* Database;
+  const [newest] = yield* drizzle.select().from(volumeRun).where(and(eq(volumeRun.volumeId, volumeId), MEANINGFUL)).orderBy(desc(volumeRun.gen)).limit(1);
+  return { newest, owed: owed(newest) };
+});
+
+/** Each of the Environment's Volumes whose committed Move is still owed its finish. */
+export const owedCommitments = Effect.fn("VolumeRun.owedCommitments")(function* (organizationId: string, environmentId: string) {
+  const { drizzle } = yield* Database;
+  const newest = yield* drizzle.selectDistinctOn([volumeRun.volumeId]).from(volumeRun)
+    .where(and(eq(volumeRun.organizationId, organizationId), eq(volumeRun.environmentId, environmentId), MEANINGFUL))
+    .orderBy(volumeRun.volumeId, desc(volumeRun.gen));
+  return newest.flatMap((row) => owed(row) ?? []);
+});
+
+const OWED_KINDS: ReadonlySet<VolumeRunKind> = new Set<VolumeRunKind>(["move", "mirror", "seed"]);
+
+/** A run that would undo or copy around a Move still owed its finish. */
+const refusedWhileOwed = (input: VolumeLaneInput) => OWED_KINDS.has(input.kind) || (input.kind === "sync" && input.args.full);
+
+const owedRefusal = Effect.fn("VolumeRun.owedRefusal")(function* (pending: Owed) {
+  const target = (yield* laneTarget(pending)) ?? "its new Server";
+  const message = `${pending.volumeName} finishes on ${target}; ployz volume release ${pending.volumeName} finishes it now`;
+  return { code: "conflict", message, details: { run: volumeRunView(pending) } } satisfies StoreRefusal;
+});
+
+export const releaseChangedMessage = (volumeName: string) => `${volumeName} changed since this release was planned; release it again`;
+
+const releaseChanged = (volumeName: string): StoreRefusal => ({ code: "conflict", message: releaseChangedMessage(volumeName), details: null });
+
 const enqueueRun = (row: VolumeRunRow, took?: VolumeRunKind) =>
   enqueueEvent(createVolumeRunRequestedEvent({
     organizationId: row.organizationId,
@@ -343,8 +391,11 @@ export const planVolumeRun = Effect.fn("VolumeRun.plan")(function* (
   if (lane !== undefined && (input.kind !== "release" || keepsLane(lane, "cancelled", "release"))) {
     return { ok: false, refusal: yield* laneRefusal(lane, input.kind) } satisfies VolumeRunPlan;
   }
+  const { owed: pending } = yield* commitment(input.volumeId);
+  if (pending !== null && refusedWhileOwed(input)) return { ok: false, refusal: yield* owedRefusal(pending) } satisfies VolumeRunPlan;
   const members = yield* observeVolumeMembers(organizationId, volume.dockerVolume, input).pipe(Effect.option);
   if (Option.isNone(members)) return { ok: false, refusal: unanswered } satisfies VolumeRunPlan;
+  if (pending !== null && input.kind === "release") return yield* planForward(volume, input, pending, members.value);
   const planned = planFromCopies({ ...input, volumeName: volume.volumeName, orphan: false }, members.value);
   if (!planned.ok) {
     const { code, message } = planned.refusal;
@@ -376,6 +427,23 @@ export const planVolumeRun = Effect.fn("VolumeRun.plan")(function* (
   const ids = (members: readonly AnsweredMember[]) => members.map((member) => member.machine.id);
   const pinned = input.kind === "release" ? { ...input, args: { plan: { sources: ids(release.sources), forgets: ids(release.forgets) } } } : input;
   return { ok: true, volume, asked, input: pinned } satisfies VolumeRunPlan;
+});
+
+/** A release that finishes a committed Move on its new Server, pinned to the commitment and the Servers it previewed. */
+const planForward = Effect.fn("VolumeRun.planForward")(function* (volume: ResolvedVolume, input: PlanRequest, pending: Owed, members: readonly Member[]) {
+  const to = members.find((member) => member.machine.id === pending.current)?.machine
+    ?? { id: pending.current, name: (yield* laneTarget(pending)) ?? pending.current };
+  const forward = planForwardRelease(volume.volumeName, to, members);
+  if (forward.kind === "blocked") return { ok: false, refusal: { code: "conflict", message: forward.message, details: null } } satisfies VolumeRunPlan;
+  const asked: OperationAsked = {
+    subject: `volume:${input.volumeId}`,
+    verb: "release",
+    name: volume.volumeName,
+    preview: { volume: input.volumeId, direction: "forward", to: { machine: to.id, name: to.name }, remove_containers_on: forward.removeOn.map((machine) => machine.name) },
+    effects: [],
+  };
+  const plan = { sources: [], forgets: [], forward: { after: pending.id, to: pending.current, removeOn: forward.removeOn.map((machine) => machine.id) } };
+  return { ok: true, volume, asked, input: { ...input, kind: "release", args: { plan } } } satisfies VolumeRunPlan;
 });
 
 export type RequestOptions = {
@@ -466,10 +534,11 @@ const takeLane = Effect.fn("VolumeRun.takeLane")(function* (caller: Caller, { in
         .where(and(eq(volumeRun.volumeId, input.volumeId), isNotNull(volumeRun.heldBy)))
         .limit(1);
       if (held !== undefined) return yield* new LaneRefused({ refusal: yield* laneRefusal(held, input.kind), busy: volumeRunView(held) });
+      const admitted = yield* admitOwed(inserted, input);
       // A release floors and plans on its own; only a yielding run fences the lane it took before it plans.
-      if (inngestRunId === null) yield* enqueueRun(inserted, end === "yielded" ? taken?.kind ?? fences : undefined);
+      if (inngestRunId === null) yield* enqueueRun(admitted, end === "yielded" ? taken?.kind ?? fences : undefined);
       if (taken !== undefined) yield* enqueueEvent(createVolumeRunTakenEvent({ runId: taken.id }));
-      return { run: volumeRunView(inserted), ended: taken === undefined ? null : volumeRunView(taken) } satisfies LaneTake;
+      return { run: volumeRunView(admitted), ended: taken === undefined ? null : volumeRunView(taken) } satisfies LaneTake;
     }
     if (end !== null && round < TAKE_ROUNDS) continue;
     const active = yield* activeLane(input.volumeId, true);
@@ -477,6 +546,30 @@ const takeLane = Effect.fn("VolumeRun.takeLane")(function* (caller: Caller, { in
     if (active === undefined) return yield* new LaneChurn({ message: `runs on ${volume.volumeName} keep landing and ending; try again` });
     return yield* new LaneRefused({ refusal: yield* laneRefusal(active, input.kind), busy: volumeRunView(active) });
   }
+});
+
+/**
+ * Read after the insert, under the lane it holds: a release inherits a commitment still owed its finish, and a run
+ * that would undo it is refused. A user's release must have previewed that same commitment; Cloud's carries no plan.
+ */
+const admitOwed = Effect.fn("VolumeRun.admitOwed")(function* (inserted: VolumeRunRow, input: VolumeLaneInput) {
+  const { newest, owed: pending } = yield* commitment(inserted.volumeId);
+  const plan = input.kind === "release" ? input.args.plan : undefined;
+  if (pending === null) {
+    if (plan?.forward === undefined) return inserted;
+    return yield* new LaneRefused({ refusal: releaseChanged(inserted.volumeName), busy: volumeRunView(newest ?? inserted) });
+  }
+  if (input.kind !== "release") {
+    if (!refusedWhileOwed(input)) return inserted;
+    return yield* new LaneRefused({ refusal: yield* owedRefusal(pending), busy: volumeRunView(pending) });
+  }
+  if (plan !== undefined && (plan.forward?.after !== pending.id || plan.forward.to !== pending.current)) {
+    return yield* new LaneRefused({ refusal: releaseChanged(inserted.volumeName), busy: volumeRunView(pending) });
+  }
+  const { drizzle } = yield* Database;
+  const [inherited] = yield* drizzle.update(volumeRun).set({ phase: "committed", current: pending.current, epoch: pending.epoch })
+    .where(eq(volumeRun.id, inserted.id)).returning();
+  return inherited ?? inserted;
 });
 
 const refused = (error: LaneRefused) => Effect.succeed({ ok: false, refusal: error.refusal, busy: error.busy } as const);
@@ -622,6 +715,12 @@ export const inspectVolumeCopies = Effect.fn("VolumeRun.inspectCopies")(function
   return yield* observeVolumeMembers(organizationId, volume.dockerVolume);
 });
 
+/** Whether the Volume's committed Move is still owed its finish, so the Copies tab offers no move or mirror. */
+export const isVolumeOwed = Effect.fn("VolumeRun.isOwed")(function* (organizationId: string, volumeId: string) {
+  const { owed } = yield* commitment(volumeId);
+  return owed !== null && owed.organizationId === organizationId;
+});
+
 /** Every run in progress across the organization's Volumes, for the canvas trays. */
 export const listActiveVolumeRuns = Effect.fn("VolumeRun.listActive")(function* (organizationId: string) {
   const { drizzle } = yield* Database;
@@ -689,6 +788,13 @@ export const endRun = Effect.fn("VolumeRun.end")(function* (
 
 export const failRun = (ctx: Pick<RunContext, "id">, inngestRunId: string, message: string) =>
   endRun(ctx, inngestRunId, "failed", message).pipe(Effect.andThen(Effect.fail(new NonRetriableError(clip(message)))));
+
+/** A message on a run still running, such as the Server it waits on. */
+export const noteRun = Effect.fn("VolumeRun.note")(function* (ctx: Pick<RunContext, "id">, inngestRunId: string, message: string) {
+  const { drizzle } = yield* Database;
+  yield* drizzle.update(volumeRun).set({ message: clip(message), updatedAt: new Date() })
+    .where(and(eq(volumeRun.id, ctx.id), eq(volumeRun.inngestRunId, inngestRunId), eq(volumeRun.state, "running")));
+});
 
 export const refuseRun = (ctx: Pick<RunContext, "id">, inngestRunId: string, refusal: Refusal) =>
   endRun(ctx, inngestRunId, "failed", refusal.message);

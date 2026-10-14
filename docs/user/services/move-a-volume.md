@@ -130,7 +130,8 @@ changed since. If the volume already has a mirror on `web-2`, the move starts fr
 A deploy never waits for a move. Until `web-2` is told to start your service, a deploy takes the
 move over: the run ends with "a Deploy took this run over", your service deploys on the old
 server, and the move is requested again once the deploy ends. From the moment `web-2` is told to
-start your service, a deploy follows the move and starts your service on `web-2`. A deploy with a
+start your service, a deploy follows the move and starts your service on `web-2`. It does so even
+after the move's run failed, until a release finishes the move. A deploy with a
 volume change staged on that volume fails instead, with "data is starting on web-2; it finishes
 there", and the change waits for your next deploy.
 
@@ -154,7 +155,8 @@ why. What happens next depends on how far it got.
 - **Once `web-2` is told to start your service**, the volume belongs to the new server. Ployz
   finishes the move there: `web-2` starts your service and the old server's container goes. The
   run fails and names what went wrong, and `ployz volume runs data` shows the release that
-  finished it.
+  finished it. If that release fails too, the move still belongs to `web-2`. The next release or
+  deploy finishes it there.
 
 If Ployz Cloud lost the run itself, the cleanup starts within about an hour. To start it now, or
 to stop a move or a mirror that's still running, release the volume:
@@ -178,7 +180,18 @@ If moves left unfinished cuts on more than one server, Release is refused too. I
 newest cut and names a `ployz server rm` line for each server whose copy it can't keep, then the
 release or move to run.
 
-Once `web-2` is told to start your service, the move can only finish there, so Release is refused:
+A move that stopped after `web-2` was told to start your service is finished on `web-2`, and the
+old server's container goes. Until that finish, a move, a mirror, a full sync or a seed of the
+volume is refused:
+
+```
+data finishes on web-2; ployz volume release data finishes it now
+```
+
+Restoring the volume stays open. Once a restore takes over, the move no longer needs finishing.
+
+While a move is still running past the point where `web-2` was told to start your service, the
+move can only finish there, so Release is refused:
 
 ```
 data is starting on web-2; it finishes there
@@ -186,8 +199,11 @@ data is starting on web-2; it finishes there
 
 While a deploy runs, Release is refused with "data is deploying; the Deploy ends its run".
 
-Finishing on `web-2` still needs the old server to answer for its container. If the old server
-dies, the move fails, and your service stays down until it comes back or you restore the volume.
+Finishing on `web-2` still needs every server to answer, since `web-2` starts from the old
+server's container. Release waits up to 15 minutes for a silent server, and the run shows
+"waiting for web-1 to answer (check 1 of 8)". If the old server stays silent, the release fails
+with "web-1 did not answer for 15m; data still finishes on web-2; ployz volume release data tries
+again". Your service stays down until it comes back or you restore the volume.
 
 ### When you remove a server mid-move
 

@@ -37,7 +37,7 @@ function panel(members: Member[], placement: PlacementRow | null, options: {
   const onOpen = vi.fn();
   const copies = copiesFromPlacement({ volume, members, row: placement, active: null,
     statuses: options.matchedAt === undefined ? [] : [{ machine: id("web-2"), okAt: options.matchedAt, matchedAt: options.matchedAt, failedAt: null, failure: null }] });
-  render(<VolumeCopiesPanel volume={volume} members={members} rows={placement ? [placement] : []} running={null} copies={copies}
+  render(<VolumeCopiesPanel volume={volume} members={members} rows={placement ? [placement] : []} running={null} owed={false} copies={copies}
     servers={options.servers ?? members.map((entry) => server(entry.machine.name))} accepting={members.map((entry) => entry.machine.id)}
     upgrade={options.upgrade ?? []} seeds disabled={false} deploying={options.deploying ?? false} stage={stage} restore={restore}
     deleteCopy={deleteCopy} refresh={refresh} refreshing={options.refreshing ?? false}

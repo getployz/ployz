@@ -273,10 +273,48 @@ export function restoreSource(members: readonly Member[]): MachineName | undefin
   return new Set(top.map(({ newest }) => newest.guid)).size === 1 ? top[0]?.name : undefined;
 }
 
+const restoreLine = (volumeName: string, holder: MachineName | undefined) => holder === undefined
+  ? ". No other server's copy is known to hold its newest data."
+  : `. Restore from ${holder}'s copy: ployz volume restore ${volumeName} --from ${holder}`;
+
 export const writerRemovedMessage = (volumeName: string, removed: string, holder: MachineName | undefined) =>
-  `${volumeName}'s writer was on ${removed} (removed)` + (holder === undefined
-    ? ". No other server's copy is known to hold its newest data."
-    : `. Restore from ${holder}'s copy: ployz volume restore ${volumeName} --from ${holder}`);
+  `${volumeName}'s writer was on ${removed} (removed)` + restoreLine(volumeName, holder);
+
+export type ForwardRelease =
+  | {
+      readonly kind: "ready";
+      readonly target: AnsweredMember;
+      readonly copy: VolumeCopy & { readonly newest: Snapshot };
+      readonly removeOn: readonly Member["machine"][];
+    }
+  | { readonly kind: "waiting"; readonly servers: readonly Member["machine"][]; readonly removeOn: readonly Member["machine"][] }
+  | { readonly kind: "blocked"; readonly message: string };
+
+/**
+ * How a release finishes a committed Move on its new Server `to`. Every Server must answer first: while B is a slot,
+ * starting it reads A's stopped Container. The rest are where the moved-off Container is removed.
+ */
+export function planForwardRelease(volumeName: string, to: Member["machine"], members: readonly Member[]): ForwardRelease {
+  const target = members.find((member) => member.machine.id === to.id);
+  if (target === undefined) return { kind: "blocked", message: writerRemovedMessage(volumeName, to.name, restoreSource(members)) };
+  for (const member of members) if (!member.answered && member.lack !== undefined) return { kind: "blocked", message: member.lack };
+  const removeOn = members.filter((member) => member !== target).map((member) => member.machine);
+  const silent = members.filter((member) => !member.answered);
+  if (silent.length > 0) return { kind: "waiting", servers: silent.map((member) => member.machine), removeOn };
+  const copy = target.answered ? target.view.copy : null;
+  if (!target.answered || copy === null || copy.newest === null) {
+    return { kind: "blocked", message: `${volumeName}'s Move committed, but ${to.name} holds no copy to start` + restoreLine(volumeName, restoreSource(members)) };
+  }
+  const root = members.find((member) => member !== target && member.answered && member.view.copy?.kind === "root");
+  if (root !== undefined) {
+    const holder = root.machine.name;
+    return {
+      kind: "blocked",
+      message: `${copyName(volumeName, holder)} is still a writer copy, so ${volumeName} can't finish on ${to.name}; ployz volume restore ${volumeName} --from ${holder} keeps ${holder}'s data`,
+    };
+  }
+  return { kind: "ready", target, copy: { ...copy, newest: copy.newest }, removeOn };
+}
 
 /**
  * A Server removed without a reset keeps its root; once Restore made a newer one elsewhere, the root with the lower

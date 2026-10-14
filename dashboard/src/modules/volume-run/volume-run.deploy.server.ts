@@ -9,6 +9,7 @@ import { volumeRun } from "#/modules/volume-run/tables";
 import { ACTIVE_VOLUME_RUN_STATES, type AnsweredMember, copyName, dockerVolumeName, type Member, type VolumeRunArgs, type VolumeRunKind } from "#/modules/volume-run/volume-run";
 import {
   askCopy,
+  commitment,
   contextOf,
   type CopyAnswer,
   ended,
@@ -19,6 +20,7 @@ import {
   type MachineRef,
   observeMembers,
   observeVolumeMembers,
+  owedCommitments,
   pastReturn,
   requeueTakenMoves,
   type RunContext,
@@ -48,10 +50,11 @@ const FENCE_ROUNDS = 3;
 
 /**
  * One transaction over the Environment's lanes, each locked: a warm move, release or another Deploy yields to this
- * Deploy's own row; a lane past its return is followed to its Server; the rest are plain. A row already running under
- * this Inngest run is the step's own earlier attempt. Each Volume the Deploy targets that no run holds gets a hold, and
- * a lane on one that the Deploy neither takes nor holds is stamped `held_by`, so a Move asked for while the Services run
- * is refused even after that lane ends; a hold took nothing, so it is neither placed nor fenced.
+ * Deploy's own row; a lane past its return, or a committed Move no run holds any more, is followed to its Server; the
+ * rest are plain. A row already running under this Inngest run is the step's own earlier attempt. Each Volume the
+ * Deploy targets that no run holds gets a hold, and a lane on one that the Deploy neither takes nor holds is stamped
+ * `held_by`, so a Move asked for while the Services run is refused even after that lane ends; a hold took nothing, so
+ * it is neither placed nor fenced.
  */
 export const placeDeployVolumes = Effect.fn("VolumeRun.placeDeploy")(function* (
   organizationId: string,
@@ -116,6 +119,12 @@ export const placeDeployVolumes = Effect.fn("VolumeRun.placeDeploy")(function* (
         },
         id: crypto.randomUUID(),
       }, inngestRunId);
+    }
+    for (const row of yield* owedCommitments(organizationId, environmentId)) {
+      if (lanes.some((lane) => lane.volumeId === row.volumeId)) continue;
+      const to = yield* laneTarget(row);
+      if (to === null) return yield* Effect.fail(new NonRetriableError(`${row.volumeName} is moving to a Server its run never named`));
+      placed.push({ kind: "follow", run: contextOf(row), to, machine: row.current, epoch: row.epoch });
     }
     return placed;
   }));
@@ -214,6 +223,12 @@ const retriable = (reason: string) => reason === "busy" || reason === "mismatch"
 
 const fenceFollowed = Effect.fn("VolumeRun.fenceFollowed")(function* (lane: Extract<DeployLane, { kind: "follow" }>) {
   const { run, to } = lane;
+  if (run.kind !== "restore") {
+    const { newest } = yield* commitment(run.volumeId);
+    if (newest !== undefined && newest.gen > run.gen) {
+      return yield* Effect.fail(new NonRetriableError(`${run.volumeName} changed since this Deploy placed it; Deploy again`));
+    }
+  }
   const members = answered(yield* observeVolumeMembers(run.organizationId, run.dockerVolume));
   const b = members.find((member) => (lane.machine === null ? member.machine.name === to : member.machine.id === lane.machine));
   if (b === undefined) return yield* Effect.fail(new Error(`${to} did not answer for ${run.volumeName}`));

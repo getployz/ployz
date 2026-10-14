@@ -19,9 +19,14 @@ type Destination = { readonly to: MachineName; readonly machine?: MachineId };
 /**
  * What a requested Release's plan showed: the slots it may resume from and the slots it may forget. The run refuses to
  * resume or forget anywhere else, so it never deletes a copy the approval did not name. Cloud's own Release of a Move
- * it ended carries none.
+ * it ended carries none. `forward` pins a release that finishes a committed Move: the commitment it follows, the
+ * Server it starts on and the Servers it removes the moved-off Container from.
  */
-export type ReleasePlan = { readonly sources: MachineId[]; readonly forgets: MachineId[] };
+export type ReleasePlan = {
+  readonly sources: MachineId[];
+  readonly forgets: MachineId[];
+  readonly forward?: { readonly after: string; readonly to: MachineId; readonly removeOn: MachineId[] };
+};
 
 export type VolumeRunArgs = {
   mirror: Destination;

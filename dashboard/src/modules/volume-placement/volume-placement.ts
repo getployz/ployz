@@ -328,14 +328,17 @@ export type PlacementTargets = { readonly move: readonly MachineRef[]; readonly 
 
 /**
  * Servers a move or a mirror may target, by what Cloud's planner accepts once detached copies are gone, since the
- * Deploy deletes those first. `servers` names the Servers that accept Services.
+ * Deploy deletes those first. `servers` names the Servers that accept Services. None while a committed Move is `owed`
+ * its finish, since the server refuses both until a release finishes it.
  */
 export function placementTargets(
   volume: PlacementVolume,
   members: readonly Member[],
   row: PlacementRow | null,
   servers: readonly MachineId[],
+  owed: boolean,
 ): PlacementTargets {
+  if (owed) return { move: [], mirror: [] };
   const observed = observePlacement(members);
   const detached = new Set(detachedCopies(observed, row).map((copy) => copy.server.id));
   const cleared = members.map((member): Member =>
@@ -357,11 +360,11 @@ export function placementTargets(
  * accepts Services and that the planner takes. Null when the primary is elsewhere, or nowhere takes it.
  */
 export function drainPlacement(
-  volume: PlacementVolume, members: readonly Member[], row: PlacementRow | null, accepting: readonly MachineId[], server: MachineId,
+  volume: PlacementVolume, members: readonly Member[], row: PlacementRow | null, accepting: readonly MachineId[], server: MachineId, owed: boolean,
 ): Placement | null {
   const target = targetPlacement(observePlacement(members), row);
   if (target === null || target.primary !== server) return null;
-  const to = placementTargets(volume, members, row, accepting.filter((id) => id !== server)).move[0];
+  const to = placementTargets(volume, members, row, accepting.filter((id) => id !== server), owed).move[0];
   return to === undefined ? null : editPlacement(target, { kind: "move", to: to.id });
 }
 

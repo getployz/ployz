@@ -374,14 +374,14 @@ describe("placementTargets", () => {
 
   it("offers a move only to the mirror's Server while a mirror exists", () => {
     const members = [member("web-1", "writer"), member("web-2", "mirror"), pooled("web-3")];
-    const targets = placementTargets(volume, members, row(["web-2"]), servers);
+    const targets = placementTargets(volume, members, row(["web-2"]), servers, false);
     expect(targets.move.map((server) => server.name)).toEqual(["web-2"]);
     expect(targets.mirror).toEqual([]);
   });
 
   it("offers every other Server once the only other copy is detached, since the Deploy deletes it first", () => {
     const members = [member("web-2", "writer"), member("web-1", "mirror"), pooled("web-3")];
-    const targets = placementTargets(volume, members, row([]), servers);
+    const targets = placementTargets(volume, members, row([]), servers, false);
     expect(targets.move.map((server) => server.name)).toEqual(["web-1", "web-3"]);
     expect(targets.mirror.map((server) => server.name)).toEqual(["web-1", "web-3"]);
   });
@@ -393,7 +393,7 @@ describe("placementTargets", () => {
 
   it("offers nothing on a Server that does not accept Services", () => {
     const members = [member("web-1", "writer"), pooled("web-2"), pooled("web-3")];
-    expect(placementTargets(volume, members, row([]), [id("web-2")]).move.map((server) => server.name)).toEqual(["web-2"]);
+    expect(placementTargets(volume, members, row([]), [id("web-2")], false).move.map((server) => server.name)).toEqual(["web-2"]);
   });
 });
 
@@ -426,7 +426,7 @@ describe("storageStep", () => {
 
 describe("drainPlacement", () => {
   const drain = (members: Member[], placement: PlacementRow | null, accepting = ["web-1", "web-2", "web-3"]) =>
-    drainPlacement(volume, members, placement, accepting.map(id), id("web-1"));
+    drainPlacement(volume, members, placement, accepting.map(id), id("web-1"), false);
 
   it("moves the primary to its mirror", () => {
     expect(drain([member("web-1", "writer"), member("web-2", "mirror"), pooled("web-3")], row(["web-2"])))
