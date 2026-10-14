@@ -33,6 +33,8 @@ class SlowDeploy:
         self.now = 0
         self.returncode = None
         self.deployment = dict(id="interrupted-deploy", number=2, status="running")
+        self.preview = None
+        self.redeploys = 0
         self.noop = None
 
     def sleep(self, seconds):
@@ -50,6 +52,12 @@ class SlowDeploy:
     def cli(self, *args):
         if args == ("--json", "deployment", "ls"):
             return json.dumps({"deployments": [self.deployment]})
+        if args == ("--json", "deployment", "show", str(self.deployment["number"])):
+            return json.dumps(dict(self.deployment, preview=self.preview))
+        if args == ("deploy",):
+            self.redeploys += 1
+            self.deployment = dict(id="redeploy", number=3, status="applied")
+            return ""
         return json.dumps({"containers": [{"labels": {"ployz.service.name": "web"}}]})
 
     def poll(self):
@@ -59,6 +67,10 @@ class SlowDeploy:
         if not self.processes:
             raise subprocess.TimeoutExpired("deploy", timeout)
         self.now = 20
+        if self.preview:
+            self.returncode = 3
+            self.deployment["status"] = "unknown"
+            return "error: Deployment #2 did not complete.", None
         self.returncode = 0
         self.deployment["status"] = "applied"
         return "", None
@@ -92,9 +104,46 @@ class Recovery(unittest.TestCase):
 
     def test_new_worker_finishes_the_interrupted_deploy(self):
         result = self.recover()
-        self.assertEqual(result, dict(deployment_id="interrupted-deploy", number=2, old_worker_pid=41, new_worker_pid=42))
+        self.assertEqual(result, dict(deployment_id="interrupted-deploy", number=2, prepared=False,
+                                      old_worker_pid=41, new_worker_pid=42))
         self.assertEqual(self.deploy.processes, {42})
         self.assertEqual(self.deploy.now, 20)
+        self.assertEqual(self.deploy.redeploys, 0)
+
+    def test_a_deploy_killed_after_its_preview_ends_unknown_and_a_redeploy_applies(self):
+        self.deploy.preview = {"operations": []}
+        result = self.recover()
+        self.assertEqual(result, dict(deployment_id="interrupted-deploy", number=2, prepared=True,
+                                      old_worker_pid=41, new_worker_pid=42))
+        self.assertEqual(self.deploy.redeploys, 1)
+
+    def test_a_prepared_deploy_that_replays_is_not_recovery(self):
+        self.deploy.preview = {"operations": []}
+        communicate = self.deploy.communicate
+
+        def replay(timeout):
+            communicate(timeout)
+            self.deploy.returncode = 0
+            self.deploy.deployment["status"] = "applied"
+            return "", None
+
+        self.deploy.communicate = replay
+        with self.assertRaisesRegex(AssertionError, "replayed"):
+            self.recover()
+
+    def test_a_failed_redeploy_is_not_recovery(self):
+        self.deploy.preview = {"operations": []}
+        cli = self.deploy.cli
+
+        def stuck(*args):
+            output = cli(*args)
+            if args == ("deploy",):
+                self.deploy.deployment["status"] = "unknown"
+            return output
+
+        self.deploy.cli = stuck
+        with self.assertRaisesRegex(AssertionError, "The redeploy did not apply"):
+            self.recover()
 
     def test_a_different_completed_deploy_is_not_recovery(self):
         communicate = self.deploy.communicate
