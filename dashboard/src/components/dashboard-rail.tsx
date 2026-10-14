@@ -84,8 +84,8 @@ function RailPlace({ place, narrow }: { place: DashboardNavItem; narrow: boolean
 
 function SectionLink({ section, className }: { section: DashboardNavSection; className: string }) {
   return (
-    <Link to={section.to} params={section.params} search={section.search}
-      activeOptions={{ exact: true }} aria-current={section.current ? "page" : undefined} className={className}>
+    <Link to={section.to} params={section.params} search={section.search} hash={"hash" in section ? section.hash : undefined}
+      activeOptions={{ exact: true, includeHash: true }} aria-current={section.current ? "page" : undefined} className={className}>
       {section.label}
     </Link>
   );
