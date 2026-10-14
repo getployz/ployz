@@ -975,6 +975,72 @@ async fn retry_after_an_unrouted_pin(
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_row_naming_a_gone_container_is_repinned_to_what_serves() {
+    let machine = machine('1');
+    let gone = container('a');
+    let stale = ServingPointer {
+        deploy: DeploymentLogId::parse("dep-x").unwrap(),
+        containers: vec![gone],
+        previous: None,
+        retiring: Vec::new(),
+    };
+    let client = Scripted {
+        observations: Some(Vec::new()),
+        dead: vec![gone],
+        pointers: Mutex::new(BTreeMap::from([(api(), stale.clone())])),
+        ..Scripted::new(vec![created(
+            Call::Run(machine, ContainerKind::ServiceContainer),
+            &container('b'),
+        )])
+    };
+
+    let outcome = execute_with(
+        &[run(&machine, spec(None, None, None), true)],
+        &client,
+        &CancellationToken::new(),
+    )
+    .await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    let [pin] = client.pins().try_into().expect("one pin");
+    assert_eq!(pin.read, Some(stale));
+    assert!(pin.pointer.containers.is_empty());
+    client.assert_done();
+}
+
+#[tokio::test]
+async fn a_failed_pull_names_the_service_whose_policy_pulled() {
+    let machine = machine('1');
+    let mut cached = spec(None, None, None);
+    cached.container.pull_policy = ployz_core::PullPolicy::Missing;
+    let mut fresh = cached.clone();
+    fresh.name = ServiceName::parse("other").unwrap();
+    fresh.container.pull_policy = ployz_core::PullPolicy::Always;
+    let pulling = run(&machine, fresh, true);
+    let plan = vec![run(&machine, cached, true), pulling.clone()];
+    let client = Scripted {
+        pull_error: Some(error("manifest unknown")),
+        ..Scripted::new(Vec::new())
+    };
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert!(
+        matches!(
+            &outcome,
+            DeployOutcome::Failed {
+                failed: FailedOperation::Operation { operation, .. },
+                ..
+            } if *operation == pulling
+        ),
+        "{outcome:?}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_retry_over_an_unrouted_empty_pin_starts_nothing_until_it_is_routed() {
     let machine = machine('1');
     retry_after_an_unrouted_pin(

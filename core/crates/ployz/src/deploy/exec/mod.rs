@@ -953,8 +953,7 @@ async fn await_routed_pin<C: MachineOperations>(
         .map_err(|error| machine_error(MachineAction::ReadServingPointer, error))?;
     let pointer = match read.pointer {
         Some(pointer) if read.all_routed => return Ok(Pin::Admitted(pointer)),
-        Some(pointer) => pointer,
-        None => match publish_pin(client, run, service).await? {
+        current => match live_pin(client, run, service, current).await? {
             Some(pointer) => pointer,
             None => return Ok(Pin::Superseded),
         },
@@ -984,10 +983,11 @@ async fn await_routed_pin<C: MachineOperations>(
     }
 }
 
-async fn publish_pin<C: MachineOperations>(
+async fn live_pin<C: MachineOperations>(
     client: &C,
     run: &DeploymentLogId,
     service: &QualifiedService,
+    current: Option<ServingPointer>,
 ) -> Result<Option<ServingPointer>, ExecutionError> {
     let observed = client
         .service_containers(service)
@@ -1013,10 +1013,18 @@ async fn publish_pin<C: MachineOperations>(
         previous: None,
         retiring: Vec::new(),
     };
+    if current.as_ref().is_some_and(|current| {
+        current
+            .containers
+            .iter()
+            .all(|id| pointer.containers.contains(id))
+    }) {
+        return Ok(current);
+    }
     let publication = client
         .publish_pointer(PublishServingPointerRequest {
             service: service.clone(),
-            read: None,
+            read: current,
             pointer: pointer.clone(),
         })
         .await
@@ -1047,7 +1055,7 @@ async fn pull_images<C: MachineOperations>(
             .entry((operation.machine_id(), spec.container.image.as_str()))
             .or_insert((index, spec));
         if strength(spec.container.pull_policy) > strength(pull.1.container.pull_policy) {
-            pull.1 = spec;
+            *pull = (index, spec);
         }
     }
     let results = join_all(

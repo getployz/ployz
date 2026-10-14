@@ -111,6 +111,8 @@ struct Scripted {
     dropped_publish: bool,
     /// No Machine routes a pin.
     unrouted_pin: bool,
+    /// No Machine routes a row naming one of these Containers.
+    dead: Vec<ContainerId>,
     /// Another Deploy writes this row just before this run's pin.
     rival: Option<ServingPointer>,
     pointers: Mutex<BTreeMap<QualifiedService, ServingPointer>>,
@@ -136,6 +138,7 @@ impl Scripted {
             lost_reply: false,
             dropped_publish: false,
             unrouted_pin: false,
+            dead: Vec::new(),
             rival: None,
             pointers: Mutex::new(BTreeMap::new()),
             publications: Mutex::new(Vec::new()),
@@ -384,7 +387,9 @@ impl MachineOperations for Scripted {
             self.unrouted.as_ref() != Some(&service.name)
         } else {
             !self.unrouted_pin
-        };
+        } && pointer
+            .as_ref()
+            .is_none_or(|pointer| !pointer.containers.iter().any(|id| self.dead.contains(id)));
         let lagging = ours.then_some(self.unrouted_machine).flatten();
         let acks = match &pointer {
             Some(pointer) if routed => self
