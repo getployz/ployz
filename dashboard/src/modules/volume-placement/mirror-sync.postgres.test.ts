@@ -101,6 +101,18 @@ describe("the mirror sync", () => {
     expect(await sync()).toMatchObject({ sync: { kind: "synced" }, lines: ["still pulling w-1-4 on db-web-2"] });
   });
 
+  it("records a refused hand-off as the mirror's failure, so the Copies view says why it skipped", async () => {
+    mirrorAnswer = { ok: false, reason: "no_capacity", copy: COPIES.mirror, message: "web-2 has no room for db" };
+    expect((await sync()).lines).toEqual(["db-web-2 refused the pull: web-2 has no room for db"]);
+    expect(await status()).toEqual([expect.objectContaining({ failed_snapshot: "w-1-5", failure: "web-2 has no room for db" })]);
+  });
+
+  it("records no failure when a newer run fences the hand-off", async () => {
+    mirrorAnswer = { ok: false, reason: "stale", copy: COPIES.mirror, message: "a newer run took db" };
+    expect((await sync()).lines).toEqual(["db-web-2 refused the pull: a newer run took db"]);
+    expect(await status()).toEqual([expect.objectContaining({ failed_snapshot: null, failure: null })]);
+  });
+
   it("takes no snapshot while a pull runs, so the writer keeps its source", async () => {
     members = [member("web-1", "writer"), member("web-2", "pulling")];
     expect((await sync()).lines).toEqual(["still pulling w-1-4 on db-web-2"]);

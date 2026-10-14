@@ -242,6 +242,9 @@ export const syncMirrors = Effect.fn("MirrorSync.sync")(function* (
     } else if (handed.reason === "busy") {
       steps.push({ kind: "pulling", mirror: named(member), target: handed.copy?.kind === "slot" ? handed.copy.pull?.target ?? target.name : target.name });
     } else {
+      // A refused hand-off starts no pull, so no pull failure would ever say why this mirror skipped. A stale refusal is
+      // a newer run fencing this sync, not the mirror skipping.
+      if (handed.reason !== "stale") yield* recordFailure(organizationId, volume.volumeId, member.machine.id, target.name, handed.message);
       steps.push({ kind: "refused", mirror: named(member), message: handed.message });
     }
   }
