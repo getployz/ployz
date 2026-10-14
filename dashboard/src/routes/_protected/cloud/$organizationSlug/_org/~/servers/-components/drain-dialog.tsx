@@ -4,18 +4,20 @@ import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle }
 import type { DrainDialogRow } from "#/modules/machines/server-drain-view";
 
 const STAYS = {
+  stops: { badge: "Stops", variant: "destructive", why: "Its only copy runs here" },
   data: { badge: "Stays", variant: "warning", why: "Data on this server" },
   unowned: { badge: "Skipped", variant: "secondary", why: "No project owns it" },
-} as const satisfies Record<NonNullable<DrainDialogRow["stays"]>, { badge: string; variant: "warning" | "secondary"; why: string }>;
+} as const satisfies Record<NonNullable<DrainDialogRow["stays"]>, { badge: string; variant: "destructive" | "warning" | "secondary"; why: string }>;
 
-/** The plain confirm: what runs here, and which of it won't move. No dry run. */
+/** The plain confirm: what runs here, and which of it won't move or stops. No dry run. */
 export function DrainDialog({ serverName, rows, open, onOpenChange, onConfirm }: {
   serverName: string;
   /** What runs here, the ones a Drain won't move last (`drainDialogRows`). */
   rows: readonly DrainDialogRow[];
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onConfirm: () => void;
+  /** Gets the Services the dialog showed as stopping: Cloud refuses a Drain that would now stop others. */
+  onConfirm: (stops: readonly string[]) => void;
 }) {
   const moves = rows.some((row) => row.stays === null);
   return (
@@ -25,7 +27,7 @@ export function DrainDialog({ serverName, rows, open, onOpenChange, onConfirm }:
       title={`Drain ${serverName}`}
       description={
         <div className="flex flex-col gap-4">
-          <p>Moves every service to your other servers, one at a time. Nothing moves back on its own.</p>
+          <p>Moves its services to your other servers, one at a time. Nothing moves back on its own.</p>
           {rows.length === 0 ? (
             <p>Nothing is running on {serverName}.</p>
           ) : (
@@ -51,7 +53,8 @@ export function DrainDialog({ serverName, rows, open, onOpenChange, onConfirm }:
         </div>
       }
       actionLabel="Drain"
-      onConfirm={onConfirm}
+      variant={rows.some((row) => row.stays === "stops") ? "destructive" : "default"}
+      onConfirm={() => onConfirm(rows.filter((row) => row.stays === "stops").map((row) => row.key))}
     />
   );
 }

@@ -1,6 +1,5 @@
 import { it } from "@effect/vitest";
-import type { Approval, ConfigCommand, ConfigStore, RpcError as SdkRpcError, RuntimeWatchView } from "@ployz/sdk";
-import { createRequire } from "node:module";
+import { type Approval, type ConfigCommand, type ConfigStore, RpcError, type RuntimeWatchView } from "@ployz/sdk";
 import { sql } from "drizzle-orm";
 import { Deferred, Effect, Fiber, Layer } from "effect";
 import { expect, vi } from "vitest";
@@ -29,8 +28,6 @@ import { handleConfigRequest } from "#/routes/api/config/-config.handler";
 import { AuthLive } from "#/server/auth.server";
 import { Database } from "#/server/database.server";
 import { acmeWeb, seedStoreGitService, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
-
-const { RpcError } = createRequire(import.meta.url)("@ployz/sdk") as { RpcError: typeof SdkRpcError };
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000a501";
 const OTHER = "00000000-0000-4000-8000-00000000a502";
@@ -70,7 +67,7 @@ const shopRemovingWeb = Effect.fn(function* () {
   const withApproval = (approval: Approval) => ({ ...acmeWeb(), approval });
   const refusal = Effect.flip(storeTry(() => store.write(ORGANIZATION, publish, withApproval("required"))))
     .pipe(Effect.map((refused) => refused.refusal));
-  const caller: Caller = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "token", id: "token-1" }, support: null };
+  const caller: Caller = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "token", id: "token-1" }, role: "owner", support: null, via: "cli" };
   const pending = provided(Effect.gen(function* () {
     const { drizzle } = yield* Database;
     const rows = yield* drizzle.select({ id: operationApprovals.id }).from(operationApprovals)
@@ -389,7 +386,7 @@ const operationCloud = Effect.fn(function* () {
   const services = yield* Layer.build(Layer.merge(AuthLive.pipe(Layer.provide(cloud)), cloud));
   const provided = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.provide(services));
   const userId = yield* provided(seedStoreOrganization(ORGANIZATION));
-  const caller: Caller = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "token", id: "token-1" }, support: null };
+  const caller: Caller = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "token", id: "token-1" }, role: "owner", support: null, via: "cli" };
   const rows = provided(Effect.gen(function* () {
     const { drizzle } = yield* Database;
     return yield* drizzle.select({ id: operationApprovals.id, status: operationApprovals.status, subject: operationApprovals.subject })
@@ -423,6 +420,14 @@ it.live("an operation that destroys nothing runs without asking", () =>
     expect(yield* rows).toEqual([]);
   }));
 
+it.live("a person's destructive operation from the dashboard runs without asking and records no approval", () =>
+  Effect.gen(function* () {
+    const { provided, caller, rows } = yield* operationCloud();
+    const person: Caller = { ...caller, via: "dashboard" };
+    expect(yield* provided(gateOperation(person, null, drainOf(["shop.web"])))).toEqual({ ok: true, approvalId: null });
+    expect(yield* rows).toEqual([]);
+  }));
+
 it.live("a destructive operation waits on one approval of exactly its preview, and its retry runs once approved", () =>
   Effect.gen(function* () {
     const { provided, caller, gate, rows } = yield* operationCloud();
@@ -433,6 +438,7 @@ it.live("a destructive operation waits on one approval of exactly its preview, a
       approval: operationDigest(asked),
       approval_id: expect.any(String),
       operation: { verb: "drain", name: "fra-1" },
+      organization: caller.organization.slug,
     });
     expect(refusedWith(yield* gate(asked)).approval_id).toBe(first.approval_id);
     expect(refusedWith(yield* gate(asked, first.approval_id)).approval_id).toBe(first.approval_id);

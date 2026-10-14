@@ -28,7 +28,8 @@ use crate::storage::Tx;
 
 /// A [`Query`], or one of its payloads, and the view it answers with.
 pub trait Ask: Serialize {
-    /// What it answers with.
+    /// The result `read` returns for it: a [`View`] variant's payload, unboxed, or
+    /// [`View`] itself for a whole [`Query`].
     type View;
 
     /// Answer it in `at`'s transaction.
@@ -173,7 +174,6 @@ queries! {
     /// One page of an Environment's Deployments.
     Deployments(DeploymentsQuery) -> DeploymentsView
         => crate::deployment::query::page(tx, who, q);
-    /// One Deployment.
     Deployment(DeploymentQuery) -> crate::DeploymentView as *
         => crate::deployment::view(tx, who, &q.id);
     /// One Deployment, by its number in an Environment.
@@ -184,7 +184,6 @@ queries! {
         => crate::deployment::build_log(tx, who, q);
     /// An Environment's Services.
     Services(ServicesQuery) -> ServicesView => crate::service::query::services(tx, who, q);
-    /// One Service.
     Service(ServiceQuery) -> ServiceView
         => crate::service::query::service(tx, who, trusted, q);
     /// Where an Environment runs on the Servers.
@@ -200,7 +199,6 @@ queries! {
     Domain(crate::DomainQuery) -> crate::DomainView => crate::domain::domain(tx, who, q, trusted);
     /// An Environment's Volumes.
     Volumes(VolumesQuery) -> VolumesView => crate::volume::query::volumes(tx, who, q);
-    /// One Volume.
     Volume(VolumeQuery) -> VolumeView => crate::volume::query::volume(tx, who, q);
     /// The deployed Volumes a full Deploy would remove.
     Removals(RemovalsQuery) -> RemovalsView => crate::volume::query::removals(tx, who, q);
@@ -213,7 +211,6 @@ queries! {
     /// What a Branch would copy and use live, before it is created.
     BranchPlan(crate::BranchPlanQuery) -> crate::BranchPlanView
         => crate::branch::branch_plan(tx, who, q);
-    /// The Organization's Build Order.
     BuildOrder(crate::BuildOrderQuery) -> crate::BuildOrderView
         => crate::builders::build_order(tx, who);
     /// What syncing one Environment's changes into another of its Project would stage.
@@ -225,6 +222,10 @@ queries! {
     Projects(crate::ProjectsQuery) -> crate::ProjectsView => crate::teardown::projects(tx, who);
     /// The Environments whose removal Deployment may be admitted now.
     Due(crate::DueQuery) -> Vec<crate::Due> => crate::removal::due(tx, who);
+    /// What a finished removal left on old servers.
+    Removed(crate::RemovedQuery) -> crate::RemovedView
+        => crate::removal::mark::residuals(tx, who, &q.id)
+            .map(|residuals| crate::RemovedView { residuals });
     /// A Project's PR plans.
     PrPlans(crate::PrPlansQuery) -> crate::PrPlansView
         => crate::pull_request::plans(tx, who, q);

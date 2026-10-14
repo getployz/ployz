@@ -45,6 +45,7 @@ async fn inspect_reports_a_root_with_its_newest_snapshot() {
                 "readonly": false,
                 "newest": {"name": "f-2", "guid": "42", "created_unix_seconds": 1_700_000_000},
                 "epoch": 0,
+                "seed": false,
             },
         }})
     );

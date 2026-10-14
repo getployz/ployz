@@ -12,27 +12,45 @@ import { Item, ItemActions, ItemContent, ItemDescription, ItemTitle } from "#/co
 import { Spinner } from "#/components/ui/spinner";
 import { toErrorMessage } from "#/lib/error-message";
 import { cn } from "#/lib/utils";
-import { type ClusterDomainRow, clusterDomainStatus, type ClusterDomainStatus } from "#/modules/cluster-domain/cluster-domain";
+import {
+  type ClusterDomainRow,
+  type ClusterDomainState,
+  clusterDomainStatus,
+  type ExcludedServer,
+} from "#/modules/cluster-domain/cluster-domain";
 
 /** A check that never lands (a lost event, a failed sync) stops spinning after this. */
 const CHECK_TIMEOUT_MS = 60_000;
 
 /** What the user reads for each status, and the one thing they can do about it. */
-function statusCopy(status: ClusterDomainStatus) {
+function statusCopy(status: ClusterDomainState) {
   if (status.kind === "ready") return { message: null, action: null } as const;
   if (status.kind === "setting_up") return { message: "This usually takes a few minutes.", action: null } as const;
   switch (status.reason) {
     case "no_servers":
-      return { message: "Add a server to start receiving traffic.", action: "servers" } as const;
+      return { message: "No server receives traffic.", action: "servers" } as const;
     case "no_public_ip":
       return { message: "None of your servers has a public IP address.", action: "servers" } as const;
     case "port_80":
       return { message: `Traffic can’t reach ${status.addresses.join(", ")}. Make sure port 80 is open.`, action: "check" } as const;
     case "port_80_taken":
       return { message: `Something else answers on port 80 of ${status.addresses.join(", ")}. Free the port for Ployz.`, action: "check" } as const;
+    case "ingress_down":
+      return { message: `Ingress isn’t running on ${status.servers.join(", ")}. Deploy to bring it back.`, action: "check" } as const;
     case "https_down":
       return { message: "HTTPS isn’t working right now. We’re fixing it.", action: null } as const;
   }
+}
+
+/** The Servers traffic skips while others carry it: the redundancy the user can win back. */
+function excludedCopy(excluded: readonly ExcludedServer[]) {
+  const on = (reason: ExcludedServer["reason"]) =>
+    excluded.flatMap((server) => server.reason !== reason ? [] : "address" in server ? [server.address] : [server.server]).join(", ");
+  const closed = on("port_80");
+  const taken = on("port_80_taken");
+  const down = on("ingress_down");
+  return [closed && `Port 80 closed on ${closed}.`, taken && `Port 80 taken on ${taken}.`, down && `Ingress isn’t running on ${down}.`]
+    .filter(Boolean).join(" ");
 }
 
 export function ClusterDomainSection({ organizationSlug, domain, onCheck }: {
@@ -59,7 +77,8 @@ export function ClusterDomainSection({ organizationSlug, domain, onCheck }: {
   }
 
   const status = domain === null ? null : clusterDomainStatus(domain, new Date());
-  const copy = status === null ? { message: "You’ll get one on your first deploy.", action: null } as const : statusCopy(status);
+  const copy = status === null ? { message: "You’ll get one on your first deploy.", action: null } as const : statusCopy(status.state);
+  const excluded = status === null ? "" : excludedCopy(status.excluded);
 
   return (
     <SettingsSection id="cluster-domain" title="Domain" description="Your services get free addresses under this domain.">
@@ -72,11 +91,12 @@ export function ClusterDomainSection({ organizationSlug, domain, onCheck }: {
               </ItemTitle>
             )}
             {copy.message === null ? null : <ItemDescription>{copy.message}</ItemDescription>}
+            {excluded === "" ? null : <ItemDescription>{excluded}</ItemDescription>}
           </ItemContent>
           {status === null ? null : (
             <ItemActions>
-              <StatusBadge status={status} />
-              {copy.action === "check" ? (
+              <StatusBadge status={status.state} />
+              {copy.action === "check" || excluded !== "" ? (
                 <Button type="button" variant="outline" size="sm" disabled={checking} onClick={handleCheck}>
                   {checking ? <Spinner data-icon="inline-start" /> : null}
                   Check again
@@ -97,7 +117,7 @@ export function ClusterDomainSection({ organizationSlug, domain, onCheck }: {
   );
 }
 
-function StatusBadge({ status }: { status: ClusterDomainStatus }) {
+function StatusBadge({ status }: { status: ClusterDomainState }) {
   switch (status.kind) {
     case "ready":
       return <Badge variant="success">Ready</Badge>;

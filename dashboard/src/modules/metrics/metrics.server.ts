@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import type { MachineId, MetricHistoryInput, MetricSubject } from "@ployz/sdk";
+import type { MetricHistoryInput, MetricSubject } from "@ployz/sdk";
 import { Clock, Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
 import { findService } from "#/modules/config-store/store-lookup.server";
@@ -50,7 +50,5 @@ export const readServerMetrics = Effect.fn("Metrics.readServer")(function* (acto
   const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
   const at = yield* Clock.currentTimeMillis;
   const window = resolveRange(input, at);
-  // SAFETY: the input schema checks the 32 lowercase hex digits a MachineId is.
-  const machineId = input.machineId as MachineId;
-  return yield* readHistory(organization.id, { kind: "machine", machine_id: machineId }, window, at);
+  return yield* readHistory(organization.id, { kind: "machine", machine_id: input.machineId }, window, at);
 });

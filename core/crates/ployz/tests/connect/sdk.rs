@@ -378,6 +378,7 @@ async fn node_smoke_covers_connect_about_preview_run_and_close() {
         environment: None,
         image_id: None,
         last_check: None,
+        run: None,
         container: super::listing_container(
             '1',
             'a',

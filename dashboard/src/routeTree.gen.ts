@@ -20,6 +20,7 @@ import { Route as ProtectedDashboardRouteImport } from './routes/_protected/dash
 import { Route as PublicAuthRouteImport } from './routes/_public/auth'
 import { Route as ApiHealthRouteImport } from './routes/api/health'
 import { Route as AuthGithubRouteImport } from './routes/auth/github'
+import { Route as InviteTokenRouteImport } from './routes/invite/$token'
 import { Route as ProtectedCloudIndexRouteImport } from './routes/_protected/cloud/index'
 import { Route as ProtectedCloudOrganizationSlugRouteRouteImport } from './routes/_protected/cloud/$organizationSlug/route'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
@@ -28,11 +29,13 @@ import { Route as ApiCliManifestRouteImport } from './routes/api/cli/manifest'
 import { Route as ApiConfigSplatRouteImport } from './routes/api/config/$'
 import { Route as ApiEnrollTokenRouteImport } from './routes/api/enroll/$token'
 import { Route as ApiGithubWebhookRouteImport } from './routes/api/github/webhook'
+import { Route as ApiMailUnsubscribeRouteImport } from './routes/api/mail/unsubscribe'
 import { Route as ApiOrgChangesRouteImport } from './routes/api/org/changes'
 import { Route as ApiRuntimeEventsRouteImport } from './routes/api/runtime/events'
 import { Route as ApiRuntimeLogsRouteImport } from './routes/api/runtime/logs'
 import { Route as ProtectedCloudOrganizationSlugOrgRouteRouteImport } from './routes/_protected/cloud/$organizationSlug/_org/route'
 import { Route as ProtectedCloudOrganizationSlugProjectRouteRouteImport } from './routes/_protected/cloud/$organizationSlug/_project/route'
+import { Route as ProtectedCloudAccountIndexRouteImport } from './routes/_protected/cloud/account/index'
 import { Route as ApiAgentOrganizationSlugChatRouteImport } from './routes/api/agent/$organizationSlug/chat'
 import { Route as ApiBuildsBuildCheckInRouteImport } from './routes/api/builds/$build/check-in'
 import { Route as ApiBuildsBuildStepsRouteImport } from './routes/api/builds/$build/steps'
@@ -47,6 +50,7 @@ import { Route as ApiEnrollTokenReportRouteImport } from './routes/api/enroll/$t
 import { Route as ProtectedCloudOrganizationSlugProjectProjectSlugRouteRouteImport } from './routes/_protected/cloud/$organizationSlug/_project/$projectSlug/route'
 import { Route as ProtectedCloudOrganizationSlugProjectNewRouteImport } from './routes/_protected/cloud/$organizationSlug/_project/new'
 import { Route as ProtectedCloudOrganizationSlugOrgChar126IndexRouteImport } from './routes/_protected/cloud/$organizationSlug/_org/~/index'
+import { Route as ProtectedCloudOrganizationSlugOrgChar126AccountRouteImport } from './routes/_protected/cloud/$organizationSlug/_org/~/account'
 import { Route as ProtectedCloudOrganizationSlugOrgChar126BillingRouteImport } from './routes/_protected/cloud/$organizationSlug/_org/~/billing'
 import { Route as ProtectedCloudOrganizationSlugOrgChar126SettingsRouteImport } from './routes/_protected/cloud/$organizationSlug/_org/~/settings'
 import { Route as ProtectedCloudOrganizationSlugProjectProjectSlugIndexRouteImport } from './routes/_protected/cloud/$organizationSlug/_project/$projectSlug/index'
@@ -119,6 +123,11 @@ const AuthGithubRoute = AuthGithubRouteImport.update({
   path: '/auth/github',
   getParentRoute: () => rootRouteImport,
 } as any)
+const InviteTokenRoute = InviteTokenRouteImport.update({
+  id: '/invite/$token',
+  path: '/invite/$token',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ProtectedCloudIndexRoute = ProtectedCloudIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -160,6 +169,11 @@ const ApiGithubWebhookRoute = ApiGithubWebhookRouteImport.update({
   path: '/api/github/webhook',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiMailUnsubscribeRoute = ApiMailUnsubscribeRouteImport.update({
+  id: '/api/mail/unsubscribe',
+  path: '/api/mail/unsubscribe',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiOrgChangesRoute = ApiOrgChangesRouteImport.update({
   id: '/api/org/changes',
   path: '/api/org/changes',
@@ -184,6 +198,12 @@ const ProtectedCloudOrganizationSlugProjectRouteRoute =
   ProtectedCloudOrganizationSlugProjectRouteRouteImport.update({
     id: '/_project',
     getParentRoute: () => ProtectedCloudOrganizationSlugRouteRoute,
+  } as any)
+const ProtectedCloudAccountIndexRoute =
+  ProtectedCloudAccountIndexRouteImport.update({
+    id: '/account/',
+    path: '/account/',
+    getParentRoute: () => ProtectedCloudRouteRoute,
   } as any)
 const ApiAgentOrganizationSlugChatRoute =
   ApiAgentOrganizationSlugChatRouteImport.update({
@@ -257,6 +277,12 @@ const ProtectedCloudOrganizationSlugOrgChar126IndexRoute =
   ProtectedCloudOrganizationSlugOrgChar126IndexRouteImport.update({
     id: '/~/',
     path: '/~/',
+    getParentRoute: () => ProtectedCloudOrganizationSlugOrgRouteRoute,
+  } as any)
+const ProtectedCloudOrganizationSlugOrgChar126AccountRoute =
+  ProtectedCloudOrganizationSlugOrgChar126AccountRouteImport.update({
+    id: '/~/account',
+    path: '/~/account',
     getParentRoute: () => ProtectedCloudOrganizationSlugOrgRouteRoute,
   } as any)
 const ProtectedCloudOrganizationSlugOrgChar126BillingRoute =
@@ -417,6 +443,7 @@ export interface FileRoutesByFullPath {
   '/auth': typeof PublicAuthRoute
   '/api/health': typeof ApiHealthRoute
   '/auth/github': typeof AuthGithubRoute
+  '/invite/$token': typeof InviteTokenRoute
   '/cloud/$organizationSlug': typeof ProtectedCloudOrganizationSlugRouteRouteWithChildren
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/cli/$': typeof ApiCliSplatRoute
@@ -424,6 +451,7 @@ export interface FileRoutesByFullPath {
   '/api/config/$': typeof ApiConfigSplatRoute
   '/api/enroll/$token': typeof ApiEnrollTokenRouteWithChildren
   '/api/github/webhook': typeof ApiGithubWebhookRoute
+  '/api/mail/unsubscribe': typeof ApiMailUnsubscribeRoute
   '/api/org/changes': typeof ApiOrgChangesRoute
   '/api/runtime/events': typeof ApiRuntimeEventsRoute
   '/api/runtime/logs': typeof ApiRuntimeLogsRoute
@@ -439,9 +467,11 @@ export interface FileRoutesByFullPath {
   '/api/cli/servers/enrollment': typeof ApiCliServersEnrollmentRoute
   '/api/enroll/$token/callback': typeof ApiEnrollTokenCallbackRoute
   '/api/enroll/$token/report': typeof ApiEnrollTokenReportRoute
+  '/cloud/account/': typeof ProtectedCloudAccountIndexRoute
   '/cloud/$organizationSlug/$projectSlug': typeof ProtectedCloudOrganizationSlugProjectProjectSlugRouteRouteWithChildren
   '/cloud/$organizationSlug/new': typeof ProtectedCloudOrganizationSlugProjectNewRoute
   '/cloud/$organizationSlug/$projectSlug/$environmentSlug': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugRouteRouteWithChildren
+  '/cloud/$organizationSlug/~/account': typeof ProtectedCloudOrganizationSlugOrgChar126AccountRoute
   '/cloud/$organizationSlug/~/billing': typeof ProtectedCloudOrganizationSlugOrgChar126BillingRoute
   '/cloud/$organizationSlug/~/settings': typeof ProtectedCloudOrganizationSlugOrgChar126SettingsRoute
   '/cloud/$organizationSlug/~/': typeof ProtectedCloudOrganizationSlugOrgChar126IndexRoute
@@ -469,6 +499,7 @@ export interface FileRoutesByTo {
   '/auth': typeof PublicAuthRoute
   '/api/health': typeof ApiHealthRoute
   '/auth/github': typeof AuthGithubRoute
+  '/invite/$token': typeof InviteTokenRoute
   '/cloud/$organizationSlug': typeof ProtectedCloudOrganizationSlugRouteRouteWithChildren
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/cli/$': typeof ApiCliSplatRoute
@@ -476,6 +507,7 @@ export interface FileRoutesByTo {
   '/api/config/$': typeof ApiConfigSplatRoute
   '/api/enroll/$token': typeof ApiEnrollTokenRouteWithChildren
   '/api/github/webhook': typeof ApiGithubWebhookRoute
+  '/api/mail/unsubscribe': typeof ApiMailUnsubscribeRoute
   '/api/org/changes': typeof ApiOrgChangesRoute
   '/api/runtime/events': typeof ApiRuntimeEventsRoute
   '/api/runtime/logs': typeof ApiRuntimeLogsRoute
@@ -491,8 +523,10 @@ export interface FileRoutesByTo {
   '/api/cli/servers/enrollment': typeof ApiCliServersEnrollmentRoute
   '/api/enroll/$token/callback': typeof ApiEnrollTokenCallbackRoute
   '/api/enroll/$token/report': typeof ApiEnrollTokenReportRoute
+  '/cloud/account': typeof ProtectedCloudAccountIndexRoute
   '/cloud/$organizationSlug/new': typeof ProtectedCloudOrganizationSlugProjectNewRoute
   '/cloud/$organizationSlug/$projectSlug/$environmentSlug': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasIndexRoute
+  '/cloud/$organizationSlug/~/account': typeof ProtectedCloudOrganizationSlugOrgChar126AccountRoute
   '/cloud/$organizationSlug/~/billing': typeof ProtectedCloudOrganizationSlugOrgChar126BillingRoute
   '/cloud/$organizationSlug/~/settings': typeof ProtectedCloudOrganizationSlugOrgChar126SettingsRoute
   '/cloud/$organizationSlug/~': typeof ProtectedCloudOrganizationSlugOrgChar126IndexRoute
@@ -523,6 +557,7 @@ export interface FileRoutesById {
   '/_public/auth': typeof PublicAuthRoute
   '/api/health': typeof ApiHealthRoute
   '/auth/github': typeof AuthGithubRoute
+  '/invite/$token': typeof InviteTokenRoute
   '/_protected/cloud/$organizationSlug': typeof ProtectedCloudOrganizationSlugRouteRouteWithChildren
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/cli/$': typeof ApiCliSplatRoute
@@ -530,6 +565,7 @@ export interface FileRoutesById {
   '/api/config/$': typeof ApiConfigSplatRoute
   '/api/enroll/$token': typeof ApiEnrollTokenRouteWithChildren
   '/api/github/webhook': typeof ApiGithubWebhookRoute
+  '/api/mail/unsubscribe': typeof ApiMailUnsubscribeRoute
   '/api/org/changes': typeof ApiOrgChangesRoute
   '/api/runtime/events': typeof ApiRuntimeEventsRoute
   '/api/runtime/logs': typeof ApiRuntimeLogsRoute
@@ -547,9 +583,11 @@ export interface FileRoutesById {
   '/api/cli/servers/enrollment': typeof ApiCliServersEnrollmentRoute
   '/api/enroll/$token/callback': typeof ApiEnrollTokenCallbackRoute
   '/api/enroll/$token/report': typeof ApiEnrollTokenReportRoute
+  '/_protected/cloud/account/': typeof ProtectedCloudAccountIndexRoute
   '/_protected/cloud/$organizationSlug/_project/$projectSlug': typeof ProtectedCloudOrganizationSlugProjectProjectSlugRouteRouteWithChildren
   '/_protected/cloud/$organizationSlug/_project/new': typeof ProtectedCloudOrganizationSlugProjectNewRoute
   '/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugRouteRouteWithChildren
+  '/_protected/cloud/$organizationSlug/_org/~/account': typeof ProtectedCloudOrganizationSlugOrgChar126AccountRoute
   '/_protected/cloud/$organizationSlug/_org/~/billing': typeof ProtectedCloudOrganizationSlugOrgChar126BillingRoute
   '/_protected/cloud/$organizationSlug/_org/~/settings': typeof ProtectedCloudOrganizationSlugOrgChar126SettingsRoute
   '/_protected/cloud/$organizationSlug/_org/~/': typeof ProtectedCloudOrganizationSlugOrgChar126IndexRoute
@@ -581,6 +619,7 @@ export interface FileRouteTypes {
     | '/auth'
     | '/api/health'
     | '/auth/github'
+    | '/invite/$token'
     | '/cloud/$organizationSlug'
     | '/api/auth/$'
     | '/api/cli/$'
@@ -588,6 +627,7 @@ export interface FileRouteTypes {
     | '/api/config/$'
     | '/api/enroll/$token'
     | '/api/github/webhook'
+    | '/api/mail/unsubscribe'
     | '/api/org/changes'
     | '/api/runtime/events'
     | '/api/runtime/logs'
@@ -603,9 +643,11 @@ export interface FileRouteTypes {
     | '/api/cli/servers/enrollment'
     | '/api/enroll/$token/callback'
     | '/api/enroll/$token/report'
+    | '/cloud/account/'
     | '/cloud/$organizationSlug/$projectSlug'
     | '/cloud/$organizationSlug/new'
     | '/cloud/$organizationSlug/$projectSlug/$environmentSlug'
+    | '/cloud/$organizationSlug/~/account'
     | '/cloud/$organizationSlug/~/billing'
     | '/cloud/$organizationSlug/~/settings'
     | '/cloud/$organizationSlug/~/'
@@ -633,6 +675,7 @@ export interface FileRouteTypes {
     | '/auth'
     | '/api/health'
     | '/auth/github'
+    | '/invite/$token'
     | '/cloud/$organizationSlug'
     | '/api/auth/$'
     | '/api/cli/$'
@@ -640,6 +683,7 @@ export interface FileRouteTypes {
     | '/api/config/$'
     | '/api/enroll/$token'
     | '/api/github/webhook'
+    | '/api/mail/unsubscribe'
     | '/api/org/changes'
     | '/api/runtime/events'
     | '/api/runtime/logs'
@@ -655,8 +699,10 @@ export interface FileRouteTypes {
     | '/api/cli/servers/enrollment'
     | '/api/enroll/$token/callback'
     | '/api/enroll/$token/report'
+    | '/cloud/account'
     | '/cloud/$organizationSlug/new'
     | '/cloud/$organizationSlug/$projectSlug/$environmentSlug'
+    | '/cloud/$organizationSlug/~/account'
     | '/cloud/$organizationSlug/~/billing'
     | '/cloud/$organizationSlug/~/settings'
     | '/cloud/$organizationSlug/~'
@@ -686,6 +732,7 @@ export interface FileRouteTypes {
     | '/_public/auth'
     | '/api/health'
     | '/auth/github'
+    | '/invite/$token'
     | '/_protected/cloud/$organizationSlug'
     | '/api/auth/$'
     | '/api/cli/$'
@@ -693,6 +740,7 @@ export interface FileRouteTypes {
     | '/api/config/$'
     | '/api/enroll/$token'
     | '/api/github/webhook'
+    | '/api/mail/unsubscribe'
     | '/api/org/changes'
     | '/api/runtime/events'
     | '/api/runtime/logs'
@@ -710,9 +758,11 @@ export interface FileRouteTypes {
     | '/api/cli/servers/enrollment'
     | '/api/enroll/$token/callback'
     | '/api/enroll/$token/report'
+    | '/_protected/cloud/account/'
     | '/_protected/cloud/$organizationSlug/_project/$projectSlug'
     | '/_protected/cloud/$organizationSlug/_project/new'
     | '/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug'
+    | '/_protected/cloud/$organizationSlug/_org/~/account'
     | '/_protected/cloud/$organizationSlug/_org/~/billing'
     | '/_protected/cloud/$organizationSlug/_org/~/settings'
     | '/_protected/cloud/$organizationSlug/_org/~/'
@@ -742,12 +792,14 @@ export interface RootRouteChildren {
   HomeRoute: typeof HomeRoute
   ApiHealthRoute: typeof ApiHealthRoute
   AuthGithubRoute: typeof AuthGithubRoute
+  InviteTokenRoute: typeof InviteTokenRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
   ApiCliSplatRoute: typeof ApiCliSplatRoute
   ApiCliManifestRoute: typeof ApiCliManifestRoute
   ApiConfigSplatRoute: typeof ApiConfigSplatRoute
   ApiEnrollTokenRoute: typeof ApiEnrollTokenRouteWithChildren
   ApiGithubWebhookRoute: typeof ApiGithubWebhookRoute
+  ApiMailUnsubscribeRoute: typeof ApiMailUnsubscribeRoute
   ApiOrgChangesRoute: typeof ApiOrgChangesRoute
   ApiRuntimeEventsRoute: typeof ApiRuntimeEventsRoute
   ApiRuntimeLogsRoute: typeof ApiRuntimeLogsRoute
@@ -841,6 +893,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthGithubRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/invite/$token': {
+      id: '/invite/$token'
+      path: '/invite/$token'
+      fullPath: '/invite/$token'
+      preLoaderRoute: typeof InviteTokenRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/_protected/cloud/': {
       id: '/_protected/cloud/'
       path: '/'
@@ -897,6 +956,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiGithubWebhookRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/mail/unsubscribe': {
+      id: '/api/mail/unsubscribe'
+      path: '/api/mail/unsubscribe'
+      fullPath: '/api/mail/unsubscribe'
+      preLoaderRoute: typeof ApiMailUnsubscribeRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/org/changes': {
       id: '/api/org/changes'
       path: '/api/org/changes'
@@ -931,6 +997,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/cloud/$organizationSlug'
       preLoaderRoute: typeof ProtectedCloudOrganizationSlugProjectRouteRouteImport
       parentRoute: typeof ProtectedCloudOrganizationSlugRouteRoute
+    }
+    '/_protected/cloud/account/': {
+      id: '/_protected/cloud/account/'
+      path: '/account'
+      fullPath: '/cloud/account/'
+      preLoaderRoute: typeof ProtectedCloudAccountIndexRouteImport
+      parentRoute: typeof ProtectedCloudRouteRoute
     }
     '/api/agent/$organizationSlug/chat': {
       id: '/api/agent/$organizationSlug/chat'
@@ -1028,6 +1101,13 @@ declare module '@tanstack/react-router' {
       path: '/~'
       fullPath: '/cloud/$organizationSlug/~/'
       preLoaderRoute: typeof ProtectedCloudOrganizationSlugOrgChar126IndexRouteImport
+      parentRoute: typeof ProtectedCloudOrganizationSlugOrgRouteRoute
+    }
+    '/_protected/cloud/$organizationSlug/_org/~/account': {
+      id: '/_protected/cloud/$organizationSlug/_org/~/account'
+      path: '/~/account'
+      fullPath: '/cloud/$organizationSlug/~/account'
+      preLoaderRoute: typeof ProtectedCloudOrganizationSlugOrgChar126AccountRouteImport
       parentRoute: typeof ProtectedCloudOrganizationSlugOrgRouteRoute
     }
     '/_protected/cloud/$organizationSlug/_org/~/billing': {
@@ -1160,6 +1240,7 @@ declare module '@tanstack/react-router' {
 }
 
 interface ProtectedCloudOrganizationSlugOrgRouteRouteChildren {
+  ProtectedCloudOrganizationSlugOrgChar126AccountRoute: typeof ProtectedCloudOrganizationSlugOrgChar126AccountRoute
   ProtectedCloudOrganizationSlugOrgChar126BillingRoute: typeof ProtectedCloudOrganizationSlugOrgChar126BillingRoute
   ProtectedCloudOrganizationSlugOrgChar126SettingsRoute: typeof ProtectedCloudOrganizationSlugOrgChar126SettingsRoute
   ProtectedCloudOrganizationSlugOrgChar126IndexRoute: typeof ProtectedCloudOrganizationSlugOrgChar126IndexRoute
@@ -1169,6 +1250,8 @@ interface ProtectedCloudOrganizationSlugOrgRouteRouteChildren {
 
 const ProtectedCloudOrganizationSlugOrgRouteRouteChildren: ProtectedCloudOrganizationSlugOrgRouteRouteChildren =
   {
+    ProtectedCloudOrganizationSlugOrgChar126AccountRoute:
+      ProtectedCloudOrganizationSlugOrgChar126AccountRoute,
     ProtectedCloudOrganizationSlugOrgChar126BillingRoute:
       ProtectedCloudOrganizationSlugOrgChar126BillingRoute,
     ProtectedCloudOrganizationSlugOrgChar126SettingsRoute:
@@ -1303,12 +1386,14 @@ const ProtectedCloudOrganizationSlugRouteRouteWithChildren =
 interface ProtectedCloudRouteRouteChildren {
   ProtectedCloudOrganizationSlugRouteRoute: typeof ProtectedCloudOrganizationSlugRouteRouteWithChildren
   ProtectedCloudIndexRoute: typeof ProtectedCloudIndexRoute
+  ProtectedCloudAccountIndexRoute: typeof ProtectedCloudAccountIndexRoute
 }
 
 const ProtectedCloudRouteRouteChildren: ProtectedCloudRouteRouteChildren = {
   ProtectedCloudOrganizationSlugRouteRoute:
     ProtectedCloudOrganizationSlugRouteRouteWithChildren,
   ProtectedCloudIndexRoute: ProtectedCloudIndexRoute,
+  ProtectedCloudAccountIndexRoute: ProtectedCloudAccountIndexRoute,
 }
 
 const ProtectedCloudRouteRouteWithChildren =
@@ -1363,12 +1448,14 @@ const rootRouteChildren: RootRouteChildren = {
   HomeRoute: HomeRoute,
   ApiHealthRoute: ApiHealthRoute,
   AuthGithubRoute: AuthGithubRoute,
+  InviteTokenRoute: InviteTokenRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
   ApiCliSplatRoute: ApiCliSplatRoute,
   ApiCliManifestRoute: ApiCliManifestRoute,
   ApiConfigSplatRoute: ApiConfigSplatRoute,
   ApiEnrollTokenRoute: ApiEnrollTokenRouteWithChildren,
   ApiGithubWebhookRoute: ApiGithubWebhookRoute,
+  ApiMailUnsubscribeRoute: ApiMailUnsubscribeRoute,
   ApiOrgChangesRoute: ApiOrgChangesRoute,
   ApiRuntimeEventsRoute: ApiRuntimeEventsRoute,
   ApiRuntimeLogsRoute: ApiRuntimeLogsRoute,

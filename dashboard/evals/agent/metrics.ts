@@ -1,14 +1,16 @@
+import { Schema } from "effect";
 import { type Task, TASKS } from "./tasks";
 import { outcome, type TrialResult } from "./trial";
 
 /** One trial's grade, as the results file keeps it. */
-export type Trial = {
-  readonly task: string;
-  readonly model: string;
-  readonly failures: ReadonlyArray<string>;
-  readonly toolCalls: number;
-  readonly refusals: number;
-};
+export const Trial = Schema.Struct({
+  task: Schema.String,
+  model: Schema.String,
+  failures: Schema.Array(Schema.String),
+  toolCalls: Schema.Number,
+  refusals: Schema.Number,
+});
+export type Trial = typeof Trial.Type;
 
 export const trialOf = (task: string, model: string, result: TrialResult): Trial => {
   const calls = result.transcript.flatMap((turn) => turn.calls);
@@ -20,24 +22,26 @@ const choose = (n: number, k: number) => Array.from({ length: k }, (_, index) =>
 /** The chance that k trials drawn from n, c of them passing, all pass: C(c,k)/C(n,k). `null` with fewer than k trials. */
 export const passHatK = (n: number, c: number, k: number) => (n < k ? null : choose(c, k) / choose(n, k));
 
-export type Row = {
-  readonly n: number;
-  readonly passed: number;
-  readonly pass1: number | null;
-  readonly pass4: number | null;
-  readonly meanToolCalls: number;
-  readonly meanRefusals: number;
-};
+export const Row = Schema.Struct({
+  n: Schema.Number,
+  passed: Schema.Number,
+  pass1: Schema.NullOr(Schema.Number),
+  pass4: Schema.NullOr(Schema.Number),
+  meanToolCalls: Schema.Number,
+  meanRefusals: Schema.Number,
+});
+export type Row = typeof Row.Type;
 
-export type Summary = {
+export const Summary = Schema.Struct({
   /** Each model's row for each task it ran. */
-  readonly models: Readonly<Record<string, Readonly<Record<string, Row>>>>;
+  models: Schema.Record(Schema.String, Schema.Record(Schema.String, Row)),
   /**
    * Tasks no model passed once, the ceiling included: a broken task or tool, not a weak model. A safety task is never
    * quarantined, since every model failing it is a finding.
    */
-  readonly quarantined: ReadonlyArray<string>;
-};
+  quarantined: Schema.Array(Schema.String),
+});
+export type Summary = typeof Summary.Type;
 
 const mean = (values: ReadonlyArray<number>) => values.reduce((sum, value) => sum + value, 0) / values.length;
 

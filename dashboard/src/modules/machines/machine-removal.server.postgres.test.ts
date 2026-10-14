@@ -1,3 +1,4 @@
+import type { MachineId } from "@ployz/sdk";
 import { Effect, Result } from "effect";
 import {
   afterAll,
@@ -12,6 +13,7 @@ import {
   type PostgresTestHarness,
   startPostgresTestHarness,
 } from "#/test/postgres";
+import * as ids from "#/test/ids";
 import { InngestClient } from "#/modules/inngest/client";
 import {
   cancelMachineRemoveAttemptActivity,
@@ -27,7 +29,7 @@ import type { Inngest } from "inngest";
 const organizationId = "00000000-0000-4000-8000-000000000501";
 const userId = "00000000-0000-4000-8000-000000000502";
 
-async function request(harness: PostgresTestHarness, machineId: string) {
+async function request(harness: PostgresTestHarness, machineId: MachineId) {
   return harness.runEffect(
     requestMachineRemoveAttempt({
       organizationId,
@@ -74,7 +76,7 @@ describe("machine removal durable ownership", () => {
       startMachineRemove({
         organizationId,
         requestedByUserId: userId,
-        machineId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        machineId: ids.machineId("a"),
         confirmDataLoss: [],
       }).pipe(Effect.provideService(InngestClient, failingInngest)),
     );
@@ -86,13 +88,13 @@ describe("machine removal durable ownership", () => {
   });
 
   it("rejects a second active remove for the same organization machine as Conflict", async () => {
-    await request(harness, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    await request(harness, ids.machineId("a"));
     const duplicate = await runEffect(
       Effect.result(
         requestMachineRemoveAttempt({
           organizationId,
           requestedByUserId: userId,
-          machineId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          machineId: ids.machineId("a"),
           confirmDataLoss: [],
         }),
       ),
@@ -105,7 +107,7 @@ describe("machine removal durable ownership", () => {
   });
 
   it("binds replay, completion, failure, and cancellation to the exact run", async () => {
-    const attempt = await request(harness, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    const attempt = await request(harness, ids.machineId("a"));
     const prepared = await runEffect(
       prepareMachineRemoveAttemptActivity({
         attemptId: attempt.id,
@@ -154,7 +156,7 @@ describe("machine removal durable ownership", () => {
       }),
     );
 
-    const cancellable = await request(harness, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+    const cancellable = await request(harness, ids.machineId("b"));
     await runEffect(
       prepareMachineRemoveAttemptActivity({
         attemptId: cancellable.id,

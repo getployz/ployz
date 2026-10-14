@@ -323,7 +323,6 @@ fn explicit_config_beats_environment_and_interactive_errors_do_not_mutate() {
         .args(["--ployz-config", flag_path.to_str().unwrap()])
         .output()
         .unwrap();
-    // Piped stdin can't choose: exit 2, naming the command that does.
     assert_eq!(output.status.code(), Some(2), "{output:?}");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("needs a terminal"), "{stderr}");

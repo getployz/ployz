@@ -36,4 +36,15 @@ export const rateIn = (top: number) => {
   return (bytesPerSecond: number) => `${bytes(bytesPerSecond)}/s`;
 };
 
-export const cpuText = (vcpus: number) => String(Number(vcpus.toFixed(2)));
+/** A share of one core, so 0.5 vCPU says "50%", with the decimals a small value needs. */
+export const cpuText = (vcpus: number) => {
+  const percent = vcpus * 100;
+  return `${Number(percent.toFixed(percent >= 10 ? 0 : percent >= 1 ? 1 : 2))}%`;
+};
+
+/** Says every CPU tick with the decimals the axis's step needs, so a quiet Service's axis never reads 0%, 0%, 0%. */
+export function cpuIn(top: number) {
+  const step = (top * 100) / 3;
+  const decimals = Math.min(2, Math.max(0, -Math.floor(Math.log10(step))));
+  return (vcpus: number) => `${Number((vcpus * 100).toFixed(decimals))}%`;
+}

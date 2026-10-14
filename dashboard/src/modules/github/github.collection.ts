@@ -1,4 +1,4 @@
-import { githubInstallUrlQueryOptions, githubRepoAccessQueryOptions } from "./github.queries";
+import { githubRepoAccessQueryOptions } from "./github.queries";
 import { skipToken, useQuery, type QueryClient } from "@tanstack/react-query";
 import { createApiCollection, preloadCollection } from "#/collections/query-collection";
 import type { GithubRepositorySelection } from "#/modules/github/github";
@@ -7,20 +7,19 @@ import { githubRepositoryCache as schemaGithubRepositoryCache } from "#/modules/
 
 type GithubRepositoryRow = typeof schemaGithubRepositoryCache.$inferSelect;
 export type GithubRepositoryView = GithubRepositorySelection & {
-  user_id: string;
   synced_at: string;
 };
 
 export type GithubCollectionScope = {
   queryClient: QueryClient;
-  userId: string;
+  organizationSlug: string;
   sessionId: string;
 };
 
 const scopes = new WeakMap<QueryClient, Map<string, ReturnType<typeof createGithubReposCollection>>>();
 
 export function githubReposQueryKey(scope: GithubCollectionScope) {
-  return ["collections", scope.sessionId, scope.userId, "github_repository_cache"];
+  return ["collections", scope.sessionId, scope.organizationSlug, "github_repository_cache"];
 }
 
 function toGithubRepositoryView(repository: GithubRepositoryRow): GithubRepositoryView {
@@ -33,16 +32,16 @@ function toGithubRepositoryView(repository: GithubRepositoryRow): GithubReposito
     private: repository.private,
     html_url: repository.htmlUrl,
     repo_updated_at: repository.repoUpdatedAt.toISOString(),
-    user_id: repository.userId,
     synced_at: repository.syncedAt.toISOString(),
   };
 }
 
 function createGithubReposCollection(scope: GithubCollectionScope) {
+  const data = { organizationSlug: scope.organizationSlug };
   return createApiCollection({
     queryClient: scope.queryClient,
     queryKey: githubReposQueryKey(scope),
-    queryFn: async ({ signal }) => (await listGithubRepositoriesServerFn({ signal })).map(toGithubRepositoryView),
+    queryFn: async ({ signal }) => (await listGithubRepositoriesServerFn({ data, signal })).map(toGithubRepositoryView),
     getKey: (row: GithubRepositoryView) => `${row.installation_id}:${row.id}`,
     // Reopening a picker within a minute reuses the cache.
     staleTime: 60_000,
@@ -57,7 +56,7 @@ export function getGithubReposCollection(scope: GithubCollectionScope) {
     cache = new Map();
     scopes.set(scope.queryClient, cache);
   }
-  const key = `${scope.sessionId}:${scope.userId}`;
+  const key = `${scope.sessionId}:${scope.organizationSlug}`;
   let collection = cache.get(key);
   if (!collection) {
     collection = createGithubReposCollection(scope);
@@ -72,11 +71,10 @@ export function useGithubReposReadState(scope: GithubCollectionScope) {
 }
 
 /**
- * Start a picker's reads together (repositories, access, install URL) when it opens or is about to;
+ * Start a picker's reads together (repositories, access) when it opens or is about to;
  * failures surface through `useGithubReposReadState` and the picker's own queries.
  */
 export function preloadGithubRepos(scope: GithubCollectionScope) {
   void preloadCollection(getGithubReposCollection(scope)).catch(() => {});
-  void scope.queryClient.prefetchQuery(githubRepoAccessQueryOptions());
-  void scope.queryClient.prefetchQuery(githubInstallUrlQueryOptions());
+  void scope.queryClient.prefetchQuery(githubRepoAccessQueryOptions(scope.organizationSlug));
 }

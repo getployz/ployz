@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 import { randomUUID } from "node:crypto";
 import type { BatchCommand, ConfigCommand, ConfigCommitted, EnvironmentRef, MachineId } from "@ployz/sdk";
 import { and, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
-import { Deferred, Effect, Fiber, Option, Semaphore } from "effect";
+import { Effect, Option, Semaphore } from "effect";
 import { callStore, readStore } from "#/modules/config-store/config-store.server";
 import { refusedWith } from "#/modules/config-store/store-sdk.server";
 import { StoreRefused, type StoreRefusal } from "#/modules/config-store/store.contract";
@@ -15,6 +15,7 @@ import {
 import { ACTIVE_VOLUME_RUN_STATES, dockerVolumeName, parseDockerVolumeName, type VolumeRunInput } from "#/modules/volume-run/volume-run";
 import { volumeRun } from "#/modules/volume-run/tables";
 import { insertRun, inspectVolumeCopies, planVolumeRun, resolveVolume } from "#/modules/volume-run/volume-run.server";
+import { whileLocked } from "#/server/advisory-lock.server";
 import { Database } from "#/server/database.server";
 
 type Row = typeof volumePlacement.$inferSelect;
@@ -51,29 +52,12 @@ const tryExclusive = Effect.fn("VolumePlacement.tryExclusive")(function* (enviro
   return row?.held === true;
 });
 
-/** Each lock holder keeps a pooled connection while its `body` takes more: one at a time can't drain the pool. */
-const holders = Semaphore.makeUnsafe(1);
+/** One holder at a time: each keeps a pooled connection while its `body` takes more. */
+const stagingHolders = Semaphore.makeUnsafe(1);
 
-/**
- * Runs `body` while Environment `environmentId`'s lock is held, on a connection of its own so `body`'s queries stay outside
- * its transaction; none when the lock is taken. `body` can't be interrupted: a Store write it stopped awaiting could still
- * commit after the lock goes.
- */
-const whileStaging = <A, E, R>(environmentId: string, body: Effect.Effect<A, E, R>) => holders.withPermits(1)(Effect.gen(function* () {
-  const database = yield* Database;
-  const locked = yield* Deferred.make<boolean>();
-  const staged = yield* Deferred.make<void>();
-  const holder = yield* database.transaction(Effect.gen(function* () {
-    const held = yield* tryExclusive(environmentId);
-    yield* Deferred.succeed(locked, held);
-    if (held) yield* Deferred.await(staged);
-  })).pipe(Effect.orDie, Effect.onError((cause) => Deferred.failCause(locked, cause)), Effect.forkChild);
-  if (!(yield* Deferred.await(locked))) {
-    yield* Fiber.await(holder);
-    return Option.none<A>();
-  }
-  return Option.some(yield* Effect.uninterruptible(body).pipe(Effect.ensuring(Deferred.succeed(staged, undefined).pipe(Effect.andThen(Fiber.await(holder))))));
-}));
+/** Runs `body` while Environment `environmentId`'s lock is held exclusively; none when it is taken. */
+const whileStaging = <A, E, R>(environmentId: string, body: Effect.Effect<A, E, R>) =>
+  whileLocked(stagingHolders, tryExclusive(environmentId), body);
 
 /**
  * Whether no stageRestore holds Environment `environmentId`: each restore's Store write has then landed or never will, so
@@ -102,7 +86,8 @@ const readRow = Effect.fn("VolumePlacement.readRow")(function* (organizationId: 
 });
 
 /** Why the row can't change: the Deploy that took it still runs it, or the Store can't say whether it does. */
-const claimed = Effect.fn("VolumePlacement.claimed")(function* (organizationId: string, row: Pick<Row, "deploymentId"> | undefined) {
+/** The refusal while a Deploy still runs the Volume's placement, else null. */
+export const deployClaim = Effect.fn("VolumePlacement.deployClaim")(function* (organizationId: string, row: Pick<Row, "deploymentId"> | undefined) {
   if (row === undefined || row.deploymentId === null) return null;
   return yield* readStore(organizationId, { query: "deployment", id: row.deploymentId }).pipe(
     Effect.map((deployment) => deployment.in_flight ? DEPLOYING : null),
@@ -123,7 +108,7 @@ export const stagePlacement = Effect.fn("VolumePlacement.stage")(function* (
   input: { readonly environment: EnvironmentRef; readonly volumeId: string; readonly staged: Placement | null; readonly mirrors: readonly MachineId[] },
 ) {
   const current = yield* readRow(organizationId, input.volumeId);
-  const refusal = yield* claimed(organizationId, current);
+  const refusal = yield* deployClaim(organizationId, current);
   if (refusal !== null) return { ok: false, refusal } satisfies PlacementWrite;
   if (current?.staged?.seed !== undefined) return { ok: false, refusal: RESTORING } satisfies PlacementWrite;
   const { environmentId } = yield* resolveVolume(organizationId, input.environment, input.volumeId);
@@ -220,7 +205,7 @@ export const discardPlacement = Effect.fn("VolumePlacement.discard")(function* (
 ) {
   const current = yield* readRow(organizationId, volumeId);
   if (current === undefined) return { ok: true, placement: null } satisfies PlacementDiscard;
-  const refusal = yield* claimed(organizationId, current);
+  const refusal = yield* deployClaim(organizationId, current);
   if (refusal !== null) return { ok: false, refusal } satisfies PlacementDiscard;
   const unchanged = and(eq(volumePlacement.volumeId, current.volumeId), unclaimedSince(current));
   const database = yield* Database;
@@ -393,7 +378,7 @@ export const deleteOldCopy = Effect.fn("VolumePlacement.deleteOldCopy")(function
   inspect: typeof inspectVolumeCopies = inspectVolumeCopies,
 ) {
   const row = yield* readRow(organizationId, input.volumeId);
-  const busy = yield* claimed(organizationId, row);
+  const busy = yield* deployClaim(organizationId, row);
   if (busy !== null) return { ok: false, refusal: { message: busy.message } } as const;
   const members = yield* inspect(organizationId, input.environment, input.volumeId);
   const old = oldCopies(observePlacement(members), row === undefined ? null : view(row)).find((copy) => copy.server.name === input.server);
@@ -415,7 +400,7 @@ export const deleteOldCopy = Effect.fn("VolumePlacement.deleteOldCopy")(function
  */
 export const requestUnclaimedRun = Effect.fn("VolumePlacement.requestUnclaimedRun")(function* (
   caller: { readonly userId: string | null; readonly organizationId: string },
-  input: { readonly volumeId: string; readonly environment: EnvironmentRef } & Extract<VolumeRunInput, { kind: "sync" | "delete_mirror" }>,
+  input: { readonly volumeId: string; readonly environment: EnvironmentRef } & Extract<VolumeRunInput, { kind: "delete_mirror" }>,
   deletes: { readonly server: MachineId; readonly point: string | null } | null = null,
 ) {
   const database = yield* Database;
@@ -425,7 +410,7 @@ export const requestUnclaimedRun = Effect.fn("VolumePlacement.requestUnclaimedRu
     if (deletes !== null) yield* drizzle.execute(sql`select pg_advisory_xact_lock_shared(${environmentLock(volume.environmentId)})`);
     const [row] = yield* drizzle.select().from(volumePlacement)
       .where(and(eq(volumePlacement.organizationId, caller.organizationId), eq(volumePlacement.volumeId, input.volumeId))).for("update");
-    const busy = yield* claimed(caller.organizationId, row);
+    const busy = yield* deployClaim(caller.organizationId, row);
     if (busy !== null) return { ok: false, refusal: busy } as const;
     const kept = row === undefined ? [] : [...row.mirrors ?? [], ...row.staged === null ? [] : [row.staged.primary, ...row.staged.mirrors]];
     if (deletes !== null && kept.includes(deletes.server)) return { ok: false, refusal: NOT_OLD } as const;

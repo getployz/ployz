@@ -8,6 +8,7 @@ import { pipeline } from "node:stream/promises";
 import { createGunzip } from "node:zlib";
 import { Data, Effect } from "effect";
 import * as tar from "tar";
+import { accessFor } from "./github-access";
 import { GithubApi, resolveGithubBranchHead, resolveGithubRepository } from "./github-observation.api";
 import { getCachedGithubRepositoryForOrganization } from "./github.repository";
 
@@ -21,12 +22,12 @@ const authorizeRepository = Effect.fn("Github.authorizeSourceRepository")(functi
   if (input.installationId !== null && !(yield* getCachedGithubRepositoryForOrganization({ ...input, installationId: input.installationId }))) {
     return yield* new GithubSourceError({ message: "Repository is not connected to this Organization." });
   }
-  return yield* resolveGithubRepository(input.installationId, input.repositoryId);
+  return yield* resolveGithubRepository(accessFor(input.organizationId, input.installationId), input.repositoryId);
 });
 
 export const resolveGithubSourceSha = Effect.fn("Github.resolveSourceSha")(function* (input: SourceIdentity & { branch: string }) {
   const repository = yield* authorizeRepository(input);
-  const result = yield* resolveGithubBranchHead(input.installationId, repository, `refs/heads/${input.branch}`);
+  const result = yield* resolveGithubBranchHead(accessFor(input.organizationId, input.installationId), repository, `refs/heads/${input.branch}`);
   if (result.state === "absent") return yield* new GithubSourceError({ message: "The source branch no longer exists." });
   return result.headSha;
 });
@@ -221,7 +222,7 @@ export const materializeGithubSource = Effect.fn("Github.materializeSource")(fun
     }).pipe(Effect.tapError((error) => Effect.logError("Source workspace cleanup failed.", error)), Effect.ignore),
   );
   const api = yield* GithubApi;
-  const response = yield* api.archive({ installationId: input.installationId, repository, sha: input.sha });
+  const response = yield* api.archive({ access: accessFor(input.organizationId, input.installationId), repository, sha: input.sha });
   return yield* Effect.tryPromise({
     try: async (signal) => resolveSourcePaths(await extractGithubSource(response, directory, signal), input.rootDir, input.dockerfilePath),
     catch: (error) => error instanceof GithubSourceError ? error : new GithubSourceError({ message: "Could not acquire the pinned repository source." }),

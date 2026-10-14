@@ -107,7 +107,7 @@ fn group(service: &str, dependencies: &[&str]) -> ServiceGroup {
             .collect(),
         steps: Vec::new(),
         publish: true,
-        previous: None,
+        kept: Vec::new(),
     }
 }
 

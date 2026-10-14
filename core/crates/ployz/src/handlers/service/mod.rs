@@ -5,10 +5,12 @@ use clap::{Arg, ArgAction, ArgMatches, Command};
 use futures_util::future::join_all;
 
 use crate::cli::{base, positional, value};
+use ployz_core::rpc::op;
 use ployz_core::{
-    ContainerAction, ContainerId, ContainerRef, ContainerRuntimeObservation, HealthFailure,
-    HealthObservation, LiveServices, MachineFailure, MachineId, MachineName, QualifiedService,
-    RpcError, RpcErrorCode, ServiceObservation, ServiceSelector, select_service,
+    ContainerAction, ContainerId, ContainerObservation, ContainerRef, ContainerRuntimeObservation,
+    HealthFailure, HealthObservation, LiveServices, MachineFailure, MachineId, MachineName,
+    MachineTarget, QualifiedService, ReadServingPointerRequest, RpcError, RpcErrorCode,
+    ServiceObservation, ServiceSelector, select_service,
 };
 use serde::Serialize;
 
@@ -43,23 +45,24 @@ pub fn processes(root: &ArgMatches) -> Result<(), Error> {
                 .map(|observed| (observed.machine.id, &observed.machine.name))
                 .collect();
             let services = live.services();
-            let mut containers = services
+            let services = services
                 .iter()
                 .filter(|service| {
                     namespace
                         .as_ref()
                         .is_none_or(|namespace| service.identity.namespace == *namespace)
                 })
-                .flat_map(ployz_core::ServiceObservation::members)
+                .collect::<Vec<_>>();
+            let retiring = retiring(client, &live, &services).await;
+            let mut containers = services
+                .iter()
+                .flat_map(|service| service.members())
                 .collect::<Vec<_>>();
             sort_processes(&mut containers, &sort);
-            let observations = containers
-                .iter()
-                .map(|container| container.as_observation())
-                .collect::<Vec<_>>();
+            let observations = process_rows(&containers, &retiring);
             let gaps = Gaps::of(&live.containers)
                 .named(names.iter().map(|(machine_id, name)| (*machine_id, *name)));
-            let table = process_table(&containers, namespace.is_some(), &names);
+            let table = process_table(&containers, namespace.is_some(), &names, &retiring);
             crate::ui::finish_fanout("containers", &observations, &gaps, || {
                 crate::ui::rows(&table);
             })
@@ -67,16 +70,133 @@ pub fn processes(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
-/// One row per Container. Rows that read the same get the short Container ID,
-/// which `exec` takes.
+async fn retiring(
+    client: &crate::connect::Client,
+    live: &LiveServices<RpcError>,
+    services: &[&ServiceObservation],
+) -> HashSet<ContainerId> {
+    let Some(target) = live
+        .containers
+        .successes
+        .iter()
+        .map(|success| &success.machine_id)
+        .min()
+        .map(MachineTarget::from)
+    else {
+        return HashSet::new();
+    };
+    let reads = services.iter().map(|service| {
+        let mut client = client.clone();
+        let target = target.clone();
+        async move {
+            client
+                .read::<op::ReadServingPointer>(
+                    ReadServingPointerRequest {
+                        service: service.identity.clone(),
+                    },
+                    &target,
+                )
+                .await
+        }
+    });
+    join_all(reads)
+        .await
+        .into_iter()
+        .flatten()
+        .filter_map(|read| read.pointer)
+        .flat_map(|pointer| pointer.retiring)
+        .collect()
+}
+
+fn is_draining(container: ContainerRef<'_>, retiring: &HashSet<ContainerId>) -> bool {
+    let observation = container.as_observation();
+    matches!(container, ContainerRef::Service(_))
+        && matches!(
+            observation.runtime,
+            ContainerRuntimeObservation::Running { .. }
+        )
+        && retiring.contains(&observation.container_id)
+}
+
+#[derive(Serialize)]
+struct Process<'a> {
+    #[serde(flatten)]
+    container: &'a ContainerObservation,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    draining: bool,
+}
+
+fn process_rows<'a>(
+    containers: &[ContainerRef<'a>],
+    retiring: &HashSet<ContainerId>,
+) -> Vec<Process<'a>> {
+    containers
+        .iter()
+        .map(|container| Process {
+            container: container.as_observation(),
+            draining: is_draining(*container, retiring),
+        })
+        .collect()
+}
+
+#[derive(Clone, Copy)]
+enum Row<'a> {
+    Container(ContainerRef<'a>),
+    Draining {
+        first: ContainerRef<'a>,
+        count: usize,
+    },
+}
+
+impl<'a> Row<'a> {
+    fn container(self) -> ContainerRef<'a> {
+        match self {
+            Row::Container(container)
+            | Row::Draining {
+                first: container, ..
+            } => container,
+        }
+    }
+}
+
+fn collapse_draining<'a>(
+    containers: &[ContainerRef<'a>],
+    retiring: &HashSet<ContainerId>,
+) -> Vec<Row<'a>> {
+    let mut entries = Vec::new();
+    let mut groups: HashMap<(QualifiedService, MachineId), usize> = HashMap::new();
+    for container in containers {
+        if !is_draining(*container, retiring) {
+            entries.push(Row::Container(*container));
+            continue;
+        }
+        let observation = container.as_observation();
+        let key = (observation.identity(), observation.machine_id);
+        match groups.get(&key).and_then(|index| entries.get_mut(*index)) {
+            Some(Row::Draining { count, .. }) => *count += 1,
+            _ => {
+                groups.insert(key, entries.len());
+                entries.push(Row::Draining {
+                    first: *container,
+                    count: 1,
+                });
+            }
+        }
+    }
+    entries
+}
+
 fn process_table(
     containers: &[ContainerRef<'_>],
     scoped: bool,
     names: &HashMap<MachineId, &MachineName>,
+    retiring: &HashSet<ContainerId>,
 ) -> Table {
-    let rows: Vec<[String; 3]> = containers
+    let entries = collapse_draining(containers, retiring);
+    let rows: Vec<[String; 3]> = entries
         .iter()
-        .map(|container| {
+        .map(|entry| {
+            let container = entry.container();
             let observation = container.as_observation();
             // Scoped to one Environment, its Namespace on every row says nothing.
             let service = if scoped {
@@ -86,13 +206,17 @@ fn process_table(
             };
             [
                 service,
-                process_kind(*container).to_owned(),
+                process_kind(container).to_owned(),
                 server(names, &observation.machine_id),
             ]
         })
         .collect();
     let mut seen: HashMap<&[String; 3], usize> = HashMap::new();
-    for row in &rows {
+    for (row, _) in rows
+        .iter()
+        .zip(&entries)
+        .filter(|(_, entry)| matches!(entry, Row::Container(_)))
+    {
         *seen.entry(row).or_default() += 1;
     }
     let clash = seen.values().any(|count| *count > 1);
@@ -101,19 +225,29 @@ fn process_table(
         header.push("CONTAINER");
     }
     let mut table = Table::new(header, "No Containers running yet.");
-    for (container, row) in containers.iter().zip(&rows) {
-        let observation = container.as_observation();
+    for (entry, row) in entries.iter().zip(&rows) {
         let mut cells: Vec<Cell> = row.iter().map(Cell::from).collect();
-        cells.push(Cell::status(
-            process_state(&observation.runtime),
-            state_tone(*container),
-        ));
+        let (state, id) = match *entry {
+            Row::Draining { count, .. } => (
+                Cell::status(format!("draining {count}"), Tone::Change),
+                Cell::from(""),
+            ),
+            Row::Container(container) => {
+                let observation = container.as_observation();
+                let id = if seen.get(row).is_some_and(|count| *count > 1) {
+                    Cell::from(crate::ui::short_id(observation.container_id.as_str()))
+                } else {
+                    Cell::from("")
+                };
+                (
+                    Cell::status(process_state(&observation.runtime), state_tone(container)),
+                    id,
+                )
+            }
+        };
+        cells.push(state);
         if clash {
-            cells.push(if seen.get(row).is_some_and(|count| *count > 1) {
-                Cell::from(crate::ui::short_id(observation.container_id.as_str()))
-            } else {
-                Cell::from("")
-            });
+            cells.push(id);
         }
         table.row(cells);
     }
@@ -590,7 +724,7 @@ pub(super) fn handler(path: &str) -> Option<Runnable> {
         "restart" => cloud(Never, restart),
         "rm" => cloud(Never, authored::remove),
         "start" => cloud(Never, |root| lifecycle(root, &[ContainerAction::Start])),
-        "stop" => cloud(Always, |root| lifecycle(root, &[ContainerAction::Stop])),
+        "stop" => cloud(Never, |root| lifecycle(root, &[ContainerAction::Stop])),
         _ => return None,
     })
 }

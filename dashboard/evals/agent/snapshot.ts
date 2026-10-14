@@ -15,7 +15,7 @@ export type EnvironmentState = {
   /** Every Setting by path, defaults included; a secret reads as `{ secret: true }`. */
   readonly settings: Readonly<Record<string, JsonValue>>;
   /** Each domain by `<service> <prefix or hostname>`. */
-  readonly domains: Readonly<Record<string, { readonly kind: string; readonly port: number }>>;
+  readonly domains: Readonly<Record<string, { readonly kind: string; readonly port: number | null }>>;
   readonly volumes: Readonly<Record<string, { readonly storage: JsonValue; readonly mounts: JsonValue }>>;
   /** Each Deployment's status by number. */
   readonly deployments: Readonly<Record<string, string>>;
@@ -67,10 +67,6 @@ const decodeEvent = Schema.decodeUnknownOption(Schema.Struct({ name: Schema.Stri
 const events = (dispatched: ReadonlyArray<unknown>) => dispatched.flat().flatMap((payload) =>
   Option.match(decodeEvent(payload), { onNone: () => [], onSome: ({ name, id }) => [`event ${name} ${id ?? "-"}`] }));
 
-type Settings = { settings: ReadonlyArray<{ path: string; value: JsonValue }> };
-type Domains = { domains: ReadonlyArray<{ service: string; kind: string; prefix: string | null; hostname: string | null; port: number }> };
-type Volumes = { volumes: ReadonlyArray<{ name: string; storage: JsonValue; mounts: JsonValue }> };
-type Deployments = { deployments: ReadonlyArray<{ number: number; status: string }> };
 type SavedService = {
   slug: string;
   config: { source: { image?: string }; managedHostnames: ReadonlyArray<{ prefix: string }>; routes: ReadonlyArray<{ hostname: string }> };
@@ -80,12 +76,10 @@ export const snapshot = Effect.fn("Eval.snapshot")(function* (store: ConfigStore
   const { drizzle } = yield* Database;
   const environments = yield* Effect.forEach(ENVIRONMENTS, (name) => Effect.gen(function* () {
     const environment = environmentRef(name);
-    // SAFETY: each query below names the view it reads, whose shape the type argument spells out.
-    const read = <A>(query: Parameters<ConfigStore["read"]>[1]) => Effect.promise(() => store.read(ORGANIZATION, query) as Promise<A>);
-    const settings = yield* read<Settings>({ query: "environment", environment, path: null, all: true });
-    const domains = yield* read<Domains>({ query: "domains", environment, service: null });
-    const volumes = yield* read<Volumes>({ query: "volumes", environment });
-    const deployments = yield* read<Deployments>({ query: "deployments", environment, limit: null, cursor: null });
+    const settings = yield* Effect.promise(() => store.read(ORGANIZATION, { query: "environment", environment, path: null, all: true }));
+    const domains = yield* Effect.promise(() => store.read(ORGANIZATION, { query: "domains", environment, service: null }));
+    const volumes = yield* Effect.promise(() => store.read(ORGANIZATION, { query: "volumes", environment }));
+    const deployments = yield* Effect.promise(() => store.read(ORGANIZATION, { query: "deployments", environment, limit: null, cursor: null }));
     const [saved] = yield* drizzle.execute<{ intent: string }>(sql`select s.intent from config_deployment d
       join config_environment e on e.id = d.environment_id
       join config_saved s on s.environment_id = d.environment_id and s.revision = d.saved_revision
@@ -94,7 +88,7 @@ export const snapshot = Effect.fn("Eval.snapshot")(function* (store: ConfigStore
     const state: EnvironmentState = {
       settings: Object.fromEntries(settings.settings.map(({ path, value }) => [path, value])),
       domains: Object.fromEntries(domains.domains.map((domain) =>
-        [`${domain.service} ${domain.prefix ?? domain.hostname}`, { kind: domain.kind, port: domain.port }])),
+        [`${domain.service} ${domain.kind === "generated" ? domain.prefix : domain.hostname}`, { kind: domain.kind, port: domain.port }])),
       volumes: Object.fromEntries(volumes.volumes.map(({ name: volume, storage, mounts }) => [volume, { storage, mounts }])),
       deployments: Object.fromEntries(deployments.deployments.map(({ number, status }) => [String(number), status])),
       released: Object.fromEntries(services.map(({ slug, config }) =>
@@ -105,10 +99,7 @@ export const snapshot = Effect.fn("Eval.snapshot")(function* (store: ConfigStore
     };
     return [name, state] as const;
   }));
-  // SAFETY: the projects query answers a ProjectsView.
-  const { projects } = yield* Effect.promise(() => store.read(ORGANIZATION, { query: "projects" }) as Promise<{
-    projects: ReadonlyArray<{ name: string; environments: ReadonlyArray<string> }>;
-  }>);
+  const { projects } = yield* Effect.promise(() => store.read(ORGANIZATION, { query: "projects" }));
   const mine = eq(operationApprovals.organizationId, ORGANIZATION);
   const approvals = yield* drizzle.select({ command: operationApprovals.command }).from(operationApprovals).where(mine);
   const name = (machine: string) => NAMES.get(machine) ?? machine;

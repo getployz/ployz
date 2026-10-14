@@ -1,8 +1,8 @@
 import "@tanstack/react-start/server-only";
-import { randomUUID } from "node:crypto";
-import type { MachineUpgradeAttempt, MachineUpgradeAttemptId } from "@ployz/sdk";
-import { and, desc, eq, isNotNull, lt, ne, sql, type SQL } from "drizzle-orm";
+import type { MachineId, MachineUpgradeAttempt, MachineUpgradeAttemptId } from "@ployz/sdk";
+import { and, desc, eq, gte, inArray, isNotNull, lt, ne, sql, type SQL } from "drizzle-orm";
 import { Data, Effect } from "effect";
+import { machineUpgradeAttemptIdOf } from "#/lib/ids";
 import { PostHog } from "#/modules/analytics/posthog.server";
 import type { Actor } from "#/modules/identity/actor";
 import { organization } from "#/modules/organization/tables";
@@ -151,10 +151,11 @@ const observeOnlineServers = Effect.fn("ServerUpgrade.observeOnline")(function* 
       : []);
 }, Effect.scoped);
 
-/** The version an online, idle Server runs; null when it isn't observed online and idle (it can't take an Upgrade). */
+/** The name and version of an online, idle Server; null when it isn't observed online and idle (it can't take an Upgrade). */
 export const observeUpgradeableServer = Effect.fn("ServerUpgrade.observe")(function* (organizationId: string, machineId: string) {
   const online = yield* observeOnlineServers(organizationId);
-  return online.find(({ id }) => id === machineId)?.version ?? null;
+  const server = online.find(({ id }) => id === machineId);
+  return server === undefined ? null : { name: server.name, version: server.version };
 });
 
 /**
@@ -184,7 +185,7 @@ export const listServersBehind = Effect.fn("ServerUpgrade.listBehind")(function*
 ) {
   const online = yield* observeOnlineServers(organizationId);
   const halted = trigger === "automatic" ? yield* haltedReleases(organizationId) : new Set<string>();
-  const behind: Array<{ readonly id: string; readonly name: string; readonly status: "online" }> = [];
+  const behind: Array<{ readonly id: MachineId; readonly name: string; readonly status: "online" }> = [];
   for (const server of online) {
     const line = releaseLine(server.version);
     const release = line === null ? null : yield* channelRelease(channel, line);
@@ -194,7 +195,7 @@ export const listServersBehind = Effect.fn("ServerUpgrade.listBehind")(function*
 }, Effect.catchIf(
   (error) => error instanceof ServerUpgradeUnreachable || error instanceof ReleasePointerUnreadable,
   (error) => Effect.logInfo("The Cluster or a Release Channel pointer can't be read; no Server is upgraded.", error)
-    .pipe(Effect.as<string[]>([])),
+    .pipe(Effect.as<MachineId[]>([])),
 ));
 
 /**
@@ -203,7 +204,7 @@ export const listServersBehind = Effect.fn("ServerUpgrade.listBehind")(function*
  * the exact version it resolved.
  */
 export const recordUpgradeAttempt = Effect.fn("ServerUpgrade.record")(function* (input: {
-  readonly request: ServerUpgradeRequestedEventData & { readonly machineId: string };
+  readonly request: ServerUpgradeRequestedEventData & { readonly machineId: MachineId };
   readonly attemptId: MachineUpgradeAttemptId;
   readonly channel: ReleaseChannel;
   readonly fromVersion: string;
@@ -391,9 +392,67 @@ const closeRunningAttempts = Effect.fn("ServerUpgrade.closeRunning")(function* (
 export const closeRunUpgradeAttempts = (inngestRunId: string) =>
   closeRunningAttempts(eq(serverUpgradeAttempt.inngestRunId, inngestRunId));
 
+/** One automatic Rollout's attempts: those it recorded in an Organization, or every one of an Inngest run. */
+export type RolloutAttempts =
+  | { readonly organizationId: string; readonly attemptIds: readonly string[] }
+  | { readonly inngestRunId: string };
+
+/** The Rollout's automatic attempts that ended other than `succeeded`, oldest first, with their Organization; null when none did. */
+export const readUpgradeFailures = Effect.fn("ServerUpgrade.readFailures")(function* (rollout: RolloutAttempts) {
+  const { drizzle } = yield* Database;
+  const rows = yield* drizzle.select({
+    organizationId: serverUpgradeAttempt.organizationId,
+    attemptId: serverUpgradeAttempt.attemptId,
+    machineId: serverUpgradeAttempt.machineId,
+    fromVersion: serverUpgradeAttempt.fromVersion,
+    targetVersion: serverUpgradeAttempt.targetVersion,
+    outcome: serverUpgradeAttempt.outcome,
+    stage: serverUpgradeAttempt.stage,
+    error: serverUpgradeAttempt.error,
+  }).from(serverUpgradeAttempt)
+    .where(and(
+      "inngestRunId" in rollout
+        ? eq(serverUpgradeAttempt.inngestRunId, rollout.inngestRunId)
+        : and(
+          eq(serverUpgradeAttempt.organizationId, rollout.organizationId),
+          inArray(serverUpgradeAttempt.attemptId, [...rollout.attemptIds]),
+        ),
+      eq(serverUpgradeAttempt.trigger, "automatic"),
+      inArray(serverUpgradeAttempt.outcome, ["failed", "interrupted", "unknown"]),
+    ))
+    .orderBy(serverUpgradeAttempt.startedAt);
+  const failures = rows.flatMap(({ outcome, ...failure }) =>
+    outcome === "failed" || outcome === "interrupted" || outcome === "unknown" ? [{ ...failure, outcome }] : []);
+  const [first] = failures;
+  if (first === undefined) return null;
+  const [named] = yield* drizzle.select({ name: organization.name, slug: organization.slug }).from(organization)
+    .where(eq(organization.id, first.organizationId));
+  return named === undefined ? null : { organizationId: first.organizationId, organization: named, failures };
+});
+
+/** Each Server's name by machine id as the Runtime Watch sees it, online or not; empty when the cluster doesn't answer. */
+export const observeServerNames = (organizationId: string) =>
+  Effect.gen(function* () {
+    const session = yield* openSession(organizationId);
+    const frame = yield* session.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS);
+    return new Map<string, string>(frame.machines.map(({ machine }) => [machine.id, machine.name]));
+  }).pipe(Effect.scoped, Effect.orElseSucceed(() => new Map<string, string>()));
+
 /** The hourly sweep: an attempt still `running` after the observation limit lost its Rollout run, so it reads `unknown`. */
 export const closeStaleUpgradeAttempts = () =>
   closeRunningAttempts(lt(serverUpgradeAttempt.startedAt, new Date(Date.now() - UPGRADE_OBSERVATION_LIMIT_MS)));
+
+/** The automatic Rollout runs with an attempt that ended `unknown` since `since`, so the sweep can mail them again on retry. */
+export const listUnknownAutomaticRollouts = Effect.fn("ServerUpgrade.listUnknownAutomatic")(function* (since: Date) {
+  const { drizzle } = yield* Database;
+  const rows = yield* drizzle.selectDistinct({ inngestRunId: serverUpgradeAttempt.inngestRunId }).from(serverUpgradeAttempt)
+    .where(and(
+      eq(serverUpgradeAttempt.trigger, "automatic"),
+      eq(serverUpgradeAttempt.outcome, "unknown"),
+      gte(serverUpgradeAttempt.endedAt, since),
+    ));
+  return rows.map(({ inngestRunId }) => inngestRunId);
+});
 
 /** Every Organization with a founded Cluster and automatic upgrades on (no settings row reads as the default). */
 export const listAutomaticUpgradeOrganizationIds = Effect.fn("ServerUpgrade.listAutomatic")(function* () {
@@ -429,11 +488,6 @@ export const setServerUpgradeSettings = Effect.fn("ServerUpgrade.setSettings")(f
   return row ?? { id: organizationId, ...DEFAULT_SERVER_UPGRADE_SETTINGS, ...settings };
 });
 
-/** Cloud mints attempt IDs in the daemon's 32-hex form. */
-export const mintAttemptId = () =>
-  // SAFETY: a UUID without its dashes is 32 lowercase hex digits, the daemon's attempt ID form.
-  randomUUID().replaceAll("-", "") as MachineUpgradeAttemptId;
-
 const UNCLAIMED = "";
 
 /**
@@ -442,7 +496,7 @@ const UNCLAIMED = "";
  */
 export const planCliServerUpgrade = Effect.fn("ServerUpgrade.planCli")(function* (
   caller: { readonly organizationId: string; readonly userId: string },
-  input: { readonly machineId: string; readonly channel: string | undefined },
+  input: { readonly machineId: MachineId; readonly channel: string | undefined },
 ) {
   const channel = yield* organizationReleaseChannel(caller.organizationId);
   if (input.channel !== undefined && input.channel !== channel) {
@@ -470,13 +524,12 @@ export const planCliServerUpgrade = Effect.fn("ServerUpgrade.planCli")(function*
   }
   const unavailable = (message: string) =>
     ({ ok: false, refusal: { code: "unavailable", message, details: null } }) as const satisfies { ok: false; refusal: StoreRefusal };
-  const fromVersion = yield* observeUpgradeableServer(caller.organizationId, input.machineId).pipe(Effect.option);
-  if (fromVersion._tag === "None") return unavailable("Your servers aren't answering. Try again once they are.");
-  if (fromVersion.value === null) return unavailable("This Server isn't online and idle, so it can't take an Upgrade now.");
-  const from = fromVersion.value;
+  const observed = yield* observeUpgradeableServer(caller.organizationId, input.machineId).pipe(Effect.option);
+  if (observed._tag === "None") return unavailable("Your servers aren't answering. Try again once they are.");
+  if (observed.value === null) return unavailable("This Server isn't online and idle, so it can't take an Upgrade now.");
+  const from = observed.value.version;
   return (attempt: string) => Effect.gen(function* () {
-    // SAFETY: an attempt is a UUID; without its dashes it is 32 lowercase hex digits, the daemon's attempt ID form.
-    const attemptId = attempt.replaceAll("-", "") as MachineUpgradeAttemptId;
+    const attemptId = machineUpgradeAttemptIdOf(attempt);
     const request = { organizationId: caller.organizationId, machineId: input.machineId, trigger: "manual", userId: caller.userId, attemptId } as const;
     yield* recordUpgradeAttempt({ request, attemptId, channel, fromVersion: from, inngestRunId: UNCLAIMED });
     yield* enqueueEvent(createCliServerUpgradeRequestedEvent(request));

@@ -83,19 +83,7 @@ pub enum BuildVariables {
 impl BuildVariables {
     /// The `ARG` names `dockerfile` declares, in every stage.
     fn declared(dockerfile: &str) -> Self {
-        let names = crate::build::dockerfile_instructions(dockerfile)
-            .into_iter()
-            .filter(|(keyword, _)| keyword == "ARG")
-            .flat_map(|(_, arguments)| {
-                arguments
-                    .split_whitespace()
-                    .filter_map(|word| word.split('=').next())
-                    .filter(|name| !name.is_empty())
-                    .map(str::to_owned)
-                    .collect::<Vec<_>>()
-            })
-            .collect();
-        Self::Declared(names)
+        Self::Declared(ployz_core::DockerfileFacts::parse(dockerfile).args)
     }
 
     fn reads(&self, name: &str) -> bool {
@@ -437,6 +425,13 @@ fn freeze(
             name.clone(),
             (root_dir.clone(), config.settings.build.clone()),
         );
+        snapshot
+            .as_object_mut()
+            .expect("validated snapshot object")
+            .insert(
+                "builtWith".into(),
+                json!(config.settings.build.build_method),
+            );
         // This tag never escapes preparation: binding replaces it with verified content.
         snapshot
             .get_mut("config")
@@ -940,5 +935,32 @@ mod tests {
         assert!(contained(temp.path(), &temp.path().join("apps/api"), "../../../").is_err());
         assert!(contained(temp.path(), temp.path(), "../").is_err());
         assert!(contained(temp.path(), temp.path(), "outside/etc").is_err());
+    }
+
+    #[test]
+    fn a_built_image_runs_its_start_command_by_how_it_was_built() {
+        let container = |build_method: &str| {
+            let intent = frozen_intent(json!({"namespace": "app", "snapshots": [{"config": {
+                "version": 2, "privateDns": "web", "healthcheck": {"type":"none"},
+                "restartPolicy":"on-failure", "startCommand": "serve --port $PORT && echo",
+                "source": {"version":2, "type":"git", "repository":"acme/web", "repositoryId":42,
+                    "access":{"type":"public"}, "rootDir":"/", "branch":{"type":"connected", "name":"main"}},
+                "build":{"buildMethod":build_method, "dockerfilePath":null, "command":null}
+            }}]}))
+            .unwrap();
+            let container = &intent.target.first().unwrap().container;
+            (container.entrypoint.clone(), container.command.clone())
+        };
+        assert_eq!(
+            container("railpack"),
+            (vec![], vec!["serve --port $PORT && echo".to_owned()])
+        );
+        assert_eq!(
+            container("dockerfile"),
+            (
+                vec!["serve".into(), "--port".into(), "$PORT".into()],
+                vec![]
+            )
+        );
     }
 }

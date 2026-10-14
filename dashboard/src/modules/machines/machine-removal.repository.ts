@@ -1,5 +1,6 @@
 import "@tanstack/react-start/server-only";
 
+import type { MachineId } from "@ployz/sdk";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
@@ -131,7 +132,7 @@ export const requestMachineRemoveAttempt = Effect.fn(
 )(function* (input: {
   organizationId: string;
   requestedByUserId: string;
-  machineId: string;
+  machineId: MachineId;
   confirmDataLoss: DataLossIdentity[];
   noReset?: boolean;
   approvalId?: string | null;
@@ -169,7 +170,7 @@ export const machineRemoveAttemptConsuming = Effect.fn(
 )(function* (
   organizationId: string,
   approvalId: string,
-  machineId: string,
+  machineId: MachineId,
   noReset: boolean,
 ) {
   const { drizzle } = yield* Database;

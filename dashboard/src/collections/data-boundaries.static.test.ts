@@ -37,17 +37,22 @@ const SPINNER_FILES = {
   "components/deletion-dialog.tsx": "deletion in flight",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/sync/SyncDialog.tsx": "sync in flight",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/create-environment-dialog.tsx": "create in flight",
+  "routes/_protected/cloud/$organizationSlug/_org/-components/new-organization-dialog.tsx": "create in flight",
   "components/service-create-command.tsx": "create in flight",
   "components/service-source-selector.tsx": "sync and submit in flight",
   "form/index.tsx": "submit in flight",
   "routes/_protected/cloud/$organizationSlug/-components/store-teardown-section.tsx": "removal in flight",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/domain-row.tsx": "Setting up while the Cluster Domain sync runs; Issuing certificate while the certificate is ordered",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceActions.tsx": "a restart, stop or start moving the Service's containers",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/monitoring/MonitoringTab.tsx": "Checking while a requested probe runs",
   "routes/_protected/cloud/$organizationSlug/_org/-components/ClusterDomainSection.tsx": "Setting up while the sync runs; Check again until the sync lands",
   "routes/_protected/cloud/$organizationSlug/_org/-components/PendingEnrollmentResetSection.tsx": "reset in flight",
+  "routes/_protected/cloud/$organizationSlug/_org/-components/members-settings.tsx": "invite, remove or leave in flight",
+  "routes/invite/$token.tsx": "joining in flight",
   "routes/_protected/cloud/$organizationSlug/_org/~/billing.tsx": "portal opening",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/add-server-dialog.tsx": "command mint in flight",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/server-services-section.tsx": "the Drain running on the Server",
+  "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/server-web-traffic-section.tsx": "the web server starting or stopping on the Server",
   "routes/_public/-components/LoginPanel.tsx": "sign-in in flight",
   "routes/device.tsx": "device approval in flight",
 };
@@ -72,8 +77,7 @@ const NETWORK_FILES = {
 /** Remote Reads a loader cannot prefetch, and what warms them instead. */
 const ON_DEMAND_READS = {
   githubFileSearchQueryOptions: "searches as the user types",
-  githubRepoAccessQueryOptions: "read together with the install URL when a repository picker opens",
-  githubInstallUrlQueryOptions: "read together with repository access when a repository picker opens",
+  githubRepoAccessQueryOptions: "read when a repository picker opens; installation access changes in GitHub, so each picker rechecks it",
   githubBranchesQueryOptions: "depends on the repository the user just picked",
   githubBuildRepositoriesQueryOptions: "calls GitHub per repository; Organization Settings › Builds fills it in after hydration",
   volumeMembersQueryOptions: "asks every Server for its copy live, so a slow Server would hold the drawer open; the Placement section waits on it instead",
@@ -84,7 +88,8 @@ const ON_DEMAND_READS = {
   approvalOptions: "named by an agent conversation's interrupt, known only once the chat hydrates",
   serviceMetricsQueryOptions: "asks every Server live, so a slow Server would hold the drawer open; the Monitoring tab waits on it instead",
   serverMetricsQueryOptions: "asks a Server live, so a slow Server would hold the page; each Servers list row reads its own Server after the list shows, and the Resources section waits on it",
-  runtimeServiceMetricsQueryOptions: "asks every Server live, so a slow Server would hold the page; each Running here row waits on its own",
+  latestServiceActQueryOptions: "keyed by the Service's name, which the drawer knows only once it reads the Store; the header shows no run until it answers",
+  runtimeServiceMetricsQueryOptions:"asks every Server live, so a slow Server would hold the page; each Running here row waits on its own",
 };
 
 /** Hook files outside data files that await the server without making UI wait on it. */

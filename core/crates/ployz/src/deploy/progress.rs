@@ -131,9 +131,14 @@ impl Progress {
         self.emit();
     }
 
+    /// Pending rows never ran; a Running row at the end did its work for a
+    /// flip that never landed, so neither has an effect.
     pub(super) fn settle_unexecuted(&self) {
         for row in self.rows().iter_mut() {
-            if matches!(row.status, OperationStatus::Pending) {
+            if matches!(
+                row.status,
+                OperationStatus::Pending | OperationStatus::Running { .. }
+            ) {
                 row.status = OperationStatus::Unexecuted;
             }
         }

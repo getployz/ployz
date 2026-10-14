@@ -1,8 +1,8 @@
 import "@tanstack/react-start/server-only";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { Data, Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
-import { member, session, user } from "#/modules/identity/tables";
+import { invitation, member, session, user } from "#/modules/identity/tables";
 import { Polar } from "#/modules/billing/polar-provider.server";
 import { listAccessibleOrganizations, requireAccess, SupportStaff } from "#/modules/organization/access.server";
 import { AppConfig } from "#/server/config.server";
@@ -10,6 +10,7 @@ import { Database } from "#/server/database.server";
 import { Conflict, NotFound } from "#/server/public-error";
 import { allocateUnique, getSlugWithSuffix } from "#/utils/slug";
 import {
+  type CreateOrganization,
   personalOrganizationBaseSlug,
   personalOrganizationName,
   type PersonalOrganizationUser,
@@ -51,26 +52,35 @@ export const getFirstOrganizationIdForUser = Effect.fn(
   return rows[0]?.organizationId ?? null;
 });
 
-const createPersonalOrganization = Effect.fn(
-  "Organization.createPersonalOrganization",
-)(function* (user: PersonalOrganizationUser) {
+/** `/cloud/<slug>` paths Cloud's own pages take. A base slug among them always gets a suffix. */
+const RESERVED_SLUGS: ReadonlySet<string> = new Set(["account"]);
+
+/** Inserts an Organization under the first free slug from `baseSlug`, owned by `userId`. */
+const insertOrganization = Effect.fn("Organization.insertOrganization")(function* (
+  userId: string,
+  name: string,
+  baseSlug: string,
+) {
   const database = yield* Database;
-  const name = personalOrganizationName(user);
-  const baseSlug = personalOrganizationBaseSlug(user);
-  return yield* allocateUnique({
+  const created = yield* allocateUnique({
     tryAttempt: (attempt) =>
       Effect.gen(function* () {
         const rows = yield* database.drizzle
           .insert(organization)
-          .values({ name, slug: getSlugWithSuffix(baseSlug, attempt) })
+          .values({ name, slug: getSlugWithSuffix(baseSlug, RESERVED_SLUGS.has(baseSlug) ? attempt + 1 : attempt) })
           .onConflictDoNothing()
-          .returning({ id: organization.id });
-        return rows[0]?.id ?? null;
+          .returning({ id: organization.id, slug: organization.slug });
+        return rows[0] ?? null;
       }),
     exhausted: new Conflict({
-      message: `Could not allocate an organization slug for ${user.id}.`,
+      message: `Could not allocate an organization slug for ${userId}.`,
     }),
   });
+  yield* database.drizzle
+    .insert(member)
+    .values({ userId, organizationId: created.id, role: "owner" })
+    .onConflictDoNothing();
+  return created;
 });
 
 export const ensurePersonalOrganizationForUser = Effect.fn(
@@ -81,14 +91,22 @@ export const ensurePersonalOrganizationForUser = Effect.fn(
     Effect.gen(function* () {
       const existing = yield* getFirstOrganizationIdForUser(user.id);
       if (existing !== null) return existing;
-      const organizationId = yield* createPersonalOrganization(user);
-      yield* database.drizzle
-        .insert(member)
-        .values({ userId: user.id, organizationId, role: "owner" })
-        .onConflictDoNothing();
-      return organizationId;
+      const created = yield* insertOrganization(
+        user.id,
+        personalOrganizationName(user),
+        personalOrganizationBaseSlug(user),
+      );
+      return created.id;
     }),
   );
+});
+
+/** A new Organization the actor owns; their sessions then act in it. Returns its slug. */
+export const createOrganization = Effect.fn("Organization.create")(function* (actor: Actor, input: CreateOrganization) {
+  const database = yield* Database;
+  const created = yield* database.transaction(insertOrganization(actor.userId, input.name, input.slug));
+  yield* updateActorSessionsOrganization(actor, created.id, created.slug);
+  return created.slug;
 });
 
 export const updateActorSessionsOrganization = Effect.fn(
@@ -105,6 +123,16 @@ export const updateActorSessionsOrganization = Effect.fn(
     .where(eq(session.userId, actor.userId));
 });
 
+/** Someone who once joined by invite already knows the Organization exists, so its name tells them nothing new. */
+const formerOrganizationName = Effect.fn("Organization.formerOrganizationName")(function* (userId: string, organizationSlug: string) {
+  const { drizzle } = yield* Database;
+  const [row] = yield* drizzle.select({ name: organization.name }).from(invitation)
+    .innerJoin(organization, eq(organization.id, invitation.organizationId))
+    .where(and(eq(invitation.acceptedByUserId, userId), eq(organization.slug, organizationSlug)))
+    .limit(1);
+  return row?.name ?? null;
+});
+
 export const getOrganizationState = Effect.fn(
   "Organization.getOrganizationState",
 )(function* (actor: Actor, organizationSlug?: string) {
@@ -112,7 +140,9 @@ export const getOrganizationState = Effect.fn(
   const polar = yield* Polar;
   const staff = yield* SupportStaff;
   const config = yield* AppConfig;
+  const accessible = organizationSlug !== undefined && organizations.some((organization) => organization.slug === organizationSlug);
   return {
+    formerOrganization: organizationSlug === undefined || accessible ? null : yield* formerOrganizationName(actor.userId, organizationSlug),
     billingEnabled: polar.mode === "hosted",
     uptimeEnabled: config.uptimeEnabled,
     /** Whether this Cloud has Ployz support at all, so the support switch means something. */

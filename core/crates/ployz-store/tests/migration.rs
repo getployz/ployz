@@ -527,3 +527,105 @@ fn an_offered_proposal_goes_with_its_receipt_when_offers_retire() {
         [["00000000-0000-4000-8000-000000000201".to_owned()]]
     );
 }
+
+/// The schema as it was before `0015_sealed_variable`: no ledger of seals.
+const BEFORE_SEALED_LEDGER: &str = "
+    DROP TABLE config_sealed_variable;
+    DELETE FROM config_migration WHERE name = '0015_sealed_variable';
+";
+
+#[test]
+fn a_seal_only_working_state_held_at_upgrade_keeps_history_from_plain_text() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let who = Actor::system(OrganizationId::parse("org").unwrap());
+    {
+        let store = ConfigStore::open(&url, backend::key()).unwrap();
+        store
+            .write(
+                &who,
+                &CreateProject {
+                    id: ProjectId::parse(uuid(1)).unwrap(),
+                    name: ProjectName::parse("shop").unwrap(),
+                    default_environment: EnvironmentId::parse(uuid(2)).unwrap(),
+                },
+            )
+            .unwrap();
+        store
+            .write(
+                &who,
+                &CreateService {
+                    id: ServiceLineageId::parse(uuid(3)).unwrap(),
+                    environment: EnvironmentRef::default(),
+                    name: ServiceName::parse("web").unwrap(),
+                    image: Some("web:1".into()),
+                    template: None,
+                },
+            )
+            .unwrap();
+        set(
+            &store,
+            &who,
+            "production",
+            &[("web.env.TOKEN", json!("plain-value"))],
+        );
+        publish(&store, &who);
+        set(
+            &store,
+            &who,
+            "production",
+            &[("web.env.TOKEN", json!({ "secret": "private-value" }))],
+        );
+    }
+    run(&url, BEFORE_SEALED_LEDGER);
+    let store = ConfigStore::open(&url, backend::key()).unwrap();
+    store
+        .write(
+            &who,
+            &Edit {
+                environment: at("production"),
+                expect: None,
+                changes: vec![Change::Unset {
+                    path: SettingPath::parse("web.env.TOKEN").unwrap(),
+                }],
+            },
+        )
+        .unwrap();
+    publish(&store, &who);
+    let restore = store.read(
+        &who,
+        &ployz_store::HistoryPreviewQuery {
+            environment: at("production"),
+            revision: ployz_store::Revision(1),
+            action: ployz_store::HistoryAction::Restore,
+            change: None,
+        },
+    );
+    match restore {
+        Err(error) => assert_eq!(error.message, "TOKEN was sealed. Set it again."),
+        Ok(preview) => assert!(
+            !serde_json::to_string(&preview)
+                .unwrap()
+                .contains("plain-value"),
+            "Restoring the plain revision brought back the value sealed at upgrade"
+        ),
+    }
+}
+
+fn publish(store: &ConfigStore, who: &Actor) {
+    store
+        .write_trusted(
+            who,
+            &ployz_store::Publish {
+                environment: at("production"),
+                version: None,
+                message: None,
+                accept_volume_loss: Vec::new(),
+            },
+            &ployz_store::Trusted {
+                approval: ployz_store::Approval::NotRequired,
+                ..ployz_store::Trusted::default()
+            },
+        )
+        .unwrap();
+}

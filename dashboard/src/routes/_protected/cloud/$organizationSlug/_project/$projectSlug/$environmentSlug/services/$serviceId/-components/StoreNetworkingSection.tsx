@@ -83,7 +83,6 @@ export function StoreNetworkingSection({ state, privateFirst = false, validatePr
   validatePrivateDns: (raw: string) => string | null;
 }) {
   const { organizationSlug, environment, service, changes } = state;
-  // Its Private DNS name, with a pending edit.
   const privateDns = settingText(state.rows.get("privateDns")?.value) || service.private_dns;
   const all = requireView(useStoreView(organizationSlug, domainsQuery(environment))).domains;
   const domains = all.filter((domain) => domain.service === service.name);
@@ -241,7 +240,6 @@ export function StoreNetworkingSection({ state, privateFirst = false, validatePr
             onClose={() => setEditor(null)}
             initial={editor.kind === "add" ? editor.draft : undefined}
             onSubmit={({ hostname, targetPort }) => {
-              // Shown at once; a refusal toasts, then reopens with what was typed.
               add(hostname, targetPort).isPersisted.promise.catch(() => {
                 if (!edited) setEditor({ kind: "add", draft: { hostname, targetPort } });
               });

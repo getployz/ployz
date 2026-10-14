@@ -13,7 +13,7 @@ import { PickedNode } from "./PickableNode";
 import { useNodePick } from "../new-branch/branch-picking";
 import { getServiceIcon } from "./service-node-helpers";
 import { DeployChip, STAGED_CLASSES, StatusLine } from "./node-status-view";
-import { deployChip, nodeIssues, restartedServices, publicDomain, runtimeLine, stagedSurface } from "./node-status";
+import { deployChip, nodeIssues, notSetLabel, restartedServices, publicDomain, runtimeLine, stagedSurface } from "./node-status";
 import { RuntimeLensContext } from "./RuntimeLensProvider";
 import { ServiceTrays } from "./VolumeTray";
 import { CopyHang } from "./MirrorNode";
@@ -54,8 +54,8 @@ export function StoreServiceCard({ service, domains, changeCount, runtimeIdentit
   const subtitle = domain ? <CardDescription className={cn("truncate", domain.live && "text-foreground")}>{domain.hostname}</CardDescription> : null;
   const chipBadge = <DeployChip light={light} chip={chip} />;
   const navigate = useNavigate();
-  // A secret it has no value for: deploys skip it, so the card says so and opens its variables.
-  const [unset] = notSet;
+  // Secrets it has no value for: deploys skip them, so the card counts them and opens its variables.
+  const unset = notSetLabel(notSet);
   const notSetChip = unset === undefined ? null : (
     <span role="link" className="flex shrink-0 items-center gap-1 text-xs text-warning hover:underline"
       onClick={(event) => {
@@ -63,7 +63,7 @@ export function StoreServiceCard({ service, domains, changeCount, runtimeIdentit
         event.stopPropagation();
         void navigate({ to: ENVIRONMENT_SERVICE_ROUTE_TO, params: { ...params, serviceId: service.id }, search: { tab: "variables" } });
       }}>
-      <LockIcon className="size-3" />{unset} not set
+      <LockIcon className="size-3" />{unset}
     </span>
   );
 

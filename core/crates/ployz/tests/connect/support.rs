@@ -154,6 +154,10 @@ pub(super) struct DiscoveryService {
     pub(super) inspect_calls: Arc<AtomicUsize>,
     pub(super) storage: MachineStorageObservation,
     pub(super) storage_capacity: Option<ployz_core::StorageCapacity>,
+    pub(super) storage_hangs_after: Option<usize>,
+    pub(super) storage_reads: Arc<AtomicUsize>,
+    /// The first reads answer Unavailable, as a daemon that is not participating does.
+    pub(super) storage_unavailable_for: usize,
     pub(super) recover_volume_on_storage_inspect: Option<DockerVolume>,
     pub(super) container_list_calls: Arc<Mutex<BTreeMap<MachineId, usize>>>,
     pub(super) container_list_outcomes: Arc<Mutex<ContainerListOutcomes>>,
@@ -220,6 +224,9 @@ impl DiscoveryService {
             inspect_calls: Arc::new(AtomicUsize::new(0)),
             storage: MachineStorageObservation::Ready,
             storage_capacity: None,
+            storage_hangs_after: None,
+            storage_reads: Arc::new(AtomicUsize::new(0)),
+            storage_unavailable_for: 0,
             recover_volume_on_storage_inspect: None,
             container_list_calls: Arc::new(Mutex::new(BTreeMap::new())),
             container_list_outcomes: Arc::new(Mutex::new(BTreeMap::new())),
@@ -491,7 +498,7 @@ impl MachineRpc for DiscoveryService {
         Ok(Response::new(ReceiverStream::new(receiver)))
     }
     type LogHistoryStream = tokio_stream::Iter<std::vec::IntoIter<Result<OpaquePayload, Status>>>;
-    type TailLogsStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
+    type TailLogsStream = tokio_stream::Iter<std::vec::IntoIter<Result<OpaquePayload, Status>>>;
     type RuntimeWatchStream = ReceiverStream<Result<OpaquePayload, Status>>;
 
     async fn describe_contract(
@@ -779,6 +786,16 @@ impl MachineRpc for DiscoveryService {
         &self,
         _request: tonic::Request<ployz_core::OpaquePayload>,
     ) -> Result<tonic::Response<ployz_core::OpaquePayload>, tonic::Status> {
+        let read = self.storage_reads.fetch_add(1, Ordering::SeqCst);
+        if read < self.storage_unavailable_for {
+            return Err(Status::unavailable("Machine is not participating"));
+        }
+        if self
+            .storage_hangs_after
+            .is_some_and(|replies| read >= replies)
+        {
+            return std::future::pending().await;
+        }
         let capacity = self.storage_capacity.as_ref().ok_or_else(|| {
             Status::unimplemented("storage capacity not supplied by this fixture")
         })?;
@@ -1050,15 +1067,41 @@ impl MachineRpc for DiscoveryService {
         Ok(Response::new(tokio_stream::iter(payloads)))
     }
 
+    /// A Server process's log is two lines, the second leaking an AWS key; any other
+    /// tail is empty.
     async fn tail_logs(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<Self::TailLogsStream>, Status> {
         self.stream_opens.fetch_add(1, Ordering::SeqCst);
         if let Some(status) = &self.tail_failure {
             return Err(status.clone());
         }
-        Ok(Response::new(tokio_stream::empty()))
+        let RpcRequestBody::TailLogs(tail) = request.into_inner().decode_request().unwrap().body
+        else {
+            return Err(Status::invalid_argument("expected tail_logs"));
+        };
+        let ployz_core::LiveLogTarget::Machine(service) = tail.target else {
+            return Ok(Response::new(tokio_stream::iter(Vec::new())));
+        };
+        let metadata = ployz_core::LogMetadata {
+            origin: ployz_core::LogOrigin::Machine { service },
+            machine_id: self.description.machine_id,
+            machine_name: MachineName::parse("one").unwrap(),
+        };
+        let mut frames = Vec::new();
+        for body in [
+            ployz_core::LogBody::Stdout(b"Started ployzd.\n".to_vec()),
+            ployz_core::LogBody::Stderr(b"pulled with AKIAABCDEFGHIJKLMNOP\n".to_vec()),
+        ] {
+            let entry = ployz_core::LogEntry {
+                metadata: metadata.clone(),
+                timestamp_unix_nanos: 1_760_000_000_000_000_000,
+                body,
+            };
+            frames.push(Ok(entry.encode().unwrap()));
+        }
+        Ok(Response::new(tokio_stream::iter(frames)))
     }
 
     async fn runtime_watch(
@@ -1185,9 +1228,13 @@ impl MachineRpc for DiscoveryService {
             })
             .collect();
         Ok(Response::new(
-            RpcResponse::from(ServingPointerRead { pointer, acks })
-                .encode()
-                .unwrap(),
+            RpcResponse::from(ServingPointerRead {
+                all_routed: pointer.is_some(),
+                pointer,
+                acks,
+            })
+            .encode()
+            .unwrap(),
         ))
     }
     async fn prune_images(
@@ -1195,6 +1242,16 @@ impl MachineRpc for DiscoveryService {
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         Err(Status::unimplemented("unused"))
+    }
+    async fn pull_image(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Ok(Response::new(
+            RpcResponse::from(ployz_core::ImagePulled {})
+                .encode()
+                .unwrap(),
+        ))
     }
     async fn pull_image_from_machine(
         &self,

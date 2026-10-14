@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use super::{Residual, Target};
 use crate::Actor;
 use crate::error;
-use crate::id::{DeploymentId, EnvironmentId, ProjectId, VolumeName};
+use crate::id::{DeploymentId, EnvironmentId, ProjectId, RemovalId, VolumeName};
 use crate::storage::{Row, Tx};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -55,7 +55,7 @@ pub(crate) struct Evidence {
 
 #[derive(Clone, Debug)]
 pub(crate) struct Mark {
-    pub(crate) id: String,
+    pub(crate) id: RemovalId,
     pub(crate) target: Target,
     pub(crate) target_name: String,
     pub(crate) by: String,
@@ -77,7 +77,8 @@ impl Mark {
     ) -> Self {
         let at = crate::deployment::now();
         Self {
-            id: uuid::Uuid::new_v4().to_string(),
+            id: RemovalId::parse(uuid::Uuid::new_v4().to_string())
+                .expect("a new UUID is a removal ID"),
             target,
             target_name,
             by: who
@@ -108,7 +109,7 @@ fn read(row: &Row) -> Result<Mark, RpcError> {
         _ => return Err(error::corrupt("Removal target")),
     };
     Ok(Mark {
-        id: row.text(0)?.to_owned(),
+        id: row.parse(0, "Removal")?,
         target,
         target_name: row.text(3)?.to_owned(),
         by: row.text(4)?.to_owned(),
@@ -178,6 +179,22 @@ pub(crate) fn live(tx: &mut dyn Tx, who: &Actor) -> Result<Vec<Mark>, RpcError> 
     .iter()
     .map(read)
     .collect()
+}
+
+/// What `who`'s finished removal `id` left on old servers.
+pub(crate) fn residuals(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    id: &RemovalId,
+) -> Result<Vec<Residual>, RpcError> {
+    tx.query(
+        "SELECT residuals FROM config_removal_mark \
+         WHERE organization_id = ?1 AND id = ?2 AND state = 'removed'",
+        &[who.organization.as_str().into(), id.as_str().into()],
+    )?
+    .first()
+    .ok_or_else(|| error::not_found("No finished removal with that ID", serde_json::json!({})))?
+    .json(0, "Removal")
 }
 
 pub(crate) fn save(tx: &mut dyn Tx, who: &Actor, mark: &Mark) -> Result<(), RpcError> {

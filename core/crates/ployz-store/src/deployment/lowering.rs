@@ -384,6 +384,7 @@ pub(super) fn lower(
                     service_id: Some(node.node_id),
                     config: Value::Null,
                     replicas: None,
+                    built_with: None,
                 },
             )),
             CompiledNodeConfig::Volume(_) | CompiledNodeConfig::Config(_) => None,
@@ -523,13 +524,14 @@ pub(super) fn lower(
     let with = |built_later: bool| {
         snapshots
             .iter()
-            .map(|(config, snapshot)| LowerDeploymentSnapshot {
-                config: json_value(&if built_later {
-                    built(config)
-                } else {
-                    config.clone()
-                }),
-                ..snapshot.clone()
+            .map(|(config, snapshot)| {
+                let build =
+                    built_later && matches!(config.settings.source, ServiceSource::Git { .. });
+                LowerDeploymentSnapshot {
+                    config: json_value(&if build { built(config) } else { config.clone() }),
+                    built_with: build.then_some(config.settings.build.build_method),
+                    ..snapshot.clone()
+                }
             })
             .collect()
     };

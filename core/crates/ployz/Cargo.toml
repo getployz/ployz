@@ -45,6 +45,7 @@ tokio-stream = "0.1.19"
 tokio-util = "0.7.19"
 tonic = { version = "0.13.1", features = ["gzip", "transport"] }
 tower = { version = "0.5.3", features = ["util"] }
+tracing = "0.1.44"
 ts-rs.workspace = true
 unicode-segmentation = "1.13.3"
 unicode-width = { version = "0.2.2", default-features = false }

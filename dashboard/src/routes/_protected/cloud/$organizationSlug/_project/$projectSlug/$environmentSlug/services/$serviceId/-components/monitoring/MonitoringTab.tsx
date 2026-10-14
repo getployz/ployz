@@ -17,7 +17,7 @@ import { admission } from "#/modules/config-store/store-deployments";
 import { useStoreDeployments } from "#/modules/config-store/store-view.queries";
 import { volumeStorageText } from "#/modules/config-store/store-volumes";
 import { useServerList } from "#/modules/machines/use-servers";
-import { bytesIn, bytesText, cpuText, onGrid, rateIn, rateText } from "#/modules/metrics/metric-chart-data";
+import { bytesIn, bytesText, cpuIn, cpuText, onGrid, rateIn, rateText } from "#/modules/metrics/metric-chart-data";
 import { serviceMetrics, type Marker, type MetricAvailability, type ServerRef, type ServiceMetrics, type ServiceSeries } from "#/modules/metrics/metrics-model";
 import { serviceMetricsQueryOptions } from "#/modules/metrics/metrics.queries";
 import {
@@ -267,7 +267,7 @@ type SeriesKey = keyof ServiceSeries;
 type ChartLine = { readonly key: SeriesKey; readonly label: string; readonly color: string };
 
 const RESOURCE_CHARTS = [
-  { id: "cpu", title: "CPU", format: (vcpus: number) => `${cpuText(vcpus)} vCPU`, lines: [{ key: "cpu", label: "CPU", color: "var(--chart-1)" }] },
+  { id: "cpu", title: "CPU", format: cpuText, axisFormat: cpuIn, lines: [{ key: "cpu", label: "CPU", color: "var(--chart-1)" }] },
   { id: "memory", title: "Memory", format: bytesText, axisFormat: bytesIn, lines: [{ key: "memory", label: "Memory", color: "var(--chart-4)" }] },
   { id: "network", title: "Network", format: rateText, axisFormat: rateIn, lines: [{ key: "netIn", label: "In", color: "var(--chart-2)" }, { key: "netOut", label: "Out", color: "var(--chart-1)" }] },
   { id: "disk", title: "Disk", format: rateText, axisFormat: rateIn, lines: [{ key: "diskRead", label: "Read", color: "var(--chart-3)" }, { key: "diskWrite", label: "Write", color: "var(--chart-5)" }] },
@@ -341,7 +341,7 @@ function Charts({ organizationSlug, scope, service, range, dimmed, uptime, uptim
   const lastLimit = metrics.all.memoryLimit.at(-1);
   const memoryLimit = lastMemory !== undefined && lastLimit?.at === lastMemory.at ? lastLimit.value : null;
   const limits = {
-    cpu: vcpuLimit === null ? null : { value: vcpuLimit, label: `Limit ${cpuText(vcpuLimit)} vCPU` },
+    cpu: vcpuLimit === null ? null : { value: vcpuLimit, label: `Limit ${cpuText(vcpuLimit)}` },
     memory: memoryLimit === null || memoryLimit <= 0 ? null : { value: memoryLimit, label: `Limit ${bytesText(memoryLimit)}` },
     network: null,
     disk: null,

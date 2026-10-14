@@ -31,11 +31,10 @@ export const ENVIRONMENT_IDS = {
 /** Generated prefixes are unique in an Organization, so only staging's web can be `web`. */
 const PREFIXES = { production: "www", staging: "web" } satisfies Record<EnvironmentName, string>;
 const CLUSTER_DOMAIN = "acme.ployz.test";
-/** What made staging's Deployment 4 fail, as its runner recorded it. */
 /** Every task happens in staging, and a member asks from the page they view: staging's architecture. */
 const STAGING_PAGE = { page: "architecture", project: "app", environment: "staging" };
 
-export const FAILURE = "Building worker failed: npm ERR! Missing script: \"start\"";
+export const STAGING_DEPLOYMENT_4_FAILURE = "Building worker failed: npm ERR! Missing script: \"start\"";
 
 export const environmentRef = (environment: EnvironmentName): EnvironmentRef => ({ project: "app", environment });
 
@@ -112,7 +111,7 @@ export const evalFixture = Effect.fn("Eval.fixture")(function* (scenario?: Fleet
   for (const number of [1, 2, 3, 4]) {
     const deployment = id("staging", 30 + number);
     yield* write({ command: "admit", admit: "deploy", id: deployment, environment: environmentRef("staging"), services: [], version: null, accept_volume_loss: [] });
-    if (number === 4) yield* Effect.promise(() => store.runDeployment(ORGANIZATION, deployment, "eval-runner", [], { failure: FAILURE }));
+    if (number === 4) yield* Effect.promise(() => store.runDeployment(ORGANIZATION, deployment, "eval-runner", [], { failure: STAGING_DEPLOYMENT_4_FAILURE }));
     else yield* provided(applied(deployment));
   }
   dispatched.length = 0;
@@ -128,7 +127,7 @@ export const evalFixture = Effect.fn("Eval.fixture")(function* (scenario?: Fleet
   const sources: Effect.Effect<Sources> = Effect.gen(function* () {
     return { dispatched: [...dispatched], ledger: fleet === null ? [] : yield* fleet.ledger };
   });
-  const caller: Caller = { userId, organization: { id: ORGANIZATION, slug: "acme" }, credential: { kind: "session", id: "session-eval" }, support: null };
+  const caller: Caller = { userId, organization: { id: ORGANIZATION, slug: "acme" }, credential: { kind: "session", id: "session-eval" }, role: "owner", support: null, via: "dashboard" };
   /** One sidebar thread of the fixture's member: each turn's stream, and the approval its last turn waits on. */
   const conversation = (model: AnyTextAdapter, thread: string) => {
     let runs = 0;

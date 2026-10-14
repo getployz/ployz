@@ -49,7 +49,6 @@ pub enum RuntimeOutcomeSummary {
     },
     /// Execution or preflight stopped before the whole plan completed.
     Failed {
-        /// Number of completed operations.
         completed: usize,
         /// Number of operations never attempted, excluding the failed operation.
         unexecuted: usize,
@@ -294,11 +293,9 @@ pub fn project_runtime_outcome(
 /// How far a Service's planned operations got.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Progress {
-    /// Every one completed.
     Completed,
     /// Some ran, not all completed.
     Failed,
-    /// None ran.
     Unattempted,
 }
 

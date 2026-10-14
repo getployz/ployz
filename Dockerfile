@@ -24,6 +24,8 @@ RUN cargo chef cook --release --locked --recipe-path recipe.json -p ployz-sdk \
     && cargo chef cook --release --locked --recipe-path recipe.json -p ployz-config-wasm --target wasm32-unknown-unknown
 # Dashboard edits must not invalidate this layer.
 COPY core/ ./
+# ployz-store's build script embeds the user docs for the agent's docs tool.
+COPY docs/user/ /app/docs/user/
 RUN bash scripts/build-cloud-sdk.sh
 
 FROM node AS dashboard

@@ -6,8 +6,10 @@ use std::{
     os::unix::fs::MetadataExt,
     path::Path,
     process::{Command, Stdio},
+    time::Duration,
 };
 
+use tokio::time::timeout;
 use tonic::transport::Endpoint;
 
 use crate::filesystem::{MACHINE_API_SOCKET_MODE, PLOYZ_DIR_MODE, atomic_write};
@@ -19,6 +21,9 @@ use super::{
     Error, InstallPaths, PLOYZ_USER, command_exists, refuse, run_apt, run_host, systemctl,
 };
 use ployz_build::{MINIMUM_BUILDX, MINIMUM_DOCKER_API, MINIMUM_DOCKER_RELEASE};
+
+const INSTALL_UNITS_TIMEOUT: Duration = Duration::from_secs(10);
+const USAGE_ERROR: i32 = 2;
 
 const DOCKER_DAEMON_CONFIG: &str = r#"{
   "features": { "containerd-snapshotter": true },
@@ -174,52 +179,87 @@ pub(super) fn verify_software_prerequisites(paths: &InstallPaths) -> Result<(), 
     Ok(())
 }
 
-pub(super) fn install_systemd(paths: &InstallPaths, install_only: bool) -> Result<(), Error> {
-    fs::create_dir_all(&paths.systemd_dir).map_err(|source| Error::Io {
+pub(super) async fn install_units(paths: &InstallPaths) -> Result<(), Error> {
+    let mut command = tokio::process::Command::new(paths.daemon());
+    command
+        .arg("install-units")
+        .arg("--bin-dir")
+        .arg(&paths.bin_dir)
+        .arg("--run-dir")
+        .arg(&paths.run_dir)
+        .arg("--systemd-dir")
+        .arg(&paths.systemd_dir)
+        .kill_on_drop(true);
+    let stage = "write systemd units with the installed release";
+    let output = timeout(INSTALL_UNITS_TIMEOUT, command.output())
+        .await
+        .map_err(|_| Error::Command {
+            stage: stage.into(),
+            message: format!("timed out after {}s", INSTALL_UNITS_TIMEOUT.as_secs()),
+        })?
+        .map_err(|source| Error::Io { stage, source })?;
+    match output.status.code() {
+        Some(0) => Ok(()),
+        // Releases before install-units reject the subcommand as a usage error.
+        Some(USAGE_ERROR) => write_units(&paths.bin_dir, &paths.run_dir, &paths.systemd_dir),
+        _ => {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+            Err(Error::Command {
+                stage: stage.into(),
+                message: if stderr.is_empty() {
+                    format!("exited with {}", output.status)
+                } else {
+                    stderr
+                },
+            })
+        }
+    }
+}
+
+/// Writes this release's systemd unit files without contacting systemd.
+///
+/// # Errors
+///
+/// Returns the first unit directory, file, or legacy unit removal that failed.
+pub fn write_units(bin_dir: &Path, run_dir: &Path, systemd_dir: &Path) -> Result<(), Error> {
+    fs::create_dir_all(systemd_dir).map_err(|source| Error::Io {
         stage: "create systemd unit directory",
         source,
     })?;
     write_file_atomically(
-        &paths.systemd_dir.join("ployz.service"),
-        &machine_daemon_service_unit(&paths.bin_dir),
+        &systemd_dir.join("ployz.service"),
+        &machine_daemon_service_unit(bin_dir),
         "write Machine daemon service unit",
     )?;
     write_file_atomically(
-        &paths.systemd_dir.join("ployz.socket"),
-        &machine_api_socket_unit(&paths.run_dir),
+        &systemd_dir.join("ployz.socket"),
+        &machine_api_socket_unit(run_dir),
         "write Machine API socket unit",
     )?;
     write_file_atomically(
-        &paths.systemd_dir.join("ployz-volume-plugin.socket"),
+        &systemd_dir.join("ployz-volume-plugin.socket"),
         volume_plugin_socket_unit(),
         "write Volume plugin socket unit",
     )?;
     write_file_atomically(
-        &paths.systemd_dir.join("ployz-volume-plugin.service"),
-        &volume_plugin_service_unit(&paths.bin_dir),
+        &systemd_dir.join("ployz-volume-plugin.service"),
+        &volume_plugin_service_unit(bin_dir),
         "write Volume plugin service unit",
     )?;
-    write_file_atomically(
-        &paths.systemd_dir.join("ployz-observe.service"),
-        &observe_service_unit(&paths.bin_dir, &paths.run_dir),
-        "write Log Store service unit",
+    remove_legacy_observe_unit(systemd_dir)
+}
+
+pub(super) fn activate_units() -> Result<(), Error> {
+    systemctl("reload systemd units", ["daemon-reload"])?;
+    systemctl("enable daemon", ["enable", "ployz.service"])?;
+    systemctl(
+        "enable Machine API socket",
+        ["enable", "--now", "ployz.socket"],
     )?;
-    if !install_only {
-        systemctl("reload systemd units", ["daemon-reload"])?;
-        systemctl("enable daemon", ["enable", "ployz.service"])?;
-        systemctl(
-            "enable Machine API socket",
-            ["enable", "--now", "ployz.socket"],
-        )?;
-        systemctl(
-            "enable volume plugin socket",
-            ["enable", "--now", "ployz-volume-plugin.socket"],
-        )?;
-        systemctl(
-            "enable Log Store",
-            ["enable", "--now", "ployz-observe.service"],
-        )?;
-    }
+    systemctl(
+        "enable volume plugin socket",
+        ["enable", "--now", "ployz-volume-plugin.socket"],
+    )?;
     Ok(())
 }
 
@@ -323,41 +363,25 @@ RestrictNamespaces=true
     )
 }
 
-/// The Log Store harvester runs as root to link Docker's root-only log files,
-/// so its cgroup limits keep a runaway harvester from starving the Machine.
-fn observe_service_unit(bin_dir: &Path, run_dir: &Path) -> String {
-    let bin = bin_dir.display();
-    let run = run_dir.display();
-    format!(
-        "\
-[Unit]
-Description=Ployz Log Store
-After=docker.service
-Wants=docker.service
-
-[Service]
-Type=simple
-ExecStartPre=/usr/bin/install -d -m {PLOYZ_DIR_MODE:04o} -o {PLOYZ_USER} -g {PLOYZ_USER} {run}
-ExecStart={bin}/ployzd observe
-EnvironmentFile=-/etc/default/ployz
-Restart=always
-RestartSec=2
-CPUQuota=10%
-MemoryMax=256M
-IOWeight=10
-NoNewPrivileges=true
-ProtectSystem=full
-ProtectControlGroups=true
-ProtectHome=read-only
-ProtectKernelTunables=true
-PrivateTmp=true
-RestrictAddressFamilies=AF_UNIX
-RestrictNamespaces=true
-
-[Install]
-WantedBy=multi-user.target
-"
-    )
+/// The daemon writes the Observe Store as a runtime unit, which a
+/// leftover `/etc` copy would shadow.
+fn remove_legacy_observe_unit(systemd_dir: &Path) -> Result<(), Error> {
+    for path in [
+        systemd_dir.join("multi-user.target.wants/ployz-observe.service"),
+        systemd_dir.join("ployz-observe.service"),
+    ] {
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(source) => {
+                return Err(Error::Io {
+                    stage: "remove legacy Log Store unit",
+                    source,
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn write_file_atomically(

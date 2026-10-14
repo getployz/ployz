@@ -11,6 +11,7 @@ import { discardFailedRestore, type FailedRestore, releasePlacementClaims } from
 import { extractUpload, releaseUpload } from "#/modules/config-store/upload.server";
 import { eq } from "drizzle-orm";
 import type { GithubApi } from "#/modules/github/github-observation.api";
+import { GithubDisconnected } from "#/modules/github/github-access";
 import { GithubSourceError, materializeGithubSource, resolveGithubSourceSha } from "#/modules/github/github-source.server";
 import type { ConfigDeploymentAdmittedEventData } from "#/modules/inngest/events";
 import type { AppConfig } from "#/server/config.server";
@@ -27,7 +28,9 @@ export type StoreEffectRunner = <A, E extends Error>(program: Effect.Effect<A, E
 export class SourceUnreadable extends Data.TaggedError("SourceUnreadable")<{ readonly message: string }> {}
 
 const fromGithub = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.mapError((error) => new SourceUnreadable({
-  message: error instanceof GithubSourceError ? error.message : "GitHub didn't answer while reading the source. Deploy again.",
+  message: error instanceof GithubSourceError || error instanceof GithubDisconnected
+    ? error.message
+    : "GitHub didn't answer while reading the source. Deploy again.",
 })));
 
 const identity = (organizationId: string, source: GitSource) => ({
@@ -115,7 +118,7 @@ const released = (store: ConfigStore, organizationId: string, deploymentId: stri
 /**
  * Run `runId` stopped before it claimed its Deployment: the Store records it failed, with why, as one whose sources Cloud
  * couldn't read. One another runner claimed, or that already ended, is left as it is.
- * ponytail: read-then-fail; a duplicate run claiming it in between loses its claim to this one.
+ * A duplicate run that claims it after the read races this one in the Store: whichever claims second is refused.
  */
 const failUnclaimed = Effect.fn("StoreDeployment.failUnclaimed")(function* (
   store: ConfigStore, organizationId: string, deploymentId: string, runId: string, why: string,
@@ -215,7 +218,7 @@ export const unclaimedStoreDeployments = Effect.fn("StoreDeployment.unclaimed")(
     if (Option.isSome(view) && view.value.in_flight) held.add(view.value.environment.id);
   }
   return unclaimed.filter((found) => !held.has(found.environment)).map((found): ConfigDeploymentAdmittedEventData => ({
-    organizationId: found.organization, environmentId: found.environment, deploymentId: found.deployment,
+    organizationId: found.organization, environmentId: found.environment, deploymentId: found.deployment, trigger: "user",
   }));
 });
 

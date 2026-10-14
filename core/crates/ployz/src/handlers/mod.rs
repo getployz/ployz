@@ -17,6 +17,7 @@ pub(crate) mod context;
 mod data_loss;
 pub(crate) mod debug;
 pub(crate) mod deploy;
+pub(crate) mod docs;
 pub(crate) mod domain;
 pub(crate) mod env;
 pub(crate) mod github;
@@ -125,15 +126,21 @@ fn reached(tree: &Command, args: &[std::ffi::OsString]) -> String {
 /// Report a rejected command line: clap's own rendering, or one JSON error under `--json`.
 fn usage_failure(error: clap::Error) -> Error {
     use clap::error::ErrorKind;
+    use std::io::Write as _;
     let wants_json = std::env::args_os()
         .take_while(|arg| arg != "--")
         .any(|arg| arg == "--json");
-    if !wants_json
-        || matches!(
-            error.kind(),
-            ErrorKind::DisplayHelp | ErrorKind::DisplayVersion
-        )
-    {
+    if matches!(
+        error.kind(),
+        ErrorKind::DisplayHelp | ErrorKind::DisplayVersion
+    ) {
+        // clap's own `exit` swallows a closed stdout instead of dying of it.
+        let mut stdout = crate::ui::stdout();
+        let _ = write!(stdout, "{}", error.render().ansi());
+        let _ = stdout.flush();
+        std::process::exit(0);
+    }
+    if !wants_json {
         error.exit();
     }
     crate::ui::init(true, crate::ui::Color::Auto);
@@ -156,8 +163,7 @@ fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
         if matches.get_flag("json") {
             return Err(Error::usage("a command is required"));
         }
-        command.print_help()?;
-        crate::ui::stream("");
+        crate::ui::stream(command.render_help().ansi());
         return Ok(());
     }
     let path = command_path(matches);
@@ -184,8 +190,7 @@ fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
             .split(' ')
             .try_fold(command, |command, name| command.find_subcommand_mut(name))
             .ok_or_else(|| Error::usage(format!("ployz {path} requires a subcommand")))?;
-        group.print_help()?;
-        crate::ui::stream("");
+        crate::ui::stream(group.render_help().ansi());
         return Ok(());
     };
     if json_refused(&path) && matches.get_flag("json") {
@@ -240,7 +245,7 @@ fn completion(root: &ArgMatches) -> Result<(), Error> {
         "ployz",
         "ployz",
         "ployz",
-        &mut std::io::stdout(),
+        &mut crate::ui::stdout_bytes(),
     )?;
     Ok(())
 }
@@ -476,6 +481,7 @@ pub(crate) fn handler_for(path: &str) -> Option<Runnable> {
         ("diff", "") => Some(cloud(Never, review::diff)),
         ("discard", "") => Some(cloud(Never, review::discard)),
         ("history", "" | "restore" | "undo") => Some(cloud(Never, review::history)),
+        ("docs", "") => Some(local(Never, docs::run)),
         ("domain", rest) => domain::handler(rest),
         ("env", rest) => env::handler(rest),
         ("exec", "") => Some(cloud(Always, operator::exec)),

@@ -37,6 +37,8 @@ pub(crate) enum Subject {
         server: String,
     },
     Service(GraphService),
+    /// A Service-wide row outside the Deploy graph, such as unchecked ingress.
+    Unlocated(QualifiedService),
     Operation {
         index: u32,
         machine: MachineId,
@@ -65,6 +67,7 @@ impl Subject {
                 },
             ) => a == b && am == bm,
             (Self::Service(a), Self::Service(b)) => a.service == b.service,
+            (Self::Unlocated(a), Self::Unlocated(b)) => a == b,
             (
                 Self::Operation {
                     index: a,
@@ -108,6 +111,7 @@ impl GraphService {
             | State::ObservedRunning
             | State::Unchanged
             | State::Failed
+            | State::Warned
             | State::Unknown
             | State::Excluded => None,
         }
@@ -123,6 +127,7 @@ impl GraphService {
             State::ObservedRunning
             | State::Unchanged
             | State::Failed
+            | State::Warned
             | State::Unknown
             | State::Excluded => state.word(),
         };
@@ -151,6 +156,8 @@ pub(crate) enum State {
     ObservedRunning,
     Unchanged,
     Failed,
+    /// Applied, but left something to look at, such as ingress that didn't start.
+    Warned,
     NotAttempted,
     Unknown,
     Excluded,
@@ -179,6 +186,7 @@ impl State {
             Self::ObservedRunning => "running",
             Self::Unchanged => "unchanged",
             Self::Failed => "failed",
+            Self::Warned => "not running",
             Self::NotAttempted => "not attempted",
             Self::Unknown => "unknown",
             Self::Excluded => "excluded",
@@ -189,7 +197,7 @@ impl State {
         match self {
             Self::Completed | Self::ObservedRunning => Tone::Good,
             Self::Failed => Tone::Bad,
-            Self::Pending | Self::Running(_) | Self::Unknown => Tone::Change,
+            Self::Pending | Self::Running(_) | Self::Unknown | Self::Warned => Tone::Change,
             Self::Unchanged | Self::NotAttempted | Self::Excluded => Tone::Muted,
         }
     }
@@ -509,6 +517,7 @@ fn label(subject: &Subject, frame: &Frame) -> String {
             }
         }
         Subject::Service(graph) => service_label(&graph.service, frame),
+        Subject::Unlocated(service) => service_label(service, frame),
         Subject::Operation { name, server, .. } => format!("{name} on {server}"),
         Subject::Node { name, .. } => name.clone(),
     }
@@ -519,7 +528,7 @@ fn service_label(service: &QualifiedService, frame: &Frame) -> String {
         .rows
         .iter()
         .filter_map(|row| match &row.subject {
-            Subject::ServiceOnServer { service, .. } => Some(service),
+            Subject::ServiceOnServer { service, .. } | Subject::Unlocated(service) => Some(service),
             Subject::Service(graph) => Some(&graph.service),
             Subject::Operation { .. } | Subject::Node { .. } => None,
         })
@@ -542,16 +551,20 @@ fn paint(text: &str, tone: Tone, color: bool) -> String {
 fn word(row: &Row) -> String {
     match &row.subject {
         Subject::Service(graph) => graph.word(&row.state),
-        Subject::ServiceOnServer { .. } | Subject::Operation { .. } | Subject::Node { .. } => {
-            row.state.word().to_owned()
-        }
+        Subject::ServiceOnServer { .. }
+        | Subject::Unlocated(_)
+        | Subject::Operation { .. }
+        | Subject::Node { .. } => row.state.word().to_owned(),
     }
 }
 
 fn row_text(row: &Row, frame: &Frame, tick: usize) -> String {
     let mark = match &row.subject {
         Subject::Service(graph) => graph.mark(&row.state),
-        Subject::ServiceOnServer { .. } | Subject::Operation { .. } | Subject::Node { .. } => None,
+        Subject::ServiceOnServer { .. }
+        | Subject::Unlocated(_)
+        | Subject::Operation { .. }
+        | Subject::Node { .. } => None,
     }
     .unwrap_or_else(|| mark(&row.state, tick));
     let elapsed = match row.timing {
@@ -588,9 +601,10 @@ fn body<'a>(
         .iter()
         .filter_map(|row| match &row.subject {
             Subject::Service(graph) => Some((graph, row)),
-            Subject::ServiceOnServer { .. } | Subject::Operation { .. } | Subject::Node { .. } => {
-                None
-            }
+            Subject::ServiceOnServer { .. }
+            | Subject::Unlocated(_)
+            | Subject::Operation { .. }
+            | Subject::Node { .. } => None,
         })
         .collect();
     graph.sort_by_key(|(graph, _)| graph.depth);
@@ -622,7 +636,7 @@ fn mark(state: &State, tick: usize) -> &'static str {
         State::Completed | State::ObservedRunning | State::Unchanged => "✔",
         State::Failed => "✘",
         State::Pending | State::NotAttempted | State::Excluded => "·",
-        State::Unknown => "!",
+        State::Unknown | State::Warned => "!",
     }
 }
 
@@ -730,6 +744,7 @@ fn changes(
             let depth = match &row.subject {
                 Subject::Service(graph) => format!(" (depth {})", graph.depth),
                 Subject::ServiceOnServer { .. }
+                | Subject::Unlocated(_)
                 | Subject::Operation { .. }
                 | Subject::Node { .. } => String::new(),
             };
@@ -744,9 +759,10 @@ fn changes(
         }
         let draining = |row: &Row| match &row.subject {
             Subject::Service(graph) => graph.draining_line(),
-            Subject::ServiceOnServer { .. } | Subject::Operation { .. } | Subject::Node { .. } => {
-                None
-            }
+            Subject::ServiceOnServer { .. }
+            | Subject::Unlocated(_)
+            | Subject::Operation { .. }
+            | Subject::Node { .. } => None,
         };
         if let Some(text) = draining(row)
             && old.is_none_or(|(old, _)| draining(old).as_ref() != Some(&text))
@@ -860,6 +876,7 @@ fn finish(
         (State::ObservedRunning, "running"),
         (State::Unchanged, "unchanged"),
         (State::Failed, "failed"),
+        (State::Warned, "warning"),
         (State::NotAttempted, "not attempted"),
         (State::Unknown, "unknown"),
         (State::Excluded, "excluded"),
@@ -877,7 +894,7 @@ fn finish(
                 vec![machine]
             }
             Subject::Service(graph) => graph.machines.iter().collect(),
-            Subject::Node { .. } => Vec::new(),
+            Subject::Unlocated(_) | Subject::Node { .. } => Vec::new(),
         })
         .collect();
     if !servers.is_empty() {

@@ -19,6 +19,7 @@ rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"
 schemars = "1.2.2"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+tantivy = { version = "0.26.2", default-features = false, features = ["stemmer"] }
 tracing = "0.1.44"
 ts-rs.workspace = true
 uuid = { version = "1.24.0", features = ["serde", "v4", "v5"] }

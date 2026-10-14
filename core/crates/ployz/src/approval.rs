@@ -24,6 +24,10 @@ pub(crate) struct Asked {
     pub(crate) effects: Vec<DestructiveEffect>,
     #[serde(flatten)]
     pub(crate) subject: Subject,
+    /// The Organization an operation acts in, which can differ from the one this device
+    /// last acted in once a browser has moved the session.
+    #[serde(default)]
+    organization: Option<String>,
 }
 
 /// What the approval covers: a Store write, which carries its diff, or an operation on one
@@ -47,8 +51,10 @@ pub(crate) enum Verb {
     Publish,
     Deploy,
     Drain,
+    Set,
     Clean,
     Remove,
+    Forget,
     Release,
     RemoveMirror,
 }
@@ -59,8 +65,10 @@ impl Verb {
             Self::Publish => "publish",
             Self::Deploy => "deploy",
             Self::Drain => "drain",
+            Self::Set => "change",
             Self::Clean => "cleanup",
             Self::Remove => "removal",
+            Self::Forget => "forgetting",
             Self::Release => "release",
             Self::RemoveMirror => "mirror removal",
         }
@@ -71,10 +79,27 @@ impl Verb {
             Self::Publish => "published",
             Self::Deploy => "deployed",
             Self::Drain => "drained",
+            Self::Set => "changed",
             Self::Clean => "cleaned",
             Self::Remove => "removed",
+            Self::Forget => "forgotten",
             Self::Release => "released",
             Self::RemoveMirror => "removed",
+        }
+    }
+
+    /// `this change to web-2`, but `this removal of web-1`.
+    fn preposition(self) -> &'static str {
+        match self {
+            Self::Set => "to",
+            Self::Publish
+            | Self::Deploy
+            | Self::Drain
+            | Self::Clean
+            | Self::Remove
+            | Self::Forget
+            | Self::Release
+            | Self::RemoveMirror => "of",
         }
     }
 }
@@ -87,6 +112,14 @@ impl Asked {
         serde_json::from_value(error.details.clone()).ok()
     }
 
+    /// The verb Cloud named, or `Deploy` for a Store write, whose diff names none.
+    pub(crate) fn verb(&self) -> Verb {
+        match &self.subject {
+            Subject::Diff(_) => Verb::Deploy,
+            Subject::Operation(operation) => operation.verb,
+        }
+    }
+
     /// The name a person types to approve: the Environment's, or the operation's.
     pub(crate) fn name(&self) -> &str {
         match &self.subject {
@@ -95,7 +128,7 @@ impl Asked {
         }
     }
 
-    /// `this deploy to shop/production`, `this removal of web-1`.
+    /// `this deploy to shop/production`, `this removal of web-1`, `this change to web-2`.
     pub(crate) fn what(&self, verb: Verb) -> String {
         let noun = verb.noun();
         match &self.subject {
@@ -103,21 +136,39 @@ impl Asked {
                 "this {noun} to {}/{}",
                 diff.environment.project, diff.environment.name
             ),
-            Subject::Operation(operation) => format!("this {noun} of {}", operation.name),
+            Subject::Operation(operation) => {
+                format!("this {noun} {} {}", verb.preposition(), operation.name)
+            }
         }
     }
 
     pub(crate) fn review(&self, verb: Verb) -> Vec<String> {
-        let mut lines = vec![format!(
-            "This {} destroys {}:",
-            verb.noun(),
-            things(self.effects.len())
-        )];
-        lines.extend(
-            self.effects
+        let within = match &self.organization {
+            Some(organization) => format!(" in Organization {organization}"),
+            None => String::new(),
+        };
+        let changes_only = !self.effects.is_empty()
+            && self
+                .effects
                 .iter()
-                .map(|effect| format!("  ✕ {}", line(effect))),
-        );
+                .all(|effect| effect.kind == DestructiveKind::ChangesRole);
+        let mut lines = vec![if changes_only {
+            format!("This {}{within}:", verb.noun())
+        } else {
+            format!(
+                "This {}{within} destroys {}:",
+                verb.noun(),
+                things(self.effects.len())
+            )
+        }];
+        lines.extend(self.effects.iter().map(|effect| {
+            let mark = if effect.kind == DestructiveKind::ChangesRole {
+                "~"
+            } else {
+                "✕"
+            };
+            format!("  {mark} {}", line(effect))
+        }));
         let others = match &self.subject {
             Subject::Diff(diff) => diff.total_count.saturating_sub(self.effects.len()),
             Subject::Operation(_) => 0,
@@ -147,6 +198,9 @@ fn line(effect: &DestructiveEffect) -> String {
         },
         DestructiveKind::RemovesDomain => format!("removes domain {name}"),
         DestructiveKind::RemovesServer => format!("removes Server {name}"),
+        DestructiveKind::RemovesMember => format!("removes member {name}"),
+        DestructiveKind::ChangesRole => format!("changes the role of {name}"),
+        DestructiveKind::RevokesInvite => format!("revokes the invite for {name}"),
     }
 }
 
@@ -282,4 +336,71 @@ pub(crate) async fn decide(
     )
     .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Asked, Verb};
+
+    fn asked(verb: &str, kind: &str) -> Asked {
+        serde_json::from_value(serde_json::json!({
+            "approval_id": "a1",
+            "approval": "d1",
+            "effects": [{ "kind": kind, "name": "bob@example.com", "node": "u1", "path": "members/u1" }],
+            "operation": { "verb": verb, "name": "bob@example.com" },
+            "organization": "acme",
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_role_change_reads_as_a_change_in_its_organization() {
+        let asked = asked("set", "changes_role");
+        assert_eq!(
+            asked.review(asked.verb()),
+            [
+                "This change in Organization acme:",
+                "  ~ changes the role of bob@example.com",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_member_removal_names_its_organization_and_what_it_destroys() {
+        let asked = asked("remove", "removes_member");
+        assert_eq!(
+            asked.review(asked.verb()),
+            [
+                "This removal in Organization acme destroys 1 thing:",
+                "  ✕ removes member bob@example.com",
+            ]
+        );
+    }
+
+    /// Cloud names every operation it gates with one of its `OperationVerb`s; one this CLI
+    /// cannot read leaves its `approval_required` refusal unasked.
+    #[test]
+    fn every_operation_verb_cloud_sends_is_a_verb() {
+        let approvals = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../dashboard/src/modules/approvals/approvals.ts");
+        let source = std::fs::read_to_string(approvals).unwrap();
+        let union = source
+            .lines()
+            .find_map(|line| line.strip_prefix("export type OperationVerb = "))
+            .expect(
+                "wants `export type OperationVerb = ...` on one line in dashboard/src/modules/approvals/approvals.ts",
+            );
+        let verbs: Vec<&str> = union
+            .trim_end_matches(';')
+            .split('|')
+            .map(|verb| verb.trim().trim_matches('"'))
+            .collect();
+        assert!(verbs.contains(&"drain"), "{union}");
+        for verb in verbs {
+            assert!(
+                serde_json::from_value::<Verb>(serde_json::json!(verb)).is_ok(),
+                "Cloud asks approval to {verb}, which `Verb` does not read"
+            );
+        }
+    }
 }

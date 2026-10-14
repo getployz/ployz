@@ -4,26 +4,10 @@ import { and, eq } from "drizzle-orm";
 import { Data, Effect } from "effect";
 import { canonicalJson, projectJsonValue } from "#/lib/json";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
+import type { OperationTool } from "#/modules/operations/operations";
 import { operationRequest } from "#/modules/operations/tables";
 import { Database } from "#/server/database.server";
 import { uuidFrom } from "#/server/uuid-from";
-
-export const OPERATION_TOOLS = [
-  "server_drain",
-  "server_upgrade",
-  "server_clean",
-  "server_remove",
-  "volume_mirror",
-  "volume_move",
-  "volume_release",
-  "volume_mirror_remove",
-  "volume_restore",
-  "volume_seed",
-  "service_restart",
-  "service_start",
-  "service_stop",
-] as const;
-export type OperationTool = (typeof OPERATION_TOOLS)[number];
 
 export const REQUEST_KEY_HEADER = "x-ployz-request-key";
 const REQUEST_KEY = /^[A-Za-z0-9_-]{8,64}$/;
@@ -65,6 +49,10 @@ const storedRequest = (organizationId: string, key: string) =>
     drizzle.select().from(operationRequest)
       .where(and(eq(operationRequest.organizationId, organizationId), eq(operationRequest.requestKey, key)))
       .pipe(Effect.map(([row]) => row)));
+
+/** When request `key` was first admitted, so a replay answers the time the first one did. Null for an unseen key. */
+export const admittedAt = (organizationId: string, key: string) =>
+  Effect.map(storedRequest(organizationId, key), (row) => row?.createdAt ?? null);
 
 /**
  * One requested operation, admitted at most once per request key. A key seen before answers its attempt without

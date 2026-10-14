@@ -6,8 +6,17 @@ const SRC = join(process.cwd(), "src");
 const VALUE_IMPORT_ALLOWLIST = new Set([
   "modules/runtime/ployz.server.ts",
   "models/runtime/ployz-sdk.server.test.ts",
+  "modules/agent/agent-chat.server.ts",
   "modules/agent/agent-steps.test.ts",
+  "modules/agent/agent-tools.ts",
   "modules/agent/agent-tools.test.ts",
+  "modules/approvals/approvals.postgres.test.ts",
+  "modules/config-store/store-sdk.server.ts",
+  "modules/config-store/volume-evidence.server.ts",
+  "modules/machines/enrollment.server.ts",
+  "modules/volume-placement/volume-placement.postgres.test.ts",
+  "modules/volume-placement/volume-placement.restore.postgres.test.ts",
+  "routes/api/cli/agent/-agent.handler.ts",
 ]);
 const BRANDED_CONSTRUCTORS = [
   "operationId",

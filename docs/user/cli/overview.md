@@ -58,10 +58,11 @@ claude mcp add -s user ployz -- ployz mcp
 ```
 
 For Codex, run `codex mcp add ployz -- ployz mcp`. The tools act signed in as you. They create
-Projects, read and stage changes in them, review, publish and deploy them, show Services, Servers
+Projects, read and stage changes in them, review, publish and deploy them, restore or undo a
+saved version, list, follow, redeploy, start and cancel their deployments, show Services, Servers
 and Volumes, and read a Service's recent logs. The agent can resend a call after a lost reply
-without running it twice. Each call acts where the agent's directory is linked when the call starts, so after
-`ployz link` or `ployz org use` the next call follows it.
+without running it twice. Each call acts where the agent's directory is linked when the call
+starts, so after `ployz link` or `ployz org use` the next call follows it.
 
 Some things are not tools. Run these yourself in a terminal:
 
@@ -73,7 +74,7 @@ Some things are not tools. Run these yourself in a terminal:
 
 Tools that can remove something are marked destructive: `publish`, `deploy`,
 `environment_remove`, `project_remove`, the server commands that drain, clean or remove a
-server, and the Volume commands that move, mirror or release a copy. When one of them needs your
+server, and the Volume commands that move, mirror, release or restore a copy. When one of them needs your
 approval (see
 [Destructive actions ask first](../account/organizations.md#destructive-actions-ask-first)),
 the agent's app shows you what it would remove and asks you to approve or deny it. Removing a
@@ -92,11 +93,25 @@ started keeps going in Cloud, and the error names the tool that shows where it s
 stopped while Cloud had not yet answered its change says the change may have landed, and the
 agent can resend it without running it twice.
 
+## Search the docs
+
+`ployz docs` searches these docs from your terminal, offline. Ask a question and it prints the
+five sections that match best, each with its page and an excerpt:
+
+```sh
+ployz docs add a custom domain
+```
+
+Name a page instead to print it whole, as Markdown: `ployz docs services/domains.md`, or just
+`ployz docs domains.md`. With `--json`, a search returns `results` with each section's `path`,
+`anchor` and `excerpt`, and a page returns its `content`. Your coding agent gets the same search
+as the `docs` tool from `ployz mcp`.
+
 ## Commands from Ployz Cloud
 
 Some commands come from Ployz Cloud instead of the CLI itself, so a new one reaches you without
-an upgrade. Today they are `ployz server upgrade-policy show` and `set`, and `ployz org approval
-ls`, `show`, `approve` and `deny`.
+an upgrade. Today they include `ployz server upgrade-policy show` and `set`, `ployz org approval
+ls`, `show`, `approve` and `deny`, and the team commands below.
 
 When you're signed in, `ployz --help` lists them with the others, and they take `--json` like any
 command. `ployz schema --json` marks each one `"origin": "cloud"`. The first one you run fetches
@@ -108,6 +123,38 @@ Your coding agent gets the ones meant for agents as tools from `ployz mcp`, and 
 follows Ployz Cloud without a restart. Commands that ask you to type a name, such as
 `ployz org approval approve`, run only in a terminal. Without Ployz Cloud, none of these commands
 exist.
+
+## Manage your team
+
+Owners and admins manage who belongs to the Organization this device acts in:
+
+```sh
+ployz org member ls
+ployz org member invite bob@example.com --role admin
+ployz org member role bob@example.com member
+ployz org member rm bob@example.com
+ployz org invite ls
+ployz org invite revoke bob@example.com
+```
+
+`invite` prints `Invite link (expires in 7 days)` and the link. Send it to the person yourself.
+Roles are `owner`, `admin` and `member`. Only an owner can make, change or remove an owner.
+Any member can run `ployz org member ls`. Pending invites name who was invited, so
+`ployz org invite ls` refuses anyone but an owner or admin.
+
+Pick a member by email or by name. When two members share a name, the command refuses with
+`ambiguous`, lists both emails and exits 2, so name the one you mean by email.
+
+`role`, `rm` and `revoke` show what they will change, and in which Organization, and ask before
+they run. In a terminal you type the email it names, or the invite id for a link with no email, to
+go ahead. Without a terminal they wait until someone approves them in Ployz Cloud. Through
+`ployz mcp`, your agent gets back an approval to show you and changes nothing until you approve it. The dashboard's
+Members page never asks. `ployz org member ls` and `ployz org invite ls` never ask.
+
+`ployz org leave` takes you out of the Organization this device acts in, after you confirm. It
+leaves that Organization even if you switched to another one in the dashboard since.
+Pass `--yes` to skip the question. It then moves this device to another Organization of yours,
+the way `ployz org rm` does, and prints which one.
 
 ## Deploy a directory
 
@@ -143,9 +190,11 @@ ployz up --project my-app --env production
 Always pass `--project` in CI, or `ployz up` creates a new project named after the checkout.
 
 The token acts as you in this organization: whoever holds it can deploy and run commands in your
-services. It expires after 90 days unless you pass `--expires-in` (1 to 365 days). To revoke it,
+services. It expires after 90 days unless you pass `--expires-in` (1 to 365 days), and stops
+working at once if you leave the organization or are removed from it. To revoke it,
 find its ID with `ployz token ls`, then run `ployz token rm ID`. If it names a server that's
-offline, run it again once that server is back.
+offline, run it again once that server is back. Owners and admins see and can revoke every
+organization token in the organization, not only their own. Members see only theirs.
 
 When a command fails, Ployz prints what went wrong, then a `cause:` line with the underlying
 error, such as the operating system's or the server's own message.
@@ -174,7 +223,7 @@ Scripts can tell failures apart by exit code:
 | 1 | It failed: something wasn't found, a server couldn't be reached, Ployz refused, or the server or Cloud doesn't support what you asked. |
 | 2 | Fix the command: a bad argument, a flag the command doesn't take, a missing `--confirm`, or a name that matches more than one thing. |
 | 3 | You got a result, but some servers didn't answer, so part of it is missing. Run it again once they're back. |
-| 130 | You cancelled: pressed Ctrl-C, didn't confirm a prompt, or stopped waiting for an approval. Before the work starts, nothing changes. Once Ployz Cloud runs it, as with a `server rm` or `server upgrade` it's following, Ctrl-C only stops the following: the work goes on in Cloud and finishes on its own. |
+| 130 | You cancelled: pressed Ctrl-C, didn't confirm a prompt, or stopped waiting for an approval. Before the work starts, nothing changes. A `ployz deploy` cancelled after its services applied keeps them, and its `--json` says `applied`. Once Ployz Cloud runs it, as with a `server rm` or `server upgrade` it's following, Ctrl-C only stops the following: the work goes on in Cloud and finishes on its own. |
 
 `ployz exec` exits with your command's own exit code.
 
@@ -188,8 +237,10 @@ Ployz Cloud, and with `--json` it exits 1 with `approval_required`. See
 [Destructive actions ask first](../account/organizations.md#destructive-actions-ask-first).
 
 `ployz env rm` and `ployz project rm` take what runs off your servers and wait for it. If a server
-doesn't answer, the command returns with the environment still being removed and names the server.
-Ployz finishes on its own once the server answers or you remove it with `ployz server rm`.
+doesn't answer, the command returns with the environment still being removed, names the server,
+and exits 3. Ployz finishes on its own once the server answers or you remove it with
+`ployz server rm`. With `--json` it reports `removal: removed` only once the environment is gone
+from `ployz env ls`, or for `project rm` the project from `ployz project ls`.
 
 Ployz colors its output in a terminal. With `CI` set or `TERM=dumb`, it prints plain text even in
 one. Set `NO_COLOR=1` or pass `--color never` to turn color off, or `--color always` to keep it

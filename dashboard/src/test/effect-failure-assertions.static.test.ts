@@ -12,12 +12,6 @@ const SRC = join(process.cwd(), "src");
 const EXIT_DIGGING =
   /Exit\.isFailure\(|\w+\._tag\s*===\s*"Failure"|\w+\._tag,\s*"Failure"\)/;
 
-// Temporary baseline: this file is edited by two open PRs; its `_tag`
-// assertions convert once they merge. Remove the entry with that conversion.
-const DEFERRED = new Set([
-  "modules/runtime/organization-runtime.server.effect.test.ts",
-]);
-
 function walk(dir: string): string[] {
   const entries = readdirSync(dir);
   const files: string[] = [];
@@ -37,7 +31,6 @@ describe("Effect failure assertions in unit tests", () => {
     const hits = walk(SRC).flatMap((path) => {
       const rel = relative(SRC, path).replaceAll("\\", "/");
       if (rel.endsWith(".postgres.test.ts") || rel.endsWith(".static.test.ts")) return [];
-      if (DEFERRED.has(rel)) return [];
       const lines = readFileSync(path, "utf8").split("\n");
       return lines.flatMap((line, index) =>
         EXIT_DIGGING.test(line) ? [`${rel}:${index + 1}: ${line.trim()}`] : [],

@@ -38,7 +38,7 @@ impl<'a> Typed<'a> {
         }
     }
 
-    /// Confirmed by `dead`: a Server that does not answer, removed without a reset.
+    /// Confirmed by `dead`: a Server that does not answer, forgotten without a reset.
     pub(super) fn dead(server: &'a str) -> Self {
         Self {
             server,
@@ -100,9 +100,6 @@ pub(super) fn retry_args(root: &ArgMatches, source: &ConnectionSource) -> Vec<St
         leaf = child;
     }
     args.extend(string_values(leaf, "server"));
-    if leaf.try_get_one::<bool>("no-reset").ok().flatten() == Some(&true) {
-        args.push("--no-reset".into());
-    }
     if let Some(connect) = leaf.try_get_one::<String>("connect").ok().flatten() {
         args.extend(["--connect".into(), connect.clone()]);
     }
@@ -146,7 +143,13 @@ fn loss(
         ),
     };
     let tree = Tree::new(
-        format!("Removing Server {server} through {context}:"),
+        format!(
+            "{} Server {server} through {context}:",
+            match volume_effect {
+                VolumeEffect::Preserve => "Forgetting",
+                VolumeEffect::LoseAccess => "Removing",
+            }
+        ),
         vec![volumes],
     );
     match (volume_effect, source) {
@@ -309,6 +312,10 @@ mod tests {
         assert!(!lost.contains("not be erased"), "{lost}");
         assert!(lost.ends_with(&format!("{CAVEAT}\n")), "{lost}");
         let kept = loss_text(&observed, &labels, VolumeEffect::Preserve);
+        assert!(
+            kept.contains("Forgetting Server worker through context prod:"),
+            "{kept}"
+        );
         assert!(kept.contains("Volumes are kept."), "{kept}");
         assert!(!kept.contains("pgdata"), "{kept}");
         assert!(
@@ -496,9 +503,8 @@ mod tests {
             .try_get_matches_from([
                 "ployz",
                 "server",
-                "rm",
+                "forget",
                 "edge",
-                "--no-reset",
                 "--connect",
                 "unix:///tmp/socket name",
                 "--ployz-config",
@@ -508,10 +514,13 @@ mod tests {
         let args = retry_args(&root, &ConnectionSource::Direct);
         let command = shell_words::join(&args);
         assert_eq!(shell_words::split(&command).unwrap(), args);
-        let parsed = crate::cli::command().try_get_matches_from(args).unwrap();
+        let parsed = crate::cli::command().try_get_matches_from(&args).unwrap();
         let leaf = leaf_matches(&parsed);
+        assert_eq!(
+            args.get(..4),
+            Some(&["ployz", "server", "forget", "edge"].map(String::from)[..])
+        );
         assert_eq!(string_values(leaf, "server"), ["edge"]);
-        assert!(leaf.get_flag("no-reset"));
         assert_eq!(
             leaf.get_one::<String>("connect").unwrap(),
             "unix:///tmp/socket name"

@@ -222,7 +222,6 @@ impl ContainerRuntime {
     }
 
     async fn sync_observations(&self, sink: &ObservationSink) -> Result<(), Error> {
-        // TODO: preserve stale rows when Docker cannot provide a complete inventory.
         let machine_id = sink.local.record().id();
         let creates = self.docker.creates();
         let inventory = self.docker.managed_container_ids().await?;

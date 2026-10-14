@@ -8,18 +8,20 @@
 use std::fmt;
 
 use ployz_core::{
-    ContainerId, ContainerKind, ContainerObservation, ExecutionError, InspectContainerRequest,
-    Machine, MachineId, MachineName, MachineTarget, PullPolicy, QualifiedService, RawVolumeSource,
-    ResolvedServiceSpec, ServiceMode, ServicePlacementEligibility, op,
+    ContainerId, ContainerKind, ContainerObservation, DeploymentLogId, ExecutionError,
+    InspectContainerRequest, Machine, MachineId, MachineName, MachineTarget, PullPolicy,
+    QualifiedService, RawVolumeSource, ResolvedServiceSpec, ServiceMode,
+    ServicePlacementEligibility, ServingPointer, op,
 };
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 use ts_rs::TS;
 
 use crate::connect::{Client, ConnectError, TARGET_RPC_TIMEOUT};
+use crate::serving_publish::{PointerClient, Protection, protection};
 
 use super::DeploySnapshot;
-use super::exec::MoveContainerError;
+use super::exec::{MoveContainerError, RemovesOld};
 
 /// A Server as a report names it: its durable identity and the name it had then. Two
 /// Servers may share a name, so the id is what a reader links by.
@@ -52,22 +54,43 @@ pub struct Move {
     pub to: MachineRef,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Replacement {
+    pub(crate) old: ContainerId,
+    pub(crate) new: ContainerId,
+    pub(crate) deploy: DeploymentLogId,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum OldCopy<'a> {
+    Remove,
+    Keep { pointer: &'a ServingPointer },
+}
+
 /// How converging one replicated Service ended.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Converged {
     /// Every Container that had to move did. Never empty.
-    Moved { moves: Vec<Move> },
+    Moved {
+        moves: Vec<Move>,
+        replaced: Vec<Replacement>,
+    },
     /// None of its active Containers had to move.
     NothingToMove,
     /// `moves` were made, then `failure` stopped the rest.
     Failed {
         moves: Vec<Move>,
+        replaced: Vec<Replacement>,
         failure: MoveFailure,
     },
     /// Nothing moved, and why.
     Stays { reason: StayReason },
     /// It stopped after `moves` without deciding the rest, and the Drain stops with it.
-    Stopped { moves: Vec<Move>, stop: DrainStop },
+    Stopped {
+        moves: Vec<Move>,
+        replaced: Vec<Replacement>,
+        stop: DrainStop,
+    },
 }
 
 /// Why a Drain ended early. Every other problem is one Service's evidence.
@@ -108,6 +131,8 @@ pub enum StayReason {
     Volume { server: MachineRef },
     /// No Server can take a Container; `detail` is the planner's.
     NoDestination { detail: String },
+    /// Its Serving Pointer could not be read, so a move could not be published.
+    PointerUnread { detail: String },
 }
 
 impl fmt::Display for StayReason {
@@ -119,6 +144,9 @@ impl fmt::Display for StayReason {
             Self::BindMount { server } => write!(f, "Bind Mount on {server}"),
             Self::Volume { server } => write!(f, "its Volume is on {server}"),
             Self::NoDestination { detail } => write!(f, "no eligible Server: {detail}"),
+            Self::PointerUnread { detail } => {
+                write!(f, "cannot read its Serving Pointer: {detail}")
+            }
         }
     }
 }
@@ -197,15 +225,15 @@ impl fmt::Display for MoveFailure {
     }
 }
 
-/// What convergence needs from a Cluster: a fresh snapshot and one move.
 pub(crate) trait ConvergenceClient {
     async fn observe(&mut self) -> Result<DeploySnapshot, ConnectError>;
     async fn move_one(
         &mut self,
         snapshot: &DeploySnapshot,
         container: &ContainerObservation,
+        old: OldCopy<'_>,
         cancellation: &CancellationToken,
-    ) -> Result<Move, MoveFailure>;
+    ) -> Result<(Move, Option<Replacement>), MoveFailure>;
 }
 
 impl ConvergenceClient for Client {
@@ -218,32 +246,40 @@ impl ConvergenceClient for Client {
         &mut self,
         snapshot: &DeploySnapshot,
         container: &ContainerObservation,
+        old: OldCopy<'_>,
         cancellation: &CancellationToken,
-    ) -> Result<Move, MoveFailure> {
-        move_one(self, snapshot, container, cancellation).await
+    ) -> Result<(Move, Option<Replacement>), MoveFailure> {
+        move_one(self, snapshot, container, old, cancellation).await
     }
 }
 
-/// Converge `service`: replace each active Container on a Machine its own spec now rules
-/// out with one on an eligible Machine, then remove the old one. Each move after the first
-/// starts from a fresh snapshot, rechecked as the first was.
 pub(crate) async fn converge<C: ConvergenceClient>(
     client: &mut C,
     service: &QualifiedService,
+    old: OldCopy<'_>,
     cancellation: &CancellationToken,
 ) -> Converged {
-    let entry_lost = |moves, error: ConnectError| Converged::Stopped {
+    let entry_lost = |moves, replaced, error: ConnectError| Converged::Stopped {
         moves,
+        replaced,
         stop: DrainStop::EntryUnreachable {
             detail: crate::ui::row(&error),
         },
     };
-    let failed = |moves, failure| Converged::Failed { moves, failure };
+    let failed = |moves, replaced, failure| Converged::Failed {
+        moves,
+        replaced,
+        failure,
+    };
+    let retiring = match old {
+        OldCopy::Remove => &[][..],
+        OldCopy::Keep { pointer } => &pointer.retiring,
+    };
     let snapshot = match client.observe().await {
         Ok(snapshot) => snapshot,
-        Err(error) => return entry_lost(Vec::new(), error),
+        Err(error) => return entry_lost(Vec::new(), Vec::new(), error),
     };
-    let initial = stranded(&snapshot, service);
+    let initial = movable(&snapshot, service, retiring);
     if let Some(reason) = refusal(&snapshot, service, &initial) {
         return Converged::Stays { reason };
     }
@@ -252,20 +288,21 @@ pub(crate) async fn converge<C: ConvergenceClient>(
         .map(|container| container.container_id)
         .collect::<Vec<_>>();
     let mut moves = Vec::new();
+    let mut replaced = Vec::new();
     let mut first = Some(snapshot);
     for id in ids {
         let snapshot = match first.take() {
             Some(snapshot) => snapshot,
             None => match client.observe().await {
                 Ok(snapshot) => snapshot,
-                Err(error) => return entry_lost(moves, error),
+                Err(error) => return entry_lost(moves, replaced, error),
             },
         };
         // A snapshot missing a Server's listing can't tell a gone Container from an unlisted one.
         if let Some(reason) = unobserved(&snapshot) {
-            return failed(moves, MoveFailure::Refused { reason });
+            return failed(moves, replaced, MoveFailure::Refused { reason });
         }
-        let fresh = stranded(&snapshot, service);
+        let fresh = movable(&snapshot, service, retiring);
         // Gone, exited, or admitted again since the first snapshot: it stays put, whatever
         // the rest would now refuse.
         let Some(container) = fresh
@@ -276,23 +313,30 @@ pub(crate) async fn converge<C: ConvergenceClient>(
             continue;
         };
         if let Some(reason) = refusal(&snapshot, service, &fresh) {
-            return failed(moves, MoveFailure::Refused { reason });
+            return failed(moves, replaced, MoveFailure::Refused { reason });
         }
         if cancellation.is_cancelled() {
             return Converged::Stopped {
                 moves,
+                replaced,
                 stop: DrainStop::Cancelled,
             };
         }
-        match client.move_one(&snapshot, container, cancellation).await {
-            Ok(step) => moves.push(step),
-            Err(failure) => return failed(moves, failure),
+        match client
+            .move_one(&snapshot, container, old, cancellation)
+            .await
+        {
+            Ok((step, kept)) => {
+                moves.push(step);
+                replaced.extend(kept);
+            }
+            Err(failure) => return failed(moves, replaced, failure),
         }
     }
     if moves.is_empty() {
         Converged::NothingToMove
     } else {
-        Converged::Moved { moves }
+        Converged::Moved { moves, replaced }
     }
 }
 
@@ -403,6 +447,16 @@ fn stranded<'a>(
         .collect()
 }
 
+fn movable<'a>(
+    snapshot: &'a DeploySnapshot,
+    service: &QualifiedService,
+    retiring: &[ContainerId],
+) -> Vec<&'a ContainerObservation> {
+    let mut movable = stranded(snapshot, service);
+    movable.retain(|container| !retiring.contains(&container.container_id));
+    movable
+}
+
 /// The snapshot's Machine `id`. Container listings fan out to the snapshot's Machines, so
 /// every id a snapshot carries names one of them.
 fn machine<'a>(snapshot: &'a DeploySnapshot, id: &MachineId) -> &'a Machine {
@@ -418,13 +472,13 @@ fn machine_ref(snapshot: &DeploySnapshot, id: &MachineId) -> MachineRef {
     MachineRef::from(machine(snapshot, id))
 }
 
-/// Place, copy the exact image, start and serve, then remove the old Container.
 async fn move_one(
     client: &mut Client,
     snapshot: &DeploySnapshot,
     container: &ContainerObservation,
+    old: OldCopy<'_>,
     cancellation: &CancellationToken,
-) -> Result<Move, MoveFailure> {
+) -> Result<(Move, Option<Replacement>), MoveFailure> {
     let source = machine(snapshot, &container.machine_id);
     let from = MachineRef::from(source);
     let spec = &container.resolved_spec;
@@ -446,17 +500,51 @@ async fn move_one(
     // The image is on `dest` by now; a registry pull could fetch a different one.
     let mut spec = spec.clone();
     spec.container.pull_policy = PullPolicy::Never;
-    match super::exec::move_container(
+    let service = QualifiedService {
+        namespace: container.namespace.clone(),
+        name: spec.name.clone(),
+    };
+    let mut gate = OldCopyGate {
+        at_removal: AtRemoval::of(old, &container.container_id),
+        reader: client.clone(),
+        service: &service,
+        old: &container.container_id,
+    };
+    let deploy = gate
+        .at_removal
+        .replacement_deploy()
+        .or_else(|| container.deploy_label());
+    let moved = super::exec::move_container(
         &*client,
         &container.namespace,
-        &spec,
+        (&spec, deploy.as_ref()),
         &dest.id,
         (&source.id, &container.container_id),
+        &mut gate,
         cancellation,
     )
-    .await
-    {
-        Ok(_) => Ok(Move { from, to }),
+    .await;
+    match moved {
+        Ok(new) => match gate.at_removal {
+            AtRemoval::Remove | AtRemoval::Retiring => Ok((Move { from, to }, None)),
+            AtRemoval::Pointed(deploy) => Ok((
+                Move { from, to },
+                Some(Replacement {
+                    old: container.container_id,
+                    new,
+                    deploy,
+                }),
+            )),
+            AtRemoval::Unread {
+                detail,
+                old_stopped,
+            } => Err(MoveFailure::OldNotRemoved {
+                from,
+                to,
+                detail: format!("reading its Serving Pointer before removing it: {detail}"),
+                old_stopped,
+            }),
+        },
         Err(MoveContainerError::NotServing {
             error: ExecutionError::Cancelled,
             replacement_removed,
@@ -482,6 +570,67 @@ async fn move_one(
                 old_stopped,
             })
         }
+    }
+}
+
+/// What the old copy's Serving Pointer says about it, from the view the move started with
+/// and then from a read immediately before each stop or removal.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(in crate::deploy) enum AtRemoval {
+    /// No pointer names it; the move stops and removes it.
+    Remove,
+    /// Its pointer names it in `containers`; it leaves only through that pointer's
+    /// retiring list, so the move keeps it and reports a `Replacement`.
+    Pointed(DeploymentLogId),
+    /// Its pointer already retires it; ployzd stops it after every Machine acknowledged.
+    Retiring,
+    /// The pointer could not be read; the old copy stays until it can be, stopped already
+    /// when the read came after the stop.
+    Unread { detail: String, old_stopped: bool },
+}
+
+impl AtRemoval {
+    pub(in crate::deploy) fn of(old: OldCopy<'_>, copy: &ContainerId) -> Self {
+        match old {
+            OldCopy::Keep { pointer } if pointer.containers.contains(copy) => {
+                Self::Pointed(pointer.deploy.clone())
+            }
+            OldCopy::Keep { pointer } if pointer.retiring.contains(copy) => Self::Retiring,
+            OldCopy::Keep { .. } | OldCopy::Remove => Self::Remove,
+        }
+    }
+
+    /// The Deploy a kept copy's replacement is labelled with, so it joins the same Serving
+    /// Pointer; `None` when the replacement keeps the copy's own label.
+    pub(in crate::deploy) fn replacement_deploy(&self) -> Option<DeploymentLogId> {
+        match self {
+            Self::Pointed(deploy) => Some(deploy.clone()),
+            Self::Remove | Self::Retiring | Self::Unread { .. } => None,
+        }
+    }
+}
+
+/// A move's old copy and its Serving Pointer. Each destructive step asks it again,
+/// and `at_removal` records what the latest read said.
+pub(in crate::deploy) struct OldCopyGate<'a, C> {
+    pub(in crate::deploy) at_removal: AtRemoval,
+    pub(in crate::deploy) reader: C,
+    pub(in crate::deploy) service: &'a QualifiedService,
+    pub(in crate::deploy) old: &'a ContainerId,
+}
+
+impl<C: PointerClient> RemovesOld for OldCopyGate<'_, C> {
+    async fn removes_old(&mut self, old_stopped: bool) -> bool {
+        self.at_removal = match protection(&mut self.reader, self.service, self.old).await {
+            Ok(Protection::Unnamed) => AtRemoval::Remove,
+            Ok(Protection::Pointed(pointer)) => AtRemoval::Pointed(pointer.deploy),
+            Ok(Protection::Retiring(_)) => AtRemoval::Retiring,
+            Err(error) => AtRemoval::Unread {
+                detail: crate::ui::row(&error),
+                old_stopped,
+            },
+        };
+        self.at_removal == AtRemoval::Remove
     }
 }
 
@@ -524,7 +673,7 @@ mod tests {
 
     use super::{
         Converged, ConvergenceClient, DeploySnapshot, DrainStop, MachineRef, Move, MoveFailure,
-        converge, refusal, stays,
+        OldCopy, Replacement, converge, refusal, stays,
     };
     use crate::connect::ConnectError;
 
@@ -624,9 +773,18 @@ mod tests {
         );
     }
 
-    /// Serves queued snapshots; every move succeeds onto machine-b.
     struct Scripted {
         snapshots: std::collections::VecDeque<Result<DeploySnapshot, ConnectError>>,
+        kept: Vec<bool>,
+    }
+
+    impl Scripted {
+        fn new(snapshots: impl IntoIterator<Item = Result<DeploySnapshot, ConnectError>>) -> Self {
+            Self {
+                snapshots: snapshots.into_iter().collect(),
+                kept: Vec::new(),
+            }
+        }
     }
 
     impl ConvergenceClient for Scripted {
@@ -640,12 +798,25 @@ mod tests {
             &mut self,
             snapshot: &DeploySnapshot,
             container: &ContainerObservation,
+            old: OldCopy<'_>,
             _cancellation: &CancellationToken,
-        ) -> Result<Move, MoveFailure> {
-            Ok(Move {
-                from: super::machine_ref(snapshot, &container.machine_id),
-                to: MachineRef::from(&machine('b', true).machine),
-            })
+        ) -> Result<(Move, Option<Replacement>), MoveFailure> {
+            self.kept.push(old != OldCopy::Remove);
+            let kept = match old {
+                OldCopy::Remove => None,
+                OldCopy::Keep { pointer } => Some(Replacement {
+                    old: container.container_id,
+                    new: id('f'),
+                    deploy: pointer.deploy.clone(),
+                }),
+            };
+            Ok((
+                Move {
+                    from: super::machine_ref(snapshot, &container.machine_id),
+                    to: MachineRef::from(&machine('b', true).machine),
+                },
+                kept,
+            ))
         }
     }
 
@@ -664,40 +835,245 @@ mod tests {
         }
     }
 
-    fn one_move() -> Vec<Move> {
-        vec![Move {
+    fn id(hex: char) -> ContainerId {
+        ContainerId::parse(hex.to_string().repeat(64)).unwrap()
+    }
+
+    fn a_to_b() -> Move {
+        Move {
             from: MachineRef::from(&machine('a', false).machine),
             to: MachineRef::from(&machine('b', true).machine),
-        }]
+        }
+    }
+
+    fn one_move() -> Vec<Move> {
+        vec![a_to_b()]
+    }
+
+    struct ClientMove {
+        result: Result<(Move, Option<Replacement>), MoveFailure>,
+        /// The destructive wants the fixture received for the old copy, in order.
+        old_copy_wants: Vec<&'static str>,
+    }
+
+    /// Moves the first copy of `two_on_a` through a real Client. Each pointer read answers
+    /// `pointer`, except read number `unreadable_read`, which fails.
+    async fn moved_through_client(
+        pointer: Option<ployz_core::ServingPointer>,
+        unreadable_read: Option<u32>,
+    ) -> ClientMove {
+        use ployz_core::{
+            ContainerDetails, ContainerLocator, ContainerNow, ContainerWant, EnsuredContainer,
+            ImageSummary, MachineImages, MachineList, OpaquePayload, RpcRequestBody, RpcResponse,
+            RunTarget, ServingPointerRead,
+        };
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::sync::{Arc, Mutex};
+        use tonic::{Request, Response};
+
+        let snapshot = two_on_a();
+        let first = snapshot.containers.first().unwrap().clone();
+        let old = first.clone();
+        let spec = old.resolved_spec.clone();
+        let destructive = Arc::new(Mutex::new(Vec::new()));
+        let recorded = destructive.clone();
+        let answered = pointer.clone();
+        let reads = Arc::new(AtomicU32::new(0));
+        let (mut client, server) =
+            crate::connect::test_support::rpc_client(move |rpc: Request<OpaquePayload>| {
+                let recorded = recorded.clone();
+                let old = old.clone();
+                let spec = spec.clone();
+                let pointer = answered.clone();
+                let reads = reads.clone();
+                async move {
+                    #[expect(
+                        clippy::wildcard_enum_match_arm,
+                        reason = "fixture answers only what one move sends"
+                    )]
+                    let response = match rpc.into_inner().decode_request().unwrap().body {
+                        RpcRequestBody::InspectContainer(_) => {
+                            RpcResponse::from(ContainerDetails {
+                                container: old,
+                                environment: None,
+                                image_id: Some("sha256:img".into()),
+                                last_check: None,
+                                run: None,
+                            })
+                        }
+                        RpcRequestBody::ListImages(_) => RpcResponse::from(MachineImages {
+                            containerd_store: true,
+                            images: vec![ImageSummary {
+                                id: "sha256:img".into(),
+                                repo_tags: vec![spec.container.image.clone()],
+                                created: 0,
+                                size: 0,
+                                containers: 0,
+                                platforms: Vec::new(),
+                                last_tagged: None,
+                            }],
+                            docker_root: None,
+                        }),
+                        RpcRequestBody::ListMachines(_) => RpcResponse::from(MachineList {
+                            enrollment: None,
+                            machines: vec![machine('a', false), machine('b', true)],
+                        }),
+                        RpcRequestBody::ReadServingPointer(_) => {
+                            if Some(reads.fetch_add(1, Ordering::SeqCst) + 1) == unreadable_read {
+                                RpcResponse::from(ployz_core::RpcError {
+                                    code: ployz_core::RpcErrorCode::Unavailable,
+                                    message: "the publisher is away".into(),
+                                    details: serde_json::Value::Null,
+                                    cause: Vec::new(),
+                                })
+                            } else {
+                                RpcResponse::from(ServingPointerRead {
+                                    pointer,
+                                    ..Default::default()
+                                })
+                            }
+                        }
+                        RpcRequestBody::EnsureContainer(ensure) => match ensure.want {
+                            ContainerWant::Running {
+                                container: RunTarget::New(_),
+                            } => RpcResponse::from(EnsuredContainer::Ensured {
+                                health: None,
+                                now: ContainerNow::Present(container('f', 'b', spec)),
+                            }),
+                            ContainerWant::Stopped {
+                                container: ContainerLocator::Id(id),
+                                ..
+                            } => {
+                                assert_eq!(id, old.container_id);
+                                recorded.lock().unwrap().push("stop");
+                                RpcResponse::from(EnsuredContainer::Ensured {
+                                    health: None,
+                                    now: ContainerNow::Present(old),
+                                })
+                            }
+                            ContainerWant::Gone {
+                                container: ContainerLocator::Id(id),
+                                ..
+                            } => {
+                                assert_eq!(id, old.container_id);
+                                recorded.lock().unwrap().push("gone");
+                                RpcResponse::from(EnsuredContainer::Ensured {
+                                    health: None,
+                                    now: ContainerNow::Absent {
+                                        of: ContainerLocator::Id(id),
+                                    },
+                                })
+                            }
+                            want => panic!("unexpected want {want:?}"),
+                        },
+                        body => panic!("unexpected request {body:?}"),
+                    };
+                    Ok(Response::new(response.encode().unwrap()))
+                }
+            })
+            .await;
+        let old = match &pointer {
+            Some(pointer) => OldCopy::Keep { pointer },
+            None => OldCopy::Remove,
+        };
+        let moved = ConvergenceClient::move_one(
+            &mut client,
+            &snapshot,
+            &first,
+            old,
+            &CancellationToken::new(),
+        )
+        .await;
+        server.abort();
+        let destructive = destructive.lock().unwrap().clone();
+        ClientMove {
+            result: moved,
+            old_copy_wants: destructive,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_client_move_keeps_a_copy_its_pointer_names_and_reports_the_replacement() {
+        let pointer = crate::serving_publish::tests::pointer('a', &['1'], &[]);
+        let moved = moved_through_client(Some(pointer.clone()), None).await;
+        let (step, replacement) = moved.result.unwrap();
+        assert_eq!(step, a_to_b());
+        assert_eq!(
+            replacement,
+            Some(Replacement {
+                old: id('1'),
+                new: id('f'),
+                deploy: pointer.deploy,
+            })
+        );
+        assert_eq!(
+            moved.old_copy_wants,
+            Vec::<&str>::new(),
+            "a pointed copy leaves only through its pointer's retire path"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_client_move_of_an_unpointed_copy_stops_then_removes_it() {
+        let moved = moved_through_client(None, None).await;
+        assert_eq!(moved.result.unwrap(), (a_to_b(), None));
+        assert_eq!(moved.old_copy_wants, ["stop", "gone"]);
+    }
+
+    #[tokio::test]
+    async fn a_client_move_whose_pointer_is_unreadable_after_the_stop_reports_the_old_copy_stopped()
+    {
+        let moved = moved_through_client(None, Some(2)).await;
+        assert_eq!(moved.old_copy_wants, ["stop"]);
+        assert!(
+            matches!(
+                moved.result,
+                Err(MoveFailure::OldNotRemoved {
+                    old_stopped: true,
+                    ..
+                })
+            ),
+            "{:?}",
+            moved.result
+        );
     }
 
     #[tokio::test]
     async fn losing_the_entry_stops_and_keeps_the_moves_already_made() {
         let service = QualifiedService::parse("app/api").unwrap();
-        let mut client = Scripted {
-            snapshots: [
-                Ok(two_on_a()),
-                Err(ConnectError::Attempt("entry went away".into())),
-            ]
-            .into(),
-        };
+        let mut client = Scripted::new([
+            Ok(two_on_a()),
+            Err(ConnectError::Attempt("entry went away".into())),
+        ]);
         assert_eq!(
-            converge(&mut client, &service, &CancellationToken::new()).await,
+            converge(
+                &mut client,
+                &service,
+                OldCopy::Remove,
+                &CancellationToken::new()
+            )
+            .await,
             Converged::Stopped {
                 moves: one_move(),
+                replaced: Vec::new(),
                 stop: DrainStop::EntryUnreachable {
                     detail: "connection attempt failed: entry went away".into(),
                 },
             }
         );
 
-        let mut client = Scripted {
-            snapshots: [Err(ConnectError::Attempt("down".into()))].into(),
-        };
+        let mut client = Scripted::new([Err(ConnectError::Attempt("down".into()))]);
         assert_eq!(
-            converge(&mut client, &service, &CancellationToken::new()).await,
+            converge(
+                &mut client,
+                &service,
+                OldCopy::Remove,
+                &CancellationToken::new()
+            )
+            .await,
             Converged::Stopped {
                 moves: Vec::new(),
+                replaced: Vec::new(),
                 stop: DrainStop::EntryUnreachable {
                     detail: "connection attempt failed: down".into(),
                 },
@@ -713,14 +1089,24 @@ mod tests {
         unobserved
             .container_omissions
             .push(machine('b', true).machine.id);
-        let mut client = Scripted {
-            snapshots: [Ok(two_on_a()), Ok(unobserved)].into(),
-        };
-        let converged = converge(&mut client, &service, &CancellationToken::new()).await;
-        let Converged::Failed { moves, failure } = &converged else {
+        let mut client = Scripted::new([Ok(two_on_a()), Ok(unobserved)]);
+        let converged = converge(
+            &mut client,
+            &service,
+            OldCopy::Remove,
+            &CancellationToken::new(),
+        )
+        .await;
+        let Converged::Failed {
+            moves,
+            replaced,
+            failure,
+        } = &converged
+        else {
             panic!("{converged:?}");
         };
         assert_eq!(moves, &one_move());
+        assert!(replaced.is_empty(), "a removed old copy needs no pointer");
         assert_eq!(failure.to_string(), "cannot observe machine-b");
     }
 
@@ -736,27 +1122,64 @@ mod tests {
             containers: vec![container('3', 'b', stateless)],
             ..DeploySnapshot::default()
         };
-        let mut client = Scripted {
-            snapshots: [Ok(first), Ok(after)].into(),
-        };
+        let mut client = Scripted::new([Ok(first), Ok(after)]);
         assert_eq!(
-            converge(&mut client, &service, &CancellationToken::new()).await,
-            Converged::Moved { moves: one_move() }
+            converge(
+                &mut client,
+                &service,
+                OldCopy::Remove,
+                &CancellationToken::new()
+            )
+            .await,
+            Converged::Moved {
+                moves: one_move(),
+                replaced: Vec::new(),
+            }
         );
+    }
+
+    #[tokio::test]
+    async fn a_kept_old_copy_already_retiring_stays_put() {
+        let service = QualifiedService::parse("app/api").unwrap();
+        let mut client = Scripted::new([Ok(two_on_a()), Ok(two_on_a())]);
+        let pointer = ployz_core::ServingPointer {
+            deploy: ployz_core::DeploymentLogId::parse("dep-a").unwrap(),
+            containers: vec![id('2')],
+            previous: None,
+            retiring: vec![id('1')],
+        };
+        let converged = converge(
+            &mut client,
+            &service,
+            OldCopy::Keep { pointer: &pointer },
+            &CancellationToken::new(),
+        )
+        .await;
+        assert_eq!(
+            converged,
+            Converged::Moved {
+                moves: one_move(),
+                replaced: vec![Replacement {
+                    old: id('2'),
+                    new: id('f'),
+                    deploy: pointer.deploy.clone(),
+                }],
+            }
+        );
+        assert_eq!(client.kept, [true], "each move keeps its old copy");
     }
 
     #[tokio::test]
     async fn a_cancelled_convergence_stops_before_moving() {
         let service = QualifiedService::parse("app/api").unwrap();
-        let mut client = Scripted {
-            snapshots: [Ok(two_on_a())].into(),
-        };
+        let mut client = Scripted::new([Ok(two_on_a())]);
         let cancelled = CancellationToken::new();
         cancelled.cancel();
         assert_eq!(
-            converge(&mut client, &service, &cancelled).await,
+            converge(&mut client, &service, OldCopy::Remove, &cancelled).await,
             Converged::Stopped {
                 moves: Vec::new(),
+                replaced: Vec::new(),
                 stop: DrainStop::Cancelled,
             }
         );

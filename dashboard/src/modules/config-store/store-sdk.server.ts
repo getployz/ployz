@@ -1,19 +1,11 @@
 import "@tanstack/react-start/server-only";
-import { createRequire } from "node:module";
-import type * as PloyzSdk from "@ployz/sdk";
-import type { ConfigStore } from "@ployz/sdk";
+import { type ConfigStore, openConfigStore, RpcError } from "@ployz/sdk";
 import { sql } from "drizzle-orm";
 import { Context, Data, Effect, Layer, Redacted, Semaphore } from "effect";
 import { storeChangeSources } from "#/modules/organization/change-log.sources";
 import { AppConfig } from "#/server/config.server";
 import { Database, type DatabaseService } from "#/server/database.server";
 import { StoreRefused } from "./store.contract";
-
-// SAFETY: the package exports this named CommonJS SDK surface at runtime.
-const { openConfigStore, RpcError } = createRequire(import.meta.url)("@ployz/sdk") as Pick<
-  typeof PloyzSdk,
-  "openConfigStore" | "RpcError"
->;
 
 
 /** Whether the Store refused with `code`. */

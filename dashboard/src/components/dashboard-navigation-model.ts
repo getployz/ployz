@@ -2,6 +2,7 @@ import type { LucideIcon } from "lucide-react";
 import { linkOptions, type RegisteredRouter } from "@tanstack/react-router";
 import {
   Building2Icon,
+  CircleUserRoundIcon,
   CreditCardIcon,
   HistoryIcon,
   LayoutGridIcon,
@@ -50,7 +51,7 @@ const environmentPlaces = {
 
 /** The organization's three places, in rail order. */
 const organizationPlaceOrder = ["projects", "servers", "organization-settings"] as const;
-type OrganizationDestination = (typeof organizationPlaceOrder)[number] | "billing";
+type OrganizationDestination = (typeof organizationPlaceOrder)[number] | "billing" | "account";
 const organizationDestinations = {
   projects: { label: "Projects", icon: LayoutGridIcon, path: "/cloud/$organizationSlug/~" },
   servers: { label: "Servers", icon: ServerIcon, path: "/cloud/$organizationSlug/~/servers" },
@@ -58,6 +59,8 @@ const organizationDestinations = {
   "organization-settings": { label: "Organization", icon: Building2Icon, path: "/cloud/$organizationSlug/~/settings" },
   // A section of Organization, with its own page. Only Ployz-hosted Cloud has billing.
   billing: { label: "Billing", icon: CreditCardIcon, path: "/cloud/$organizationSlug/~/billing" },
+  // The user's own settings. No rail entry: the avatar row at the rail's foot is this place.
+  account: { label: "Account", icon: CircleUserRoundIcon, path: "/cloud/$organizationSlug/~/account" },
 } satisfies Record<OrganizationDestination, Destination>;
 
 export type DashboardSection = EnvironmentPlace | OrganizationDestination;
@@ -94,7 +97,7 @@ export type DashboardNavSection = ReturnType<typeof placeSections>[number];
 /** The search keys that pick a Settings page's section. */
 export interface DashboardSectionSearch {
   scope?: "environment" | "project";
-  section?: "general" | "builds";
+  section?: "general" | "members" | "builds";
 }
 
 /** Where `section` lives in `scope`; a section the scope lacks falls back to its home (Architecture or Projects). */
@@ -165,6 +168,7 @@ function placeSections(
     const to = organizationDestinations["organization-settings"].path;
     return [
       { label: "General", current: open === "general", ...linkOptions({ to, params, search: {} }) },
+      { label: "Members", current: open === "members", ...linkOptions({ to, params, search: { section: "members" as const } }) },
       { label: "Builds", current: open === "builds", ...linkOptions({ to, params, search: { section: "builds" as const } }) },
       ...billingEnabled
         ? [{ label: "Billing", current: open === "billing", ...linkOptions({ to: organizationDestinations.billing.path, params, search: {} }) }]
@@ -211,6 +215,7 @@ const sectionByRouteId = new Map<RegisteredRouteId, DashboardSection>([
   ["/_protected/cloud/$organizationSlug/_project/new", "projects"],
   ["/_protected/cloud/$organizationSlug/_org/~/billing", "billing"],
   ["/_protected/cloud/$organizationSlug/_org/~/settings", "organization-settings"],
+  ["/_protected/cloud/$organizationSlug/_org/~/account", "account"],
   ["/_protected/cloud/$organizationSlug/_org/~/servers/", "servers"],
   ["/_protected/cloud/$organizationSlug/_org/~/servers/$serverId", "servers"],
   ["/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/deployments/", "deployments"],

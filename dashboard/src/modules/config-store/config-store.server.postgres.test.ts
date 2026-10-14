@@ -7,12 +7,13 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { eq, sql } from "drizzle-orm";
 import * as tar from "tar";
-import { Cause, Effect, Exit, Layer } from "effect";
+import { Cause, Effect, Exit, Layer, Schema } from "effect";
 import { Inngest } from "inngest";
 import type { PolarService } from "#/modules/billing/polar-provider.server";
 import { startFakeHostedDns } from "#/modules/cluster-domain/hosted-dns.test-fixture";
 import { callStoreAsMember } from "#/modules/config-store/config-store.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
+import * as ids from "#/test/ids";
 import { enrollStoreServer, storeTestCloud } from "#/test/store-cloud";
 import { handleConfigRequest } from "#/routes/api/config/-config.handler";
 import { runStoreDeployment } from "#/modules/config-store/store-deployment.server";
@@ -20,7 +21,7 @@ import { uploadChunk } from "#/modules/config-store/tables";
 import { receiveUpload, releaseUpload } from "#/modules/config-store/upload.server";
 import { resolveCaller } from "#/modules/identity/caller.server";
 import { Auth, AuthLive } from "#/server/auth.server";
-import { githubInstallation, githubRepositoryCache } from "#/modules/github/tables";
+import { githubInstallation, githubRepositoryCache, organizationGithubInstallation } from "#/modules/github/tables";
 import { member, user } from "#/modules/identity/tables";
 import { machineRemoveAttempt, organizationMachine } from "#/modules/machines/tables";
 import {
@@ -48,12 +49,12 @@ const origin = "http://localhost:3000";
  * is public, `acme/secret` is someone else's private repository, and `acme/down` finds GitHub unreachable.
  */
 const github = fakeGithubApi({
-  "https://api.github.com/repos/acme/web/git/ref/heads%2Fdev": {
+  "/repos/acme/web/git/ref/heads%2Fdev": {
     ref: "refs/heads/dev", object: { type: "commit", sha: "a".repeat(40) },
   },
-  "https://api.github.com/repos/acme/docs": { id: 12, full_name: "acme/docs", private: false, default_branch: "main" },
-  "https://api.github.com/repos/acme/secret": { id: 13, full_name: "acme/secret", private: true, default_branch: "main" },
-  "https://api.github.com/repos/acme/down": "down",
+  "/repos/acme/docs": { id: 12, full_name: "acme/docs", private: false, default_branch: "main" },
+  "/repos/acme/secret": { id: 13, full_name: "acme/secret", private: true, default_branch: "main" },
+  "/repos/acme/down": "down",
 });
 
 /** Cloud with the Config Store in its database. */
@@ -72,16 +73,28 @@ const cloudLayer = Effect.fn(function* (
 });
 
 /** The fields these tests read from Store results and refusals. */
-type Reply = {
-  readonly written?: string;
-  readonly view?: string;
-  readonly staged?: ReadonlyArray<string>;
-  readonly settings?: ReadonlyArray<{ readonly path: string; readonly value: number; readonly default: number; readonly apply: string }>;
-  readonly values?: Readonly<Record<string, string | number>>;
-  readonly error?: { readonly code: string; readonly details: { readonly revision?: number; readonly next?: string } | null };
-  readonly domain?: { readonly kind: string; readonly prefix?: string; readonly hostname: string | null };
-  readonly domains?: ReadonlyArray<{ readonly hostname: string | null; readonly status: string; readonly action: { readonly type: string } | null }>;
-};
+const Reply = Schema.Struct({
+  written: Schema.optionalKey(Schema.String),
+  view: Schema.optionalKey(Schema.String),
+  staged: Schema.optionalKey(Schema.Array(Schema.String)),
+  settings: Schema.optionalKey(Schema.Array(Schema.Struct({
+    path: Schema.String, value: Schema.Unknown, default: Schema.Unknown, apply: Schema.String,
+  }))),
+  values: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
+  error: Schema.optionalKey(Schema.Struct({
+    code: Schema.String,
+    details: Schema.NullOr(Schema.Struct({ revision: Schema.optionalKey(Schema.Number), next: Schema.optionalKey(Schema.String) })),
+  })),
+  domain: Schema.optionalKey(Schema.Struct({
+    kind: Schema.String, prefix: Schema.optionalKey(Schema.String), hostname: Schema.NullOr(Schema.String),
+  })),
+  domains: Schema.optionalKey(Schema.Array(Schema.Struct({
+    hostname: Schema.NullOr(Schema.String), status: Schema.String, action: Schema.NullOr(Schema.Struct({ type: Schema.String })),
+  }))),
+});
+type Reply = typeof Reply.Type;
+/** Checks the fields the tests read and keeps the rest, so whole-reply assertions still see every field. */
+const decodeReply = (text: string) => Schema.decodeUnknownSync(Reply)(JSON.parse(text), { onExcessProperty: "preserve" });
 
 /** One CLI request; `json` is the Store's result, or its refusal under `error`. */
 const request = Effect.fn(function* (path: string, cookie: string | undefined, body: Body | undefined, method = "POST") {
@@ -95,8 +108,7 @@ const request = Effect.fn(function* (path: string, cookie: string | undefined, b
     return { status: statusForPublicError(encodePublicError(Cause.squash(exit.cause))), json: empty };
   }
   const text = yield* Effect.promise(() => exit.value.text());
-  // SAFETY: test-only view of the Store's JSON; assertions check every field read.
-  return { status: exit.value.status, json: JSON.parse(text) as Reply };
+  return { status: exit.value.status, json: decodeReply(text) };
 });
 
 const signUp = Effect.fn(function* (name: string) {
@@ -278,7 +290,7 @@ it.live(
         const event = {
           id: "config-deployment-admitted-00000000-0000-4000-8000-000000000101",
           name: "config/deployment.admitted",
-          data: { organizationId: expect.any(String), environmentId: ENVIRONMENT, deploymentId: admit.id },
+          data: { organizationId: expect.any(String), environmentId: ENVIRONMENT, deploymentId: admit.id, trigger: "user" },
         };
         expect(sent).toEqual([event, event]);
 
@@ -294,7 +306,7 @@ it.live(
         assert.strictEqual((yield* request("write", alice, start)).status, 200);
         expect(sent.at(-1)).toEqual({
           name: "config/deployment.admitted",
-          data: { organizationId: expect.any(String), environmentId: ENVIRONMENT, deploymentId: start.deployment },
+          data: { organizationId: expect.any(String), environmentId: ENVIRONMENT, deploymentId: start.deployment, trigger: "user" },
         });
         const superseded = yield* request("write", alice, { ...start, deployment: admit.id });
         assert.strictEqual(superseded.status, 409);
@@ -317,8 +329,8 @@ it.live(
         const VOLUME = "00000000-0000-4000-8000-000000000004";
         yield* request("write", alice, { command: "create_volume", id: VOLUME, environment: here, name: "data", storage: { kind: "docker" }, mounts: [] });
         const { drizzle } = yield* Database;
-        const web1 = "1".repeat(32) as MachineId;
-        const web2 = "2".repeat(32) as MachineId;
+        const web1 = ids.machineId("1");
+        const web2 = ids.machineId("2");
         yield* drizzle.insert(volumePlacement).values({
           volumeId: VOLUME, organizationId, environmentId: ENVIRONMENT, mirrors: [web2], staged: { primary: web1, mirrors: [], deletes: [] },
         });
@@ -347,14 +359,14 @@ it.live(
         yield* request("write", alice, web);
         // Cloud's Cluster has this Server and `other`, which leaves first without a reset. It resets this one when
         // asked; the first reset doesn't finish.
-        const machineId = "0".repeat(32);
-        const other = "1".repeat(32);
+        const machineId = ids.machineId("0");
+        const other = ids.machineId("1");
         const { drizzle } = yield* Database;
         const encryption = yield* SecretEncryption;
         const [enrolled] = yield* drizzle.select().from(organizationMachine);
         if (!enrolled) return assert.fail("no Server enrolled");
         yield* drizzle.insert(organizationMachine).values({
-          ...enrolled, machineId: other as MachineId, isDialEntry: false, encryptedCapability: encryption.encrypt("ployz1:other"),
+          ...enrolled, machineId: other, isDialEntry: false, encryptedCapability: encryption.encrypt("ployz1:other"),
         });
         const warnings: Array<string | null> = ["Docker reset failed: busy volume", null];
         // No Server answers the runtime watch, so their capabilities are unknown and every removal still goes out.
@@ -369,7 +381,7 @@ it.live(
         };
         const userId = (yield* resolveCaller(new Headers({ cookie: alice }))).userId;
         let runs = 0;
-        const removeServer = (server: string, noReset: boolean) => Effect.gen(function* () {
+        const removeServer = (server: MachineId, noReset: boolean) => Effect.gen(function* () {
           const removal = { organizationId, machineId: server, confirmDataLoss: [], noReset };
           const attempt = yield* requestMachineRemoveAttempt({ ...removal, requestedByUserId: userId });
           const inngestRunId = `run-${++runs}`;
@@ -414,7 +426,7 @@ it.live(
         // A replay of that release after a new Cluster was paired, even through a Server of the same ID, touches nothing.
         yield* drizzle.insert(organizationPairing).values({
           organizationId, encryptedPairingSecret: encryption.encrypt("ppair_replacement"),
-          founderPublicKey: "founder-key", founderClaimMachineId: "1".repeat(32) as MachineId,
+          founderPublicKey: "founder-key", founderClaimMachineId: ids.machineId("1"),
         });
         yield* drizzle.insert(organizationMachine).values({
           ...enrolled, clusterKey: createHash("sha256").update("ppair_replacement").digest("hex"),
@@ -438,7 +450,7 @@ it.live(
         const caller = yield* resolveCaller(new Headers({ cookie: alice }));
         const organizationId = caller.organization.id;
         yield* enrollStoreServer(organizationId);
-        const machineId = "0".repeat(32);
+        const machineId = ids.machineId("0");
         const { drizzle } = yield* Database;
         const sent: Array<{ machine: string; confirmed: readonly unknown[] }> = [];
         const replies = [
@@ -498,7 +510,7 @@ it.live(
         const caller = yield* resolveCaller(new Headers({ cookie: alice }));
         const organizationId = caller.organization.id;
         yield* enrollStoreServer(organizationId);
-        const machineId = "0".repeat(32);
+        const machineId = ids.machineId("0");
         const resetWarning = "Docker reset failed";
         const sent: string[] = [];
         const forgets = [
@@ -558,10 +570,14 @@ it.live(
         const database = yield* Database;
         const [row] = yield* database.drizzle.select({ id: user.id, organization: member.organizationId }).from(user)
           .innerJoin(member, eq(member.userId, user.id)).where(eq(user.email, "alice@example.test"));
-        const userId = row?.id ?? assert.fail("no user");
-        yield* database.drizzle.insert(githubInstallation).values({ userId, installationId: 7, accountLogin: "acme", accountType: "Organization" });
+        if (!row) assert.fail("no user");
+        const userId = row.id;
+        yield* database.drizzle.insert(githubInstallation).values({ installationId: 7, accountLogin: "acme", accountType: "Organization" });
+        yield* database.drizzle.insert(organizationGithubInstallation).values({
+          organizationId: row.organization, installationId: 7, connectedByUserId: userId, connectedGithubLogin: "alice",
+        });
         yield* database.drizzle.insert(githubRepositoryCache).values({
-          userId, installationId: 7, repositoryId: 11, name: "web", fullName: "acme/web", defaultBranch: "main",
+          installationId: 7, repositoryId: 11, name: "web", fullName: "acme/web", defaultBranch: "main",
           private: true, htmlUrl: "https://github.com/acme/web", repoUpdatedAt: new Date(),
         });
         let services = 10;
@@ -573,7 +589,7 @@ it.live(
         const created = yield* request("write", alice, git("web", "Acme/Web", "dev"));
         assert.strictEqual(created.status, 200);
         assert.include(created.json.staged ?? [], "web.branch");
-        assert.deepInclude(github.calls, { url: "https://api.github.com/repos/acme/web/git/ref/heads%2Fdev", installationId: 7 });
+        assert.deepInclude(github.calls, { path: "/repos/acme/web/git/ref/heads%2Fdev", access: { type: "organization", organizationId: row.organization, installationId: 7 } });
         const web = yield* request("read", alice, get("web"));
         assert.deepInclude(web.json.values, { repository: "acme/web", branch: "dev" });
 
@@ -673,8 +689,7 @@ const upload = Effect.fn(function* (deploymentId: string, cookie: string, body: 
   const response = yield* handleConfigRequest(new Request(`${origin}/api/config/upload/${deploymentId}`, {
     method: "POST", headers: { cookie, "content-type": "application/gzip" }, body: new Blob([new Uint8Array(body)]),
   }));
-  // SAFETY: test-only view of Cloud's JSON; assertions check every field read.
-  return { status: response.status, json: (yield* Effect.promise(() => response.json())) as Reply };
+  return { status: response.status, json: decodeReply(yield* Effect.promise(() => response.text())) };
 });
 
 it.live(
@@ -725,7 +740,7 @@ it.live(
         assert.strictEqual(yield* held(first), 1);
         // Its Server left: its upload was read, and nothing ran.
         yield* drizzle.delete(organizationMachine);
-        const ran = yield* runStoreDeployment({ organizationId, environmentId: ENVIRONMENT, deploymentId: first }, "cloud-test");
+        const ran = yield* runStoreDeployment({ organizationId, environmentId: ENVIRONMENT, deploymentId: first, trigger: "user" }, "cloud-test");
         expect(ran).toMatchObject({ ran: { id: first, status: "failed" } });
         assert.strictEqual(yield* held(first), 0);
         assert.strictEqual(yield* held(second), 1);

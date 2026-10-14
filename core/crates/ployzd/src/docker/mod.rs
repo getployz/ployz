@@ -19,7 +19,7 @@ mod integration_tests;
 pub(crate) mod test_support;
 
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeMap, HashMap},
     net::{Ipv4Addr, SocketAddr},
     path::PathBuf,
     sync::Arc,
@@ -53,7 +53,7 @@ pub(crate) use create::container_log_config;
 pub(crate) use lifecycle::{ContainerCreated, ContainerRequest, require_eligible, same_creation};
 pub(crate) use managed_service::{DesiredContainer, Ensure, ManagedService};
 pub(crate) use peer_pull::pull_from_ingest;
-pub use spec_store::{Error as SpecStoreError, MachineSpecStore};
+pub use spec_store::{Error as SpecStoreError, FloorTurn, MachineSpecStore};
 pub use unregistry::ImageIngest;
 
 #[cfg(test)]
@@ -180,7 +180,7 @@ pub struct ContainerRuntime {
     docker: LocalDocker,
     specs: MachineSpecStore,
     sink: Option<ObservationSink>,
-    stopping: watch::Sender<BTreeSet<ContainerId>>,
+    stopping: watch::Sender<BTreeMap<ContainerId, usize>>,
     checks: Arc<std::sync::Mutex<CheckRecords>>,
     stranded: Arc<tokio::sync::Mutex<observe::StrandedIngress>>,
 }
@@ -192,22 +192,47 @@ impl ContainerRuntime {
             docker,
             specs,
             sink: None,
-            stopping: watch::Sender::new(BTreeSet::new()),
+            stopping: watch::Sender::new(BTreeMap::new()),
             checks: Arc::new(std::sync::Mutex::new(CheckRecords::new(chrono::Utc::now()))),
             stranded: Arc::default(),
         }
     }
 
-    /// Report this Container as `stopping` until its stop runs,
-    /// so the Ingress Proxies stop routing to it before it stops.
-    pub fn mark_stopping(&self, container_id: ContainerId) {
-        self.stopping
-            .send_if_modified(|stopping| stopping.insert(container_id));
+    pub async fn floor_turn(&self) -> FloorTurn<'_> {
+        self.specs.floor_turn().await
     }
 
-    fn clear_stopping(&self, container_id: &ContainerId) {
-        self.stopping
-            .send_if_modified(|stopping| stopping.remove(container_id));
+    pub async fn clear_floors(&self) -> Result<(), Error> {
+        Ok(self.specs.clear_floors().await?)
+    }
+
+    /// Report this Container as `stopping` until the returned Withdrawal drops,
+    /// so the Ingress Proxies stop routing to it before it stops. Each operation
+    /// holds its own; the Container returns to ingress once none is held.
+    pub fn withdraw(&self, container_id: ContainerId) -> Withdrawal {
+        self.stopping.send_if_modified(|stopping| {
+            let held = stopping.entry(container_id).or_default();
+            *held += 1;
+            *held == 1
+        });
+        Withdrawal {
+            stopping: self.stopping.clone(),
+            container_id,
+        }
+    }
+
+    fn is_withdrawn(&self, container_id: &ContainerId) -> bool {
+        self.stopping.borrow().contains_key(container_id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn stopping_ids_for_test(&self) -> std::collections::BTreeSet<ContainerId> {
+        self.stopping.borrow().keys().copied().collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn spec_store_path_for_test(&self) -> &std::path::Path {
+        self.specs.path_for_test()
     }
 
     /// Drop what the daemon remembers about a container Docker no longer has.
@@ -364,6 +389,7 @@ impl ContainerRuntime {
 
         let environment = inspected.config.as_ref().and_then(inspected_environment);
         let address = container_address(&inspected);
+        let run = container_run(&inspected);
         let mut runtime = runtime_observation(inspected.state.as_ref());
         let mut effective_check = effective_healthcheck(inspected.config.as_ref());
         let mut last_check = last_docker_check(inspected.state.as_ref());
@@ -399,7 +425,7 @@ impl ContainerRuntime {
                     ),
             };
         }
-        let runtime = withdrawn(runtime, self.stopping.borrow().contains(container_id));
+        let runtime = withdrawn(runtime, self.is_withdrawn(container_id));
         let container =
             ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
                 container_id: *container_id,
@@ -422,7 +448,31 @@ impl ContainerRuntime {
             environment,
             image_id: inspected.image,
             last_check,
+            run,
         })
+    }
+}
+
+/// One operation's hold on a Container's `stopping` mark.
+#[must_use = "the Container returns to ingress when its Withdrawal drops"]
+pub struct Withdrawal {
+    stopping: watch::Sender<BTreeMap<ContainerId, usize>>,
+    container_id: ContainerId,
+}
+
+impl Drop for Withdrawal {
+    fn drop(&mut self) {
+        self.stopping.send_if_modified(|stopping| {
+            let Some(held) = stopping.get_mut(&self.container_id) else {
+                return false;
+            };
+            *held -= 1;
+            if *held > 0 {
+                return false;
+            }
+            stopping.remove(&self.container_id);
+            true
+        });
     }
 }
 
@@ -551,6 +601,7 @@ fn display_name(name: Option<&str>) -> String {
 #[serde(rename_all = "PascalCase")]
 struct RawContainerInspect {
     name: Option<String>,
+    restart_count: Option<i64>,
     created: Option<String>,
     image: Option<String>,
     config: Option<RawContainerConfig>,
@@ -599,6 +650,14 @@ struct RawNetworkSettings {
 struct RawEndpointSettings {
     #[serde(rename = "IPAddress")]
     ip_address: Option<String>,
+}
+
+fn container_run(inspected: &RawContainerInspect) -> Option<ployz_core::ContainerRun> {
+    let started = started_at(inspected.state.as_ref())?;
+    Some(ployz_core::ContainerRun {
+        restart_count: inspected.restart_count.unwrap_or_default(),
+        started_at_unix_nanos: started.timestamp_nanos_opt().unwrap_or_default(),
+    })
 }
 
 fn started_at(state: Option<&serde_json::Value>) -> Option<chrono::DateTime<chrono::Utc>> {
@@ -1198,7 +1257,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(hook.cmd, Some(vec!["migrate".into()]));
-        assert_eq!(hook.entrypoint, Some(vec!["/entrypoint".into()]));
+        assert_eq!(regular.entrypoint, Some(vec!["/entrypoint".into()]));
+        assert_eq!(hook.entrypoint, Some(Vec::new()));
         assert_eq!(hook.hostname.as_deref(), Some("shared-host"));
         assert_eq!(hook.user.as_deref(), Some("1000"));
         let hook_env = hook.env.as_ref().unwrap();
@@ -1944,6 +2004,23 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(effective_healthcheck(inherited.config.as_ref()), None);
+    }
+
+    #[test]
+    fn each_docker_start_is_its_own_run() {
+        let run = |restart_count: i64, started_at: &str| {
+            let inspected: RawContainerInspect = serde_json::from_value(json!({
+                "RestartCount": restart_count,
+                "State": { "Status": "running", "StartedAt": started_at },
+            }))
+            .unwrap();
+            container_run(&inspected)
+        };
+        let first = run(0, "2026-10-05T11:00:00.1Z");
+        assert!(first.is_some());
+        assert_ne!(first, run(1, "2026-10-05T11:00:00.1Z"));
+        assert_ne!(first, run(0, "2026-10-05T11:00:00.2Z"));
+        assert_eq!(first, run(0, "2026-10-05T11:00:00.1Z"));
     }
 
     fn inspect_json() -> serde_json::Value {

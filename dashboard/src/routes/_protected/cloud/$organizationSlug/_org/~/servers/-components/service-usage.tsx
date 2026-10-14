@@ -21,7 +21,7 @@ export function ServiceUsage({ organizationSlug, server, namespace, name }: {
   const usage = data === undefined || isError ? null : serviceUsageOn(serviceMetrics(data, new Map([[server.id, server.name]])), server.id, Date.now() - dataUpdatedAt);
   return (
     <ItemDescription className="whitespace-nowrap tabular-nums">
-      {usage === null ? "–" : `${cpuText(usage.cpu)} vCPU · ${bytesText(usage.memory)}`}
+      {usage === null ? "–" : `${cpuText(usage.cpu)} CPU · ${bytesText(usage.memory)}`}
     </ItemDescription>
   );
 }

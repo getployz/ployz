@@ -13,6 +13,7 @@ import { useStoreChangeActions } from "./useStoreChangeActions";
 
 afterEach(() => {
   admittedIds.length = 0;
+  saves.length = 0;
   cleanup();
   vi.restoreAllMocks();
   document.body.replaceChildren();
@@ -25,6 +26,7 @@ const loss = { volumes: [{ id: "v", name: "pg-data", docker_volume: "ns_vol-v", 
 const admitted = { ok: true, value: { written: "deployment", id: "d" } } as never;
 
 const admittedIds: string[] = [];
+const saves: boolean[] = [];
 const NO_LOSS: PlacementLoss = { items: [], losesWrites: false, accept: [], version: (version) => version };
 const shown = (version: string) => `${version}#loss-shown`;
 
@@ -32,7 +34,7 @@ function Deploy({ placementLoss }: { placementLoss: PlacementLoss }) {
   const { deploy, publish, discard, neverSync, dialog } = useStoreChangeActions("acme", ref, "2:1:0", (id) => admittedIds.push(id), placementLoss);
   return <>
     <button type="button" onClick={() => deploy("  Ship the api  ")}>Deploy now</button>
-    <button type="button" onClick={() => publish("  Save this draft  ")}>Save now</button>
+    <button type="button" onClick={() => void publish("  Save this draft  ").then((saved) => saves.push(saved))}>Save now</button>
     <button type="button" onClick={() => discard("web.replicas")}>Discard replicas</button>
     <button type="button" onClick={() => neverSync("api.env.CACHE_TTL", "a:variables.CACHE_TTL" as RowId)}>Never sync CACHE_TTL</button>
     {dialog}
@@ -59,7 +61,6 @@ it("asks before a Deploy deletes Volume data, then admits accepting exactly what
   test.write.mockResolvedValueOnce(refusal("confirmation_required", loss)).mockResolvedValueOnce(admitted);
 
   act(() => { fireEvent.click(screen.getByText("Deploy now")); });
-  // Every Volume that goes, on the Servers holding it; the user types where.
   await screen.findByText("pg-data");
   expect(screen.getByText("hetzner-1")).toBeTruthy();
   expect(screen.getByText("Deletes data")).toBeTruthy();
@@ -73,7 +74,6 @@ it("asks before a Deploy deletes Volume data, then admits accepting exactly what
   ]);
   await waitFor(() => expect(screen.queryByText("pg-data")).toBeNull());
   expect(toast.error).not.toHaveBeenCalled();
-  // The admitted Deploy, the second admission's own id, opens.
   expect(admittedIds).toHaveLength(1);
   expect(test.admits()[1]).toMatchObject({ id: admittedIds[0] });
 });
@@ -164,4 +164,38 @@ it("saves the optional message without admitting a deployment", async () => {
   await waitFor(() => expect(test.write).toHaveBeenCalledTimes(1));
   expect(test.admits()).toEqual([{ command: "publish", environment: ref, version: "2:1:0", accept_volume_loss: [], message: "Save this draft" }]);
   expect(admittedIds).toEqual([]);
+  await waitFor(() => expect(saves).toEqual([true]));
+});
+
+it("reports a Save the Store refused as not saved", async () => {
+  const test = setup();
+  test.write.mockResolvedValueOnce(refusal("unavailable", { volumes: ["pg-data"] }));
+  fireEvent.click(screen.getByText("Save now"));
+  await waitFor(() => expect(saves).toEqual([false]));
+  expect(toast.error).toHaveBeenCalledWith("refused: unavailable");
+});
+
+it("reports a Save as saved once the user accepts the data it deletes, and not saved when they cancel", async () => {
+  const test = setup();
+  test.write.mockResolvedValueOnce(refusal("confirmation_required", loss)).mockResolvedValueOnce({ ok: true, value: { written: "published" } } as never);
+  fireEvent.click(screen.getByText("Save now"));
+  await screen.findByText("pg-data");
+  expect(saves).toEqual([]);
+  fireEvent.change(screen.getByPlaceholderText("shop/production"), { target: { value: "shop/production" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(saves).toEqual([true]));
+
+  test.write.mockResolvedValueOnce(refusal("confirmation_required", loss));
+  fireEvent.click(screen.getByText("Save now"));
+  await screen.findByText("pg-data");
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  await waitFor(() => expect(saves).toEqual([true, false]));
+});
+
+it("reports an earlier Save as not saved when a later one asks again", async () => {
+  setup().write.mockResolvedValue(refusal("confirmation_required", loss));
+  fireEvent.click(screen.getByText("Save now"));
+  await screen.findByText("pg-data");
+  fireEvent.click(screen.getByText("Save now"));
+  await waitFor(() => expect(saves).toEqual([false]));
 });

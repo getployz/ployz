@@ -1,7 +1,10 @@
+import type { MachineId } from "@ployz/sdk";
 import type { webhooks } from "#/modules/billing/polar-api";
 import { Schema } from "effect";
+import type { MailMessage } from "#/modules/mail/mailer.server";
 import type { ServerPolicyChange } from "#/modules/machines/server-policy";
 import type { UpgradeTrigger } from "#/modules/server-upgrade/server-upgrade";
+import type { VolumeRunKind } from "#/modules/volume-run/volume-run";
 import { eventType, staticSchema } from "inngest";
 import { githubCheckSuiteReceivedEventDataSchema, githubPullRequestReceivedEventDataSchema, githubPushReceivedEventDataSchema, type GithubCheckSuiteReceivedEventData, type GithubCheckSuiteReceivedEventInput, type GithubPullRequestReceivedEventData, type GithubPullRequestReceivedEventInput, type GithubPushReceivedEventData, type GithubPushReceivedEventInput } from "#/modules/github/github-ingestion.contracts";
 import { asReferenceId } from "#/lib/json";
@@ -80,8 +83,14 @@ export type VolumeRunRequestedEventData = {
   environment: string;
   volumeId: string;
   runId: string;
+  /** The kind of the warm lane this run took over, so the run fences that lane's Machines before it plans. */
+  took?: VolumeRunKind;
 };
+export const volumeRunTakenEvent = "volume/run.taken";
+
+export type VolumeRunTakenEventData = { runId: string };
 export const serverDrainRequestedEvent = "server/drain.requested";
+export const serverWebTrafficRequestedEvent = "server/web-traffic.requested";
 export const namespaceCleanupRequestedEvent = "namespace/cleanup.requested";
 export const serviceActRequestedEvent = "service/act.requested";
 export const clusterDomainSyncRequestedEvent = "cluster-domain/sync.requested";
@@ -91,6 +100,9 @@ export const configPrCheckRequestedEvent = "config/pr-check.requested";
 export const serverAccessRetireRequestedEvent = "server-access/retire.requested";
 export const configFirstServerJoinedEvent = "config/first-server.joined";
 export const configSweepRequestedEvent = "config/sweep.requested";
+export const mailSendRequestedEvent = "mail/send";
+
+export type MailSendRequestedEventData = MailMessage;
 
 export type GithubInstallationWebhookEventData = GithubInstallationWebhook & {
   deliveryId: string;
@@ -112,7 +124,7 @@ export type OrganizationBillingSyncRequestedEventData = {
 
 export type ServerPolicyChangeRequestedEventData = {
   organizationId: string;
-  machineId: string;
+  machineId: MachineId;
   change: ServerPolicyChange;
 };
 
@@ -120,7 +132,7 @@ export type ServerPolicyChangeRequestedEventData = {
 export type ServerUpgradeRequestedEventData = {
   organizationId: string;
   /** The Server to Upgrade; null upgrades every Server behind. */
-  machineId: string | null;
+  machineId: MachineId | null;
   trigger: UpgradeTrigger;
   userId: string | null;
   /** The attempt ID the CLI polls, minted by its request; only with `machineId`. Absent, the run mints one. */
@@ -135,7 +147,14 @@ export type MachineRemoveRequestedEventData = {
 export type ServerDrainRequestedEventData = {
   attemptId: string;
   organizationId: string;
-  machineId: string;
+  machineId: MachineId;
+};
+
+/** A web traffic change was requested: its row is written. `organizationId` keys the Organization's one-at-a-time changes. */
+export type ServerWebTrafficRequestedEventData = {
+  attemptId: string;
+  organizationId: string;
+  machineId: MachineId;
 };
 
 /** A clean of a Namespace no Environment owns was requested: its row is written. */
@@ -186,7 +205,10 @@ export type ConfigDeploymentAdmittedEventData = {
   /** Deployments of one Environment run one at a time. */
   environmentId: string;
   deploymentId: string;
+  trigger?: DeploymentTrigger;
 };
+
+export type DeploymentTrigger = "github" | "user";
 
 export type InngestFunctionCancelledEventData = {
   function_id: string;
@@ -260,6 +282,10 @@ export const serverDrainRequestedEventType = eventType(
   serverDrainRequestedEvent,
   { schema: staticSchema<ServerDrainRequestedEventData>() },
 );
+export const serverWebTrafficRequestedEventType = eventType(
+  serverWebTrafficRequestedEvent,
+  { schema: staticSchema<ServerWebTrafficRequestedEventData>() },
+);
 export const namespaceCleanupRequestedEventType = eventType(
   namespaceCleanupRequestedEvent,
   { schema: staticSchema<NamespaceCleanupRequestedEventData>() },
@@ -271,6 +297,14 @@ export const serviceActRequestedEventType = eventType(
 export const volumeRunRequestedEventType = eventType(
   volumeRunRequestedEvent,
   { schema: staticSchema<VolumeRunRequestedEventData>() },
+);
+export const volumeRunTakenEventType = eventType(
+  volumeRunTakenEvent,
+  { schema: staticSchema<VolumeRunTakenEventData>() },
+);
+export const mailSendRequestedEventType = eventType(
+  mailSendRequestedEvent,
+  { schema: staticSchema<MailSendRequestedEventData>() },
 );
 export const inngestFunctionFinishedEventType = eventType(
   "inngest/function.finished",
@@ -357,6 +391,11 @@ export function createServerPolicyChangeRequestedEvent(
   return { name: serverPolicyChangeRequestedEvent, data } as const;
 }
 
+/** Keyed by the attempt its request key admits: sending it again for the same act runs nothing new. */
+export function createKeyedServerPolicyChangeRequestedEvent(data: ServerPolicyChangeRequestedEventData, attemptId: string) {
+  return { id: `server-policy-${attemptId}`, name: serverPolicyChangeRequestedEvent, data } as const;
+}
+
 export function createServerUpgradeRequestedEvent(data: ServerUpgradeRequestedEventData) {
   return { name: serverUpgradeRequestedEvent, data } as const;
 }
@@ -371,14 +410,29 @@ export function createVolumeRunRequestedEvent(data: VolumeRunRequestedEventData)
   return { id: `volume-run-${data.runId}`, name: volumeRunRequestedEvent, data } as const;
 }
 
+/** Keyed by the ended row: a row is taken over once. */
+export function createVolumeRunTakenEvent(data: VolumeRunTakenEventData) {
+  return { id: `volume-run-taken-${data.runId}`, name: volumeRunTakenEvent, data } as const;
+}
+
 /** Keyed by the Drain's row: sending it again for the same request runs nothing new. */
 export function createServerDrainRequestedEvent(data: ServerDrainRequestedEventData) {
   return { id: `server-drain-${data.attemptId}`, name: serverDrainRequestedEvent, data } as const;
 }
 
+/** Keyed by the change's row: sending it again for the same request runs nothing new. */
+export function createServerWebTrafficRequestedEvent(data: ServerWebTrafficRequestedEventData) {
+  return { id: `server-web-traffic-${data.attemptId}`, name: serverWebTrafficRequestedEvent, data } as const;
+}
+
 /** Keyed by the clean's row: sending it again for the same request runs nothing new. */
 export function createNamespaceCleanupRequestedEvent(data: NamespaceCleanupRequestedEventData) {
   return { id: `namespace-cleanup-${data.cleanupId}`, name: namespaceCleanupRequestedEvent, data } as const;
+}
+
+/** The key names what this mail is for: queueing it again sends one mail. */
+export function createMailSendRequestedEvent(message: MailSendRequestedEventData, key: string) {
+  return { id: `mail-${key}`, name: mailSendRequestedEvent, data: message } as const;
 }
 
 /** Keyed by the act's row: sending it again for the same attempt runs nothing new. */
@@ -410,7 +464,6 @@ export function createOrganizationBillingSyncRequestedEvent(
   } as const;
 }
 
-/** Keyed by the Deployment, so admitting it again (a replayed request) sends nothing new. */
 export function createConfigPrCheckRequestedEvent(input: { organizationId: string; repositoryId: number; number: number }) {
   return {
     name: configPrCheckRequestedEvent,
@@ -548,12 +601,16 @@ export type InngestSendableEvent =
   | ReturnType<typeof createGithubRepositoriesSyncRequestedEvent>
   | ReturnType<typeof createMachineRemoveRequestedEvent>
   | ReturnType<typeof createServerPolicyChangeRequestedEvent>
+  | ReturnType<typeof createKeyedServerPolicyChangeRequestedEvent>
   | ReturnType<typeof createServerUpgradeRequestedEvent>
   | ReturnType<typeof createCliServerUpgradeRequestedEvent>
   | ReturnType<typeof createServerDrainRequestedEvent>
+  | ReturnType<typeof createServerWebTrafficRequestedEvent>
   | ReturnType<typeof createNamespaceCleanupRequestedEvent>
   | ReturnType<typeof createServiceActRequestedEvent>
+  | ReturnType<typeof createMailSendRequestedEvent>
   | ReturnType<typeof createVolumeRunRequestedEvent>
+  | ReturnType<typeof createVolumeRunTakenEvent>
   | ReturnType<typeof createClusterDomainSyncRequestedEvent>
   | ReturnType<typeof createConfigFirstServerJoinedEvent>
   | ReturnType<typeof createOrganizationBillingSyncRequestedEvent>

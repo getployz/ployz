@@ -50,6 +50,18 @@ impl SecretSet {
         }
     }
 
+    /// A set for logs no Container env reaches, as a Server process's own: only
+    /// secret-shaped values are scrubbed.
+    #[must_use]
+    pub const fn no_env() -> Self {
+        Self {
+            secrets: BTreeSet::new(),
+            plain: BTreeMap::new(),
+            store: true,
+            machine: MachineEnv::Read,
+        }
+    }
+
     /// The Store's env for a Container: `secrets` are scrubbed wherever they appear, `plain`
     /// values stay readable when the Machine's env holds the same value under that name.
     #[must_use]

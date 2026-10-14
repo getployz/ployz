@@ -1,5 +1,6 @@
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useLiveQuery } from "@tanstack/react-db";
+import { useHydrated } from "@tanstack/react-router";
 import {
   getRuntimeCollections,
   isIncompleteObservation,
@@ -8,11 +9,14 @@ import {
 
 export function useRuntimeLens(organizationSlug: string) {
   const collections = getRuntimeCollections(organizationSlug, useCollectionScope());
-  const { data: machines = [], isLoading: machinesLoading } = useLiveQuery(collections.machines);
-  const { data: statusRows = [], isLoading: statusLoading } = useLiveQuery(collections.status);
+  const liveMachines = useLiveQuery(collections.machines);
+  const liveStatus = useLiveQuery(collections.status);
+  const hydrated = useHydrated();
+  const machines = hydrated ? (liveMachines.data ?? []) : [];
+  const statusRows = hydrated ? (liveStatus.data ?? []) : [];
   const status = statusRows[0]?.status ?? "connecting";
   const error = statusRows[0]?.error ?? null;
-  const isLoading = machinesLoading || statusLoading;
+  const isLoading = hydrated && (liveMachines.isLoading || liveStatus.isLoading);
 
   return {
     machines: machines.map(projectRuntimeMachineRecord),

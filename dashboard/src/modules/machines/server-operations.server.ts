@@ -5,7 +5,9 @@ import { getApproval, operationDigest, type OperationDigest, pendingApprovals } 
 import type { OperationAsked } from "#/modules/approvals/approvals.server";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { ownedNamespaces } from "#/modules/machines/namespace-cleanup.server";
+import { machineUpdateForPolicyChange, type ServerPolicyChange } from "#/modules/machines/server-policy";
 import { SYSTEM_NAMESPACE, splitQualifiedService } from "#/modules/machines/server-services";
+import { needsAttention, serverStatus } from "#/modules/machines/server-status";
 import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
 import { firstRuntimeFrame, OrganizationRuntime, RUNTIME_FRAME_TIMEOUT_MS } from "#/modules/runtime/organization-runtime.server";
 import { dockerVolumeName } from "#/modules/volume-run/volume-run";
@@ -94,6 +96,30 @@ export function drainPlan(frame: RuntimeWatchView, owned: ReadonlySet<string>, m
   };
 }
 
+const servesWeb = ({ machine }: RuntimeWatchView["machines"][number]) => machine.accepts_ingress && machine.public_ip !== null;
+const online = ({ machine, membership }: RuntimeWatchView["machines"][number]) =>
+  !needsAttention(serverStatus({ membership, runningBuilds: machine.runtime.running_builds }));
+
+/**
+ * What turning web traffic off on `machineId` loses: every domain the Cluster serves, when no other online Server with
+ * a public IP takes web traffic. The preview is the whole `change`, so approving web off approves nothing else it carries.
+ * Null when the frame has no such Server.
+ */
+export function ingressOffPlan(frame: RuntimeWatchView, machineId: string, change: ServerPolicyChange): OperationAsked | null {
+  const name = serverName(frame, machineId);
+  if (name === undefined) return null;
+  const last = frame.machines.some((observed) => observed.machine.id === machineId && servesWeb(observed))
+    && !frame.machines.some((observed) => observed.machine.id !== machineId && servesWeb(observed) && online(observed));
+  const domains = last ? [...new Set(frame.certificates.map(({ hostname }) => hostname))].sort(byName) : [];
+  return {
+    subject: `server:${machineId}`,
+    verb: "set",
+    name,
+    preview: { server: machineId, ...machineUpdateForPolicyChange(change) },
+    effects: domains.map((hostname) => ({ kind: "removes_domain", name: hostname, node: hostname, path: `domains/${hostname}` })),
+  };
+}
+
 /** What cleaning `namespace` deletes: its Services' containers and the Volumes it holds on each Server. */
 export function cleanPlan(
   frame: RuntimeWatchView,
@@ -149,7 +175,7 @@ export function removePlan(
   const volumes = [...(confirmed ?? [])].sort((a, b) => byName(volumeName(a), volumeName(b)));
   return {
     subject: `server:${machineId}`,
-    verb: "remove",
+    verb: confirmed === null ? "forget" : "remove",
     name,
     preview: { server: machineId, reset: confirmed !== null, volumes: volumes.map(volumeName) },
     effects: [
@@ -167,6 +193,12 @@ const observe = (organizationId: string) => firstRuntimeFrame(organizationId).pi
 export const planDrain = Effect.fn("ServerOperations.planDrain")(function* (organizationId: string, machineId: string) {
   const frame = yield* observe(organizationId);
   return drainPlan(frame, new Set(yield* ownedNamespaces(organizationId)), machineId);
+});
+
+export const planIngressOff = Effect.fn("ServerOperations.planIngressOff")(function* (
+  organizationId: string, machineId: string, change: ServerPolicyChange,
+) {
+  return ingressOffPlan(yield* observe(organizationId), machineId, change);
 });
 
 const ownedOrSystem = (organizationId: string, namespace: string) => namespace === SYSTEM_NAMESPACE
@@ -228,9 +260,11 @@ export const planRemove = Effect.fn("ServerOperations.planRemove")(function* (
  * An operation approval's preview recomputed on read, so a changed Cluster supersedes it. A Server no longer observed,
  * or a Namespace an Environment owns by now, no longer applies. When the Cluster can't be read, the stored preview stands.
  */
-export const freshOperationDigest: OperationDigest<Effect.Services<ReturnType<typeof planClean>>> = (organizationId, subject, verb, stored) => {
+export const freshOperationDigest: OperationDigest<Effect.Services<ReturnType<typeof planClean>>> = (organizationId, subject, verb, stored, preview) => {
   const separator = subject.indexOf(":");
   const key = subject.slice(separator + 1);
+  // A member or invite approval is planned again when its command reruns; there is no Cluster to recompute it from.
+  if (["member", "invite"].includes(subject.slice(0, separator))) return Effect.succeed(stored);
   const fresh = Effect.gen(function* () {
     switch (verb) {
       case "drain": {
@@ -241,7 +275,12 @@ export const freshOperationDigest: OperationDigest<Effect.Services<ReturnType<ty
       case "clean":
         if (yield* ownedOrSystem(organizationId, key)) return null;
         return operationDigest(yield* planClean(organizationId, key));
-      case "remove": {
+      case "set": {
+        const plan = ingressOffPlan(yield* observe(organizationId), key, { acceptsIngress: false });
+        return plan === null || plan.effects.length === 0 ? null : operationDigest({ ...plan, preview });
+      }
+      case "remove":
+      case "forget": {
         const frame = yield* observe(organizationId);
         return frame.machines.some(({ machine }) => machine.id === key) ? stored : null;
       }

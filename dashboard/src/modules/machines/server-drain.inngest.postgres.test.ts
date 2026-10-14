@@ -18,14 +18,16 @@ import { PloyzProviderError, type PloyzSdkError, type PloyzSession } from "#/mod
 import type { Database } from "#/server/database.server";
 import { serverDrainAttempt } from "#/modules/machines/tables";
 import { makeInngestEffectRunner, type runInngestEffect } from "#/server/run.server";
+import * as ids from "#/test/ids";
+import { invokeOnFailure } from "#/test/inngest-failure";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
 
 const organizationId = "00000000-0000-4000-8000-000000000d01";
 const userId = "00000000-0000-4000-8000-000000000d02";
 const actor = { userId };
-const caller = { userId, organization: { id: organizationId, slug: "acme" }, credential: { kind: "session" as const, id: "session-1" }, support: null };
-const machineId = "a".repeat(32);
-const otherMachineId = "b".repeat(32);
+const caller = { userId, organization: { id: organizationId, slug: "acme" }, credential: { kind: "session" as const, id: "session-1" }, role: "owner" as const, support: null, via: "dashboard" as const };
+const machineId = ids.machineId("a");
+const otherMachineId = ids.machineId("b");
 const requestId = "00000000-0000-4000-8000-0000000000a1";
 const secondTab = "00000000-0000-4000-8000-0000000000a2";
 const web1 = { id: "1".repeat(32), name: "web-1" };
@@ -104,8 +106,8 @@ describe("drain-server", () => {
       }),
     ))) as typeof runInngestEffect;
 
-  const request = (id = requestId, machine = machineId) =>
-    runEffect(requestServerDrain(caller, { organizationSlug: "acme", machineId: machine, requestId: id }));
+  const request = (id = requestId, machine = machineId, stops: string[] = []) =>
+    runEffect(requestServerDrain(caller, { organizationSlug: "acme", machineId: machine, requestId: id, stops }));
   /** One run of the Drain. The test engine mints a run ID per step execution; Inngest keeps one per run. */
   const drain = (attemptId = requestId, machine = machineId, runId = "run-drain") => new InngestTestEngine({
     function: createDrainServer(new Inngest({ id: "test" }), runEffect),
@@ -222,6 +224,7 @@ describe("drain-server", () => {
       machineId,
       targets: ["shop-production/api", "shop-production/db"],
       approvalId: null,
+      planDigest: "",
     }));
     await drain(attemptId);
 
@@ -238,24 +241,19 @@ describe("drain-server", () => {
     expect(drainCalls).toEqual([[machineId, { scope: "services", services: ["shop-production/api"] }]]);
   });
 
-  it("a dashboard Drain that retires the last copy of a Global asks a human, and runs once with the approval", async () => {
+  it("a dashboard Drain that retires the last copy of a Global runs without asking anyone", async () => {
     frame = frameOf("global");
-    const asked = await request();
-    if (!("asking" in asked)) return expect.fail(`the Drain ran without asking: ${JSON.stringify(asked)}`);
-    expect(await rows()).toEqual([]);
-    expect(send).not.toHaveBeenCalled();
-    const approvals = await harness.pool.query(`select id, status, command from operation_approvals`);
-    expect(approvals.rows).toEqual([{ id: asked.asking.approvalId, status: "pending", command: "drain" }]);
+    expect(await request(requestId, machineId, ["shop-production/api"])).toMatchObject({ drain: { attemptId: requestId, state: "pending" } });
+    expect((await harness.pool.query(`select count(*)::int as n from operation_approvals`)).rows).toEqual([{ n: 0 }]);
+    await drain();
 
-    expect(await runEffect(requestServerDrain(caller, { organizationSlug: "acme", machineId, requestId })))
-      .toMatchObject({ asking: { approvalId: asked.asking.approvalId } });
-    expect(await rows()).toEqual([]);
+    expect(drainCalls).toEqual([[machineId, { scope: "services", services: ["shop-production/api"] }]]);
+  });
 
-    await harness.pool.query(`update operation_approvals set status = 'approved', decided_at = now() where id = $1`, [asked.asking.approvalId]);
-    const approved = { organizationSlug: "acme", machineId, requestId, approvalId: asked.asking.approvalId };
-    expect(await runEffect(requestServerDrain(caller, approved))).toMatchObject({ drain: { attemptId: requestId, state: "pending" } });
-    expect(await runEffect(requestServerDrain(caller, approved))).toMatchObject({ drain: { attemptId: requestId } });
-    expect((await harness.pool.query(`select approval_id from server_drain_attempt`)).rows).toEqual([{ approval_id: asked.asking.approvalId }]);
+  it("refuses a dashboard Drain that would stop a Service its dialog showed as moving", async () => {
+    frame = frameOf("global");
+    await expect(request()).rejects.toThrow("Draining now stops api. Review the drain again.");
+    expect(await rows()).toEqual([]);
   });
 
   it("plans again when its turn comes and refuses a destroy its gate never saw, without asking the Engine", async () => {
@@ -273,21 +271,10 @@ describe("drain-server", () => {
     }]);
   });
 
-  it("runs a queued Drain whose approval covers what it destroys when its turn comes", async () => {
-    frame = frameOf("global");
-    const asked = await request();
-    if (!("asking" in asked)) return expect.fail(`the Drain ran without asking: ${JSON.stringify(asked)}`);
-    await harness.pool.query(`update operation_approvals set status = 'approved', decided_at = now() where id = $1`, [asked.asking.approvalId]);
-    await runEffect(requestServerDrain(caller, { organizationSlug: "acme", machineId, requestId, approvalId: asked.asking.approvalId }));
-    await drain();
-
-    expect(drainCalls).toEqual([[machineId, { scope: "services", services: ["shop-production/api"] }]]);
-  });
-
   it("answers a CLI retry carrying the approval a Drain consumed with that Drain, not a second one", async () => {
     const approvalId = "00000000-0000-4000-8000-0000000000b1";
     const cli = (attemptId: string) => runEffect(requestCliServerDrain({ organizationId, userId }, {
-      attemptId, machineId, targets: ["shop-production/api"], approvalId,
+      attemptId, machineId, targets: ["shop-production/api"], approvalId, planDigest: "",
     }));
     const attemptId = await cli(requestId);
     await drain(attemptId);
@@ -434,15 +421,13 @@ describe("drain-server", () => {
   });
 
   it("onFailure ends a pending row failed and a running one unknown, and leaves an ended row alone", async () => {
-    const onFailure = createDrainServer(new Inngest({ id: "test" }), runEffect).opts.onFailure;
-    if (onFailure === undefined) return expect.fail("a failed run closes its row");
+    const worker = createDrainServer(new Inngest({ id: "test" }), runEffect);
     await request();
     await harness.pool.query(`update server_drain_attempt set inngest_run_id = 'run-1' where id = $1`, [requestId]);
     await request(secondTab, otherMachineId);
     await claim(secondTab, "run-2");
 
-    // SAFETY: the failure handler reads only the failed run's ID.
-    const fail = (runId: string) => Promise.resolve(onFailure({ event: { data: { run_id: runId } } } as never));
+    const fail = (runId: string) => invokeOnFailure(worker, runId, { name: "server/drain.requested", data: request0 });
     await fail("run-1");
     await fail("run-2");
     await fail("run-2");
@@ -454,12 +439,12 @@ describe("drain-server", () => {
   });
 
   it("onFailure leaves alone a pending row its run never bound, even when the failed run's event names it", async () => {
-    const onFailure = createDrainServer(new Inngest({ id: "test" }), runEffect).opts.onFailure;
-    if (onFailure === undefined) return expect.fail("a failed run closes its row");
     await request();
 
-    // SAFETY: the failure handler reads only the failed run's ID and its event.
-    await onFailure({ event: { data: { run_id: "run-never-bound", event: { data: request0 } } } } as never);
+    await invokeOnFailure(createDrainServer(new Inngest({ id: "test" }), runEffect), "run-never-bound", {
+      name: "server/drain.requested",
+      data: request0,
+    });
 
     expect(await rows()).toMatchObject([{ state: "pending", end_code: null, inngest_run_id: null }]);
   });
