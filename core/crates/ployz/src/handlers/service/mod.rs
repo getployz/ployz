@@ -5,12 +5,11 @@ use clap::{Arg, ArgAction, ArgMatches, Command};
 use futures_util::future::join_all;
 
 use crate::cli::{base, positional, value};
-use ployz_core::rpc::op;
 use ployz_core::{
     ContainerAction, ContainerId, ContainerObservation, ContainerRef, ContainerRuntimeObservation,
     HealthFailure, HealthObservation, LiveServices, MachineFailure, MachineId, MachineName,
-    MachineTarget, QualifiedService, ReadServingPointerRequest, RpcError, RpcErrorCode,
-    ServiceObservation, ServiceSelector, select_service,
+    MachineObservation, QualifiedService, RpcError, RpcErrorCode, ServiceObservation,
+    ServiceSelector, select_service,
 };
 use serde::Serialize;
 
@@ -53,7 +52,7 @@ pub fn processes(root: &ArgMatches) -> Result<(), Error> {
                         .is_none_or(|namespace| service.identity.namespace == *namespace)
                 })
                 .collect::<Vec<_>>();
-            let retiring = retiring(client, &live, &services).await;
+            let retiring = retiring(client, &machines, &services).await;
             let mut containers = services
                 .iter()
                 .flat_map(|service| service.members())
@@ -72,32 +71,16 @@ pub fn processes(root: &ArgMatches) -> Result<(), Error> {
 
 async fn retiring(
     client: &crate::connect::Client,
-    live: &LiveServices<RpcError>,
+    machines: &[MachineObservation],
     services: &[&ServiceObservation],
 ) -> HashSet<ContainerId> {
-    let Some(target) = live
-        .containers
-        .successes
-        .iter()
-        .map(|success| &success.machine_id)
-        .min()
-        .map(MachineTarget::from)
-    else {
+    let Some(publisher) = crate::serving_publish::publisher_among(machines) else {
         return HashSet::new();
     };
     let reads = services.iter().map(|service| {
         let mut client = client.clone();
-        let target = target.clone();
-        async move {
-            client
-                .read::<op::ReadServingPointer>(
-                    ReadServingPointerRequest {
-                        service: service.identity.clone(),
-                    },
-                    &target,
-                )
-                .await
-        }
+        let mut at = publisher.clone();
+        async move { client.read_at(&mut at, &service.identity).await }
     });
     join_all(reads)
         .await
