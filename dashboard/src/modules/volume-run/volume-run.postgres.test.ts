@@ -351,6 +351,9 @@ describe("volume runs", () => {
       const key = verb.replace(/\(.*$/, "");
       sent.push(request.payload);
       verbs.push(verb);
+      if (want.kind === "floor" && fake.capabilities?.includes(requirements.volumeFloor.capability) === false) {
+        return Effect.fail(new ServerLacks({ machineId: target, capability: requirements.volumeFloor.capability }));
+      }
       const hook = beforeSet.get(key);
       beforeSet.delete(key);
       return Effect.promise(async () => hook?.()).pipe(Effect.andThen((): Effect.Effect<VolumeCopyView, PloyzSdkError> => {
@@ -854,6 +857,21 @@ describe("volume runs", () => {
     it("a release that took a warm Move on a Volume with no Service floors and plans on its own, and ends done", async () => {
       containers = [];
       machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
+      await move();
+      const released = await release();
+      if (!released.ok) throw new Error(released.refusal.message);
+
+      const output = await deliver(released.run.id, "run-2");
+
+      expect(output.error).toBeUndefined();
+      expect(verbs).toEqual(["floor@fsn-1", "floor@fsn-2", "writer@fsn-1(none)"]);
+      expect((await lanes()).find((lane) => lane.id === released.run.id)).toMatchObject({ state: "done" });
+    });
+
+    it("a release skips the floor on an empty Server that predates it, so a fleet mid-upgrade can still release", async () => {
+      containers = [];
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
+      machines.push({ name: "fsn-3", pool: true, copy: null, capabilities: [requirements.volumeMove.capability] });
       await move();
       const released = await release();
       if (!released.ok) throw new Error(released.refusal.message);
