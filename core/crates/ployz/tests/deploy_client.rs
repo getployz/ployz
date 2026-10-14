@@ -916,6 +916,8 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
     );
 
     // Cancelled while it runs, the runner stops it.
+    let (held, held_server) =
+        listening(DeployService::new(machine('a', "one")).hold_health()).await;
     let second = DeploymentId::parse("00000000-0000-4000-8000-000000000102").unwrap();
     let mut admit = Deploy {
         id: second.clone(),
@@ -937,7 +939,7 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
         Arc::clone(&store),
         second.clone(),
         RunnerId::parse("cloud-run-3").unwrap(),
-        vec![ployz::context::Connection::tcp(address)],
+        vec![ployz::context::Connection::tcp(held)],
         Ok(Default::default()),
     ));
     while store
@@ -987,6 +989,7 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
     .unwrap_err();
     assert_eq!(never.code, ployz_core::RpcErrorCode::Conflict);
     server.abort();
+    held_server.abort();
 }
 
 #[tokio::test]

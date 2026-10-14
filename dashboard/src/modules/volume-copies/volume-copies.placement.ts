@@ -1,4 +1,4 @@
-import type { ChangeKind, MachineName } from "@ployz/sdk";
+import type { ChangeKind, MachineId, MachineName } from "@ployz/sdk";
 import {
   appliedMirrors, detachedName, observePlacement, type PlacementItem, type PlacementRow, type PlacementVolume, placementForm,
 } from "#/modules/volume-placement/volume-placement";
@@ -6,19 +6,25 @@ import { runWords } from "#/modules/volume-run/volume-copies";
 import { copyName, type Member, type VolumeRunView } from "#/modules/volume-run/volume-run";
 import type { MirrorCopy, OldCopy, StagedCopy, VolumeCopies } from "./volume-copies";
 
+/** What the mirror syncs last saw of one mirror. A pull that lands later never clears an older failure. */
+export type MirrorStatusView = {
+  readonly machine: MachineId;
+  readonly okAt: string | null;
+  readonly matchedAt: string | null;
+  readonly failedAt: string | null;
+  readonly failure: string | null;
+};
+
 /**
- * Today's reads in copies words: the Placement form, the Volume's active run and its last mirror refresh. The one place
- * that knows placement rows and Volume Runs, so a rewrite of either touches only this file.
+ * Today's reads in copies words: the Placement form, the Volume's active run and what the mirror syncs saw. The one
+ * place that knows placement rows and Volume Runs, so a rewrite of either touches only this file.
  */
 export function copiesFromPlacement(input: {
   readonly volume: PlacementVolume;
   readonly members: readonly Member[];
   readonly row: PlacementRow | null;
   readonly active: VolumeRunView | null;
-  /** The newest mirror round that ended, whatever its end. */
-  readonly lastSync: VolumeRunView | null;
-  /** The newest mirror round that ended done: every mirror held the primary's data as of its end. */
-  readonly lastDone: VolumeRunView | null;
+  readonly statuses: readonly MirrorStatusView[];
 }): VolumeCopies | null {
   const { volume, members, row, active } = input;
   const form = placementForm(volume, members, row);
@@ -26,9 +32,11 @@ export function copiesFromPlacement(input: {
   const observed = observePlacement(members);
   const moving = form.primary.change !== null && row?.staged?.seed === undefined;
   const promoted = moving && appliedMirrors(observed, row).includes(form.primary.server.id);
-  const failed = input.lastSync !== null && ["failed", "lost"].includes(input.lastSync.state);
   const silent = new Set(members.filter((member) => !member.answered).map((member) => member.machine.id));
-  const doneAt = input.lastDone?.finished_at == null ? null : new Date(input.lastDone.finished_at);
+  const pullOf = (id: MachineId) => {
+    const member = members.find((each) => each.machine.id === id);
+    return member?.answered === true && member.view.copy?.kind === "slot" ? member.view.copy.pull : null;
+  };
   const target = active === null ? null : runTarget(active);
 
   const busyOn = (server: MachineName): string | null => {
@@ -39,15 +47,19 @@ export function copiesFromPlacement(input: {
   };
   const mirror = (item: PlacementItem, staged: StagedCopy | null): MirrorCopy => {
     const quiet = silent.has(item.server.id);
+    const status = input.statuses.find((each) => each.machine === item.server.id);
+    const matchedAt = status?.matchedAt == null ? null : new Date(status.matchedAt);
+    const pull = pullOf(item.server.id);
+    const failed = pull?.failure != null || (status?.failedAt != null && (status.okAt === null || status.failedAt > status.okAt));
     return {
       kind: "mirror",
       id: item.server.id,
       server: item.server,
       name: copyName(volume.name, item.server.name),
-      refreshedAt: quiet ? doneAt : syncedAt(item.newest, doneAt),
+      refreshedAt: quiet ? matchedAt : syncedAt(item.newest, matchedAt),
       skipped: quiet ? "silent" : failed ? "failed" : null,
       staged,
-      busy: active?.kind === "sync" ? "Refreshing" : busyOn(item.server.name),
+      busy: active?.kind === "sync" || (pull !== null && pull.failure === null) ? "Refreshing" : busyOn(item.server.name),
     };
   };
   const old = (item: PlacementItem): OldCopy => ({
@@ -80,12 +92,12 @@ export function copiesFromPlacement(input: {
 }
 
 /**
- * A sync with nothing to send makes no snapshot, yet the mirror still matches the primary as of that sync. A mirror
- * with no snapshot has never received data, so an older done sync says nothing about it.
+ * A sync that finds the mirror already at the writer's newest still means the mirror matches as of that sync. A mirror
+ * with no snapshot has never received data, so an older match says nothing about it.
  */
-function syncedAt(newest: Date | null, doneAt: Date | null): Date | null {
-  if (newest === null || doneAt === null) return newest;
-  return doneAt > newest ? doneAt : newest;
+function syncedAt(newest: Date | null, matchedAt: Date | null): Date | null {
+  if (newest === null || matchedAt === null) return newest;
+  return matchedAt > newest ? matchedAt : newest;
 }
 
 function stagedOf(change: ChangeKind | null): StagedCopy | null {

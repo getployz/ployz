@@ -7,20 +7,20 @@
 
 use ployz_core::config::ReviewLifecycleKind;
 use ployz_core::{
-    ConfigFileName, ConfigName, DeployOutcome, DeployPreview, ExecutionError, OperationRow,
-    RpcError, RpcErrorCode, ServiceName,
+    ConfigFileName, ConfigName, DeployOutcome, DeployPreview, ExecutionError, MachineId,
+    OperationRow, RpcError, RpcErrorCode, ServiceName,
 };
 use ployz_store::tools::{LineCap, LogExcerpt, LogText, SecretSet, Withheld};
 use ployz_store::{
     Actor, Admit, Approval, ApprovalDigest, AttachConfig, Cancel, Change, Command, ConfigId,
     ConfigMountAt, ConfigStore, ConfigsQuery, CreateConfig, CreateProject, CreateService,
-    DeleteConfig, Deploy, DeploymentId, DeploymentStatus, DeploymentSummary, DeploymentsQuery,
-    DetachConfig, DiffQuery, DiffView, Discard, Edit, EnvironmentId, EnvironmentRef, FailedAt,
-    NamespaceQuery, NodeStatus, OrganizationId, PlanQuery, Principal, ProjectId, ProjectName,
-    Publish, PutConfigFile, Query, RemoveService, RenameConfig, RenameService, Retry, Revision,
-    RowPhase, RowState, RowTracker, RunEvidence, RunnerId, ServerRow, ServiceLineageId,
-    ServiceQuery, ServicesQuery, SettingPath, Start, Trusted, UploadBase, UploadedSource, View,
-    Written,
+    DeleteConfig, Deploy, DeploymentId, DeploymentStatus, DeploymentSummary, DeploymentWarning,
+    DeploymentsQuery, DetachConfig, DiffQuery, DiffView, Discard, Edit, EnvironmentId,
+    EnvironmentRef, FailedAt, IngressAction, IngressFailure, IngressRepair, NamespaceQuery,
+    NodeStatus, OrganizationId, PlanQuery, Principal, ProjectId, ProjectName, Publish,
+    PutConfigFile, Query, RemoveService, RenameConfig, RenameService, Retry, Revision, RowPhase,
+    RowState, RowTracker, RunEvidence, RunnerId, ServerRow, ServiceLineageId, ServiceQuery,
+    ServicesQuery, SettingPath, Start, Trusted, UploadBase, UploadedSource, View, Written,
 };
 use serde_json::{Value, json};
 
@@ -282,6 +282,82 @@ fn a_deploy_publishes_then_its_runner_records_it_into_applied_state() {
             ("api".to_owned(), NodeStatus::Unchanged)
         ]
     );
+}
+
+#[test]
+fn a_failed_ingress_repair_leaves_the_deploy_applied_with_a_warning() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    let taken = IngressFailure::PortTaken {
+        cause: "failed to bind host port 0.0.0.0:80/tcp: address already in use".into(),
+    };
+    let repairs = vec![
+        IngressRepair {
+            machine: MachineId::parse("a".repeat(32)).unwrap(),
+            server: "web-1".into(),
+            action: IngressAction::Create,
+            failure: Some(taken.clone()),
+        },
+        IngressRepair {
+            machine: MachineId::parse("b".repeat(32)).unwrap(),
+            server: "web-2".into(),
+            action: IngressAction::Start,
+            failure: None,
+        },
+    ];
+    store
+        .record(&id(1), &a, RunEvidence::Ingress(repairs.clone()))
+        .unwrap();
+    let recorded = store
+        .record(&id(1), &a, succeeded(&["web", "api"]))
+        .unwrap();
+
+    let warning = DeploymentWarning::IngressNotServing {
+        server: "web-1".into(),
+        ingress: taken,
+    };
+    assert_eq!(recorded.status, DeploymentStatus::Applied);
+    assert_eq!(recorded.warnings, std::slice::from_ref(&warning));
+    assert_eq!(recorded.ingress, repairs);
+    let read = store
+        .read(&who, &ployz_store::DeploymentQuery { id: id(1) })
+        .unwrap()
+        .deployment;
+    assert_eq!((read.warnings, read.ingress), (vec![warning], repairs));
+}
+
+#[test]
+fn an_unchecked_ingress_leaves_the_deploy_applied_with_one_warning() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    let cause = "Couldn't list the Cluster's Servers.".to_owned();
+    for _ in 0..2 {
+        store
+            .record(&id(1), &a, RunEvidence::IngressUnchecked(cause.clone()))
+            .unwrap();
+    }
+    let recorded = store
+        .record(&id(1), &a, succeeded(&["web", "api"]))
+        .unwrap();
+
+    let warning = DeploymentWarning::IngressUnchecked { cause };
+    assert_eq!(recorded.status, DeploymentStatus::Applied);
+    assert_eq!(recorded.warnings, std::slice::from_ref(&warning));
+    let read = store
+        .read(&who, &ployz_store::DeploymentQuery { id: id(1) })
+        .unwrap()
+        .deployment;
+    assert_eq!(read.warnings, [warning]);
 }
 
 fn sentry(store: &ConfigStore, who: &Actor) {

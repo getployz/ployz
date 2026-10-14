@@ -67,10 +67,13 @@ losing the writes since the mirror's last refresh. To keep deploying your other 
 see [When a server goes down](scaling.md#when-a-server-goes-down).
 
 > [!WARNING]
-> Ployz doesn't back up volumes. A [mirror](move-a-volume.md#mirror-a-volume) holds the data as
-> of its last refresh, nothing newer, and Ployz doesn't switch to it on its own.
-> Keep your own copies off your servers. See
-> [Back up a database](databases.md#back-up-a-database).
+> A volume lives on one server. Add a [mirror](move-a-volume.md#mirror-a-volume) to keep a backup
+> of it on another of your servers. A mirror holds the data as of its last refresh, nothing
+> newer, and Ployz doesn't switch to it on its own. A snapshot isn't a backup: it stays on the
+> volume's own server and is lost with it.
+>
+> A mirror isn't an offsite backup either. Your servers often share one provider and one account.
+> For a copy that survives losing them, see [Back up a database](databases.md#back-up-a-database).
 
 ## Copies
 
@@ -107,8 +110,8 @@ Volume data has no writer; web-2 holds its only copy. Make it the writer: ployz 
 
 Run the `ployz volume restore` line it prints to make that copy the writer again, then deploy.
 If several servers hold copies, keep the newest and remove the others with the `ployz volume mirror rm` lines it names. A volume
-that is [mid-move](move-a-volume.md#when-a-move-stops) refuses too, and names the move to wait for
-or the `ployz volume release` line to run.
+that is [mid-move](move-a-volume.md#when-a-move-stops) refuses too, and names the
+`ployz volume release` line that stops the move.
 
 ## When your servers show Docker only
 

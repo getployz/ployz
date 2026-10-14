@@ -1,6 +1,6 @@
 import { testConfigEnvironment } from "#/test/config-environment";
 import { createPrivateKey, X509Certificate } from "node:crypto";
-import type { MachineId, PublishCertificateMaterialRequest, RuntimeWatchView } from "@ployz/sdk";
+import type { ContainerId, ContainerObservation, MachineId, PublishCertificateMaterialRequest, RuntimeWatchView, ServiceId } from "@ployz/sdk";
 import { InngestTestEngine } from "@inngest/test";
 import { ConfigProvider, Effect, Layer } from "effect";
 import { Inngest } from "inngest";
@@ -17,6 +17,7 @@ import { InngestClient } from "#/modules/inngest/client";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
 import {
+  runtimeWatchContainerFixture,
   runtimeWatchFrameFixture,
   runtimeWatchMachineFixture,
   runtimeWatchMachineObservationFixture,
@@ -29,9 +30,18 @@ import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret
 const organizationId = "00000000-0000-4000-8000-000000000b01";
 const otherOrganizationId = "00000000-0000-4000-8000-000000000b02";
 const encryption = makeSecretEncryption("cluster-domain-sync-test-encryption-secret");
-const machine = (id: string, public_ip: string | null, accepts_ingress = true) =>
-  runtimeWatchMachineObservationFixture({ machine: runtimeWatchMachineFixture(id.repeat(32).slice(0, 32), id, { public_ip, accepts_ingress }) });
+const machine = (id: string, public_ip: string | null, accepts_ingress = true, membership = "up") =>
+  runtimeWatchMachineObservationFixture({
+    machine: runtimeWatchMachineFixture(id.repeat(32).slice(0, 32), id, { public_ip, accepts_ingress }),
+    membership,
+  });
 const idOf = (id: string) => id.repeat(32).slice(0, 32) as MachineId;
+const ingressRunningOn = (...ids: string[]) => ({
+  identity: "ployz-system/ingress",
+  service_id: "i".repeat(32) as ServiceId,
+  containers: ids.map((id) => runtimeWatchContainerFixture(idOf(id), `ingress-${id}`)),
+  hook_containers: [],
+});
 const inngest = new Inngest({ id: "cluster-domain-sync-test" });
 vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
 
@@ -197,6 +207,69 @@ describe("sync-cluster-domain", () => {
     expect(await row()).toMatchObject({ records_synced_at: null, traffic: { kind }, checked_at: expect.any(Date) });
   });
 
+  it("leaves a down ingress Server out of the probe and the finding", async () => {
+    frame = runtimeWatchFrameFixture({
+      machines: [machine("a", "203.0.113.1"), machine("b", "203.0.113.2", true, "down"), machine("c", "203.0.113.3", true, "suspect")],
+      services: [ingressRunningOn("a", "c")],
+    });
+    verify.set("203.0.113.1", idOf("a"));
+    verify.set("203.0.113.2", idOf("b"));
+
+    const output = await sync();
+
+    expect(output.result).toMatchObject({ observed: true, recordsPut: true });
+    expect(hostedDns.requests[0]).toMatchObject({ body: { a: ["203.0.113.1"], aaaa: [] } });
+    expect(await row()).toMatchObject({
+      traffic: {
+        kind: "probed",
+        reachable: [{ machineId: idOf("a"), address: "203.0.113.1" }],
+        unreachable: [{ machineId: idOf("c"), address: "203.0.113.3" }],
+        taken: [],
+      },
+    });
+  });
+
+  it("keeps the last check when the records PUT fails, so a Server traffic still reaches stays named", async () => {
+    frame = runtimeWatchFrameFixture({ machines: [machine("a", "203.0.113.1"), machine("b", "203.0.113.2")], services: [ingressRunningOn("a", "b")] });
+    verify.set("203.0.113.2", idOf("b"));
+    await sync();
+    const before = await row();
+    verify.set("203.0.113.1", idOf("a"));
+    verify.delete("203.0.113.2");
+    hostedDns.state.failWith = 503;
+
+    const output = await sync();
+
+    expect(output.error).toBeDefined();
+    expect(before).toMatchObject({ traffic: { kind: "probed", unreachable: [{ machineId: idOf("a"), address: "203.0.113.1" }] } });
+    expect(await row()).toMatchObject({ traffic: before?.traffic, checked_at: before?.checked_at });
+  });
+
+  it("records that nothing answers even when renewing the lease fails", async () => {
+    frame = runtimeWatchFrameFixture({ machines: [machine("a", "203.0.113.1")], services: [ingressRunningOn("a")] });
+    verify.set("203.0.113.1", idOf("a"));
+    await sync();
+    verify.delete("203.0.113.1");
+    hostedDns.state.failWith = 503;
+
+    const output = await sync();
+
+    expect(output.error).toBeDefined();
+    expect(await row()).toMatchObject({
+      traffic: { kind: "probed", reachable: [], unreachable: [{ machineId: idOf("a"), address: "203.0.113.1" }] },
+    });
+  });
+
+  it("reads every ingress Server down as no Servers", async () => {
+    frame = runtimeWatchFrameFixture({ machines: [machine("a", "203.0.113.1", true, "down"), machine("b", null)] });
+    verify.set("203.0.113.1", idOf("a"));
+
+    const output = await sync();
+
+    expect(output.result).toMatchObject({ observed: true, recordsPut: false });
+    expect(await row()).toMatchObject({ traffic: { kind: "no_servers" } });
+  });
+
   it("clears the last finding while the Cluster is offline, and still records the check", async () => {
     frame = runtimeWatchFrameFixture({ machines: [] });
     await sync();
@@ -213,7 +286,7 @@ describe("sync-cluster-domain", () => {
   });
 
   it("writes no records with nothing reachable, and still renews the lease", async () => {
-    frame = runtimeWatchFrameFixture({ machines: [machine("a", "203.0.113.1")] });
+    frame = runtimeWatchFrameFixture({ machines: [machine("a", "203.0.113.1")], services: [ingressRunningOn("a")] });
     const output = await sync();
     expect(output.result).toMatchObject({ observed: true, recordsPut: false });
 
@@ -224,6 +297,73 @@ describe("sync-cluster-domain", () => {
     expect(await row()).toMatchObject({
       records_synced_at: null,
       traffic: { kind: "probed", unreachable: [{ machineId: idOf("a"), address: "203.0.113.1" }], taken: [] },
+    });
+  });
+
+  it("names an ingress Server whose Ingress Proxy isn't running, and leaves it out of the records", async () => {
+    frame = runtimeWatchFrameFixture({
+      machines: [machine("a", "203.0.113.1"), machine("b", "203.0.113.2"), machine("c", "203.0.113.3")],
+      services: [ingressRunningOn("a", "c")],
+    });
+    verify.set("203.0.113.1", idOf("a"));
+
+    await sync();
+
+    expect(hostedDns.requests[0]).toMatchObject({ path: "/domains/acme.ployz.test/records", body: { a: ["203.0.113.1"], aaaa: [] } });
+    expect(await row()).toMatchObject({
+      traffic: {
+        kind: "probed",
+        unreachable: [{ machineId: idOf("c"), address: "203.0.113.3" }],
+        down: [{ machineId: idOf("b"), address: "203.0.113.2", name: "b" }],
+      },
+    });
+  });
+
+  it("calls a Server closed rather than down while its Ingress Proxy is paused or restarting", async () => {
+    const at = (id: string, runtime: ContainerObservation["runtime"]) =>
+      ({ ...runtimeWatchContainerFixture(idOf(id), `ingress-${id}`), runtime });
+    frame = runtimeWatchFrameFixture({
+      machines: [machine("a", "203.0.113.1"), machine("b", "203.0.113.2"), machine("c", "203.0.113.3")],
+      services: [{
+        ...ingressRunningOn(),
+        containers: [at("a", { state: "paused" }), at("b", { state: "restarting" }), at("c", { state: "exited", code: 0 })],
+      }],
+    });
+
+    await sync();
+
+    expect(await row()).toMatchObject({
+      traffic: {
+        kind: "probed",
+        unreachable: [{ machineId: idOf("a"), address: "203.0.113.1" }, { machineId: idOf("b"), address: "203.0.113.2" }],
+        down: [{ machineId: idOf("c"), address: "203.0.113.3", name: "c" }],
+      },
+    });
+  });
+
+  it("calls a Server closed rather than down when its containers weren't observed", async () => {
+    frame = runtimeWatchFrameFixture({
+      machines: [machine("a", "203.0.113.1")],
+      incomplete_ids: { machines: [idOf("a")], containers: [], volumes: [], certificates: [] },
+    });
+
+    await sync();
+
+    expect(await row()).toMatchObject({
+      traffic: { kind: "probed", unreachable: [{ machineId: idOf("a"), address: "203.0.113.1" }], down: [] },
+    });
+  });
+
+  it("calls a Server closed rather than down when any container went unobserved", async () => {
+    frame = runtimeWatchFrameFixture({
+      machines: [machine("a", "203.0.113.1")],
+      incomplete_ids: { machines: [], containers: ["c".repeat(64) as ContainerId], volumes: [], certificates: [] },
+    });
+
+    await sync();
+
+    expect(await row()).toMatchObject({
+      traffic: { kind: "probed", unreachable: [{ machineId: idOf("a"), address: "203.0.113.1" }], down: [] },
     });
   });
 

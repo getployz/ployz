@@ -146,6 +146,11 @@ store_string!(
     SyncId, "a Sync ID (a UUID)", is_uuid
 );
 store_string!(
+    /// A removal's identity, minted by the Store when it writes the mark: what
+    /// reads where the removal ended once its target is gone.
+    RemovalId, "a removal ID (a UUID)", is_uuid
+);
+store_string!(
     /// A proposal's identity: one source included in a destination's draft, minted by
     /// the Store when it is first included.
     ProposalId, "a proposal ID (a UUID)", is_uuid

@@ -96,6 +96,7 @@ struct Scripted {
     observations: Option<Vec<ContainerObservation>>,
     slots: Mutex<Vec<SlotKey>>,
     answers: Mutex<Vec<AnswerWhen>>,
+    deploys: Mutex<Vec<Option<ployz_core::DeploymentLogId>>>,
     cancel_on_prepare: Option<CancellationToken>,
     runs_global: bool,
     pull_error: Option<RpcError>,
@@ -128,6 +129,7 @@ impl Scripted {
             observations: None,
             slots: Mutex::new(Vec::new()),
             answers: Mutex::new(Vec::new()),
+            deploys: Mutex::new(Vec::new()),
             cancel_on_prepare: None,
             runs_global: false,
             pull_error: None,
@@ -245,6 +247,7 @@ impl MachineOperations for Scripted {
                 let call = Call::Run(machine, new.slot.kind);
                 settled = new.answer == AnswerWhen::Settled;
                 self.answers.lock().unwrap().push(new.answer);
+                self.deploys.lock().unwrap().push(new.deployment_id);
                 self.slots.lock().unwrap().push(new.slot.clone());
                 (call, ContainerLocator::Key(new.slot))
             }
@@ -322,6 +325,7 @@ impl MachineOperations for Scripted {
                     environment: None,
                     image_id: None,
                     last_check,
+                    run: None,
                 })
             }
             Reply::ObservedIngress(runtime) => {
@@ -337,6 +341,7 @@ impl MachineOperations for Scripted {
                     environment: None,
                     image_id: None,
                     last_check: None,
+                    run: None,
                 })
             }
             Reply::Pending => std::future::pending().await,

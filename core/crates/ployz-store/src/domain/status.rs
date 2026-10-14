@@ -96,6 +96,15 @@ fn status(domain: &Domain, deployed: Deployed, evidence: &DomainEvidence) -> Sta
         Some(ClusterDomainStatus::NoPublicIp) => {
             return attention("No ingress Server has a public IP", None);
         }
+        Some(ClusterDomainStatus::IngressDown { servers }) => {
+            return attention(
+                format!(
+                    "Ingress isn't running on {}. Deploy to bring it back.",
+                    servers.join(", ")
+                ),
+                Some(DomainAction::Deploy),
+            );
+        }
         Some(ClusterDomainStatus::Port80 { addresses }) => {
             return attention(
                 format!("Port 80 is closed on {}", addresses.join(", ")),
@@ -442,6 +451,21 @@ mod tests {
                 (DomainStatus::NeedsAttention, Some(reason.into()), None)
             );
         }
+        let mut down = ready.clone();
+        down.cluster_domain = down.cluster_domain.map(|cluster| ClusterDomain {
+            status: ClusterDomainStatus::IngressDown {
+                servers: vec!["web-1".into()],
+            },
+            ..cluster
+        });
+        assert_eq!(
+            status(&domain, Deployed::Yes, &down),
+            (
+                DomainStatus::NeedsAttention,
+                Some("Ingress isn't running on web-1. Deploy to bring it back.".into()),
+                Some(DomainAction::Deploy)
+            )
+        );
     }
 
     #[test]

@@ -9,15 +9,15 @@ use std::{
 use ployz_core::{
     CapabilityAdvertisement, CertificateMaterialChange, CertificateMaterialPublished,
     ContainerList, ContainerObservation, ContractDescription, EnvironmentValues, LiveLogTarget,
-    LocalMachinePhase, LogMetadata, LogOrigin, MachineLogService, MachineRpc, OpaquePayload,
-    PROTOCOL_MAJOR, Rpc, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, ServingPointerRead,
-    op,
+    LocalMachinePhase, LogMetadata, LogOrigin, MachineLogService, MachineRpc, NotPointerPublisher,
+    OpaquePayload, PROTOCOL_MAJOR, Rpc, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
+    ServingPointerRead, op,
 };
 use serde_json::Value;
 use tonic::{Request, Response, Status};
 
 use crate::{
-    corrosion::{AdminClient, CertificateMaterial, ReplicatedStore},
+    corrosion::{AdminClient, CertificateMaterial, IngressRouteRow, ReplicatedStore},
     docker::{ContainerRuntime, ImageIngest},
     logs::{RpcStream, open_journal_logs, serve_logs},
     machine::{LocalMachine, LocalMachineError, LocalMachineRecord, RecordOwner, StoreError},
@@ -132,6 +132,25 @@ impl MachineService {
         self.replicated()
     }
 
+    async fn pointer_replicated(&self) -> Result<&ReplicatedStore, RpcError> {
+        let replicated = self.ready_replicated()?;
+        let publisher = match self.local.pointer_publisher().await {
+            Ok(publisher) => publisher,
+            Err(LocalMachineError::Cluster(error)) => return Err(cluster_store_error(error)),
+            Err(
+                error @ (LocalMachineError::UnreadableLowerMachine(_)
+                | LocalMachineError::MissingPeerRow(_)),
+            ) => {
+                return Err(RpcError::caused(RpcErrorCode::Unavailable, &error));
+            }
+            Err(_) => return Err(unavailable("Cluster store is not available")),
+        };
+        if publisher != self.local_record().id() {
+            return Err(NotPointerPublisher { publisher }.rpc_error());
+        }
+        Ok(replicated)
+    }
+
     fn containers(&self) -> Result<&ContainerRuntime, RpcError> {
         self.local
             .containers()
@@ -157,6 +176,19 @@ impl MachineService {
         request: &impl serde::Serialize,
     ) -> Result<Response<OpaquePayload>, Status> {
         let _guard = self.switch_mutation.lock().await;
+        self.volume_verb::<T>(verb, route, request).await
+    }
+
+    /// A Volume verb that takes no switch lock. A read may land beside a cut's drain: the
+    /// write that follows it rechecks the copy under the lock, so a stale view ends in a
+    /// refusal, never a wrong flip.
+    #[allow(clippy::result_large_err)]
+    async fn volume_verb<T: serde::de::DeserializeOwned + Into<RpcResponse>>(
+        &self,
+        verb: &'static str,
+        route: &str,
+        request: &impl serde::Serialize,
+    ) -> Result<Response<OpaquePayload>, Status> {
         if let Err(error) = self.require_joined() {
             return respond(error);
         }
@@ -340,7 +372,7 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::InspectVolumeCopy>(request)?;
-        self.switch_verb::<ployz_core::VolumeCopyView>(
+        self.volume_verb::<ployz_core::VolumeCopyView>(
             "InspectVolumeCopy",
             "Volume.Inspect",
             &request,
@@ -651,7 +683,7 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::PublishServingPointer>(request)?;
-        let replicated = match self.ready_replicated() {
+        let replicated = match self.pointer_replicated().await {
             Ok(replicated) => replicated,
             Err(error) => return respond(error),
         };
@@ -673,7 +705,7 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::ReadServingPointer>(request)?;
-        let replicated = match self.ready_replicated() {
+        let replicated = match self.pointer_replicated().await {
             Ok(replicated) => replicated,
             Err(error) => return respond(error),
         };
@@ -684,10 +716,16 @@ impl MachineRpc for MachineService {
         let acks: BTreeMap<_, _> = match replicated.ingress_routes().await {
             Ok(routes) => routes
                 .into_iter()
-                .filter(|((_, service), ack)| {
-                    *service == request.service && routes_pointer(ack, pointer.as_ref())
+                .filter_map(|((machine_id, service), row)| match row {
+                    IngressRouteRow::Acked(ack)
+                        if service == request.service && routes_pointer(&ack, pointer.as_ref()) =>
+                    {
+                        Some((machine_id, ack.deploy))
+                    }
+                    IngressRouteRow::Acked(_)
+                    | IngressRouteRow::UnknownDeploy(_)
+                    | IngressRouteRow::UnknownContainers => None,
                 })
-                .map(|((machine_id, _), ack)| (machine_id, ack.deploy))
                 .collect(),
             Err(error) => return respond(cluster_store_error(error)),
         };
@@ -737,6 +775,9 @@ fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Stat
             Err(Status::unavailable("Cluster is not available"))
         }
         LocalMachineError::DockerUnavailable => respond(unavailable("Docker is not available")),
+        LocalMachineError::UnreadableLowerMachine(_) | LocalMachineError::MissingPeerRow(_) => {
+            respond(RpcError::caused(RpcErrorCode::Unavailable, &error))
+        }
         LocalMachineError::MissingAssignment => {
             respond(RpcError::caused(RpcErrorCode::InvalidArgument, &error))
         }

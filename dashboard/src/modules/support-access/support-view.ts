@@ -139,6 +139,7 @@ function viewRedactions(shows: SupportShows): ViewRedactions {
     volumes: same,
     volume: same,
     removals: same,
+    removed: same,
     configs: same,
     branch: same,
     branch_plan: same,

@@ -9,6 +9,7 @@ use ployzd::machine_pool::MachinePool;
 
 use super::{
     Dataset, DockerVolumeName, Result, VolumeError, VolumeStorage,
+    seed::SEED_PROPERTY,
     storage::{
         EPOCH_PROPERTY, PROMOTE_PROPERTY, PULL_PROPERTY, RESUME_TOKEN_PROPERTY, slot_fs,
         slot_parent,
@@ -39,6 +40,11 @@ impl VolumeStorage {
 
     pub(super) async fn unregistered(&self, dataset: &str) -> Result<bool> {
         Ok(self.property(dataset, PROMOTE_PROPERTY).await?.is_some())
+    }
+
+    pub(super) async fn unadopted_seed(&self, dataset: &str) -> Result<bool> {
+        Ok(self.unregistered(dataset).await?
+            && self.property(dataset, SEED_PROPERTY).await?.is_some())
     }
 
     /// Every snapshot of a dataset as `name<TAB>guid<TAB>creation`, newest first by
@@ -157,6 +163,7 @@ impl VolumeStorage {
                 readonly: root.readonly,
                 newest: self.newest_snapshot(&root.name).await?,
                 epoch: self.epoch(&root.name).await?,
+                seed: self.unadopted_seed(&root.name).await?,
             }));
         }
         let Some(slot) = Self::slot(datasets, pool, name) else {

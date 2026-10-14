@@ -106,8 +106,16 @@ fn seed(tx: &mut dyn Tx, fixture: &Fixture) -> Result<(), ployz_core::RpcError> 
         tx.execute(
             "INSERT INTO config_environment (id, organization_id, project_id, name, \
              working_revision, working) \
-             VALUES (?1, ?2, '00000000-0000-4000-8000-000000000001', ?3, 1, '{}')",
-            &[id.into(), ORG.into(), name.into()],
+             VALUES (?1, ?2, '00000000-0000-4000-8000-000000000001', ?3, 1, ?4)",
+            &[
+                id.into(),
+                ORG.into(),
+                name.into(),
+                json!({ "version": 1, "environmentSlug": name, "services": [], "volumes": [] })
+                    .to_string()
+                    .as_str()
+                    .into(),
+            ],
         )?;
     }
     let pr = &fixture.pull_request;

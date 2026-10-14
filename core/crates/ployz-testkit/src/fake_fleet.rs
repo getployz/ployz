@@ -786,6 +786,7 @@ impl Fleet {
                         environment: Some(container.spec.env.clone()),
                         image_id: None,
                         last_check: None,
+                        run: None,
                     }
                     .into(),
                 )
@@ -842,6 +843,7 @@ impl Fleet {
                             readonly: false,
                             newest: None,
                             epoch: WriterEpoch::default(),
+                            seed: false,
                         },
                     });
                 unary(VolumeCopyView { copy }.into())

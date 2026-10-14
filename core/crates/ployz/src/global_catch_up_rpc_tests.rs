@@ -142,9 +142,14 @@ async fn real_catch_up_client_retries_readiness_and_placement_to_their_budget() 
                 .await;
             let started = tokio::time::Instant::now();
             let succeeded = if placement {
-                CatchUpClient::run_slot(&mut client, &target.id, request)
-                    .await
-                    .is_ok()
+                CatchUpClient::run_slot(
+                    &mut client,
+                    &target.id,
+                    request,
+                    &tokio_util::sync::CancellationToken::new(),
+                )
+                .await
+                .is_ok()
             } else {
                 CatchUpClient::bridge_capacity(&mut client, &target.id)
                     .await
@@ -172,7 +177,8 @@ async fn real_catch_up_client_retries_readiness_and_placement_to_their_budget() 
 async fn catch_up_uses_primitives_and_never_replaces_a_key_conflict_or_unknown_slot() {
     use ployz_core::{
         ContainerList, ContainerLocator, ContainerWant, Drain, LocalMachinePhase, MachineDetails,
-        OpaquePayload, RpcRequestBody, RunTarget,
+        MachineList, MachineObservation, MembershipObservation, OpaquePayload, RpcRequestBody,
+        RunTarget,
     };
     use std::sync::{Arc, Mutex};
     use tonic::{Request, Response};
@@ -206,15 +212,30 @@ async fn catch_up_uses_primitives_and_never_replaces_a_key_conflict_or_unknown_s
                 let recorded = recorded.clone();
                 let expected = expected.clone();
                 async move {
-                    assert_eq!(
-                        rpc.metadata().get(ployz_core::ONE_TARGET_HEADER).unwrap(),
-                        target.id.as_str()
-                    );
+                    let one_target = rpc.metadata().get(ployz_core::ONE_TARGET_HEADER).cloned();
+                    let body = rpc.into_inner().decode_request().unwrap().body;
+                    if !matches!(body, RpcRequestBody::ListMachines(_)) {
+                        assert_eq!(one_target.unwrap(), target.id.as_str());
+                    }
                     #[expect(
                         clippy::wildcard_enum_match_arm,
                         reason = "fixture rejects unrelated RPCs"
                     )]
-                    let response = match rpc.into_inner().decode_request().unwrap().body {
+                    let response = match body {
+                        RpcRequestBody::ListMachines(_) => {
+                            recorded.lock().unwrap().push("machines");
+                            RpcResponse::from(MachineList {
+                                enrollment: None,
+                                machines: vec![MachineObservation::new(
+                                    target.clone(),
+                                    MembershipObservation::Up,
+                                )],
+                            })
+                        }
+                        RpcRequestBody::ReadServingPointer(_) => {
+                            recorded.lock().unwrap().push("read pointer");
+                            RpcResponse::from(ployz_core::ServingPointerRead::default())
+                        }
                         RpcRequestBody::Inspect(inspect) => {
                             recorded.lock().unwrap().push(if inspect.include_storage {
                                 "inspect"
@@ -330,7 +351,13 @@ async fn catch_up_uses_primitives_and_never_replaces_a_key_conflict_or_unknown_s
                 }
             })
             .await;
-        let ran = CatchUpClient::run_slot(&mut client, &target.id, request).await;
+        let ran = CatchUpClient::run_slot(
+            &mut client,
+            &target.id,
+            request,
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .await;
         assert_eq!(
             ran.ok(),
             match outcome {
@@ -344,7 +371,7 @@ async fn catch_up_uses_primitives_and_never_replaces_a_key_conflict_or_unknown_s
             "new" | "revision" => &["inspect", "list", "capacity", "run new"],
             "matching" => &["inspect", "list", "run existing"],
             "conflict" => &["inspect", "list", "capacity", "run new"],
-            "ineligible" => &["inspect", "list", "gone"],
+            "ineligible" => &["inspect", "list", "machines", "read pointer", "gone"],
             "capacity" => &["inspect", "list", "capacity"],
             _ => &["inspect"],
         };
@@ -577,7 +604,13 @@ async fn provisioned_globals_use_target_storage_and_report_unknown() {
                 }
             })
             .await;
-        let result = CatchUpClient::run_slot(&mut client, &target.id, request).await;
+        let result = CatchUpClient::run_slot(
+            &mut client,
+            &target.id,
+            request,
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .await;
         if inspection_error {
             assert!(
                 result

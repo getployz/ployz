@@ -171,6 +171,10 @@ pub enum VolumeCopy {
         /// The run of writes this root belongs to; 0 until `SetVolumeCopy` numbers it.
         #[serde(default)]
         epoch: WriterEpoch,
+        /// A root `Volume.Seed` landed that Docker has not adopted yet: it carries both
+        /// `ployz:seed` and `ployz:promote`. Older daemons never report it.
+        #[serde(default)]
+        seed: bool,
     },
     /// `<pool>/ployz-mirror/<name>`: a read-only copy Docker never sees. `newest` is of
     /// its `fs` child; `resume_token` is set while a receive into `fs` is interrupted.
@@ -387,7 +391,7 @@ pub fn no_writer_message(name: &str, copies: &[KnownCopy]) -> String {
         .join(", ");
     if copies.iter().any(|copy| copy.role == CopyRole::Switching) {
         return format!(
-            "Volume {name} is mid-Move; it is held as {listed}. Wait for the Move to finish, or run ployz volume release {name}"
+            "Volume {name} is mid-Move; it is held as {listed}; ployz volume release {name} stops it"
         );
     }
     match copies {
@@ -429,6 +433,7 @@ mod tests {
             readonly,
             newest: None,
             epoch: WriterEpoch::default(),
+            seed: false,
         };
         let slot = VolumeCopy::Slot {
             slot: SlotId::new(1),
@@ -532,7 +537,7 @@ mod tests {
             );
             assert!(message.contains("hel-1 (switching)"), "{message}");
             assert!(
-                message.ends_with("Wait for the Move to finish, or run ployz volume release data"),
+                message.ends_with("; ployz volume release data stops it"),
                 "{message}"
             );
             assert!(!message.contains("restore"), "{message}");

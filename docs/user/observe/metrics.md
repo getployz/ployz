@@ -14,9 +14,9 @@ without installing anything.
 
 A service with a public address leads with its [uptime](uptime.md) and **Response time**. Then
 come **CPU**, **Memory**, **Network** and **Disk**, all on one time axis, so hovering one chart
-moves the cursor on every chart. A dashed line on **CPU** and **Memory** marks the service's
-limit. A vertical rule marks each deploy, and a marker shows each OOM kill, exit and restart. A
-service with a managed volume ends with a **Managed volume** row that names the volume and its
+moves the cursor on every chart. **CPU** reads as a share of one core, so 100% is one full
+core. A dashed line on **CPU** and **Memory** marks the service's limit. A vertical rule marks
+each deploy, and a marker shows each OOM kill, exit and restart. A service with a managed volume ends with a **Managed volume** row that names the volume and its
 size limit.
 
 The charts cover the last hour. Pick a range from 5 minutes to 30 days with the same picker as
@@ -49,8 +49,10 @@ Below the table, Ployz counts the OOM kills, exits and restarts in the range. Wh
 ## Spot trouble on the canvas
 
 When a service's replicas were OOM killed in the last hour, its card shows **⚠ OOM**. When one
-replica restarted two or more times in the last hour without an OOM kill, the card shows
-**⚠ Restarting**. A single restart, such as `ployz service restart` or a rollback, shows nothing.
+replica crashed with a non-zero exit code and came back twice, each time within 10 minutes of the
+last, the card shows **⚠ Restarting** until that replica stays up for 10 minutes. A restart after a clean
+exit or a stop, such as `ployz service restart`, a Deploy or a rollback, shows nothing, even when
+the app exits non-zero on the stop signal, as with SIGTERM (143), SIGINT (130) or SIGKILL (137).
 When other issues share the card, the badge adds their count, as in **⚠ OOM +1**. The badge is
 amber, or red when the service is down. Click the ⚠ to open the service's Monitoring tab. A
 server that needs an upgrade or doesn't answer adds nothing to the card.

@@ -850,6 +850,7 @@ impl MachineRpc for JoinDaemon {
             environment: None,
             image_id: None,
             last_check: None,
+            run: None,
         })
     }
     async fn inspect_storage(

@@ -5,7 +5,7 @@ export type AcceptedLoss = { volumes: Array<string>, version: string, };
 
 export type Act = { attempt: AttemptId, digest: BodyDigest, action: Action, };
 
-export type Action = { "action": "service", environment: EnvironmentId, service: ServiceName, only: ServerRef | null, verb: ServiceVerb, } | { "action": "drain", server: ServerRef, } | { "action": "upgrade", server: ServerRef, } | { "action": "clean", leftover: Namespace, loss: AcceptedLoss | null, } | { "action": "remove_server", server: ServerRef, loss: AcceptedLoss | null, } | { "action": "volume", volume: VolumeId, run: VolumeRun, };
+export type Action = { "action": "service", environment: EnvironmentId, service: ServiceName, only: ServerRef | null, verb: ServiceVerb, } | { "action": "drain", server: ServerRef, } | { "action": "upgrade", server: ServerRef, } | { "action": "clean", leftover: Namespace, loss: AcceptedLoss | null, } | { "action": "remove_server", server: ServerRef, loss: AcceptedLoss | null, } | { "action": "forget_server", server: ServerRef, } | { "action": "volume", volume: VolumeId, run: VolumeRun, };
 
 export type AddDomain = { environment: EnvironmentRef, service: ServiceName,
 /**
@@ -453,7 +453,7 @@ export type CloudQuery = { "query": "github_tree" } & GithubTreeQuery | { "query
 
 export type ClusterDomain = { name: Hostname, status: ClusterDomainStatus, };
 
-export type ClusterDomainStatus = { "kind": "setting_up" } | { "kind": "ready" } | { "kind": "no_servers" } | { "kind": "no_public_ip" } | { "kind": "port_80", addresses: Array<string>, } | { "kind": "port_80_taken", addresses: Array<string>, } | { "kind": "https_down" };
+export type ClusterDomainStatus = { "kind": "setting_up" } | { "kind": "ready" } | { "kind": "no_servers" } | { "kind": "no_public_ip" } | { "kind": "port_80", addresses: Array<string>, } | { "kind": "port_80_taken", addresses: Array<string>, } | { "kind": "ingress_down", servers: Array<string>, } | { "kind": "https_down" };
 
 export type ClusterTeardown = { destroyed_namespaces: Array<Namespace>, machines: PartialResult<LocalMachineRemoved, RpcError>, pairing_revoked: boolean, };
 
@@ -624,7 +624,7 @@ export type ConfigName = string;
 
 export type ConfigNodeConfig = { version: 1, name: ConfigName, files: { [key in ConfigFileName]: SavedConfigFile }, };
 
-export type ConfigQuery = { "query": "environment" } & EnvironmentQuery | { "query": "diff" } & DiffQuery | { "query": "history" } & HistoryQuery | { "query": "history_preview" } & HistoryPreviewQuery | { "query": "plan" } & PlanQuery | { "query": "deployments" } & DeploymentsQuery | { "query": "deployment" } & DeploymentQuery | { "query": "numbered_deployment" } & NumberedDeploymentQuery | { "query": "build_log" } & BuildLogQuery | { "query": "services" } & ServicesQuery | { "query": "service" } & ServiceQuery | { "query": "namespace" } & NamespaceQuery | { "query": "namespaces" } & NamespacesQuery | { "query": "domains" } & DomainsQuery | { "query": "domain" } & DomainQuery | { "query": "volumes" } & VolumesQuery | { "query": "volume" } & VolumeQuery | { "query": "removals" } & RemovalsQuery | { "query": "configs" } & ConfigsQuery | { "query": "config" } & ConfigItemQuery | { "query": "branch" } & BranchQuery | { "query": "branch_plan" } & BranchPlanQuery | { "query": "build_order" } & BuildOrderQuery | { "query": "sync" } & SyncQuery | { "query": "environments" } & EnvironmentsQuery | { "query": "projects" } & ProjectsQuery | { "query": "due" } & DueQuery | { "query": "pr_plans" } & PrPlansQuery | { "query": "pull_request" } & PullRequestQuery | { "query": "on_merge" } & OnMergeQuery;
+export type ConfigQuery = { "query": "environment" } & EnvironmentQuery | { "query": "diff" } & DiffQuery | { "query": "history" } & HistoryQuery | { "query": "history_preview" } & HistoryPreviewQuery | { "query": "plan" } & PlanQuery | { "query": "deployments" } & DeploymentsQuery | { "query": "deployment" } & DeploymentQuery | { "query": "numbered_deployment" } & NumberedDeploymentQuery | { "query": "build_log" } & BuildLogQuery | { "query": "services" } & ServicesQuery | { "query": "service" } & ServiceQuery | { "query": "namespace" } & NamespaceQuery | { "query": "namespaces" } & NamespacesQuery | { "query": "domains" } & DomainsQuery | { "query": "domain" } & DomainQuery | { "query": "volumes" } & VolumesQuery | { "query": "volume" } & VolumeQuery | { "query": "removals" } & RemovalsQuery | { "query": "configs" } & ConfigsQuery | { "query": "config" } & ConfigItemQuery | { "query": "branch" } & BranchQuery | { "query": "branch_plan" } & BranchPlanQuery | { "query": "build_order" } & BuildOrderQuery | { "query": "sync" } & SyncQuery | { "query": "environments" } & EnvironmentsQuery | { "query": "projects" } & ProjectsQuery | { "query": "due" } & DueQuery | { "query": "removed" } & RemovedQuery | { "query": "pr_plans" } & PrPlansQuery | { "query": "pull_request" } & PullRequestQuery | { "query": "on_merge" } & OnMergeQuery;
 
 export type ConfigRef = string;
 
@@ -684,7 +684,7 @@ servers?: number,
  */
 approval?: Approval, };
 
-export type ConfigView = { "view": "environment" } & EnvironmentView | { "view": "diff" } & DiffView | { "view": "history" } & HistoryView | { "view": "history_preview" } & HistoryPreview | { "view": "plan" } & PlanView | { "view": "deployments" } & DeploymentsView | { "view": "deployment" } & DeploymentView | { "view": "numbered_deployment" } & DeploymentView | { "view": "build_log" } & BuildLogView | { "view": "services" } & ServicesView | { "view": "service" } & ServiceView | { "view": "namespace" } & NamespaceView | { "view": "namespaces" } & NamespacesView | { "view": "domains" } & DomainsView | { "view": "domain" } & DomainView | { "view": "volumes" } & VolumesView | { "view": "volume" } & VolumeView | { "view": "removals" } & RemovalsView | { "view": "configs" } & ConfigsView | { "view": "config" } & ConfigItemView | { "view": "branch" } & BranchView | { "view": "branch_plan" } & BranchPlanView | { "view": "build_order" } & BuildOrderView | { "view": "sync" } & SyncView | { "view": "environments" } & EnvironmentsView | { "view": "projects" } & ProjectsView | { "view": "due" } & Array<Due> | { "view": "pr_plans" } & PrPlansView | { "view": "pull_request" } & PullRequestView | { "view": "on_merge" } & OnMerge;
+export type ConfigView = { "view": "environment" } & EnvironmentView | { "view": "diff" } & DiffView | { "view": "history" } & HistoryView | { "view": "history_preview" } & HistoryPreview | { "view": "plan" } & PlanView | { "view": "deployments" } & DeploymentsView | { "view": "deployment" } & DeploymentView | { "view": "numbered_deployment" } & DeploymentView | { "view": "build_log" } & BuildLogView | { "view": "services" } & ServicesView | { "view": "service" } & ServiceView | { "view": "namespace" } & NamespaceView | { "view": "namespaces" } & NamespacesView | { "view": "domains" } & DomainsView | { "view": "domain" } & DomainView | { "view": "volumes" } & VolumesView | { "view": "volume" } & VolumeView | { "view": "removals" } & RemovalsView | { "view": "configs" } & ConfigsView | { "view": "config" } & ConfigItemView | { "view": "branch" } & BranchView | { "view": "branch_plan" } & BranchPlanView | { "view": "build_order" } & BuildOrderView | { "view": "sync" } & SyncView | { "view": "environments" } & EnvironmentsView | { "view": "projects" } & ProjectsView | { "view": "due" } & Array<Due> | { "view": "removed" } & RemovedView | { "view": "pr_plans" } & PrPlansView | { "view": "pull_request" } & PullRequestView | { "view": "on_merge" } & OnMerge;
 
 export type ConfigWritten = { "written": "project" } & ProjectCreated | { "written": "project_renamed" } & ProjectSummary | { "written": "environment" } & EnvironmentCreated | { "written": "service" } & ServiceStaged | { "written": "service_renamed" } & ServiceStaged | { "written": "service_removed" } & ServiceStaged | { "written": "volume" } & VolumeStaged | { "written": "volume_removed" } & VolumeStaged | { "written": "volume_renamed" } & VolumeStaged | { "written": "config" } & ConfigStaged | { "written": "config_removed" } & ConfigStaged | { "written": "config_renamed" } & ConfigStaged | { "written": "edited" } & Edited | { "written": "published" } & Published | { "written": "discarded" } & Discarded | { "written": "history_staged" } & HistoryStaged | { "written": "deployment" } & DeploymentSummary | { "written": "domain_added" } & DomainAdded | { "written": "domain" } & DomainStaged | { "written": "automated" } & Automated | { "written": "branch" } & Branched | { "written": "build_order" } & BuildOrderView | { "written": "synced" } & Synced | { "written": "undone" } & Undone | { "written": "removed" } & Removed | { "written": "taken" } & Taken | { "written": "never_synced" } & NeverSynced | { "written": "on_merge" } & OnMerge | { "written": "default_environment" } & EnvironmentsView | { "written": "branch_setup" } & EnvironmentsView | { "written": "removal" } & Removal | { "written": "removal_cancelled" } & RemovalCancelled | { "written": "pr_plans" } & PrPlansView | { "written": "batch" } & Batched;
 
@@ -808,7 +808,7 @@ expect: Revision | null, };
 
 export type CopyObservation = { copies: Array<ObservedCopy>, unanswered: Array<MachineId>, };
 
-export type CopyRefusal = "mismatch" | "no_transition" | "busy" | "no_capacity" | "behind" | "written" | "no_source";
+export type CopyRefusal = "mismatch" | "no_transition" | "busy" | "no_capacity" | "behind" | "written" | "no_source" | "stale";
 
 export type CopyRole = "writer" | "slot" | "switching";
 
@@ -1183,9 +1183,14 @@ in_flight: boolean,
  */
 outcome: Outcome | null,
 /**
- * What its runner was warned of when it claimed it.
+ * What its runner was warned of when it claimed it, and the Ingress Proxies its
+ * Deploy left down or couldn't check.
  */
-warnings?: Array<DeploymentWarning>, };
+warnings?: Array<DeploymentWarning>,
+/**
+ * Each Server's Ingress Proxy it created or started.
+ */
+ingress?: Array<IngressRepair>, };
 
 export type DeploymentView = { environment: EnvironmentSummary,
 /**
@@ -1269,9 +1274,14 @@ in_flight: boolean,
  */
 outcome: Outcome | null,
 /**
- * What its runner was warned of when it claimed it.
+ * What its runner was warned of when it claimed it, and the Ingress Proxies its
+ * Deploy left down or couldn't check.
  */
-warnings?: Array<DeploymentWarning>, };
+warnings?: Array<DeploymentWarning>,
+/**
+ * Each Server's Ingress Proxy it created or started.
+ */
+ingress?: Array<IngressRepair>, };
 
 export type DeploymentWarning = { config: ConfigName, file: ConfigFileName,
 /**
@@ -1285,7 +1295,7 @@ variable: string, } | { config: ConfigName, file: ConfigFileName,
 /**
  * The variable as the file references it, such as `api.TOKEN`.
  */
-secret: string, };
+secret: string, } | { server: string, ingress: IngressFailure, } | { cause: string, };
 
 export type DeploymentsQuery = { environment: EnvironmentRef,
 /**
@@ -1569,8 +1579,8 @@ stopped: DrainStop | null,
  */
 remaining: Remaining,
 /**
- * Every chosen Service left the Server, the Drain ran to its end, and what remains
- * was observed.
+ * Every chosen Service left the Server or moved, the Drain ran to its end, and what
+ * remains was observed. A moved Service's old copy may still be retiring.
  */
 complete: boolean, };
 
@@ -1966,13 +1976,17 @@ export type HistoryContainerKind = "service" | "pre_deploy_hook" | "system";
 
 export type HistoryGapReason = "not_captured" | "corrupt";
 
-export type HistoryPreview = { environment: EnvironmentSummary, revision: Revision, action: HistoryAction,
+export type HistoryPreview = { environment: EnvironmentSummary, revision: Revision, action: HistoryAction, change?: string,
 /**
  * The exact current Diff version, required when staging this preview.
  */
 version: string, changes: Array<NodeChange>, total_count: number, overwritten: Array<string>, };
 
-export type HistoryPreviewQuery = { environment: EnvironmentRef, revision: Revision, action: HistoryAction, };
+export type HistoryPreviewQuery = { environment: EnvironmentRef, revision: Revision, action: HistoryAction,
+/**
+ * Undo only this change of the revision, by its path, and what it links.
+ */
+change?: string, };
 
 export type HistoryQuery = { environment: EnvironmentRef,
 /**
@@ -1980,7 +1994,11 @@ export type HistoryQuery = { environment: EnvironmentRef,
  */
 limit?: number, };
 
-export type HistoryStaged = { environment: EnvironmentSummary, saved: Revision | null, changed: boolean, };
+export type HistoryStaged = { environment: EnvironmentSummary, saved: Revision | null, changed: boolean,
+/**
+ * Sealed variables the action brought back without a value.
+ */
+not_set: Array<NotSetVariable>, };
 
 export type HistoryStream = "stdout" | "stderr";
 
@@ -2077,7 +2095,17 @@ kind: EnvironmentNodeType,
  */
 name: string | null, };
 
+export type IngressAction = "create" | "start";
+
+export type IngressFailure = { "type": "port_taken", cause: string, } | { "type": "failed", cause: string, };
+
 export type IngressHost = string;
+
+export type IngressRepair = { machine: MachineId, server: string, action: IngressAction,
+/**
+ * Why it isn't running; none once it started.
+ */
+failure: IngressFailure | null, };
 
 export type InitialMachinePolicy = {
 /**
@@ -2754,6 +2782,8 @@ rows: Array<ServerRow>, } & ({ "type": "service", id: ServiceLineageId, name: Se
 
 export type NodeStatus = "pending" | "deployed" | "removed" | "failed" | "not_attempted" | "unchanged" | "unknown";
 
+export type NotSetVariable = { service: ServiceName, key: string, };
+
 export type NumberedDeploymentQuery = { environment: EnvironmentRef, number: number, };
 
 export type ObservationGap = { machine_name: MachineName, reason: ObservationGapReason, };
@@ -3268,9 +3298,11 @@ services: Array<QualifiedService>,
  */
 unchosen: Array<QualifiedService>, } | { "kind": "unobserved", error: string, };
 
-export type Removal = { "removal": "removed", residuals: Array<Residual>, } | { "removal": "removing", left: Array<Left>, waiting_on: Array<Waiting>, };
+export type Removal = { "removal": "removed", residuals: Array<Residual>, } | { "removal": "removing", id: RemovalId, left: Array<Left>, waiting_on: Array<Waiting>, };
 
 export type RemovalCancelled = { project: ProjectName, environment: EnvironmentName | null, cancelled: Array<DeploymentId>, };
+
+export type RemovalId = string;
 
 export type RemovalsQuery = {
 /**
@@ -3383,6 +3415,10 @@ environment: EnvironmentSummary,
  * False when the draft held no such proposal, as when a Remove is retried.
  */
 removed: boolean, };
+
+export type RemovedQuery = { id: RemovalId, };
+
+export type RemovedView = { residuals: Array<Residual>, };
 
 export type RemovedVolume = { id: VolumeId, name: VolumeName,
 /**
@@ -3607,7 +3643,12 @@ export type SavedRevision = { revision: Revision, message: string | null, saved_
 /**
  * Seconds since the Unix epoch; absent on legacy snapshots.
  */
-saved_at: number | null, predecessor: Revision | null, changes: Array<NodeChange>, total_count: number, };
+saved_at: number | null, predecessor: Revision | null, changes: Array<NodeChange>, total_count: number,
+/**
+ * Change path to how many changes undoing that one change reverses, for
+ * changes the same save linked together. Absent means one.
+ */
+linked: { [key in string]: number }, };
 
 export type SavedServiceIntent = { id: string, lineageId: string, slug: string, config: AuthoredServiceConfig, variables: Array<SavedVariableIntent>, volumeAttachments: Array<VolumeAttachment>,
 /**
@@ -4047,11 +4088,15 @@ remove_on_close: boolean | null,
  */
 include_bots: boolean | null, };
 
-export type SetVolumeCopyRefused = { reason: CopyRefusal, copy: VolumeCopy | null, };
+export type SetVolumeCopyRefused = { reason: CopyRefusal, copy: VolumeCopy | null,
+/**
+ * The floor that refused a Stale request.
+ */
+floor?: VolumeGen, };
 
 export type SetVolumeCopyReply = { copy: VolumeCopy | null, };
 
-export type SetVolumeCopyRequest = { name: DockerVolumeName, expect: ExpectedCopy, want: WantedCopy, };
+export type SetVolumeCopyRequest = { name: DockerVolumeName, expect: ExpectedCopy, want: WantedCopy, gen?: VolumeGen, };
 
 export type SetVolumeSharedWrites = {
 /**
@@ -4145,11 +4190,11 @@ export type Source = "server" | "cloud_cache";
 
 export type SourceKind = "empty" | "uploaded" | "git" | "image";
 
-export type StageHistory = { environment: EnvironmentRef, revision: Revision, action: HistoryAction, version: string, accept_overwrite?: boolean, };
+export type StageHistory = { environment: EnvironmentRef, revision: Revision, action: HistoryAction, change?: string, version: string, accept_overwrite?: boolean, };
 
 export type Start = { deployment: DeploymentId, };
 
-export type StayReason = { "kind": "unobserved", server: MachineRef, } | { "kind": "mid_rollout" } | { "kind": "global" } | { "kind": "bind_mount", server: MachineRef, } | { "kind": "volume", server: MachineRef, } | { "kind": "no_destination", detail: string, };
+export type StayReason = { "kind": "unobserved", server: MachineRef, } | { "kind": "mid_rollout" } | { "kind": "global" } | { "kind": "bind_mount", server: MachineRef, } | { "kind": "volume", server: MachineRef, } | { "kind": "no_destination", detail: string, } | { "kind": "pointer_unread", detail: string, };
 
 export type Step = { "step": "read", asks: Array<Ask>, } | { "step": "write", write: Write, } | { "step": "wait", ms: number, then: Array<Ask>, } | { "step": "done", result: ToolResult, };
 
@@ -4523,7 +4568,12 @@ export type VolumeCopy = { "kind": "root", readonly: boolean, newest: Snapshot |
 /**
  * The run of writes this root belongs to; 0 until `SetVolumeCopy` numbers it.
  */
-epoch: WriterEpoch, } | { "kind": "slot",
+epoch: WriterEpoch,
+/**
+ * A root `Volume.Seed` landed that Docker has not adopted yet: it carries both
+ * `ployz:seed` and `ployz:promote`. Older daemons never report it.
+ */
+seed: boolean, } | { "kind": "slot",
 /**
  * The slot parent's guid, which changes when the slot is destroyed and created again.
  */
@@ -4536,6 +4586,8 @@ pull: Pull | null, };
 export type VolumeCopyView = { copy: VolumeCopy | null, };
 
 export type VolumeDriver = { name: string, options: { [key in string]: string }, };
+
+export type VolumeGen = number;
 
 export type VolumeId = string;
 
@@ -4605,7 +4657,7 @@ export type VolumeRemoval = { id: DockerVolumeId, outcome: VolumeRemovalOutcome,
 
 export type VolumeRemovalOutcome = { "status": "removed" } | { "status": "failed", error: RpcError, } | { "status": "omitted" };
 
-export type VolumeRun = { "run": "mirror", to: ServerRef, full: boolean, } | { "run": "sync", full: boolean, } | { "run": "move", to: ServerRef, } | { "run": "release", loss: AcceptedLoss | null, } | { "run": "remove_mirror", loss: AcceptedLoss | null, };
+export type VolumeRun = { "run": "mirror", to: ServerRef, } | { "run": "sync", full: boolean, } | { "run": "move", to: ServerRef, } | { "run": "release", loss: AcceptedLoss | null, } | { "run": "remove_mirror", loss: AcceptedLoss | null, };
 
 export type VolumeSource = { "kind": "bind", machine_path: MachinePath, create_machine_path: boolean, propagation: BindPropagation | null, recursive: BindRecursive | null, } | { "kind": "external", name: DockerVolumeName, } | { "kind": "ordinary", name: DockerVolumeName, driver: VolumeDriver, labels: { [key in string]: string }, } | { "kind": "provisioned",
 /**
@@ -4732,7 +4784,7 @@ volumes: Array<VolumeListing>, };
 
 export type Waiting = { server: string, why: string, fix: Fix, };
 
-export type WantedCopy = { "kind": "writer", at: SnapshotGuid, epoch: WriterEpoch, start: CopyStart | null, } | { "kind": "mirror", from: string | null, target: SnapshotName, drain: Drain, } | { "kind": "snapshot", name: SnapshotName, } | { "kind": "forget" };
+export type WantedCopy = { "kind": "writer", at: SnapshotGuid, epoch: WriterEpoch, start: CopyStart | null, } | { "kind": "mirror", from: string | null, target: SnapshotName, drain: Drain, } | { "kind": "snapshot", name: SnapshotName, } | { "kind": "forget" } | { "kind": "floor" };
 
 export type WireGuardPublicKey = Array<number>;
 

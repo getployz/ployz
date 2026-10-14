@@ -272,7 +272,10 @@ impl MachineOperations for Client {
                 {
                     new.slot.creation_key = key;
                 }
-                new.deployment_id.clone_from(&self.deployment_id);
+                // A replacement joining a named Deploy keeps that Deploy's label.
+                if new.deployment_id.is_none() {
+                    new.deployment_id.clone_from(&self.deployment_id);
+                }
                 None
             }
             ContainerWant::Running { .. } => Some(TARGET_RPC_TIMEOUT),
@@ -1363,20 +1366,26 @@ pub(in crate::deploy) enum MoveContainerError {
     },
 }
 
-/// Placement convergence's one move: start `spec` on `to`, wait until it is healthy,
-/// then remove `old` from `from`. A new Container that never gets healthy is removed
-/// again, so `old` keeps serving. No hooks run.
-///
-/// # Errors
-///
-/// [`MoveContainerError::NotServing`] when the new Container never served;
-/// [`MoveContainerError::OldNotRemoved`] when it serves but `old` could not be removed.
+/// Whether a move may stop or remove its old Container. `move_container` asks
+/// immediately before each destructive request, so a Serving Pointer published
+/// meanwhile keeps the old Container for that pointer's retire path.
+pub(in crate::deploy) trait RemovesOld {
+    async fn removes_old(&mut self) -> bool;
+}
+
+impl RemovesOld for bool {
+    async fn removes_old(&mut self) -> bool {
+        *self
+    }
+}
+
 pub(in crate::deploy) async fn move_container<C: MachineOperations>(
     client: &C,
     namespace: &Namespace,
-    spec: &ResolvedServiceSpec,
+    (spec, deploy): (&ResolvedServiceSpec, Option<&DeploymentLogId>),
     to: &MachineId,
     (from, old): (&MachineId, &ContainerId),
+    gate: &mut impl RemovesOld,
     cancellation: &CancellationToken,
 ) -> Result<ContainerId, MoveContainerError> {
     let client = RestartTolerant {
@@ -1398,7 +1407,7 @@ pub(in crate::deploy) async fn move_container<C: MachineOperations>(
         &progress,
         to,
         slot.clone(),
-        spec,
+        (spec, deploy),
         AnswerWhen::Settled,
         cancellation,
     )
@@ -1414,6 +1423,9 @@ pub(in crate::deploy) async fn move_container<C: MachineOperations>(
             });
         }
     };
+    if !gate.removes_old().await {
+        return Ok(new);
+    }
     // Stopped first, so a failed removal can say whether the old Container still serves.
     stop(&client, from, old, Drain::DEFAULT, None)
         .await
@@ -1421,6 +1433,9 @@ pub(in crate::deploy) async fn move_container<C: MachineOperations>(
             error,
             old_stopped: false,
         })?;
+    if !gate.removes_old().await {
+        return Ok(new);
+    }
     remove(&client, from, old, Drain::NONE)
         .await
         .map_err(|error| MoveContainerError::OldNotRemoved {
@@ -1463,7 +1478,7 @@ async fn start<C: MachineOperations>(
         progress,
         machine_id,
         slot.clone(),
-        spec,
+        (spec, None),
         answer,
         cancellation,
     )
@@ -1523,7 +1538,7 @@ async fn run_new<C: MachineOperations>(
     progress: &Progress,
     machine_id: &MachineId,
     slot: SlotKey,
-    spec: &ResolvedServiceSpec,
+    (spec, deploy): (&ResolvedServiceSpec, Option<&DeploymentLogId>),
     answer: AnswerWhen,
     cancellation: &CancellationToken,
 ) -> Result<(ContainerId, Option<HealthVerdict>), RpcError> {
@@ -1532,7 +1547,7 @@ async fn run_new<C: MachineOperations>(
         container: RunTarget::New(NewContainer {
             slot: slot.clone(),
             resolved_spec: spec.clone(),
-            deployment_id: None,
+            deployment_id: deploy.cloned(),
             registry_auth: None,
             image_prepared: true,
             answer,

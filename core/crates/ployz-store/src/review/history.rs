@@ -1,5 +1,7 @@
-use ployz_core::RpcError;
-use ployz_core::config::SavedEnvironmentIntent;
+use std::collections::BTreeMap;
+
+use ployz_core::config::{SavedEnvironmentIntent, SavedVariableIntent};
+use ployz_core::{RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
@@ -46,6 +48,9 @@ pub struct SavedRevision {
     pub predecessor: Option<Revision>,
     pub changes: Vec<NodeChange>,
     pub total_count: usize,
+    /// Change path to how many changes undoing that one change reverses, for
+    /// changes the same save linked together. Absent means one.
+    pub linked: BTreeMap<String, usize>,
 }
 
 /// Restore a complete version, or reverse only what one revision changed.
@@ -64,6 +69,10 @@ pub struct HistoryPreviewQuery {
     pub environment: EnvironmentRef,
     pub revision: Revision,
     pub action: HistoryAction,
+    /// Undo only this change of the revision, by its path, and what it links.
+    #[serde(default)]
+    #[ts(optional)]
+    pub change: Option<String>,
 }
 
 /// What a History action stages, and exactly which draft fields it overwrites.
@@ -72,6 +81,8 @@ pub struct HistoryPreview {
     pub environment: EnvironmentSummary,
     pub revision: Revision,
     pub action: HistoryAction,
+    #[ts(optional)]
+    pub change: Option<String>,
     /// The exact current Diff version, required when staging this preview.
     pub version: String,
     pub changes: Vec<NodeChange>,
@@ -87,6 +98,9 @@ pub struct StageHistory {
     pub environment: EnvironmentRef,
     pub revision: Revision,
     pub action: HistoryAction,
+    #[serde(default)]
+    #[ts(optional)]
+    pub change: Option<String>,
     pub version: String,
     #[serde(default)]
     #[ts(as = "Option<bool>", optional)]
@@ -99,6 +113,16 @@ pub struct HistoryStaged {
     pub environment: EnvironmentSummary,
     pub saved: Option<Revision>,
     pub changed: bool,
+    /// Sealed variables the action brought back without a value.
+    pub not_set: Vec<NotSetVariable>,
+}
+
+/// A sealed variable History brought back sealed without a value: Deploys leave
+/// it out until someone sets it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct NotSetVariable {
+    pub service: ServiceName,
+    pub key: String,
 }
 
 pub(crate) fn history(
@@ -107,6 +131,7 @@ pub(crate) fn history(
     query: &HistoryQuery,
 ) -> Result<HistoryView, RpcError> {
     let mut environment = scope::environment(tx, who, &query.environment)?;
+    let scrub = review::Scrub::load(tx, &environment.summary.id)?;
     let limit = query.limit.unwrap_or(HISTORY_PAGE).max(1);
     // One extra row is the oldest shown revision's predecessor, and says more exist.
     let mut rows = tx.query(
@@ -124,7 +149,8 @@ pub(crate) fn history(
     let mut previous = None;
     for (index, row) in rows.iter().enumerate() {
         let revision = Revision(row.number(0, "revision")?);
-        let intent = row.intent(1, "Saved State")?;
+        let mut intent = row.intent(1, "Saved State")?;
+        scrub.apply(revision, &mut intent);
         if index >= first {
             environment.working = intent.clone();
             let changes = previous
@@ -141,6 +167,7 @@ pub(crate) fn history(
                     .as_ref()
                     .map_or_else(Vec::new, |changes| changes.changes.clone()),
                 total_count: changes.as_ref().map_or(0, |changes| changes.total_count),
+                linked: changes.map(|changes| changes.linked).unwrap_or_default(),
             });
         }
         previous = Some((revision, intent));
@@ -160,14 +187,15 @@ pub(crate) fn preview(
 ) -> Result<HistoryPreview, RpcError> {
     let environment = scope::environment(tx, who, &query.environment)?;
     let reviewed = review::review(tx, &environment)?;
-    let prepared = prepare(tx, &environment, &reviewed, query.revision, query.action)?;
-    Ok(preview_of(
+    let prepared = prepare(
+        tx,
         &environment,
         &reviewed,
-        &prepared,
         query.revision,
         query.action,
-    ))
+        query.change.as_deref(),
+    )?;
+    Ok(preview_of(&environment, &reviewed, &prepared, query))
 }
 
 pub(crate) fn stage(
@@ -189,24 +217,35 @@ pub(crate) fn stage(
         &reviewed,
         command.revision,
         command.action,
+        command.change.as_deref(),
     )?;
     if !prepared.overwritten().is_empty() && !command.accept_overwrite {
+        let query = HistoryPreviewQuery {
+            environment: command.environment.clone(),
+            revision: command.revision,
+            action: command.action,
+            change: command.change.clone(),
+        };
         return Err(error::confirmation_required(
             "This History action overwrites draft changes",
-            json!({ "history_preview": preview_of(&environment, &reviewed, &prepared, command.revision, command.action) }),
+            json!({ "history_preview": preview_of(&environment, &reviewed, &prepared, &query) }),
         ));
     }
+    let not_set = prepared.not_set().to_vec();
     let (environment, changed) = prepared.persist(tx)?;
     Ok(HistoryStaged {
         environment,
         saved: reviewed.view.saved,
         changed,
+        not_set,
     })
 }
 
+/// The version saved at `revision`, as History shows it.
 fn snapshot(
     tx: &mut dyn Tx,
     environment: &Environment,
+    scrub: &review::Scrub,
     revision: Revision,
 ) -> Result<SavedEnvironmentIntent, RpcError> {
     let rows = tx.query(
@@ -216,14 +255,17 @@ fn snapshot(
             revision_param(revision)?.into(),
         ],
     )?;
-    rows.first()
+    let mut intent = rows
+        .first()
         .ok_or_else(|| {
             error::not_found(
                 "No saved version has this revision",
                 json!({ "revision": revision }),
             )
         })?
-        .intent(0, "Saved State")
+        .intent(0, "Saved State")?;
+    scrub.apply(revision, &mut intent);
+    Ok(intent)
 }
 
 fn prepare(
@@ -232,46 +274,161 @@ fn prepare(
     reviewed: &review::Review,
     revision: Revision,
     action: HistoryAction,
+    change: Option<&str>,
 ) -> Result<super::authored::Prepared, RpcError> {
-    let selected = snapshot(tx, environment, revision)?;
+    if action == HistoryAction::Restore && change.is_some() {
+        return Err(error::invalid(
+            "Only Undo takes a single change; Restore puts back the whole version",
+            json!({ "revision": revision }),
+        ));
+    }
+    let scrub = review::Scrub::load(tx, &environment.summary.id)?;
+    let selected = snapshot(tx, environment, &scrub, revision)?;
     let previous = match action {
         HistoryAction::Restore => None,
         HistoryAction::Undo => {
-            let rows = tx.query("SELECT revision, intent FROM config_saved WHERE environment_id = ?1 AND revision < ?2 ORDER BY revision DESC LIMIT 1", &[environment.summary.id.as_str().into(), revision_param(revision)?.into()])?;
-            Some(
-                rows.first()
-                    .ok_or_else(|| {
-                        error::conflict(
-                            "This saved version has no recorded predecessor to undo",
-                            json!({ "revision": revision }),
-                        )
-                    })?
-                    .intent(1, "Saved State")?,
-            )
+            let rows = tx.query("SELECT revision FROM config_saved WHERE environment_id = ?1 AND revision < ?2 ORDER BY revision DESC LIMIT 1", &[environment.summary.id.as_str().into(), revision_param(revision)?.into()])?;
+            let predecessor = rows.first().ok_or_else(|| {
+                error::conflict(
+                    "This saved version has no recorded predecessor to undo",
+                    json!({ "revision": revision }),
+                )
+            })?;
+            Some(snapshot(
+                tx,
+                environment,
+                &scrub,
+                Revision(predecessor.number(0, "revision")?),
+            )?)
         }
     };
-    super::authored::prepare_history(
+    match super::authored::prepare_history(
         tx,
         environment,
+        scrub.ever(),
         reviewed.saved.as_ref().map(|saved| &saved.intent),
         &selected,
         previous.as_ref(),
-    )
+        change,
+    ) {
+        Err(error) if error.details.get("removed").is_some() => {
+            Err(deleted_since(tx, environment, revision, &selected, error)?)
+        }
+        prepared => prepared,
+    }
 }
 fn preview_of(
     environment: &Environment,
     reviewed: &review::Review,
     prepared: &super::authored::Prepared,
-    revision: Revision,
-    action: HistoryAction,
+    query: &HistoryPreviewQuery,
 ) -> HistoryPreview {
     HistoryPreview {
         environment: environment.summary.clone(),
-        revision,
-        action,
+        revision: query.revision,
+        action: query.action,
+        change: query.change.clone(),
         version: reviewed.view.version.clone(),
         changes: prepared.preview().changes.clone(),
         total_count: prepared.preview().total_count,
         overwritten: prepared.overwritten().to_vec(),
     }
+}
+
+/// `error`, from a change to a node deleted since `revision`, as the node's name
+/// and the save that deleted it.
+fn deleted_since(
+    tx: &mut dyn Tx,
+    environment: &Environment,
+    revision: Revision,
+    selected: &SavedEnvironmentIntent,
+    error: RpcError,
+) -> Result<RpcError, RpcError> {
+    let text = |key: &str| error.details.get(key).and_then(serde_json::Value::as_str);
+    let (Some(kind), Some(id)) = (text("removed"), text("id")) else {
+        return Ok(error);
+    };
+    let key = text("key").unwrap_or_default();
+    fn variables<'a>(
+        intent: &'a SavedEnvironmentIntent,
+        service: &str,
+    ) -> Option<&'a [SavedVariableIntent]> {
+        intent
+            .services
+            .iter()
+            .find(|candidate| candidate.id == service)
+            .map(|candidate| candidate.variables.as_slice())
+    }
+    // The node's name in `intent`, and for a variable the ID it has there: a
+    // variable found by key is followed by its new ID from then on.
+    let name_in = |intent: &SavedEnvironmentIntent,
+                   name: &str,
+                   variable: &Option<String>|
+     -> Option<(String, Option<String>)> {
+        let named = |name: String| Some((name, None));
+        match kind {
+            "service" => intent
+                .services
+                .iter()
+                .find(|service| service.id == id)
+                .and_then(|service| named(service.slug.clone())),
+            "variable" => {
+                let variables = variables(intent, id)?;
+                variables
+                    .iter()
+                    .find(|now| variable.as_ref() == Some(&now.id))
+                    .or_else(|| variables.iter().find(|now| now.key == name))
+                    .map(|now| (now.key.clone(), Some(now.id.clone())))
+            }
+            "volume" => intent
+                .volumes
+                .iter()
+                .find(|volume| volume.resource_id == id)
+                .and_then(|volume| named(volume.name.clone())),
+            _ => intent
+                .configs
+                .iter()
+                .find(|config| config.resource_id == id)
+                .and_then(|config| named(config.name.to_string())),
+        }
+    };
+    let Some((mut name, mut variable)) = name_in(selected, key, &None) else {
+        return Ok(error);
+    };
+    let rows = tx.query(
+        "SELECT revision, intent FROM config_saved WHERE environment_id = ?1 AND revision > ?2 \
+         ORDER BY revision",
+        &[
+            environment.summary.id.as_str().into(),
+            revision_param(revision)?.into(),
+        ],
+    )?;
+    let then = name.clone();
+    let mut renamed = None;
+    let mut deleted = None;
+    for row in &rows {
+        if let Some((held, id)) = name_in(&row.intent(1, "Saved State")?, &name, &variable) {
+            if held != name {
+                renamed = Some(row.int(0)?);
+            }
+            name = held;
+            variable = id;
+            deleted = None;
+        } else if deleted.is_none() {
+            deleted = Some(row.int(0)?);
+        }
+    }
+    // Undo applies to the draft, so a node gone from it is deleted whatever the
+    // saves did, and one renamed in it carries its draft name.
+    let message = match (name_in(&environment.working, &name, &variable), deleted) {
+        (None, Some(revision)) => format!("{name} was deleted in #{revision}"),
+        (None, None) => format!("{name} was deleted"),
+        (Some((held, _)), _) if held == then => format!("{name} was deleted"),
+        (Some((held, _)), _) if held != name => format!("{then} was renamed to {held}"),
+        (Some(_), _) => match renamed {
+            Some(revision) => format!("{then} was renamed to {name} in #{revision}"),
+            None => format!("{then} was renamed to {name}"),
+        },
+    };
+    Ok(error::conflict(message, error.details))
 }

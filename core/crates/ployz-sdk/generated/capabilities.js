@@ -37,6 +37,7 @@ exports.capabilities = Object.freeze([
   "ployz.serving.read.v1",
   "ployz.storage.inspect.v1",
   "ployz.storage.prepare.v1",
+  "ployz.volume.copy.floor.v1",
   "ployz.volume.copy.inspect.v1",
   "ployz.volume.copy.set.v1",
   "ployz.volume.list.v1",

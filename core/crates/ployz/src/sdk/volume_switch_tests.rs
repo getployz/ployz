@@ -53,6 +53,7 @@ fn a_set_volume_copy_reply_and_its_refusal_pass_through_as_the_machine_sent_them
         "readonly": false,
         "newest": { "name": "f-1", "guid": "13", "created_unix_seconds": 1700000000 },
         "epoch": 2,
+        "seed": false,
     });
     let current: ployz_core::VolumeCopy = serde_json::from_value(copy.clone())
         .unwrap_or_else(|error| panic!("the copy parses: {error}"));
@@ -67,6 +68,7 @@ fn a_set_volume_copy_reply_and_its_refusal_pass_through_as_the_machine_sent_them
     let refused = ployz_core::SetVolumeCopyRefused {
         reason: ployz_core::CopyRefusal::Behind,
         copy: Some(current),
+        floor: None,
     }
     .rpc_error("Volume data is not at the wanted snapshot".to_owned());
     let error = volume_switch_payload("set_volume_copy", RpcResponseBody::Error(refused.clone()))

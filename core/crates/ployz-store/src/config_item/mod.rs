@@ -194,7 +194,12 @@ pub(crate) fn create_config(
     create: &CreateConfig,
 ) -> Result<ConfigStaged, RpcError> {
     let mut environment = scope::lock(tx, who, &create.environment)?;
-    taken(&environment, &create.name)?;
+    crate::names::refuse_taken(
+        tx,
+        &environment,
+        crate::names::Name::Config(create.name.as_str()),
+        None,
+    )?;
     let node = SavedConfigIntent {
         resource_id: create.id.to_string(),
         resource_lineage_id: create.id.to_string(),
@@ -291,7 +296,12 @@ pub(crate) fn rename_config(
     let mut environment = scope::lock(tx, who, &rename.environment)?;
     let changed = rename.name != rename.config;
     if changed {
-        taken(&environment, &rename.name)?;
+        crate::names::refuse_taken(
+            tx,
+            &environment,
+            crate::names::Name::Config(rename.name.as_str()),
+            None,
+        )?;
         environment.config_mut(&rename.config)?.name = rename.name.clone();
         scope::save_working(tx, &mut environment)?;
     }
@@ -374,19 +384,6 @@ fn mounted(
         environment: environment.summary,
         staged,
     })
-}
-
-fn taken(environment: &Environment, name: &ConfigName) -> Result<(), RpcError> {
-    if environment.config(name).is_err() {
-        return Ok(());
-    }
-    Err(error::conflict(
-        format!(
-            "Environment {} already has a Config named {name}",
-            environment.summary.name
-        ),
-        json!({ "config": name }),
-    ))
 }
 
 fn staged(

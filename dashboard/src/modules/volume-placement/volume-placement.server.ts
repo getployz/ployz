@@ -102,7 +102,8 @@ const readRow = Effect.fn("VolumePlacement.readRow")(function* (organizationId: 
 });
 
 /** Why the row can't change: the Deploy that took it still runs it, or the Store can't say whether it does. */
-const claimed = Effect.fn("VolumePlacement.claimed")(function* (organizationId: string, row: Pick<Row, "deploymentId"> | undefined) {
+/** The refusal while a Deploy still runs the Volume's placement, else null. */
+export const deployClaim = Effect.fn("VolumePlacement.deployClaim")(function* (organizationId: string, row: Pick<Row, "deploymentId"> | undefined) {
   if (row === undefined || row.deploymentId === null) return null;
   return yield* readStore(organizationId, { query: "deployment", id: row.deploymentId }).pipe(
     Effect.map((deployment) => deployment.in_flight ? DEPLOYING : null),
@@ -123,7 +124,7 @@ export const stagePlacement = Effect.fn("VolumePlacement.stage")(function* (
   input: { readonly environment: EnvironmentRef; readonly volumeId: string; readonly staged: Placement | null; readonly mirrors: readonly MachineId[] },
 ) {
   const current = yield* readRow(organizationId, input.volumeId);
-  const refusal = yield* claimed(organizationId, current);
+  const refusal = yield* deployClaim(organizationId, current);
   if (refusal !== null) return { ok: false, refusal } satisfies PlacementWrite;
   if (current?.staged?.seed !== undefined) return { ok: false, refusal: RESTORING } satisfies PlacementWrite;
   const { environmentId } = yield* resolveVolume(organizationId, input.environment, input.volumeId);
@@ -220,7 +221,7 @@ export const discardPlacement = Effect.fn("VolumePlacement.discard")(function* (
 ) {
   const current = yield* readRow(organizationId, volumeId);
   if (current === undefined) return { ok: true, placement: null } satisfies PlacementDiscard;
-  const refusal = yield* claimed(organizationId, current);
+  const refusal = yield* deployClaim(organizationId, current);
   if (refusal !== null) return { ok: false, refusal } satisfies PlacementDiscard;
   const unchanged = and(eq(volumePlacement.volumeId, current.volumeId), unclaimedSince(current));
   const database = yield* Database;
@@ -393,7 +394,7 @@ export const deleteOldCopy = Effect.fn("VolumePlacement.deleteOldCopy")(function
   inspect: typeof inspectVolumeCopies = inspectVolumeCopies,
 ) {
   const row = yield* readRow(organizationId, input.volumeId);
-  const busy = yield* claimed(organizationId, row);
+  const busy = yield* deployClaim(organizationId, row);
   if (busy !== null) return { ok: false, refusal: { message: busy.message } } as const;
   const members = yield* inspect(organizationId, input.environment, input.volumeId);
   const old = oldCopies(observePlacement(members), row === undefined ? null : view(row)).find((copy) => copy.server.name === input.server);
@@ -415,7 +416,7 @@ export const deleteOldCopy = Effect.fn("VolumePlacement.deleteOldCopy")(function
  */
 export const requestUnclaimedRun = Effect.fn("VolumePlacement.requestUnclaimedRun")(function* (
   caller: { readonly userId: string | null; readonly organizationId: string },
-  input: { readonly volumeId: string; readonly environment: EnvironmentRef } & Extract<VolumeRunInput, { kind: "sync" | "delete_mirror" }>,
+  input: { readonly volumeId: string; readonly environment: EnvironmentRef } & Extract<VolumeRunInput, { kind: "delete_mirror" }>,
   deletes: { readonly server: MachineId; readonly point: string | null } | null = null,
 ) {
   const database = yield* Database;
@@ -425,7 +426,7 @@ export const requestUnclaimedRun = Effect.fn("VolumePlacement.requestUnclaimedRu
     if (deletes !== null) yield* drizzle.execute(sql`select pg_advisory_xact_lock_shared(${environmentLock(volume.environmentId)})`);
     const [row] = yield* drizzle.select().from(volumePlacement)
       .where(and(eq(volumePlacement.organizationId, caller.organizationId), eq(volumePlacement.volumeId, input.volumeId))).for("update");
-    const busy = yield* claimed(caller.organizationId, row);
+    const busy = yield* deployClaim(caller.organizationId, row);
     if (busy !== null) return { ok: false, refusal: busy } as const;
     const kept = row === undefined ? [] : [...row.mirrors ?? [], ...row.staged === null ? [] : [row.staged.primary, ...row.staged.mirrors]];
     if (deletes !== null && kept.includes(deletes.server)) return { ok: false, refusal: NOT_OLD } as const;

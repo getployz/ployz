@@ -3,17 +3,18 @@
 use std::time::Duration;
 
 use ployz_core::{
-    ContainerId, ContainerKind, EnvironmentValues, ListContainersRequest, LiveServices, Machine,
-    MachineId, MachineName, MachineTarget, ObservedGlobalSlotSpec, QualifiedService, RpcError,
-    RpcErrorCode, ServicePlacementEligibility, op,
+    AnonymousVolumes, ContainerId, ContainerKind, ContainerLocator, ContainerWant, Drain,
+    EnvironmentValues, ListContainersRequest, LiveServices, Machine, MachineId, MachineName,
+    MachineTarget, ObservedGlobalSlotSpec, QualifiedService, RpcError, RpcErrorCode,
+    ServicePlacementEligibility, op,
 };
 use tokio_util::sync::CancellationToken;
 
 use crate::connect::{Client, ConnectError};
-use crate::global_slot::{remove_slot, slot_eligibility, unknown_eligibility};
-use crate::serving_publish::{Amendment, PointerClient, amend_pointer, rotated};
+use crate::global_slot::{slot_eligibility, unknown_eligibility};
+use crate::serving_publish::{PointerClient, Protection, Rotation, amend_pointer, protection};
 
-const POINTED_RETIRE_WAIT: Duration = Duration::from_secs(330);
+pub(crate) const POINTED_RETIRE_WAIT: Duration = Duration::from_secs(330);
 const POINTED_RETIRE_POLL: Duration = Duration::from_secs(1);
 
 /// What retiring one Global on the drained Server came to.
@@ -31,12 +32,13 @@ pub(crate) enum Retirement {
 pub(crate) trait RetireClient {
     /// What every Server runs, with each Server's name.
     async fn live_services(&mut self) -> Result<(LiveServices<RpcError>, Names), ConnectError>;
-    /// Stop and remove `slot`'s Containers on `machine_id` when fresh evidence says it is
-    /// definitely ineligible there; refuse when it is eligible or its eligibility unknown.
+    /// Retire `slot`'s Containers on `machine_id` when fresh evidence says it is definitely
+    /// ineligible there; refuse when it is eligible or its eligibility unknown.
     async fn retire_slot(
         &mut self,
         machine_id: &MachineId,
         slot: &ObservedGlobalSlotSpec,
+        cancellation: &CancellationToken,
     ) -> Result<(), RpcError>;
 }
 
@@ -59,15 +61,19 @@ impl RetireClient for Client {
         &mut self,
         machine_id: &MachineId,
         slot: &ObservedGlobalSlotSpec,
+        cancellation: &CancellationToken,
     ) -> Result<(), RpcError> {
         let identity = slot.identity();
         match slot_eligibility(self, machine_id, &identity.namespace, slot.resolved_spec()).await? {
             ServicePlacementEligibility::Ineligible(_) => {
-                if retire_pointed(self, machine_id, identity, POINTED_RETIRE_WAIT).await? {
-                    Ok(())
-                } else {
-                    remove_slot(self, machine_id, &identity.namespace, &identity.name).await
-                }
+                retire_copies(
+                    self,
+                    machine_id,
+                    identity,
+                    POINTED_RETIRE_WAIT,
+                    cancellation,
+                )
+                .await
             }
             ServicePlacementEligibility::Eligible => Err(RpcError {
                 code: RpcErrorCode::Conflict,
@@ -80,13 +86,17 @@ impl RetireClient for Client {
     }
 }
 
-/// The Containers a Server runs for one Service.
 pub(crate) trait CopyLister: PointerClient {
     async fn copies_on(
         &mut self,
         machine_id: &MachineId,
         service: &QualifiedService,
     ) -> Result<Vec<ContainerId>, RpcError>;
+    async fn remove_copy(
+        &mut self,
+        machine_id: &MachineId,
+        copy: &ContainerId,
+    ) -> Result<(), RpcError>;
 }
 
 impl CopyLister for Client {
@@ -115,28 +125,61 @@ impl CopyLister for Client {
             .map(|container| container.container_id)
             .collect())
     }
+
+    async fn remove_copy(
+        &mut self,
+        machine_id: &MachineId,
+        copy: &ContainerId,
+    ) -> Result<(), RpcError> {
+        self.ensure_container(
+            machine_id,
+            ContainerWant::Gone {
+                container: ContainerLocator::Id(*copy),
+                drain: Drain::DEFAULT,
+                anonymous_volumes: AnonymousVolumes::Remove,
+            },
+            None,
+        )
+        .await
+        .map(|_| ())
+    }
 }
 
-/// Move the Service's Containers on `machine_id` into its Serving Pointer's `retiring` and
-/// wait up to `wait` for the Server's retire loop to stop them, which it does once every
-/// up Machine stopped routing to them. Answers `false`, having written nothing, when the
-/// Service has no pointer.
-pub(crate) async fn retire_pointed<C: CopyLister>(
+/// Retire every copy of `service` on `machine_id` under the pointer-membership contract:
+/// a read immediately before each step decides it. Fails once `wait` passes with a copy
+/// still listed.
+pub(crate) async fn retire_copies<C: CopyLister>(
     client: &mut C,
     machine_id: &MachineId,
     service: &QualifiedService,
     wait: Duration,
-) -> Result<bool, RpcError> {
-    let copies = client.copies_on(machine_id, service).await?;
-    if amend_pointer(client, service, |current| rotated(current, &[], &copies)).await?
-        == Amendment::NoPointer
-    {
-        return Ok(false);
-    }
+    cancellation: &CancellationToken,
+) -> Result<(), RpcError> {
     let deadline = tokio::time::Instant::now() + wait;
     loop {
-        if client.copies_on(machine_id, service).await?.is_empty() {
-            return Ok(true);
+        let copies = cancellable(cancellation, client.copies_on(machine_id, service)).await?;
+        let mut waiting = false;
+        for copy in copies {
+            match cancellable(cancellation, protection(client, service, &copy)).await? {
+                Protection::Unnamed => {
+                    cancellable(cancellation, client.remove_copy(machine_id, &copy)).await?;
+                }
+                Protection::Pointed(pointer) => {
+                    amend_pointer(
+                        client,
+                        service,
+                        &pointer.deploy,
+                        cancellation,
+                        &Rotation::leaving([copy]),
+                    )
+                    .await?;
+                    waiting = true;
+                }
+                Protection::Retiring => waiting = true,
+            }
+        }
+        if !waiting {
+            return Ok(());
         }
         if tokio::time::Instant::now() >= deadline {
             return Err(RpcError {
@@ -149,7 +192,30 @@ pub(crate) async fn retire_pointed<C: CopyLister>(
                 cause: Vec::new(),
             });
         }
-        tokio::time::sleep(POINTED_RETIRE_POLL).await;
+        cancellable(cancellation, async {
+            tokio::time::sleep(POINTED_RETIRE_POLL).await;
+            Ok(())
+        })
+        .await?;
+    }
+}
+
+async fn cancellable<T>(
+    cancellation: &CancellationToken,
+    work: impl Future<Output = Result<T, RpcError>>,
+) -> Result<T, RpcError> {
+    tokio::select! {
+        result = work => result,
+        () = cancellation.cancelled() => Err(cancelled()),
+    }
+}
+
+fn cancelled() -> RpcError {
+    RpcError {
+        code: RpcErrorCode::Unavailable,
+        message: "the drain was cancelled while it retired".into(),
+        details: serde_json::Value::Null,
+        cause: Vec::new(),
     }
 }
 
@@ -200,7 +266,7 @@ pub(crate) async fn retire_globals<C: RetireClient>(
                     None => Retirement::NotRetired(
                         "its newest Container is not Global; deploy it first".into(),
                     ),
-                    Some(slot) => match client.retire_slot(&server.id, &slot).await {
+                    Some(slot) => match client.retire_slot(&server.id, &slot, cancellation).await {
                         Ok(()) => Retirement::Retired,
                         Err(error) => Retirement::NotRetired(crate::ui::row(&error)),
                     },

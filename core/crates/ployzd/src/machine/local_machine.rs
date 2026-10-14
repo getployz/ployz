@@ -42,6 +42,7 @@ pub struct LocalMachine {
 }
 
 mod container;
+pub(crate) use container::CutRefusal;
 mod management_client;
 mod upgrade;
 
@@ -102,6 +103,10 @@ pub enum Error {
     ClusterUnavailable,
     #[error("Docker is not available")]
     DockerUnavailable,
+    #[error("the roster row of lower Machine {0} is unreadable")]
+    UnreadableLowerMachine(MachineId),
+    #[error("the Machine at {} is active but has no readable roster row", .0.0)]
+    MissingPeerRow(ManagementAddress),
     #[error("at least one Machine update is required")]
     EmptyUpdate,
     #[error(transparent)]
@@ -278,9 +283,9 @@ impl LocalMachine {
             .as_ref()
             .ok_or(Error::ClusterStoreUnavailable)?;
         let machines = cluster.replicated.machines().await?;
-        let ackers =
+        let membership =
             crate::retire::sample_ackers(machines, &self.record().id(), &cluster.admin).await;
-        Ok(match ackers {
+        Ok(match membership.ackers {
             crate::retire::Ackers::Known(machines) if !machines.is_empty() => {
                 Some(machines.into_keys().collect())
             }
@@ -523,11 +528,7 @@ impl LocalMachine {
         }
         let replicated = self.replicated()?;
         let machines = replicated.machines().await?.observations;
-        let states = match &self.cluster {
-            Some(cluster) => cluster.admin.membership_states().await?,
-            None => Vec::new(),
-        };
-        let states = membership_states_by_address(states);
+        let states = self.membership_states().await?;
         let entry_id = local.id();
         Ok(MachineList {
             enrollment: Some(ployz_core::EnrollmentSnapshot {
@@ -542,6 +543,61 @@ impl LocalMachine {
             }
             .overlay(machines, &entry_id),
         })
+    }
+
+    /// The lowest-id Machine that invites RPC in this Machine's Membership Observation.
+    /// Only that Machine answers Serving Pointer reads and publishes, so every
+    /// compare-and-set it sees runs on one Corrosion node.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::ClusterStoreUnavailable`] when the Cluster store is missing,
+    /// [`Error::Cluster`] when replicated or admin I/O fails, and
+    /// [`Error::UnreadableLowerMachine`] when a Machine below the publisher has a row this
+    /// Machine cannot decode, and [`Error::MissingPeerRow`] when an admin-active peer has no
+    /// readable row at all, since either Machine may be the publisher another Machine sees.
+    pub async fn pointer_publisher(&self) -> Result<MachineId, Error> {
+        let machines = self.replicated()?.machines().await?;
+        let states = self.membership_states().await?;
+        let record = self.record();
+        let local_id = record.id();
+        let known = machines
+            .observations
+            .iter()
+            .map(Machine::management_address)
+            .chain(record.machine().map(Machine::management_address))
+            .collect::<BTreeSet<_>>();
+        let publisher = synthesize_membership(machines.observations, &local_id, &states)
+            .iter()
+            .filter(|observation| observation.invites_rpc())
+            .map(|observation| observation.machine.id)
+            .min()
+            .unwrap_or(local_id);
+        if let Some(unreadable) = machines
+            .incomplete_ids
+            .into_iter()
+            .min()
+            .filter(|unreadable| *unreadable < publisher)
+        {
+            return Err(Error::UnreadableLowerMachine(unreadable));
+        }
+        if let Some((missing, _)) = states
+            .iter()
+            .find(|(address, evidence)| evidence.invites_rpc() && !known.contains(address))
+        {
+            return Err(Error::MissingPeerRow(*missing));
+        }
+        Ok(publisher)
+    }
+
+    async fn membership_states(
+        &self,
+    ) -> Result<BTreeMap<ManagementAddress, MembershipEvidence>, Error> {
+        let states = match &self.cluster {
+            Some(cluster) => cluster.admin.membership_states().await?,
+            None => Vec::new(),
+        };
+        Ok(membership_states_by_address(states))
     }
 
     /// Apply a local Machine update and best-effort publish it.
@@ -704,7 +760,8 @@ impl LocalMachine {
         Ok(())
     }
 
-    /// Demote every root through the plugin, then make Docker forget each demoted name.
+    /// Demote every root through the plugin, make Docker forget each demoted name, then
+    /// forget every Volume floor, so a lane from a new cluster starts at any `gen`.
     /// A Machine without Docker has no volume driver and nothing to depart.
     ///
     /// # Errors
@@ -725,7 +782,12 @@ impl LocalMachine {
                 .await
                 .map_err(|error| Error::Cleanup(format!("Docker kept Volume {name}: {error}")))?;
         }
-        Ok(())
+        containers.clear_floors().await.map_err(|error| {
+            Error::Cleanup(format!(
+                "the Volume floors stayed: {}",
+                ployz_core::error_chain::inline(&error)
+            ))
+        })
     }
 }
 

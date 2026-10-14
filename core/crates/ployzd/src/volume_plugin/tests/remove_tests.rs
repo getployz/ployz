@@ -280,7 +280,6 @@ async fn get_hangs_up_on_an_empty_or_unparseable_body() {
 #[tokio::test]
 async fn get_hangs_up_when_pool_or_dataset_state_is_unsure() {
     for (pools, markers) in [
-        ("", &["root", "volume"][..]),
         (USABLE_POOL, &["root", "volume", "descendant"][..]),
         (USABLE_POOL, &["root", "volume", "unbounded-volume"][..]),
         (USABLE_POOL, &["volume"][..]),
@@ -389,5 +388,27 @@ async fn remove_waits_for_a_list_holding_the_storage_mutation() {
             .unwrap()
             .contains("zfs destroy -r tank/ployz/data")
     );
+    server.abort();
+}
+
+#[tokio::test]
+async fn get_answers_absent_without_a_pool_and_hangs_up_while_one_is_not_imported() {
+    let test = TestDir::new();
+    let (zpool, zfs) = fake_zfs(&test.0, "");
+    let socket = test.0.join("plugin.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let server = tokio::spawn(serve(listener, VolumeStorage::with_programs(zpool, zfs)));
+
+    assert_eq!(
+        post(&socket, "/VolumeDriver.Get", json!({"Name":"data"})).await,
+        json!({"Err":"Provisioned Volume data does not exist"})
+    );
+
+    fs::create_dir(test.0.join("ployz-volumes")).unwrap();
+    assert_hangs_up(&socket, "/VolumeDriver.Get", br#"{"Name":"data"}"#).await;
+
+    fs::remove_dir(test.0.join("ployz-volumes")).unwrap();
+    fs::write(test.0.join("machine-pool"), "").unwrap();
+    assert_hangs_up(&socket, "/VolumeDriver.Get", br#"{"Name":"data"}"#).await;
     server.abort();
 }

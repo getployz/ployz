@@ -50,7 +50,7 @@ export function useVolumeCopies(organizationSlug: string, environment: Environme
   const mirror = useRefreshMirror(organizationSlug, environment, volume.id);
   const row = rows.find((entry) => entry.volumeId === volume.id) ?? null;
   const copies = members === undefined ? null
-    : copiesFromPlacement({ volume, members, row, active: running, lastSync: mirror.lastSync, lastDone: mirror.lastDone });
+    : copiesFromPlacement({ volume, members, row, active: running, statuses: mirror.statuses });
   const accepting = placementServers(lens.machines);
   return {
     volume,

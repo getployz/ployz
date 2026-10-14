@@ -165,8 +165,10 @@ once**, from the next build. See
 ### Start command
 
 Empty by default, so the service runs what the image or the build sets. Set one, like
-`npm run worker`, to run something else from the same code; it runs in a shell, so `$PORT` works.
-See [Override the start command](../deploy/docker-image.md#override-the-start-command).
+`npm run worker`, to run something else from the same code. On a Railpack build it runs in a
+shell, so `$PORT` and `&&` work. On an image or a Dockerfile build it replaces the `ENTRYPOINT`
+and runs without a shell; wrap it in `sh -c '…'` to get one. See
+[Override the start command](../deploy/docker-image.md#override-the-start-command).
 
 ### Pre-deploy command
 
@@ -180,8 +182,9 @@ doesn't undo what it changed. See
 A new replica must pass it before it takes traffic. Off by default, so an old replica stops a few
 seconds after the new one starts, ready or not. Off also ignores a `HEALTHCHECK` in the image.
 
-- **HTTP path.** Enter a path like `/up`. It passes when that path answers on `PORT` with a 2xx
-  status; a redirect fails it.
+- **HTTP path.** Enter a path like `/up`. It passes when that path answers with a 2xx status on
+  the port your domains send traffic to; a redirect fails it. With no domain, or domains on
+  different ports, it checks `PORT`.
 - **Command.** Enter a command like `pg_isready -h 127.0.0.1`. It runs in a shell inside the
   container and passes when it exits 0. The databases Ployz creates come with one.
 

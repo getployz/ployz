@@ -8,9 +8,10 @@ for its data, a generated password and the variables your app needs to connect. 
 it's an ordinary service you can change like any other.
 
 > [!WARNING]
-> Ployz doesn't back up databases yet. If the server that holds a database is lost, so is its
-> data. Take your own dumps and keep them off your servers: see
-> [Back up a database](#back-up-a-database).
+> A database lives on one server. Add a [mirror](move-a-volume.md#mirror-a-volume) of its volume
+> to keep a backup on another of your servers, which you can [restore](restore-a-volume.md) or
+> move the database to. A mirror isn't an offsite backup, so also take your own dumps and keep
+> them off your servers: see [Back up a database](#back-up-a-database).
 
 ## Add a database
 
@@ -68,7 +69,9 @@ If 5432 is taken on your laptop, pick another local port, like `15432:5432`.
 
 ## Back up a database
 
-Dump each database on a schedule, from a computer you trust or a CI job, and store the dumps
+A [mirror](move-a-volume.md#mirror-a-volume) keeps a backup of the database's volume on another of
+your servers. For an offsite backup, dump each database on a schedule, from a computer you trust
+or a CI job, and store the dumps
 away from your servers, such as in object storage. A dump kept on the same server is lost with
 it. Dumps are CLI-only for now. Keep `-T`: it sends the dump to the file unchanged.
 

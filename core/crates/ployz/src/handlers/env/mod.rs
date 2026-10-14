@@ -461,7 +461,8 @@ fn rm(root: &ArgMatches) -> Result<(), Error> {
             removed: &removed,
         },
         || removed.say(&format!("Environment {typed}")),
-    )
+    )?;
+    removed.ended(matches)
 }
 
 /// Refuse an unconfirmed `env rm`, naming what goes and the exact retry; and

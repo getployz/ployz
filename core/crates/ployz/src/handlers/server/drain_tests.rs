@@ -172,6 +172,26 @@ fn every_outcome_that_existed_prints_the_same_line() {
         unchosen: vec![service("db")],
     });
     assert_eq!(remaining(&db), Ok("Still on web-2: app/db".to_owned()));
+    let retiring = DrainReport {
+        services: vec![ServiceDrain {
+            service: service("web"),
+            outcome: DrainOutcome::Moved {
+                moves: vec![step(&server('a', "web-1"))],
+            },
+        }],
+        ..report(Remaining::Observed {
+            services: vec![service("db"), service("web")],
+            unchosen: vec![service("db")],
+        })
+    };
+    assert_eq!(
+        remaining(&retiring),
+        Ok("Still on web-2: app/db, app/web (retiring)".to_owned())
+    );
+    assert!(
+        retiring.complete(),
+        "a moved Service's old copy retires through ployzd; the drain is done"
+    );
     let empty = report(Remaining::Observed {
         services: Vec::new(),
         unchosen: Vec::new(),
