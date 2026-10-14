@@ -6,6 +6,7 @@ import { Effect, Redacted } from "effect";
 import { type MailContent, renderMail } from "#/modules/mail/layout";
 import { makePostShibaMailer } from "#/modules/mail/mailer.server";
 import { sampleMail } from "#/modules/mail/sample";
+import { NOTIFICATION_TYPES } from "#/modules/notifications/notification-types";
 import { uptimeAlertSamples } from "#/modules/uptime/alert-mail";
 
 const ALLOWED_TO = "nick@ployz.dev";
@@ -18,7 +19,7 @@ const required = (name: string) => {
 
 export async function run() {
   const origin = new URL(process.env["APP_URL"] ?? "http://localhost:3000").origin;
-  const unsubscribe = { label: "Unsubscribe from uptime emails", url: `${origin}/api/mail/unsubscribe?token=sample` };
+  const unsubscribe = { label: NOTIFICATION_TYPES.uptime.unsubscribe, url: `${origin}/api/mail/unsubscribe?token=sample` };
   const samples: Record<string, MailContent> = {
     sample: sampleMail(origin),
     ...Object.fromEntries(Object.entries(uptimeAlertSamples(origin)).map(([name, content]) => [name, { ...content, unsubscribe }])),
