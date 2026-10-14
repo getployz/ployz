@@ -18,9 +18,9 @@ export const Route = createFileRoute("/invite/$token")({
 });
 
 const UNUSABLE = {
-  accepted: "This invite was used already.",
-  revoked: "This invite was revoked.",
-  expired: "This invite expired.",
+  accepted: "This invite was used already",
+  revoked: "This invite was revoked",
+  expired: "This invite expired",
 } satisfies Record<Exclude<Invite["state"], "pending">, string>;
 
 function InvitePage() {

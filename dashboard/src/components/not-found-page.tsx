@@ -35,8 +35,8 @@ function NoLongerMember({ organization }: { organization: string }) {
           <EmptyMedia variant="icon">
             <UserXIcon />
           </EmptyMedia>
-          <EmptyTitle>No longer a member</EmptyTitle>
-          <EmptyDescription>You are no longer a member of {organization}.</EmptyDescription>
+          <EmptyTitle>Membership ended</EmptyTitle>
+          <EmptyDescription>Ask someone in {organization} for a new invite.</EmptyDescription>
         </EmptyHeader>
         <EmptyContent className="sm:flex-row sm:justify-center">
           <Link to={CloudRoute.to} className={buttonVariants()}>
