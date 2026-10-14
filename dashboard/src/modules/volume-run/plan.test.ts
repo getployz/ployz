@@ -344,7 +344,7 @@ describe("plan_from_copies_table", () => {
   });
 });
 
-const named = (members: readonly Member[], role: Role) => members.filter((each) => roleOf(each) === role).map((each) => each.machine.name).sort();
+const named = (members: readonly Member[], role: Role) => members.filter((each) => roleOf(each) === role).map((each) => each.machine.name).sort((a, b) => a.localeCompare(b));
 
 /** The cut every remedy keeps: highest epoch, then holds a snapshot, then first by Server name. */
 function keptCut(members: readonly Member[]) {
@@ -429,6 +429,8 @@ describe("follow every next step a refusal names", () => {
     ["no slot", []],
     ["one slot", [member("fsn-3", "mirror")]],
     ["two slots", [member("fsn-4", "behind"), member("fsn-3", "mirror")]],
+    // The freshest slot is last by name and listed last, so picking by member order or freshness names fsn-4.
+    ["two slots listed by name", [member("fsn-3", "behind"), member("fsn-4", "mirror")]],
   ];
   const cuts: [string, Member[]][] = [
     ["a newer cut with a snapshot", [member("fsn-1", "cut", { epoch: 8 }), member("fsn-2", "cut", { epoch: 9 })]],
