@@ -2,6 +2,7 @@
 """Boat provider logic that needs no sandbox: endpoints, errors, limits, placement, and which sandboxes down removes."""
 
 import contextlib
+import fcntl
 import importlib.machinery
 import importlib.util
 import io
@@ -13,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import unittest.mock
 
@@ -311,6 +313,33 @@ class Registry(unittest.TestCase):
         self.assertEqual(self.calls, [])
         self.assertTrue(boat.registry("other").exists())
 
+    def test_refresh_extends_live_sandboxes_and_names_failures_once(self):
+        self.registered(**{"machine-1": dict(id="bx_a", state="running"), "machine-2": dict(id="bx_b", state="running"),
+                           "machine-3": dict(id="bx_c", state="deleted")})
+        self.answers[("extend", "bx_b")] = result(1, {"event": "error", "code": "internal", "status": 500})
+        self.provider.record(lambda record: record.update(extended=0))
+        with contextlib.redirect_stderr(io.StringIO()) as said:
+            self.provider.refresh()
+        self.assertEqual(sorted(self.calls), [["extend", "bx_a", "--ttl", boat.TTL], ["extend", "bx_b", "--ttl", boat.TTL]])
+        self.assertEqual(said.getvalue().count("\n"), 1)
+        self.assertIn("bx_b", said.getvalue())
+        self.assertNotIn("bx_a", said.getvalue())
+
+    def test_refresh_extends_only_once_half_the_ttl_is_spent_and_remembers_a_full_success(self):
+        self.registered(**{"machine-1": dict(id="bx_a", state="running")})
+        self.provider.refresh()
+        self.assertEqual(self.calls, [])
+        self.provider.record(lambda record: record.update(extended=int(time.time()) - boat.TTL // 2 - 1))
+        self.provider.refresh()
+        self.provider.refresh()
+        self.assertEqual(self.calls, [["extend", "bx_a", "--ttl", boat.TTL]])
+        self.provider.record(lambda record: record.update(extended=0))
+        self.answers[("extend", "bx_a")] = result(1, {"event": "error", "code": "internal", "status": 500})
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.provider.refresh()
+            self.provider.refresh()
+        self.assertEqual(len(self.calls), 3)
+
     def test_a_sandbox_on_a_peers_node_is_refused(self):
         self.registered(**{"machine-1": dict(id="bx_a", state="running", ip="2001:41d0:1004:4161:100::33"),
                            "machine-2": dict(id="bx_b", state="running")})
@@ -325,6 +354,318 @@ class Registry(unittest.TestCase):
         apart = dict(ip="2001:41d0:1004:389e:100::40", sshEndpoint="213.32.24.158:19040")
         self.assertTrue(self.provider.place("machine-2", apart))
         self.assertEqual(self.provider.record()["sandboxes"]["machine-2"]["ssh"], "213.32.24.158:19040")
+
+
+def parked(sandbox, node, image="bake-a", at=0):
+    return dict(id=sandbox, image=image, ip=f"2001:db8:0:{node}::1", ssh=f"203.0.113.{node}:22", parked_at=at)
+
+
+class Pool(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        for name, value in [("REGISTRY", Path(directory.name)), ("POOL", Path(directory.name) / boat.POOL.name),
+                            ("BAKES", Path(directory.name) / boat.BAKES.name)]:
+            self.addCleanup(setattr, boat, name, getattr(boat, name))
+            setattr(boat, name, value)
+
+    def provider(self, *machines):
+        self.calls = []
+
+        def fake(args, check=True, **kwargs):
+            self.calls.append(args[2:-1])
+            return result(0, {})
+        run = dict(id="run1", manifest=str(boat.REGISTRY / "cluster.json"), image="bake-a",
+                   machines=[dict(name=name) for name in machines])
+        return boat.Provider(run, fake, Path("."))
+
+    def locked(self):
+        """Whether some open file holds pool.lock now."""
+        with (boat.REGISTRY / "pool.lock").open("a") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return True
+            fcntl.flock(lock, fcntl.LOCK_UN)
+            return False
+
+    def test_a_claim_reads_who_owns_a_sandbox_under_the_pool_lock(self):
+        held = []
+        with unittest.mock.patch.object(boat, "registered", lambda: held.append(self.locked()) or set()), \
+                unittest.mock.patch.object(boat, "boat_json", lambda *args: dict(sandboxes=[])):
+            self.provider().create()
+        self.assertEqual(held, [True])
+
+    def test_fingerprint_ignores_hold_names_and_order_but_not_a_leftover(self):
+        fresh = boat.fingerprint("== containers\nhold-1|alpine:3.20|running|1\nzed|redis|running|\n== volumes\n== zpools\n")
+        reset = boat.fingerprint("== containers\nzed|redis|running|\nhold-9|alpine:3.20|running|1\n== volumes\n\n== zpools\n")
+        self.assertEqual(boat.differences(fresh, reset), [])
+        dirty = boat.fingerprint("== containers\nhold-9|alpine:3.20|running|1\nzed|redis|running|\nweb|nginx|exited|\n"
+                                 "== volumes\nlocal data\n== zpools\n")
+        self.assertEqual(boat.differences(fresh, dirty), ["containers (-[] +['web|nginx|exited|'])", "volumes (-[] +['local data'])"])
+        self.assertIn("ssh (-[] +['exit 255'])", boat.differences(fresh, {**fresh, "ssh": ["exit 255"]}))
+
+    def test_listeners_compare_across_clones_but_not_a_new_port(self):
+        fresh = boat.fingerprint('== listening\nudp 0.0.0.0:57550 \nudp [::]:33831 users:(("avahi-daemon",pid=834,fd=15))\n'
+                                 'tcp 0.0.0.0:22 users:(("sshd",pid=19,fd=3),("systemd",pid=1,fd=313))\n'
+                                 'udp 192.168.122.49%enp7s0:68 users:(("systemd-network",pid=728,fd=23))\n')
+        clone = ('== listening\ntcp 0.0.0.0:22 users:(("systemd",pid=1,fd=40),("sshd",pid=7,fd=3))\n'
+                 'udp [::]:45818 users:(("avahi-daemon",pid=901,fd=15))\nudp 0.0.0.0:40543 \n'
+                 'udp 192.168.122.47%enp7s0:68 users:(("systemd-network",pid=700,fd=23))\n')
+        self.assertEqual(boat.differences(fresh, boat.fingerprint(clone)), [])
+        leftover = boat.fingerprint(clone + 'udp 0.0.0.0:51820 \ntcp [::]:7574 users:(("ployzd",pid=5,fd=13))\n')
+        self.assertEqual(boat.differences(fresh, leftover),
+                         ["listening (-[] +['tcp [::]:7574 ployzd', 'udp 0.0.0.0:ephemeral'])"])
+        renamed = boat.fingerprint(clone.replace('("systemd",pid=1,fd=40),', ''))
+        self.assertEqual(boat.differences(fresh, renamed), ["listening (-['tcp 0.0.0.0:22 sshd systemd'] +['tcp 0.0.0.0:22 sshd'])"])
+
+    def test_a_run_claims_its_own_bake_newest_first_one_per_node_up_to_its_size(self):
+        entries = [parked("bx_old", 1, at=1), parked("bx_new", 1, at=3), parked("bx_two", 2, at=2), parked("bx_three", 3, at=0),
+                   parked("bx_other", 4, image="bake-b", at=9)]
+        self.assertEqual([entry["id"] for entry in boat.pick(entries, "bake-a", 2)], ["bx_new", "bx_two"])
+        self.assertEqual([entry["id"] for entry in boat.pick(entries, "bake-a", 5)], ["bx_new", "bx_two", "bx_three"])
+
+    def listing(self, **states):
+        return lambda *args: dict(sandboxes=[dict(id=sandbox, state=state) for sandbox, state in states.items()])
+
+    def test_a_claim_deletes_stale_entries_of_any_bake_and_keeps_a_sibling_bakes_live_ones(self):
+        boat.write(boat.BAKES, ["bake-a", "bake-b"])
+        boat.write(boat.POOL, [parked("bx_gone", 1), parked("bx_stopped", 2), parked("bx_old", 3, image="bake-c"),
+                               parked("bx_sibling", 4, image="bake-b"), parked("bx_held", 5)])
+        boat.write(boat.registry("run9"), dict(run="run9", image="bake-a", sandboxes={"m": dict(id="bx_held", state="running")}))
+        listing = self.listing(bx_stopped="stopped", bx_old="ready", bx_sibling="ready", bx_held="ready")
+        with unittest.mock.patch.object(boat, "boat_json", listing):
+            provider = self.provider()
+            provider.create()
+        self.assertEqual([entry["id"] for entry in boat.read(boat.POOL)], ["bx_sibling"])
+        self.assertEqual(sorted(self.calls), [["delete", sandbox, "--yes"] for sandbox in ["bx_gone", "bx_old", "bx_stopped"]])
+
+    def test_a_claim_budgets_the_starts_its_discarded_candidates_need(self):
+        boat.write(boat.BAKES, ["bake-a"])
+        boat.write(boat.POOL, [parked("bx_a", 1)])
+        limits = dict(maxActiveSandboxes=100, activeSandboxes=1, starts=dict(
+            minute=dict(remaining=2), hour=dict(remaining=60), day=dict(remaining=200), unlimited=False))
+        answers = dict(list=dict(sandboxes=[dict(id="bx_a", state="ready")]), limits=limits)
+        with unittest.mock.patch.object(boat, "boat_json", lambda *args: answers[args[0]]), \
+                contextlib.redirect_stderr(io.StringIO()) as said:
+            # No fingerprint of bake-a exists, so the candidate fails its proof.
+            with self.assertRaisesRegex(RuntimeError, "Starts this minute: need up to 3, 2 left"):
+                self.provider("machine-1", "machine-2", "machine-3").create()
+        self.assertIn("no fingerprint of this bake", said.getvalue())
+
+    def test_a_new_fingerprint_script_or_reading_never_meets_an_old_fingerprint(self):
+        saved = boat.fingerprints("bake-a")
+        self.assertNotEqual(boat.fingerprints("bake-b"), saved)
+        with unittest.mock.patch.object(boat, "FINGERPRINT", boat.FINGERPRINT + "section extra; true\n"):
+            self.assertNotEqual(boat.fingerprints("bake-a"), saved)
+        with unittest.mock.patch.object(boat, "NORMALIZE", boat.NORMALIZE + 1):
+            self.assertNotEqual(boat.fingerprints("bake-a"), saved)
+        self.assertEqual(boat.fingerprints("bake-a"), saved)
+
+    def test_park_counts_only_its_own_bake_toward_the_pool_size(self):
+        boat.write(boat.BAKES, ["bake-a", "bake-b"])
+        limits = dict(maxActiveSandboxes=100, activeSandboxes=0, starts=dict(unlimited=True))
+        listing = self.listing(bx_b1="ready", bx_b2="ready", bx_new="ready")
+        with unittest.mock.patch.object(boat, "boat_json", lambda *args: limits if args[0] == "limits" else listing()), unittest.mock.patch.object(boat, "POOL_SIZE", 2):
+            provider = self.provider("machine-1")
+            provider.create()
+            boat.write(boat.POOL, [parked("bx_b1", 1, image="bake-b"), parked("bx_b2", 2, image="bake-b"), parked("bx_gone", 3)])
+            provider.mark("machine-1", id="bx_new", state="running", ip="2001:db8:0:9::1", ssh="203.0.113.9:22")
+            boat.write(boat.fingerprints("bake-a"), {"containers": []})
+            provider.reboot = lambda node: None
+            provider.fingerprint = lambda node: {"containers": []}
+            provider.park("machine-1")
+        self.assertEqual([entry["id"] for entry in boat.read(boat.POOL)], ["bx_b1", "bx_b2", "bx_new"])
+        self.assertIn(["delete", "bx_gone", "--yes"], self.calls)
+        self.assertEqual(provider.record()["sandboxes"]["machine-1"]["state"], "parked")
+
+    def test_the_ledger_keeps_what_one_lock_saves_and_is_no_run_record(self):
+        with boat.pool() as entries:
+            entries.append(parked("bx_a", 1, at=5))
+        with boat.pool() as entries:
+            self.assertEqual(entries, [parked("bx_a", 1, at=5)])
+            entries.clear()
+        self.assertEqual(boat.read(boat.POOL), [])
+        with boat.pool() as entries:
+            entries.append(parked("bx_b", 2))
+        self.assertEqual(list(boat.REGISTRY.glob("*.json")), [])
+        self.assertEqual(boat.pooled(), {"bake-a": 1})
+        self.assertEqual(boat.images_in_use(), {"bake-a"})
+
+    def test_preflight_budgets_only_the_machines_the_pool_cannot_cover(self):
+        boat.write(boat.BAKES, ["bake-a", "bake-b"])
+        boat.write(boat.POOL, [parked("bx_a", 1), parked("bx_b", 2), parked("bx_c", 2), parked("bx_d", 3, image="bake-b")])
+        answers = dict(list=dict(sandboxes=[dict(id=sandbox, state="ready") for sandbox in ["bx_a", "bx_b", "bx_c", "bx_d"]]),
+                       limits=dict(maxActiveSandboxes=100, activeSandboxes=0, starts=dict(
+                           minute=dict(remaining=1), hour=dict(remaining=60), day=dict(remaining=200), unlimited=False)))
+        with unittest.mock.patch.object(boat, "boat_json", lambda *args: answers[args[0]]), \
+                unittest.mock.patch.object(boat, "corrosion_image", lambda core: "corrosion"), \
+                unittest.mock.patch.object(boat, "bake_name", lambda corrosion: "bake-a"):
+            boat.preflight(3, Path("."))
+            with self.assertRaisesRegex(RuntimeError, "Starts this minute: need up to 2, 1 left"):
+                boat.preflight(4, Path("."))
+            with unittest.mock.patch.object(boat, "POOL_SIZE", 0), self.assertRaisesRegex(RuntimeError, "need up to 3, 1 left"):
+                boat.preflight(3, Path("."))
+
+    def test_reap_takes_stopped_gone_and_retired_bakes_and_all_under_force(self):
+        entries = [parked("bx_up", 1), parked("bx_stopped", 2), parked("bx_gone", 3), parked("bx_old", 4, image="bake-c"),
+                   parked("bx_sibling", 5, image="bake-b")]
+        states = {"bx_up": "ready", "bx_stopped": "stopped", "bx_old": "idle", "bx_sibling": "idle"}
+        found = [(entry["id"], reason) for entry, reason in boat.stale(entries, states, {"bake-a", "bake-b"})]
+        self.assertEqual(found, [("bx_stopped", "stopped"), ("bx_gone", "gone"), ("bx_old", "retired bake")])
+        found = [entry["id"] for entry, reason in boat.stale(entries, states, {"bake-a", "bake-b"}, True)]
+        self.assertEqual(found, ["bx_up", "bx_stopped", "bx_gone", "bx_old", "bx_sibling"])
+
+    def test_a_bake_the_ledger_or_any_run_still_uses_is_kept(self):
+        boat.write(boat.BAKES, ["bake-a", "bake-b"])
+        boat.write(boat.registry("run9"), dict(run="run9", image="bake-z", sandboxes={}))
+        self.assertEqual(boat.kept_bakes(), {"bake-a", "bake-b", "bake-z"})
+
+    def test_reap_reads_sandbox_states_under_the_pool_lock_and_keeps_a_sibling_bake(self):
+        boat.write(boat.BAKES, ["bake-a", "bake-b"])
+        boat.write(boat.POOL, [parked("bx_a", 1), parked("bx_b", 2, image="bake-b"), parked("bx_c", 3, image="bake-c")])
+        held = []
+
+        def listing(*args):
+            held.append(self.locked())
+            return dict(sandboxes=[dict(id=sandbox, state="ready") for sandbox in ["bx_a", "bx_b", "bx_c"]])
+        with unittest.mock.patch.object(boat, "boat_json", listing):
+            rows = boat.reap_pool(False, False)
+        self.assertEqual(held, [True])
+        self.assertEqual([(row["id"], row["reason"]) for row in rows], [("bx_c", "retired bake")])
+
+# Docker as far as the image reset reaches it, backed by a JSON file of tags, image ids and build cache entries.
+FAKE_DOCKER = r"""#!/usr/bin/env python3
+import json, os, sys
+path = os.environ["FAKE_DOCKER_STATE"]
+state = json.load(open(path))
+tags, ids, args = state["tags"], state["ids"], sys.argv[1:]
+def drop(image):
+    for tag in [t for t, i in tags.items() if i == image]:
+        del tags[tag]
+    ids.remove(image)
+if args[:2] == ["image", "ls"] and "-q" in args:
+    print("\n".join(ids))
+elif args[:2] == ["image", "ls"]:
+    print("\n".join([f"{t} {i}" for t, i in tags.items()] + [f"<none>:<none> {i}" for i in ids if i not in tags.values()]))
+elif args[0] == "tag":
+    assert args[1] in ids, f"no image {args[1]}"
+    tags[args[2]] = args[1]
+elif args[:2] == ["rmi", "-f"]:
+    for name in args[2:]:
+        if name in tags:
+            image = tags.pop(name)
+            if image not in tags.values():
+                ids.remove(image)
+        elif name in ids:
+            drop(name)
+        else:
+            sys.exit(f"no such image {name}")
+elif args[:3] == ["builder", "prune", "-af"]:
+    state["cache"] = 0
+else:
+    sys.exit(f"unexpected docker {args}")
+json.dump(state, open(path, "w"))
+"""
+
+
+class Reset(unittest.TestCase):
+    """The stash and restore shell, run against a scratch tree that stands in for the guest's /."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root, self.stash = Path(directory.name, "guest"), Path(directory.name, "bake.tar")
+        files = {"usr/local/bin/ployz": "bake ployz", "usr/bin/runc": "bake runc", "usr/bin/runcon": "runcon",
+                 "etc/systemd/system/ployz.service": "unit", "var/lib/ployz/state": "bake state", "run/keep": "",
+                 "opt/keep": "", "root/.ssh/authorized_keys": "key", "root/notes": "bake", "srv/keep": "",
+                 "var/tmp/cloud-init/keep": ""}
+        for name, content in files.items():
+            Path(self.root, name).parent.mkdir(parents=True, exist_ok=True)
+            Path(self.root, name).write_text(content)
+
+    def sh(self, script, *args):
+        script = script.replace("cd /", f"cd {self.root}").replace(boat.STASH, str(self.stash))
+        subprocess.run(["bash", "-ec", script, "sh", *args], cwd=self.root, check=True, capture_output=True)
+
+    def tree(self):
+        return {str(path.relative_to(self.root)): path.read_text() if path.is_file() else "/" for path in self.root.rglob("*")}
+
+    def write(self, name, content=""):
+        Path(self.root, name).parent.mkdir(parents=True, exist_ok=True)
+        Path(self.root, name).write_text(content)
+
+    def test_restore_puts_back_the_bakes_runc_and_install_and_drops_a_wrapper_and_its_original(self):
+        self.sh(boat.KEEP_INSTALL)
+        bake = self.tree()
+        self.write("usr/local/bin/ployz", "run ployz")
+        Path(self.root, "usr/bin/runc").rename(Path(self.root, "usr/bin/runc.slow-original"))
+        self.write("usr/bin/runc", "wrapper")
+        self.write("usr/bin/runc.fast-wrapper", "wrapper")
+        self.write("var/lib/ployz/run-state", "run")
+        self.write("opt/ployz-verify/bin", "run")
+        self.sh("stash=$1\n" + boat.RESTORE, self.stash)
+        self.assertEqual(self.tree(), bake)
+
+    def test_restore_drops_scratch_a_run_left_and_keeps_live_agent_and_systemd_state(self):
+        self.write("var/tmp/ariana/db", "agent")
+        self.sh(boat.KEEP_INSTALL)
+        self.write("etc/default/ployz", "PLOYZ_FLAG=1")
+        self.write("root/.cache/ployz/deep/file", "run")
+        self.write("root/notes", "edited")
+        self.write("srv/data", "run")
+        self.write("var/tmp/cloud-init/run-file", "run")
+        self.write("var/tmp/a name with\nnewline", "run")
+        survivors = {"var/tmp/ariana/db-wal": "agent", "var/tmp/systemd-private-abc/tmp/x": "boot"}
+        for name, content in survivors.items():
+            self.write(name, content)
+        expected = self.tree()
+        for name in ["etc/default/ployz", "root/.cache", "root/.cache/ployz", "root/.cache/ployz/deep",
+                     "root/.cache/ployz/deep/file", "srv/data", "var/tmp/cloud-init/run-file", "var/tmp/a name with\nnewline"]:
+            del expected[name]
+        self.sh("stash=$1\n" + boat.RESTORE, self.stash)
+        # Reset keeps a bake file's path; it only proves the path list, and the fingerprint lists paths, not contents.
+        self.assertEqual(self.tree(), expected)
+
+    def test_image_reset_puts_back_moved_tags_drops_new_images_and_tags_and_empties_the_build_cache(self):
+        bin_dir, state = Path(self.root.parent, "bin"), Path(self.root.parent, "docker.json")
+        bin_dir.mkdir()
+        Path(bin_dir, "docker").write_text(FAKE_DOCKER)
+        Path(bin_dir, "docker").chmod(0o755)
+        bake = {"tags": {"ployz/agent:v1": "sha256:aaa", "busybox:latest": "sha256:bbb"},
+                "ids": ["sha256:aaa", "sha256:bbb", "sha256:ccc"], "cache": 0}
+        state.write_text(json.dumps(bake))
+        env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "FAKE_DOCKER_STATE": str(state)}
+        run = lambda script: subprocess.run(["bash", "-ec", script, "sh", str(self.stash)], env=env, check=True,
+                                            capture_output=True, text=True)
+        run(f"{boat.IMAGE_TAGS} > \"$1.tags\"")
+        # A run rebuilt the agent under the bake's tag, tagged the bake's old image anew, pulled one more and built.
+        state.write_text(json.dumps({"tags": {"ployz/agent:v1": "sha256:ddd", "local/agent:old": "sha256:aaa",
+                                              "busybox:latest": "sha256:bbb", "nginx:latest": "sha256:eee"},
+                                     "ids": ["sha256:aaa", "sha256:bbb", "sha256:ccc", "sha256:ddd", "sha256:eee"],
+                                     "cache": 7}))
+        run("stash=$1\n" + boat.IMAGE_RESET)
+        self.assertEqual(json.loads(state.read_text()), bake)
+
+    def test_journal_reset_drops_the_runs_archives_and_other_machines_and_keeps_the_open_journal(self):
+        bin_dir = Path(self.root.parent, "bin")
+        bin_dir.mkdir()
+        # journalctl --rotate archives each open file under a name with an @ and opens a fresh one.
+        Path(bin_dir, "journalctl").write_text("#!/bin/sh\n[ \"$1\" = --rotate ] || exit 1\n"
+                                               "for f in var/log/journal/*/*.journal; do case $f in *@*) ;; *)\n"
+                                               "mv \"$f\" \"${f%.journal}@0001.journal\"; : > \"$f\" ;; esac; done\n")
+        Path(bin_dir, "journalctl").chmod(0o755)
+        self.write("etc/machine-id", "abc\n")
+        self.write("var/log/journal/abc/system.journal", "run")
+        self.write("var/log/journal/abc/system@0000.journal", "older run")
+        self.write("var/log/journal/abc/user-1000@0000.journal~", "torn")
+        self.write("var/log/journal/old/system.journal", "bake's builder")
+        env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"}
+        subprocess.run(["bash", "-ec", boat.JOURNAL_RESET], cwd=self.root, env=env, check=True, capture_output=True)
+        journal = {name: content for name, content in self.tree().items() if name.startswith("var/log/journal")}
+        self.assertEqual(journal, {"var/log/journal": "/", "var/log/journal/abc": "/", "var/log/journal/abc/system.journal": ""})
+        # Reset runs it after RESTORE, from /.
+        self.assertGreater(boat.RESET.find(boat.JOURNAL_RESET), boat.RESET.find("cd /\n" + boat.RESTORE))
 
 
 if __name__ == "__main__":
