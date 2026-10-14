@@ -132,7 +132,13 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
   if (input.kind === "restore") return planRestore(name, input.args, answered);
   if (roots.length > 1) {
     const old = oldCopy(roots);
-    if (old === null && withRole("writer").length < 2) return midRun();
+    if (old === null && withRole("writer").length < 2) {
+      const servers = roots.map((member) => member.machine.name).join(" and ");
+      return refuse(
+        "volume_switching",
+        `${name} has unfinished cuts on ${servers}, so release cannot pick a writer; server rm all but one, then ployz volume restore ${name} --from the one left`,
+      );
+    }
     if (old === null) return refuse("two_writers", `${name} has two writers, ${roots.map(named).join(" and ")}`);
     return { ok: true, phase: { kind: "demote", ...old } };
   }
