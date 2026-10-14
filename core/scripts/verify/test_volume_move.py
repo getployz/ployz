@@ -1716,6 +1716,15 @@ class VolumeMoveTests(unittest.TestCase):
         result, _ = self.run_with("soak-1-rounds-runner-kill", self.close_an_earlier_run, 5, late_pull)
         self.assertIn("the trigger never fired before the run ended", result["failures"], result)
 
+    def test_a_pull_the_first_run_admitted_with_no_receive_running_is_not_credited(self):
+        # The plugin sets `ployz:pull` when it admits the round pull, before the receive spawns, and keeps it after
+        # the receive ends; only a running receive puts the kill inside it.
+        def admitted(begun):
+            model = self.model
+            model.at(begun + 1, lambda: model.pull_targets.update({"machine-2": "w-1-0"}))
+        result, _ = self.run_with("soak-1-rounds-runner-kill", lambda model: setattr(self, "model", model), 5, admitted)
+        self.assertIn("the trigger never fired before the run ended", result["failures"], result)
+
     def test_a_cut_an_earlier_move_left_waiting_in_the_daemon_is_not_credited_to_the_first_run(self):
         # Codex r4's detached cut: the cut waits for the admission turn and stops the writer after the clean start.
         def waiting(model):
