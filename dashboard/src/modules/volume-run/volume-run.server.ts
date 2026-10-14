@@ -15,7 +15,7 @@ import type {
   VolumeSwitchRequest,
   WantedCopy,
 } from "@ployz/sdk";
-import { and, desc, eq, inArray, isNull, lt, max, or, type SQL, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, lt, max, or, type SQL, sql } from "drizzle-orm";
 import { Data, Effect, Option, Schema } from "effect";
 import { NonRetriableError } from "inngest";
 import type { OperationAsked } from "#/modules/approvals/approvals.server";
@@ -133,8 +133,9 @@ const KIND_WORDS = {
 } satisfies Record<VolumeRunKind, string>;
 
 // A Machine may already be destroying the copy, and no floor retracts that, so a release cannot promise to stop it.
-export const volumeBusyMessage = (lane: Pick<VolumeRunRow, "kind" | "volumeName">) =>
-  `VolumeBusy: ${lane.volumeName} is busy with a ${KIND_WORDS[lane.kind]}; ${lane.kind === "delete_mirror" ? "it finishes on its own" : `ployz volume release ${lane.volumeName} stops it`}`;
+const busyWith = (lane: Pick<VolumeRunRow, "kind" | "volumeName">) =>
+  `${lane.volumeName} is busy with a ${KIND_WORDS[lane.kind]}; ${lane.kind === "delete_mirror" ? "it finishes on its own" : `ployz volume release ${lane.volumeName} stops it`}`;
+export const volumeBusyMessage = (lane: Pick<VolumeRunRow, "kind" | "volumeName">) => `VolumeBusy: ${busyWith(lane)}`;
 
 export const finishesThere = (volumeName: string, server: string) => `${volumeName} is starting on ${server}; it finishes there`;
 
@@ -142,9 +143,10 @@ export const finishesThere = (volumeName: string, server: string) => `${volumeNa
 export const pastReturn = (lane: Pick<VolumeRunRow, "phase" | "kind">) => lane.phase === "committed" || lane.kind === "restore";
 type LaneEnd = "cancelled" | "yielded";
 // A seed's copy into the new Volume runs on without its row, and a Machine destroying a mirror's copy runs on without
-// its removal's, so a release could only stop watching them.
-const keepsLane = (lane: VolumeRunRow, end: LaneEnd) =>
-  pastReturn(lane) || ((lane.kind === "deploy" || lane.kind === "seed" || lane.kind === "delete_mirror") && end === "cancelled");
+// its removal's, so a release could only stop watching them. A Deploy's Services run on its lane, or beside a lane it
+// holds, so only a Deploy takes either.
+const keepsLane = (lane: VolumeRunRow, end: LaneEnd, kind: VolumeRunKind) =>
+  pastReturn(lane) || (deploying(lane) && kind !== "deploy") || ((lane.kind === "seed" || lane.kind === "delete_mirror") && end === "cancelled");
 
 // SAFETY: the row's kind and args were written together from one VolumeRunInput.
 const laneInput = (lane: Pick<VolumeRunRow, "kind" | "args">) => ({ kind: lane.kind, args: lane.args }) as VolumeRunInput;
@@ -171,23 +173,21 @@ const activeLane = Effect.fn("VolumeRun.activeLane")(function* (volumeId: string
   return lane;
 });
 
+const deploying = (lane: Pick<VolumeRunRow, "kind" | "heldBy">) => lane.kind === "deploy" || lane.heldBy !== null;
+
 const laneRefusal = Effect.fn("VolumeRun.laneRefusal")(function* (lane: VolumeRunRow, kind: VolumeRunKind) {
   const run = volumeRunView(lane);
-  if (lane.kind === "deploy") return { code: "conflict", message: `${lane.volumeName} is deploying; the Deploy ends its run`, details: { run } } satisfies StoreRefusal;
+  if (deploying(lane)) return { code: "conflict", message: `${lane.volumeName} is deploying; the Deploy ends its run`, details: { run } } satisfies StoreRefusal;
+  const refuse = (message: string, details: JsonValue = { run }) =>
+    ({ code: "conflict", message: kind === "release" ? message : `VolumeBusy: ${message}`, details }) satisfies StoreRefusal;
   const input = laneInput(lane);
-  if (input.kind === "seed") {
-    const copying = `${lane.volumeName} is being copied into ${input.args.into.name}; it finishes on its own`;
-    return { code: "conflict", message: kind === "release" ? copying : `VolumeBusy: ${copying}`, details: { run } } satisfies StoreRefusal;
-  }
-  if (!pastReturn(lane)) return { code: "conflict", message: volumeBusyMessage(lane), details: { run } } satisfies StoreRefusal;
+  if (input.kind === "seed") return refuse(`${lane.volumeName} is being copied into ${input.args.into.name}; it finishes on its own`);
+  if (!pastReturn(lane)) return refuse(busyWith(lane));
   const target = yield* laneTarget(lane);
   const finishes = finishesThere(lane.volumeName, target ?? "its new Server");
-  if (kind === "release") {
-    // A restore's target is the copy it restores from, not a move's destination.
-    const details: JsonValue = target === null || lane.kind === "restore" ? { run } : { run, move_to: target };
-    return { code: "conflict", message: finishes, details } satisfies StoreRefusal;
-  }
-  return { code: "conflict", message: `VolumeBusy: ${finishes}`, details: { run } } satisfies StoreRefusal;
+  // A restore's target is the copy it restores from, not a move's destination.
+  if (kind === "release" && target !== null && lane.kind !== "restore") return refuse(finishes, { run, move_to: target });
+  return refuse(finishes);
 });
 
 const enqueueRun = (row: VolumeRunRow, took?: VolumeRunKind) =>
@@ -339,7 +339,7 @@ export const planVolumeRun = Effect.fn("VolumeRun.plan")(function* (
     if (refusal !== null) return { ok: false, refusal } satisfies VolumeRunPlan;
   }
   const lane = yield* activeLane(input.volumeId);
-  if (lane !== undefined && (input.kind !== "release" || keepsLane(lane, "cancelled"))) {
+  if (lane !== undefined && (input.kind !== "release" || keepsLane(lane, "cancelled", "release"))) {
     return { ok: false, refusal: yield* laneRefusal(lane, input.kind) } satisfies VolumeRunPlan;
   }
   const members = yield* observeVolumeMembers(organizationId, volume.dockerVolume, input).pipe(Effect.option);
@@ -381,6 +381,8 @@ export type RequestOptions = {
   readonly id?: string;
   /** `yielded` takes over a warm lane as a Deploy or a staged placement does; a release always cancels. */
   readonly end?: "yielded";
+  /** The kind of a fenced run this one replaces: it fences before it plans even when it takes over no lane. */
+  readonly fences?: VolumeRunKind;
 };
 
 export const requestVolumeRun = Effect.fn("VolumeRun.request")(function* (
@@ -394,7 +396,7 @@ export const requestVolumeRun = Effect.fn("VolumeRun.request")(function* (
     const refusal = yield* seedLandingRefusal(caller.organizationId, input.environment, input.volumeId, input.args.into.volumeId);
     if (refusal !== null) return { ok: false, refusal, busy: null } as const;
   }
-  return yield* database.transaction(insertRun(caller, input, volume, options.id ?? crypto.randomUUID(), options.end ?? endOf(input.kind)));
+  return yield* database.transaction(insertRun(caller, input, volume, options.id ?? crypto.randomUUID(), options.end ?? endOf(input.kind), options.fences));
 });
 
 export type LaneTaker = {
@@ -403,6 +405,7 @@ export type LaneTaker = {
   readonly id: string;
   /** The one lane this taker may end; finding another, or none, leaves the Volume alone. */
   readonly lane?: string;
+  readonly fences?: VolumeRunKind;
 };
 
 export type LaneTake = { readonly run: VolumeRunView; readonly ended: VolumeRunView | null };
@@ -429,14 +432,14 @@ const TAKE_ROUNDS = 3;
  * insert; the next round reads it under the lock and takes it over too. A lane that ended before the read leaves the
  * Volume free, so any taker inserts again.
  */
-const takeLane = Effect.fn("VolumeRun.takeLane")(function* (caller: Caller, { input, volume, id, lane: only }: LaneTaker, end: LaneEnd | null, inngestRunId: string | null = null) {
+const takeLane = Effect.fn("VolumeRun.takeLane")(function* (caller: Caller, { input, volume, id, lane: only, fences }: LaneTaker, end: LaneEnd | null, inngestRunId: string | null = null) {
   const { drizzle } = yield* Database;
   for (let round = 1; ; round++) {
     const lane = end === null ? undefined : yield* activeLane(input.volumeId, true);
     if (only !== undefined && lane?.id !== only) return yield* new LaneMoved({ active: lane });
     let taken: VolumeRunRow | undefined;
     if (lane !== undefined && end !== null) {
-      if (keepsLane(lane, end)) return yield* new LaneRefused({ refusal: yield* laneRefusal(lane, input.kind), busy: volumeRunView(lane) });
+      if (keepsLane(lane, end, input.kind)) return yield* new LaneRefused({ refusal: yield* laneRefusal(lane, input.kind), busy: volumeRunView(lane) });
       [taken] = yield* drizzle.update(volumeRun).set(ended(end, TAKEN_BY[end]))
         .where(and(eq(volumeRun.id, lane.id), inArray(volumeRun.state, ACTIVE_VOLUME_RUN_STATES), eq(volumeRun.phase, "warm")))
         .returning();
@@ -456,8 +459,14 @@ const takeLane = Effect.fn("VolumeRun.takeLane")(function* (caller: Caller, { in
       requestedByUserId: caller.userId,
     }).onConflictDoNothing().returning();
     if (inserted !== undefined) {
+      // Read after the insert, not before: the insert waited out any lane still active, so a stamped lane that ended
+      // between a read and the insert is seen here.
+      const [held] = input.kind === "deploy" ? [] : yield* drizzle.select().from(volumeRun)
+        .where(and(eq(volumeRun.volumeId, input.volumeId), isNotNull(volumeRun.heldBy)))
+        .limit(1);
+      if (held !== undefined) return yield* new LaneRefused({ refusal: yield* laneRefusal(held, input.kind), busy: volumeRunView(held) });
       // A release floors and plans on its own; only a yielding run fences the lane it took before it plans.
-      if (inngestRunId === null) yield* enqueueRun(inserted, end === "yielded" ? taken?.kind : undefined);
+      if (inngestRunId === null) yield* enqueueRun(inserted, end === "yielded" ? taken?.kind ?? fences : undefined);
       if (taken !== undefined) yield* enqueueEvent(createVolumeRunTakenEvent({ runId: taken.id }));
       return { run: volumeRunView(inserted), ended: taken === undefined ? null : volumeRunView(taken) } satisfies LaneTake;
     }
@@ -473,10 +482,11 @@ const refused = (error: LaneRefused) => Effect.succeed({ ok: false, refusal: err
 
 export const insertRun = Effect.fn("VolumeRun.insert")(function* (
   caller: Caller, input: { readonly volumeId: string } & VolumeRunInput, volume: ResolvedVolume, id: string, end: LaneEnd | null = endOf(input.kind),
+  fences?: VolumeRunKind,
 ) {
   const database = yield* Database;
-  const taken = yield* database.transaction(takeLane(caller, { input, volume, id }, end)).pipe(Effect.catchTag("LaneRefused", refused));
-  return "ok" in taken ? taken : { ok: true, run: taken.run } as const;
+  const taken = yield* database.transaction(takeLane(caller, { input, volume, id, fences }, end)).pipe(Effect.catchTag("LaneRefused", refused));
+  return "ok" in taken ? taken : { ok: true, run: taken.run, took: taken.ended !== null } as const;
 });
 
 /** A Deploy's own lane, running under `inngestRunId` from the start; a warm lane found there yields to it. */
@@ -487,6 +497,16 @@ export const takeDeployLane = Effect.fn("VolumeRun.takeDeployLane")(function* (c
   const row = yield* readRow(taker.id);
   if (row === undefined) return yield* Effect.fail(new Error(`volume run ${taker.id} vanished after its insert`));
   return { run: contextOf(row), ended };
+});
+
+/**
+ * A Deploy's hold on a Volume no run holds, so nothing starts beside its Services. It takes nothing, so a lane that
+ * landed since the Deploy's read fails the step, and the retry places over that lane.
+ */
+export const holdDeployLane = Effect.fn("VolumeRun.holdDeployLane")(function* (caller: Caller, taker: LaneTaker, inngestRunId: string) {
+  yield* takeLane(caller, taker, null, inngestRunId).pipe(
+    Effect.catchTag("LaneRefused", ({ refusal }) => Effect.fail(new Error(refusal.message))),
+  );
 });
 
 /** The Machines the Cluster names now; none when it does not answer. */
@@ -978,6 +998,7 @@ const isDestination = (run: VolumeLaneInput, machine: MachineRef) =>
 
 /**
  * Each managed Server's copy of `dockerVolume`; a Server that doesn't answer in time is a member that didn't answer.
+ * So is one the frame lists only by id: it is still in the cluster, so a mirror on it is not gone.
  * For a run, a Server that holds a copy or receives one and lacks the generation floor is a member that lacks it.
  */
 export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(function* (organizationId: string, dockerVolume: string, run?: VolumeLaneInput) {
@@ -985,7 +1006,8 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
   const frame = yield* session.watchFirstFrame(5_000);
   // A Docker-only Machine holds no copy and may not serve the verb, so it must not block the run.
   const managed = frame.machines.filter((observed) => observed.storage?.state !== "stateless");
-  return yield* Effect.forEach(managed, ({ machine }) => {
+  const unlisted = frame.incomplete_ids.machines.map((id): Member => ({ machine: { id, name: id }, answered: false }));
+  const listed = yield* Effect.forEach(managed, ({ machine }) => {
     const ref: MachineRef = { id: machine.id, name: machine.name };
     const server = { name: machine.name, daemonVersion: machine.runtime.daemon_version };
     const lacks = (capability: string) => lackSentence(organizationId, capability, server, run?.kind).pipe(
@@ -1000,12 +1022,14 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
           address: managementAddress(machine.public_key),
           answered: true,
           view,
+          floorless,
         })),
       Effect.timeout(OBSERVE_TIMEOUT),
       Effect.catchTag("ServerLacks", (lack) => lacks(lack.capability)),
       Effect.orElseSucceed((): Member => ({ machine: ref, answered: false })),
     );
   }, { concurrency: "unbounded" });
+  return [...listed, ...unlisted];
 }, Effect.scoped);
 
 /** What a run of each kind is called when a Server can't run it. */
@@ -1154,6 +1178,14 @@ export const closeStaleVolumeRuns = <R>(lookup: InngestRunLookup<R>) => Effect.g
     .returning({ id: volumeRun.id });
   const running = yield* drizzle.select({ id: volumeRun.id, inngestRunId: volumeRun.inngestRunId }).from(volumeRun)
     .where(and(eq(volumeRun.state, "running"), lt(volumeRun.updatedAt, new Date(now - VOLUME_RUN_RUNNING_CHECK_MS))));
+  let unheld = 0;
+  const holders = yield* drizzle.selectDistinct({ heldBy: volumeRun.heldBy }).from(volumeRun).where(isNotNull(volumeRun.heldBy));
+  for (const { heldBy } of holders) {
+    if (heldBy === null) continue;
+    const status = yield* lookup(heldBy).pipe(Effect.option);
+    if (Option.isNone(status) || status.value === "running") continue;
+    unheld += (yield* drizzle.update(volumeRun).set({ heldBy: null }).where(eq(volumeRun.heldBy, heldBy)).returning({ id: volumeRun.id })).length;
+  }
   let closed = 0;
   for (const row of running) {
     if (row.inngestRunId === null) continue;
@@ -1162,7 +1194,7 @@ export const closeStaleVolumeRuns = <R>(lookup: InngestRunLookup<R>) => Effect.g
     const [state, message] = STALE_ENDS[status.value];
     closed += yield* endAndRelease(and(eq(volumeRun.id, row.id), eq(volumeRun.inngestRunId, row.inngestRunId)), ended(state, message));
   }
-  return { not_started: unclaimed.length, closed };
+  return { not_started: unclaimed.length, unheld, closed };
 }).pipe(Effect.withSpan("VolumeRun.closeStale"));
 
 /** A staged removal not yet applied still holds its name, so its slot is not an orphan. */

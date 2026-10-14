@@ -74,10 +74,10 @@ deployment's status, like **Deploying** and then **Deployed**, and a link to the
 When it starts a run on a server or volume, like a restart or a mirror, the card shows the run's
 name and its state when Cloud took it, like **Queued · restart web**. Ask the agent how the run
 went to see where it got to.
-A restart goes one server at a time and starts each container again, even when stopping it
-failed. A container counts as back once it passes its healthcheck, like a deploy waits for.
-If a server's containers don't come back, the restart stops there and leaves the other servers
-alone. Stopping or restarting a service also stops its pre-deploy hook containers, and no
+A restart goes one container at a time, across every server, and starts each container again,
+even when stopping it failed. A container counts as back once it passes its healthcheck, like a
+deploy waits for. If a container doesn't come back, the restart stops there and leaves the rest
+untouched. Stopping or restarting a service also stops its pre-deploy hook containers, and no
 restart or start runs them again. Restarting or stopping the same service from here and from the
 CLI at once can leave it either running or stopped.
 

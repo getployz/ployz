@@ -43,6 +43,7 @@ const SPINNER_FILES = {
   "form/index.tsx": "submit in flight",
   "routes/_protected/cloud/$organizationSlug/-components/store-teardown-section.tsx": "removal in flight",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/domain-row.tsx": "Setting up while the Cluster Domain sync runs; Issuing certificate while the certificate is ordered",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceActions.tsx": "a restart, stop or start moving the Service's containers",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/monitoring/MonitoringTab.tsx": "Checking while a requested probe runs",
   "routes/_protected/cloud/$organizationSlug/_org/-components/ClusterDomainSection.tsx": "Setting up while the sync runs; Check again until the sync lands",
   "routes/_protected/cloud/$organizationSlug/_org/-components/PendingEnrollmentResetSection.tsx": "reset in flight",
@@ -86,7 +87,8 @@ const ON_DEMAND_READS = {
   approvalOptions: "named by an agent conversation's interrupt, known only once the chat hydrates",
   serviceMetricsQueryOptions: "asks every Server live, so a slow Server would hold the drawer open; the Monitoring tab waits on it instead",
   serverMetricsQueryOptions: "asks a Server live, so a slow Server would hold the page; each Servers list row reads its own Server after the list shows, and the Resources section waits on it",
-  runtimeServiceMetricsQueryOptions: "asks every Server live, so a slow Server would hold the page; each Running here row waits on its own",
+  latestServiceActQueryOptions: "keyed by the Service's name, which the drawer knows only once it reads the Store; the header shows no run until it answers",
+  runtimeServiceMetricsQueryOptions:"asks every Server live, so a slow Server would hold the page; each Running here row waits on its own",
 };
 
 /** Hook files outside data files that await the server without making UI wait on it. */

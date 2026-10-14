@@ -53,7 +53,7 @@ an owner.
 
 When someone leaves or is removed, they lose the organization at once: its dashboard, their
 organization tokens, and their signed-in CLIs' access to its servers. If they joined by invite and
-open it again, it says they're no longer a member.
+open it again, it says their membership ended.
 
 ## Let Ployz support in
 

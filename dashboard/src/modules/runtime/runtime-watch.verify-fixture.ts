@@ -12,6 +12,7 @@ import {
 const machine = (id: string, name: string, membership: string, daemonVersion: string, capabilities: string[]) =>
   runtimeWatchMachineObservationFixture({
     membership,
+    storage: { state: "pool", size_bytes: 400e9, used_bytes: 120e9, free_bytes: 280e9 },
     machine: runtimeWatchMachineFixture(id, name, {
       runtime: { ...runtimeWatchMachineFixture(id, name).runtime, daemon_version: daemonVersion, capabilities },
     }),

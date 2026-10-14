@@ -20,8 +20,8 @@ import { ToggleGroup, ToggleGroupItem } from "#/components/ui/toggle-group";
 import { cn } from "#/lib/utils";
 import { previewSegments } from "#/modules/config-store/config-references";
 import {
-  configBytesText, configEdits, configFileSizeError, configReferenceValues, EXECUTABLE_MODE, fileAccess, hiddenFile, READ_ONLY_MODE,
-  saveConfigCommand, utf8Bytes, type FileDraft,
+  configBytesText, configEdits, configFileSizeError, configReferenceValues, draftAccess, EXECUTABLE_MODE, executableToggle, fileAccessLabel,
+  hiddenFile, READ_ONLY_MODE, saveConfigCommand, utf8Bytes, type FileDraft,
 } from "#/modules/config-store/store-configs";
 import { changedProps, dnsLabelError } from "#/modules/config-store/store-services";
 import { storeReferenceTargets } from "#/modules/config-store/store-variables";
@@ -36,6 +36,7 @@ import { CanvasInspectorNameEditor } from "../../../-components/CanvasInspectorN
 import { CanvasInspectorNotFound } from "../../../-components/CanvasInspectorRouteStates";
 import { useStoreChangeActions } from "../../../-components/canvas/useStoreChangeActions";
 import { DEPLOYMENT_PAGE_ROUTE_TO } from "../../../-components/deployment-page";
+import { ConfigFilePermissionsDialog } from "./ConfigFilePermissionsDialog";
 import { useConfigFileEditor } from "./config-file-editor-loader";
 import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../../../-components/environment-route-paths";
 
@@ -208,6 +209,8 @@ function ConfigFiles({ fileNames, current, onSelect, item, drafts, dirty, textOf
   const ConfigFileEditor = useConfigFileEditor();
   const [view, setView] = useState<"edit" | "preview">("edit");
   const [adding, setAdding] = useState<{ name: string; error: string | null } | null>(null);
+  const [permissionsFor, setPermissionsFor] = useState<string | null>(null);
+  const accessOf = (file: string) => draftAccess(item.files.find((one) => one.name === file), drafts.get(file));
 
   function add() {
     if (!adding) return;
@@ -224,9 +227,9 @@ function ConfigFiles({ fileNames, current, onSelect, item, drafts, dirty, textOf
       <div className="flex items-center gap-2">
         <div role="tablist" aria-label="Files" className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
           {fileNames.map((file) => {
-            const summary = item.files.find((one) => one.name === file);
-            const mode = drafts.get(file)?.mode ?? summary?.mode ?? READ_ONLY_MODE;
-            const access = fileAccess({ mode, uid: summary?.uid ?? 0, gid: summary?.gid ?? 0 });
+            const access = accessOf(file);
+            const { mode } = access;
+            const toggle = executableToggle(access);
             const active = file === current;
             return (
               <div key={file} className={cn("flex items-center rounded-md border", active ? "bg-muted" : "border-transparent")}>
@@ -243,17 +246,16 @@ function ConfigFiles({ fileNames, current, onSelect, item, drafts, dirty, textOf
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="start">
                       <DropdownMenuGroup>
-                        <DropdownMenuLabel>{hidden(file) ? "Hidden" : configBytesText(utf8Bytes(textOf(file)))} · Permissions {access.kind === "fixed" ? access.label : mode}</DropdownMenuLabel>
-                        {access.kind === "toggle" ? (
-                          <DropdownMenuCheckboxItem checked={access.executable} disabled={hidden(file)}
+                        <DropdownMenuLabel>{hidden(file) ? "Hidden" : configBytesText(utf8Bytes(textOf(file)))} · Permissions {fileAccessLabel(access)}</DropdownMenuLabel>
+                        {toggle ? (
+                          <DropdownMenuCheckboxItem checked={toggle.executable} disabled={hidden(file)}
                             onCheckedChange={(executable) => onDraft(file, { mode: executable ? EXECUTABLE_MODE : READ_ONLY_MODE })}>
                             Executable
                           </DropdownMenuCheckboxItem>
                         ) : (
-                          <>
-                            <DropdownMenuCheckboxItem checked={false} disabled>Executable</DropdownMenuCheckboxItem>
-                          </>
+                          <DropdownMenuCheckboxItem checked={false} disabled>Executable</DropdownMenuCheckboxItem>
                         )}
+                        <DropdownMenuItem disabled={hidden(file)} onClick={() => setPermissionsFor(file)}>Permissions…</DropdownMenuItem>
                         <DropdownMenuItem variant="destructive" onClick={() => onRemove(file)}>Remove file</DropdownMenuItem>
                       </DropdownMenuGroup>
                     </DropdownMenuContent>
@@ -305,6 +307,10 @@ function ConfigFiles({ fileNames, current, onSelect, item, drafts, dirty, textOf
         </div>
       )}
       {footer}
+      {permissionsFor === null ? null : (
+        <ConfigFilePermissionsDialog file={permissionsFor} access={accessOf(permissionsFor)} onClose={() => setPermissionsFor(null)}
+          onSubmit={(change) => onDraft(permissionsFor, change)} />
+      )}
     </div>
   );
 }

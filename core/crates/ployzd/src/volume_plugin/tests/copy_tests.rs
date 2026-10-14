@@ -8,8 +8,10 @@ use std::{
 };
 
 use axum::{Router, body::Body, extract::Request, http::StatusCode, response::IntoResponse};
-use tokio::{net::TcpListener, sync::Semaphore};
+use tokio::{net::TcpListener, process::Command, sync::Semaphore};
 use tokio_util::sync::CancellationToken;
+
+use super::super::transfer::{Receives, Stop, ZfsChild};
 
 use super::first_pool_tests::fake_first_pool;
 use super::inspect_tests::{set_property, start};
@@ -92,6 +94,7 @@ fn state(test: &TestDir) -> Vec<(String, String)> {
                         | "zfs"
                         | "zpool"
                         | "receive-pid"
+                        | "receive-ready"
                         | "fail-command"
                         | "next-guid"
                 )
@@ -335,6 +338,7 @@ async fn the_writer_route_promotes_a_pulled_slot() {
     assert_eq!(
         effects(&commands(&test)),
         [
+            "zfs inherit ployz:pulled tank/ployz-mirror/data/fs",
             "zfs set ployz:epoch=2 tank/ployz-mirror/data/fs",
             "zfs set ployz:promote=on tank/ployz-mirror/data/fs",
             "zfs rename tank/ployz-mirror/data/fs tank/ployz/data",
@@ -542,7 +546,8 @@ async fn the_writer_route_reopens_a_read_only_root_of_its_own_epoch() {
 
 /// A writer Machine's send port, answering the bound and a stream text per request:
 /// the first answer whose key the request URI contains, else the default one. A held
-/// answer sends its headers at once and its stream only after `release`.
+/// answer sends its headers at once and its stream only after `release`; a silent one
+/// never answers.
 struct Source {
     requests: Arc<StdMutex<Vec<String>>>,
     answers: Arc<StdMutex<Vec<Answer>>>,
@@ -555,7 +560,14 @@ struct Answer {
     key: String,
     status: StatusCode,
     stream: String,
-    held: bool,
+    mode: Mode,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Mode {
+    Now,
+    Held,
+    Silent,
 }
 
 impl Source {
@@ -565,7 +577,7 @@ impl Source {
             key: String::new(),
             status: StatusCode::OK,
             stream: stream.to_owned(),
-            held: false,
+            mode: Mode::Now,
         }]));
         let gate = Arc::new(Semaphore::new(0));
         let state = (
@@ -592,8 +604,10 @@ impl Source {
                     .find(|answer| uri.contains(answer.key.as_str()))
                     .cloned()
                     .unwrap();
-                if !answer.held {
-                    return (answer.status, answer.stream).into_response();
+                match answer.mode {
+                    Mode::Now => return (answer.status, answer.stream).into_response(),
+                    Mode::Silent => std::future::pending::<()>().await,
+                    Mode::Held => {}
                 }
                 let body = futures_util::stream::once(async move {
                     let _permit = gate.acquire().await;
@@ -615,24 +629,29 @@ impl Source {
 
     /// Answer requests whose URI contains `key` with `status` and `stream` from now on.
     fn answer(&self, key: &str, status: StatusCode, stream: &str) {
-        self.push(key, status, stream, false);
+        self.push(key, status, stream, Mode::Now);
     }
 
     /// Like `answer`, but holding each stream until `release`.
     fn hold(&self, key: &str, stream: &str) {
-        self.push(key, StatusCode::OK, stream, true);
+        self.push(key, StatusCode::OK, stream, Mode::Held);
+    }
+
+    /// Never answer requests whose URI contains `key`, not even with headers.
+    fn silence(&self, key: &str) {
+        self.push(key, StatusCode::OK, "", Mode::Silent);
     }
 
     fn release(&self) {
         self.gate.add_permits(Semaphore::MAX_PERMITS);
     }
 
-    fn push(&self, key: &str, status: StatusCode, stream: &str, held: bool) {
+    fn push(&self, key: &str, status: StatusCode, stream: &str, mode: Mode) {
         self.answers.lock().unwrap().push(Answer {
             key: key.to_owned(),
             status,
             stream: stream.to_owned(),
-            held,
+            mode,
         });
     }
 
@@ -651,6 +670,16 @@ fn puller_stalling_after(
     port: u16,
     stall: Duration,
 ) -> (PathBuf, Server) {
+    let (socket, server, _) = puller_with_receives(test, markers, port, stall);
+    (socket, server)
+}
+
+fn puller_with_receives(
+    test: &TestDir,
+    markers: &[&str],
+    port: u16,
+    stall: Duration,
+) -> (PathBuf, Server, Receives) {
     for marker in markers {
         fs::write(test.0.join(marker), "").unwrap();
     }
@@ -660,7 +689,8 @@ fn puller_stalling_after(
     let mut storage = VolumeStorage::with_programs(zpool, zfs);
     storage.send_port = port;
     storage.receive_stall = stall;
-    (socket, tokio::spawn(serve(listener, storage)))
+    let receives = storage.receives.clone();
+    (socket, tokio::spawn(serve(listener, storage)), receives)
 }
 
 fn pull(target: &str) -> Value {
@@ -1052,6 +1082,757 @@ async fn a_pull_for_another_target_while_a_receive_runs_refuses_busy_and_keeps_t
         Some(&json!("w-1-1")),
         "{reply}"
     );
+    server.abort();
+}
+
+#[tokio::test]
+async fn departure_during_a_receive_stops_it_and_destroys_the_mirror() {
+    let source = Source::start(Some(BOUND), "snapshot w-1-1 77\n").await;
+    let test = TestDir::new();
+    let (socket, server) = puller(&test, &["root"], source.port);
+    fs::create_dir_all(test.0.join("props")).unwrap();
+    fs::write(test.0.join("props/stall-read"), "").unwrap();
+    post(&socket, "/Volume.Copy.Pull", pull("w-1-1")).await;
+    let pid = receive_ready(&test).await;
+
+    let reply = post(&socket, "/Storage.Demote", json!(null)).await;
+    assert_eq!(
+        reply,
+        json!({"Ok": {"demoted": ["data"], "stuck": [], "failed": []}})
+    );
+    assert!(!Path::new(&format!("/proc/{pid}")).exists());
+    let copy = post(&socket, "/Volume.Copy.Inspect", json!({"name": "data"})).await;
+    assert_eq!(copy, json!({"Ok": null}));
+    assert!(!test.0.join("mirror").exists());
+    server.abort();
+}
+
+/// Waits up to five seconds for `done`, and fails the test naming `what` if it never is.
+async fn eventually(what: &str, mut done: impl FnMut() -> bool) {
+    for _ in 0..500 {
+        if done() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("{what} never happened");
+}
+
+/// Waits until the fake receive has made its dataset and set its properties, as a
+/// receive does before it reads any data, and answers its pid.
+pub(super) async fn receive_ready(test: &TestDir) -> String {
+    let ready = test.0.join("props/receive-ready");
+    eventually("the receive's dataset", || ready.exists()).await;
+    fs::read_to_string(ready).unwrap().trim().to_owned()
+}
+
+/// Waits for the fake receive to start, and answers its pid.
+async fn receive_pid(test: &TestDir) -> String {
+    let pid = test.0.join("props/receive-pid");
+    for _ in 0..300 {
+        if pid.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    fs::read_to_string(pid).unwrap().trim().to_owned()
+}
+
+#[tokio::test]
+async fn departure_stops_a_pull_into_a_slot_it_keeps() {
+    for (mark, value) in [("ployz:cut", "on"), ("ployz:epoch", "3")] {
+        let source = Source::start(Some(BOUND), "snapshot w-1-2 12\n").await;
+        let test = TestDir::new();
+        let (socket, server, receives) = puller_with_receives(
+            &test,
+            &["root", "mirror", "mirror-fs"],
+            source.port,
+            Duration::from_secs(60),
+        );
+        set_snapshots(&test, SLOT_FS, &[("w-1-1", 11)]);
+        set_property(&test, SLOT_FS, mark, value);
+        fs::write(test.0.join("props/stall-read"), "").unwrap();
+        post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
+        receive_pid(&test).await;
+        let scan =
+            "list -Hp -o name,refquota,used,usedbydataset,mountpoint,mounted,readonly -r tank";
+        // The pull ran this scan before it answered, so only a stall proves the departure's.
+        let stalled = test.0.join("props/stalled");
+        let _ = fs::remove_file(&stalled);
+        fs::write(test.0.join("props/stall-command"), scan).unwrap();
+
+        let departure = tokio::spawn({
+            let socket = socket.clone();
+            async move { post(&socket, "/Storage.Demote", json!(null)).await }
+        });
+        eventually(&format!("{mark}: the departure's scan"), || {
+            fs::read_to_string(&stalled).is_ok_and(|line| line.trim() == scan)
+        })
+        .await;
+        // A receive still running at the scan lands now, and its task marks the pull
+        // before the departure goes on, so stopping it can no longer beat that mark.
+        fs::remove_file(test.0.join("props/stall-read")).unwrap();
+        let name: DockerVolumeName = "data".parse().unwrap();
+        eventually(&format!("{mark}: the receive task's finish"), || {
+            !receives.running(&name)
+        })
+        .await;
+        fs::remove_file(test.0.join("props/stall-command")).unwrap();
+        let reply = departure.await.unwrap();
+        assert_eq!(
+            reply,
+            json!({"Ok": {"demoted": [], "stuck": [], "failed": []}}),
+            "{mark}"
+        );
+        assert!(test.0.join("mirror-fs").exists(), "{mark}");
+        assert_eq!(property(&test, SLOT_FS, mark).as_deref(), Some(value));
+        server.abort();
+    }
+}
+
+#[tokio::test]
+async fn a_landed_pull_drops_the_writer_marks_so_the_departure_destroys_the_mirror() {
+    for (mark, value) in [
+        ("ployz:cut", "on"),
+        ("ployz:epoch", "3"),
+        ("ployz:promote", "on"),
+        ("ployz:seed", "11"),
+    ] {
+        let source = Source::start(Some(BOUND), "snapshot w-1-2 12\n").await;
+        let test = TestDir::new();
+        let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
+        set_snapshots(&test, SLOT_FS, &[("w-1-1", 11)]);
+        set_property(&test, SLOT_FS, mark, value);
+
+        post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
+        finished(&socket, "w-1-2").await;
+        assert_eq!(property(&test, SLOT_FS, mark), None, "{mark}");
+        assert_eq!(
+            property(&test, SLOT_FS, "ployz:pulled").as_deref(),
+            Some("12"),
+            "{mark}"
+        );
+
+        let reply = post(&socket, "/Storage.Demote", json!(null)).await;
+        assert_eq!(
+            reply,
+            json!({"Ok": {"demoted": ["data"], "stuck": [], "failed": []}}),
+            "{mark}"
+        );
+        assert!(!test.0.join("mirror").exists(), "{mark}");
+        server.abort();
+    }
+}
+
+#[tokio::test]
+async fn a_pull_of_the_slots_newest_keeps_its_cut() {
+    let source = Source::start(Some(BOUND), "snapshot w-1-1 11\n").await;
+    let test = TestDir::new();
+    let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
+    set_snapshots(&test, SLOT_FS, &[("w-1-1", 11)]);
+    set_property(&test, SLOT_FS, "ployz:cut", "on");
+
+    finished(&socket, "w-1-1").await;
+    assert_eq!(
+        property(&test, SLOT_FS, "ployz:cut").as_deref(),
+        Some("on"),
+        "nothing newer landed, so the cut may still be the only copy"
+    );
+    let reply = post(&socket, "/Storage.Demote", json!(null)).await;
+    assert_eq!(
+        reply,
+        json!({"Ok": {"demoted": [], "stuck": [], "failed": []}})
+    );
+    assert!(test.0.join("mirror-fs").exists());
+    server.abort();
+}
+
+/// The state a pull leaves when the daemon stops between landing the target and the
+/// resend that settles it, on a slot whose own past left a mark: the slot's parent still
+/// names the pull. A release before the pulled mark leaves a slot its newest point never
+/// marked, which a cut's same-newest resend leaves too.
+fn landed_before_a_restart(test: &TestDir, mark: &str, value: &str) {
+    set_snapshots(test, SLOT_FS, &[("w-1-2", 12)]);
+    set_property(test, SLOT, "ployz:pull", "w-1-2");
+    set_property(test, SLOT_FS, mark, value);
+}
+
+#[tokio::test]
+async fn a_resend_of_the_slots_newest_keeps_its_marks_and_marks_no_pull() {
+    for (mark, value) in [("ployz:cut", "on"), ("ployz:epoch", "3")] {
+        let test = TestDir::new();
+        let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], 1);
+        landed_before_a_restart(&test, mark, value);
+
+        let reply = post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
+        assert_eq!(reply.pointer("/Ok/pull"), Some(&Value::Null), "{reply}");
+        assert_eq!(property(&test, SLOT_FS, mark).as_deref(), Some(value));
+        assert_eq!(property(&test, SLOT_FS, "ployz:pulled"), None, "{mark}");
+        let reply = post(&socket, "/Storage.Demote", json!(null)).await;
+        assert_eq!(
+            reply,
+            json!({"Ok": {"demoted": [], "stuck": [], "failed": []}}),
+            "{mark}"
+        );
+        assert!(test.0.join("mirror-fs").exists(), "{mark}");
+        server.abort();
+    }
+}
+
+#[tokio::test]
+async fn a_pull_stopped_over_a_marked_slot_leaves_it_kept() {
+    for (mark, value) in [("ployz:cut", "on"), ("ployz:epoch", "3")] {
+        let source = Source::start(Some(BOUND), "snapshot w-1-3 13\n").await;
+        let test = TestDir::new();
+        let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
+        landed_before_a_restart(&test, mark, value);
+        fs::write(test.0.join("props/stall-read"), "").unwrap();
+        post(&socket, "/Volume.Copy.Pull", pull("w-1-3")).await;
+        let pid = receive_pid(&test).await;
+
+        let reply = post(&socket, "/Storage.Demote", json!(null)).await;
+        assert_eq!(
+            reply,
+            json!({"Ok": {"demoted": [], "stuck": [], "failed": []}}),
+            "{mark}"
+        );
+        assert!(
+            !Path::new(&format!("/proc/{pid}")).exists(),
+            "{mark}: the receive still runs"
+        );
+        assert!(test.0.join("mirror-fs").exists(), "{mark}");
+        assert_eq!(property(&test, SLOT_FS, "ployz:pulled"), None, "{mark}");
+        server.abort();
+    }
+}
+
+#[tokio::test]
+async fn a_pull_whose_mark_cleanup_fails_leaves_a_slot_the_departure_keeps() {
+    for (mark, value) in [("ployz:cut", "on"), ("ployz:epoch", "3")] {
+        let source = Source::start(Some(BOUND), "snapshot w-1-2 12\n").await;
+        let test = TestDir::new();
+        let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
+        set_snapshots(&test, SLOT_FS, &[("w-1-1", 11)]);
+        set_property(&test, SLOT_FS, mark, value);
+        fs::write(test.0.join("inherit-fails"), "").unwrap();
+
+        post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
+        let copy = landed(&socket, "w-1-2").await;
+        assert_eq!(
+            copy.pointer("/Ok/newest/name"),
+            Some(&json!("w-1-2")),
+            "{copy}"
+        );
+        post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
+        assert_eq!(property(&test, SLOT_FS, "ployz:pulled"), None, "{mark}");
+
+        let reply = post(&socket, "/Storage.Demote", json!(null)).await;
+        assert_eq!(
+            reply,
+            json!({"Ok": {"demoted": [], "stuck": [], "failed": []}}),
+            "{mark}"
+        );
+        assert!(test.0.join("mirror-fs").exists(), "{mark}");
+        server.abort();
+    }
+}
+
+/// The epoch a promote sets describes the slot's newest point, so a promote stopped before
+/// its rename leaves a slot the departure keeps, pulled or not.
+#[tokio::test]
+async fn departure_keeps_a_pulled_slot_whose_promote_stopped_before_the_rename() {
+    let test = TestDir::new();
+    let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], 1);
+    set_snapshots(&test, SLOT_FS, &[("w-1-2", 12)]);
+    set_property(&test, SLOT, "ployz:pull", "w-1-2");
+    set_property(&test, SLOT_FS, "ployz:pulled", "12");
+    fs::write(
+        test.0.join("props/fail-command"),
+        "rename tank/ployz-mirror/data/fs tank/ployz/data",
+    )
+    .unwrap();
+
+    let reply = post(
+        &socket,
+        "/Volume.Copy.Writer",
+        json!({"name": "data", "at": "12", "epoch": 4}),
+    )
+    .await;
+    assert!(reply.get("Err").is_some(), "{reply}");
+    assert_eq!(property(&test, SLOT_FS, "ployz:pulled"), None);
+    assert_eq!(
+        property(&test, SLOT_FS, "ployz:epoch").as_deref(),
+        Some("4")
+    );
+    let reply = post(&socket, "/Storage.Demote", json!(null)).await;
+    assert_eq!(
+        reply,
+        json!({"Ok": {"demoted": [], "stuck": [], "failed": []}})
+    );
+    assert!(test.0.join("mirror-fs").exists());
+    server.abort();
+}
+
+/// v0.3.0-beta.1 promoted a pulled slot without dropping its pull record, so a promote
+/// it stopped before the rename leaves the record naming the newest point.
+#[tokio::test]
+async fn departure_keeps_a_beta1_promote_that_stopped_before_the_rename() {
+    let test = TestDir::new();
+    let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], 1);
+    landed_before_a_restart(&test, "ployz:epoch", "2");
+    set_property(&test, SLOT_FS, "ployz:promote", "on");
+
+    let reply = post(&socket, "/Storage.Demote", json!(null)).await;
+    assert_eq!(
+        reply,
+        json!({"Ok": {"demoted": [], "stuck": [], "failed": []}})
+    );
+    assert!(test.0.join("mirror-fs").exists());
+    server.abort();
+}
+
+/// A pull of the point a cut slot already holds lands nothing, so the slot never records
+/// a pull: a daemon stopped partway through must not leave the cut looking pulled.
+#[tokio::test]
+#[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+async fn a_pull_of_a_cut_slots_own_newest_never_records_a_pull() {
+    let test = TestDir::new();
+    let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], 1);
+    set_snapshots(&test, SLOT_FS, &[("w-1-1", 11)]);
+    set_property(&test, SLOT_FS, "ployz:cut", "on");
+    fs::write(
+        test.0.join("props/fail-command"),
+        "inherit ployz:pull tank/ployz-mirror/data",
+    )
+    .unwrap();
+
+    post(&socket, "/Volume.Copy.Pull", pull("w-1-1")).await;
+    assert_eq!(property(&test, SLOT, "ployz:pull"), None);
+    assert_eq!(
+        post(&socket, "/VolumeDriver.Get", json!({"Name": "data"})).await["Err"],
+        json!(""),
+        "Docker keeps its record for a cut Volume"
+    );
+    let reply = post(&socket, "/Storage.Demote", json!(null)).await;
+    assert_eq!(
+        reply,
+        json!({"Ok": {"demoted": [], "stuck": [], "failed": []}})
+    );
+    assert!(test.0.join("mirror-fs").exists());
+    server.abort();
+}
+
+/// A receive that fails on its own deadline has reaped its child by the time it answers:
+/// a `zfs receive` still exiting holds the slot busy for the departure's destroy.
+#[tokio::test]
+async fn a_receive_that_stalls_answers_only_once_its_child_is_gone() {
+    for (marker, stream) in [
+        ("stall-exit", "snapshot w-1-1 77\n".to_owned()),
+        ("stall-read", "x".repeat(1 << 20)),
+    ] {
+        let source = Source::start(Some(BOUND), &stream).await;
+        let test = TestDir::new();
+        fs::write(test.0.join("root"), "").unwrap();
+        fs::write(test.0.join("mirror"), "").unwrap();
+        fs::create_dir_all(test.0.join("props")).unwrap();
+        fs::write(test.0.join("props").join(marker), "").unwrap();
+        let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
+        let mut storage = VolumeStorage::with_programs(zpool, zfs);
+        storage.send_port = source.port;
+        storage.receive_stall = Duration::from_millis(200);
+        let stream = ployz_core::SendStream {
+            name: "data".parse().unwrap(),
+            source: ployz_core::SendSource::Full {
+                target: "w-1-1".parse().unwrap(),
+            },
+        };
+
+        let received = storage
+            .receive(
+                ployz_core::ManagementAddress("::1".parse().unwrap()),
+                &stream,
+                SLOT_FS,
+                BOUND,
+                "test",
+                &Stop::unowned(),
+            )
+            .await;
+        // No await between the answer and the check: a child only killed on drop is
+        // still a zombie here, and so still listed in /proc.
+        let pid = fs::read_to_string(test.0.join("props/receive-pid")).unwrap();
+        assert!(received.is_err(), "{marker}");
+        assert!(
+            !Path::new(&format!("/proc/{}", pid.trim())).exists(),
+            "{marker}: the receive answered before its child was reaped"
+        );
+    }
+}
+
+/// A child the kill leaves running past its owner, as a `zfs` blocked in the kernel is.
+fn slow_child(stop: &Stop) -> (ZfsChild, u32) {
+    let mut child = ZfsChild::spawn(Command::new("sleep").arg("1.5"), stop).unwrap();
+    child.spare_from_kill();
+    let pid = child.id().unwrap();
+    (child, pid)
+}
+
+fn alive(pid: u32) -> bool {
+    Path::new(&format!("/proc/{pid}")).exists()
+}
+
+/// Stops every task in `receives` and answers whether `pid` had exited by then.
+async fn stopped_after(receives: &Receives, pid: u32) -> bool {
+    let stuck = receives.stop_all(Duration::from_secs(5)).await;
+    assert!(stuck.is_empty(), "{stuck:?}");
+    !alive(pid)
+}
+
+#[tokio::test]
+async fn a_zfs_child_dropped_without_a_reap_is_killed() {
+    let receives = Receives::default();
+    let name: DockerVolumeName = "data".parse().unwrap();
+    let mut pid = 0;
+    receives.spawn(&name, |stop| {
+        let child = ZfsChild::spawn(Command::new("sleep").arg("30"), &stop).unwrap();
+        pid = child.id().unwrap();
+        async move {
+            drop(child);
+            Ok(())
+        }
+    });
+    assert!(stopped_after(&receives, pid).await);
+}
+
+#[tokio::test]
+async fn a_receive_task_finishes_only_once_a_dropped_child_exits() {
+    let receives = Receives::default();
+    let name: DockerVolumeName = "data".parse().unwrap();
+    let mut pid = 0;
+    receives.spawn(&name, |stop| {
+        let (child, spawned) = slow_child(&stop);
+        pid = spawned;
+        async move {
+            drop(child);
+            Ok(())
+        }
+    });
+    assert!(
+        stopped_after(&receives, pid).await,
+        "the task finished before its child exited"
+    );
+}
+
+/// The shape of the seed's copy (seed.rs `copy_snapshot`): its send is running when the
+/// receive fails to spawn.
+#[tokio::test]
+async fn a_receive_task_whose_second_spawn_fails_finishes_once_the_first_child_exits() {
+    let receives = Receives::default();
+    let name: DockerVolumeName = "data".parse().unwrap();
+    let mut pid = 0;
+    receives.spawn(&name, |stop| {
+        let (send, spawned) = slow_child(&stop);
+        pid = spawned;
+        async move {
+            let _send = send;
+            let _receive = ZfsChild::spawn(&mut Command::new("/nonexistent/zfs"), &stop)
+                .map_err(|error| format!("could not run zfs receive: {error}"))?;
+            Ok(())
+        }
+    });
+    assert!(
+        stopped_after(&receives, pid).await,
+        "the task finished before its send exited"
+    );
+    assert!(receives.failure(&name).is_some());
+}
+
+#[tokio::test]
+async fn a_receive_task_that_panics_with_a_live_child_finishes_once_it_exits() {
+    let receives = Receives::default();
+    let name: DockerVolumeName = "data".parse().unwrap();
+    let mut pid = 0;
+    receives.spawn(&name, |stop| {
+        let (child, spawned) = slow_child(&stop);
+        pid = spawned;
+        async move {
+            let _child = child;
+            panic!("the receive task broke");
+        }
+    });
+    assert!(
+        stopped_after(&receives, pid).await,
+        "the task finished before its child exited"
+    );
+    assert!(!receives.running(&name), "a panicked task reads as running");
+    assert!(receives.failure(&name).is_some());
+}
+
+/// A child the kill leaves running until the test removes `gate`, as a `zfs` blocked in
+/// the kernel is until the kernel lets it go.
+fn held_child(stop: &Stop, gate: &Path) -> ZfsChild {
+    let mut child = gated_child(stop, gate);
+    child.spare_from_kill();
+    child
+}
+
+/// A child that runs until the test removes `gate` or a kill ends it.
+fn gated_child(stop: &Stop, gate: &Path) -> ZfsChild {
+    fs::write(gate, "").unwrap();
+    ZfsChild::spawn(
+        Command::new("sh").args([
+            "-c",
+            &format!("while [ -e '{}' ]; do sleep 0.01; done", gate.display()),
+        ]),
+        stop,
+    )
+    .unwrap()
+}
+
+/// A kill the kernel refuses leaves the child running, so the reap must still wait for it:
+/// otherwise the task finishes early and the departure judges a slot the child still holds.
+#[tokio::test]
+async fn a_reap_whose_kill_fails_holds_its_task_until_the_child_exits() {
+    let test = TestDir::new();
+    let gate = test.0.join("gate");
+    let receives = Receives::default();
+    let name: DockerVolumeName = "data".parse().unwrap();
+    receives.spawn(&name, |stop| {
+        let mut child = held_child(&stop, &gate);
+        child.fail_kill();
+        async move {
+            child.reap().await;
+            Ok(())
+        }
+    });
+    assert_eq!(
+        receives.stop_all(Duration::from_millis(200)).await,
+        ["data"],
+        "the departure lost a child whose kill failed"
+    );
+    fs::remove_file(&gate).unwrap();
+    assert!(receives.stop_all(Duration::from_secs(5)).await.is_empty());
+    assert!(!receives.running(&name));
+}
+
+/// A wait that errors proves no exit, so neither the reap nor the drop may release the
+/// task's finish on it: the departure would judge a slot the child may still hold.
+#[tokio::test]
+async fn a_reap_whose_wait_fails_holds_its_task_until_the_child_exits() {
+    let test = TestDir::new();
+    let gate = test.0.join("gate");
+    let receives = Receives::default();
+    let name: DockerVolumeName = "data".parse().unwrap();
+    receives.spawn(&name, |stop| {
+        let mut child = held_child(&stop, &gate);
+        child.fail_kill();
+        child.fail_wait();
+        async move {
+            child.reap().await;
+            Ok(())
+        }
+    });
+    assert_eq!(
+        receives.stop_all(Duration::from_millis(200)).await,
+        ["data"],
+        "the departure lost a child whose wait failed"
+    );
+    fs::remove_file(&gate).unwrap();
+    assert!(receives.stop_all(Duration::from_secs(5)).await.is_empty());
+    assert!(!receives.running(&name));
+}
+
+#[tokio::test]
+async fn a_dropped_child_whose_wait_fails_holds_its_task_until_it_exits() {
+    let test = TestDir::new();
+    let gate = test.0.join("gate");
+    let receives = Receives::default();
+    let name: DockerVolumeName = "data".parse().unwrap();
+    receives.spawn(&name, |stop| {
+        let mut child = held_child(&stop, &gate);
+        child.fail_wait();
+        async move {
+            let _child = child;
+            Err("the receive task returned early".to_owned())
+        }
+    });
+    assert_eq!(
+        receives.stop_all(Duration::from_millis(200)).await,
+        ["data"],
+        "the departure lost a dropped child whose wait failed"
+    );
+    fs::remove_file(&gate).unwrap();
+    assert!(receives.stop_all(Duration::from_secs(5)).await.is_empty());
+    assert!(!receives.running(&name));
+}
+
+/// A drop kills through the same kill as a reap, so a refused kill is logged and the
+/// task's finish waits for the child's own exit.
+#[tokio::test]
+async fn a_dropped_child_whose_kill_fails_holds_its_task_until_it_exits() {
+    let test = TestDir::new();
+    let gate = test.0.join("gate");
+    let receives = Receives::default();
+    let name: DockerVolumeName = "data".parse().unwrap();
+    let capture = Capture::default();
+    let _logs = tracing::subscriber::set_default(
+        tracing_subscriber::fmt()
+            .with_writer(capture.clone())
+            .with_ansi(false)
+            .finish(),
+    );
+    receives.spawn(&name, |stop| {
+        let mut child = gated_child(&stop, &gate);
+        child.fail_kill();
+        async move {
+            let _child = child;
+            Err("the receive task returned early".to_owned())
+        }
+    });
+    assert_eq!(
+        receives.stop_all(Duration::from_millis(200)).await,
+        ["data"],
+        "the departure lost a dropped child whose kill failed"
+    );
+    let journal = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
+    assert!(
+        journal.contains("could not kill a zfs process"),
+        "the refused kill went unlogged: {journal}"
+    );
+    fs::remove_file(&gate).unwrap();
+    assert!(receives.stop_all(Duration::from_secs(5)).await.is_empty());
+    assert!(!receives.running(&name));
+}
+
+#[derive(Clone, Default)]
+struct Capture(Arc<StdMutex<Vec<u8>>>);
+
+impl std::io::Write for Capture {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Capture {
+    type Writer = Self;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+/// A task of `name` that panics while `gate` holds its child, answered once its failure
+/// is published and the child is still alive.
+async fn panicked_with_a_held_child(receives: &Receives, name: &DockerVolumeName, gate: &Path) {
+    receives.spawn(name, |stop| {
+        let child = held_child(&stop, gate);
+        async move {
+            let _child = child;
+            panic!("the receive task broke");
+        }
+    });
+    for _ in 0..500 {
+        if receives.failure(name).is_some() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("the panic was never published");
+}
+
+/// A same-target retry (copy.rs `copy_pull`) answers and forgets a failure only once the
+/// Volume reads as not running, so the failed task must read as running until its child
+/// has exited.
+#[tokio::test]
+async fn a_panicked_task_reads_as_running_until_its_child_exits() {
+    let test = TestDir::new();
+    let gate = test.0.join("gate");
+    let receives = Receives::default();
+    let name: DockerVolumeName = "data".parse().unwrap();
+    panicked_with_a_held_child(&receives, &name, &gate).await;
+    assert!(
+        receives.running(&name),
+        "a retry would forget a task whose child is alive"
+    );
+    fs::remove_file(&gate).unwrap();
+    assert!(receives.stop_all(Duration::from_secs(5)).await.is_empty());
+    assert!(!receives.running(&name));
+    assert!(receives.failure(&name).is_some());
+}
+
+#[tokio::test]
+async fn a_forget_while_a_child_is_reaped_leaves_it_for_the_departure_to_name() {
+    let test = TestDir::new();
+    let gate = test.0.join("gate");
+    let receives = Receives::default();
+    let name: DockerVolumeName = "data".parse().unwrap();
+    panicked_with_a_held_child(&receives, &name, &gate).await;
+    receives.forget(&name);
+    assert_eq!(
+        receives.stop_all(Duration::from_millis(200)).await,
+        ["data"],
+        "the departure lost a child that still holds the slot"
+    );
+    assert!(
+        receives.failure(&name).is_none(),
+        "the forgotten failure came back"
+    );
+    fs::remove_file(&gate).unwrap();
+    assert!(receives.stop_all(Duration::from_secs(5)).await.is_empty());
+}
+
+#[tokio::test]
+async fn a_task_that_replaces_one_still_reaping_a_child_leaves_that_child_for_the_departure() {
+    let test = TestDir::new();
+    let gate = test.0.join("gate");
+    let receives = Receives::default();
+    let name: DockerVolumeName = "data".parse().unwrap();
+    panicked_with_a_held_child(&receives, &name, &gate).await;
+    receives.spawn(&name, |_stop| async { Ok(()) });
+    assert_eq!(
+        receives.stop_all(Duration::from_millis(200)).await,
+        ["data"],
+        "the departure lost a child that still holds the slot"
+    );
+    fs::remove_file(&gate).unwrap();
+    assert!(receives.stop_all(Duration::from_secs(5)).await.is_empty());
+    assert!(!receives.running(&name));
+}
+
+#[tokio::test]
+async fn departure_stops_a_pull_whose_writer_never_answers() {
+    let source = Source::start(Some(BOUND), "").await;
+    source.silence("/volume-send/");
+    let test = TestDir::new();
+    let (socket, server) = puller(&test, &["root"], source.port);
+    let reply = post(&socket, "/Volume.Copy.Pull", pull("w-1-1")).await;
+    assert_eq!(reply.pointer("/Ok/kind"), Some(&json!("slot")), "{reply}");
+    for _ in 0..300 {
+        if source
+            .requests()
+            .iter()
+            .any(|uri| uri.starts_with("/volume-send/"))
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let reply = tokio::time::timeout(
+        Duration::from_secs(5),
+        post(&socket, "/Storage.Demote", json!(null)),
+    )
+    .await
+    .expect("the departure waits on a writer that never answers");
+    assert_eq!(
+        reply,
+        json!({"Ok": {"demoted": ["data"], "stuck": [], "failed": []}})
+    );
+    assert!(!test.0.join("mirror").exists());
     server.abort();
 }
 
@@ -2121,4 +2902,272 @@ async fn a_snapshot_resent_at_its_want_prunes_past_the_newest_two() {
         "{reply}"
     );
     assert_eq!(snapshot_names(&a.test, ROOT), ["w-1-3", "w-1-2"]);
+}
+
+/// A head writer path the crash table stops after each of its effects.
+#[derive(Clone, Copy, Debug)]
+enum Writing {
+    Cut,
+    Restore,
+    PromoteAPulledSlot,
+    Seed,
+    LandAPulledSeed,
+    FirstPull,
+    IncrementalPull,
+    Resend,
+    SameNewestPull,
+}
+
+impl Writing {
+    /// The Volume the path writes, with its route, request and the reply that ends it.
+    fn drive(self) -> (&'static str, &'static str, Value) {
+        match self {
+            Self::Cut => (
+                "data",
+                "/Volume.Copy.Cut",
+                json!({"name": "data", "target": "f-1"}),
+            ),
+            Self::Restore => (
+                "data",
+                "/Volume.Copy.Writer",
+                json!({"name": "data", "at": "13", "epoch": 0}),
+            ),
+            Self::PromoteAPulledSlot => (
+                "data",
+                "/Volume.Copy.Writer",
+                json!({"name": "data", "at": "13", "epoch": 2}),
+            ),
+            Self::Seed | Self::LandAPulledSeed => (
+                "seed",
+                "/Volume.Seed",
+                json!({"name": "data", "into": "seed", "guid": "77"}),
+            ),
+            Self::FirstPull | Self::IncrementalPull | Self::Resend => {
+                ("data", "/Volume.Copy.Pull", pull("w-1-2"))
+            }
+            Self::SameNewestPull => ("data", "/Volume.Copy.Pull", pull("w-1-1")),
+        }
+    }
+
+    fn ended(self, reply: &Value) -> bool {
+        match self {
+            Self::Cut => reply.pointer("/Ok/kind") == Some(&json!("slot")),
+            Self::Restore | Self::PromoteAPulledSlot => {
+                reply.pointer("/Ok/kind") == Some(&json!("root"))
+            }
+            Self::Seed | Self::LandAPulledSeed => {
+                reply.pointer("/Ok/copy/kind") == Some(&json!("root"))
+            }
+            Self::FirstPull | Self::IncrementalPull | Self::Resend | Self::SameNewestPull => {
+                reply.pointer("/Ok/pull") == Some(&Value::Null)
+            }
+        }
+    }
+
+    fn fixture(self, test: &TestDir, port: u16) -> (PathBuf, Server) {
+        match self {
+            Self::Cut => {
+                let started = writer(test, &[("w-1-1", 11)]);
+                set_property(test, ROOT, "written@f-1", "0");
+                started
+            }
+            Self::Restore => {
+                let started = slot(test, &[("f-1", 13)]);
+                set_property(test, SLOT_FS, "ployz:cut", "on");
+                started
+            }
+            Self::PromoteAPulledSlot => {
+                let started = slot(test, &[("f-1", 13)]);
+                set_property(test, SLOT_FS, "ployz:pulled", "13");
+                started
+            }
+            Self::Seed => {
+                let started = start(test, USABLE_POOL, &["root", "volume"]);
+                set_property(
+                    test,
+                    ROOT,
+                    "snapshots",
+                    "tank/ployz/data@w-1-1\t77\t1700000000",
+                );
+                started
+            }
+            // A mirror of a Volume whose writer elsewhere was seeded from this point holds
+            // its guid, so a seed of that point lands the mirror in place.
+            Self::LandAPulledSeed => {
+                let started = Self::Seed.fixture(test, port);
+                fs::write(test.0.join("seed-slot"), "").unwrap();
+                fs::write(test.0.join("seed-fs"), "").unwrap();
+                set_property(
+                    test,
+                    "tank/ployz-mirror/seed/fs",
+                    "snapshots",
+                    "tank/ployz-mirror/seed/fs@w-1-1\t77\t1700000000",
+                );
+                set_property(test, "tank/ployz-mirror/seed/fs", "ployz:pulled", "77");
+                started
+            }
+            Self::FirstPull => puller(test, &["root"], port),
+            Self::IncrementalPull => {
+                let started = puller(test, &["root", "mirror", "mirror-fs"], port);
+                set_snapshots(test, SLOT_FS, &[("w-1-1", 11)]);
+                for (mark, value) in [
+                    ("ployz:cut", "on"),
+                    ("ployz:epoch", "3"),
+                    ("ployz:promote", "on"),
+                    ("ployz:seed", "11"),
+                ] {
+                    set_property(test, SLOT_FS, mark, value);
+                }
+                started
+            }
+            Self::Resend => {
+                let started = puller(test, &["root", "mirror", "mirror-fs"], port);
+                landed_before_a_restart(test, "ployz:cut", "on");
+                started
+            }
+            Self::SameNewestPull => {
+                let started = puller(test, &["root", "mirror", "mirror-fs"], port);
+                set_snapshots(test, SLOT_FS, &[("w-1-1", 11)]);
+                set_property(test, SLOT_FS, "ployz:cut", "on");
+                started
+            }
+        }
+    }
+
+    /// Whether the finished path leaves a slot a writer elsewhere holds the point of.
+    fn received(self) -> bool {
+        matches!(self, Self::FirstPull | Self::IncrementalPull)
+    }
+
+    /// Whether the fixture is such a slot before the path changes anything.
+    fn starts_received(self) -> bool {
+        matches!(self, Self::PromoteAPulledSlot | Self::LandAPulledSeed)
+    }
+}
+
+/// Drives `writing` until it ends or, once `stop` has failed after its given number of
+/// earlier runs, until its request stops changing anything: the failed effect stands for
+/// the daemon stopping there.
+async fn drive(writing: Writing, test: &TestDir, socket: &Path, stop: Option<(&str, usize)>) {
+    let (_, route, request) = writing.drive();
+    let fail = test.0.join("props/fail-command");
+    if let Some((stop, earlier)) = stop {
+        fs::create_dir_all(test.0.join("props")).unwrap();
+        fs::write(test.0.join("props/fail-skip"), earlier.to_string()).unwrap();
+        fs::write(&fail, stop.strip_prefix("zfs ").unwrap()).unwrap();
+    }
+    for _ in 0..300 {
+        if stop.is_some() && !fail.exists() {
+            return;
+        }
+        let reply = post(socket, route, request.clone()).await;
+        if reply.get("Err").is_some() || writing.ended(&reply) {
+            assert!(stop.is_some() || reply.get("Ok").is_some(), "{reply}");
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("{writing:?} never ended");
+}
+
+/// The departure's verdict on the copy `name` held: whether it destroyed a slot that held
+/// a snapshot.
+async fn departure_destroys_a_point(test: &TestDir, socket: &Path, name: &str) -> bool {
+    let fs = format!("tank/ployz-mirror/{name}/fs");
+    let held = test
+        .0
+        .join(format!(
+            "{}-fs",
+            if name == "data" { "mirror" } else { "seed" }
+        ))
+        .exists()
+        && !snapshot_names(test, &fs).is_empty();
+    let before = commands(test);
+    let reply = post(socket, "/Storage.Demote", json!(null)).await;
+    assert!(reply.get("Ok").is_some(), "{reply}");
+    let destroy = format!("zfs destroy -r tank/ployz-mirror/{name}\n");
+    held && commands(test)[before.len()..].contains(&destroy)
+}
+
+/// Stops each head writer path at each effect it has, and asks the departure. Only a
+/// mirror pull that has marked the snapshot it received leaves a slot the departure
+/// destroys; every earlier stop, and every other path once it changed anything, leaves a
+/// slot it keeps.
+#[tokio::test]
+async fn every_stop_of_a_writer_path_leaves_a_slot_the_departure_keeps_until_a_pull_marked_it() {
+    for writing in [
+        Writing::Cut,
+        Writing::Restore,
+        Writing::PromoteAPulledSlot,
+        Writing::Seed,
+        Writing::LandAPulledSeed,
+        Writing::FirstPull,
+        Writing::IncrementalPull,
+        Writing::Resend,
+        Writing::SameNewestPull,
+    ] {
+        let (name, _, _) = writing.drive();
+        let source = Source::start(Some(BOUND), "snapshot w-1-2 12\n").await;
+        let test = TestDir::new();
+        let (socket, server) = writing.fixture(&test, source.port);
+        drive(writing, &test, &socket, None).await;
+        let steps = effects(&commands(&test));
+        assert!(!steps.is_empty(), "{writing:?}");
+        let marked = steps
+            .iter()
+            .position(|step| step.starts_with("zfs set ployz:pulled="));
+        assert_eq!(
+            marked.is_some(),
+            writing.received(),
+            "{writing:?}: {steps:?}"
+        );
+        if let Some(marked) = marked {
+            let received = steps
+                .iter()
+                .position(|step| step.starts_with("zfs receive"))
+                .unwrap();
+            assert!(received < marked, "{writing:?}: {steps:?}");
+            for mark in ["ployz:cut", "ployz:epoch", "ployz:promote", "ployz:seed"] {
+                let inherit = format!("zfs inherit {mark} {SLOT_FS}");
+                let dropped = steps.iter().position(|step| *step == inherit);
+                assert!(
+                    dropped.is_some_and(|dropped| received < dropped && dropped < marked),
+                    "{writing:?}: {mark} is not dropped between the receive and the mark: {steps:?}"
+                );
+            }
+        }
+        assert_eq!(
+            departure_destroys_a_point(&test, &socket, name).await,
+            writing.received(),
+            "{writing:?} finished"
+        );
+        server.abort();
+
+        for (index, step) in steps.iter().enumerate() {
+            let source = Source::start(Some(BOUND), "snapshot w-1-2 12\n").await;
+            let test = TestDir::new();
+            let (socket, server) = writing.fixture(&test, source.port);
+            let earlier = steps
+                .iter()
+                .take(index)
+                .filter(|done| *done == step)
+                .count();
+            drive(writing, &test, &socket, Some((step, earlier))).await;
+            assert!(
+                !test.0.join("props/fail-command").exists(),
+                "{writing:?}: {step} never ran"
+            );
+            let received = if index == 0 {
+                writing.starts_received()
+            } else {
+                marked.is_some_and(|marked| index > marked)
+            };
+            assert_eq!(
+                departure_destroys_a_point(&test, &socket, name).await,
+                received,
+                "{writing:?} stopped at {step}"
+            );
+            server.abort();
+        }
+    }
 }
