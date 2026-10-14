@@ -124,7 +124,9 @@ To stop an organization from using an installation, run `ployz github ls` to fin
 `ployz github disconnect <id>`. Only an owner or admin can. Builds that organization has in
 flight on GitHub through that installation stop, and their deploys fail with "GitHub account
 `<login>` was disconnected". Other organizations connected to the same installation keep it.
-Uninstalling the app on GitHub removes it from every organization at once.
+Suspending the app on GitHub hides its repositories from every organization until you unsuspend
+it; the connections stay. Uninstalling the app on GitHub removes it from every organization at
+once.
 
 ## Read a repository from the CLI
 

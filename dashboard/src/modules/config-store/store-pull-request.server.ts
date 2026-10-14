@@ -6,7 +6,7 @@ import { storePrCheckRun } from "./store-pull-requests";
 import { admittedEvents, callStore, storeSystem } from "#/modules/config-store/config-store.server";
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import { StoreGithubFailure, mergedInto, pullRequestEvent } from "#/modules/config-store/store-github.server";
-import { organizationAccess } from "#/modules/github/github-access";
+import { installationAccess } from "#/modules/github/github-access";
 import { fetchInstallationPullRequest, githubLacksPermission, postInstallationCheckRun } from "#/modules/github/github-observation.api";
 import { githubRepositoryCache, organizationGithubInstallation } from "#/modules/github/tables";
 import type { GithubPullRequestReceivedEventData } from "#/modules/github/github-ingestion.contracts";
@@ -39,15 +39,13 @@ const collect = Effect.fn("StorePullRequest.collect")(function* (organizationId:
 /**
  * A pull request, as each Organization linked to the installation sees it: Cloud reads its facts from GitHub now,
  * never the webhook's, and the Store keeps the newest by GitHub's `updated_at`, so a late delivery can't reopen a
- * closed one. The Store makes, retracks and closes PR Environments. The read goes through the first linked
- * Organization: every linked one shares the installation's token.
+ * closed one. The Store makes, retracks and closes PR Environments.
  */
 export const observeStorePullRequest = Effect.fn("StorePullRequest.observe")(function* (payload: GithubPullRequestReceivedEventData) {
   const done: StoreOutcome = { deployments: [], closing: [], check: false };
   const organizations = yield* listLinkedOrganizationIds(payload.installationId);
-  const first = organizations[0];
-  if (first === undefined) return done;
-  const access = organizationAccess(first, payload.installationId);
+  if (organizations.length === 0) return done;
+  const access = installationAccess(payload.installationId);
   const live = yield* fetchInstallationPullRequest(access, payload.repositoryId, payload.number);
   const { updatedAt } = live;
   if (updatedAt === null) return yield* new StoreGithubFailure({ message: "GitHub sent a pull request without updated_at." });
@@ -152,9 +150,8 @@ export const publishStorePrCheck = Effect.fn("StorePullRequest.publishCheck")(fu
     config.app.url.href,
   );
   if (!run) return "skipped" as const;
-  const first = views[0];
-  if (first === undefined) return "skipped" as const;
-  return yield* postInstallationCheckRun(organizationAccess(first.organizationId, payload.installationId), payload.repositoryId, {
+  if (views.length === 0) return "skipped" as const;
+  return yield* postInstallationCheckRun(installationAccess(payload.installationId), payload.repositoryId, {
     ...run,
     externalId: `${payload.repositoryId}:${payload.number}`,
   }).pipe(

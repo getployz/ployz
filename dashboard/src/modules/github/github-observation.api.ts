@@ -180,7 +180,6 @@ export type GithubInstallationRepositoriesResponse = typeof installationReposito
 export const GITHUB_REPOSITORIES_PAGE_SIZE = 100;
 
 export type GithubJsonRequest<S extends Schema.ConstraintDecoder<unknown>> = {
-  /** Whose read this is: public, or an Organization through an installation it links. */
   access: GithubAccess;
   path: `/${string}`;
   operation: GithubObservationOperation;
@@ -190,7 +189,6 @@ export type GithubJsonRequest<S extends Schema.ConstraintDecoder<unknown>> = {
   body?: unknown;
 };
 
-/** A call as the GitHub App itself, on its `/app/...` endpoints. */
 export type GithubAppRequest<S extends Schema.ConstraintDecoder<unknown>> = {
   path: `/app/${string}`;
   operation: GithubObservationOperation;
@@ -517,10 +515,11 @@ export const GithubApiLive = Layer.effect(
     const config = yield* AppConfig;
     const tokens = yield* GithubTokens;
 
-    const bearer = (access: GithubAccess) =>
-      access.type === "public"
-        ? Effect.succeed(null)
-        : tokens.installationToken(access.organizationId, access.installationId);
+    const bearer = (access: GithubAccess) => {
+      if (access.type === "public") return Effect.succeed(null);
+      if (access.type === "installation") return tokens.systemInstallationToken(access.installationId);
+      return tokens.installationToken(access.organizationId, access.installationId);
+    };
 
     const request = Effect.fn("GithubApi.request")(
       function* <S extends Schema.ConstraintDecoder<unknown>>(input: {
@@ -582,7 +581,7 @@ export const GithubApiLive = Layer.effect(
 
     const json: GithubApiService["json"] = Effect.fn("GithubApi.json")(
       function* <S extends Schema.ConstraintDecoder<unknown>>({ access, ...input }: GithubJsonRequest<S>) {
-        if (access.type === "organization" && !isValidGithubId(access.installationId)) {
+        if (access.type !== "public" && !isValidGithubId(access.installationId)) {
           return yield* githubObservationError({ code: "invalid_input", operation: input.operation, retriable: false });
         }
         const token = yield* bearer(access);

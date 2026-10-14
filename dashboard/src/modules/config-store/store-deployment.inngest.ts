@@ -130,7 +130,6 @@ type Step = Parameters<Parameters<PloyzInngest["createFunction"]>[1]>[0]["step"]
  * checks in and pushes. Each wait first reads whether a final report already ended it; each timeout also asks GitHub,
  * which catches a completion that landed between waits. With a Builder after GitHub, the first wait is the start limit.
  * Whatever GitHub doesn't build, the runner builds on the servers when the walk has them next, or fails with why.
- * Resolves to why the Deployment fails instead, when the Organization disconnected the installation mid-build.
  */
 async function walkGithub(organizationId: string, target: StoreGithubTarget, step: Step, runEffect: StoreEffectRunner): Promise<string | null> {
   const key = target.service;

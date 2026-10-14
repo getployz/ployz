@@ -80,7 +80,6 @@ export const dispatchGithubBuildWorkflow = Effect.fn("Github.dispatchBuildWorkfl
   };
 });
 
-/** A build run as its Organization reaches it. */
 export type GithubRunRef = { access: GithubAccess; fullName: string; runId: number };
 
 /** Cancel a build run. A run that already finished can't be cancelled; that's fine. */
@@ -132,6 +131,7 @@ export const listGithubBuildRepositories = Effect.fn("Github.listBuildRepositori
     const repositories = yield* listStoreGithubRepositories(actor, input.organizationSlug);
     return yield* Effect.forEach(repositories, (repository) =>
       checkGithubBuildWorkflow(organizationAccess(organization.id, repository.installationId), repository.repositoryId).pipe(
+        Effect.catchTag("GithubDisconnected", () => Effect.succeed({ fullName: null, defaultBranch: null, readiness: "no_permission" as const })),
         Effect.map((checked): GithubBuildRepository => ({
           installationId: repository.installationId,
           repositoryId: repository.repositoryId,

@@ -148,7 +148,6 @@ export const startStoreGithubBuild = Effect.fn("StoreGithub.start")(function* (o
   }).pipe(
     // GitHub failing before dispatch is GitHub being unusable, not the build failing.
     Effect.catchTag("GithubObservationError", (error) => skip(`GitHub couldn't take the build: ${error.message}`)),
-    // The Organization disconnected the installation: the build can't read the repository, with GitHub or the Servers.
     Effect.catchTag("GithubDisconnected", (error) => skip(error.message)),
     // Started or ended by a retried step already.
     Effect.catchIf(refusedWith("conflict"), () => Effect.succeed(done)),
@@ -162,7 +161,6 @@ const githubRun = (build: GithubBuild) => ({
 /** Whether GitHub says the run completed; GitHub unreachable reads as still running. */
 const runEnded = (build: GithubBuild) => githubRunCompleted(githubRun(build)).pipe(Effect.orElseSucceed(() => false));
 
-/** What one look at a dispatched build resolves to: the walk waits on, is done, or the Deployment fails with why. */
 export type StoreGithubCheck = "waiting" | "done" | { failed: string };
 
 /**
@@ -247,7 +245,6 @@ export const checkInStoreGithubBuild = Effect.fn("StoreGithub.checkIn")(function
   const store = yield* cloudStore;
   return yield* Effect.gen(function* () {
     const build = yield* storeTry(() => store.githubBuild(buildId));
-    // A Build Grant reads the Organization's secrets: none for a run whose installation it disconnected meanwhile.
     const link = yield* findInstallationLink(build.organization, build.run.installation_id);
     if (!link.linked) return yield* new Forbidden({ message: `GitHub account \`${link.accountLogin}\` was disconnected` });
     const connections = yield* connectionsOf(build.organization);
@@ -268,6 +265,8 @@ export const recordStoreGithubBuildSteps = Effect.fn("StoreGithub.steps")(functi
   const store = yield* cloudStore;
   return yield* Effect.gen(function* () {
     const build = yield* storeTry(() => store.githubBuild(buildId));
+    const link = yield* findInstallationLink(build.organization, build.run.installation_id);
+    if (!link.linked) return yield* new Forbidden({ message: `GitHub account \`${link.accountLogin}\` was disconnected` });
     const reported = yield* storeTry(() => store.githubReport(buildId, claims, report));
     if (reported.ended) {
       const connections = yield* connectionsOf(build.organization);

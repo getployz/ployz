@@ -3,10 +3,6 @@
 // Prints one line, `VERIFY_SEED <json>`: the organization slug, the session cookie, an Organization Token for the CLI
 // (`cliToken`), every write's outcome and what was skipped.
 //
-// With the fake GitHub (PLOYZ_VERIFY_GITHUB_ORIGIN set), Ada is its user ada and her organization links every
-// installation ada installed (7 acme, 8 ada), with their granted repositories cached as a sync leaves them. Bob Bobson is
-// its user bob, signs in with bob@example.com and BOB_PASSWORD to his own personal organization, which links 10 bob.
-//
 // Ada Lovelace's organization holds project `shop`, on public images so a real Server can run it:
 //   fix-api     a Branch of production (api, web) with 2 changes to save; production moved on after it branched
 //   staging     a kept Branch of production (api, worker) that includes search's changes, then sets one itself
@@ -59,8 +55,6 @@ type FakeGithub = {
   }>;
 };
 
-// The signed-in user is their fake GitHub user, and their organization links every installation that user installed,
-// its granted repositories cached as a sync leaves them. The fake's installation webhook records and grants nothing.
 const linkFakeGithub = (signedIn: { id: string; email: string }, organizationId: string) => Effect.gen(function* () {
   const { drizzle } = yield* Database;
   const fixture = JSON.parse(readFileSync(".verify/github.json", "utf8")) as FakeGithub;

@@ -16,7 +16,7 @@ import type {
   GithubCheckSuiteReceivedEventData,
   GithubPushReceivedEventData,
 } from "#/modules/github/github-ingestion.contracts";
-import { organizationAccess, type GithubAccess } from "#/modules/github/github-access";
+import { installationAccess, organizationAccess, type GithubAccess } from "#/modules/github/github-access";
 import { listLinkedOrganizationIds } from "#/modules/github/github.repository";
 import type { ConfigDeploymentAdmittedEventData } from "#/modules/inngest/events";
 
@@ -113,15 +113,10 @@ const observeBranchFor = Effect.fn("StoreGithub.observeBranchFor")(function* (
   return yield* new StoreGithubFailure({ message: "The branch's head kept moving while Cloud compared it." });
 });
 
-/**
- * The Organizations linked to the installation, and the access the fan-out reads GitHub with: the first linked one's.
- * Every linked Organization shares the installation's one token, so one read serves them all.
- */
 const linkedOrganizations = Effect.fn("StoreGithub.linkedOrganizations")(function* (installationId: number) {
   const organizations = yield* listLinkedOrganizationIds(installationId);
-  const first = organizations[0];
-  if (first === undefined) return null;
-  return { organizations, access: organizationAccess(first, installationId) };
+  if (organizations.length === 0) return null;
+  return { organizations, access: installationAccess(installationId) };
 });
 
 /**
@@ -138,7 +133,9 @@ export const observeStoreBranch = Effect.fn("StoreGithub.observeBranch")(functio
   const head = live.state === "present" ? live.headSha : null;
   const deployments: ConfigDeploymentAdmittedEventData[] = [];
   for (const organizationId of linked.organizations) {
-    deployments.push(...yield* observeBranchFor(store, organizationAccess(organizationId, payload.installationId), organizationId, payload, repository, head));
+    deployments.push(...yield* observeBranchFor(store, organizationAccess(organizationId, payload.installationId), organizationId, payload, repository, head).pipe(
+      Effect.catchTag("GithubDisconnected", () => Effect.succeed([])),
+    ));
   }
   return deployments;
 });

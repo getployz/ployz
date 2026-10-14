@@ -124,7 +124,6 @@ it.live(
       expect(yield* Effect.promise(() => store.read(ORGANIZATION, { query: "deployment", id: closed.removals[0] ?? "" })))
         .toMatchObject({ remove: true, status: "queued" });
 
-      // The Organization disconnected acme: its pull requests no longer reach the Store, and no check is published.
       expect(yield* unlinkGithubInstallation({ organizationId: ORGANIZATION, installationId: 7 }).pipe(Effect.provide(services))).toBe(true);
       const checksBefore = posted.length;
       Object.assign(pull, { state: "open", updated_at: "2026-09-29T14:00:00Z" });

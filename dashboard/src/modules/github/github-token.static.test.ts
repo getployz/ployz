@@ -4,7 +4,6 @@ import { expect, it } from "vitest";
 
 const SRC = join(process.cwd(), "src");
 
-/** Every installation token GitHub hands Cloud comes from the one place that checks the Organization's link first. */
 it("mints installation tokens in github-token.server.ts only", () => {
   const minting = readdirSync(SRC, { recursive: true, withFileTypes: true })
     .filter((entry) => entry.isFile() && /\.tsx?$/.test(entry.name) && !/\.test\.tsx?$/.test(entry.name))

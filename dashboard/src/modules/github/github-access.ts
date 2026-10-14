@@ -1,12 +1,14 @@
 import { Data } from "effect";
 
 /**
- * Who a repository read is for: a public repository needs no credentials; everything else reads as an Organization
- * through an installation it links. A repository request without one of these does not compile.
+ * Who a repository read is for: a public repository needs no credentials; an Organization reads through an installation
+ * it links; Cloud itself reads as the installation only to act on a webhook for every Organization linked to it. A
+ * repository request without one of these does not compile.
  */
 export type GithubAccess =
   | { readonly type: "public" }
-  | { readonly type: "organization"; readonly organizationId: string; readonly installationId: number };
+  | { readonly type: "organization"; readonly organizationId: string; readonly installationId: number }
+  | { readonly type: "installation"; readonly installationId: number };
 
 /** The Organization no longer links the installation, so no token is minted or reused for it. */
 export class GithubDisconnected extends Data.TaggedError("GithubDisconnected")<{
@@ -24,6 +26,7 @@ export class GithubDisconnected extends Data.TaggedError("GithubDisconnected")<{
 export const organizationAccess = (organizationId: string, installationId: number): GithubAccess =>
   ({ type: "organization", organizationId, installationId });
 
-/** The access a source's `installationId` names: `null` is a public read. */
+export const installationAccess = (installationId: number): GithubAccess => ({ type: "installation", installationId });
+
 export const accessFor = (organizationId: string, installationId: number | null): GithubAccess =>
   installationId === null ? { type: "public" } : organizationAccess(organizationId, installationId);

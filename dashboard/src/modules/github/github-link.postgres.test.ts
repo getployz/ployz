@@ -20,22 +20,18 @@ it("hands an installation token only to an Organization that links the installat
     const tokens = await harness.runEffect(makeGithubTokens((installationId) => Effect.sync(() => `token-${installationId}-${(mints += 1)}`)));
     const token = (organizationId: string, installationId: number) => harness.runEffect(Effect.result(tokens.installationToken(organizationId, installationId)));
 
-    // Two Organizations on one installation share one mint.
     expect(await token(shop, 7)).toEqual(Result.succeed("token-7-1"));
     expect(await token(lab, 7)).toEqual(Result.succeed("token-7-1"));
     expect(mints).toBe(1);
 
-    // Unlinking one leaves the other; the unlinked one is refused by name while the token is still cached.
     expect(await harness.runEffect(unlinkGithubInstallation({ organizationId: shop, installationId: 7 }))).toBe(true);
     expect(await token(shop, 7)).toEqual(Result.fail(new GithubDisconnected({ organizationId: shop, installationId: 7, accountLogin: "acme" })));
     expect(await token(lab, 7)).toEqual(Result.succeed("token-7-1"));
     expect(mints).toBe(1);
 
-    // An installation Cloud never saw reads as disconnected too; Cloud's own bookkeeping needs no link.
     expect(await token(lab, 9)).toEqual(Result.fail(new GithubDisconnected({ organizationId: lab, installationId: 9, accountLogin: "installation 9" })));
     expect(await harness.runEffect(tokens.systemInstallationToken(7))).toBe("token-7-1");
 
-    // The link check runs before the cache on every call, and stays cheap.
     const started = performance.now();
     const calls = await harness.runEffect(Effect.forEach(
       Array.from({ length: 200 }, () => 7),

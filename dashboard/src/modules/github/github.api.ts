@@ -23,7 +23,6 @@ const RepositoryFullName = Schema.String.check(
   Schema.isPattern(/^[^/\s]+\/[^/\s]+$/),
 );
 
-/** One page of an installation's repositories, read as Cloud for the cache. */
 export const listInstallationReposPage = Effect.fn(
   "Github.listInstallationReposPage",
 )(function* (installationId: number, page: number) {

@@ -11,6 +11,7 @@ import { sendInngestEvent } from "#/modules/inngest/client";
 import { listGithubRepositoryFiles, listGithubRepositoryBranches } from "#/modules/github/github.api";
 import {
   deleteCachedGithubRepositoriesById,
+  deleteCachedGithubRepositoriesForInstallation,
   deleteGithubInstallation,
   getCachedGithubRepositoryForOrganization,
   listCachedGithubRepositoriesForOrganization,
@@ -60,7 +61,8 @@ function githubRepositoryFromWebhook(
 
 /**
  * An installation webhook records what GitHub told us and grants nothing: only an Organization's link row does.
- * `deleted` and `suspend` forget the installation, which cascades to its cache and every Organization's link.
+ * `suspend` empties the installation's repository cache and keeps every Organization's link, so `unsuspend` brings the
+ * repositories back; `deleted` forgets the installation, which cascades to its cache and every link.
  */
 export const processGithubInstallationEvent = Effect.fn(
   "Github.processInstallationEvent",
@@ -78,7 +80,8 @@ export const processGithubInstallationEvent = Effect.fn(
     };
   }
 
-  yield* deleteGithubInstallation(payload.installation.id);
+  if (payload.action === "suspend") yield* deleteCachedGithubRepositoriesForInstallation(payload.installation.id);
+  else yield* deleteGithubInstallation(payload.installation.id);
   return {
     installationId: payload.installation.id,
     shouldSyncRepositories: false,
@@ -113,7 +116,6 @@ export const processGithubInstallationRepositoriesEvent = Effect.fn(
   };
 });
 
-/** The GitHub repositories the Organization's linked installations grant, which its repository picker lists. */
 export const listGithubRepositories = Effect.fn("Github.listRepositories")(
   function* (actor: Actor, organizationSlug: string) {
     const { organization } = yield* requireAccess(actor, organizationSlug, "operate");
@@ -163,7 +165,6 @@ type RepositoryInput = {
   readonly installationId: number | null;
 };
 
-/** A repository as the Organization reads it: through one of its linked installations, or publicly. */
 const readableRepository = Effect.fn("Github.readableRepository")(function* (actor: Actor, input: RepositoryInput) {
   const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
   const access: GithubAccess = accessFor(organization.id, input.installationId);

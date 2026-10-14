@@ -140,7 +140,6 @@ it.live(
           { organizationId: otherOrganizationId, installationId: 43, connectedByUserId: otherSession.user.id, connectedGithubLogin: "other" },
         ]);
         yield* database.drizzle.insert(githubRepositoryCache).values([row, { ...row, installationId: 43, name: "private-other" }]);
-        // The repository cache is read per Organization through its links, outside the Org Store.
         assert.deepStrictEqual(yield* listCachedGithubRepositoriesForOrganization(organizationId), [row]);
         assert.deepStrictEqual((yield* listCachedGithubRepositoriesForOrganization(otherOrganizationId)).map((row) => row.name), ["private-other"]);
         const place = { environmentId: crypto.randomUUID(), resourceType: "service", x: 1, y: 2 };

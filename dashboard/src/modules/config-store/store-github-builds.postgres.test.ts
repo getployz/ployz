@@ -157,8 +157,6 @@ it.live(
       const trusted = yield* provided(gatherTrusted(ORGANIZATION, admission, (query) => store.read(ORGANIZATION, query)));
       expect(trusted.servers).toBe(0);
 
-      // The Organization disconnects acme while GitHub holds a build: the runner's check-in is refused, the worker's
-      // next look cancels the run and fails the Deployment with the disconnect.
       const disconnected = "00000000-0000-4000-8000-00000000b105";
       yield* write({ command: "admit", admit: "deploy", id: disconnected, environment: here, services: [], version: null, accept_volume_loss: [] });
       const held = `${disconnected}.web`;
@@ -169,6 +167,9 @@ it.live(
       expect(yield* provided(unlinkGithubInstallation({ organizationId: ORGANIZATION, installationId: 7 }))).toBe(true);
       expect(yield* provided(Effect.flip(checkInStoreGithubBuild(request(oidcToken({ run_id: "9105" })), held))))
         .toMatchObject({ _tag: "Forbidden", message: "GitHub account `acme` was disconnected" });
+      expect(yield* provided(Effect.flip(recordStoreGithubBuildSteps(request(oidcToken({ run_id: "9105" })), held, JSON.stringify({ from: 0, events: [] })))))
+        .toMatchObject({ _tag: "Forbidden", message: "GitHub account `acme` was disconnected" });
+      expect(yield* Effect.promise(() => store.githubBuild(held))).toMatchObject({ status: "building" });
       const look = yield* provided(checkStoreGithubBuild(ORGANIZATION, { ...target, build: held }, { ended: false, startLimit: false }));
       expect(look).toEqual({ failed: "GitHub account `acme` was disconnected" });
       expect(yield* Effect.promise(() => store.githubBuild(held))).toMatchObject({ status: "failed" });

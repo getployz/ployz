@@ -41,7 +41,6 @@ function retryAfterSeconds(response: Response): number | undefined {
   return Number.isSafeInteger(seconds) ? seconds : undefined;
 }
 
-/** The App JWT GitHub accepts on `/app/...` endpoints, including the token mint. */
 export const githubAppJwt = Effect.fn("GithubTokens.appJwt")(function* () {
   const { github } = yield* AppConfig;
   return yield* Effect.try({
@@ -50,7 +49,6 @@ export const githubAppJwt = Effect.fn("GithubTokens.appJwt")(function* () {
   });
 });
 
-/** One `POST /app/installations/{id}/access_tokens`. The only place Cloud mints an installation token. */
 export const mintInstallationToken = Effect.fn("GithubTokens.mint")(function* (installationId: number) {
   const { github } = yield* AppConfig;
   const jwt = yield* githubAppJwt();
@@ -96,7 +94,6 @@ export interface GithubTokensService {
 
 export class GithubTokens extends Context.Service<GithubTokens, GithubTokensService>()("ployz/GithubTokens") {}
 
-/** Whether the Organization links the installation now, and the account's login for the refusal when it does not. */
 export const findInstallationLink = Effect.fn("GithubTokens.findInstallationLink")(function* (organizationId: string, installationId: number) {
   const { drizzle } = yield* Database;
   const rows = yield* drizzle
@@ -112,7 +109,6 @@ export const findInstallationLink = Effect.fn("GithubTokens.findInstallationLink
   return { linked: row?.linked !== undefined && row.linked !== null, accountLogin: row?.accountLogin ?? `installation ${installationId}` };
 });
 
-/** The service over any `mint`, so a test counts mints without GitHub. */
 export const makeGithubTokens = Effect.fn("GithubTokens.make")(function* (
   mint: (installationId: number) => Effect.Effect<string, GithubObservationError>,
 ) {
@@ -128,7 +124,6 @@ export const makeGithubTokens = Effect.fn("GithubTokens.make")(function* (
   });
   const installationToken: GithubTokensService["installationToken"] = Effect.fn("GithubTokens.installation")(function* (organizationId, installationId) {
     if (!isValidGithubId(installationId)) return yield* mintFailed({ code: "request_failed", retriable: false });
-    // A database that can't answer is a defect here, not a GitHub observation.
     const link = yield* findInstallationLink(organizationId, installationId).pipe(Effect.provideService(Database, database), Effect.orDie);
     if (!link.linked) return yield* new GithubDisconnected({ organizationId, installationId, accountLogin: link.accountLogin });
     return yield* cached(installationId);

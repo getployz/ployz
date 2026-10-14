@@ -15,7 +15,6 @@ import {
 const Uuid = Schema.String.check(Schema.isUUID());
 const DEFAULT_HOSTED_DNS_URL = new URL("https://dns.ployz.app/");
 const DEFAULT_POSTHOG_HOST = new URL("https://us.i.posthog.com");
-/** `oidc` is GitHub Actions' token issuer: every runner token names it, and its JWKS signs them. */
 export type GithubOrigins = { readonly api: string; readonly web: string; readonly codeload: string; readonly oidc: string };
 const GITHUB_ORIGINS: GithubOrigins = {
   api: "https://api.github.com",

@@ -444,7 +444,9 @@ export async function run() {
       const setupAction = url.searchParams.get("setup_action") === "update" ? "update" : "install";
       const deliver = () => sendWebhook({ event: "installation", action: "created", installation: id, sender: from.login });
       let delivered: { status: number } | undefined;
-      if (setupAction === "install" && url.searchParams.get("order") === "callback-first") setTimeout(() => void deliver(), 700);
+      if (setupAction === "install" && url.searchParams.get("order") === "callback-first") {
+        setTimeout(() => void deliver().catch((error: unknown) => console.log(`${new Date().toISOString()} deferred installation webhook failed: ${String(error)}`)), 700);
+      }
       else if (setupAction === "install") delivered = await deliver();
       const { callbackPath } = fixture.app.afterInstall;
       if (callbackPath === null) {

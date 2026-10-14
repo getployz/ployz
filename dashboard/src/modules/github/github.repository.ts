@@ -42,7 +42,6 @@ const linkedInstallation = {
   connectedAt: schemaLink.connectedAt,
 };
 
-/** The installations the Organization reads through, with who connected each. */
 export const listGithubInstallationsForOrganization = Effect.fn(
   "Github.listInstallationsForOrganization",
 )(function* (organizationId: string) {
@@ -79,7 +78,6 @@ export const linkGithubInstallation = Effect.fn("Github.linkInstallation")(
   },
 );
 
-/** Forget the Organization's link only; the installation, its cache and other Organizations' links stay. */
 export const unlinkGithubInstallation = Effect.fn("Github.unlinkInstallation")(
   function* (input: { readonly organizationId: string; readonly installationId: number }) {
     const database = yield* Database;
@@ -120,6 +118,15 @@ export const deleteGithubInstallation = Effect.fn(
   yield* database.drizzle
     .delete(schemaGithubInstallation)
     .where(eq(schemaGithubInstallation.installationId, installationId));
+});
+
+export const deleteCachedGithubRepositoriesForInstallation = Effect.fn(
+  "Github.deleteCachedRepositoriesForInstallation",
+)(function* (installationId: number) {
+  const database = yield* Database;
+  yield* database.drizzle
+    .delete(schemaGithubRepositoryCache)
+    .where(eq(schemaGithubRepositoryCache.installationId, installationId));
 });
 
 export const deleteCachedGithubRepositoriesById = Effect.fn(
@@ -212,7 +219,6 @@ const linkedCache = (organizationId: string) =>
     eq(schemaLink.installationId, schemaGithubRepositoryCache.installationId),
   );
 
-/** The repositories the Organization's linked installations grant, which a repository picker reads. */
 export const listCachedGithubRepositoriesForOrganization = Effect.fn(
   "Github.listCachedRepositoriesForOrganization",
 )(function* (organizationId: string) {

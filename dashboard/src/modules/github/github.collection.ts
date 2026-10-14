@@ -10,7 +10,6 @@ export type GithubRepositoryView = GithubRepositorySelection & {
   synced_at: string;
 };
 
-/** The repositories one Organization reads, per browser session. */
 export type GithubCollectionScope = {
   queryClient: QueryClient;
   organizationSlug: string;

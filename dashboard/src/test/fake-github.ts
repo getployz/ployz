@@ -7,7 +7,6 @@ import { AppConfig } from "#/server/config.server";
 
 type GithubRequest = Parameters<GithubApiService["json"]>[0];
 
-/** Installation tokens minted once per installation for any Organization, link or no link, so an API test needs no database. */
 export const GithubTokensUnchecked = Layer.effect(GithubTokens, Effect.gen(function* () {
   const config = yield* AppConfig;
   const cache = yield* Cache.make({
