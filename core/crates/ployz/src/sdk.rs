@@ -813,7 +813,7 @@ impl Session {
             })?;
             crate::ingress::fill_slots(&mut client, cancel)
                 .await
-                .map_err(|failure| internal(failure.to_string()))
+                .map_err(|failure| failure.report())
         })
         .await
     }
@@ -1226,15 +1226,6 @@ fn invalid_argument(message: String) -> RpcError {
 fn unavailable(message: String) -> RpcError {
     RpcError {
         code: RpcErrorCode::Unavailable,
-        message,
-        details: Value::Null,
-        cause: Vec::new(),
-    }
-}
-
-fn internal(message: String) -> RpcError {
-    RpcError {
-        code: RpcErrorCode::Internal,
         message,
         details: Value::Null,
         cause: Vec::new(),
