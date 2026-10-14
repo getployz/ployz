@@ -24,7 +24,7 @@ use super::{
     inspect::internal,
     seed::SEED_PROPERTY,
     storage::{
-        CUT_PROPERTY, EPOCH_PROPERTY, PROMOTE_PROPERTY, PULL_PROPERTY, slot_fs, slot_parent,
+        CUT_PROPERTY, EPOCH_PROPERTY, PROMOTE_PROPERTY, PULLED_PROPERTY, slot_fs, slot_parent,
     },
 };
 
@@ -167,11 +167,7 @@ impl VolumeStorage {
         let fs = Self::slot_fs(datasets, pool, name);
         let Some(root) = root else {
             return Ok(match fs {
-                Some(fs)
-                    if self
-                        .written_here(&slot_parent(pool, name), &fs.name)
-                        .await? =>
-                {
+                Some(fs) if self.written_here(&fs.name).await? => {
                     if fs.readonly {
                         Departure::Departed
                     } else {
@@ -188,39 +184,38 @@ impl VolumeStorage {
         })
     }
 
-    /// Whether the slot's copy may be the only one: a departure or a Move's cut left a
-    /// root there, a restore marked it before landing it, or a seed received its point
-    /// whole, which its source may since have pruned. Only this Machine sets these marks
-    /// and a send carries no properties, so a received copy has none of its own. A
-    /// cut or an epoch describes the point it was set at, so it stops counting once the
-    /// slot's parent records that its newest snapshot was pulled: a writer elsewhere made
-    /// that snapshot after it. A promote mark counts regardless: v0.3.0-beta.1 promoted
-    /// without dropping the pull record, and a landed pull at worst leaks one old point.
-    async fn written_here(&self, parent: &str, fs: &str) -> super::Result<bool> {
-        let points: Vec<String> = self
+    /// Whether the slot's copy may be the only one. Only a mirror pull marks a slot
+    /// pulled, once its receive made a snapshot a writer elsewhere had made, and that is
+    /// the only evidence the departure destroys on: every slot without it is kept, so a
+    /// state no release before the mark could tell apart leaks rather than loses data. A
+    /// departure snapshot or a seed, promote, cut or epoch mark keeps a slot even so, as
+    /// each describes a point this Machine may alone hold. A slot with no snapshot at all
+    /// holds only a receive that never completed, which every receive makes resumable with
+    /// `-s`, so it holds no point at all.
+    async fn written_here(&self, fs: &str) -> super::Result<bool> {
+        if self
             .snapshot_names(fs)
             .await?
-            .into_iter()
-            .filter_map(|snapshot| snapshot.split_once('@').map(|(_, point)| point.to_owned()))
-            .collect();
-        if points
             .iter()
-            .any(|point| point.starts_with(DEPARTURE_SNAPSHOT_PREFIX))
-            || self.property(fs, SEED_PROPERTY).await?.is_some()
-            || self.property(fs, PROMOTE_PROPERTY).await?.is_some()
+            .filter_map(|snapshot| snapshot.split_once('@'))
+            .any(|(_, point)| point.starts_with(DEPARTURE_SNAPSHOT_PREFIX))
         {
             return Ok(true);
         }
-        let pulled = self.property(parent, PULL_PROPERTY).await?;
-        if pulled.is_some() && pulled.as_ref() == points.first() {
-            return Ok(false);
-        }
-        for mark in [CUT_PROPERTY, EPOCH_PROPERTY] {
+        for mark in [
+            SEED_PROPERTY,
+            PROMOTE_PROPERTY,
+            CUT_PROPERTY,
+            EPOCH_PROPERTY,
+        ] {
             if self.property(fs, mark).await?.is_some() {
                 return Ok(true);
             }
         }
-        Ok(false)
+        let Some(newest) = self.newest_guid(fs).await? else {
+            return Ok(false);
+        };
+        Ok(self.local_property(fs, PULLED_PROPERTY).await? != Some(newest))
     }
 
     async fn freeze_root(

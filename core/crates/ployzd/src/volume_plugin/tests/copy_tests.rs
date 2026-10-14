@@ -337,6 +337,7 @@ async fn the_writer_route_promotes_a_pulled_slot() {
     assert_eq!(
         effects(&commands(&test)),
         [
+            "zfs inherit ployz:pulled tank/ployz-mirror/data/fs",
             "zfs set ployz:epoch=2 tank/ployz-mirror/data/fs",
             "zfs set ployz:promote=on tank/ployz-mirror/data/fs",
             "zfs rename tank/ployz-mirror/data/fs tank/ployz/data",
@@ -1160,6 +1161,7 @@ async fn a_landed_pull_drops_the_writer_marks_so_the_departure_destroys_the_mirr
         ("ployz:cut", "on"),
         ("ployz:epoch", "3"),
         ("ployz:promote", "on"),
+        ("ployz:seed", "11"),
     ] {
         let source = Source::start(Some(BOUND), "snapshot w-1-2 12\n").await;
         let test = TestDir::new();
@@ -1170,6 +1172,11 @@ async fn a_landed_pull_drops_the_writer_marks_so_the_departure_destroys_the_mirr
         post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
         finished(&socket, "w-1-2").await;
         assert_eq!(property(&test, SLOT_FS, mark), None, "{mark}");
+        assert_eq!(
+            property(&test, SLOT_FS, "ployz:pulled").as_deref(),
+            Some("12"),
+            "{mark}"
+        );
 
         let reply = post(&socket, "/Storage.Demote", json!(null)).await;
         assert_eq!(
@@ -1203,8 +1210,9 @@ async fn a_pull_of_the_slots_newest_keeps_its_cut() {
 }
 
 /// The state a pull leaves when the daemon stops between landing the target and the
-/// resend that settles it: the slot's parent still names the pull, and marks from the
-/// copy's own past are still on it.
+/// resend that settles it, on a slot whose own past left a mark: the slot's parent still
+/// names the pull. A release before the pulled mark leaves a slot its newest point never
+/// marked, which a cut's same-newest resend leaves too.
 fn landed_before_a_restart(test: &TestDir, mark: &str, value: &str) {
     set_snapshots(test, SLOT_FS, &[("w-1-2", 12)]);
     set_property(test, SLOT, "ployz:pull", "w-1-2");
@@ -1212,25 +1220,7 @@ fn landed_before_a_restart(test: &TestDir, mark: &str, value: &str) {
 }
 
 #[tokio::test]
-async fn departure_destroys_a_landed_pull_whose_marks_were_never_dropped() {
-    for (mark, value) in [("ployz:cut", "on"), ("ployz:epoch", "3")] {
-        let test = TestDir::new();
-        let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], 1);
-        landed_before_a_restart(&test, mark, value);
-
-        let reply = post(&socket, "/Storage.Demote", json!(null)).await;
-        assert_eq!(
-            reply,
-            json!({"Ok": {"demoted": ["data"], "stuck": []}}),
-            "{mark}"
-        );
-        assert!(!test.0.join("mirror").exists(), "{mark}");
-        server.abort();
-    }
-}
-
-#[tokio::test]
-async fn a_resend_of_a_landed_pull_drops_the_marks_of_the_older_point() {
+async fn a_resend_of_the_slots_newest_keeps_its_marks_and_marks_no_pull() {
     for (mark, value) in [("ployz:cut", "on"), ("ployz:epoch", "3")] {
         let test = TestDir::new();
         let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], 1);
@@ -1238,19 +1228,17 @@ async fn a_resend_of_a_landed_pull_drops_the_marks_of_the_older_point() {
 
         let reply = post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
         assert_eq!(reply.pointer("/Ok/pull"), Some(&Value::Null), "{reply}");
-        assert_eq!(property(&test, SLOT_FS, mark), None, "{mark}");
+        assert_eq!(property(&test, SLOT_FS, mark).as_deref(), Some(value));
+        assert_eq!(property(&test, SLOT_FS, "ployz:pulled"), None, "{mark}");
         let reply = post(&socket, "/Storage.Demote", json!(null)).await;
-        assert_eq!(
-            reply,
-            json!({"Ok": {"demoted": ["data"], "stuck": []}}),
-            "{mark}"
-        );
+        assert_eq!(reply, json!({"Ok": {"demoted": [], "stuck": []}}), "{mark}");
+        assert!(test.0.join("mirror-fs").exists(), "{mark}");
         server.abort();
     }
 }
 
 #[tokio::test]
-async fn a_pull_started_over_a_landed_one_leaves_a_mirror_the_departure_destroys() {
+async fn a_pull_stopped_over_a_marked_slot_leaves_it_kept() {
     for (mark, value) in [("ployz:cut", "on"), ("ployz:epoch", "3")] {
         let source = Source::start(Some(BOUND), "snapshot w-1-3 13\n").await;
         let test = TestDir::new();
@@ -1261,22 +1249,19 @@ async fn a_pull_started_over_a_landed_one_leaves_a_mirror_the_departure_destroys
         let pid = receive_pid(&test).await;
 
         let reply = post(&socket, "/Storage.Demote", json!(null)).await;
-        assert_eq!(
-            reply,
-            json!({"Ok": {"demoted": ["data"], "stuck": []}}),
-            "{mark}"
-        );
+        assert_eq!(reply, json!({"Ok": {"demoted": [], "stuck": []}}), "{mark}");
         assert!(
             !Path::new(&format!("/proc/{pid}")).exists(),
             "{mark}: the receive still runs"
         );
-        assert!(!test.0.join("mirror").exists(), "{mark}");
+        assert!(test.0.join("mirror-fs").exists(), "{mark}");
+        assert_eq!(property(&test, SLOT_FS, "ployz:pulled"), None, "{mark}");
         server.abort();
     }
 }
 
 #[tokio::test]
-async fn a_pull_whose_mark_cleanup_fails_leaves_a_mirror_the_departure_destroys() {
+async fn a_pull_whose_mark_cleanup_fails_leaves_a_slot_the_departure_keeps() {
     for (mark, value) in [("ployz:cut", "on"), ("ployz:epoch", "3")] {
         let source = Source::start(Some(BOUND), "snapshot w-1-2 12\n").await;
         let test = TestDir::new();
@@ -1293,14 +1278,11 @@ async fn a_pull_whose_mark_cleanup_fails_leaves_a_mirror_the_departure_destroys(
             "{copy}"
         );
         post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
+        assert_eq!(property(&test, SLOT_FS, "ployz:pulled"), None, "{mark}");
 
         let reply = post(&socket, "/Storage.Demote", json!(null)).await;
-        assert_eq!(
-            reply,
-            json!({"Ok": {"demoted": ["data"], "stuck": []}}),
-            "{mark}"
-        );
-        assert!(!test.0.join("mirror").exists(), "{mark}");
+        assert_eq!(reply, json!({"Ok": {"demoted": [], "stuck": []}}), "{mark}");
+        assert!(test.0.join("mirror-fs").exists(), "{mark}");
         server.abort();
     }
 }
@@ -1311,7 +1293,9 @@ async fn a_pull_whose_mark_cleanup_fails_leaves_a_mirror_the_departure_destroys(
 async fn departure_keeps_a_pulled_slot_whose_promote_stopped_before_the_rename() {
     let test = TestDir::new();
     let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], 1);
-    landed_before_a_restart(&test, "ployz:cut", "on");
+    set_snapshots(&test, SLOT_FS, &[("w-1-2", 12)]);
+    set_property(&test, SLOT, "ployz:pull", "w-1-2");
+    set_property(&test, SLOT_FS, "ployz:pulled", "12");
     fs::write(
         test.0.join("props/fail-command"),
         "rename tank/ployz-mirror/data/fs tank/ployz/data",
@@ -1325,9 +1309,13 @@ async fn departure_keeps_a_pulled_slot_whose_promote_stopped_before_the_rename()
     )
     .await;
     assert!(reply.get("Err").is_some(), "{reply}");
-    assert_eq!(property(&test, SLOT_FS, "ployz:cut"), None);
+    assert_eq!(property(&test, SLOT_FS, "ployz:pulled"), None);
+    assert_eq!(
+        property(&test, SLOT_FS, "ployz:epoch").as_deref(),
+        Some("4")
+    );
     let reply = post(&socket, "/Storage.Demote", json!(null)).await;
-    assert!(reply.get("Ok").is_some(), "{reply}");
+    assert_eq!(reply, json!({"Ok": {"demoted": [], "stuck": []}}));
     assert!(test.0.join("mirror-fs").exists());
     server.abort();
 }

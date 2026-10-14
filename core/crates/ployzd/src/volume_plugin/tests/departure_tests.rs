@@ -119,6 +119,7 @@ async fn departure_destroys_a_received_mirror_and_the_emptied_mirror_root() {
             "snapshots",
             "tank/ployz-mirror/data/fs@w-3-1\t901\t1690000001",
         );
+        set_property(&test, "tank/ployz-mirror/data/fs", "ployz:pulled", "901");
         let (socket, server) = start(&test, USABLE_POOL, markers);
 
         let response = post(&socket, "/Storage.Demote", json!(null)).await;
@@ -283,7 +284,11 @@ async fn departure_keeps_every_slot_no_landed_pull_marked() {
         let (socket, server) = start(&test, USABLE_POOL, &["root", "mirror", "mirror-fs"]);
 
         let response = post(&socket, "/Storage.Demote", json!(null)).await;
-        assert_eq!(response, json!({"Ok": {"demoted": [], "stuck": []}}), "{case}");
+        assert_eq!(
+            response,
+            json!({"Ok": {"demoted": [], "stuck": []}}),
+            "{case}"
+        );
         assert!(!commands(&test).contains("zfs destroy"), "{case}");
         assert!(test.0.join("mirror-fs").exists(), "{case}");
         server.abort();
@@ -300,7 +305,12 @@ async fn departure_keeps_a_slot_that_only_inherits_a_pulled_mark() {
         "snapshots",
         "tank/ployz-mirror/data/fs@w-1-2\t12\t1700000002",
     );
-    set_property(&test, "inherited/tank/ployz-mirror/data/fs", "ployz:pulled", "12");
+    set_property(
+        &test,
+        "inherited/tank/ployz-mirror/data/fs",
+        "ployz:pulled",
+        "12",
+    );
     let (socket, server) = start(&test, USABLE_POOL, &["root", "mirror", "mirror-fs"]);
 
     let response = post(&socket, "/Storage.Demote", json!(null)).await;

@@ -228,7 +228,11 @@ async fn seed_finishes_an_interrupted_landing_on_resend() {
         "mountpoint",
         "/var/lib/ployz-mirror/seed/fs",
     );
-    fs::write(test.0.join("inherit-fails"), "").unwrap();
+    fs::write(
+        test.0.join("props/fail-command"),
+        "inherit mountpoint tank/ployz/seed",
+    )
+    .unwrap();
 
     let mut interrupted = Value::Null;
     for _ in 0..200 {
@@ -244,7 +248,6 @@ async fn seed_finishes_an_interrupted_landing_on_resend() {
         "the landing stopped after the rename"
     );
 
-    fs::remove_file(test.0.join("inherit-fails")).unwrap();
     let resent = post(&socket, "/Volume.Seed", seed(77)).await;
     assert_eq!(resent.pointer("/Ok/copy/kind").unwrap(), "root", "{resent}");
     assert_landed(&test);

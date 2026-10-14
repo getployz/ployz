@@ -20,9 +20,10 @@ use super::{
     inspect::internal,
     mirror,
     pool::UnlabeledBacking,
+    seed::SEED_PROPERTY,
     storage::{
         CUT_PROPERTY, DATASET_ROOT, EPOCH_PROPERTY, PROMOTE_PROPERTY, PULL_PROPERTY,
-        RESUME_TOKEN_PROPERTY, slot_fs, slot_parent,
+        PULLED_PROPERTY, RESUME_TOKEN_PROPERTY, slot_fs, slot_parent,
     },
     transfer::{ReceiveFailure, Stop},
 };
@@ -448,20 +449,9 @@ impl VolumeStorage {
         {
             self.z(&["receive", "-A", &fs_name]).await?;
         }
-        // The epoch below describes the slot's newest point, so the departure must not
-        // read the slot as pulled while it carries the epoch.
-        let slot = slot_parent(&scope.pool, name);
-        let pulling = self
-            .property(&slot, PULL_PROPERTY)
-            .await
-            .map_err(internal)?;
-        if pulling.is_some() {
-            let newest = self.snapshots(&fs_name).await.map_err(internal)?;
-            let newest = newest.first().map(|newest| newest.name.as_str());
-            self.drop_marks_of_an_older_point(&fs_name, pulling.as_deref(), newest)
-                .await?;
-            self.z(&["inherit", PULL_PROPERTY, &slot]).await?;
-        }
+        // The slot stops being a received copy here, so the departure must not take it
+        // for one from a crash on.
+        self.z(&["inherit", PULLED_PROPERTY, &fs_name]).await?;
         self.z(&[
             "set",
             &format!("{EPOCH_PROPERTY}={}", request.epoch),
@@ -486,7 +476,8 @@ impl VolumeStorage {
             self.create_root(&parent).await.map_err(internal)?;
         }
         self.z(&["rename", &fs_name, &root_name]).await?;
-        self.z(&["destroy", &slot]).await?;
+        self.z(&["destroy", &slot_parent(&scope.pool, name)])
+            .await?;
         self.make_writable(&root_name, "", true, name).await?;
         self.copy_now(&scope).await
     }
@@ -635,8 +626,6 @@ impl VolumeStorage {
         };
         let newest_name = newest.as_ref().map(|newest| newest.name.as_str());
         if newest_name == Some(target.as_str()) {
-            self.drop_marks_of_an_older_point(&fs, pulling.as_deref(), newest_name)
-                .await?;
             self.finish_copy(&fs, bound)
                 .await
                 .map_err(|error| internal(error.into()))?;
@@ -650,8 +639,6 @@ impl VolumeStorage {
             return self.copy_now(&scope).await;
         }
         if pulling.as_deref() != Some(target.as_str()) {
-            self.drop_marks_of_an_older_point(&fs, pulling.as_deref(), newest_name)
-                .await?;
             self.z(&["set", &format!("{PULL_PROPERTY}={target}"), &parent])
                 .await?;
         }
@@ -685,10 +672,17 @@ impl VolumeStorage {
             name: request.name.clone(),
             source,
         };
+        let held = match scope.fs() {
+            Some(_) => self.newest_guid(&fs).await.map_err(internal)?,
+            None => None,
+        };
         let storage = self.clone();
         let from = request.from;
         self.receives.spawn(name, |stop| async move {
-            let result = storage.pull_stream(from, stream, &fs, bound, &stop).await;
+            let result = match storage.pull_stream(from, stream, &fs, bound, &stop).await {
+                Ok(()) => storage.mark_pulled(&fs, held.as_deref()).await,
+                Err(error) => Err(error),
+            };
             if let Err(error) = &result {
                 tracing::warn!(%fs, %error, "Volume pull failed");
             }
@@ -749,22 +743,31 @@ impl VolumeStorage {
             .map_err(|failure| failure.to_string())
     }
 
-    /// A slot whose parent names its newest snapshot pulled that snapshot, which only a
-    /// writer elsewhere made after this copy's cut, restore or promote. Its marks describe
-    /// an older point, so they go before the record of the pull does; the departure reads
-    /// the record in their place until then.
-    async fn drop_marks_of_an_older_point(
-        &self,
-        fs: &str,
-        pulling: Option<&str>,
-        newest: Option<&str>,
-    ) -> Result<(), RpcError> {
-        if pulling.is_none() || pulling != newest {
+    /// Marks the slot received from a writer elsewhere, when this pull made a newer
+    /// snapshot than the slot `held`. Any cut, restore, promote or seed mark describes a
+    /// point that writer has since built on, so each goes first: a crash between leaves a
+    /// slot with neither, which the departure keeps.
+    async fn mark_pulled(&self, fs: &str, held: Option<&str>) -> Result<(), String> {
+        let newest = self
+            .newest_guid(fs)
+            .await
+            .map_err(|error| error.to_string())?;
+        let Some(newest) = newest.filter(|newest| Some(newest.as_str()) != held) else {
             return Ok(());
+        };
+        for mark in [
+            CUT_PROPERTY,
+            EPOCH_PROPERTY,
+            PROMOTE_PROPERTY,
+            SEED_PROPERTY,
+        ] {
+            self.zfs(&["inherit", mark, fs])
+                .await
+                .map_err(|error| error.to_string())?;
         }
-        for mark in [CUT_PROPERTY, EPOCH_PROPERTY, PROMOTE_PROPERTY] {
-            self.z(&["inherit", mark, fs]).await?;
-        }
+        self.zfs(&["set", &format!("{PULLED_PROPERTY}={newest}"), fs])
+            .await
+            .map_err(|error| error.to_string())?;
         Ok(())
     }
 

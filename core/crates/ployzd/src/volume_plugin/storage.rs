@@ -37,6 +37,11 @@ pub(super) const CUT_PROPERTY: &str = "ployz:cut";
 /// On a slot parent: the target of the SetVolumeCopy pull in flight, from its start until
 /// its prune is done.
 pub(super) const PULL_PROPERTY: &str = "ployz:pull";
+/// On a slot's `fs`: the guid of the snapshot a mirror pull received, set once the
+/// receive exits having made a snapshot newer than the slot held. That snapshot came from
+/// a writer elsewhere, so while it is still the newest the departure may destroy the slot.
+/// Read only where set locally: a value inherited from a parent proves nothing.
+pub(super) const PULLED_PROPERTY: &str = "ployz:pulled";
 
 pub(super) fn slot_parent(pool: &MachinePool, name: &DockerVolumeName) -> String {
     format!("{}/{MIRROR_ROOT}/{name}", pool.name())
