@@ -45,11 +45,12 @@ export function upgradeFailedMail({ organization, failures, origin }: UpgradeFai
   const one = failures.length === 1;
   const servers = one ? first.name : `${failures.length} servers`;
   const release = failures.find((failure) => failure.targetVersion !== null)?.targetVersion ?? null;
+  const ended = failures.some((failure) => failure.outcome === "unknown") ? "may not have upgraded" : "didn't upgrade";
   const skip = release === null ? null : `Automatic upgrades skip ${release} until a newer release is out or you upgrade a server to it yourself.`;
   return {
-    subject: release === null ? `${servers} didn't upgrade` : `${servers} didn't upgrade to ${release}`,
+    subject: release === null ? `${servers} ${ended}` : `${servers} ${ended} to ${release}`,
     preview: one ? `${whereLeft(first)}.` : `Ployz stopped the automatic upgrade in ${organization.name}.`,
-    title: `${servers} didn't upgrade`,
+    title: `${servers} ${ended}`,
     paragraphs: [[`Ployz stopped the automatic upgrade in ${organization.name}.`, skip].filter((line) => line !== null).join(" ")],
     action: one
       ? { label: "View server", url: `${origin}/cloud/${organization.slug}/~/servers/${first.machineId}` }

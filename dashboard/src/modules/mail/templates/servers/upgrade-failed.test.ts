@@ -31,6 +31,11 @@ it("says where each server was left instead of the stage it stopped at", () => {
   expect(left({ outcome: "unknown", stage: "activating" })).toBe("Stopped reporting partway through");
 });
 
+it("says a server may not have upgraded when Ployz lost track of any attempt", () => {
+  expect(mail(failure({ outcome: "unknown" }))).toMatchObject({ subject: "web-1 may not have upgraded to 0.2.6", title: "web-1 may not have upgraded" });
+  expect(mail(failure({}), failure({ name: "web-2", outcome: "unknown" }))).toMatchObject({ subject: "2 servers may not have upgraded to 0.2.6" });
+});
+
 it("counts several servers and links the list", () => {
   const several = mail(failure({}), failure({ name: "web-2" }), failure({ name: "worker-1" }));
   expect(several).toMatchObject({
