@@ -180,11 +180,14 @@ BUSY_LIMIT = 180
 # Docker's default 10 s.
 STOP_HOLD = 12
 DAEMON, PLUGIN = "ployz.service", "ployz-volume-plugin.service"
-CGROUP = "/sys/fs/cgroup/system.slice"
-RESTART = (f"test -d {CGROUP} || {{ echo 'no cgroup v2 system.slice'; exit 1; }}; "
+# Each unit's control group is where systemd says, read before the stop since a stopped unit drops it.
+RESTART = ("test -f /sys/fs/cgroup/cgroup.controllers || { echo 'no cgroup v2'; exit 1; }; "
+           f"gd=$(systemctl show -p ControlGroup --value {DAEMON}); gp=$(systemctl show -p ControlGroup --value {PLUGIN}); "
            f"systemctl stop {DAEMON} {PLUGIN} || {{ echo 'failed stop'; exit 1; }}; "
-           f"for u in {DAEMON} {PLUGIN}; do if test -d {CGROUP}/$u; then s=0; p=$(cat {CGROUP}/$u/cgroup.procs 2>/dev/null) || s=$?; "
-           "echo \"procs $u $s $(printf %s \"$p\" | tr '\\n' ' ')\"; else echo \"procs $u absent\"; fi; done; "
+           f"for x in '{DAEMON} '\"$gd\" '{PLUGIN} '\"$gp\"; do set -- $x; u=$1; g=/sys/fs/cgroup$2; "
+           "if test -z \"$2\"; then echo \"procs $u nogroup\"; elif test -d \"$g\"; then s=0; "
+           "p=$(cat \"$g/cgroup.procs\" 2>/dev/null) || s=$?; echo \"procs $u $s $(printf %s \"$p\" | tr '\\n' ' ')\"; "
+           "else echo \"procs $u absent\"; fi; done; "
            f"systemctl start {DAEMON} || {{ echo 'failed {DAEMON}'; exit 1; }}; "
            f"for i in $(seq 60); do systemctl is-active --quiet {DAEMON} && break; sleep 1; done; "
            f"systemctl is-active --quiet {DAEMON} || {{ echo 'failed {DAEMON}'; exit 1; }}; "
@@ -817,7 +820,9 @@ class VolumeMove:
                 read.append(unit)
                 if status == "absent":
                     continue
-                if status != "0":
+                if status == "nogroup":
+                    problems.append(f"systemd named no control group for {unit}")
+                elif status != "0":
                     problems.append(f"cgroup.procs of {unit} was not read: cat exited {status}")
                 elif pids:
                     problems.append(f"{unit} still holds {' '.join(pids)} after its stop")
