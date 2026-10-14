@@ -227,15 +227,20 @@ If the old server stays silent, the release fails with "web-1 did not answer for
 finishes on web-2; ployz volume release data tries again". Your service stays down until it comes
 back or you restore the volume.
 
-A silent server can't be reset, so `ployz server rm` refuses it.
-[Forget it](../servers/manage-servers.md#forget-a-server-that-is-gone) instead:
+If `web-1` is gone for good, [forget it](../servers/manage-servers.md#forget-a-server-that-is-gone).
+A silent server can't be reset, so `ployz server rm` refuses it:
 
 ```sh
 ployz server forget web-1 --confirm dead
 ```
 
 The wait ends at the next check. The old server's stopped container goes with it, so the release
-fails with "data has no stopped Service container to start on web-2".
+fails with "data has no stopped Service container to start on web-2". Restore from `web-2`'s copy
+instead, then deploy your service:
+
+```sh
+ployz volume restore data --from web-2
+```
 
 ### When you remove a server mid-move
 
