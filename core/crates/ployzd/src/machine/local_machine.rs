@@ -9,12 +9,11 @@ use std::{
 };
 
 use ployz_core::{
-    DockerVolumeName, EnrollRequest, Enrolled, ForgetRequest, Forgotten, InspectRequest,
-    LeaveRequest, Left, LeftPhase, LocalMachinePhase, Machine, MachineDetails, MachineId,
-    MachineIdentity, MachineList, MachineObservation, MachineToken, MachineUpdated,
-    ManagementAddress, MembershipEvidence, PublicIpDiscovery, RegisterRequest, Registered,
-    RpcError, RpcErrorCode, RttObservation, RttStatistics, SelectedEndpoint, StorageDeparture,
-    UpdateMachineRequest, synthesize_membership,
+    EnrollRequest, Enrolled, ForgetRequest, Forgotten, InspectRequest, LeaveRequest, Left,
+    LeftPhase, LocalMachinePhase, Machine, MachineDetails, MachineId, MachineIdentity, MachineList,
+    MachineObservation, MachineToken, MachineUpdated, ManagementAddress, MembershipEvidence,
+    PublicIpDiscovery, RegisterRequest, Registered, RpcError, RpcErrorCode, RttObservation,
+    RttStatistics, SelectedEndpoint, StorageDeparture, UpdateMachineRequest, synthesize_membership,
 };
 use thiserror::Error;
 
