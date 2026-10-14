@@ -1,5 +1,7 @@
 """Boat sandbox backend for verify-cluster's disposable-Machine contract."""
 
+import fcntl
+import hashlib
 import host
 import ipaddress
 import json
@@ -8,10 +10,12 @@ from pathlib import Path
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import threading
 import time
+import uuid
 
 SNAPSHOT = "ployz-verify-024"
 # The release ployzd install put in SNAPSHOT; Machines booting it skip the install.
@@ -25,6 +29,39 @@ TTL = int(os.environ.get("PLOYZ_VERIFY_BOAT_TTL", 6 * 3600))
 IMAGES = ["caddy:2", "nginx:1.29-alpine", "nginx:1.27-alpine", "postgres:16-alpine", "alpine:3.20", "traefik/whoami:v1.10.3"]
 UP_STATES = {"ready", "idle", "running", "cloning"}
 REGISTRY = Path.home() / ".cache" / "ployz" / "verify" / "boat"
+# prepare() bakes SNAPSHOT plus BAKE into a named snapshot whose authorized_keys holds this key, so Machines
+# skip the image pulls and `boat exec`.
+BOOTSTRAP = REGISTRY / "bootstrap"
+BAKED = "ployz-verify-boat-"
+# A Boat snapshot drops images no container uses, so BAKE leaves a created, never started holder per image.
+# Boat restores containers after boot, so the holders stay; tmpfs over each image VOLUME keeps them volume-free.
+# Boat keeps 10 named snapshots per account; bakes past the newest few are removed.
+KEEP_BAKED = 3
+NAMED = 10
+BAKE_NAME = re.compile(re.escape(BAKED) + "[0-9a-f]{10}")
+# Bakes this host made; another host or person may share the account and the name prefix.
+BAKES = REGISTRY / "bakes.ledger"
+BAKE = """
+ufw disable >/dev/null
+printf '%s\\n' "$@" | xargs -P8 -n1 docker pull -q >/dev/null
+caddy_version=$(docker run --rm --entrypoint caddy caddy:2 version)
+caddy_version=${caddy_version%% *}
+docker tag caddy:2 "caddy:${caddy_version#v}"
+for image in "$@" "caddy:${caddy_version#v}"; do
+    mounts=$(docker image inspect -f '{{range $path, $_ := .Config.Volumes}}--mount=type=tmpfs,dst={{$path}} {{end}}' "$image")
+    docker create --label ployz.verify.hold=1 $mounts "$image" >/dev/null
+done
+command -v zstd >/dev/null || DEBIAN_FRONTEND=noninteractive apt-get install -y -qq zstd >/dev/null || \
+    { apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq zstd >/dev/null; }
+sync
+"""
+# A clone can carry an sshd listener that systemd no longer tracks, so restarting ssh later fails with
+# port 22 in use. Kill only listeners, so open SSH sessions survive.
+LISTENER = shlex.quote(r"^sshd: [^ ]*sshd -D \[listener\]")
+# A clone resumes while Boat's agent still queues systemd jobs, and restarting ssh under them can drop
+# systemctl's bus connection. Two idle readings in a row mark the restore done.
+SETTLE = ("idle=0; for i in $(seq 120); do if [ -z \"$(systemctl list-jobs --no-legend)\" ]; then idle=$((idle+1));"
+          " [ $idle = 2 ] && break; else idle=0; fi; sleep 0.5; done; ")
 # The ployz units live in /etc/systemd/system, where `systemctl mask` refuses them, so power off disables those.
 PLOYZ_UNITS = "ployz.socket ployz.service ployz-volume-plugin.socket"
 DOCKER_UNITS = "docker.service docker.socket containerd.service"
@@ -91,11 +128,64 @@ def read(path):
         return None
 
 
+def records():
+    """Every run record in REGISTRY; a corrupt one is skipped with a warning so it never hides the others."""
+    for path in sorted(REGISTRY.glob("*.json")):
+        try:
+            record = read(path)
+        except ValueError:
+            print(f"Skipping unreadable Boat run record {path}", file=sys.stderr)
+            continue
+        if record:
+            yield record
+
+
 def write(path, record):
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
     temporary.write_text(json.dumps(record, indent=2) + "\n")
     temporary.replace(path)
+
+
+COMPRESSED = {}
+COMPRESSING = threading.Lock()
+
+
+def compressed(source):
+    """zstd of `source`, made once per content for every Machine that receives it."""
+    stat = os.stat(source)
+    key = (os.path.realpath(source), stat.st_size, stat.st_mtime_ns)
+    with COMPRESSING:
+        if key not in COMPRESSED:
+            COMPRESSED[key] = subprocess.run(["zstd", "-3", "-T0", "-qc", source], capture_output=True, check=True).stdout
+        return COMPRESSED[key]
+
+
+def bootstrap():
+    """The public half of the key every baked snapshot authorizes, made on first use."""
+    BOOTSTRAP.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with (BOOTSTRAP / "key.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if not (BOOTSTRAP / "id_ed25519").exists():
+            subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "ployz-verify-boat",
+                            "-f", BOOTSTRAP / "id_ed25519"], check=True)
+    return (BOOTSTRAP / "id_ed25519.pub").read_text().strip()
+
+
+def stale_bakes(named, current, ours, in_use):
+    """Bakes to remove before baking `current`, oldest first: only bakes this host made that no run still uses."""
+    older = sorted((snapshot for snapshot in named if snapshot["name"] in ours and BAKE_NAME.fullmatch(snapshot["name"])
+                    and snapshot["name"] != current and snapshot["name"] not in in_use),
+                   key=lambda snapshot: snapshot["createdAt"])
+    # The account keeps at most NAMED snapshots, so a full account gives up more of our older bakes.
+    # A failed or unfinished `current` is saved over, so it takes no extra slot.
+    taken = sum(snapshot["name"] != current for snapshot in named)
+    surplus = max(len(older) - (KEEP_BAKED - 1), taken - (NAMED - 1), 0)
+    return [snapshot["name"] for snapshot in older[:surplus]]
+
+
+def images_in_use():
+    return {record["image"] for record in records() if record.get("image")}
 
 
 def boat_json(*args):
@@ -112,8 +202,8 @@ def status(state):
 
 def runs():
     """Every Boat verify run this user's registry holds, from any checkout."""
-    records = [record for path in sorted(REGISTRY.glob("*.json")) if (record := read(path))]
-    if not records:
+    found = list(records())
+    if not found:
         return []
     states = {sandbox["id"]: sandbox["state"] for sandbox in boat_json("list", "--all")["sandboxes"]}
     return [dict(id=record["run"], provider="boat", owner=record.get("owner", {}), created=record.get("created"),
@@ -121,7 +211,7 @@ def runs():
                                        memory=MEMORY, created=entry.get("created", record.get("created")))
                                   for name, entry in record["sandboxes"].items() if entry["state"] != "deleted"),
                                  key=lambda machine: machine["name"]))
-            for record in records]
+            for record in found]
 
 
 def shortfalls(machines, limits):
@@ -152,8 +242,16 @@ class Provider:
         self.registry = registry(run["id"])
         self.lock = threading.Lock()
         self.private = Path(run["manifest"]).parent / "private"
-        # A socket path must fit in 108 bytes, which the run directory does not.
-        self.control = REGISTRY / "ssh"
+        # A socket path must fit in 108 bytes with ssh's 17-character bind suffix; neither the run nor the registry directory does.
+        # The per-user runtime directory is private when it is ours; /tmp is the fallback options() checks.
+        runtime = os.environ.get("XDG_RUNTIME_DIR")
+        try:
+            ours = bool(runtime) and os.stat(runtime).st_uid == os.getuid() and Path(runtime).is_dir()
+        except OSError:
+            ours = False
+        private = Path(runtime or "/") / "ployz-boat"
+        # "/<8>-<%C as 40>" plus the bind suffix is 67 more characters.
+        self.control = private if ours and len(os.fsencode(private)) + 67 <= 107 else Path(f"/tmp/ployz-boat-{os.getuid()}")
 
     def boat(self, *args, **kwargs):
         return self.commands([*cli(), *args, "--json"], **kwargs)
@@ -176,7 +274,7 @@ class Provider:
         if self.registry.exists():
             raise RuntimeError(f"Boat registry already exists for this run: {self.registry}")
         write(self.registry, dict(run=self.run["id"], manifest=self.run["manifest"], owner=self.run.get("owner", {}),
-                                  created=int(time.time()), sandboxes={}))
+                                  image=self.run.get("image"), created=int(time.time()), sandboxes={}))
 
     def launch(self, node):
         before = time.time()
@@ -198,7 +296,7 @@ class Provider:
                 continue
             if failure and failure.get("code") == "boat_direct_failed" and not created:
                 # The create may have run without telling us its id; never retry it blind.
-                known = {entry["id"] for path in REGISTRY.glob("*.json") for entry in (read(path) or {}).get("sandboxes", {}).values()}
+                known = {entry["id"] for record in records() for entry in record.get("sandboxes", {}).values()}
                 unknown = [sandbox["id"] for sandbox in boat_json("list", "--all")["sandboxes"]
                            if sandbox["id"] not in known and sandbox["createdAt"] >= time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(before - 5))]
                 raise RuntimeError(f"{node['name']}: boat new failed with boat_direct_failed; sandboxes created since then "
@@ -229,38 +327,34 @@ class Provider:
             self.boat("delete", sandbox, "--yes")
         else:
             raise RuntimeError(f"{node['name']}: Boat kept placing the sandbox on a node another Machine uses")
+        if self.run["image"] == SNAPSHOT:
+            self.install_key(node, sandbox)
+        self.wait_agent(node)
+        # A baked sandbox already holds BAKE's result.
+        bake = BAKE if self.run["image"] == SNAPSHOT else ""
+        self.exec(node, ["bash", "-ec", f"""
+{SETTLE}
+main=$(systemctl show -p MainPID --value ssh.service)
+for pid in $(pgrep -f {LISTENER}); do [ "$pid" = "$main" ] || kill "$pid"; done
+if [ -n "$(ss -Hlun 'sport = :51820')" ]; then echo "UDP port 51820 is taken" >&2; exit 1; fi
+{bake}""", "boot", self.run["corrosion"], *IMAGES], timeout=600)
+
+    def install_key(self, node, sandbox):
         key = (self.private / "id_ed25519.pub").read_text().strip()
-        # A clone can carry an sshd listener that systemd no longer tracks, so restarting ssh later fails with
-        # port 22 in use. Kill only listeners, so open SSH sessions survive.
-        listener = shlex.quote(r"^sshd: [^ ]*sshd -D \[listener\]")
-        # A clone resumes while Boat's agent still queues systemd jobs, and restarting ssh under them can drop
-        # systemctl's bus connection and then hang boat exec. Two idle readings in a row mark the restore done.
-        settle = ("idle=0; for i in $(seq 120); do if [ -z \"$(systemctl list-jobs --no-legend)\" ]; then idle=$((idle+1));"
-                  " [ $idle = 2 ] && break; else idle=0; fi; sleep 0.5; done; ")
-        install = (settle + f"install -d -m 700 /root/.ssh && printf '%s\\n' {shlex.quote(key)} > /root/.ssh/authorized_keys"
+        install = (SETTLE + f"install -d -m 700 /root/.ssh && printf '%s\\n' {shlex.quote(key)} > /root/.ssh/authorized_keys"
                    " && chmod 600 /root/.ssh/authorized_keys && systemctl stop ssh.service ssh.socket"
-                   f" && {{ pkill -f {listener}; for i in $(seq 50); do pgrep -f {listener} >/dev/null || break; sleep 0.1; done; }}"
+                   f" && {{ pkill -f {LISTENER}; for i in $(seq 50); do pgrep -f {LISTENER} >/dev/null || break; sleep 0.1; done; }}"
                    " && systemctl start ssh.socket")
         deadline = time.monotonic() + 120
         while True:
             result = self.boat("exec", sandbox, "--timeout", "60", "--", "sudo", "sh", "-c", install, check=False)
             if not result.returncode:
-                break
+                return
             failure = error(result)
             if (failure or {}).get("code") != "boat_starting" or time.monotonic() >= deadline:
                 why = failure or exited(result) or result.stderr.decode(errors="replace")
                 raise RuntimeError(f"{node['name']}: could not install the root key: {why}")
             time.sleep(1)
-        self.wait_agent(node)
-        # Incus guests have no firewall, and UFW drops WireGuard between sandboxes.
-        self.exec(node, ["bash", "-ec", """
-ufw disable >/dev/null
-if [ -n "$(ss -Hlun 'sport = :51820')" ]; then echo "UDP port 51820 is taken" >&2; exit 1; fi
-printf '%s\\n' "$@" | xargs -P8 -n1 docker pull -q >/dev/null
-caddy_version=$(docker run --rm --entrypoint caddy caddy:2 version)
-caddy_version=${caddy_version%% *}
-docker tag caddy:2 "caddy:${caddy_version#v}"
-""", "boot", self.run["corrosion"], *IMAGES], timeout=600)
 
     def power_off(self, node):
         # No sync beyond the unit links: a reset loses the page cache, as `incus stop --force` does.
@@ -313,21 +407,36 @@ systemctl enable --now {PLOYZ_UNITS} $observe
 
     def options(self):
         self.control.mkdir(parents=True, exist_ok=True, mode=0o700)
+        # /tmp is shared; a directory someone else planted could hand our ssh to their fake control master.
+        found = os.lstat(self.control)
+        if not stat.S_ISDIR(found.st_mode) or found.st_uid != os.getuid() or found.st_mode & 0o077:
+            raise RuntimeError(f"{self.control} must be a directory only you can open; remove it")
         # The endpoint comes from the authenticated Boat API, and up regenerates host keys after the first connection.
         return ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
                 "-o", "LogLevel=ERROR", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15",
-                "-i", str(self.private / "id_ed25519"), "-o", "ControlMaster=auto", "-o", "ControlPersist=300",
-                "-o", "ControlPath=" + str(self.control / (self.run["id"] + "-%C"))]
+                "-i", str(self.private / "id_ed25519"), "-i", str(BOOTSTRAP / "id_ed25519"), "-o", "ControlMaster=auto", "-o", "ControlPersist=300",
+                "-o", "ControlPath=" + self.control_path()]
+
+    def control_path(self):
+        return str(self.control / (hashlib.sha1(self.run["id"].encode()).hexdigest()[:8] + "-%C"))
 
     def exec(self, node, args, **kwargs):
-        host, port = endpoint(self.sandbox(node)["ssh"])
+        destination = ((self.record() or {}).get("sandboxes", {}).get(node["name"]) or {}).get("ssh")
+        if not destination:
+            raise RuntimeError(f"{node['name']} has no SSH endpoint yet")
+        host, port = endpoint(destination)
         return self.commands(["ssh", *self.options(), "-p", port, "root@" + host, shlex.join(args)], **kwargs)
 
     def push(self, node, source, destination):
         directory = os.path.dirname(destination)
-        with open(source, "rb") as content:
-            self.exec(node, ["sh", "-ec", 'install -d "$1"; cat > "$2.push"; chmod 0755 "$2.push"; mv "$2.push" "$2"',
-                             "push", directory, destination], stdin=content, timeout=600)
+        if self.run["image"] == SNAPSHOT or os.path.getsize(source) < 1 << 20:
+            with open(source, "rb") as content:
+                self.exec(node, ["sh", "-ec", 'install -d "$1"; cat > "$2.push"; chmod 0755 "$2.push"; mv "$2.push" "$2"',
+                                 "push", directory, destination], stdin=content, timeout=600)
+            return
+        # The upload from this host is the slow link; zstd cuts a release binary about fivefold.
+        self.exec(node, ["sh", "-ec", 'install -d "$1"; zstd -dqc > "$2.push"; chmod 0755 "$2.push"; mv "$2.push" "$2"',
+                         "push", directory, destination], input=compressed(source), timeout=600)
 
     def address(self, node):
         address = json.loads(self.boat("info", self.sandbox(node)["id"]).stdout)["sandbox"]["ip"]
@@ -358,7 +467,10 @@ systemctl enable --now {PLOYZ_UNITS} $observe
                 failures.append(f"boat delete {entry['id']} failed: {failure or result.stderr.decode(errors='replace')}")
                 continue
             if entry.get("state") != "stopped":
-                self.boat("stop", entry["id"])
+                stopped = self.boat("stop", entry["id"], check=False)
+                if stopped.returncode:
+                    failures.append(f"boat stop {entry['id']} failed: {error(stopped) or stopped.stderr.decode(errors='replace')}")
+                    continue
                 self.mark(name, state="stopped")
             print(f"Stopped {entry['id']} ({name}): this Boat key may not delete it; it needs the sandbox.delete-own scope "
                   f"and to have created the sandbox.", file=sys.stderr)
@@ -370,7 +482,41 @@ systemctl enable --now {PLOYZ_UNITS} $observe
     def prepare(self):
         if not shutil.which(cli()[0]):
             raise RuntimeError(f"Boat CLI not found: {cli()[0]}; install it or set BOAT_CLI")
-        self.run["image"] = SNAPSHOT
+        if not shutil.which("zstd"):
+            raise RuntimeError("zstd not found; install it")
         self.run["bootstrap_release"] = SNAPSHOT_RELEASE
         self.run["corrosion"] = re.search(r'pub const IMAGE: &str = "([^"]+)"',
                                           (self.core / "crates/ployzd/src/corrosion/service.rs").read_text()).group(1)
+        recipe = json.dumps([SNAPSHOT, BAKE, SETTLE, IMAGES, self.run["corrosion"], bootstrap()])
+        self.run["image"] = BAKED + hashlib.sha256(recipe.encode()).hexdigest()[:10]
+        # One baked snapshot per recipe; simultaneous runs don't bake it twice.
+        with (REGISTRY / "bake.lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            named = boat_json("snapshots")["named"]
+            ours = read(BAKES) or []
+            if any(snapshot["name"] == self.run["image"] and snapshot["status"] == "ready" for snapshot in named):
+                return
+
+            # Prune first; the account caps named snapshots.
+            for name in stale_bakes(named, self.run["image"], ours, images_in_use()):
+                if not self.boat("snapshot", "rm", name, check=False).returncode:
+                    ours.remove(name)
+            # The name hashes this host's bootstrap key, so it is ours even if the save outlives a timeout here.
+            write(BAKES, list(dict.fromkeys([*ours, self.run["image"]])))
+            print(f"Baking Boat snapshot {self.run['image']} (first run of this recipe only).", file=sys.stderr)
+            bake = Provider(dict(id="bake-" + uuid.uuid4().hex[:10], manifest=str(BOOTSTRAP / "bake" / "cluster.json"),
+                                 owner=self.run.get("owner", {}), image=SNAPSHOT, corrosion=self.run["corrosion"]),
+                            self.commands, self.core)
+            bake.private = BOOTSTRAP
+            node = dict(name="bake")
+            try:
+                bake.create()
+                bake.start(node)
+                self.boat("snapshot", bake.sandbox(node)["id"], self.run["image"], timeout=1800)
+            except BaseException:
+                try:
+                    bake.destroy()
+                except (RuntimeError, OSError, subprocess.SubprocessError) as error:
+                    print(f"Deleting the bake sandbox also failed: {error}", file=sys.stderr)
+                raise
+            bake.destroy()

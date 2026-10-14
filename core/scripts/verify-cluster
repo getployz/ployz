@@ -456,12 +456,15 @@ done
 def teardown(run, commands, backend):
     run["state"] = "tearing-down"
     save(run)
-    for node in run["machines"]:
-        try:
-            backend.exec(node, ["bash", "-c", "journalctl -u ployz -u ployz-dns -u ployz-observe -u ployz-volume-plugin -u docker -u ssh -u ssh.socket --no-pager -n 300; zpool status; zfs list; wg show"], check=False, timeout=10)
-        except (RuntimeError, subprocess.TimeoutExpired):
-            pass
-    backend.destroy()
+    try:
+        for node in run["machines"]:
+            try:
+                backend.exec(node, ["bash", "-c", "journalctl -u ployz -u ployz-dns -u ployz-observe -u ployz-volume-plugin -u docker -u ssh -u ssh.socket --no-pager -n 300; zpool status; zfs list; wg show"], check=False, timeout=10)
+            except (RuntimeError, subprocess.TimeoutExpired):
+                pass
+    finally:
+        # Evidence is best effort; a Machine that never got an address must not keep the rest alive.
+        backend.destroy()
     private = Path(run["manifest"]).parent / "private"
     cloud = run.get("cloud", {})
     if cloud.get("owns_dashboard") and (private / "cloud-token").exists():
@@ -509,7 +512,7 @@ def host_runs():
             continue
         try:
             found += [{**run, "provider": name} for run in importlib.import_module(name).runs()]
-        except (RuntimeError, OSError, subprocess.SubprocessError) as error:
+        except (RuntimeError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
             # One provider being unreachable must not hide or block the other's runs.
             print(f"Skipping {name} runs: {str(error).splitlines()[0]}", file=sys.stderr)
     return found
