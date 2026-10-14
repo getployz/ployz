@@ -1,9 +1,9 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "4eac1b71-be9f-4f2a-a9e0-48d9b2eed81a",
+  "id": "67c4345a-58c7-4dd2-80b5-c60e23734dbe",
   "prevIds": [
-    "114ae64f-7bfe-4403-9435-f3ca9e0e66f0"
+    "0a3fb876-f74e-4064-bda3-4b58a1678a14"
   ],
   "ddl": [
     {
@@ -116,6 +116,12 @@
     },
     {
       "isRlsEnabled": false,
+      "name": "server_web_traffic_attempt",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
       "name": "github_installation",
       "entityType": "tables",
       "schema": "public"
@@ -123,6 +129,12 @@
     {
       "isRlsEnabled": false,
       "name": "github_repository_cache",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "organization_github_installation",
       "entityType": "tables",
       "schema": "public"
     },
@@ -273,6 +285,12 @@
     {
       "isRlsEnabled": false,
       "name": "uptime_result_hourly",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "notification_preference",
       "entityType": "tables",
       "schema": "public"
     },
@@ -2418,6 +2436,19 @@
       "table": "server_drain_attempt"
     },
     {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "plan_digest",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "server_drain_attempt"
+    },
+    {
       "type": "timestamp with time zone",
       "typeSchema": null,
       "notNull": true,
@@ -2461,13 +2492,13 @@
       "typeSchema": null,
       "notNull": true,
       "dimensions": 0,
-      "default": "gen_random_uuid()",
+      "default": null,
       "generated": null,
       "identity": null,
       "name": "id",
       "entityType": "columns",
       "schema": "public",
-      "table": "github_installation"
+      "table": "server_web_traffic_attempt"
     },
     {
       "type": "uuid",
@@ -2477,10 +2508,127 @@
       "default": null,
       "generated": null,
       "identity": null,
-      "name": "user_id",
+      "name": "organization_id",
       "entityType": "columns",
       "schema": "public",
-      "table": "github_installation"
+      "table": "server_web_traffic_attempt"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "machine_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "requested_by_user_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "want",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "'pending'",
+      "generated": null,
+      "identity": null,
+      "name": "state",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "inngest_run_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "failure",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "requested_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "started_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "ended_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
     },
     {
       "type": "integer",
@@ -2537,6 +2685,19 @@
     {
       "type": "timestamp with time zone",
       "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "suspended_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "github_installation"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
       "notNull": true,
       "dimensions": 0,
       "default": "now()",
@@ -2559,19 +2720,6 @@
       "entityType": "columns",
       "schema": "public",
       "table": "github_installation"
-    },
-    {
-      "type": "uuid",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "user_id",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "github_repository_cache"
     },
     {
       "type": "integer",
@@ -2689,6 +2837,71 @@
       "entityType": "columns",
       "schema": "public",
       "table": "github_repository_cache"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "organization_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_github_installation"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "installation_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_github_installation"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "connected_by_user_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_github_installation"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "connected_github_login",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_github_installation"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "connected_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_github_installation"
     },
     {
       "type": "uuid",
@@ -3904,6 +4117,19 @@
       "generated": null,
       "identity": null,
       "name": "inngest_run_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "volume_run"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "held_by",
       "entityType": "columns",
       "schema": "public",
       "table": "volume_run"
@@ -6080,6 +6306,58 @@
       "table": "uptime_result_hourly"
     },
     {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "user_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "notification_preference"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "type",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "notification_preference"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "channel",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "notification_preference"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "updated_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "notification_preference"
+    },
+    {
       "nameExplicit": true,
       "columns": [
         {
@@ -6636,70 +6914,70 @@
       "nameExplicit": true,
       "columns": [
         {
-          "value": "user_id",
+          "value": "organization_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "machine_id",
           "isExpression": false,
           "asc": true,
           "nullsFirst": false,
           "opclass": null
         }
       ],
-      "isUnique": false,
-      "where": null,
+      "isUnique": true,
+      "where": "\"state\" in ('pending', 'running')",
       "with": "",
       "method": "btree",
       "concurrently": false,
-      "name": "github_installation_user_idx",
+      "name": "server_web_traffic_attempt_one_active_idx",
       "entityType": "indexes",
       "schema": "public",
-      "table": "github_installation"
+      "table": "server_web_traffic_attempt"
     },
     {
       "nameExplicit": true,
       "columns": [
         {
-          "value": "installation_id",
+          "value": "inngest_run_id",
           "isExpression": false,
           "asc": true,
           "nullsFirst": false,
           "opclass": null
         }
       ],
-      "isUnique": false,
-      "where": null,
+      "isUnique": true,
+      "where": "\"inngest_run_id\" is not null",
       "with": "",
       "method": "btree",
       "concurrently": false,
-      "name": "github_installation_installation_id_idx",
+      "name": "server_web_traffic_attempt_run_uidx",
       "entityType": "indexes",
       "schema": "public",
-      "table": "github_installation"
+      "table": "server_web_traffic_attempt"
     },
     {
       "nameExplicit": true,
       "columns": [
         {
-          "value": "installation_id",
+          "value": "organization_id",
           "isExpression": false,
           "asc": true,
           "nullsFirst": false,
           "opclass": null
-        }
-      ],
-      "isUnique": false,
-      "where": null,
-      "with": "",
-      "method": "btree",
-      "concurrently": false,
-      "name": "github_repository_cache_installation_idx",
-      "entityType": "indexes",
-      "schema": "public",
-      "table": "github_repository_cache"
-    },
-    {
-      "nameExplicit": true,
-      "columns": [
+        },
         {
-          "value": "user_id",
+          "value": "machine_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "requested_at",
           "isExpression": false,
           "asc": true,
           "nullsFirst": false,
@@ -6711,10 +6989,10 @@
       "with": "",
       "method": "btree",
       "concurrently": false,
-      "name": "github_repository_cache_user_idx",
+      "name": "server_web_traffic_attempt_latest_idx",
       "entityType": "indexes",
       "schema": "public",
-      "table": "github_repository_cache"
+      "table": "server_web_traffic_attempt"
     },
     {
       "nameExplicit": true,
@@ -6736,6 +7014,27 @@
       "entityType": "indexes",
       "schema": "public",
       "table": "github_repository_cache"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "installation_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "organization_github_installation_installation_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "organization_github_installation"
     },
     {
       "nameExplicit": true,
@@ -6936,6 +7235,27 @@
       "method": "btree",
       "concurrently": false,
       "name": "volume_run_one_active_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "volume_run"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "volume_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": "\"held_by\" is not null",
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "volume_run_held_idx",
       "entityType": "indexes",
       "schema": "public",
       "table": "volume_run"
@@ -7935,24 +8255,24 @@
     {
       "nameExplicit": false,
       "columns": [
-        "user_id"
+        "organization_id"
       ],
       "schemaTo": "public",
-      "tableTo": "user",
+      "tableTo": "organization",
       "columnsTo": [
         "id"
       ],
       "onUpdate": "NO ACTION",
       "onDelete": "CASCADE",
-      "name": "github_installation_user_id_user_id_fkey",
+      "name": "server_web_traffic_attempt_organization_id_organization_id_fkey",
       "entityType": "fks",
       "schema": "public",
-      "table": "github_installation"
+      "table": "server_web_traffic_attempt"
     },
     {
       "nameExplicit": false,
       "columns": [
-        "user_id"
+        "requested_by_user_id"
       ],
       "schemaTo": "public",
       "tableTo": "user",
@@ -7960,11 +8280,79 @@
         "id"
       ],
       "onUpdate": "NO ACTION",
+      "onDelete": "SET NULL",
+      "name": "server_web_traffic_attempt_requested_by_user_id_user_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "installation_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "github_installation",
+      "columnsTo": [
+        "installation_id"
+      ],
+      "onUpdate": "NO ACTION",
       "onDelete": "CASCADE",
-      "name": "github_repository_cache_user_id_user_id_fkey",
+      "name": "github_repository_cache_1YBtmuU8cDTC_fkey",
       "entityType": "fks",
       "schema": "public",
       "table": "github_repository_cache"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "organization_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "organization",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "organization_github_installation_SbYu7cqZzW9M_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "organization_github_installation"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "installation_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "github_installation",
+      "columnsTo": [
+        "installation_id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "organization_github_installation_aAoZjPsdZFh5_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "organization_github_installation"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "connected_by_user_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "user",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "SET NULL",
+      "name": "organization_github_installation_dG3N0i4nA3Do_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "organization_github_installation"
     },
     {
       "nameExplicit": false,
@@ -8534,6 +8922,23 @@
       "table": "uptime_result_hourly"
     },
     {
+      "nameExplicit": false,
+      "columns": [
+        "user_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "user",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "notification_preference_user_id_user_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "notification_preference"
+    },
+    {
       "columns": [
         "organization_id",
         "cluster_key"
@@ -8569,7 +8974,6 @@
     },
     {
       "columns": [
-        "user_id",
         "installation_id",
         "repository_id"
       ],
@@ -8578,6 +8982,17 @@
       "entityType": "pks",
       "schema": "public",
       "table": "github_repository_cache"
+    },
+    {
+      "columns": [
+        "organization_id",
+        "installation_id"
+      ],
+      "nameExplicit": false,
+      "name": "organization_github_installation_pkey",
+      "entityType": "pks",
+      "schema": "public",
+      "table": "organization_github_installation"
     },
     {
       "columns": [
@@ -8636,6 +9051,17 @@
       "entityType": "pks",
       "schema": "public",
       "table": "uptime_result_hourly"
+    },
+    {
+      "columns": [
+        "user_id",
+        "type"
+      ],
+      "nameExplicit": false,
+      "name": "notification_preference_pkey",
+      "entityType": "pks",
+      "schema": "public",
+      "table": "notification_preference"
     },
     {
       "columns": [
@@ -8790,6 +9216,16 @@
     {
       "columns": [
         "id"
+      ],
+      "nameExplicit": false,
+      "name": "server_web_traffic_attempt_pkey",
+      "schema": "public",
+      "table": "server_web_traffic_attempt",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "installation_id"
       ],
       "nameExplicit": false,
       "name": "github_installation_pkey",
@@ -9078,18 +9514,6 @@
     {
       "nameExplicit": false,
       "columns": [
-        "user_id",
-        "installation_id"
-      ],
-      "nullsNotDistinct": false,
-      "name": "github_installation_user_id_installation_id_unique",
-      "entityType": "uniques",
-      "schema": "public",
-      "table": "github_installation"
-    },
-    {
-      "nameExplicit": false,
-      "columns": [
         "environment_id",
         "resource_type",
         "resource_id"
@@ -9320,6 +9744,48 @@
       "entityType": "checks",
       "schema": "public",
       "table": "server_drain_attempt"
+    },
+    {
+      "value": "\"machine_id\" ~ '^[0-9a-f]{32}$'",
+      "name": "server_web_traffic_attempt_machine_id_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
+    },
+    {
+      "value": "\"want\" in ('on','off')",
+      "name": "server_web_traffic_attempt_want_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
+    },
+    {
+      "value": "\"state\" in ('pending','running','finished','failed')",
+      "name": "server_web_traffic_attempt_state_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
+    },
+    {
+      "value": "(\"state\" = 'failed') = (\"failure\" is not null)\n        and (\"failure\" is null or length(\"failure\") between 1 and 1024)",
+      "name": "server_web_traffic_attempt_failure_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
+    },
+    {
+      "value": "\"inngest_run_id\" is null or length(\"inngest_run_id\") between 1 and 255",
+      "name": "server_web_traffic_attempt_run_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
+    },
+    {
+      "value": "(\n        (\"state\" = 'pending' and \"started_at\" is null and \"ended_at\" is null)\n        or (\"state\" = 'running' and \"inngest_run_id\" is not null\n          and \"started_at\" is not null and \"ended_at\" is null)\n        or (\"state\" = 'finished' and \"inngest_run_id\" is not null\n          and \"started_at\" is not null and \"ended_at\" is not null)\n        or (\"state\" = 'failed' and \"ended_at\" is not null)\n      )",
+      "name": "server_web_traffic_attempt_state_shape_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
     },
     {
       "value": "(\n        \"has_active_subscription\" = false\n        OR (\n          \"active_subscription_id\" IS NOT NULL\n          AND \"current_period_end\" IS NOT NULL\n        )\n      )",
@@ -9628,6 +10094,20 @@
       "entityType": "checks",
       "schema": "public",
       "table": "uptime_result_hourly"
+    },
+    {
+      "value": "\"type\" in ('uptime','deploy-failed','upgrade-failed')",
+      "name": "notification_preference_type_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "notification_preference"
+    },
+    {
+      "value": "\"channel\" in ('email','none')",
+      "name": "notification_preference_channel_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "notification_preference"
     }
   ],
   "renames": []
