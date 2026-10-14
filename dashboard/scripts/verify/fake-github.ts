@@ -10,7 +10,7 @@ import { gzipSync } from "node:zlib";
 type User = { id: number; login: string; name: string; email: string };
 type Repository = {
   id: number; name: string; private: boolean; default_branch: string; branches: string[];
-  awaitsGrant?: true;
+  awaitsGrant?: boolean;
   files: Record<string, string>;
 };
 type Installation = { id: number; account: { id: number; login: string; type: "User" | "Organization" }; users: string[]; repositories: Repository[] };
