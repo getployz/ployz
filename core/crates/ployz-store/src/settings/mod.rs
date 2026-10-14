@@ -17,8 +17,9 @@ mod size;
 use ployz_core::config::{
     AuthoredServiceConfig, COMMAND_MAX, CPU_LIMIT_MAX, HEALTHCHECK_PATH_MAX,
     HEALTHCHECK_TIMEOUT_DEFAULT, HEALTHCHECK_TIMEOUT_MAX, IMAGE_MAX, MAX_RETRIES_MAX,
-    MEM_LIMIT_MAX, REPLICAS_MAX, RESTART_POLICIES, ServiceHealthcheck, ServiceImageCredentials,
-    ServiceSource, default_max_retries, default_replicas, parse_service_setting,
+    MEM_LIMIT_MAX, REPLICAS_MAX, RESTART_POLICIES, ServiceBuildConfig, ServiceHealthcheck,
+    ServiceImageCredentials, ServiceSource, default_max_retries, default_replicas,
+    parse_service_setting,
 };
 use ployz_core::{RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
@@ -479,12 +480,13 @@ impl ServiceSetting {
             return Err(self.invalid("the Deployment Policy is not in the config"));
         }
         if self == Self::Image {
-            // An empty Service takes an image as its source.
+            // An empty or repository Service takes an image as its source. Build settings mean
+            // nothing to an image, so they return to their defaults rather than resurface later.
             let credentials = match &config.source {
                 ServiceSource::Image { credentials, .. } => credentials.clone(),
-                ServiceSource::Empty { .. } => ServiceImageCredentials::None,
-                ServiceSource::Git { .. } => {
-                    return Err(self.invalid("this Service builds from a repository"));
+                ServiceSource::Empty { .. } | ServiceSource::Git { .. } => {
+                    config.build = ServiceBuildConfig::default();
+                    ServiceImageCredentials::None
                 }
             };
             config.source = image_source(self.decode(value)?, credentials)?;
