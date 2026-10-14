@@ -14,7 +14,7 @@ import type {
   VolumeSwitchRequest,
   WantedCopy,
 } from "@ployz/sdk";
-import { and, desc, eq, inArray, isNotNull, isNull, lt, max, notInArray, or, type SQL, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, lt, max, ne, notInArray, or, type SQL, sql } from "drizzle-orm";
 import { Data, Effect, Option, Schema } from "effect";
 import { NonRetriableError } from "inngest";
 import type { OperationAsked } from "#/modules/approvals/approvals.server";
@@ -740,45 +740,39 @@ export const releaseLanesOff = Effect.fn("VolumeRun.releaseLanesOff")(function* 
   return released;
 });
 
-/**
- * Every commitment to `machine` that ended unfinished stops naming it, so nothing is owed a finish there. Each Volume
- * clears on its own: a Deploy holds one Volume's commitment while it reaches for the next, so one statement holding
- * several could deadlock against it.
- */
-const forgetUnfinishedCommitments = Effect.fn("VolumeRun.forgetUnfinishedCommitments")(function* (organizationId: string, machine: MachineId) {
-  const { drizzle } = yield* Database;
-  const unfinished = and(
-    eq(volumeRun.organizationId, organizationId),
-    inArray(volumeRun.kind, ["move", "release"]),
-    eq(volumeRun.phase, "committed"),
-    eq(volumeRun.current, machine),
-    notInArray(volumeRun.state, [...ACTIVE_VOLUME_RUN_STATES, "done"]),
-  );
-  const volumes = yield* drizzle.selectDistinct({ volumeId: volumeRun.volumeId }).from(volumeRun).where(unfinished);
-  for (const { volumeId } of volumes) {
-    yield* drizzle.update(volumeRun).set({ current: null }).where(and(unfinished, eq(volumeRun.volumeId, volumeId)));
-  }
-});
+/** Every commitment to `machine`: a committed move or release naming it that has not ended done, active or not. */
+const committedTo = (organizationId: string, machine: MachineId) => and(
+  eq(volumeRun.organizationId, organizationId),
+  inArray(volumeRun.kind, ["move", "release"]),
+  eq(volumeRun.phase, "committed"),
+  eq(volumeRun.current, machine),
+  ne(volumeRun.state, "done"),
+);
 
 /**
- * Ends every committed lane whose writer-to-be is `machine`, cancelling its Inngest run, until a pass finds none. A
- * committed Move failing meanwhile hands its lane to a release bound here, and admitOwed locks the commitment, so the
- * select after a clear sees any admission that read it first.
+ * Ends every commitment to `machine` until one read finds none, so nothing is owed a finish there. Each pass forgets
+ * the ended ones a Volume at a time, since a Deploy holds one Volume's commitment while it reaches for the next and one
+ * statement holding several could deadlock against it. Then one read sees active and ended commitments together, and
+ * each active one found ends failed, cancelling its Inngest run; the next pass forgets what that read saw ended.
+ * It terminates: a pass moves each active commitment it reads to ended and each ended one out of the predicate. A new
+ * one comes only from a lane already active, failing into its release, or from admitOwed inheriting an ended one,
+ * which locks it, so the read after the forget sees it.
  */
 const endLanesTo = Effect.fn("VolumeRun.endLanesTo")(function* (
   organizationId: string,
   machine: { readonly id: MachineId; readonly name: MachineName | null },
 ) {
   const database = yield* Database;
+  const committed = committedTo(organizationId, machine.id);
   for (;;) {
-    yield* forgetUnfinishedCommitments(organizationId, machine.id);
-    const lanes = yield* database.drizzle.select().from(volumeRun).where(and(
-      eq(volumeRun.organizationId, organizationId),
-      inArray(volumeRun.state, ACTIVE_VOLUME_RUN_STATES),
-      eq(volumeRun.phase, "committed"),
-      eq(volumeRun.current, machine.id),
-    ));
-    if (lanes.length === 0) return;
+    const volumes = yield* database.drizzle.selectDistinct({ volumeId: volumeRun.volumeId }).from(volumeRun).where(committed);
+    for (const { volumeId } of volumes) {
+      yield* database.drizzle.update(volumeRun).set({ current: null })
+        .where(and(committed, eq(volumeRun.volumeId, volumeId), notInArray(volumeRun.state, [...ACTIVE_VOLUME_RUN_STATES])));
+    }
+    const rows = yield* database.drizzle.select().from(volumeRun).where(committed);
+    if (rows.length === 0) return;
+    const lanes = rows.filter((row) => ACTIVE_VOLUME_RUN_STATES.some((active) => active === row.state));
     for (const lane of lanes) {
       // The message only advises; a lane left active would block the restore it names.
       const holder = yield* observeVolumeMembers(organizationId, lane.dockerVolume).pipe(

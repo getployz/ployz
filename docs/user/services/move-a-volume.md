@@ -204,6 +204,12 @@ name every such server to remove first:
 data has unfinished cuts on web-1 and web-3, so release cannot finish it on web-2; ployz server rm web-1 and web-3, then ployz volume release data
 ```
 
+If another server's copy is still a writer, both print that first instead:
+
+```
+data-web-1 is still a writer copy, so data can't finish on web-2; ployz volume restore data --from web-1 keeps web-1's data
+```
+
 While a move is still running past the point where `web-2` was told to start your service, the
 move can only finish there, so Release is refused:
 
