@@ -545,8 +545,11 @@ class ClusterModel:
         delay = re.fullmatch(r"delay-rpc:SetVolumeCopy\.(\w+):(\d+)", fault)
         lane["held"] = None
         if delay and delay[1] == transition:
-            self.log_fault(machine, at)
-            self.hold_verb(machine, at + int(delay[2]))
+            late = self.LATE_LINES.get(self.mutation) if name == "final" else None
+            identity = late(self.epoch(lane["row"]["id"])) if late else {}
+            if not (name == "final" and self.mutation == "hold-line-lost"):
+                self.log_fault(machine, at, **identity)
+            self.hold_verb(machine, at + int(delay[2]), **identity)
             lane["until"], lane["held"] = at + int(delay[2]) + STEP, machine
         elif fault and not fault.startswith("delay-rpc:") and (
                 fault == f"kill-daemon:SetVolumeCopy.{transition}" or not fault.startswith("kill-daemon:")):
@@ -570,6 +573,11 @@ class ClusterModel:
             self.copies[machine] = "writer"
             self.running[machine] = self.current
 
+    # A final pull hold after the late arm that is not the first run's: another run's gen, or a round target.
+    # hold-line-lost drops the hold's own line and keeps its release.
+    LATE_LINES = {"final-other-gen": lambda epoch: dict(gen=999),
+                  "final-round-target": lambda epoch: dict(target=f"w-{epoch}-0")}
+
     def take(self, state):
         """End the lane's row as `state` in one step and put the app back on the source, promoting it if cut."""
         lane, self.lane = self.lane, None
@@ -592,10 +600,11 @@ class ClusterModel:
             lane["until"] = self.clock() + 1
             self.enter(lane)
 
-    def hold_verb(self, machine, until):
+    def hold_verb(self, machine, until, **identity):
         """ployzd holds the verb until the fault file clears or the hold's limit passes, whatever Cloud does with the
         run meanwhile, and logs which ended it with the held verb's identity."""
-        hold = {by: self.fault_text(machine, by=by) for by in ("disarm", "limit")}
+        other = dict(gen=999) if self.mutation == "release-other-gen" else identity
+        hold = {by: self.fault_text(machine, by=by, **other) for by in ("disarm", "limit")}
         self.verb_holds[machine] = hold
         self.at(until, lambda: self.release_verb(machine, "limit", hold))
 
@@ -3151,6 +3160,10 @@ finally:
              "the Deploy printed 'Provisioned Volume status has an invalid mountpoint'"),
             ("requeue-unrelated", "deploy-warm", "0 requeued moves, expected 1"),
             ("cut-other-gen", "deploy-after-cut", "the trigger never fired before the run ended"),
+            ("final-other-gen", "deploy-after-cut", "the trigger never fired before the run ended"),
+            ("final-round-target", "deploy-after-cut", "the trigger never fired before the run ended"),
+            ("hold-line-lost", "deploy-after-cut", "the trigger never fired before the run ended"),
+            ("release-other-gen", "deploy-after-cut", "the hold was released by None, not the disarm after the Deploy"),
             ("deploy-stalls", "deploy-warm", f"over the {PLAIN_DEPLOY}s baseline plus {volume_move.DEPLOY_MARGIN}s"),
         ]
         for mutation, name, message in planted:
