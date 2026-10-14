@@ -66,7 +66,10 @@ class Limits(unittest.TestCase):
         problems = boat.shortfalls(3, self.limits(active=98, minute=2))
         self.assertEqual(len(problems), 2)
         self.assertIn("Active sandboxes: need 3, 2 of 100 free", problems)
-        self.assertIn("Starts this minute: need up to 9, 2 left", problems)
+        self.assertIn("Starts this minute: need up to 3, 2 left", problems)
+
+    def test_the_minute_budgets_one_start_per_machine(self):
+        self.assertEqual(boat.shortfalls(8, self.limits(minute=12, hour=60, day=200)), [])
 
     def test_hour_and_day_budget_every_relaunch(self):
         problems = boat.shortfalls(3, self.limits(hour=8, day=9))

@@ -132,9 +132,8 @@ def shortfalls(machines, limits):
         problems.append(f"Active sandboxes: need {machines}, {headroom} of {limits['maxActiveSandboxes']} free")
     if limits["starts"].get("unlimited"):
         return problems
-    # A relaunch follows a boot of well under a minute, so every window may see every placement.
-    need = machines * PLACEMENTS
-    for window in ["minute", "hour", "day"]:
+    # Relaunches wait on a boot, so only the first placements share a minute; the rate_limited retry absorbs the rest.
+    for window, need in [("minute", machines), ("hour", machines * PLACEMENTS), ("day", machines * PLACEMENTS)]:
         remaining = limits["starts"][window]["remaining"]
         if need > remaining:
             problems.append(f"Starts this {window}: need up to {need}, {remaining} left")
