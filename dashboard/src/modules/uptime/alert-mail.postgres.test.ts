@@ -30,8 +30,6 @@ const evidence = {
   ],
 };
 
-const literal = (value: unknown) => `'${(typeof value === "string" ? value : JSON.stringify(value)).replaceAll("'", "''")}'`;
-
 /**
  * Cloud with the Store open: Organization Acme whose members are Ada and Bob, Bob with uptime email off, and a check on
  * Service `web` in shop / production. `open` and `close` write incidents and their alerts with the control plane's own
@@ -63,8 +61,9 @@ const setup = Effect.fn(function* () {
     values (${ORGANIZATION}, 'web', 'https://web.acme.test/health', ${ENVIRONMENT}, ${SERVICE}) returning id`);
   if (check === undefined) throw new Error("no check");
 
-  const statement = (text: string, values: readonly unknown[]) =>
-    query(sql.raw(text.replace(/\$(\d)/g, (_, n: string) => literal(values[Number(n) - 1]))));
+  /** Runs one of the control plane's `$n` statements with `values` bound as its parameters. */
+  const statement = (text: string, values: readonly JsonValue[]) =>
+    query(sql.join(text.split(/\$(\d+)/).map((part, index) => (index % 2 === 0 ? sql.raw(part) : sql`${values[Number(part) - 1]}`))));
   const open = Effect.fn(function* (openedAt: string) {
     const id = randomUUID();
     yield* statement(controlPlaneStatements.open, [check.id, 1, id, openedAt, evidence, { transition: "opened" }]);
