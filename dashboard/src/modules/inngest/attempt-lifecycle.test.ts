@@ -46,15 +46,16 @@ describe("attemptLifecycle", () => {
     expect(cancel.result).toEqual({ closed: 1 });
   });
 
-  it("passes a singleton through, so a second run of one Volume is skipped while the first runs", () => {
+  it("runs every Volume Run event, and cancels the run when another lane takes its row", () => {
     const [run] = createVolumeRunFunctions(new Inngest({ id: "test" }));
 
-    expect(run.opts.singleton).toEqual({ key: "event.data.volumeId", mode: "skip" });
+    expect(run.opts.singleton).toBeUndefined();
+    expect(run.opts.cancelOn).toEqual([{ event: expect.objectContaining({ name: "volume/run.taken" }), match: "data.runId" }]);
   });
 
-  it("leaves singleton unset on a run that does not ask for it", () => {
+  it("leaves cancelOn unset on a run that does not ask for it", () => {
     const [run] = createServerDrainFunctions(new Inngest({ id: "test" }));
 
-    expect(run.opts.singleton).toBeUndefined();
+    expect(run.opts.cancelOn).toBeUndefined();
   });
 });

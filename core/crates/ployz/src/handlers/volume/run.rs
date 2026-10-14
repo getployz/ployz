@@ -71,6 +71,7 @@ pub(crate) enum VolumeRunState {
     Cancelled,
     Lost,
     NotStarted,
+    Yielded,
 }
 
 impl VolumeRunState {
@@ -82,7 +83,9 @@ impl VolumeRunState {
         match self {
             Self::Requested | Self::Running => Tone::Change,
             Self::Done => Tone::Good,
-            Self::Failed | Self::Cancelled | Self::Lost | Self::NotStarted => Tone::Bad,
+            Self::Failed | Self::Cancelled | Self::Lost | Self::NotStarted | Self::Yielded => {
+                Tone::Bad
+            }
         }
     }
 }
@@ -586,7 +589,8 @@ fn ended(run: &VolumeRun, started: &str, follow: String) -> Result<(), Error> {
         | VolumeRunState::Running
         | VolumeRunState::Done
         | VolumeRunState::Failed
-        | VolumeRunState::Cancelled => RpcErrorCode::Conflict,
+        | VolumeRunState::Cancelled
+        | VolumeRunState::Yielded => RpcErrorCode::Conflict,
     };
     Err(Error::detailed(
         code,
@@ -601,6 +605,7 @@ const fn ended_word(state: VolumeRunState) -> &'static str {
         VolumeRunState::Cancelled => "was cancelled",
         VolumeRunState::Lost => "was lost",
         VolumeRunState::NotStarted => "never started",
+        VolumeRunState::Yielded => "gave way to a Deploy",
         VolumeRunState::Requested
         | VolumeRunState::Running
         | VolumeRunState::Done

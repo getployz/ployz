@@ -26,9 +26,11 @@ import { PloyzProviderError, type PloyzSdkError, type PloyzSession } from "#/mod
 import { createRunStoreDeployment } from "#/modules/config-store/store-deployment.inngest";
 import type { InngestRunStatus } from "#/modules/inngest/client";
 import { createCloseFinishedVolumeRun, createCloseStaleVolumeRuns, createRunVolume } from "#/modules/volume-run/volume-run.inngest";
+import { operationsOn } from "#/modules/operations/operation-history.server";
 import {
   closeStaleVolumeRuns,
   closeVolumeRun,
+  listVolumeRuns,
   orphanSlotNames,
   requestVolumeRun,
   requireOwner,
@@ -506,10 +508,10 @@ describe("volume runs", () => {
 
       const swept = await runEffect(closeStaleVolumeRuns(lookup));
 
-      expect(swept).toEqual({ lost: 1, closed: 4 });
+      expect(swept).toEqual({ not_started: 1, closed: 4 });
       expect(looked.sort()).toEqual(["r-cancelled", "r-completed", "r-failed", "r-missing", "r-running"]);
       expect(Object.fromEntries((await rows()).map((row) => [row.id.slice(-2), row.state]))).toEqual({
-        "01": "lost", "02": "requested", "03": "lost", "04": "failed", "05": "cancelled", "06": "lost", "07": "running", "08": "running",
+        "01": "not_started", "02": "requested", "03": "lost", "04": "failed", "05": "cancelled", "06": "lost", "07": "running", "08": "running",
       });
     });
 
@@ -561,6 +563,131 @@ describe("volume runs", () => {
     });
   });
 
+
+  describe("lane gen", () => {
+    const gens = async () => (await harness.pool.query(
+      "select gen from volume_run where volume_id = $1 order by created_at, id", [volumeId])).rows.map((row: { gen: string }) => Number(row.gen));
+
+    it("rises with each run on a Volume", async () => {
+      const first = await requested({ kind: "sync", args: { full: false } });
+      await execute(first.id, "run-1");
+      const second = await requested({ kind: "sync", args: { full: false } });
+      await execute(second.id, "run-2");
+      await requested({ kind: "sync", args: { full: false } });
+
+      const [a = 0, b = 0, c = 0] = await gens();
+      expect(b).toBeGreaterThan(a);
+      expect(c).toBeGreaterThan(b);
+    });
+
+    it("never gives two inserts on one Volume the same number, even while both are open", async () => {
+      const lane = await Promise.all([1, 2].map(() => request({ kind: "sync", args: { full: false } })));
+      expect(lane.filter((result) => result.ok)).toHaveLength(1);
+      expect(await gens()).toHaveLength(1);
+
+      const insert = (client: { query: typeof harness.pool.query }) => client.query(
+        `insert into volume_run (organization_id, environment_id, volume_id, volume_name, docker_volume, kind, args, state)
+         values ($1, 'env-1', $2, 'data', $3, 'sync', '{"full":false}', 'done') returning gen`,
+        [organizationId, volumeId, dockerVolume]);
+      const one = await harness.pool.connect();
+      const two = await harness.pool.connect();
+      try {
+        await one.query("begin");
+        await two.query("begin");
+        await Promise.all([insert(one), insert(two)]);
+        await Promise.all([one.query("commit"), two.query("commit")]);
+      } finally {
+        one.release();
+        two.release();
+      }
+      const all = await gens();
+      expect(all).toHaveLength(3);
+      expect(new Set(all).size).toBe(3);
+    });
+
+    it("cannot be chosen by a writer", async () => {
+      await expect(harness.pool.query(
+        `insert into volume_run (organization_id, environment_id, volume_id, volume_name, docker_volume, kind, args, gen)
+         values ($1, 'env-1', $2, 'data', $3, 'sync', '{"full":false}', 1)`,
+        [organizationId, volumeId, dockerVolume])).rejects.toThrow(/gen/);
+    });
+
+    it("starts a new row warm", async () => {
+      await requested({ kind: "mirror", args: { to: "fsn-2" } });
+
+      expect((await harness.pool.query("select phase from volume_run")).rows).toEqual([{ phase: "warm" }]);
+    });
+  });
+
+  describe("claim by row", () => {
+    it("a duplicate event for a finished row exits at the claim and leaves the row as the first run left it", async () => {
+      const run = await requested({ kind: "mirror", args: { to: "fsn-2" } });
+      await execute(run.id, "run-1");
+      const before = await rows();
+      verbs = [];
+
+      const duplicate = await execute(run.id, "run-duplicate");
+
+      expect(duplicate.result).toEqual({ runId: run.id, settled: "done" });
+      expect(verbs).toEqual([]);
+      expect(await rows()).toEqual(before);
+    });
+
+    it("two events for one row at once run it once", async () => {
+      const run = await requested({ kind: "mirror", args: { to: "fsn-2" } });
+
+      const both = await Promise.all([execute(run.id, "run-1"), execute(run.id, "run-2")]);
+
+      expect(both.map((output) => output.result).filter((result) => expect.objectContaining({ settled: expect.any(String) }).asymmetricMatch(result))).toHaveLength(1);
+      const [row] = await rows();
+      expect(row).toMatchObject({ state: "done" });
+      expect(["run-1", "run-2"]).toContain(row?.inngest_run_id);
+    });
+  });
+
+  describe("lane sweep", () => {
+    const old = "now() - interval '20 minutes'";
+    const insert = (volume: string, state: string, run: string | null, at: string) => harness.pool.query(
+      `insert into volume_run (organization_id, environment_id, volume_id, volume_name, docker_volume, kind, args, state, inngest_run_id, created_at, updated_at)
+       values ($1, 'env-1', $2, 'data', 'd', 'move', '{"to":"fsn-2"}', $3, $4, ${at}, ${at})`,
+      [organizationId, volume, state, run]);
+    const byVolume = async () => Object.fromEntries((await harness.pool.query(
+      "select volume_id, state, message from volume_run")).rows.map((row: { volume_id: string; state: string; message: string | null }) =>
+      [row.volume_id, [row.state, row.message]]));
+
+    it("closes an unclaimed requested row after the grace period as never delivered, and leaves a fresh one", async () => {
+      await insert("v-old", "requested", null, old);
+      await insert("v-fresh", "requested", null, "now() - interval '1 minute'");
+
+      const swept = await runEffect(closeStaleVolumeRuns(() => Effect.succeed("running" as const)));
+
+      expect(swept).toEqual({ not_started: 1, closed: 0 });
+      expect(await byVolume()).toEqual({ "v-old": ["not_started", "event never delivered"], "v-fresh": ["requested", null] });
+    });
+
+    it("a running row whose Inngest run is over still ends as today", async () => {
+      await insert("v-over", "running", "r-over", old);
+      await insert("v-live", "running", "r-live", old);
+
+      const swept = await runEffect(closeStaleVolumeRuns((runId) => Effect.succeed(runId === "r-over" ? "cancelled" as const : "running" as const)));
+
+      expect(swept).toEqual({ not_started: 0, closed: 1 });
+      expect(await byVolume()).toEqual({ "v-over": ["cancelled", "the run was cancelled"], "v-live": ["running", null] });
+    });
+  });
+
+  describe("yielded", () => {
+    it("reads back from volume runs and operation history", async () => {
+      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
+      await harness.pool.query(
+        "update volume_run set state = 'yielded', message = 'a Deploy took the Volume', finished_at = now() where id = $1", [run.id]);
+
+      expect(await runEffect(listVolumeRuns(organizationId, volumeId)))
+        .toMatchObject([{ id: run.id, state: "yielded", message: "a Deploy took the Volume" }]);
+      expect(await runEffect(operationsOn(organizationId, { kind: "volume", volume: volumeId }, null, 10)))
+        .toMatchObject([{ attempt: run.id, state: "superseded", reason: "a Deploy took the Volume" }]);
+    });
+  });
 
   describe("epoch", () => {
     it("takes one above the highest epoch a copy shows, in its root or its newest snapshot's name", async () => {
