@@ -7,7 +7,7 @@
 use std::path::Path;
 
 use clap::{ArgMatches, Command, ValueHint};
-use ployz_core::{RpcErrorCode, ServiceName};
+use ployz_core::{DockerfileFacts, RpcErrorCode, ServiceName};
 use ployz_store::{
     AddDomain, Change, CreateProject, CreateService, DeploymentView, DomainName, DomainsQuery,
     Edit, EnvironmentId, EnvironmentRef, ProjectId, ProjectName, ServiceLineageId, ServicesQuery,
@@ -241,28 +241,12 @@ fn add_service(
             service: name,
             hostname: None,
             prefix: None,
-            port: dockerfile.as_deref().and_then(exposed_port),
+            port: dockerfile
+                .as_deref()
+                .and_then(|dockerfile| DockerfileFacts::parse(dockerfile).ports.first().copied()),
         })?;
     }
     Ok(())
-}
-
-/// The first port the Dockerfile's final stage `EXPOSE`s: earlier stages only build.
-fn exposed_port(dockerfile: &str) -> Option<u16> {
-    // ponytail: a port the final stage inherits from its base image isn't seen.
-    let mut port = None;
-    for (keyword, arguments) in crate::build::dockerfile_instructions(dockerfile) {
-        match keyword.as_str() {
-            "FROM" => port = None,
-            "EXPOSE" if port.is_none() => {
-                port = arguments
-                    .split_whitespace()
-                    .find_map(|port| port.split('/').next()?.parse().ok());
-            }
-            _ => {}
-        }
-    }
-    port
 }
 
 /// The directory's name as a Project and Service name, else `app`.
@@ -286,24 +270,6 @@ fn directory_name(directory: &Path) -> ServiceName {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_final_stages_first_exposed_port_is_the_domains() {
-        for (dockerfile, port) in [
-            ("FROM nginx\nEXPOSE 80\nEXPOSE 443", Some(80)),
-            ("FROM x\n  expose 3000/tcp 9000", Some(3000)),
-            ("FROM x\nEXPOSE \\\n  8080", Some(8080)),
-            ("FROM x\nEXPOSE $PORT", None),
-            ("FROM x", None),
-            (
-                "FROM node AS build\nEXPOSE 3000\nFROM nginx\nEXPOSE 80",
-                Some(80),
-            ),
-            ("FROM node AS build\nEXPOSE 3000\nFROM nginx", None),
-        ] {
-            assert_eq!(exposed_port(dockerfile), port, "{dockerfile}");
-        }
-    }
 
     #[test]
     fn a_directory_names_its_project_or_falls_back_to_app() {

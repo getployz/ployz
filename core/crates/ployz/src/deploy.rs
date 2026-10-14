@@ -318,7 +318,6 @@ pub struct DeploySnapshot {
     pub container_failures: Vec<MachineFailure<RpcError>>,
     /// Required Container queries that produced no terminal response.
     pub container_omissions: Vec<MachineId>,
-    /// Fresh targeted bridge observations used only for capacity admission.
     /// Fresh telemetry by Machine, or `None` for snapshot paths that cannot create endpoints.
     pub capacity: Option<BTreeMap<MachineId, BridgeEndpointCapacity>>,
 }

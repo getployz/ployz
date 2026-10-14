@@ -27,7 +27,6 @@
                   "excerpt": "Custom domains are free. 1. In Settings → Networking, click Custom Domain. 2. Enter the Domain, like app.example.com, leave Target port blank to use PORT, and click Save route. 3. Create the DNS…",
                   "heading": "Add a custom domain",
                   "path": "services/domains.md",
-                  "score": 49.23,
                   "title": "Domains"
                 },
                 {
@@ -35,7 +34,6 @@
                   "excerpt": "Adds a domain you own, like app.example.com, next to the generated one, and a service can have as many as you need. It needs a DNS record at your DNS provider. See Add a custom domain.",
                   "heading": "Networking > Custom Domain",
                   "path": "services/settings.md",
-                  "score": 32.88,
                   "title": "Service settings"
                 },
                 {
@@ -43,7 +41,6 @@
                   "excerpt": "A service can have several generated domains, like web and shop, each with its own port. Click Generate Domain again, edit Subdomain, which suggests a free one, like web-2, and click Generate Domain.…",
                   "heading": "Generate a domain > Add another generated domain",
                   "path": "services/domains.md",
-                  "score": 30.15,
                   "title": "Domains"
                 },
                 {
@@ -51,7 +48,6 @@
                   "excerpt": "…Settings → Networking. 2. Under Public Networking, click Generate Domain. 3. Leave Port blank to use PORT, or enter the port your app listens on. Click Generate Domain. 4. Click Deploy. The address…",
                   "heading": "Generate a domain",
                   "path": "services/domains.md",
-                  "score": 25.03,
                   "title": "Domains"
                 },
                 {
@@ -59,7 +55,6 @@
                   "excerpt": "Click the trash icon on the domain. It shows Removed on your next deploy and keeps serving until you deploy. Undo keeps it.",
                   "heading": "Remove a domain",
                   "path": "services/domains.md",
-                  "score": 23.04,
                   "title": "Domains"
                 }
               ]
@@ -96,7 +91,6 @@
                   "excerpt": "Custom domains are free. 1. In Settings → Networking, click Custom Domain. 2. Enter the Domain, like app.example.com, leave Target port blank to use PORT, and click Save route. 3. Create the DNS…",
                   "heading": "Add a custom domain",
                   "path": "services/domains.md",
-                  "score": 49.23,
                   "title": "Domains"
                 },
                 {
@@ -104,7 +98,6 @@
                   "excerpt": "Adds a domain you own, like app.example.com, next to the generated one, and a service can have as many as you need. It needs a DNS record at your DNS provider. See Add a custom domain.",
                   "heading": "Networking > Custom Domain",
                   "path": "services/settings.md",
-                  "score": 32.88,
                   "title": "Service settings"
                 },
                 {
@@ -112,7 +105,6 @@
                   "excerpt": "A service can have several generated domains, like web and shop, each with its own port. Click Generate Domain again, edit Subdomain, which suggests a free one, like web-2, and click Generate Domain.…",
                   "heading": "Generate a domain > Add another generated domain",
                   "path": "services/domains.md",
-                  "score": 30.15,
                   "title": "Domains"
                 },
                 {
@@ -120,7 +112,6 @@
                   "excerpt": "…Settings → Networking. 2. Under Public Networking, click Generate Domain. 3. Leave Port blank to use PORT, or enter the port your app listens on. Click Generate Domain. 4. Click Deploy. The address…",
                   "heading": "Generate a domain",
                   "path": "services/domains.md",
-                  "score": 25.03,
                   "title": "Domains"
                 },
                 {
@@ -128,7 +119,6 @@
                   "excerpt": "Click the trash icon on the domain. It shows Removed on your next deploy and keeps serving until you deploy. Undo keeps it.",
                   "heading": "Remove a domain",
                   "path": "services/domains.md",
-                  "score": 23.04,
                   "title": "Domains"
                 }
               ]

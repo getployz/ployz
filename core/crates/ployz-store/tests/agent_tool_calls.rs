@@ -399,9 +399,16 @@ fn acme_api(cloud: Cloud) -> Result<Value, RpcError> {
                 json!({ "repository": "acme/api", "ref": "main", "paths": paths, "truncated": false }),
             )
         }
-        Cloud::Ask(CloudQuery::GithubFile(file)) => Ok(json!({
-            "repository": "acme/api", "ref": "main", "path": file.path, "size": 12, "content": "FROM alpine\n",
-        })),
+        Cloud::Ask(CloudQuery::GithubFile(file)) => {
+            let content = match file.path.as_str() {
+                "Dockerfile.cloud" => CLOUD_DOCKERFILE,
+                _ => "FROM alpine\n",
+            };
+            Ok(json!({
+                "repository": "acme/api", "ref": "main", "path": file.path,
+                "size": content.len(), "content": content,
+            }))
+        }
         Cloud::Ask(query) => panic!("github_ls asked {query:?}"),
         Cloud::Act(act) => panic!("github_ls acted {act:?}"),
     }
@@ -420,6 +427,54 @@ fn github_ls_reads_a_top_level_file() {
     .ok();
     assert_eq!(read["path"], "Dockerfile");
     assert_eq!(read["content"], "FROM alpine\n");
+}
+
+const CLOUD_DOCKERFILE: &str = "FROM node AS build
+ARG NPM_TOKEN
+ENV NODE_ENV=production
+EXPOSE 3000
+FROM node:slim
+ARG VERSION=1
+ENV DATABASE_URL=\"postgres://app:hunter2@db/app\" PORT=8080
+ENV LOG_LEVEL debug
+EXPOSE 8080/tcp 9090
+CMD [\"node\", \"server.js\"]
+";
+
+#[test]
+fn github_ls_reads_a_dockerfiles_final_ports_and_variable_names() {
+    let read = drive(
+        &shop(),
+        in_org(),
+        "github_ls",
+        json!({ "repository": "acme/api", "path": "Dockerfile.cloud" }),
+        "call-1",
+        &mut acme_api,
+    )
+    .ok();
+    assert_eq!(read["content"], CLOUD_DOCKERFILE);
+    assert_eq!(
+        read["dockerfile"],
+        json!({
+            "ports": [8080, 9090],
+            "env": ["DATABASE_URL", "LOG_LEVEL", "PORT"],
+            "args": ["NPM_TOKEN", "VERSION"],
+        })
+    );
+}
+
+#[test]
+fn github_ls_reads_no_dockerfile_facts_from_other_files() {
+    let read = drive(
+        &shop(),
+        in_org(),
+        "github_ls",
+        json!({ "repository": "acme/api", "path": "src/main.rs" }),
+        "call-1",
+        &mut acme_api,
+    )
+    .ok();
+    assert!(read["dockerfile"].is_null(), "{read}");
 }
 
 #[test]

@@ -547,6 +547,26 @@ a client could compute from the observations it already gathers, a daemon stop
 path that stops serving infrastructure, a second writer of `dns.json` or the DNS
 unit, DNS answering before its first load.
 
+## Open questions
+
+Each entry is current behavior kept on purpose until a product decision changes
+it. Make that decision here before changing the code.
+
+- **Corrosion bootstrap.** A joining Machine bootstraps Corrosion from every peer
+  visible when it joined, and a founder from none. Choosing a subset waits on a
+  product reason to prefer some peers over others.
+- **Corrosion configuration.** The daemon writes Corrosion's `config.toml`, but
+  the fields stay Corrosion's. Whether Ployz owns that format is undecided.
+- **Internal DNS record types.** Internal DNS answers A queries only. Every other
+  type gets an authoritative empty NOERROR. A new record type waits on a product
+  need.
+- **Internal DNS caching.** An Internal DNS Answer carries TTL zero and Ployz
+  keeps no cache. A cache waits on a decision that stale answers are acceptable.
+- **Membership in ingress.** The Ingress Proxy routes to Serving Containers
+  without consulting Membership Observations, while Internal DNS filters on them
+  once it has loaded them. Aligning the two changes the membership model for every
+  replicated projection, not ingress alone.
+
 ## Boundaries
 
 Ployz deliberately does not provide:

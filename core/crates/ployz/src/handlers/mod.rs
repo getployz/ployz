@@ -17,6 +17,7 @@ pub(crate) mod context;
 mod data_loss;
 pub(crate) mod debug;
 pub(crate) mod deploy;
+pub(crate) mod docs;
 pub(crate) mod domain;
 pub(crate) mod env;
 pub(crate) mod github;
@@ -480,6 +481,7 @@ pub(crate) fn handler_for(path: &str) -> Option<Runnable> {
         ("diff", "") => Some(cloud(Never, review::diff)),
         ("discard", "") => Some(cloud(Never, review::discard)),
         ("history", "" | "restore" | "undo") => Some(cloud(Never, review::history)),
+        ("docs", "") => Some(local(Never, docs::run)),
         ("domain", rest) => domain::handler(rest),
         ("env", rest) => env::handler(rest),
         ("exec", "") => Some(cloud(Always, operator::exec)),

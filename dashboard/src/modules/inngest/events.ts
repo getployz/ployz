@@ -463,7 +463,6 @@ export function createOrganizationBillingSyncRequestedEvent(
   } as const;
 }
 
-/** Keyed by the Deployment, so admitting it again (a replayed request) sends nothing new. */
 export function createConfigPrCheckRequestedEvent(input: { organizationId: string; repositoryId: number; number: number }) {
   return {
     name: configPrCheckRequestedEvent,

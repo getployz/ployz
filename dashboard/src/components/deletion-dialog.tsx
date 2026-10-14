@@ -150,10 +150,11 @@ function OpenDeletionDialog<Evidence>({ onOpenChange, title, place, confirmLabel
         </AlertDialogHeader>
         {items.length > 0 ? <DeletionList items={items} fresh={fresh} /> : null}
         <Field>
-          <FieldLabel htmlFor={inputId} className="font-normal">
-            Type <strong className="font-mono font-medium">{place}</strong>
+          {/* Inline text, not a flex row: a long name wraps instead of squeezing "Type" into "Typ e". */}
+          <FieldLabel htmlFor={inputId} className="block w-full font-normal leading-relaxed">
+            Type <strong className="font-mono font-medium break-all">{place}</strong>{" "}
             {/* A button inside the label copies without focusing the input. */}
-            <CopyButton value={place} label={`Copy ${place}`} />
+            <CopyButton value={place} label={`Copy ${place}`} className="-my-1 align-middle" />{" "}
             to confirm
           </FieldLabel>
           <Input id={inputId} aria-label={`Type ${place} to confirm`} autoFocus autoComplete="off" spellCheck={false} placeholder={place} value={typed}

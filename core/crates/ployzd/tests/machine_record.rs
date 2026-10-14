@@ -1062,7 +1062,6 @@ fn local_record_refuses_unknown_management_client_slot_fields() {
     // Key material fails closed: an unknown slot field may be a secret.
     assert!(serde_json::from_value::<LocalMachineRecord>(extended).is_err());
 
-    // A record with no slots still writes the field.
     assert_eq!(
         valid.get("management_clients"),
         Some(&serde_json::json!({}))
