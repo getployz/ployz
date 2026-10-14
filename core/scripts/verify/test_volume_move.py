@@ -2610,6 +2610,39 @@ finally:
         self.assertTrue(any(failure.startswith("the kill-ployz landed after the first run")
                             for failure in result["failures"]), result["failures"])
 
+    UNREAD_LISTS = {"a failed list": (1, json.dumps(dict(error=dict(code="internal", message="list failed")))),
+                    "malformed JSON": (0, '{"runs": [{"id": '),
+                    "a list without the first run": (0, json.dumps(dict(runs=[])))}
+
+    def unread_once(self, model, reply):
+        """The first runs list after the kill lands answers reply instead of what Cloud holds."""
+        cli, spent = model.cli, []
+
+        def unread(args):
+            if args[:2] == ["volume", "runs"] and model.kills and not spent:
+                spent.append(args)
+                return reply
+            return cli(args)
+        model.cli = unread
+
+    def test_an_unread_row_after_the_action_never_reads_as_live(self):
+        # Codex r10 1: the late-action scenario, with the read after the kill failed, malformed or missing the first
+        # run. The admission row's `running` must not stand in for it.
+        for shape, reply in self.UNREAD_LISTS.items():
+            with self.subTest(shape):
+                def before(model, reply=reply):
+                    self.model = model
+                    model.latency["machine-2"] = 1.0
+                    self.unread_once(model, reply)
+
+                def effect(at):
+                    self.model.cut("machine-1", at + 10)
+                    self.model.log_fault("machine-2", at + 14)
+                result, _ = self.run_with("soak-4-final-kill-ployz-other", before, 15.5, effect)
+                self.assertFalse(result["passed"], result)
+                self.assertTrue(any(failure.startswith("the first run's row could not be read after the kill-ployz")
+                                    for failure in result["failures"]), result["failures"])
+
     CLOCKS = ("machine-1", "machine-2", "cloud", "host")
 
     def perturb(self, model, label, number, seen):
