@@ -172,14 +172,14 @@ export const observeLeavingServerActivity = Effect.fn("MachineRemoval.observeLea
 
 /**
  * A copy on another Server, by Docker Volume: what a lane committed to the leaving Server names to restore from. A
- * writer counts: a lane commits only after its source's cut, so a writer seen before the commit is a slot by the time
- * the lane ends. A copy's snapshots are not observed here, so a slot may still lack one.
+ * writer wins over a slot: a lane commits only after its source's cut, so a writer seen before the commit is a slot by
+ * the time the lane ends, holding the cut's snapshot. Other slots' snapshots are not observed here, so one may lack any.
  */
 export function heldOff(copies: readonly ObservedCopy[], servers: readonly MachineIdentity[], leaving: MachineId) {
   const held: Record<string, MachineName> = {};
   for (const copy of copies) {
     const holder = copy.machine_id === leaving ? undefined : servers.find((server) => server.id === copy.machine_id);
-    if (holder !== undefined) held[copy.name] ??= holder.name;
+    if (holder !== undefined && (copy.role === "writer" || held[copy.name] === undefined)) held[copy.name] = holder.name;
   }
   return held;
 }
