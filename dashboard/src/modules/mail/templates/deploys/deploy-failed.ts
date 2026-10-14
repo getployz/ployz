@@ -34,7 +34,7 @@ export function deployFailedMail({ origin, organization, deployment, sources }: 
   facts.push({ label: "Environment", value: place }, { label: "Error", value: failure });
   return {
     subject: named ? `${named} failed to deploy to ${place}` : `A deploy to ${place} failed`,
-    preview: commit && source?.branch ? `${commit} on ${source.branch} didn't deploy. The logs show why.` : "The logs show why.",
+    preview: commit && source?.branch ? `${commit} on ${source.branch} didn't deploy.` : "The logs show what went wrong.",
     title: named ? `${named} failed to deploy to ${environment}` : `A deploy to ${environment} failed`,
     paragraphs: [source?.branch ? `GitHub started this deploy from ${source.branch}. The logs show what went wrong.` : "GitHub started this deploy. The logs show what went wrong."],
     action: { label: "View logs", url },
