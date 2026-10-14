@@ -19,9 +19,9 @@ since it measures the Deploy the others are held to:
 `run` needs a ready two-Machine vc, Incus or Boat, with Cloud and verify faults:
   PLOYZ_VERIFY_CARGO_ARGS='--features ployz/verify-faults,ployzd/verify-faults' \\
     scripts/verify-cluster up --machines 2 --daemon checkout --cloud
-For an Incus vc, hold /tmp/ployz-warm-move-vc.lock across up, the run and down; a Boat vc (`up --provider boat`)
-skips it. `--soak` holds about 8 GB of Postgres per Machine copy, so give an Incus vc room with
-`up --disk 48GiB --memory 4GiB`; a Boat sandbox already has that room.
+A Boat vc (the default) needs no lock. For an Incus vc (`up --provider incus`), hold /tmp/ployz-warm-move-vc.lock
+across up, the run and down. `--soak` holds about 8 GB of Postgres per Machine copy; a Boat sandbox has that room,
+and an Incus vc needs `up --provider incus --disk 48GiB --memory 4GiB`.
 Results land in the run's evidence/volume-move-<time>/, one JSON per case and summary.json.
 """
 
