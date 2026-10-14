@@ -7,7 +7,7 @@ import { deployClaim } from "#/modules/volume-placement/volume-placement.server"
 import { expectOf, roleOf } from "#/modules/volume-run/plan";
 import { volumeMirrorStatus, volumeRun } from "#/modules/volume-run/tables";
 import { ACTIVE_VOLUME_RUN_STATES, type AnsweredMember, copyName, type Member } from "#/modules/volume-run/volume-run";
-import { askCopy, type CopyAnswer, DRAIN_MS, observeVolumeMembers, requestVolumeRun } from "#/modules/volume-run/volume-run.server";
+import { askCopy, type CopyAnswer, DRAIN_MS, observeVolumeMembers, requestVolumeRun, SwitchAttemptError } from "#/modules/volume-run/volume-run.server";
 import { Database } from "#/server/database.server";
 
 export type SyncedVolume = {
@@ -207,7 +207,10 @@ export const syncMirrors = Effect.fn("MirrorSync.sync")(function* (
   const named = (member: Member) => copyName(volume.name, member.machine.name);
   const pull = (member: SlotMember, copy: Slot, target: string) =>
     ask(asker, member.machine, expectOf(copy), { kind: "mirror", from: writer.address, target, drain: DRAIN_MS }).pipe(
-      Effect.catch((error) => Effect.succeed<MirrorAnswer>({ ok: false, reason: "unreached", copy: null, message: error.message })),
+      Effect.catchIf(
+        (error) => error instanceof SwitchAttemptError,
+        (error) => Effect.succeed<MirrorAnswer>({ ok: false, reason: "unreached", copy: null, message: error.message }),
+      ),
     );
 
   // The Machine finishes a landed pull only when asked for it again, so resend each pull before calling it busy.
