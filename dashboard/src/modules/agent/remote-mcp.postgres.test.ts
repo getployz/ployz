@@ -2,7 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { it } from "@effect/vitest";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { sql } from "drizzle-orm";
-import { Effect, Layer, Schema } from "effect";
+import { Effect, Fiber, Layer, Schedule, Schema } from "effect";
 import { afterEach, expect, vi } from "vitest";
 import { connectAgent } from "#/modules/agent/connect.server";
 import { serveAuth, serveMcpMetadata, serveRemoteMcp } from "#/modules/agent/remote-mcp.server";
@@ -10,7 +10,7 @@ import { decideApproval, pendingApprovals } from "#/modules/approvals/approvals.
 import type { PolarService } from "#/modules/billing/polar-provider.server";
 import type { Caller } from "#/modules/identity/actor";
 import type { JsonObject } from "#/db/tables";
-import { oauthConsent } from "#/modules/identity/oauth-tables";
+import { oauthConsent, oauthRefreshToken } from "#/modules/identity/oauth-tables";
 import { member } from "#/modules/identity/tables";
 import { REQUEST_KEY_HEADER } from "#/modules/operations/keyed.server";
 import { Auth, AuthLive } from "#/server/auth.server";
@@ -64,6 +64,17 @@ const cloudOf = Effect.fn(function* (hosted: boolean) {
   return { run, provided };
 });
 
+/** Sign `email` up through the auth routes and return its session cookie. */
+const signUp = (run: Effect.Success<ReturnType<typeof cloudOf>>["run"], email: string) =>
+  Effect.promise(async () => {
+    const response = await run(serveAuth(new Request(`${origin}/api/auth/sign-up/email`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email, name: email.split("@", 1)[0], password: "correct-horse-battery-staple" }),
+    })));
+    return response.headers.get("set-cookie")?.split(";", 1)[0] ?? expect.fail(`no session cookie for ${email}`);
+  });
+
 /**
  * Hosted Cloud with Shop: `web` deployed and staged for removal, so the next Deploy destroys it. Bo signed up and joined
  * Shop as an owner; the app's own JWKS answers through its auth routes.
@@ -86,15 +97,7 @@ const hostedShop = Effect.fn(function* () {
   }));
   yield* Effect.promise(() => store.write(ORGANIZATION, { command: "remove_service", environment: here, service: "web" }));
 
-  const signUp = yield* provided(Effect.gen(function* () {
-    const auth = yield* Auth;
-    return yield* auth.handler(new Request(`${origin}/api/auth/sign-up/email`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ email: "bo@example.test", name: "bo", password: "correct-horse-battery-staple" }),
-    }));
-  }));
-  const cookie = signUp.headers.get("set-cookie")?.split(";", 1)[0] ?? expect.fail("no session cookie");
+  const cookie = yield* signUp(run, "bo@example.test");
   const boId = yield* provided(Effect.gen(function* () {
     const { drizzle } = yield* Database;
     const [bo] = yield* drizzle.execute<{ id: string }>(sql`select id from "user" where email = 'bo@example.test'`, "objects");
@@ -184,8 +187,26 @@ const onlyConsent = Effect.fn(function* (shop: Shop) {
   return consent?.id ?? expect.fail("Bo has no consent");
 });
 
-const consentCall = (shop: Shop, path: string, body: { readonly id: string; readonly update?: { readonly scopes: ReadonlyArray<string> } }) =>
-  authJson(shop, path, { method: "POST", headers: { cookie: shop.cookie, "content-type": "application/json" }, body: JSON.stringify(body) });
+const consentCall = (shop: Shop, path: string, body: { readonly id: string; readonly update?: { readonly scopes: ReadonlyArray<string> } }, cookie = shop.cookie) =>
+  authJson(shop, path, { method: "POST", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify(body) });
+
+const disconnect = (shop: Shop) => Effect.flatMap(onlyConsent(shop), (id) => consentCall(shop, "/api/auth/oauth2/delete-consent", { id }));
+
+/** Codes, refresh tokens and consents are stamped in whole seconds, so a reconnect that must count as later waits one out. */
+const aSecondLater = Effect.sleep("1100 millis");
+
+/** A refresh token row as better-auth stores one, made outside the token endpoint. */
+const plantRefreshToken = Effect.fn(function* (shop: Shop, clientId: string) {
+  const token = randomBytes(32).toString("base64url");
+  yield* shop.provided(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    yield* drizzle.insert(oauthRefreshToken).values({
+      token: createHash("sha256").update(token).digest("base64url"), clientId, userId: shop.boId, referenceId: ORGANIZATION,
+      resources: [`${origin}/mcp`], scopes: ["ployz", "offline_access"], authTime: new Date(), expiresAt: new Date(Date.now() + 86_400_000),
+    });
+  }));
+  return token;
+});
 
 /** An MCP client on `/mcp` with `token`; `keys` records each response's request key header. */
 const agentWith = Effect.fn(function* (shop: Shop, token: string, headers: Record<string, string> = {}) {
@@ -319,8 +340,9 @@ it.live("disconnecting stops the grant's refresh token, even after the agent con
     const old = yield* connectTokens(shop, clientId);
     const refreshToken = old.refresh_token ?? expect.fail("connect issued no refresh token");
 
-    expect((yield* consentCall(shop, "/api/auth/oauth2/delete-consent", { id: yield* onlyConsent(shop) })).status).toBe(200);
+    expect((yield* disconnect(shop)).status).toBe(200);
     expect((yield* raw(shop, old.access_token)).status).toBe(401);
+    yield* aSecondLater;
     expect((yield* raw(shop, yield* connect(shop, clientId))).status).toBe(200);
 
     expect((yield* refresh(shop, clientId, refreshToken)).status).toBe(400);
@@ -333,10 +355,74 @@ it.live("disconnecting stops a code the agent hasn't redeemed, even after the ag
     yield* connectTokens(shop, clientId);
     const pending = yield* issueCode(shop, clientId);
 
-    expect((yield* consentCall(shop, "/api/auth/oauth2/delete-consent", { id: yield* onlyConsent(shop) })).status).toBe(200);
+    expect((yield* disconnect(shop)).status).toBe(200);
+    yield* aSecondLater;
     expect((yield* raw(shop, yield* connect(shop, clientId))).status).toBe(200);
 
     expect((yield* redeem(shop, pending)).status).toBe(400);
+  }).pipe(Effect.scoped), 30_000);
+
+it.live("disconnecting stops every code the agent hasn't redeemed, however many it holds", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const clientId = yield* registerAgent(shop);
+    yield* connectTokens(shop, clientId);
+    const pending = yield* Effect.forEach(Array.from({ length: 101 }), () => issueCode(shop, clientId));
+
+    expect((yield* disconnect(shop)).status).toBe(200);
+    yield* aSecondLater;
+    expect((yield* raw(shop, yield* connect(shop, clientId))).status).toBe(200);
+
+    const statuses = yield* Effect.forEach(pending, (code) => redeem(shop, code).pipe(Effect.map((answer) => answer.status)));
+    expect(new Set(statuses)).toEqual(new Set([400]));
+  }).pipe(Effect.scoped), 60_000);
+
+it.live("a refresh token made while disconnected mints nothing after the agent connects again", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const clientId = yield* registerAgent(shop);
+    yield* connectTokens(shop, clientId);
+
+    expect((yield* disconnect(shop)).status).toBe(200);
+    const late = yield* plantRefreshToken(shop, clientId);
+    yield* aSecondLater;
+    const renewed = yield* connectTokens(shop, clientId);
+    expect((yield* raw(shop, renewed.access_token)).status).toBe(200);
+
+    expect((yield* refresh(shop, clientId, late)).status).toBe(400);
+    expect((yield* refresh(shop, clientId, renewed.refresh_token ?? expect.fail("reconnect issued no refresh token"))).status).toBe(200);
+  }).pipe(Effect.scoped), 30_000);
+
+it.live("someone else's refused disconnect, landing mid-way through Bo's, doesn't keep Bo's old credentials alive", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const clientId = yield* registerAgent(shop);
+    const old = yield* connectTokens(shop, clientId);
+    const refreshToken = old.refresh_token ?? expect.fail("connect issued no refresh token");
+    const pending = yield* issueCode(shop, clientId);
+    const consentId = yield* onlyConsent(shop);
+    const outsider = yield* signUp(shop.run, "outsider@example.test");
+
+    const boDisconnecting = yield* shop.provided(Effect.gen(function* () {
+      const database = yield* Database;
+      return yield* database.transaction(Effect.gen(function* () {
+        const { drizzle } = yield* Database;
+        yield* drizzle.execute(sql`select id from oauth_consent where id = ${consentId} for update`);
+        const bo = yield* Effect.forkDetach(consentCall(shop, "/api/auth/oauth2/delete-consent", { id: consentId }));
+        yield* drizzle.execute<{ waiting: number }>(sql`select count(*)::int as waiting from pg_stat_activity
+          where datname = current_database() and wait_event_type = 'Lock' and query ilike '%oauth_consent%'`, "objects").pipe(
+          Effect.repeat({ schedule: Schedule.spaced("20 millis"), until: ([row]) => (row?.waiting ?? 0) > 0 }),
+        );
+        expect((yield* consentCall(shop, "/api/auth/oauth2/delete-consent", { id: consentId }, outsider)).status).toBe(401);
+        return bo;
+      }));
+    }));
+    expect((yield* Fiber.join(boDisconnecting)).status).toBe(200);
+    yield* aSecondLater;
+    expect((yield* raw(shop, yield* connect(shop, clientId))).status).toBe(200);
+
+    expect((yield* redeem(shop, pending)).status).toBe(400);
+    expect((yield* refresh(shop, clientId, refreshToken)).status).toBe(400);
   }).pipe(Effect.scoped), 30_000);
 
 it.live("a code redeemed while disconnected yields no refresh token that works after the agent connects again", () =>
@@ -346,7 +432,7 @@ it.live("a code redeemed while disconnected yields no refresh token that works a
     yield* connectTokens(shop, clientId);
     const pending = yield* issueCode(shop, clientId);
 
-    expect((yield* consentCall(shop, "/api/auth/oauth2/delete-consent", { id: yield* onlyConsent(shop) })).status).toBe(200);
+    expect((yield* disconnect(shop)).status).toBe(200);
     const redeemed = yield* redeem(shop, pending);
     const minted = redeemed.status === 200 ? Schema.decodeUnknownSync(Issued)(redeemed.body).refresh_token : undefined;
     expect((yield* raw(shop, yield* connect(shop, clientId))).status).toBe(200);
