@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 import { randomUUID } from "node:crypto";
 import type { BatchCommand, ConfigCommand, ConfigCommitted, EnvironmentRef, MachineId } from "@ployz/sdk";
 import { and, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
-import { Deferred, Effect, Fiber, Option, Semaphore } from "effect";
+import { Effect, Option, Semaphore } from "effect";
 import { callStore, readStore } from "#/modules/config-store/config-store.server";
 import { refusedWith } from "#/modules/config-store/store-sdk.server";
 import { StoreRefused, type StoreRefusal } from "#/modules/config-store/store.contract";
@@ -15,6 +15,7 @@ import {
 import { ACTIVE_VOLUME_RUN_STATES, dockerVolumeName, parseDockerVolumeName, type VolumeRunInput } from "#/modules/volume-run/volume-run";
 import { volumeRun } from "#/modules/volume-run/tables";
 import { insertRun, inspectVolumeCopies, planVolumeRun, resolveVolume } from "#/modules/volume-run/volume-run.server";
+import { whileLocked } from "#/server/advisory-lock.server";
 import { Database } from "#/server/database.server";
 
 type Row = typeof volumePlacement.$inferSelect;
@@ -51,29 +52,12 @@ const tryExclusive = Effect.fn("VolumePlacement.tryExclusive")(function* (enviro
   return row?.held === true;
 });
 
-/** Each lock holder keeps a pooled connection while its `body` takes more: one at a time can't drain the pool. */
-const holders = Semaphore.makeUnsafe(1);
+/** One holder at a time: each keeps a pooled connection while its `body` takes more. */
+const stagingHolders = Semaphore.makeUnsafe(1);
 
-/**
- * Runs `body` while Environment `environmentId`'s lock is held, on a connection of its own so `body`'s queries stay outside
- * its transaction; none when the lock is taken. `body` can't be interrupted: a Store write it stopped awaiting could still
- * commit after the lock goes.
- */
-const whileStaging = <A, E, R>(environmentId: string, body: Effect.Effect<A, E, R>) => holders.withPermits(1)(Effect.gen(function* () {
-  const database = yield* Database;
-  const locked = yield* Deferred.make<boolean>();
-  const staged = yield* Deferred.make<void>();
-  const holder = yield* database.transaction(Effect.gen(function* () {
-    const held = yield* tryExclusive(environmentId);
-    yield* Deferred.succeed(locked, held);
-    if (held) yield* Deferred.await(staged);
-  })).pipe(Effect.orDie, Effect.onError((cause) => Deferred.failCause(locked, cause)), Effect.forkChild);
-  if (!(yield* Deferred.await(locked))) {
-    yield* Fiber.await(holder);
-    return Option.none<A>();
-  }
-  return Option.some(yield* Effect.uninterruptible(body).pipe(Effect.ensuring(Deferred.succeed(staged, undefined).pipe(Effect.andThen(Fiber.await(holder))))));
-}));
+/** Runs `body` while Environment `environmentId`'s lock is held exclusively; none when it is taken. */
+const whileStaging = <A, E, R>(environmentId: string, body: Effect.Effect<A, E, R>) =>
+  whileLocked(stagingHolders, tryExclusive(environmentId), body);
 
 /**
  * Whether no stageRestore holds Environment `environmentId`: each restore's Store write has then landed or never will, so

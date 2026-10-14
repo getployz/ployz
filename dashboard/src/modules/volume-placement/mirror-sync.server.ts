@@ -1,13 +1,14 @@
 import "@tanstack/react-start/server-only";
 import type { EnvironmentRef, MachineId, Snapshot, VolumeCopy } from "@ployz/sdk";
 import { and, eq, inArray, max, sql } from "drizzle-orm";
-import { Effect } from "effect";
+import { Effect, Option, Semaphore } from "effect";
 import { volumePlacement } from "#/modules/volume-placement/tables";
 import { deployClaim } from "#/modules/volume-placement/volume-placement.server";
 import { expectOf, roleOf } from "#/modules/volume-run/plan";
 import { volumeMirrorStatus, volumeRun } from "#/modules/volume-run/tables";
 import { ACTIVE_VOLUME_RUN_STATES, type AnsweredMember, copyName, type Member } from "#/modules/volume-run/volume-run";
 import { askCopy, type CopyAnswer, DRAIN_MS, observeVolumeMembers, requestVolumeRun, SwitchAttemptError } from "#/modules/volume-run/volume-run.server";
+import { whileLocked } from "#/server/advisory-lock.server";
 import { Database } from "#/server/database.server";
 
 export type SyncedVolume = {
@@ -156,12 +157,7 @@ const snapshotRound = Effect.fn("MirrorSync.snapshotRound")(function* () {
  * It reports each failed pull once, before anything else, so an open lane never hides one. With a lane open it says
  * why it does nothing. Otherwise it snapshots the writer and hands each idle mirror the pull, without waiting for it.
  */
-export const syncMirrors = Effect.fn("MirrorSync.sync")(function* (
-  organizationId: string,
-  volume: SyncedVolume,
-  observe: MemberObserver = observeVolumeMembers,
-  ask: CopyAsk = askCopy,
-) {
+const syncOnce = Effect.fn("MirrorSync.sync")(function* (organizationId: string, volume: SyncedVolume, observe: MemberObserver, ask: CopyAsk) {
   const { drizzle } = yield* Database;
   const answer = (reported: readonly PullFailure[], sync: MirrorSync) => {
     const lines = syncLines(volume.name, { reported, sync });
@@ -277,3 +273,15 @@ export const syncMirrors = Effect.fn("MirrorSync.sync")(function* (
   }
   return yield* answer(reported, { kind: "synced", mirrors: steps });
 });
+
+/** Waits out any other sync of Volume `volumeId`, so a second never snapshots past a pull the first just handed off. */
+const syncLock = Effect.fn("MirrorSync.lock")(function* (volumeId: string) {
+  yield* (yield* Database).drizzle.execute(sql`select pg_advisory_xact_lock(hashtext(${`volume-sync:${volumeId}`}))`);
+  return true;
+});
+
+/** Apart from staging's so a slow sync never queues a restore; two, so holders pin 3 of the pool's 10 connections and bodies keep 7. */
+const syncHolders = Semaphore.makeUnsafe(2);
+
+export const syncMirrors = (organizationId: string, volume: SyncedVolume, observe: MemberObserver = observeVolumeMembers, ask: CopyAsk = askCopy) =>
+  whileLocked(syncHolders, syncLock(volume.volumeId), syncOnce(organizationId, volume, observe, ask)).pipe(Effect.map(Option.getOrThrow));
