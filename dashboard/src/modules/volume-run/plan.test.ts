@@ -425,7 +425,10 @@ function follow(input: PlanInput, members: readonly Member[]) {
 }
 
 describe("follow every next step a refusal names", () => {
-  const twin = (id: string, floorless: boolean, copy: VolumeCopy): AnsweredMember => ({
+  // `Required` is shallow. This pins every leaf at every depth, so a new optional field fails typecheck here until each
+  // twin sets it, and `tied` then sees it.
+  type Complete<T> = T extends string | number | bigint | boolean | null | undefined ? T : { [K in keyof T]-?: Complete<T[K]> };
+  const twin = (id: string, floorless: boolean, copy: Complete<VolumeCopy>): AnsweredMember => ({
     machine: { id: id.padEnd(32, "0") as MachineId, name: "twin" }, address: `fdcc::${id}`, answered: true, view: { copy }, floorless,
   } satisfies Required<AnsweredMember>);
   const at = (name: string, each: AnsweredMember): Member => ({ ...each, machine: { ...each.machine, name } });
@@ -433,10 +436,10 @@ describe("follow every next step a refusal names", () => {
   const earlier = { ...COPIES.behind.newest, created_unix_seconds: newest.created_unix_seconds - 60 };
   const slotA = twin("a", false, { ...COPIES.behind, newest: earlier });
   const slotB = twin("b", true, { ...COPIES.mirror, slot: "2", resume_token: "tok", pull: { target: newest.name, failure: "no space" } });
-  const bareA = twin("a", false, { ...COPIES.cut, epoch: 9, newest: null });
-  const bareB = twin("b", true, { ...COPIES.cut, epoch: 9, newest: null });
-  const heldA = twin("a", false, { ...COPIES.cut, epoch: 9, newest: earlier });
-  const heldB = twin("b", true, { ...COPIES.cut, epoch: 9 });
+  const bareA = twin("c", false, { ...COPIES.cut, epoch: 9, newest: null });
+  const bareB = twin("d", true, { ...COPIES.cut, epoch: 9, newest: null });
+  const heldA = twin("c", false, { ...COPIES.cut, epoch: 9, newest: earlier });
+  const heldB = twin("d", true, { ...COPIES.cut, epoch: 9 });
 
   type Tree = string | number | bigint | boolean | null | undefined | { readonly [key: string]: Tree };
   const tied = (a: Tree, b: Tree, path = ""): string[] => {
