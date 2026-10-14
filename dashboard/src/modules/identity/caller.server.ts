@@ -33,6 +33,7 @@ export const resolveCaller = Effect.fn("Identity.resolveCaller")(function* (head
     organization: bound,
     credential: { kind: "session", id: session.session.id },
     support: null,
+    via: "cli",
   } satisfies Caller;
 });
 
@@ -47,6 +48,7 @@ export const dashboardCaller = Effect.fn("Identity.dashboardCaller")(function* (
     organization: access.organization,
     credential: { kind: "session", id: session.session.id },
     support: access.kind === "support" ? access.shows : null,
+    via: "dashboard",
   } satisfies Caller;
 });
 
@@ -78,6 +80,7 @@ const tokenCaller = Effect.fn("Identity.tokenCaller")(function* (secret: string)
     organization: { id: row.organizationId, slug: row.slug },
     credential: { kind: "token", id: row.id },
     support: null,
+    via: "cli",
   } satisfies Caller;
 });
 

@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { approvalOptions } from "#/components/agent-sidebar/approvals.queries";
 import { toErrorMessage } from "#/lib/error-message";
 import { listNames } from "#/lib/plural";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
@@ -25,9 +24,7 @@ export type ServerDrain = {
 /**
  * Drain on a Server page: the row reads as starting at once, asks Cloud in the background under a request id this tab
  * minted, and settles when that Drain's row arrives. Cloud answers with the Drain it admitted, which is another tab's
- * when one was already active on this Server; the row then waits on that one. A Drain that would destroy something
- * waits on an approval in the sidebar, and the same request goes again with it once a human approves. Cloud refusing
- * toasts its words.
+ * when one was already active on this Server; the row then waits on that one. Cloud refusing toasts its words.
  * Once Cloud admits the Drain, each Volume primary here is staged to move off with it, for the next Deploy; one that
  * nowhere takes toasts. While a Server with storage runs an older daemon, nothing is staged and every primary stays.
  */
@@ -40,11 +37,8 @@ export function useServerDrain(
   const { servers: latest } = useServerDrains(organizationSlug);
   const { machines } = useRuntimeLens(organizationSlug);
   const [requested, setRequested] = useState<string | null>(null);
-  const [asking, setAsking] = useState<{ readonly requestId: string; readonly approvalId: string } | null>(null);
   const [open, setOpen] = useState(false);
   const arrived = requested !== null && latest[server.id]?.attemptId === requested;
-  const { data: approval } = useQuery({ ...approvalOptions(organizationSlug, asking?.approvalId ?? ""), enabled: asking !== null });
-  const decided = asking !== null && approval?.id === asking.approvalId ? approval.status : null;
 
   useEffect(() => {
     if (arrived) setRequested(null);
@@ -67,16 +61,10 @@ export function useServerDrain(
     );
   };
 
-  const send = (requestId: string, approvalId: string | null) => {
+  const send = (requestId: string) => {
     setRequested(requestId);
-    requestServerDrainServerFn({ data: { organizationSlug, machineId: server.id, requestId, approvalId } }).then(
+    requestServerDrainServerFn({ data: { organizationSlug, machineId: server.id, requestId } }).then(
       (answer) => {
-        if ("asking" in answer) {
-          setRequested((current) => (current === requestId ? null : current));
-          setAsking({ requestId, approvalId: answer.asking.approvalId });
-          toast.info(`Draining ${server.name} waits for approval in the sidebar.`);
-          return;
-        }
         setRequested((current) => (current === requestId ? answer.drain.attemptId : current));
         stageOff();
         // The change stream brings the row too; this covers a tab whose stream is reconnecting.
@@ -89,16 +77,9 @@ export function useServerDrain(
     );
   };
 
-  useEffect(() => {
-    if (asking === null || decided === null || decided === "pending") return;
-    setAsking(null);
-    if (decided === "approved") send(asking.requestId, asking.approvalId);
-    else toast.info(decided === "denied" ? `Draining ${server.name} was denied.` : `${server.name} changed before the drain was approved. Drain again.`);
-  }, [decided]);
-
   const confirm = () => {
     setOpen(false);
-    send(crypto.randomUUID(), null);
+    send(crypto.randomUUID());
   };
 
   return {
