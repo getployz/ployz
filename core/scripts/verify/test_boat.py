@@ -46,6 +46,12 @@ class Errors(unittest.TestCase):
         self.assertIsNone(boat.error(result(0, {"event": "ready", "id": "bx_1"})))
         self.assertIsNone(boat.error(subprocess.CompletedProcess([], 1, b"not json\n", b"")))
 
+    def test_a_failed_exec_reports_its_stderr(self):
+        ran = dict(exitCode=1, stderr="Failed to start ssh.socket: Transport endpoint is not connected\n", stdout="")
+        failed = subprocess.CompletedProcess([], 1, json.dumps(ran).encode(), b"")
+        self.assertEqual(boat.exited(failed), "exit 1: Failed to start ssh.socket: Transport endpoint is not connected")
+        self.assertIsNone(boat.exited(result(0, dict(exitCode=0, stderr=""))))
+
 
 class Limits(unittest.TestCase):
     def limits(self, active=0, minute=12):

@@ -44,6 +44,17 @@ def error(result):
     return None
 
 
+def exited(result):
+    """The stderr of a command `boat exec` ran that exited non-zero, or None."""
+    try:
+        ran = json.loads(result.stdout)
+    except ValueError:
+        return None
+    if isinstance(ran, dict) and ran.get("exitCode"):
+        return f"exit {ran['exitCode']}: {ran.get('stderr', '').strip()}"
+    return None
+
+
 def events(result):
     found = []
     for line in result.stdout.decode(errors="replace").splitlines():
@@ -222,8 +233,11 @@ class Provider:
             result = self.boat("exec", sandbox, "--timeout", "60", "--", "sudo", "sh", "-c", install, check=False)
             if not result.returncode:
                 break
-            if (error(result) or {}).get("code") != "boat_starting" or time.monotonic() >= deadline:
-                raise RuntimeError(f"{node['name']}: could not install the root key: {error(result) or result.stderr.decode(errors='replace')}")
+            # A fresh clone's systemd can drop systemctl's bus connection; the install is safe to repeat.
+            failure = error(result) or exited(result)
+            retry = isinstance(failure, str) or (failure or {}).get("code") == "boat_starting"
+            if not retry or time.monotonic() >= deadline:
+                raise RuntimeError(f"{node['name']}: could not install the root key: {failure or result.stderr.decode(errors='replace')}")
             time.sleep(1)
         self.wait_agent(node)
         # Incus guests have no firewall, and UFW drops WireGuard between sandboxes.
