@@ -319,7 +319,7 @@ export function planForwardRelease(volumeName: string, to: Member["machine"], me
 }
 
 /** A release finishes an owed Move on `target` only once no cut is left outside it, so every cut goes first. */
-export function unfinishedCutsBefore(volumeName: string, target: AnsweredMember, members: readonly Member[]): string | null {
+function unfinishedCutsBefore(volumeName: string, target: AnsweredMember, members: readonly Member[]): string | null {
   const cuts = members.filter((member): member is AnsweredMember => member !== target && roleOf(member) === "cutting").sort(byServer);
   if (cuts.length === 0 || !holds(target)) return null;
   const { remove, step } = releaseOrMoveOntoSlot(volumeName, target, []);

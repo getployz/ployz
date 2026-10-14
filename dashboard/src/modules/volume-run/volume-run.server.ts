@@ -33,7 +33,7 @@ import { type Requirement, requirementFor, requirements, serverSupports } from "
 import { observeVolumeCopies, type PloyzSdkError, sdkFailureMessage, setVolumeCopyRefusal } from "#/modules/runtime/ployz.server";
 import {
   alreadyOn, newestGuid, type PlanInput, type Planned, planForwardRelease, planFromCopies, type Refusal, type RefusalCode, type ReleaseFrom, restoreSource,
-  unfinishedCutsBefore, writerRemovedMessage,
+  roleOf, writerRemovedMessage,
 } from "#/modules/volume-run/plan";
 import { isBehind, isCurrent, releaseLine } from "#/modules/server-upgrade/server-upgrade";
 import { channelRelease, organizationReleaseChannel } from "#/modules/server-upgrade/server-upgrade.server";
@@ -440,10 +440,9 @@ export const planVolumeRun = Effect.fn("VolumeRun.plan")(function* (
     ? { ...input, args: withSlotMachine(input.args, members.value.map((member) => member.machine)) }
     : input;
   if (pending !== null && refusedWhileOwed(resolved, pending)) return { ok: false, refusal: yield* namedOwedRefusal(pending) } satisfies VolumeRunPlan;
-  if (pending !== null && input.kind === "delete_mirror") {
-    const target = members.value.find((member): member is AnsweredMember => member.answered && member.machine.id === pending.current);
-    const cuts = target === undefined ? null : unfinishedCutsBefore(volume.volumeName, target, members.value);
-    if (cuts !== null) return { ok: false, refusal: { code: "conflict", message: cuts, details: null } } satisfies VolumeRunPlan;
+  if (pending !== null && input.kind === "delete_mirror" && members.value.some((member) => member.machine.id !== pending.current && roleOf(member) === "cutting")) {
+    const forward = planForwardRelease(volume.volumeName, yield* owedTarget(pending, members.value), members.value);
+    if (forward.kind === "blocked") return { ok: false, refusal: { code: "conflict", message: forward.message, details: null } } satisfies VolumeRunPlan;
   }
   const planned = planFromCopies({ ...input, volumeName: volume.volumeName, orphan: false }, members.value);
   if (!planned.ok) {
@@ -478,9 +477,14 @@ export const planVolumeRun = Effect.fn("VolumeRun.plan")(function* (
   return { ok: true, volume, asked, input: pinned } satisfies VolumeRunPlan;
 });
 
-const planForward = Effect.fn("VolumeRun.planForward")(function* (volume: ResolvedVolume, input: PlanRequest, pending: Owed, members: readonly Member[]) {
-  const to = members.find((member) => member.machine.id === pending.current)?.machine
+const owedTarget = Effect.fn("VolumeRun.owedTarget")(function* (pending: Owed, members: readonly Member[]) {
+  return members.find((member) => member.machine.id === pending.current)?.machine
     ?? { id: pending.current, name: (yield* laneTarget(pending)) ?? pending.current };
+});
+
+/** A release that finishes a committed Move on its new Server, pinned to the commitment and the Servers it previewed. */
+const planForward = Effect.fn("VolumeRun.planForward")(function* (volume: ResolvedVolume, input: PlanRequest, pending: Owed, members: readonly Member[]) {
+  const to = yield* owedTarget(pending, members);
   const forward = planForwardRelease(volume.volumeName, to, members);
   if (forward.kind === "blocked") return { ok: false, refusal: { code: "conflict", message: forward.message, details: null } } satisfies VolumeRunPlan;
   const asked: OperationAsked = {
