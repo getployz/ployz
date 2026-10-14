@@ -17,6 +17,8 @@ SNAPSHOT = "ployz-verify-024"
 # The release ployzd install put in SNAPSHOT; Machines booting it skip the install.
 SNAPSHOT_RELEASE = "0.2.4"
 SIZE = "small"
+# Launches per Machine before start() gives up on landing it on a node no peer uses.
+PLACEMENTS = 3
 MEMORY = 4 * host.GiB
 TTL = int(os.environ.get("PLOYZ_VERIFY_BOAT_TTL", 6 * 3600))
 # prepare-guest.sh pulls these into the Incus image; SNAPSHOT keeps no Docker images, so each Machine pulls them at boot.
@@ -128,10 +130,13 @@ def shortfalls(machines, limits):
     headroom = limits["maxActiveSandboxes"] - limits["activeSandboxes"]
     if machines > headroom:
         problems.append(f"Active sandboxes: need {machines}, {headroom} of {limits['maxActiveSandboxes']} free")
-    for window in ["minute", "hour", "day"]:
+    if limits["starts"].get("unlimited"):
+        return problems
+    # Every launch fires at once but a relaunch waits on a full boot, so the minute window only sees first launches.
+    for window, need in [("minute", machines), ("hour", machines * PLACEMENTS), ("day", machines * PLACEMENTS)]:
         remaining = limits["starts"][window]["remaining"]
-        if not limits["starts"].get("unlimited") and machines > remaining:
-            problems.append(f"Starts this {window}: need {machines}, {remaining} left")
+        if need > remaining:
+            problems.append(f"Starts this {window}: need up to {need}, {remaining} left")
     return problems
 
 
@@ -211,7 +216,7 @@ class Provider:
         return bool(placed)
 
     def start(self, node):
-        for attempt in range(3):
+        for attempt in range(PLACEMENTS):
             sandbox = self.launch(node)
             info = json.loads(self.boat("info", sandbox).stdout)["sandbox"]
             if self.place(node["name"], info):

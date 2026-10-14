@@ -54,9 +54,9 @@ class Errors(unittest.TestCase):
 
 
 class Limits(unittest.TestCase):
-    def limits(self, active=0, minute=12):
+    def limits(self, active=0, minute=12, hour=60, day=200):
         return dict(maxActiveSandboxes=100, activeSandboxes=active,
-                    starts=dict(minute=dict(remaining=minute), hour=dict(remaining=60), day=dict(remaining=200), unlimited=False))
+                    starts=dict(minute=dict(remaining=minute), hour=dict(remaining=hour), day=dict(remaining=day), unlimited=False))
 
     def test_a_run_that_fits_has_no_shortfall(self):
         self.assertEqual(boat.shortfalls(3, self.limits()), [])
@@ -65,7 +65,16 @@ class Limits(unittest.TestCase):
         problems = boat.shortfalls(3, self.limits(active=98, minute=2))
         self.assertEqual(len(problems), 2)
         self.assertIn("Active sandboxes: need 3, 2 of 100 free", problems)
-        self.assertIn("Starts this minute: need 3, 2 left", problems)
+        self.assertIn("Starts this minute: need up to 3, 2 left", problems)
+
+    def test_hour_and_day_budget_every_relaunch(self):
+        problems = boat.shortfalls(3, self.limits(hour=8, day=9))
+        self.assertEqual(problems, ["Starts this hour: need up to 9, 8 left"])
+
+    def test_an_unlimited_account_skips_the_start_budget(self):
+        limits = self.limits(hour=0)
+        limits["starts"]["unlimited"] = True
+        self.assertEqual(boat.shortfalls(3, limits), [])
 
 
 class Images(unittest.TestCase):
