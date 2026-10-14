@@ -8,7 +8,7 @@ use std::{
 use ployz_core::{
     CertificateHost, ContainerId, DeploymentLogId, DockerVolume, DockerVolumeId, DockerVolumeName,
     IngressHost, IssuanceClock, IssuanceFailure, Machine, MachineId, QualifiedService,
-    ServingPointer,
+    ServingPointer, ServingPointerPublication,
 };
 use serde_json::json;
 
@@ -582,6 +582,77 @@ async fn serving_pointers_round_trip_and_set_aside_malformed_rows() {
         broken_row,
         "a repaired then re-broken row warns again"
     );
+    task.abort();
+}
+
+#[tokio::test]
+async fn serving_pointer_compare_and_set_writes_only_over_the_value_read() {
+    let pointer = |deploy: &str, container: &str| ServingPointer {
+        deploy: DeploymentLogId::parse(deploy).unwrap(),
+        containers: vec![ContainerId::parse(container.repeat(64)).unwrap()],
+        previous: None,
+        retiring: Vec::new(),
+    };
+    let api = QualifiedService::parse("app/api").unwrap();
+    let (store, task) = identity_store(corrosion_db()).await;
+    let first = pointer("d1", "a");
+    let second = pointer("d2", "b");
+
+    assert_eq!(
+        store
+            .compare_and_set_serving_pointer(&api, None, &first)
+            .await
+            .unwrap(),
+        ServingPointerPublication::Published,
+        "insert when absent"
+    );
+    assert_eq!(
+        store.serving_pointer(&api).await.unwrap(),
+        Some(first.clone())
+    );
+    assert_eq!(
+        store
+            .compare_and_set_serving_pointer(&api, None, &second)
+            .await
+            .unwrap(),
+        ServingPointerPublication::Superseded {
+            current: Some(first.clone())
+        },
+        "insert when present"
+    );
+    assert_eq!(
+        store
+            .compare_and_set_serving_pointer(&api, Some(&first), &second)
+            .await
+            .unwrap(),
+        ServingPointerPublication::Published,
+        "update on a matching read"
+    );
+    assert_eq!(
+        store
+            .compare_and_set_serving_pointer(&api, Some(&first), &pointer("d3", "c"))
+            .await
+            .unwrap(),
+        ServingPointerPublication::Superseded {
+            current: Some(second.clone())
+        },
+        "update on a stale read"
+    );
+    assert_eq!(
+        store.serving_pointer(&api).await.unwrap(),
+        Some(second.clone())
+    );
+
+    let (fourth, fifth) = (pointer("d4", "d"), pointer("d5", "e"));
+    let (left, right) = tokio::join!(
+        store.compare_and_set_serving_pointer(&api, Some(&second), &fourth),
+        store.compare_and_set_serving_pointer(&api, Some(&second), &fifth),
+    );
+    let published = [left.unwrap(), right.unwrap()]
+        .into_iter()
+        .filter(|outcome| *outcome == ServingPointerPublication::Published)
+        .count();
+    assert_eq!(published, 1, "two writers from one read: exactly one wins");
     task.abort();
 }
 

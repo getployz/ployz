@@ -5,8 +5,9 @@ use std::{collections::BTreeSet, path::PathBuf, sync::Arc};
 use ployz_core::{
     CapabilityAdvertisement, CertificateMaterialChange, CertificateMaterialPublished,
     ContainerList, ContainerObservation, ContractDescription, EnvironmentValues, LiveLogTarget,
-    LocalMachinePhase, LogMetadata, LogOrigin, MachineLogService, MachineRpc, OpaquePayload,
-    PROTOCOL_MAJOR, Rpc, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, op,
+    LocalMachinePhase, LogMetadata, LogOrigin, MachineLogService, MachineRpc, NotPointerPublisher,
+    OpaquePayload, PROTOCOL_MAJOR, Rpc, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
+    ServingPointerRead, op,
 };
 use serde_json::Value;
 use tonic::{Request, Response, Status};
@@ -127,6 +128,25 @@ impl MachineService {
         self.replicated()
     }
 
+    async fn pointer_replicated(&self) -> Result<&ReplicatedStore, RpcError> {
+        let replicated = self.ready_replicated()?;
+        let publisher = match self.local.pointer_publisher().await {
+            Ok(publisher) => publisher,
+            Err(LocalMachineError::Cluster(error)) => return Err(cluster_store_error(error)),
+            Err(
+                error @ (LocalMachineError::UnreadableLowerMachine(_)
+                | LocalMachineError::MissingPeerRow(_)),
+            ) => {
+                return Err(RpcError::caused(RpcErrorCode::Unavailable, &error));
+            }
+            Err(_) => return Err(unavailable("Cluster store is not available")),
+        };
+        if publisher != self.local_record().id() {
+            return Err(NotPointerPublisher { publisher }.rpc_error());
+        }
+        Ok(replicated)
+    }
+
     fn containers(&self) -> Result<&ContainerRuntime, RpcError> {
         self.local
             .containers()
@@ -168,7 +188,7 @@ impl MachineService {
         if let Err(error) = self.require_joined() {
             return respond(error);
         }
-        crate::faults::apply(verb).await;
+        crate::faults::apply(verb, None).await;
         match self.local.plugin().call::<T>(route, request).await {
             Ok(reply) => respond(reply),
             Err(error) => respond(error),
@@ -637,6 +657,43 @@ impl MachineRpc for MachineService {
             Err(error) => respond(cluster_store_error(error)),
         }
     }
+
+    async fn publish_serving_pointer(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::PublishServingPointer>(request)?;
+        let replicated = match self.pointer_replicated().await {
+            Ok(replicated) => replicated,
+            Err(error) => return respond(error),
+        };
+        match replicated
+            .compare_and_set_serving_pointer(
+                &request.service,
+                request.read.as_ref(),
+                &request.pointer,
+            )
+            .await
+        {
+            Ok(publication) => respond(publication),
+            Err(error) => respond(cluster_store_error(error)),
+        }
+    }
+
+    async fn read_serving_pointer(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::ReadServingPointer>(request)?;
+        let replicated = match self.pointer_replicated().await {
+            Ok(replicated) => replicated,
+            Err(error) => return respond(error),
+        };
+        match replicated.serving_pointer(&request.service).await {
+            Ok(pointer) => respond(ServingPointerRead { pointer }),
+            Err(error) => respond(cluster_store_error(error)),
+        }
+    }
 }
 
 #[allow(clippy::result_large_err)]
@@ -655,6 +712,9 @@ fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Stat
             Err(Status::unavailable("Cluster is not available"))
         }
         LocalMachineError::DockerUnavailable => respond(unavailable("Docker is not available")),
+        LocalMachineError::UnreadableLowerMachine(_) | LocalMachineError::MissingPeerRow(_) => {
+            respond(RpcError::caused(RpcErrorCode::Unavailable, &error))
+        }
         LocalMachineError::MissingAssignment => {
             respond(RpcError::caused(RpcErrorCode::InvalidArgument, &error))
         }

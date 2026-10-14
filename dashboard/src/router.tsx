@@ -60,7 +60,7 @@ export function getRouter() {
   const router = createTanStackRouter({
     routeTree,
     context: { queryClient, dbClient },
-    defaultNotFoundComponent: () => <NotFoundPage />,
+    defaultNotFoundComponent: ({ data }) => <NotFoundPage data={data} />,
     defaultPendingComponent: AppPending,
     scrollRestoration: true,
     scrollToTopSelectors: [

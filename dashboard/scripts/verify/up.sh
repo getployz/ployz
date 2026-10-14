@@ -7,6 +7,7 @@
 # DAEMON is space-separated [machine-N=]stable|beta|checkout|<version>, e.g. DAEMON="checkout machine-2=0.2.3";
 # down.sh tears that cluster down too. Real Servers also get a per-checkout Inngest dev server and worker.
 # FAKE_GITHUB=1 points Cloud at a fake GitHub (fake-github.ts, fixtures .verify/github.json) and starts Inngest too.
+# MAIL=1 turns mail on: a fake PostShiba (fake-postshiba.ts) relays every send into a Mailpit inbox, and Inngest runs.
 # Stops itself after 15 idle minutes with no connection to vite (idle.sh; VERIFY_IDLE_TIMEOUT=<seconds>, 0 keeps it up).
 set -euo pipefail
 # A verify session takes main's SDK build while the SDK's interface is unchanged; SDK=exact builds this checkout's.
@@ -18,7 +19,7 @@ run=$dash/.verify/run
 fresh=0
 if [ "${1:-}" = --fresh ]; then fresh=1; shift; fi
 [ -n "${SERVERS:-}" ] && export VERIFY_REAL_SERVERS=1
-if [ "${VERIFY_REAL_SERVERS:-0}" = 1 ] || [ "${FAKE_GITHUB:-0}" = 1 ]; then with_inngest=1; else with_inngest=0; fi
+if [ "${VERIFY_REAL_SERVERS:-0}" = 1 ] || [ "${FAKE_GITHUB:-0}" = 1 ] || [ "${MAIL:-0}" = 1 ]; then with_inngest=1; else with_inngest=0; fi
 cd "$dash"
 
 # Fresh checkouts have neither node_modules nor the native SDK; rebuild the SDK when core sources are newer.
@@ -30,7 +31,7 @@ if [ ! -f "$sdk" ] || [ -n "$(find "$wt/core/crates" -newer "$sdk" -type f \( -n
 # vite reads the env file once and loads the SDK once, and the worker runs a bundle of the code it started with, so
 # only an instance without Inngest, started by this up.sh in this mode on this port, with unchanged dependencies,
 # is reused.
-mode="billing=${BILLING:-0} fake-servers=${FAKE_SERVERS:-0} fake-github=${FAKE_GITHUB:-0} up=$(sha1sum < "$dash/scripts/verify/up.sh" | cut -c1-12)"
+mode="billing=${BILLING:-0} fake-servers=${FAKE_SERVERS:-0} fake-github=${FAKE_GITHUB:-0} mail=${MAIL:-0} up=$(sha1sum < "$dash/scripts/verify/up.sh" | cut -c1-12)"
 reseed=0
 if [ "$fresh" = 0 ] && [ "$with_inngest" != 1 ] && [ "$install$build_sdk" = 00 ] \
   && [ "$(cat "$run/mode" 2>/dev/null)" = "$mode" ] && kill -0 "$(cat "$run/vite.pid" 2>/dev/null)" 2>/dev/null \
@@ -85,6 +86,24 @@ else
     FAKE_GITHUB_CLOUD_URL=http://localhost:$port GITHUB_APP_WEBHOOK_SECRET=verify-webhook-secret \
       setsid nohup node scripts/verify/runner.mjs /scripts/verify/fake-github.ts > "$run/fake-github.log" 2>&1 < /dev/null &
     echo $! > "$run/fake-github.pid"
+  fi
+  mail=
+  if [ "${MAIL:-0}" = 1 ]; then
+    docker run --detach --rm --name "$name-mailpit" --label "ployz.verify.checkout=$wt" --publish 127.0.0.1::8025 axllent/mailpit:latest >/dev/null
+    mailpit=http://127.0.0.1:$(docker port "$name-mailpit" 8025/tcp | head -1 | sed 's/.*://')
+    for _ in $(seq 120); do curl -fs -o /dev/null "$mailpit/readyz" && break; sleep 0.25; done
+    MAILPIT_URL=$mailpit setsid nohup node scripts/verify/runner.mjs /scripts/verify/fake-postshiba.ts > "$run/fake-postshiba.log" 2>&1 < /dev/null &
+    echo $! > "$run/fake-postshiba.pid"
+    for _ in $(seq 120); do
+      fake_postshiba=$(sed -n 's/^VERIFY_FAKE_POSTSHIBA //p' "$run/fake-postshiba.log") && [ -n "$fake_postshiba" ] && break; sleep 0.25
+    done
+    [ -n "$fake_postshiba" ] || { echo "up.sh: the fake PostShiba did not start (see $run/fake-postshiba.log)" >&2; cat "$run/fake-postshiba.log" >&2; exit 1; }
+    mail="POSTSHIBA_API_KEY=verify-postshiba-key
+POSTSHIBA_TEAM_ID=verify-team
+POSTSHIBA_CLUSTER_ID=verify-cluster
+MAIL_FROM='Ployz <noreply@ployz.verify>'
+PLOYZ_VERIFY_POSTSHIBA_ORIGIN=$fake_postshiba"
+    echo "$mailpit" > "$run/mailpit"
   fi
 
   # Postgres: named for the checkout, host port from Docker, data on tmpfs (down.sh deletes it).
@@ -151,6 +170,7 @@ GITHUB_APP_CLIENT_SECRET=verify-app-client-secret
 GITHUB_APP_WEBHOOK_SECRET=verify-webhook-secret
 GITHUB_APP_PRIVATE_KEY='$key'
 $github_origin
+$mail
 $polar
 POLAR_SERVER=sandbox
 INNGEST_EVENT_KEY=verify-event-key
@@ -235,6 +255,9 @@ browser:
 EOF
 if [ "$with_inngest" = 1 ]; then
   echo "inngest: http://127.0.0.1:$inngest_port (function runs; logs $run/inngest.log, $run/worker.log)" | tee -a "$run/info"
+fi
+if [ "${MAIL:-0}" = 1 ]; then
+  echo "mail: inbox $(cat "$run/mailpit") (every mail Cloud sends lands here; sends logged in $run/fake-postshiba.log)" | tee -a "$run/info"
 fi
 if [ "${FAKE_GITHUB:-0}" = 1 ]; then
   bob_credentials=$(node -e 'const { bob } = JSON.parse(process.argv[1]); process.stdout.write(JSON.stringify(bob))' "$seed")

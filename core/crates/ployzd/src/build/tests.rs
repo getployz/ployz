@@ -285,11 +285,11 @@ async fn build_concurrency_bounds_simultaneous_builds_on_separate_slots() {
         )
         .await
         .unwrap();
-    let (third, mut third_response) = fixture.request(Output::Load).await;
     assert!(matches!(
         event(&mut second_response).await,
         Event::Admitted { .. }
     ));
+    let (third, mut third_response) = fixture.request(Output::Load).await;
     assert!(matches!(
         event(&mut third_response).await,
         Event::Progress(_)

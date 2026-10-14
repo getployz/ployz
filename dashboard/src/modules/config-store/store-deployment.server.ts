@@ -118,7 +118,7 @@ const released = (store: ConfigStore, organizationId: string, deploymentId: stri
 /**
  * Run `runId` stopped before it claimed its Deployment: the Store records it failed, with why, as one whose sources Cloud
  * couldn't read. One another runner claimed, or that already ended, is left as it is.
- * ponytail: read-then-fail; a duplicate run claiming it in between loses its claim to this one.
+ * A duplicate run that claims it after the read races this one in the Store: whichever claims second is refused.
  */
 const failUnclaimed = Effect.fn("StoreDeployment.failUnclaimed")(function* (
   store: ConfigStore, organizationId: string, deploymentId: string, runId: string, why: string,

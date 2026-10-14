@@ -1,6 +1,6 @@
 import type { DrainReport } from "@ployz/sdk";
 import { Schema } from "effect";
-import { machineIdStringSchema } from "#/modules/machines/enrollment";
+import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 
 /**
  * One Drain Cloud runs on one Server, as its row moves: the click writes `pending`, the run claims it `running` right
@@ -34,7 +34,7 @@ export const DRAIN_RUNNING_LIMIT_MS = 24 * 60 * 60_000;
 
 export const RequestServerDrainInput = Schema.Struct({
   organizationSlug: Schema.String.check(Schema.isNonEmpty()),
-  machineId: machineIdStringSchema,
+  machineId: rustMachineIdSchema,
   /** Minted by the confirming tab: the row's id, so sending the same request again returns the same Drain. */
   requestId: Schema.String.check(Schema.isUUID()),
   /** The Services the confirm dialog showed as stopping. A Drain that would now stop another one is refused. */

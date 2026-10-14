@@ -11,6 +11,7 @@ import {
 import { AppConfig, type MailConfiguration } from "#/server/config.server";
 
 const config: NonNullable<MailConfiguration> = {
+  verifyOrigin: null,
   apiKey: Redacted.make("test-key"),
   teamId: "team-1",
   clusterId: "cluster-1",
@@ -158,6 +159,23 @@ describe("MailerLive", () => {
 
       assert.deepStrictEqual(result, { status: "skipped" });
       assert.strictEqual(requests.length, 0);
+    }),
+  );
+
+  it.effect("sends to PostShiba, or to a verify lab's origin on the same path", () =>
+    Effect.gen(function* () {
+      const { fetch, requests } = fakeFetch(201, { message_id: "msg-1" });
+      const original = globalThis.fetch;
+      globalThis.fetch = fetch;
+      yield* Effect.forEach([config, { ...config, verifyOrigin: "http://127.0.0.1:4556" }], (mail) =>
+        sendMail(message, "key-1").pipe(Effect.provide(withMail(mail)))).pipe(
+        Effect.ensuring(Effect.sync(() => { globalThis.fetch = original; })),
+      );
+
+      assert.deepStrictEqual(requests.map((request) => String(request.url)), [
+        "https://app.postshiba.com/api/v1/teams/team-1/clusters/cluster-1/sends",
+        "http://127.0.0.1:4556/api/v1/teams/team-1/clusters/cluster-1/sends",
+      ]);
     }),
   );
 });

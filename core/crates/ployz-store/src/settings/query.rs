@@ -22,7 +22,6 @@ use crate::variables::{self, VariableKey};
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct EnvironmentQuery {
-    /// The Environment to read.
     #[serde(default)]
     pub environment: EnvironmentRef,
     /// Narrow to one Service or one Setting; omitted means every Setting.
@@ -53,7 +52,6 @@ pub struct EnvironmentView {
 /// One Setting's current Working State value.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct SettingRow {
-    /// The Setting.
     pub path: SettingPath,
     /// Its value in Working State; `null` when it has none.
     pub value: Value,

@@ -1,21 +1,26 @@
-import { useSuspenseQuery } from "@tanstack/react-query";
-import { createFileRoute, Link } from "@tanstack/react-router";
-import { prefetchRemote } from "#/collections/route-data";
+import { createFileRoute, Link, redirect } from "@tanstack/react-router";
+import { requireAccountOrganizationSlug } from "#/collections/route-data";
 import { DashboardPage } from "#/components/dashboard-page";
 import { PloyzMark } from "#/components/icons/ployz-logo";
 import { buttonVariants } from "#/components/ui/button-variants";
-import { notificationSettingsQueryOptions, useSetNotificationChannel } from "#/modules/notifications/notifications.queries";
-import { NotificationsSection } from "./-components/notifications-section";
+import { AccountSections, prefetchAccount } from "../$organizationSlug/_org/-components/account-sections";
 
+/**
+ * Email footers and older links land here. Account opens inside the Organization the user is acting in, else their
+ * first one. A user in none (their only one was deleted) still gets their account, without an Organization around it.
+ */
 export const Route = createFileRoute("/_protected/cloud/account/")({
-  loader: ({ context }) => prefetchRemote(context, notificationSettingsQueryOptions()),
-  component: AccountPage,
+  beforeLoad: async ({ context, cause }) => {
+    if (cause === "preload") return;
+    const slug = await requireAccountOrganizationSlug(context, context.session.session.activeOrganizationSlug);
+    if (slug) throw redirect({ to: "/cloud/$organizationSlug/~/account", params: { organizationSlug: slug }, replace: true });
+  },
+  loader: ({ context }) =>
+    prefetchAccount({ queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id }),
+  component: AccountWithoutOrganization,
 });
 
-/** The signed-in user's own settings, the same in every Organization they belong to. */
-function AccountPage() {
-  const { data: settings } = useSuspenseQuery(notificationSettingsQueryOptions());
-  const setChannel = useSetNotificationChannel();
+function AccountWithoutOrganization() {
   return (
     <div className="flex min-h-dvh flex-col">
       <header className="flex h-12 shrink-0 items-center gap-2 border-b px-3 md:px-4">
@@ -25,7 +30,7 @@ function AccountPage() {
         <h1 className="text-sm font-semibold">Account</h1>
       </header>
       <DashboardPage width="content">
-        <NotificationsSection settings={settings} onChange={(change) => setChannel.mutate(change)} />
+        <AccountSections />
       </DashboardPage>
     </div>
   );

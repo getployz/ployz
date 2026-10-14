@@ -218,7 +218,7 @@ export function findDuplicateJsonKeys(text: string): string[] {
 }
 
 export type RawEditorDiff = {
-  creates: { id: string; key: string; value: string }[];
+  creates: { key: string; value: string }[];
   updates: { variableId: string; key: string; value: string }[];
   deletes: string[];
 };
@@ -237,7 +237,7 @@ export function diffVariables(
   for (const entry of parsed) {
     const existing = currentByKey.get(entry.key);
     if (!existing) {
-      creates.push({ id: crypto.randomUUID(), key: entry.key, value: entry.value });
+      creates.push({ key: entry.key, value: entry.value });
       continue;
     }
     if (existing.value.value === entry.value) continue;

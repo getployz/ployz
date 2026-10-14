@@ -123,7 +123,7 @@ const replaced = { kind: "kept", reason: "Cloud was paired with a new Cluster si
  * Applied State, then `forgetEmptiedPairing`. A pairing already gone was forgotten by an earlier run.
  */
 export const dropRemovedServer = Effect.fn("PairingRemoval.dropRemoved")(
-  function* (input: { organizationId: string; machineId: string; generation: string; removal: "reset" | "membership" }) {
+  function* (input: { organizationId: string; machineId: MachineId; generation: string; removal: "reset" | "membership" }) {
     const { organizationId, generation } = input;
     const database = yield* Database;
     return yield* database.transaction(Effect.gen(function* () {
@@ -131,11 +131,10 @@ export const dropRemovedServer = Effect.fn("PairingRemoval.dropRemoved")(
       if (pairing.kind === "gone") return { kind: "released" } as const;
       if (pairing.kind === "replaced") return replaced;
       const { drizzle } = yield* Database;
-      // SAFETY: a Machine ID the SDK removed; an organization_machine row only matches the same representation.
       yield* drizzle.delete(organizationMachine).where(and(
         eq(organizationMachine.organizationId, organizationId),
         eq(organizationMachine.clusterKey, generation),
-        eq(organizationMachine.machineId, input.machineId as MachineId),
+        eq(organizationMachine.machineId, input.machineId),
       ));
       if (yield* othersRemain(organizationId, generation)) return { kind: "others_remain" } as const;
       if (input.removal === "membership") {

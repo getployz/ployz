@@ -774,6 +774,16 @@ mod set_volume_copy {
         error.clone()
     }
 
+    /// The lines the cut logged once every holder stopped, as the journal shows them.
+    fn cut_lines(capture: &crate::diag::test_support::Capture) -> Vec<String> {
+        capture
+            .text()
+            .lines()
+            .filter(|line| line.contains("cut: holders stopped"))
+            .map(str::to_owned)
+            .collect()
+    }
+
     fn cut(expect: Value) -> Value {
         json!({"name":VOLUME, "expect":expect,
             "want":{"kind":"mirror", "from":null, "target":"f-1", "drain":0}})
@@ -1052,6 +1062,7 @@ mod set_volume_copy {
         let service = service.with_volume_plugin(socket);
         running_holder(&service, &fake).await;
 
+        let (capture, _logging) = crate::diag::test_support::capture();
         let first = reply(&set_copy(&service, cut(json!({"kind":"writer", "epoch":0}))).await);
         assert_eq!(
             serde_json::to_value(&first).unwrap(),
@@ -1068,6 +1079,10 @@ mod set_volume_copy {
         assert_eq!(
             plugin.routes_called(),
             vec![INSPECT_ROUTE, CUT_ROUTE, INSPECT_ROUTE, INSPECT_ROUTE]
+        );
+        assert_eq!(
+            cut_lines(&capture),
+            vec![" INFO cut: holders stopped volume=app_data target=f-1 gen=0"]
         );
         server.abort();
         std::fs::remove_dir_all(data_dir).unwrap();
@@ -1172,6 +1187,7 @@ mod set_volume_copy {
         let service = service.with_volume_plugin(socket);
         running_holder(&service, &fake).await;
 
+        let (capture, _logging) = crate::diag::test_support::capture();
         let error = refusal(&set_copy(&service, cut(json!({"kind":"writer", "epoch":0}))).await);
         assert_eq!(error.code, RpcErrorCode::Internal, "{error:?}");
         assert!(
@@ -1183,6 +1199,7 @@ mod set_volume_copy {
         );
         assert_eq!(holder_status(&fake), vec![json!("running")]);
         assert_eq!(plugin.routes_called(), vec![INSPECT_ROUTE]);
+        assert_eq!(cut_lines(&capture), Vec::<String>::new());
         server.abort();
         std::fs::remove_dir_all(data_dir).unwrap();
     }
@@ -1199,12 +1216,14 @@ mod set_volume_copy {
         let service = service.with_volume_plugin(socket);
         running_holder(&service, &fake).await;
 
+        let (capture, _logging) = crate::diag::test_support::capture();
         let error = refusal(&set_copy(&service, cut(json!({"kind":"writer", "epoch":0}))).await);
         assert_eq!(error.code, RpcErrorCode::Conflict, "{error:?}");
         assert_eq!(error.details["reason"], json!("busy"));
         assert_eq!(error.details["copy"], writer_root(0, None)["Ok"]);
         assert_eq!(holder_status(&fake), vec![json!("running")]);
         assert_eq!(plugin.routes_called(), vec![INSPECT_ROUTE, INSPECT_ROUTE]);
+        assert_eq!(cut_lines(&capture), Vec::<String>::new());
         server.abort();
         std::fs::remove_dir_all(data_dir).unwrap();
     }
@@ -1935,6 +1954,170 @@ mod set_volume_copy {
         server.abort();
         std::fs::remove_dir_all(data_dir).unwrap();
     }
+
+    /// Each child re-runs this binary armed through its own fault file, since a kill aborts
+    /// the whole process.
+    #[cfg(feature = "verify-faults")]
+    mod fault_lines {
+        use std::os::unix::process::ExitStatusExt;
+
+        use super::*;
+
+        const SIGABRT: i32 = 6;
+
+        /// Runs the ignored test `child` of this module alone, under `fault`.
+        fn run(child: &str, fault: &str) -> (std::process::Output, String) {
+            let child = format!("machine_api::local::tests::set_volume_copy::fault_lines::{child}");
+            let armed = tempfile::tempdir().unwrap();
+            let path = armed.path().join("fault");
+            std::fs::write(&path, fault).unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &child, "--ignored", "--nocapture"])
+                .env(crate::faults::PATH_ENV, &path)
+                .env_remove(crate::diag::ENV)
+                .output()
+                .unwrap();
+            (output, child)
+        }
+
+        fn fault_lines(text: &str) -> Vec<&str> {
+            text.lines()
+                .filter(|line| line.contains("fault:"))
+                .collect()
+        }
+
+        #[test]
+        fn a_switch_fault_line_names_the_volume_and_the_want() {
+            let (output, child) = run(
+                "a_cut_under_a_switch_delay",
+                "delay-rpc:SetVolumeCopy.WriterToMirror:0",
+            );
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success() && stdout.contains("1 passed"),
+                "{child}:\n{stdout}\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                fault_lines(&stdout),
+                vec![
+                    r#" WARN fault: delaying switch verb verb="SetVolumeCopy.WriterToMirror" secs=0 volume=app_data target=f-1 gen=6"#,
+                    r#" WARN fault: releasing switch verb verb="SetVolumeCopy.WriterToMirror" by=limit volume=app_data target=f-1 gen=6"#,
+                ]
+            );
+        }
+
+        #[test]
+        fn an_admission_fault_line_names_the_volume_and_the_want() {
+            let (output, child) = run("a_cut_under_a_switch_delay", "delay-rpc:SetVolumeCopy:0");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success() && stdout.contains("1 passed"),
+                "{child}:\n{stdout}\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                fault_lines(&stdout),
+                vec![
+                    r#" WARN fault: delaying switch verb verb="SetVolumeCopy" secs=0 volume=app_data target=f-1 gen=6"#,
+                    r#" WARN fault: releasing switch verb verb="SetVolumeCopy" by=limit volume=app_data target=f-1 gen=6"#,
+                ]
+            );
+        }
+
+        /// A Floor only raises the gen floor, outside the switch lock, so an armed switch
+        /// fault never holds it.
+        #[test]
+        fn a_floor_passes_an_armed_switch_fault_without_a_line() {
+            let (output, child) = run("a_floor_under_a_switch_delay", "delay-rpc:SetVolumeCopy:30");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success() && stdout.contains("1 passed"),
+                "{child}:\n{stdout}\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(fault_lines(&stdout), Vec::<&str>::new());
+        }
+
+        /// The kill aborts the child, so its line is read from the child's stderr.
+        #[test]
+        fn a_promote_kill_line_names_the_volume_and_the_want() {
+            let (output, child) = run(
+                "a_promote_under_a_kill",
+                "kill-daemon:SetVolumeCopy.MirrorToWriter",
+            );
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert_eq!(
+                output.status.signal(),
+                Some(SIGABRT),
+                "{child} was not aborted:\n{}\n{stderr}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+            assert_eq!(
+                fault_lines(&stderr),
+                vec![
+                    r#" WARN fault: killing daemon inside the effect verb="SetVolumeCopy.MirrorToWriter" volume=app_data at=900 epoch=1 gen=6"#
+                ]
+            );
+        }
+
+        #[tokio::test]
+        #[ignore = "a child of a_promote_kill_line_names_the_volume_and_the_want"]
+        async fn a_promote_under_a_kill() {
+            crate::diag::init(None).unwrap();
+            let (data_dir, _store, service, _fake) = fake_docker_service("ployzd-copy-kill").await;
+            let plugin = FakePlugin::default();
+            plugin.reply(INSPECT_ROUTE, slot(Some(snapshot("f-1", 900))));
+            plugin.reply(WRITER_ROUTE, writer_root(1, Some(snapshot("f-1", 900))));
+            let (socket, _server) = plugin.serve(&data_dir);
+            let service = service.with_volume_plugin(socket);
+            let promote = json!({"name":VOLUME,
+                "expect":{"kind":"mirror", "newest":"900", "slot":"1"},
+                "want":{"kind":"writer", "at":"900", "epoch":1, "start":null}, "gen":6});
+
+            let answered = set_copy(&service, promote).await;
+            panic!("the promote outlived its kill: {answered:?}");
+        }
+
+        #[tokio::test]
+        #[ignore = "a child of a_floor_passes_an_armed_switch_fault_without_a_line"]
+        async fn a_floor_under_a_switch_delay() {
+            let (data_dir, _store, service, _fake) =
+                fake_docker_service("ployzd-floor-fault").await;
+            let plugin = FakePlugin::default();
+            plugin.reply(INSPECT_ROUTE, writer_root(0, None));
+            let (socket, server) = plugin.serve(&data_dir);
+            let service = service.with_volume_plugin(socket);
+
+            let (capture, _logging) = crate::diag::test_support::capture();
+            reply(&set_copy(&service, floor(6)).await);
+            print!("{}", capture.text());
+            server.abort();
+            std::fs::remove_dir_all(data_dir).unwrap();
+        }
+
+        #[tokio::test]
+        #[ignore = "a child of a_switch_fault_line_names_the_volume_and_the_want"]
+        async fn a_cut_under_a_switch_delay() {
+            let (data_dir, _store, service, _fake) = fake_docker_service("ployzd-copy-fault").await;
+            let plugin = FakePlugin::default();
+            plugin.reply(INSPECT_ROUTE, writer_root(0, None));
+            plugin.reply(CUT_ROUTE, slot(Some(snapshot("f-1", 7))));
+            let (socket, server) = plugin.serve(&data_dir);
+            let service = service.with_volume_plugin(socket);
+
+            let request = at_gen(cut(json!({"kind":"writer", "epoch":0})), 6);
+            let (capture, _logging) = crate::diag::test_support::capture();
+            reply(&set_copy(&service, request).await);
+            print!("{}", capture.text());
+            assert_eq!(
+                plugin.routes_called(),
+                vec![INSPECT_ROUTE, CUT_ROUTE, INSPECT_ROUTE]
+            );
+            server.abort();
+            std::fs::remove_dir_all(data_dir).unwrap();
+        }
+    }
 }
 
 mod ensure_container {
@@ -2389,5 +2572,333 @@ mod ensure_container {
         );
         server.abort();
         std::fs::remove_dir_all(data_dir).unwrap();
+    }
+}
+
+mod serving_pointer {
+    use std::path::{Path, PathBuf};
+
+    use futures_util::{SinkExt, StreamExt};
+    use ployz_core::{
+        DeploymentLogId, Machine, NotPointerPublisher, OpaquePayload, PublishServingPointerRequest,
+        QualifiedService, ReadServingPointerRequest, Rpc, RpcError, ServingPointer,
+        ServingPointerPublication, ServingPointerRead,
+    };
+    use serde_json::{Value, json};
+    use tokio::net::UnixListener;
+    use tokio_util::codec::LengthDelimitedCodec;
+
+    use super::*;
+    use crate::corrosion::{
+        AdminClient, ReplicatedStore,
+        store_tests::{corrosion_db, identity_store},
+    };
+
+    fn admin_socket(dir: &Path, states: Vec<Value>) -> PathBuf {
+        let path = dir.join(format!("admin-{}.sock", MachineId::random()));
+        let listener = UnixListener::bind(&path).unwrap();
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let mut framed = LengthDelimitedCodec::builder()
+                    .big_endian()
+                    .length_field_length(4)
+                    .new_framed(stream);
+                framed.next().await;
+                for state in &states {
+                    let frame = serde_json::to_vec(&json!({ "Json": state })).unwrap();
+                    framed.send(frame.into()).await.unwrap();
+                }
+                framed
+                    .send(serde_json::to_vec(&json!("Success")).unwrap().into())
+                    .await
+                    .unwrap();
+            }
+        });
+        path
+    }
+
+    fn machine_one() -> Machine {
+        serde_json::from_value(json!({
+            "id": "0".repeat(32),
+            "name": "machine-1",
+            "subnet": "10.210.1.0/24",
+            "labels": {}, "accepts_builds": true, "accepts_services": true, "accepts_ingress": true,
+            "public_key": crate::network::WireGuardPrivateKey::from_bytes([7; 32]).public_key(),
+            "advertised_endpoints": ["192.0.2.7:51820"],
+        }))
+        .unwrap()
+    }
+
+    fn alive(machine: &Machine) -> Value {
+        let address = std::net::SocketAddr::new(
+            machine.management_address().0.into(),
+            ployz_core::CORROSION_GOSSIP_PORT,
+        );
+        json!({ "id": { "addr": address }, "state": "Alive" })
+    }
+
+    async fn machine(
+        dir: &Path,
+        rows: &[Machine],
+        states: Vec<Value>,
+    ) -> (MachineService, tokio::task::JoinHandle<()>) {
+        serve(dir, enrolled(dir), corrosion_db(), rows, states).await
+    }
+
+    fn enrolled(dir: &Path) -> LocalMachineStore {
+        let mut local = LocalMachineStore::open(dir.join(MachineId::random().as_str())).unwrap();
+        local
+            .enroll(ployz_core::EnrollRequest {
+                role: ployz_core::EnrollAs::Founder {
+                    initial_policy: Default::default(),
+                    name: ployz_core::MachineName::parse("local").unwrap(),
+                    cluster_network: "10.210.0.0/16".parse().unwrap(),
+                    public_ip: None,
+                    advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(
+                        "192.0.2.1:51820".parse().unwrap(),
+                    )],
+                },
+                wireguard_mtu: None,
+            })
+            .unwrap();
+        local
+    }
+
+    async fn serve(
+        dir: &Path,
+        local: LocalMachineStore,
+        db: rusqlite::Connection,
+        rows: &[Machine],
+        states: Vec<Value>,
+    ) -> (MachineService, tokio::task::JoinHandle<()>) {
+        let (replicated, task): (ReplicatedStore, _) = identity_store(db).await;
+        for row in rows {
+            replicated
+                .machine_publication()
+                .await
+                .publish(row)
+                .await
+                .unwrap();
+        }
+        let service = MachineService::with_cluster(
+            RecordOwner::spawn(local).unwrap(),
+            Some((replicated, AdminClient::new(admin_socket(dir, states)))),
+        );
+        (service, task)
+    }
+
+    fn api() -> QualifiedService {
+        QualifiedService::parse("app/api").unwrap()
+    }
+
+    fn pointer(deploy: &str, container: &str) -> ServingPointer {
+        ServingPointer {
+            deploy: DeploymentLogId::parse(deploy).unwrap(),
+            containers: vec![ContainerId::parse(container.repeat(64)).unwrap()],
+            previous: None,
+            retiring: Vec::new(),
+        }
+    }
+
+    fn answer<T: Rpc>(response: tonic::Response<OpaquePayload>) -> Result<T::Response, RpcError> {
+        let response = response.into_inner().decode_response().unwrap();
+        if let ployz_core::RpcResponseBody::Error(error) = &response.body {
+            return Err(error.clone());
+        }
+        Ok(response.decode::<T>().unwrap())
+    }
+
+    async fn publish(
+        service: &MachineService,
+        read: Option<ServingPointer>,
+        pointer: ServingPointer,
+    ) -> Result<ServingPointerPublication, RpcError> {
+        let request = op::PublishServingPointer::into_request(PublishServingPointerRequest {
+            service: api(),
+            read,
+            pointer,
+        });
+        answer::<op::PublishServingPointer>(
+            service
+                .publish_serving_pointer(Request::new(request.encode().unwrap()))
+                .await
+                .unwrap(),
+        )
+    }
+
+    async fn read(service: &MachineService) -> Result<ServingPointerRead, RpcError> {
+        let request =
+            op::ReadServingPointer::into_request(ReadServingPointerRequest { service: api() });
+        answer::<op::ReadServingPointer>(
+            service
+                .read_serving_pointer(Request::new(request.encode().unwrap()))
+                .await
+                .unwrap(),
+        )
+    }
+
+    #[tokio::test]
+    async fn publish_answers_published_then_superseded_with_the_current_row() {
+        let dir = std::env::temp_dir().join(format!("ployzd-pointer-{}", MachineId::random()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (service, task) = machine(&dir, &[], Vec::new()).await;
+
+        assert_eq!(
+            publish(&service, None, pointer("d1", "a")).await,
+            Ok(ServingPointerPublication::Published)
+        );
+        assert_eq!(
+            publish(&service, None, pointer("d2", "b")).await,
+            Ok(ServingPointerPublication::Superseded {
+                current: Some(pointer("d1", "a"))
+            })
+        );
+        assert_eq!(
+            read(&service).await.unwrap().pointer,
+            Some(pointer("d1", "a"))
+        );
+        task.abort();
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn machines_that_disagree_on_machine_one_never_both_publish() {
+        let dir = std::env::temp_dir().join(format!("ployzd-pointer-{}", MachineId::random()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let one = machine_one();
+        let (sees_one_down, first) = machine(&dir, std::slice::from_ref(&one), Vec::new()).await;
+        let (sees_one_up, second) =
+            machine(&dir, std::slice::from_ref(&one), vec![alive(&one)]).await;
+
+        let outcomes = [
+            publish(&sees_one_down, None, pointer("d1", "a")).await,
+            publish(&sees_one_up, None, pointer("d2", "b")).await,
+        ];
+        let refusal = NotPointerPublisher { publisher: one.id };
+        assert_eq!(outcomes[0], Ok(ServingPointerPublication::Published));
+        let refused = outcomes[1].as_ref().unwrap_err();
+        assert_eq!(
+            NotPointerPublisher::from_error(refused),
+            Some(refusal.clone())
+        );
+        let read_refused = read(&sees_one_up).await.unwrap_err();
+        assert_eq!(
+            NotPointerPublisher::from_error(&read_refused),
+            Some(refusal)
+        );
+        first.abort();
+        second.abort();
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_machine_whose_active_peer_has_no_roster_row_refuses_to_publish() {
+        let dir = std::env::temp_dir().join(format!("ployzd-pointer-{}", MachineId::random()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (mut low, mut high) = (enrolled(&dir), enrolled(&dir));
+        if low.record().id() > high.record().id() {
+            std::mem::swap(&mut low, &mut high);
+        }
+        let low_machine = low.record().machine().unwrap().clone();
+        let high_machine = high.record().machine().unwrap().clone();
+        let both_alive = || vec![alive(&low_machine), alive(&high_machine)];
+        let (low, low_task) = serve(
+            &dir,
+            low,
+            corrosion_db(),
+            &[low_machine.clone(), high_machine.clone()],
+            both_alive(),
+        )
+        .await;
+        let (high, high_task) = serve(
+            &dir,
+            high,
+            corrosion_db(),
+            std::slice::from_ref(&high_machine),
+            both_alive(),
+        )
+        .await;
+
+        let outcomes = [
+            publish(&low, None, pointer("d1", "a")).await,
+            publish(&high, None, pointer("d2", "b")).await,
+        ];
+        assert_eq!(outcomes[0], Ok(ServingPointerPublication::Published));
+        let refused = outcomes[1].as_ref().unwrap_err();
+        assert_eq!(refused.code, RpcErrorCode::Unavailable, "{refused:?}");
+        assert!(
+            refused
+                .message
+                .contains(&low_machine.management_address().0.to_string()),
+            "{refused:?}"
+        );
+        assert_eq!(read(&low).await.unwrap().pointer, Some(pointer("d1", "a")));
+        let unwritten = high.replicated().unwrap().serving_pointer(&api()).await;
+        assert_eq!(
+            unwritten.unwrap(),
+            None,
+            "a Machine that cannot see its active peer's row never elects itself"
+        );
+        low_task.abort();
+        high_task.abort();
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_machine_whose_lower_peer_has_an_unreadable_row_refuses_to_publish() {
+        let dir = std::env::temp_dir().join(format!("ployzd-pointer-{}", MachineId::random()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (mut low, mut high) = (enrolled(&dir), enrolled(&dir));
+        if low.record().id() > high.record().id() {
+            std::mem::swap(&mut low, &mut high);
+        }
+        let low_machine = low.record().machine().unwrap().clone();
+        let high_machine = high.record().machine().unwrap().clone();
+        let both_alive = || vec![alive(&low_machine), alive(&high_machine)];
+        let high_db = corrosion_db();
+        high_db
+            .execute(
+                "INSERT INTO machines (id, info) VALUES (?, '{}')",
+                [low_machine.id.as_str()],
+            )
+            .unwrap();
+        let (low, low_task) = serve(
+            &dir,
+            low,
+            corrosion_db(),
+            &[low_machine.clone(), high_machine.clone()],
+            both_alive(),
+        )
+        .await;
+        let (high, high_task) = serve(
+            &dir,
+            high,
+            high_db,
+            std::slice::from_ref(&high_machine),
+            both_alive(),
+        )
+        .await;
+
+        let outcomes = [
+            publish(&low, None, pointer("d1", "a")).await,
+            publish(&high, None, pointer("d2", "b")).await,
+        ];
+        assert_eq!(outcomes[0], Ok(ServingPointerPublication::Published));
+        let refused = outcomes[1].as_ref().unwrap_err();
+        assert_eq!(refused.code, RpcErrorCode::Unavailable, "{refused:?}");
+        assert!(
+            refused.message.contains(low_machine.id.as_str()),
+            "{refused:?}"
+        );
+        assert_eq!(read(&low).await.unwrap().pointer, Some(pointer("d1", "a")));
+        let unwritten = high.replicated().unwrap().serving_pointer(&api()).await;
+        assert_eq!(
+            unwritten.unwrap(),
+            None,
+            "the refused publish wrote nothing"
+        );
+        low_task.abort();
+        high_task.abort();
+        std::fs::remove_dir_all(dir).ok();
     }
 }

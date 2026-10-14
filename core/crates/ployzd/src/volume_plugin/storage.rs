@@ -198,7 +198,7 @@ impl VolumeStorage {
             if self.unregistered(&existing.name).await? {
                 self.zfs(&["inherit", PROMOTE_PROPERTY, &existing.name])
                     .await?;
-                ployzd::faults::kill_inside("Create");
+                ployzd::faults::kill_inside("Create", None);
             }
             return Ok(());
         }

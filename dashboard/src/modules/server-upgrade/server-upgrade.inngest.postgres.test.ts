@@ -1,4 +1,4 @@
-import type { MachineUpgradeAttempt, MachineUpgradeAttemptId, RuntimeWatchView } from "@ployz/sdk";
+import type { MachineId, MachineUpgradeAttempt, MachineUpgradeAttemptId, RuntimeWatchView } from "@ployz/sdk";
 import { InngestTestEngine } from "@inngest/test";
 import { ConfigProvider, Effect, Layer } from "effect";
 import { Inngest } from "inngest";
@@ -32,13 +32,15 @@ import { AppConfig } from "#/server/config.server";
 import type { Database } from "#/server/database.server";
 import { makeInngestEffectRunner, type runInngestEffect } from "#/server/run.server";
 import { testConfigEnvironment } from "#/test/config-environment";
+import * as ids from "#/test/ids";
+import { invokeOnFailure } from "#/test/inngest-failure";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
 
 const organizationId = "00000000-0000-4000-8000-000000000c01";
 const userId = "00000000-0000-4000-8000-000000000c02";
-const machineId = "a".repeat(32);
+const machineId = ids.machineId("a");
 // Every Server's ID repeats one hex digit: web-1 is `1…1`, web-2 `2…2`, web-10 `a…a` above.
-const serverId = (digit: string) => digit.repeat(32);
+const serverId = ids.machineId;
 /** The newest release the stable pointer names; the beta pointer names `publishedBeta`, or the same with none. */
 let published = "0.2.2";
 let publishedBeta: string | null = null;
@@ -122,7 +124,7 @@ describe("roll-out-server-upgrade", () => {
     ))) as typeof runInngestEffect;
 
   /** Upgrade on a Server page names its Server; Upgrade and Upgrade the rest on the Servers page name none. */
-  const rollOut = (target: string | null = machineId, trigger: "manual" | "automatic" = "manual") =>
+  const rollOut = (target: MachineId | null = machineId, trigger: "manual" | "automatic" = "manual") =>
     rollOutRequested({ organizationId, machineId: target, trigger, userId: trigger === "manual" ? userId : null });
   const rollOutRequested = (data: ServerUpgradeRequestedEventData) => new InngestTestEngine({
     function: createRollOutServerUpgrade(new Inngest({ id: "test" }), runEffect),
@@ -733,16 +735,17 @@ describe("roll-out-server-upgrade", () => {
   });
 
   it("onFailure closes the failed run's running attempts as unknown, once, and no other run's", async () => {
-    const onFailure = createRollOutServerUpgrade(new Inngest({ id: "test" }), runEffect).opts.onFailure;
-    if (onFailure === undefined) return expect.fail("a failed run closes its attempts");
+    const worker = createRollOutServerUpgrade(new Inngest({ id: "test" }), runEffect);
     await harness.pool.query(`
       insert into server_upgrade_attempt (organization_id, machine_id, attempt_id, trigger, channel, from_version, stage, inngest_run_id, started_at)
       values ('${organizationId}', '${machineId}', '${"b".repeat(32)}', 'manual', 'stable', '0.2.1', 'restarting', 'run-1', now()),
              ('${organizationId}', '${machineId}', '${"c".repeat(32)}', 'manual', 'stable', '0.2.1', null, 'run-2', now());
     `);
 
-    // SAFETY: the failure handler reads only the failed run's ID.
-    const fail = (runId: string) => Promise.resolve(onFailure({ event: { data: { run_id: runId } } } as never));
+    const fail = (runId: string) => invokeOnFailure(worker, runId, {
+      name: "server/upgrade.requested",
+      data: { organizationId, machineId, trigger: "manual", userId },
+    });
     await fail("run-1");
     await fail("run-1");
 

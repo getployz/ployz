@@ -186,13 +186,26 @@ mod tests {
     }
 
     #[test]
+    fn a_down_machine_derives_no_platform() {
+        let machines = [
+            observed(1, "x86_64", MembershipObservation::Up),
+            observed(2, "aarch64", MembershipObservation::Down),
+            observed(3, "riscv64", MembershipObservation::Down),
+        ];
+        let anywhere = super::super::tests::intent(&["anywhere"]);
+        assert_eq!(
+            placement_platforms(&anywhere, &machines).unwrap(),
+            BTreeSet::from(["linux/amd64".to_owned()])
+        );
+    }
+
+    #[test]
     fn placement_machines_fix_railpack_platforms() {
         let root = tempfile::tempdir().unwrap();
         std::fs::write(root.path().join("Dockerfile"), "FROM scratch\n").unwrap();
         let machines = [
             observed(1, "x86_64", MembershipObservation::Up),
             observed(2, "aarch64", MembershipObservation::Suspect),
-            // A Down Machine is never a placement, so it derives nothing.
             observed(3, "aarch64", MembershipObservation::Down),
         ];
         let mut intent = super::super::tests::intent(&["pinned", "anywhere", "file"]);
@@ -228,15 +241,20 @@ mod tests {
                 .platforms
                 .clone()
         };
-        assert!(captured.targets().all(|target| target.platforms.is_empty()));
+        assert!(captured.targets().all(ployz_build::Target::is_native));
         captured.cover_machines(&intent, &machines).unwrap();
         assert_eq!(platforms(&captured, "pinned"), ["linux/amd64"]);
         assert_eq!(
             platforms(&captured, "anywhere"),
             ["linux/amd64", "linux/arm64"]
         );
-        // A Dockerfile keeps its native platform.
-        assert!(platforms(&captured, "file").is_empty());
+        assert!(
+            captured
+                .targets()
+                .find(|target| target.name == "file")
+                .unwrap()
+                .is_native()
+        );
         for captured in &captured.targets {
             ployz_build::remote::validate_capture(
                 captured.inputs.root(),

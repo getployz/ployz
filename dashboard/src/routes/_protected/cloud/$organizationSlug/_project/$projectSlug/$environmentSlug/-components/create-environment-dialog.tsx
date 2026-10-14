@@ -16,7 +16,6 @@ import {
 import { Field, FieldError, FieldGroup, FieldLabel } from "#/components/ui/field";
 import { Input } from "#/components/ui/input";
 import { Spinner } from "#/components/ui/spinner";
-import type { EnvironmentId } from "@ployz/sdk";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { dnsLabelError } from "#/modules/config-store/store-services";
 
@@ -44,8 +43,7 @@ export function CreateEnvironmentDialog({
       const invalid = dnsLabelError(input.name);
       if (invalid) throw new Error(invalid);
       // The Store names it as typed, or says why not in the form.
-      // SAFETY: an Environment id is a UUID the caller mints; the Store checks it.
-      const id = crypto.randomUUID() as EnvironmentId;
+      const id = crypto.randomUUID();
       await writer.commit({ command: "create_environment", id, project: input.projectSlug, name: input.name },
         ["invalid_argument", "conflict"]).isPersisted.promise;
       return input.name;

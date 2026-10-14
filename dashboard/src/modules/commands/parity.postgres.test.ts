@@ -171,6 +171,8 @@ it.live("gives the same answer and leaves the same rows through ployz and the si
       ["server_upgrade_policy_set", { channel: "beta" }],
       ["org_approval_ls", {}],
       ["org_approval_show", { id: first ?? "" }],
+      ["org_member_ls", {}],
+      ["org_invite_ls", {}],
       ["uptime_show", { service: "web" }],
     ];
     const raced = ["uptime_check"];

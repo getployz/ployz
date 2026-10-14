@@ -27,6 +27,7 @@ import { PloyzProviderError, type PloyzSdkError, type PloyzSession } from "#/mod
 import { RuntimeConnectionFailure } from "#/modules/runtime/runtime-connection-errors";
 import { createCancelStoreDeployment, createRunStoreDeployment } from "#/modules/config-store/store-deployment.inngest";
 import type { InngestRunStatus } from "#/modules/inngest/client";
+import { configDeploymentAdmittedEvent } from "#/modules/inngest/events";
 import { createCloseFinishedVolumeRun, createCloseStaleVolumeRuns, createRunVolume } from "#/modules/volume-run/volume-run.inngest";
 import { operationsOn } from "#/modules/operations/operation-history.server";
 import {
@@ -56,6 +57,7 @@ import { runVolume } from "#/modules/operations/operations.server";
 import { decideApproval } from "#/modules/approvals/approvals.server";
 import type { Database } from "#/server/database.server";
 import { makeInngestEffectRunner, type runInngestEffect } from "#/server/run.server";
+import { invokeOnFailure } from "#/test/inngest-failure";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
 
 const organizationId = "00000000-0000-4000-8000-000000000e01";
@@ -2962,10 +2964,10 @@ describe("volume runs", () => {
       const [placed] = await place();
       await fence(placed);
       const worker = createRunStoreDeployment(new Inngest({ id: "test" }), runEffect);
-      const onFailure = worker.opts.onFailure;
-      if (onFailure === undefined) throw new Error("the worker ends its lanes when it fails");
-      // SAFETY: the failure handler reads only the failed run's ID and its triggering event.
-      const failed = () => onFailure({ event: { data: { run_id: DEPLOY, event: { data: { organizationId, environmentId: "env-1", deploymentId: "d-1" } } } } } as never);
+      const failed = () => invokeOnFailure(worker, DEPLOY, {
+        name: configDeploymentAdmittedEvent,
+        data: { organizationId, environmentId: "env-1", deploymentId: "d-1" },
+      });
       send.mockClear();
 
       await failed();

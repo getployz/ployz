@@ -1,5 +1,5 @@
 import type { ExpectedCopy, Snapshot, SnapshotGuid, VolumeCopy } from "@ployz/sdk";
-import { type AnsweredMember, copyName, type Member, type VolumeRunArgs, type VolumeRunInput } from "#/modules/volume-run/volume-run";
+import { type AnsweredMember, copyName, type Member, type ReleasePlan, type VolumeRunArgs, type VolumeRunInput } from "#/modules/volume-run/volume-run";
 
 /** `cutting` is a read-only root: a cut began on it and has not renamed it to a slot yet. */
 export type Role = "writer" | "cutting" | "mirror" | "empty" | "unanswered";
@@ -32,7 +32,7 @@ export type Refusal = { readonly code: RefusalCode; readonly message: string };
 export type ReleaseFrom =
   | { readonly kind: "cut"; readonly root: AnsweredMember }
   | { readonly kind: "writer"; readonly writer: AnsweredMember; readonly behind: readonly AnsweredMember[] }
-  | { readonly kind: "slots"; readonly slots: readonly AnsweredMember[] };
+  | { readonly kind: "slots"; readonly slots: readonly AnsweredMember[]; readonly plan: ReleasePlan | undefined };
 
 export type Planned =
   | { readonly ok: true; readonly phase: { readonly kind: "mirror"; readonly writer: AnsweredMember; readonly target: AnsweredMember } }
@@ -43,7 +43,7 @@ export type Planned =
   | { readonly ok: true; readonly phase: { readonly kind: "release"; readonly from: ReleaseFrom } }
   | { readonly ok: true; readonly phase: { readonly kind: "restore"; readonly from: AnsweredMember; readonly lostAfter: Snapshot | null } }
   | { readonly ok: true; readonly phase: { readonly kind: "demote"; readonly old: AnsweredMember; readonly writer: AnsweredMember } }
-  | { readonly ok: true; readonly phase: { readonly kind: "seed"; readonly source: AnsweredMember } }
+  | { readonly ok: true; readonly phase: { readonly kind: "seed"; readonly source: AnsweredMember; readonly args: VolumeRunArgs["seed"] } }
   | { readonly ok: false; readonly refusal: Refusal };
 
 export type PlanInput = VolumeRunInput & { readonly volumeName: string; readonly orphan: boolean };
@@ -140,13 +140,13 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
 
   if (input.kind === "seed") {
     if (root === undefined || roleOf(root) !== "writer") return root === undefined ? refuse("no_writer", `${name} has no primary to restore from`) : midRun();
-    return { ok: true, phase: { kind: "seed", source: root } };
+    return { ok: true, phase: { kind: "seed", source: root, args: input.args } };
   }
 
   if (input.kind === "release") {
     if (root === undefined) {
       if (mirrors.length === 0) return refuse("no_writer", `${name} has no copy to release`);
-      return { ok: true, phase: { kind: "release", from: { kind: "slots", slots: mirrors } } };
+      return { ok: true, phase: { kind: "release", from: { kind: "slots", slots: mirrors, plan: input.args.plan } } };
     }
     if (roleOf(root) === "cutting") return { ok: true, phase: { kind: "release", from: { kind: "cut", root } } };
     const at = newestGuid(root.view.copy);

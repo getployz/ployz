@@ -1,4 +1,4 @@
-import type { ConfigCommand, ConfigQuery, ConfigView, ConfigWritten, DiffView, EnvironmentRef as StoreEnvironmentRef, EnvironmentView, JsonValue, ServicesView } from "@ployz/sdk";
+import type { Change, ConfigCommand, ConfigQuery, ConfigView, ConfigWritten, DiffView, EnvironmentRef as StoreEnvironmentRef, EnvironmentView, JsonValue, ServicesView } from "@ployz/sdk";
 import { Data, Schema } from "effect";
 
 /** A Store refusal as the Store words it: the RPC error vocabulary, never the rejected value. */
@@ -41,6 +41,12 @@ export type StoreCall = { operation: "read"; query: ConfigQuery } | { operation:
 /** The view a query answers with: each query kind has the view of the same name. */
 export type StoreViewOf<Q extends ConfigQuery> = Extract<ConfigView, { view: Q["query"] }>;
 
+/** `view` if it is the one `query` answers with. */
+export function viewOf<K extends ConfigQuery["query"]>(view: ConfigView, query: { query: K }): Extract<ConfigView, { view: K }> | undefined {
+  const answers = (candidate: ConfigView): candidate is Extract<ConfigView, { view: K }> => candidate.view === query.query;
+  return answers(view) ? view : undefined;
+}
+
 /** Reads one view in the calling Organization. */
 export type StoreRead = <Q extends ConfigQuery>(query: Q) => Promise<StoreViewOf<Q>>;
 
@@ -51,12 +57,14 @@ export type StoreAnswer<C extends StoreCall> = C extends { operation: "read"; qu
  * A query or command from outside Cloud, checked once where it enters: an object naming its kind. The Store decodes
  * and validates the rest itself, refusing anything else as `invalid_argument`.
  */
-const envelope = <T>(kind: "query" | "command") => {
+const envelope = <T>(kind: string) => {
   const named = Schema.is(Schema.Struct({ [kind]: Schema.String }));
   return Schema.declare<T>((value): value is T => named(value));
 };
 export const StoreQuery = envelope<ConfigQuery>("query");
 export const StoreCommand = envelope<ConfigCommand>("command");
+export const StoreView = envelope<ConfigView>("view");
+export const StoreChange = envelope<Change>("op");
 
 export const storeReadInput = Schema.Struct({ organizationSlug: Schema.String, query: StoreQuery });
 export const storeWriteInput = Schema.Struct({ organizationSlug: Schema.String, command: StoreCommand });

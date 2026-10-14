@@ -94,9 +94,11 @@ async function show({ orgStore = "ready", scope = "environment", billingEnabled 
   const settings = createRoute({ getParentRoute: () => environment, path: "settings", component: () => <div>Environment preferences</div> });
   const canvasLayout = createRoute({ getParentRoute: () => environment, id: "_canvas", component: Outlet });
   const canvas = createRoute({ getParentRoute: () => canvasLayout, path: "/", component: () => <div>Canvas nodes</div> });
+  const orgLayout = createRoute({ getParentRoute: () => organization, id: "_org" });
+  const account = createRoute({ getParentRoute: () => orgLayout, path: "~/account", component: () => <div>Account sections</div> });
   const router = createRouter({
     context: { queryClient: client, dbClient: getDbClient(client) },
-    routeTree: root.addChildren([protectedRoute.addChildren([cloud.addChildren([organization.addChildren([projectLayout.addChildren([project.addChildren([environment.addChildren([logs, settings, canvasLayout.addChildren([canvas])])])])])])])]),
+    routeTree: root.addChildren([protectedRoute.addChildren([cloud.addChildren([organization.addChildren([projectLayout.addChildren([project.addChildren([environment.addChildren([logs, settings, canvasLayout.addChildren([canvas])])])]), orgLayout.addChildren([account])])])])]),
     history: createMemoryHistory({ initialEntries: [path] }),
     scrollRestoration: true, scrollToTopSelectors: [scrollSelector],
   });
@@ -187,11 +189,28 @@ it("lists Settings' sections under it in the rail, and on phones under the top b
   expect(within(rail).getByRole("link", { name: "Environment" }).getAttribute("aria-current")).toBeNull();
 });
 
+it("marks the avatar row as the current place on Account, with no rail entry of its own", async () => {
+  const { rail } = await show({ scope: "all", path: "/cloud/acme/~/account" });
+  await screen.findByText("Account sections");
+  const trigger = within(rail).getByRole("button", { name: "Open account menu" });
+  expect(trigger.getAttribute("aria-current")).toBe("page");
+  expect(within(rail).queryByRole("link", { name: "Account" })).toBeNull();
+  // The logo is labelled and Router marks it current under every organization page; place rows are named by their text.
+  const places = within(rail).getAllByRole("link").filter((link) => !link.hasAttribute("aria-label"));
+  expect(places.map((link) => link.textContent)).toEqual(["Projects", "Servers", "Organization"]);
+  expect(places.filter((link) => link.getAttribute("aria-current") === "page")).toEqual([]);
+});
+
+it("leaves the avatar row unmarked away from Account", async () => {
+  const { rail } = await show();
+  expect(within(rail).getByRole("button", { name: "Open account menu" }).getAttribute("aria-current")).toBeNull();
+});
+
 it("holds only Account, organization switching, Theme, Home and Log out in the account menu, and applies a theme choice", async () => {
   const { rail } = await show();
   const menu = await openAccountMenu(rail);
   expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Account", "Switch organization", "Home", "Log out"]);
-  expect(within(menu).getByRole("menuitem", { name: "Account" }).getAttribute("href")).toBe("/cloud/account");
+  expect(within(menu).getByRole("menuitem", { name: "Account" }).getAttribute("href")).toBe("/cloud/acme/~/account");
   expect(within(menu).getByRole("menuitem", { name: "Home" }).getAttribute("href")).toBe("/home");
   expect(within(menu).getAllByRole("menuitemradio").map((item) => item.textContent)).toEqual(["System", "Light", "Dark"]);
   expect(screen.getAllByText("test@example.com").length).toBeGreaterThan(0);

@@ -1,7 +1,8 @@
 import { useId } from "react";
-import { useLoaderData } from "@tanstack/react-router";
+import { useQuery } from "@tanstack/react-query";
 import { Field, FieldContent, FieldDescription, FieldGroup, FieldLabel } from "#/components/ui/field";
 import { Switch } from "#/components/ui/switch";
+import { organizationMembersQueryOptions } from "#/modules/organization/members.queries";
 import type { SupportAccessChange } from "#/modules/support-access/support-access";
 import { useSupportAccess } from "#/modules/support-access/support-access.hooks";
 import { SettingsSection } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
@@ -15,8 +16,9 @@ const SHOWS = [
 /** "Allow support access": whether Ployz support may open this Organization and act in it, and what it may read there. */
 export function SupportAccessSection({ organizationSlug }: { organizationSlug: string }) {
   const { row, change } = useSupportAccess(organizationSlug);
-  // Only the Organization decides what Ployz support may do, so support sees these switches but can't move them.
-  const locked = useLoaderData({ from: "/_protected/cloud/$organizationSlug" }).access === "support";
+  // Only an owner or admin decides what Ployz support may do. Everyone else, support included, sees the switches but can't move them.
+  const yourRole = useQuery(organizationMembersQueryOptions(organizationSlug)).data?.members.find((row) => row.you)?.role;
+  const locked = yourRole !== "owner" && yourRole !== "admin";
   return (
     <SettingsSection id="support-access" title="Support">
       <SupportSwitch

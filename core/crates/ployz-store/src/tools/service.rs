@@ -402,7 +402,7 @@ fn refuse_referenced_rename(mut error: RpcError, call: &Call, writes: Writes) ->
         .with_retry(Call::new(&call.tool, retry))
 }
 
-/// `value` without its null fields.
+/// `value` with its top-level null fields removed.
 pub(crate) fn drop_nulls(mut value: Value) -> Value {
     if let Value::Object(fields) = &mut value {
         fields.retain(|_, field| !field.is_null());

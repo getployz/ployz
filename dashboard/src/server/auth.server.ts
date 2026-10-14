@@ -185,7 +185,10 @@ const makeAuth = Effect.gen(function* () {
         createOrganizationBillingSyncEventsFromCustomerStatePayload(payload),
       ),
   });
-  const organizations = organizationPlugin();
+  // Ployz owns invitations; the plugin's routes for them are closed, so it only needs to know the column it never writes.
+  const organizations = organizationPlugin({
+    schema: { invitation: { additionalFields: { tokenHash: { type: "string", required: true, input: false } } } },
+  });
   const instance = betterAuth({
     secret: Redacted.value(config.auth.secret),
     baseURL: {
@@ -278,7 +281,7 @@ const makeAuth = Effect.gen(function* () {
     signInGithub: (headers, callbackURL) => Effect.tryPromise({
       try: () => instance.api.signInSocial({
         headers,
-        body: { provider: "github", callbackURL, newUserCallbackURL: "/cloud?welcome=true" },
+        body: { provider: "github", callbackURL, newUserCallbackURL: callbackURL === "/cloud" ? "/cloud?welcome=true" : callbackURL },
         asResponse: true,
       }),
       catch: (cause) => new AuthenticationUnavailable({ cause }),

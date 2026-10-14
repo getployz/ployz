@@ -27,7 +27,6 @@ use crate::{Actor, Trusted};
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct Edit {
-    /// The Environment to edit.
     #[serde(default)]
     pub environment: EnvironmentRef,
     /// Refuse with `conflict` unless Working State is still at this revision.
@@ -48,7 +47,6 @@ pub enum Change {
     Set {
         /// The Setting.
         path: SettingPath,
-        /// Its new value.
         value: Value,
     },
     /// Return a Setting to its default, or delete a variable.
@@ -117,7 +115,6 @@ pub struct TypedAddresses {
     pub path: SettingPath,
     /// The Services whose private addresses it types.
     pub services: Vec<ServiceName>,
-    /// What to set instead.
     pub instead: Instead,
 }
 

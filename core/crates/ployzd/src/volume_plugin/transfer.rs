@@ -10,7 +10,8 @@ use std::{
 };
 
 use futures_util::{FutureExt as _, StreamExt as _};
-use ployz_core::{ManagementAddress, SendStream, error_chain::inline};
+use ployz_core::{ManagementAddress, SendSource, SendStream, VolumeGen, error_chain::inline};
+use ployzd::faults::{Identity, Want};
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
     process::{Child, Command},
@@ -18,6 +19,18 @@ use tokio::{
 use tokio_util::sync::{CancellationToken, DropGuard};
 
 use super::{DockerVolumeName, VolumeStorage};
+
+/// The Volume and target a pull of `stream` lands, for the lane at `gen`.
+pub(super) fn pulling(stream: &SendStream, r#gen: VolumeGen) -> Identity<'_> {
+    let (SendSource::Full { target }
+    | SendSource::Incremental { target, .. }
+    | SendSource::Resume { target, .. }) = &stream.source;
+    Identity {
+        volume: &stream.name,
+        want: Want::Mirror { target },
+        r#gen,
+    }
+}
 
 /// A receive's `kill-daemon` fault fires once this much of the stream is in, so ZFS holds a
 /// partial receive to resume.
@@ -209,7 +222,12 @@ impl std::fmt::Display for ReceiveFailure {
 impl VolumeStorage {
     /// Pulls one stream into `fs`, then re-asserts and verifies the slot's bound and
     /// read-only state, which ZFS drops on an interrupted first receive. `fault` names
-    /// the kill point that fires once the stream passes [`KILL_AFTER_BYTES`].
+    /// the kill point that fires once the stream passes [`KILL_AFTER_BYTES`], for the
+    /// Volume and target `stream` names.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Each is one pull's own: its source, slot, bound, stop, and the lane its fault line names."
+    )]
     pub(super) async fn receive(
         &self,
         from: ManagementAddress,
@@ -217,10 +235,12 @@ impl VolumeStorage {
         fs: &str,
         bound: u64,
         fault: &'static str,
+        r#gen: VolumeGen,
         stop: &Stop,
     ) -> Result<(), ReceiveFailure> {
         let opened = self.open_stream(from, stream, stop).await?;
-        self.receive_opened(opened, fs, bound, fault, stop).await
+        self.receive_opened(opened, fs, bound, fault, pulling(stream, r#gen), stop)
+            .await
     }
 
     /// The writer's answer to `stream`, before anything touches the slot. A writer that
@@ -284,6 +304,7 @@ impl VolumeStorage {
         fs: &str,
         bound: u64,
         fault: &'static str,
+        identity: Identity<'_>,
         stop: &Stop,
     ) -> Result<(), ReceiveFailure> {
         let refquota = format!("refquota={bound}");
@@ -306,7 +327,7 @@ impl VolumeStorage {
         )
         .map_err(|error| ReceiveFailure::Failed(format!("could not run zfs receive: {error}")))?;
         let pumped = {
-            let pump = self.pump(child.child(), &url, response, fs, fault);
+            let pump = self.pump(child.child(), &url, response, fs, fault, identity);
             tokio::select! {
                 biased;
                 () = stop.cancelled() => None,
@@ -330,6 +351,7 @@ impl VolumeStorage {
         response: reqwest::Response,
         fs: &str,
         fault: &'static str,
+        identity: Identity<'_>,
     ) -> Result<(), ReceiveFailure> {
         let mut stdin = child.stdin.take().expect("zfs receive stdin is piped");
         let mut body = response.bytes_stream();
@@ -353,7 +375,7 @@ impl VolumeStorage {
                     let before = received;
                     received += bytes.len() as u64;
                     if before < KILL_AFTER_BYTES && received >= KILL_AFTER_BYTES {
-                        ployzd::faults::kill_inside(fault);
+                        ployzd::faults::kill_inside(fault, Some(identity));
                     }
                 }
                 Err(error) => {

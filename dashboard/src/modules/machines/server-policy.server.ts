@@ -1,5 +1,6 @@
 import "@tanstack/react-start/server-only";
 
+import type { MachineId } from "@ployz/sdk";
 import { Data, Effect } from "effect";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
 import type { Actor, Caller } from "#/modules/identity/actor";
@@ -35,11 +36,11 @@ const DRAINING = "A drain is running on this server. Wait for it to finish.";
  * (`DRAIN_SLOT`), so no Drain runs while it does; it checks again right before the update, which refuses one
  * requested while the change waited.
  */
-const undoesDrain = (organizationId: string, machineId: string, change: ServerPolicyChange) =>
+const undoesDrain = (organizationId: string, machineId: MachineId, change: ServerPolicyChange) =>
   change.acceptsServices === true ? drainActiveOn(organizationId, machineId) : Effect.succeed(false);
 
 const refuseWhileDraining = Effect.fn("ServerPolicy.refuseWhileDraining")(function* (
-  organizationId: string, machineId: string, change: ServerPolicyChange,
+  organizationId: string, machineId: MachineId, change: ServerPolicyChange,
 ) {
   if (yield* undoesDrain(organizationId, machineId, change)) {
     return yield* new Conflict({ userFacing: true, message: DRAINING });
@@ -67,7 +68,7 @@ export const requestServerPolicyChange = Effect.fn(
 
 /** Plans a keyed Server Policy change: admitted, it queues one event keyed by its attempt in the same commit. */
 export const planKeyedServerPolicyChange = Effect.fn("ServerPolicy.planKeyed")(function* (
-  caller: Caller, machineId: string, change: ServerPolicyChange,
+  caller: Caller, machineId: MachineId, change: ServerPolicyChange,
 ) {
   const refused = (code: string, message: string) =>
     ({ ok: false, refusal: { code, message, details: null } }) as const satisfies { ok: false; refusal: StoreRefusal };
