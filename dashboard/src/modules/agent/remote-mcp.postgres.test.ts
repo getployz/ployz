@@ -41,7 +41,8 @@ const hostedPolar: PolarService = {
 };
 
 const Registered = Schema.Struct({ client_id: Schema.String });
-const Issued = Schema.Struct({ access_token: Schema.String });
+const Issued = Schema.Struct({ access_token: Schema.String, refresh_token: Schema.optional(Schema.String) });
+const Consents = Schema.Array(Schema.Struct({ id: Schema.String }));
 const Structured = Schema.Struct({
   ok: Schema.Boolean,
   request_key: Schema.String,
@@ -117,7 +118,8 @@ type Shop = Effect.Success<ReturnType<typeof hostedShop>>;
 const authJson = (shop: Shop, path: string, init: RequestInit) =>
   Effect.promise(async () => {
     const response = await shop.run(serveAuth(new Request(`${origin}${path}`, init)));
-    return { status: response.status, body: await response.json() };
+    const text = await response.text();
+    return { status: response.status, body: text === "" ? null : JSON.parse(text) };
   });
 
 const registerAgent = Effect.fn(function* (shop: Shop) {
@@ -133,8 +135,8 @@ const registerAgent = Effect.fn(function* (shop: Shop) {
   return Schema.decodeUnknownSync(Registered)(registered.body).client_id;
 });
 
-/** The whole connect dance Bo's agent does: authorize, consent on /connect for Shop, and trade the code for a token. */
-const connect = Effect.fn(function* (shop: Shop, clientId: string) {
+/** The whole connect dance Bo's agent does: authorize, consent on /connect for Shop, and trade the code for tokens. */
+const connectTokens = Effect.fn(function* (shop: Shop, clientId: string) {
   const verifier = randomBytes(32).toString("base64url");
   const authorize = new URL("/api/auth/oauth2/authorize", origin);
   authorize.search = new URLSearchParams({
@@ -155,8 +157,20 @@ const connect = Effect.fn(function* (shop: Shop, clientId: string) {
       grant_type: "authorization_code", code, redirect_uri: REDIRECT, client_id: clientId, code_verifier: verifier, resource: `${origin}/mcp`,
     }).toString(),
   });
-  return Schema.decodeUnknownSync(Issued)(issued.body).access_token;
+  return Schema.decodeUnknownSync(Issued)(issued.body);
 });
+
+const connect = (shop: Shop, clientId: string) => connectTokens(shop, clientId).pipe(Effect.map((issued) => issued.access_token));
+
+/** The id of Bo's one consent, the grant `/connect` made. */
+const onlyConsent = Effect.fn(function* (shop: Shop) {
+  const consents = yield* authJson(shop, "/api/auth/oauth2/get-consents", { method: "GET", headers: { cookie: shop.cookie } });
+  const [consent] = Schema.decodeUnknownSync(Consents)(consents.body);
+  return consent?.id ?? expect.fail("Bo has no consent");
+});
+
+const consentCall = (shop: Shop, path: string, body: { readonly id: string; readonly update?: { readonly scopes: ReadonlyArray<string> } }) =>
+  authJson(shop, path, { method: "POST", headers: { cookie: shop.cookie, "content-type": "application/json" }, body: JSON.stringify(body) });
 
 /** An MCP client on `/mcp` with `token`; `keys` records each response's request key header. */
 const agentWith = Effect.fn(function* (shop: Shop, token: string, headers: Record<string, string> = {}) {
@@ -274,6 +288,25 @@ it.live("revoking the grant turns its token away, and connecting again issues on
     const renewed = yield* connect(shop, clientId);
     expect((yield* raw(shop, renewed)).status).toBe(200);
     expect((yield* raw(shop, old)).status).toBe(401);
+  }).pipe(Effect.scoped), 30_000);
+
+it.live("disconnecting stops the grant's refresh token, even after the agent connects again", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const clientId = yield* registerAgent(shop);
+    const old = yield* connectTokens(shop, clientId);
+    const refreshToken = old.refresh_token ?? expect.fail("connect issued no refresh token");
+
+    expect((yield* consentCall(shop, "/api/auth/oauth2/delete-consent", { id: yield* onlyConsent(shop) })).status).toBe(200);
+    expect((yield* raw(shop, old.access_token)).status).toBe(401);
+    expect((yield* raw(shop, yield* connect(shop, clientId))).status).toBe(200);
+
+    const refreshed = yield* authJson(shop, "/api/auth/oauth2/token", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ grant_type: "refresh_token", client_id: clientId, refresh_token: refreshToken, resource: `${origin}/mcp` }).toString(),
+    });
+    expect(refreshed.status).toBe(400);
   }).pipe(Effect.scoped), 30_000);
 
 it.live("a self-hosted Cloud answers 404 on every remote agent route and method", () =>
