@@ -1134,10 +1134,6 @@ async fn publish_group<C: MachineOperations>(
         .map_err(|error| machine_error(MachineAction::PublishServingPointer, error))
 }
 
-/// The row each publishing group admitted, read at each pointer write and
-/// never held across one: the executor publishes a group while another
-/// group's stop retires a copy, and a stop-first task only ever amends its
-/// own group's row.
 struct Rows<'a> {
     namespace: &'a Namespace,
     groups: &'a [ServiceGroup],
@@ -1352,8 +1348,6 @@ async fn execute_operation<C: MachineOperations>(
                 Some(replacement.old_container_id),
             );
             if replacement.spec.update.order == UpdateOrder::StopFirst {
-                // The inspection runs before the row stops naming the old
-                // Container, so a failed one leaves it pointed and serving.
                 let old = match client
                     .inspect_container(&replacement.machine_id, &replacement.old_container_id)
                     .await

@@ -91,8 +91,6 @@ enum Reply {
 
 struct Step(Call, Reply);
 
-/// Holds the first retiring amendment until the first Container start of the
-/// run has reached the Machine, then lets both through.
 struct AmendmentStall {
     requested: tokio::sync::Notify,
     released: tokio::sync::Notify,
@@ -106,6 +104,19 @@ impl AmendmentStall {
             released: tokio::sync::Notify::new(),
             spent: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    async fn hold_amendment(&self) {
+        self.requested.notify_one();
+        self.released.notified().await;
+    }
+
+    async fn release_on_first_start(&self) {
+        if self.spent.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
+        self.requested.notified().await;
+        self.released.notify_one();
     }
 }
 
@@ -302,11 +313,8 @@ impl MachineOperations for Scripted {
                 (call, container)
             }
         };
-        if let (Call::Run(..), Some(stall)) = (&call, &self.amendment_stall)
-            && !stall.spent.swap(true, std::sync::atomic::Ordering::SeqCst)
-        {
-            stall.requested.notified().await;
-            stall.released.notify_one();
+        if let (Call::Run(..), Some(stall)) = (&call, &self.amendment_stall) {
+            stall.release_on_first_start().await;
         }
         let healthy = settled.then_some(HealthVerdict::Healthy);
         let present = |container_id: &ContainerId| {
@@ -451,8 +459,7 @@ impl MachineOperations for Scripted {
             && !flip
             && !request.pointer.retiring.is_empty()
         {
-            stall.requested.notify_one();
-            stall.released.notified().await;
+            stall.hold_amendment().await;
         }
         if flip && self.dropped_publish {
             return Err(error("connection reset"));
