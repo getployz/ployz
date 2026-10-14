@@ -7,7 +7,7 @@ import { deployClaim } from "#/modules/volume-placement/volume-placement.server"
 import { expectOf, roleOf } from "#/modules/volume-run/plan";
 import { volumeMirrorStatus, volumeRun } from "#/modules/volume-run/tables";
 import { ACTIVE_VOLUME_RUN_STATES, type AnsweredMember, copyName, type Member } from "#/modules/volume-run/volume-run";
-import { askCopy, DRAIN_MS, observeVolumeMembers, requestVolumeRun } from "#/modules/volume-run/volume-run.server";
+import { askCopy, type CopyAnswer, DRAIN_MS, observeVolumeMembers, requestVolumeRun } from "#/modules/volume-run/volume-run.server";
 import { Database } from "#/server/database.server";
 
 export type SyncedVolume = {
@@ -45,6 +45,9 @@ export type CopyAsk = typeof askCopy;
 
 type Slot = Extract<VolumeCopy, { kind: "slot" }>;
 type SlotMember = AnsweredMember & { readonly view: { readonly copy: Slot } };
+
+/** A mirror's answer, or why it couldn't be asked: that mirror skips the round and the others still get theirs. */
+type MirrorAnswer = CopyAnswer | { readonly ok: false; readonly reason: "unreached"; readonly copy: null; readonly message: string };
 
 const isSlot = (member: Member): member is SlotMember => member.answered && member.view.copy?.kind === "slot";
 const pullingTo = (copy: Slot) => copy.pull !== null && copy.pull.failure === null ? copy.pull.target : null;
@@ -202,6 +205,10 @@ export const syncMirrors = Effect.fn("MirrorSync.sync")(function* (
   const asker = { organizationId, dockerVolume: volume.dockerVolume, volumeName: volume.name, gen };
   const steps: MirrorStep[] = [];
   const named = (member: Member) => copyName(volume.name, member.machine.name);
+  const pull = (member: SlotMember, copy: Slot, target: string) =>
+    ask(asker, member.machine, expectOf(copy), { kind: "mirror", from: writer.address, target, drain: DRAIN_MS }).pipe(
+      Effect.catch((error) => Effect.succeed<MirrorAnswer>({ ok: false, reason: "unreached", copy: null, message: error.message })),
+    );
 
   // The Machine finishes a landed pull only when asked for it again, so resend each pull before calling it busy.
   const busy: MirrorStep[] = [];
@@ -213,7 +220,7 @@ export const syncMirrors = Effect.fn("MirrorSync.sync")(function* (
       idle.push({ member, copy });
       continue;
     }
-    const resent = yield* ask(asker, member.machine, expectOf(copy), { kind: "mirror", from: writer.address, target, drain: DRAIN_MS });
+    const resent = yield* pull(member, copy, target);
     if (resent.ok && resent.copy?.kind === "slot" && resent.copy.pull === null) idle.push({ member, copy: resent.copy });
     else if (resent.ok || resent.reason === "busy") busy.push({ kind: "pulling", mirror: named(member), target });
     else busy.push({ kind: "refused", mirror: named(member), message: resent.message });
@@ -236,7 +243,7 @@ export const syncMirrors = Effect.fn("MirrorSync.sync")(function* (
       const status = statuses.find((row) => row.machineId === member.machine.id);
       if (status?.okSnapshot !== copy.newest.name) yield* recordSuccess(organizationId, volume.volumeId, member.machine.id, copy.newest, false);
     }
-    const handed = yield* ask(asker, member.machine, expectOf(copy), { kind: "mirror", from: writer.address, target: target.name, drain: DRAIN_MS });
+    const handed = yield* pull(member, copy, target.name);
     // A concurrent sync's hand-off moves the copy past this one's expect, so this one is refused as a mismatch.
     const pulling = handed.copy?.kind === "slot" ? pullingTo(handed.copy) : null;
     if (handed.ok) {
