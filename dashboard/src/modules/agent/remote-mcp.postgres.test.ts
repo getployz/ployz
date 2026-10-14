@@ -135,8 +135,8 @@ const registerAgent = Effect.fn(function* (shop: Shop) {
   return Schema.decodeUnknownSync(Registered)(registered.body).client_id;
 });
 
-/** The whole connect dance Bo's agent does: authorize, consent on /connect for Shop, and trade the code for tokens. */
-const connectTokens = Effect.fn(function* (shop: Shop, clientId: string, pageQuery: (signed: string) => string = (signed) => signed) {
+/** Authorize and consent on /connect for Shop, leaving the code unredeemed. */
+const issueCode = Effect.fn(function* (shop: Shop, clientId: string, pageQuery: (signed: string) => string = (signed) => signed) {
   const verifier = randomBytes(32).toString("base64url");
   const authorize = new URL("/api/auth/oauth2/authorize", origin);
   authorize.search = new URLSearchParams({
@@ -150,13 +150,28 @@ const connectTokens = Effect.fn(function* (shop: Shop, clientId: string, pageQue
     organizationId: ORGANIZATION, accept: true, oauthQuery: pageQuery(toConnect.search.slice(1)),
   }));
   const code = new URL(decided.url).searchParams.get("code") ?? expect.fail(`consent answered ${decided.url}`);
-  const issued = yield* authJson(shop, "/api/auth/oauth2/token", {
+  return { clientId, code, verifier };
+});
+
+const redeem = (shop: Shop, { clientId, code, verifier }: Effect.Success<ReturnType<typeof issueCode>>) =>
+  authJson(shop, "/api/auth/oauth2/token", {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
       grant_type: "authorization_code", code, redirect_uri: REDIRECT, client_id: clientId, code_verifier: verifier, resource: `${origin}/mcp`,
     }).toString(),
   });
+
+const refresh = (shop: Shop, clientId: string, refreshToken: string) =>
+  authJson(shop, "/api/auth/oauth2/token", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ grant_type: "refresh_token", client_id: clientId, refresh_token: refreshToken, resource: `${origin}/mcp` }).toString(),
+  });
+
+/** The whole connect dance Bo's agent does: authorize, consent on /connect for Shop, and trade the code for tokens. */
+const connectTokens = Effect.fn(function* (shop: Shop, clientId: string, pageQuery?: (signed: string) => string) {
+  const issued = yield* redeem(shop, yield* issueCode(shop, clientId, pageQuery));
   return Schema.decodeUnknownSync(Issued)(issued.body);
 });
 
@@ -308,12 +323,36 @@ it.live("disconnecting stops the grant's refresh token, even after the agent con
     expect((yield* raw(shop, old.access_token)).status).toBe(401);
     expect((yield* raw(shop, yield* connect(shop, clientId))).status).toBe(200);
 
-    const refreshed = yield* authJson(shop, "/api/auth/oauth2/token", {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ grant_type: "refresh_token", client_id: clientId, refresh_token: refreshToken, resource: `${origin}/mcp` }).toString(),
-    });
-    expect(refreshed.status).toBe(400);
+    expect((yield* refresh(shop, clientId, refreshToken)).status).toBe(400);
+  }).pipe(Effect.scoped), 30_000);
+
+it.live("disconnecting stops a code the agent hasn't redeemed, even after the agent connects again", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const clientId = yield* registerAgent(shop);
+    yield* connectTokens(shop, clientId);
+    const pending = yield* issueCode(shop, clientId);
+
+    expect((yield* consentCall(shop, "/api/auth/oauth2/delete-consent", { id: yield* onlyConsent(shop) })).status).toBe(200);
+    expect((yield* raw(shop, yield* connect(shop, clientId))).status).toBe(200);
+
+    expect((yield* redeem(shop, pending)).status).toBe(400);
+  }).pipe(Effect.scoped), 30_000);
+
+it.live("a code redeemed while disconnected yields no refresh token that works after the agent connects again", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const clientId = yield* registerAgent(shop);
+    yield* connectTokens(shop, clientId);
+    const pending = yield* issueCode(shop, clientId);
+
+    expect((yield* consentCall(shop, "/api/auth/oauth2/delete-consent", { id: yield* onlyConsent(shop) })).status).toBe(200);
+    const redeemed = yield* redeem(shop, pending);
+    const minted = redeemed.status === 200 ? Schema.decodeUnknownSync(Issued)(redeemed.body).refresh_token : undefined;
+    expect((yield* raw(shop, yield* connect(shop, clientId))).status).toBe(200);
+
+    if (minted !== undefined) expect((yield* refresh(shop, clientId, minted)).status).toBe(400);
+    expect(redeemed.status).toBe(400);
   }).pipe(Effect.scoped), 30_000);
 
 it.live("taking the ployz scope off the consent turns the next call away", () =>
