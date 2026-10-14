@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Stops this checkout's verify instance: the cluster, vite dev server, Inngest dev server and worker, fake Hosted DNS,
-# fake GitHub and Postgres container up.sh started, and its agent-browser sessions (KEEP_BROWSER=1 keeps them). Keeps
-# dashboard/.verify/evidence and the cluster's evidence.
+# fake GitHub, fake PostShiba, and the Postgres and Mailpit containers up.sh started, and its agent-browser sessions
+# (KEEP_BROWSER=1 keeps them). Keeps dashboard/.verify/evidence and the cluster's evidence.
 # Usage: scripts/verify/down.sh
 set -uo pipefail
 dash=$(cd "$(dirname "$0")/../.." && pwd)
@@ -9,14 +9,14 @@ wt=$(dirname "$dash")
 name=ployz-verify-$(printf %s "$wt" | sha1sum | cut -c1-10)
 run=$dash/.verify/run
 [ -f "$run/cluster" ] && "$wt/core/scripts/verify-cluster" down "$(cat "$run/cluster")"
-for process in idle seed-uptime worker vite inngest hosted-dns fake-github; do
+for process in idle seed-uptime worker vite inngest hosted-dns fake-github fake-postshiba; do
   [ -f "$run/$process.pid" ] || continue
   pid=$(cat "$run/$process.pid")
   kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null
   for _ in $(seq 20); do kill -0 "$pid" 2>/dev/null || break; sleep 0.25; done
   kill -KILL -- "-$pid" 2>/dev/null || true
 done
-docker rm --force "$name" >/dev/null 2>&1 || true
+docker rm --force "$name" "$name-mailpit" >/dev/null 2>&1 || true
 if [ "${KEEP_BROWSER:-0}" != 1 ]; then
   for session in "$name" "$name-bob"; do agent-browser --session "$session" close >/dev/null 2>&1 || true; done
 fi
