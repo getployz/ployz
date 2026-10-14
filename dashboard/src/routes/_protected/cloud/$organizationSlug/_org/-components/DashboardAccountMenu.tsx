@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { Building2Icon, ChevronsUpDownIcon, HouseIcon, LogOutIcon, PlusIcon } from "lucide-react";
+import { Building2Icon, ChevronsUpDownIcon, HouseIcon, LogOutIcon, PlusIcon, UserIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
 import {
   getSignOutErrorMessage,
@@ -135,6 +135,10 @@ export default function DashboardAccountMenu({
 
         <DropdownMenuSeparator />
         <DropdownMenuGroup>
+          <DropdownMenuItem render={<Link to="/cloud/account" />}>
+            <UserIcon />
+            Account
+          </DropdownMenuItem>
           <DropdownMenuSub>
             <DropdownMenuSubTrigger>
               <Building2Icon />
