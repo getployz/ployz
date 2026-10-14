@@ -7,6 +7,7 @@ import { readStore } from "#/modules/config-store/config-store.server";
 import { ownedNamespaces } from "#/modules/machines/namespace-cleanup.server";
 import { machineUpdateForPolicyChange, type ServerPolicyChange } from "#/modules/machines/server-policy";
 import { SYSTEM_NAMESPACE, splitQualifiedService } from "#/modules/machines/server-services";
+import { needsAttention, serverStatus } from "#/modules/machines/server-status";
 import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
 import { firstRuntimeFrame, OrganizationRuntime, RUNTIME_FRAME_TIMEOUT_MS } from "#/modules/runtime/organization-runtime.server";
 import { dockerVolumeName } from "#/modules/volume-run/volume-run";
@@ -96,17 +97,19 @@ export function drainPlan(frame: RuntimeWatchView, owned: ReadonlySet<string>, m
 }
 
 const servesWeb = ({ machine }: RuntimeWatchView["machines"][number]) => machine.accepts_ingress && machine.public_ip !== null;
+const online = ({ machine, membership }: RuntimeWatchView["machines"][number]) =>
+  !needsAttention(serverStatus({ membership, runningBuilds: machine.runtime.running_builds }));
 
 /**
- * What turning web traffic off on `machineId` loses: every domain the Cluster serves, when no other Server with a
- * public IP takes web traffic. The preview is the whole `change`, so approving web off approves nothing else it carries.
+ * What turning web traffic off on `machineId` loses: every domain the Cluster serves, when no other online Server with
+ * a public IP takes web traffic. The preview is the whole `change`, so approving web off approves nothing else it carries.
  * Null when the frame has no such Server.
  */
 export function ingressOffPlan(frame: RuntimeWatchView, machineId: string, change: ServerPolicyChange): OperationAsked | null {
   const name = serverName(frame, machineId);
   if (name === undefined) return null;
   const last = frame.machines.some((observed) => observed.machine.id === machineId && servesWeb(observed))
-    && !frame.machines.some((observed) => observed.machine.id !== machineId && servesWeb(observed));
+    && !frame.machines.some((observed) => observed.machine.id !== machineId && servesWeb(observed) && online(observed));
   const domains = last ? [...new Set(frame.certificates.map(({ hostname }) => hostname))].sort(byName) : [];
   return {
     subject: `server:${machineId}`,

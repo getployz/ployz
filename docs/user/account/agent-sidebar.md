@@ -115,7 +115,7 @@ server, like **Remove fra-1**.
 - **Only removals ask.** Deploys that roll out a new image, change variables or scale a service
   go ahead without a card. Under such a deploy you'll see **Didn't ask. Nothing destroyed.**
   Restarting, starting or stopping a service never asks, and neither does upgrading a server or
-  changing what it takes, unless turning web traffic off leaves no server with a public IP to
+  changing what it takes, unless turning web traffic off leaves no online server with a public IP to
   serve your domains. Then the card lists the domains that go dark and everything else the change sets,
   and approving it covers only that change. Redeploying a deployment doesn't ask either, because it ships exactly
   what that deployment did and you already approved anything it removes. Starting a queued one

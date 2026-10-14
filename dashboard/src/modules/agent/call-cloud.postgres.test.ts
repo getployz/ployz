@@ -80,8 +80,8 @@ describe("callCloud", () => {
     connected: asTestDouble<PloyzSession>()({
       watchFirstFrame: () => Effect.succeed(asTestDouble<RuntimeWatchView>()({
         machines: [
-          { machine: { id: MACHINE, name: "web-2", accepts_ingress: true, public_ip: "203.0.113.2" } },
-          { machine: { id: OTHER_MACHINE, name: "web-3", accepts_ingress: otherServesWeb, public_ip: "203.0.113.3" } },
+          { membership: "up", machine: { id: MACHINE, name: "web-2", accepts_ingress: true, public_ip: "203.0.113.2", runtime: { running_builds: 0 } } },
+          { membership: "up", machine: { id: OTHER_MACHINE, name: "web-3", accepts_ingress: otherServesWeb, public_ip: "203.0.113.3", runtime: { running_builds: 0 } } },
         ],
         certificates: [{ hostname: "shop.example.com" }],
       })),

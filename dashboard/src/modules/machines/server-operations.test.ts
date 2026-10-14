@@ -142,10 +142,13 @@ describe("cleanPlan and removePlan", () => {
 
 describe("ingressOffPlan", () => {
   const off = { acceptsIngress: false } as const;
-  const web = (ingress: { here: readonly [boolean, string | null]; there: readonly [boolean, string | null] }) => asTestDouble<RuntimeWatchView>()({
+  const web = (
+    ingress: { here: readonly [boolean, string | null]; there: readonly [boolean, string | null] },
+    thereMembership = "up",
+  ) => asTestDouble<RuntimeWatchView>()({
     machines: [
-      { machine: { id: here, name: "fra-1", accepts_ingress: ingress.here[0], public_ip: ingress.here[1] } },
-      { machine: { id: there, name: "fra-2", accepts_ingress: ingress.there[0], public_ip: ingress.there[1] } },
+      { membership: "up", machine: { id: here, name: "fra-1", accepts_ingress: ingress.here[0], public_ip: ingress.here[1], runtime: { running_builds: 0 } } },
+      { membership: thereMembership, machine: { id: there, name: "fra-2", accepts_ingress: ingress.there[0], public_ip: ingress.there[1], runtime: { running_builds: 0 } } },
     ],
     certificates: [{ hostname: "shop.example.com" }, { hostname: "api.example.com" }, { hostname: "shop.example.com" }],
   });
@@ -165,8 +168,17 @@ describe("ingressOffPlan", () => {
     }
   });
 
-  it("removes nothing while another Server with a public IP takes web traffic, or when this one serves none", () => {
-    expect(ingressOffPlan(web({ here: [true, "203.0.113.1"], there: [true, "203.0.113.2"] }), here, off)?.effects).toEqual([]);
+  it("removes every domain when the only other Server that takes web traffic is offline or unknown", () => {
+    for (const membership of ["down", "left", "unknown"]) {
+      expect(ingressOffPlan(web({ here: [true, "203.0.113.1"], there: [true, "203.0.113.2"] }, membership), here, off)?.effects.map(({ name }) => name))
+        .toEqual(["api.example.com", "shop.example.com"]);
+    }
+  });
+
+  it("removes nothing while another online Server with a public IP takes web traffic, or when this one serves none", () => {
+    for (const membership of ["up", "suspect"]) {
+      expect(ingressOffPlan(web({ here: [true, "203.0.113.1"], there: [true, "203.0.113.2"] }, membership), here, off)?.effects).toEqual([]);
+    }
     expect(ingressOffPlan(web({ here: [false, "203.0.113.1"], there: [false, null] }), here, off)?.effects).toEqual([]);
     expect(ingressOffPlan(web({ here: [true, null], there: [false, null] }), here, off)?.effects).toEqual([]);
   });
