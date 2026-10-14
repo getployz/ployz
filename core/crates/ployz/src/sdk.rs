@@ -818,21 +818,35 @@ impl Session {
         .await
     }
 
-    /// Stop serving web traffic on `machine` once its ingress role is off: stop and remove
-    /// its Ingress Proxy. Nothing else stops it; the daemon never stops serving
+    /// Stop serving web traffic on `machine` once its ingress role is off: wait until this
+    /// entry observes the role, so nothing it plans next recreates the proxy, then stop and
+    /// remove its Ingress Proxy. Nothing else stops it; the daemon never stops serving
     /// infrastructure on its own.
     ///
     /// # Errors
     ///
     /// Returns a generated [`RpcError`] when the session is closed, `machine` is not a
-    /// Machine Target or not visible, or the Machine does not acknowledge a listing, stop
-    /// or removal.
+    /// Machine Target or not visible, this entry hasn't observed the role within 30 s, or
+    /// the Machine does not acknowledge a listing, stop or removal.
     pub async fn stop_ingress(&self, machine: &str) -> Result<(), RpcError> {
         let target =
             MachineTarget::parse(machine).map_err(|error| invalid_argument(error.to_string()))?;
         let mut client = self.client()?;
+        let cancel = &self.inner.cancel;
         self.until_closed(async {
             let id = visible_machine_id(&mut client, &target).await?;
+            crate::cluster::wait_for_role(
+                &mut client,
+                &id,
+                crate::cluster::RoleSetting::IngressOff,
+                cancel,
+            )
+            .await
+            .map_err(|error| match error {
+                crate::cluster::RoleWaitError::Connect(error) => RpcError::from(error),
+                error @ (crate::cluster::RoleWaitError::NotObserved(_)
+                | crate::cluster::RoleWaitError::Cancelled) => unavailable(error.to_string()),
+            })?;
             let ingress = ployz_core::QualifiedService::system_ingress();
             crate::global_slot::remove_slot(&mut client, &id, &ingress.namespace, &ingress.name)
                 .await
