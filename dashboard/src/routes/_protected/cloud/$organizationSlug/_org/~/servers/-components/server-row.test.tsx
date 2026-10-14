@@ -38,21 +38,22 @@ async function row(shown: Server, upgrade: ServerUpgradeLine = null) {
   return screen.findByRole("link");
 }
 
-it("says nothing about a healthy Server beyond its name and what runs there", async () => {
+it("shows nothing about a healthy Server beyond its name and what runs there, and tells a screen reader it is online", async () => {
   const link = await row(server({ services: ["api", "web"] }));
-  expect(link.textContent).toBe("fsn-1apiweb");
+  expect(link.textContent).toBe("fsn-1apiwebOnline");
+  expect(link.querySelector(".sr-only")?.textContent).toBe("Online");
   expect(link.getAttribute("href")).toBe(`/cloud/acme/~/servers/${"1".repeat(32)}`);
 });
 
 it("shows three Services and counts the rest", async () => {
   const link = await row(server({ services: ["api", "web", "worker", "postgres", "redis"] }));
-  expect(link.textContent).toBe("fsn-1apiwebworker+2");
+  expect(link.textContent).toBe("fsn-1apiwebworker+2Online");
 });
 
 it("says what an idle Server does, and that a Docker-only Server takes no volumes", async () => {
-  expect((await row(server({ acceptsBuilds: true }))).textContent).toBe("fsn-1Only runs builds");
+  expect((await row(server({ acceptsBuilds: true }))).textContent).toBe("fsn-1Only runs buildsOnline");
   cleanup();
-  expect((await row(server({ storage: "stateless" }))).textContent).toBe("fsn-1Nothing runningDocker only");
+  expect((await row(server({ storage: "stateless" }))).textContent).toBe("fsn-1Nothing runningDocker onlyOnline");
 });
 
 it("names the state that needs someone", async () => {
@@ -60,7 +61,7 @@ it("names the state that needs someone", async () => {
   cleanup();
   expect((await row(server({ services: ["api"] }), { kind: "upgrading", target: "0.3.0" })).textContent).toBe("fsn-1apiUpgrading");
   cleanup();
-  expect((await row(server({ services: ["api"] }), { kind: "behind", release: "0.3.0", canUpgrade: true })).textContent).toBe("fsn-1api");
+  expect((await row(server({ services: ["api"] }), { kind: "behind", release: "0.3.0", canUpgrade: true })).textContent).toBe("fsn-1apiOnline");
 });
 
 it("lets a running upgrade explain the Server, and offline outrank a failed one", () => {

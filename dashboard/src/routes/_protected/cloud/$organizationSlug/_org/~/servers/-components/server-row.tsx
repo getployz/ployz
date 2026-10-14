@@ -8,7 +8,7 @@ import type { ServerUpgradeLine } from "#/modules/server-upgrade/server-upgrade"
 import { runsHere, serviceNames } from "./runs-here";
 import { ServerMeters } from "./server-meters";
 
-/** What a Server row says about itself: a dot always, a word only when someone should look. */
+/** What a Server row says about itself: a dot always, a visible word only when someone should look. */
 export type ServerRowState = "online" | "building" | "offline" | "unknown" | "upgrading" | "upgrade-failed";
 
 const STATES = {
@@ -59,7 +59,7 @@ export function ServerRow({ organizationSlug, server, upgrade, stale }: {
     <Link
       to="/cloud/$organizationSlug/~/servers/$serverId"
       params={{ organizationSlug, serverId: server.machine.id }}
-      className={cn(SERVER_ROW_GRID, "outline-none transition-colors hover:bg-muted focus-visible:bg-muted")}
+      className={cn(SERVER_ROW_GRID, "outline-none transition-colors hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-inset")}
     >
       <span aria-hidden="true" className={cn("size-2 rounded-full", stale ? "bg-muted-foreground" : dot)} />
       <span className="truncate font-medium">{server.name}</span>
@@ -76,7 +76,7 @@ export function ServerRow({ organizationSlug, server, upgrade, stale }: {
         <ServerMeters organizationSlug={organizationSlug} server={server} />
       </span>
       <span className={cn("col-3 row-[1/span_2] text-right whitespace-nowrap @xl:col-auto @xl:row-auto", stale ? "text-muted-foreground" : tone)}>
-        {word}
+        {word ?? <span className="sr-only">Online</span>}
       </span>
       <ChevronRightIcon aria-hidden="true" className="col-4 row-[1/span_2] size-4 text-muted-foreground @xl:col-auto @xl:row-auto" />
     </Link>
