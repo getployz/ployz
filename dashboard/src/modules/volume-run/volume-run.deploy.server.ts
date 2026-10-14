@@ -1,15 +1,17 @@
 import "@tanstack/react-start/server-only";
 import type { MachineId, MachineName } from "@ployz/sdk";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { NonRetriableError } from "inngest";
+import { readStore } from "#/modules/config-store/config-store.server";
 import { expectOf, observedEpoch, oldCopy } from "#/modules/volume-run/plan";
 import { volumeRun } from "#/modules/volume-run/tables";
-import { ACTIVE_VOLUME_RUN_STATES, type AnsweredMember, copyName, type Member, type VolumeRunArgs, type VolumeRunKind } from "#/modules/volume-run/volume-run";
+import { ACTIVE_VOLUME_RUN_STATES, type AnsweredMember, copyName, dockerVolumeName, type Member, type VolumeRunArgs, type VolumeRunKind } from "#/modules/volume-run/volume-run";
 import {
   askCopy,
   contextOf,
   ended,
+  holdDeployLane,
   keptOn,
   laneTarget,
   type MachineRef,
@@ -44,7 +46,9 @@ const FENCE_ROUNDS = 3;
 /**
  * One transaction over the Environment's lanes, each locked: a warm move, release or another Deploy yields to this
  * Deploy's own row; a lane past its return is followed to its Server; the rest are plain. A row already running under
- * this Inngest run is the step's own earlier attempt.
+ * this Inngest run is the step's own earlier attempt. Each Volume the Deploy targets that no run holds gets a hold, and
+ * a lane on one that the Deploy neither takes nor holds is stamped `held_by`, so a Move asked for while the Services run
+ * is refused even after that lane ends; a hold took nothing, so it is neither placed nor fenced.
  */
 export const placeDeployVolumes = Effect.fn("VolumeRun.placeDeploy")(function* (
   organizationId: string,
@@ -52,6 +56,11 @@ export const placeDeployVolumes = Effect.fn("VolumeRun.placeDeploy")(function* (
   deploymentId: string,
   inngestRunId: string,
 ) {
+  const deployment = yield* readStore(organizationId, { query: "deployment", id: deploymentId });
+  const { volumes } = yield* readStore(organizationId, {
+    query: "volumes",
+    environment: { project: deployment.environment.project, environment: deployment.environment.name },
+  });
   const database = yield* Database;
   return yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
@@ -59,30 +68,52 @@ export const placeDeployVolumes = Effect.fn("VolumeRun.placeDeploy")(function* (
       .where(and(eq(volumeRun.organizationId, organizationId), eq(volumeRun.environmentId, environmentId), inArray(volumeRun.state, ACTIVE_VOLUME_RUN_STATES)))
       .orderBy(volumeRun.volumeId)
       .for("update");
+    const targets = new Set(deployment.nodes.flatMap((node) => (node.type === "volume" ? [node.id] : [])));
+    const beside: string[] = [];
     const placed: DeployLane[] = [];
     for (const lane of lanes) {
-      if (BESIDE_WRITER.has(lane.kind)) continue;
-      if (lane.kind === "deploy" && lane.inngestRunId === inngestRunId) {
-        // SAFETY: a deploy row's args were written from a VolumeRunArgs["deploy"].
-        placed.push({ kind: "took", run: contextOf(lane), resume: (lane.args as VolumeRunArgs["deploy"]).resume });
+      if (BESIDE_WRITER.has(lane.kind)) {
+        if (targets.has(lane.volumeId)) beside.push(lane.id);
+        continue;
+      }
+      // SAFETY: a deploy row's args were written from a VolumeRunArgs["deploy"].
+      const deploy = lane.kind === "deploy" ? (lane.args as VolumeRunArgs["deploy"]) : null;
+      if (deploy !== null && lane.inngestRunId === inngestRunId) {
+        if (deploy.hold !== true) placed.push({ kind: "took", run: contextOf(lane), resume: deploy.resume });
         continue;
       }
       if (pastReturn(lane)) {
         const to = yield* laneTarget(lane);
         if (to === null) return yield* Effect.fail(new NonRetriableError(`${lane.volumeName} is moving to a Server its run never named`));
         placed.push({ kind: "follow", run: contextOf(lane), to, machine: lane.current ?? pinned(lane), epoch: lane.epoch });
+        if (targets.has(lane.volumeId)) beside.push(lane.id);
         continue;
       }
-      // SAFETY: a move row's args are a Destination; a deploy row's were written from a VolumeRunArgs["deploy"].
-      const resume = lane.kind === "move"
-        ? (lane.args as VolumeRunArgs["move"])
-        : lane.kind === "deploy" ? (lane.args as VolumeRunArgs["deploy"]).resume : null;
+      const hold = deploy?.hold === true;
+      // SAFETY: a move row's args are a Destination.
+      const resume = lane.kind === "move" ? (lane.args as VolumeRunArgs["move"]) : (deploy?.resume ?? null);
       const { run } = yield* takeDeployLane(CLOUD(organizationId), {
-        input: { volumeId: lane.volumeId, kind: "deploy", args: { deployment: deploymentId, resume } },
+        input: { volumeId: lane.volumeId, kind: "deploy", args: hold ? { deployment: deploymentId, resume: null, hold } : { deployment: deploymentId, resume } },
         volume: { environmentId, volumeName: lane.volumeName, dockerVolume: lane.dockerVolume, refquotaBytes: lane.refquotaBytes },
         id: crypto.randomUUID(),
       }, inngestRunId);
-      placed.push({ kind: "took", run, resume });
+      if (!hold) placed.push({ kind: "took", run, resume });
+    }
+    if (beside.length > 0) yield* drizzle.update(volumeRun).set({ heldBy: inngestRunId }).where(inArray(volumeRun.id, beside));
+    const laned = new Set(lanes.map((lane) => lane.volumeId));
+    for (const id of targets) {
+      const volume = laned.has(id) ? undefined : volumes.find((entry) => entry.id === id);
+      if (volume === undefined) continue;
+      yield* holdDeployLane(CLOUD(organizationId), {
+        input: { volumeId: volume.id, kind: "deploy", args: { deployment: deploymentId, resume: null, hold: true } },
+        volume: {
+          environmentId,
+          volumeName: volume.name,
+          dockerVolume: dockerVolumeName(deployment.namespace, volume.id),
+          refquotaBytes: volume.storage.kind === "provisioned" ? volume.storage.maximumBytes : 0,
+        },
+        id: crypto.randomUUID(),
+      }, inngestRunId);
     }
     return placed;
   }));
@@ -175,11 +206,18 @@ export const fenceDeployVolume = (lane: DeployLane, inngestRunId: string) =>
 
 const DEPLOY_ENDS = { done: null, failed: "the Deploy failed", cancelled: "the Deploy was cancelled" } as const;
 
-/** The Deploy's own rows end, whichever way the Deploy did, and a move it took over is requested again, once. */
+/**
+ * The Deploy's own rows end, whichever way the Deploy did, and a move it took over is requested again, once. Its holds
+ * are deleted in any state, so a Volume's history keeps no trace of them, and its stamps are cleared first, so they
+ * refuse none of those moves.
+ */
 export const finishDeployVolumes = Effect.fn("VolumeRun.finishDeploy")(function* (inngestRunId: string, state: keyof typeof DEPLOY_ENDS) {
   const database = yield* Database;
   return yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
+    const held = sql`${volumeRun.args}->>'hold' = 'true'`;
+    yield* drizzle.delete(volumeRun).where(and(eq(volumeRun.inngestRunId, inngestRunId), eq(volumeRun.kind, "deploy"), held));
+    yield* drizzle.update(volumeRun).set({ heldBy: null }).where(eq(volumeRun.heldBy, inngestRunId));
     const rows = yield* drizzle.update(volumeRun).set(ended(state, DEPLOY_ENDS[state]))
       .where(and(eq(volumeRun.inngestRunId, inngestRunId), eq(volumeRun.kind, "deploy"), eq(volumeRun.state, "running")))
       .returning();
