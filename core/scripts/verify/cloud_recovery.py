@@ -34,6 +34,7 @@ def recover_deploy(manifest, deploy, number, verify, cli):
     assert alive(old_pid), f"The recorded worker {old_pid} was not alive before runner kill"
     verify("runner", "kill", manifest)
     assert not alive(old_pid), f"The worker {old_pid} survived runner kill"
+    killed = time.monotonic()
     time.sleep(10)
     shown = json.loads(cli("--json", "deployment", "show", str(number)))
     assert deploy.poll() is None and shown["id"] == interrupted and shown["status"] == "running", \
@@ -48,6 +49,9 @@ def recover_deploy(manifest, deploy, number, verify, cli):
     if prepared:
         assert deploy.returncode == 3 and deployment["id"] == interrupted and deployment["status"] == "unknown", \
             f"A Deploy killed after its Preview did not end unknown: {deployment}\n{output}"
+        settled = time.monotonic() - killed
+        assert settled < 400, \
+            f"The retried claim never refused the Deploy; it went unknown after {settled:.0f}s when its 600s lease lapsed"
         cli("deploy")
         deployment = newest()
         assert deployment["number"] == number + 1 and deployment["status"] == "applied", \

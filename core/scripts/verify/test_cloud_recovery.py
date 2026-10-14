@@ -117,18 +117,37 @@ class Recovery(unittest.TestCase):
                                       old_worker_pid=41, new_worker_pid=42))
         self.assertEqual(self.deploy.redeploys, 1)
 
-    def test_a_prepared_deploy_that_replays_is_not_recovery(self):
+    def prepared_and_settled(self, **settled):
         self.deploy.preview = {"operations": []}
         communicate = self.deploy.communicate
 
-        def replay(timeout):
-            communicate(timeout)
-            self.deploy.returncode = 0
-            self.deploy.deployment["status"] = "applied"
-            return "", None
+        def settle(timeout):
+            output = communicate(timeout)
+            self.deploy.now = settled.pop("now", self.deploy.now)
+            self.deploy.returncode = settled.pop("returncode", self.deploy.returncode)
+            self.deploy.deployment.update(settled)
+            return output
 
-        self.deploy.communicate = replay
+        self.deploy.communicate = settle
+
+    def test_a_prepared_deploy_that_exits_cleanly_is_not_recovery(self):
+        self.prepared_and_settled(returncode=0)
         with self.assertRaisesRegex(AssertionError, "did not end unknown"):
+            self.recover()
+
+    def test_a_prepared_deploy_that_replays_is_not_recovery(self):
+        self.prepared_and_settled(status="applied")
+        with self.assertRaisesRegex(AssertionError, "did not end unknown"):
+            self.recover()
+
+    def test_a_different_unknown_deploy_is_not_recovery(self):
+        self.prepared_and_settled(id="different-deploy")
+        with self.assertRaisesRegex(AssertionError, "did not end unknown"):
+            self.recover()
+
+    def test_a_lapsed_lease_is_not_recovery(self):
+        self.prepared_and_settled(now=610)
+        with self.assertRaisesRegex(AssertionError, "lease lapsed"):
             self.recover()
 
     def test_a_failed_redeploy_is_not_recovery(self):
