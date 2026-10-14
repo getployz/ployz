@@ -904,15 +904,12 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
             }
         }
         for group in schedule.failed_groups() {
-            if unread.contains(&group) {
-                continue;
-            }
-            restore_group(
-                client,
-                started.remove(&group).unwrap_or_default(),
-                stopped.remove(&group).unwrap_or_default(),
-            )
-            .await;
+            let started = if unread.contains(&group) {
+                Vec::new()
+            } else {
+                started.remove(&group).unwrap_or_default()
+            };
+            restore_group(client, started, stopped.remove(&group).unwrap_or_default()).await;
         }
     }
 

@@ -745,6 +745,40 @@ async fn a_publish_with_no_reply_keeps_its_copies_while_the_row_reads_unchanged(
 }
 
 #[tokio::test]
+async fn a_stop_first_publish_with_no_reply_keeps_the_new_copy_and_restarts_the_old_one() {
+    let machine = machine('1');
+    let old = container('a');
+    let new = container('b');
+    let plan = vec![global_replacement(&machine, &old, UpdateOrder::StopFirst)];
+    let client = Scripted {
+        dropped_publish: true,
+        ..Scripted::new(vec![
+            observed(Call::Inspect(machine, old), running()),
+            ok(Call::Stop(machine, old)),
+            created(Call::Run(machine, ContainerKind::ServiceContainer), &new),
+            ok(Call::Restart(machine, old)),
+        ])
+    };
+    client.pointers.lock().unwrap().insert(
+        api(),
+        ServingPointer {
+            deploy: DeploymentLogId::parse("older").unwrap(),
+            containers: vec![old],
+            previous: None,
+            retiring: Vec::new(),
+        },
+    );
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Failed { .. }),
+        "{outcome:?}"
+    );
+    client.assert_done();
+}
+
+#[tokio::test]
 async fn a_dropped_publish_is_not_landed_by_an_earlier_row_of_the_same_deploy() {
     let machine = machine('1');
     let earlier = ServingPointer {
