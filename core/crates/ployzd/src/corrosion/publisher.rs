@@ -81,12 +81,10 @@ pub async fn run_machine_publisher(
             }
         }
     }
-    let mut publish_network = true;
     loop {
         if let Some(replicated) = &replicated {
             let record = local.record();
-            if publish_network
-                && let Some(network) = record.cluster_network()
+            if let Some(network) = record.cluster_network()
                 && let Err(error) = replicated.publish_cluster_network(network).await
             {
                 eprintln!(
@@ -108,25 +106,25 @@ pub async fn run_machine_publisher(
             }
         }
         let tick = tokio::time::Instant::now() + Duration::from_secs(60);
-        publish_network = loop {
+        loop {
             tokio::select! {
-                () = tokio::time::sleep_until(tick) => break true,
+                () = tokio::time::sleep_until(tick) => break,
                 // A closed channel (no Build runner) never changes again.
-                Ok(()) = running_builds.changed() => break true,
-                Ok(()) = records.changed() => break true,
+                Ok(()) = running_builds.changed() => break,
+                Ok(()) = records.changed() => break,
                 Ok(()) = machines.changed() => {
                     let snapshot = machines.borrow_and_update().clone();
                     if let Some(replicated) = &replicated
                         && row_is_stale(replicated, &snapshot, &records, &running_builds).await
                     {
-                        break false;
+                        break;
                     }
                 }
                 () = shutdown.cancelled() => {
                     return Ok(());
                 }
             }
-        };
+        }
     }
 }
 
