@@ -66,7 +66,6 @@ export function withPageContext(message: ModelMessage, block: string): ModelMess
   return { ...message, content: [{ type: "text", content: block }, ...own] };
 }
 
-/** A Project's Environments, by id and current name. */
 export type Listing = { project: string; environments: ReadonlyArray<{ id: string; name: string }> };
 
 /**

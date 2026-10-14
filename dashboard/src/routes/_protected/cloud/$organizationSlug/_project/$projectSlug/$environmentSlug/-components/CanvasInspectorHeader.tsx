@@ -6,7 +6,6 @@ import { Button } from "#/components/ui/button";
 import { buttonVariants } from "#/components/ui/button-variants";
 import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_SERVICE_ROUTE_TO } from "./environment-route-paths";
 
-// Shared by the frame and header; route selection remains owned by the router.
 export const InspectorPresentation = createContext<{
   takeover: boolean;
   toggleFullscreen: () => void;

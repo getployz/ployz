@@ -31,10 +31,10 @@ export const ENVIRONMENT_IDS = {
 /** Generated prefixes are unique in an Organization, so only staging's web can be `web`. */
 const PREFIXES = { production: "www", staging: "web" } satisfies Record<EnvironmentName, string>;
 const CLUSTER_DOMAIN = "acme.ployz.test";
-/** What made staging's Deployment 4 fail, as its runner recorded it. */
 /** Every task happens in staging, and a member asks from the page they view: staging's architecture. */
 const STAGING_PAGE = { page: "architecture", project: "app", environment: "staging" };
 
+/** What made staging's Deployment 4 fail, as its runner recorded it. */
 export const FAILURE = "Building worker failed: npm ERR! Missing script: \"start\"";
 
 export const environmentRef = (environment: EnvironmentName): EnvironmentRef => ({ project: "app", environment });

@@ -71,7 +71,6 @@ impl Error {
 #[serde(try_from = "String")]
 pub(crate) struct PairingCredential(String);
 
-/// A Pairing Credential must be a non-empty bearer.
 #[derive(Debug, Error)]
 #[error("invalid Pairing Credential: expected a non-empty bearer")]
 pub(crate) struct EmptyPairingCredential;

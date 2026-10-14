@@ -38,4 +38,5 @@ ALTER TABLE "github_repository_cache" ADD CONSTRAINT "github_repository_cache_1Y
 ALTER TABLE "organization_github_installation" ADD CONSTRAINT "organization_github_installation_SbYu7cqZzW9M_fkey" FOREIGN KEY ("organization_id") REFERENCES "organization"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "organization_github_installation" ADD CONSTRAINT "organization_github_installation_aAoZjPsdZFh5_fkey" FOREIGN KEY ("installation_id") REFERENCES "github_installation"("installation_id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "organization_github_installation" ADD CONSTRAINT "organization_github_installation_dG3N0i4nA3Do_fkey" FOREIGN KEY ("connected_by_user_id") REFERENCES "user"("id") ON DELETE SET NULL;--> statement-breakpoint
-SELECT organization_change_attach('organization_github_installation', 'organization_id', 'installation_id');
+SELECT organization_change_attach('organization_github_installation', 'organization_id', 'installation_id');--> statement-breakpoint
+ALTER TABLE "github_installation" ADD COLUMN "suspended_at" timestamp with time zone;

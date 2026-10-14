@@ -21,7 +21,6 @@ export type ServerWebTraffic = {
   readonly partial: boolean;
   /** No other online Server takes web traffic: turning off here stops every domain. */
   readonly reach: WebTrafficReach;
-  /** Turn on now (the switch, and Retry). */
   readonly turnOn: () => void;
   /** Open the confirm before turning off. */
   readonly ask: () => void;

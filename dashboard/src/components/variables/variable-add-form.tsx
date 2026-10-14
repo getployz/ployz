@@ -138,7 +138,6 @@ export function VariableAddForm({
 
   /** Writes the variable as the form has it, sealed or not; an overwrite replaces the existing one. */
   function save() {
-    // Optimistic: the writer rolls back and toasts if saving fails.
     onCreateVariable({
       key: typedKey,
       value: state.value,

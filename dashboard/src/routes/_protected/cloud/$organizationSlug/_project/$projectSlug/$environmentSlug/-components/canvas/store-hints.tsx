@@ -23,7 +23,6 @@ export function storeHintNotes(diff: DiffView, groups: readonly ChangeGroup[], n
   const follows = hintNotes(diff.follow_hints, rows);
   const incoming = (row: RowId | null) => diff.incoming.find((change) => change.row === row);
   const name = diff.environment.name;
-  // Hints no change shows.
   const rest = follows.rest.map((hint) => ({ key: `${hint.from}:${hint.row}`, hint, note: <FollowNote hint={hint} version={diff.version} /> }));
   return {
     originFor: (row: RowId): ChangeOrigin | undefined => {

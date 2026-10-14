@@ -14,7 +14,6 @@ import type { ChangeGroup, ChangeRow } from "#/modules/config-store/store-deploy
 export type ChangeOrigin = { title: string; description: string };
 
 export type EnvironmentChangesReviewProps = {
-  /** The Environment's name, for the header's line. */
   environment: string;
   groups: ChangeGroup[];
   totalChanges: number;
