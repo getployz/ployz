@@ -487,22 +487,39 @@ class Pool(unittest.TestCase):
             self.assertNotEqual(boat.fingerprints("bake-a"), saved)
         self.assertEqual(boat.fingerprints("bake-a"), saved)
 
-    def test_park_counts_only_its_own_bake_toward_the_pool_size(self):
-        boat.write(boat.BAKES, ["bake-a", "bake-b"])
+    def park(self, ledger, pool):
+        """Park machine-1 as bx_new with POOL_SIZE 2; returns the provider."""
+        boat.write(boat.BAKES, ledger)
         limits = dict(maxActiveSandboxes=100, activeSandboxes=0, starts=dict(unlimited=True))
-        listing = self.listing(bx_b1="ready", bx_b2="ready", bx_new="ready")
-        with unittest.mock.patch.object(boat, "boat_json", lambda *args: limits if args[0] == "limits" else listing()), unittest.mock.patch.object(boat, "POOL_SIZE", 2):
+        listing = self.listing(**{entry["id"]: "ready" for entry in pool if entry["id"] != "bx_gone"}, bx_new="ready")
+        with unittest.mock.patch.object(boat, "boat_json", lambda *args: limits if args[0] == "limits" else listing()), \
+                unittest.mock.patch.object(boat, "POOL_SIZE", 2), contextlib.redirect_stderr(io.StringIO()):
             provider = self.provider("machine-1")
             provider.create()
-            boat.write(boat.POOL, [parked("bx_b1", 1, image="bake-b"), parked("bx_b2", 2, image="bake-b"), parked("bx_gone", 3)])
+            boat.write(boat.POOL, pool)
             provider.mark("machine-1", id="bx_new", state="running", ip="2001:db8:0:9::1", ssh="203.0.113.9:22")
             boat.write(boat.fingerprints("bake-a"), {"containers": []})
             provider.reboot = lambda node: None
             provider.fingerprint = lambda node: {"containers": []}
             provider.park("machine-1")
-        self.assertEqual([entry["id"] for entry in boat.read(boat.POOL)], ["bx_b1", "bx_b2", "bx_new"])
-        self.assertIn(["delete", "bx_gone", "--yes"], self.calls)
+        return provider
+
+    def test_park_displaces_an_older_bakes_oldest_sandbox_to_keep_the_whole_pool_at_its_size(self):
+        provider = self.park(["bake-b", "bake-a"], [parked("bx_b1", 1, image="bake-b", at=1),
+                                                     parked("bx_b2", 2, image="bake-b", at=2), parked("bx_gone", 3)])
+        self.assertEqual([entry["id"] for entry in boat.read(boat.POOL)], ["bx_b2", "bx_new"])
+        self.assertEqual(sorted(call for call in self.calls if call[0] == "delete"),
+                         [["delete", "bx_b1", "--yes"], ["delete", "bx_gone", "--yes"]])
         self.assertEqual(provider.record()["sandboxes"]["machine-1"]["state"], "parked")
+
+    def test_park_never_displaces_a_newer_bake_and_keeps_each_bake_to_the_pool_size(self):
+        for ledger, image in [(["bake-a", "bake-b"], "bake-b"), (["bake-b", "bake-a"], "bake-a")]:
+            with self.subTest(full_of=image):
+                pool = [parked("bx_1", 1, image=image), parked("bx_2", 2, image=image)]
+                provider = self.park(ledger, pool)
+                self.assertEqual(boat.read(boat.POOL), pool)
+                self.assertEqual(provider.record()["sandboxes"]["machine-1"]["state"], "running")
+                boat.registry("run1").unlink()
 
     def test_a_stale_entry_stays_in_the_pool_until_its_delete_succeeds_or_finds_it_gone(self):
         boat.write(boat.BAKES, ["bake-a"])

@@ -905,8 +905,7 @@ systemctl enable --now {PLOYZ_UNITS} $observe
         try:
             with pool() as entries:
                 dead = tidy(entries, sandbox_states(), registered())
-                # Only this bake's sandboxes count, so a sibling checkout's parked bake never fills the pool for this one.
-                full = sum(other["image"] == image for other in entries if not other.get("retiring")) >= POOL_SIZE
+                full = not self.make_room(entries, dead)
                 if not full:
                     entries.append(dict(id=entry["id"], image=image, ip=entry["ip"], ssh=entry["ssh"], parked_at=int(time.time())))
                     self.mark(name, state="parked")
@@ -914,7 +913,25 @@ systemctl enable --now {PLOYZ_UNITS} $observe
             print(f"Deleting {entry['id']} ({name}) instead of reusing it: {why}", file=sys.stderr)
         retire(dead, lambda sandbox: self.boat("delete", sandbox, "--yes", check=False))
         if full:
-            print(f"Deleting {entry['id']} ({name}): the pool already holds {POOL_SIZE} of this bake.", file=sys.stderr)
+            print(f"Deleting {entry['id']} ({name}): the pool already holds {POOL_SIZE} of this bake or newer ones.", file=sys.stderr)
+
+    def make_room(self, entries, dead):
+        """Whether the pool can take one more sandbox of this run's bake, marking retiring, and adding to `dead`, what it displaces.
+
+        All bakes together keep POOL_SIZE, so idle sandboxes never eat the account's active headroom. This bake displaces
+        the oldest sandboxes of bakes the ledger made before it, never its own or a newer bake's."""
+        image, order = self.run["image"], read(BAKES) or []
+        rank = lambda bake: order.index(bake) if bake in order else -1
+        live = [other for other in entries if not other.get("retiring")]
+        older = sorted((other for other in live if rank(other["image"]) < rank(image)),
+                       key=lambda other: (rank(other["image"]), other["parked_at"]))
+        surplus = len(live) + 1 - POOL_SIZE
+        if surplus > len(older):
+            return False
+        for other in older[:max(surplus, 0)]:
+            other["retiring"] = True
+            dead.append(other)
+        return True
 
     def reboot(self, node):
         """Reboot the guest, which costs no Boat start, and wait until SSH answers from the new boot."""
