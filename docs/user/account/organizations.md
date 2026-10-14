@@ -33,8 +33,8 @@ In the sidebar, click **Organization** for its settings:
 Everyone in an organization has one role:
 
 - **Owner**: everything, including deleting the organization and making other owners.
-- **Admin**: everything an owner can do, except deleting the organization or making or
-  removing an owner.
+- **Admin**: everything an owner can do, except deleting the organization. Only an owner can
+  make or remove an owner.
 - **Member**: deploys and changes projects and servers, but can't invite, change roles, remove
   anyone, turn support access on or off, or forget servers.
 

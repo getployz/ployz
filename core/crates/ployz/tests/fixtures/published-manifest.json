@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "revision": "ca901e48ae16",
+  "revision": "e53d37d25b04",
   "commands": [
     {
       "name": "server_upgrade_policy_show",
@@ -575,7 +575,7 @@
         "member",
         "role"
       ],
-      "about": "Change a member's role. Only an owner makes or removes an owner",
+      "about": "Change a member's role. Only an owner can make or remove an owner",
       "examples": [
         "ployz org member role bob@example.com admin"
       ],

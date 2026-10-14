@@ -113,7 +113,7 @@ The plan an Organization is on in Ployz Cloud: Free, or the legacy paid Polar su
 _Avoid_: Free plan, Teams plan, plan slug, subscription tier
 
 **Member**:
-A user who belongs to an Organization, with one role: owner, admin or member. Owners and admins invite, change roles and remove; only an owner grants or removes owner. An Organization always keeps at least one owner. A member's commands act as them; when they leave or are removed, their Organization Tokens and Server Access end with the membership.
+A user who belongs to an Organization, with one role: owner, admin or member. Owners and admins invite, change roles and remove; only an owner can make or remove an owner. An Organization always keeps at least one owner. A member's commands act as them; when they leave or are removed, their Organization Tokens and Server Access end with the membership.
 _Avoid_: Seat, collaborator, team member, user
 
 **Invite**:

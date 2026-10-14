@@ -147,7 +147,8 @@ The token acts as you in this organization: whoever holds it can deploy and run 
 services. It expires after 90 days unless you pass `--expires-in` (1 to 365 days), and stops
 working at once if you leave the organization or are removed from it. To revoke it,
 find its ID with `ployz token ls`, then run `ployz token rm ID`. If it names a server that's
-offline, run it again once that server is back.
+offline, run it again once that server is back. Owners and admins see and can revoke every
+organization token in the organization, not only their own. Members see only theirs.
 
 When a command fails, Ployz prints what went wrong, then a `cause:` line with the underlying
 error, such as the operating system's or the server's own message.
