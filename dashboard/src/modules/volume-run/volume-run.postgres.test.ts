@@ -35,6 +35,7 @@ import {
   closeVolumeRun,
   commitAndStart,
   commitMove,
+  type CopyAnswer,
   listVolumeRuns,
   orphanSlotNames,
   releaseLanesOff,
@@ -894,6 +895,28 @@ describe("volume runs", () => {
       expect(named("fsn-1").copy).toMatchObject({ kind: "root", readonly: false, newest: G });
       expect(containers).toEqual([{ machine: "fsn-1", id: "web-fsn-1", running: true }]);
       expect(await lanes()).toMatchObject([{ kind: "move", state: "yielded" }, { id: run.id, state: "done" }]);
+    });
+
+    it("a staged Mirror that took a warm Move before B got a copy plans from B as the fence saw it, and the Move's late Mirror to B is stale", async () => {
+      const moved = newSnap("w-0-1");
+      const taken = await move();
+      const staged = await runEffect(requestVolumeRun({ userId, organizationId }, { volumeId, environment, kind: "mirror", args: { to: "fsn-2" } }, { end: "yielded" }));
+      if (!staged.ok) throw new Error(staged.refusal.message);
+      const dead: RunContext = { ...context(taken.id), kind: "move", args: { to: "fsn-2" }, gen: Number((await lanes()).find((lane) => lane.id === taken.id)?.gen) };
+      let late: CopyAnswer | undefined;
+      beforeSet.set("snapshot@fsn-1", async () => {
+        late = await runEffect(askCopy(dead, { id: idOf("fsn-2"), name: "fsn-2" }, { kind: "none" }, { kind: "mirror", from: "fdcc::1", target: moved.name, drain: 3_000 }));
+        inspect(named("fsn-2"));
+      });
+
+      const output = await deliver(staged.run.id, "run-2");
+
+      expect(late).toMatchObject({ ok: false, reason: "stale" });
+      expect(output.error).toBeUndefined();
+      expect(verbs).toEqual(["floor@fsn-1", "floor@fsn-2", "snapshot@fsn-1(w-1-0)", "pull@fsn-2(w-0-1)", "pull@fsn-2(ployz-10)", "pull@fsn-2(ployz-10)", "snapshot@fsn-1(w-1-1)"]);
+      expect(sent[4]).toMatchObject({ expect: { kind: "none" }, want: { kind: "mirror", target: base.name } });
+      expect(named("fsn-2").copy).toMatchObject({ kind: "slot", newest: base, pull: null });
+      expect(await lanes()).toMatchObject([{ kind: "move", state: "yielded" }, { id: staged.run.id, state: "done" }]);
     });
 
     it("a staged Restore that took a warm Move whose cut flipped, then fails its plan, leaves the Service started on A", async () => {
@@ -2623,6 +2646,24 @@ describe("volume runs", () => {
       expect(verbs).toEqual(["floor@fsn-1", "snapshot@fsn-1(f-1)"]);
       expect(containers).toEqual([{ machine: "fsn-1", id: "web-fsn-1", running: true }]);
       expect(machines[0]?.copy).toMatchObject({ kind: "root", newest: { guid: base.guid } });
+    });
+
+    it("a warm move's late mirror to B after the takeover is stale on B, so B keeps the copy the fence saw", async () => {
+      const next = newSnap("w-1-1");
+      named("fsn-1").copy = writerCopy(next, 1);
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
+      const taken = await moving();
+      const [placed] = await place();
+
+      expect(await fence(placed)).toEqual({ on: "fsn-1" });
+      const [old] = await lanes();
+      const dead: RunContext = { ...context(taken.id), kind: "move", args: { to: "fsn-2" }, gen: Number(old?.gen) };
+      const late = await runEffect(askCopy(dead, { id: idOf("fsn-2"), name: "fsn-2" }, { kind: "mirror", newest: base.guid, slot: "1" }, { kind: "mirror", from: "fdcc::1", target: next.name, drain: 3_000 }));
+      inspect(named("fsn-2"));
+
+      expect(late).toMatchObject({ ok: false, reason: "stale" });
+      expect(named("fsn-2").copy).toEqual(slotCopy(base));
+      expect(containers).toEqual([{ machine: "fsn-1", id: "web-fsn-1", running: true }]);
     });
 
     it("after the cut finished but before the floor rose: the reply is a slot, and the promote starts the stopped app on A", async () => {
