@@ -120,7 +120,7 @@ Under **Web traffic** on a server's page, **Takes web traffic** is a switch. On,
 reads **Your domains point at 203.0.113.10**: the server's address. Turn it off and a dialog lists the
 domains pointed at your servers. When another server takes web traffic, it keeps serving them; when
 this is the only one, the dialog warns that they stop working. Confirm with **Stop**: the row reads
-**Stopping…** while the web server on it stops, and then **Your domains don't point here**. Your
+**Stopping…** while the web server on it stops, and then **Web traffic is off**. Your
 generated addresses stop pointing at it within the hour, or when you click **Check again** under
 **Domain** in **Organization → General**. Until then, anyone sent to it gets no answer on ports 80
 and 443; to keep the internet out for good, also close them in its firewall.
@@ -131,7 +131,7 @@ server holds port 80, the switch goes back off and the section says why: **Could
 traffic · Port 80 is in use on web-1. Free it, then try again.** Fix the cause and click **Retry**.
 
 From the CLI, `ployz server set web-1 --accepts-ingress=false` turns the role off but leaves the web
-server running until the next deploy; the switch stops it right away.
+server running; use the switch to stop it.
 
 ## Upgrade Ployz on a server
 

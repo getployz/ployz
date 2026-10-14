@@ -60,7 +60,7 @@ function WebTrafficLine({ view }: { view: WebTrafficView }) {
     case "stopping":
       return <><Spinner className="inline-block size-3 align-[-2px]" /> Stopping…</>;
     case "off":
-      return <>Your domains don’t point here.</>;
+      return <>Web traffic is off.</>;
     case "failed":
       return view.on && view.address !== null ? <>Your domains point at {view.address}.</> : <>Your domains don’t point here.</>;
   }

@@ -18,6 +18,9 @@ it("never says your domains point at a Server with no public IP", () => {
   cleanup();
   section({ kind: "on", address: "203.0.113.10" });
   expect(screen.getByText("Your domains point at 203.0.113.10.")).toBeTruthy();
+  cleanup();
+  section({ kind: "off" });
+  expect(screen.queryByText(/point/)).toBeNull();
 });
 
 it("warns that more domains may stop when some weren't reported", () => {
