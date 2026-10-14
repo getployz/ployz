@@ -15,7 +15,7 @@ function cached() {
   const scope = { queryClient, sessionId: "s", userId: "u" };
   const key = (query: Parameters<typeof storeViewOptions>[2]) => storeViewOptions("acme", scope, query).queryKey;
   const put = (query: Parameters<typeof storeViewOptions>[2], value: DiffView | EnvironmentView | ServicesView) =>
-    queryClient.setQueryData<unknown>(key(query), { ok: true, value });
+    queryClient.setQueryData<unknown>(key(query), { ok: true, value: { view: query.query, ...value } });
   put(diffQuery(ref), {
     environment, version: "3:1:1", saved: 1, published: false, incoming: [], follow_hints: [], included: [], total_count: 3, changes: [
       { type: "service", id: "w", row: rowId("w:node"), name: "web", lifecycle: "update", comparison: null, data: null, restarts: [], settings: [
@@ -294,7 +294,7 @@ it("removes only the named Config file from both the listing and open item", asy
   const item = { query: "config", environment: ref, config: "sentry" } as const;
   const other = { query: "config", environment: ref, config: "other" } as const;
   const key = (query: Parameters<typeof storeViewOptions>[2]) => storeViewOptions("acme", scope, query).queryKey;
-  queryClient.setQueryData<unknown>(key(configs), { ok: true, value: { environment, configs: [config("sentry"), config("other")] } });
+  queryClient.setQueryData<unknown>(key(configs), { ok: true, value: { view: "configs", environment, configs: [config("sentry"), config("other")] } });
   queryClient.setQueryData<unknown>(key(item), { ok: true, value: config("sentry") });
   queryClient.setQueryData<unknown>(key(other), { ok: true, value: config("other") });
   await applyOptimistic(queryClient, "acme", { command: "remove_config_file", environment: ref, config: "sentry", file: "conf.d/site.yml" });
@@ -317,7 +317,7 @@ it.each(["delete", "rename"])("keeps an inactive Config cache isolated after %s 
   const listing = { query: "configs", environment: ref } as const;
   const oldQuery = { query: "config", environment: ref, config: "@old" } as const;
   const newQuery = { query: "config", environment: ref, config: "@new" } as const;
-  for (const [query, value] of [[listing, { environment, configs: [old] }], [oldQuery, old], [newQuery, replacement]] as const) {
+  for (const [query, value] of [[listing, { view: "configs", environment, configs: [old] }], [oldQuery, old], [newQuery, replacement]] as const) {
     queryClient.setQueryData<unknown>(key(query), { ok: true, value });
   }
   if (action === "delete") {
@@ -325,7 +325,7 @@ it.each(["delete", "rename"])("keeps an inactive Config cache isolated after %s 
   } else {
     await applyOptimistic(queryClient, "acme", { command: "rename_config", environment: ref, config: "sentry", name: "renamed" });
     // The committed listing refreshes; the inactive exact item remains cached.
-    queryClient.setQueryData<unknown>(key(listing), { ok: true, value: { environment, configs: [{ ...old, name: "renamed" }] } });
+    queryClient.setQueryData<unknown>(key(listing), { ok: true, value: { view: "configs", environment, configs: [{ ...old, name: "renamed" }] } });
   }
   await applyOptimistic(queryClient, "acme", { command: "create_config", environment: ref, id: "new", name: "sentry", mounts: [] });
   const read = (query: typeof oldQuery | typeof newQuery) => queryClient.getQueryData<{ value: ConfigItemView }>(key(query))?.value;

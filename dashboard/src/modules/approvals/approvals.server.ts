@@ -1,13 +1,12 @@
 import "@tanstack/react-start/server-only";
 import { createHash } from "node:crypto";
-import type { Approval, ConfigCommand, DestructiveEffect, JsonValue } from "@ployz/sdk";
+import type { Approval, ConfigCommand, DestructiveEffect, DiffView, JsonValue } from "@ployz/sdk";
 import { and, desc, eq, ne, type SQL, sql } from "drizzle-orm";
 import { Effect, Option, Schema } from "effect";
 import { canonicalJson } from "#/lib/json";
 import { Uuid } from "#/lib/schema";
 import {
   type ApprovalDecision,
-  type ApprovalReview,
   approvalSubject,
   type OperationVerb,
 } from "#/modules/approvals/approvals";
@@ -170,12 +169,17 @@ export const reviewedDiff = Effect.fn("Approvals.reviewedDiff")(function* (organ
   return row !== undefined && "diff" in row.review ? row.review.diff : null;
 });
 
+const isEffect = Schema.is(Schema.Struct({ kind: Schema.String, node: Schema.String, path: Schema.String }));
+const isDiff = Schema.is(Schema.Struct({
+  version: Schema.String,
+  environment: Schema.Struct({ id: Schema.String, project: Schema.String, name: Schema.String }),
+}));
+
+/** The review an `approval_required` refusal carries: the Store's `DestructiveEffect[]` and `DiffView`, by the fields Cloud reads. */
 const RefusedReview = Schema.Struct({
   approval: Schema.String,
-  diff: Schema.Struct({
-    version: Schema.String,
-    environment: Schema.Struct({ id: Schema.String, project: Schema.String, name: Schema.String }),
-  }),
+  effects: Schema.mutable(Schema.Array(Schema.declare<DestructiveEffect>((value): value is DestructiveEffect => isEffect(value)))),
+  diff: Schema.declare<DiffView>((value): value is DiffView => isDiff(value)),
 });
 
 /**
@@ -193,9 +197,7 @@ export const requestApproval = Effect.fn("Approvals.request")(function* (
     yield* Effect.logWarning("An approval_required refusal named no review; nothing was recorded.");
     return refused;
   }
-  const { approval: digest, diff } = decoded.value;
-  // SAFETY: the Store words the refusal's `effects` and `diff` as `DestructiveEffect[]` and `DiffView`.
-  const { effects, diff: review } = refused.details as Extract<ApprovalReview, { diff: unknown }>;
+  const { approval: digest, effects, diff } = decoded.value;
   const organizationId = caller.organization.id;
   const recorded = yield* recordAndSweep(organizationId, diff.environment.id, Effect.gen(function* () {
     const { drizzle } = yield* Database;
@@ -206,7 +208,7 @@ export const requestApproval = Effect.fn("Approvals.request")(function* (
       credentialKind: caller.credential.kind,
       credentialId: caller.credential.id,
       command: command.command,
-      review: { effects, diff: review },
+      review: { effects, diff },
       digest,
     }).onConflictDoUpdate({
       target: [operationApprovals.organizationId, operationApprovals.digest],
@@ -215,7 +217,7 @@ export const requestApproval = Effect.fn("Approvals.request")(function* (
     }).returning({ id: operationApprovals.id });
     return row ?? (yield* Effect.die("an upsert returned no row"));
   }), staleEnvironment(organizationId, diff.environment));
-  return { ...refused, details: { effects, approval: digest, diff: review, approval_id: recorded.id } };
+  return { ...refused, details: { effects, approval: digest, diff, approval_id: recorded.id } };
 });
 
 /** An operation that may wait for a human: its sweep key, verb, name, preview, and what it destroys. */

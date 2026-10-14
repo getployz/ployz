@@ -6,7 +6,7 @@ import type {
   VolumeListing, VolumesView,
 } from "@ployz/sdk";
 import type { StoreResult } from "./store.contract";
-import { environmentKey, queryOf, storeViewPrefix } from "./store-view.queries";
+import { cachedView, environmentKey, queryOf, storeViewPrefix } from "./store-view.queries";
 
 /**
  * Shows a Store command in the cached views at once, as the Store will answer once it commits: what the user sees while
@@ -41,17 +41,13 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
     });
   // The Services as the tab last read them.
   const listed = (environment: EnvironmentRef) => cached("services", environment).flatMap((query) => {
-    // SAFETY: `cached` found only services views.
-    const data = query.state.data as StoreResult<ServicesView> | undefined;
-    return data?.ok ? data.value.services : [];
+    return cachedView(query, "services")?.services ?? [];
   });
 
   // Item drawers can be inactive and retain names from before a rename or deletion.
   const workingConfigId = (environment: EnvironmentRef, name: string) => {
     const ids = new Set(cached("configs", environment).flatMap((query) => {
-      // SAFETY: `cached` found only Configs views.
-      const data = query.state.data as StoreResult<ConfigsView> | undefined;
-      return data?.ok ? data.value.configs.filter((config) => config.name === name && config.change !== "delete").map((config) => config.id) : [];
+      return (cachedView(query, "configs")?.configs ?? []).filter((config) => config.name === name && config.change !== "delete").map((config) => config.id);
     }));
     return ids.size === 1 ? ids.values().next().value : undefined;
   };
