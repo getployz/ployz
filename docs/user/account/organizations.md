@@ -72,7 +72,7 @@ more it sees:
 
 All three start off, and turning support access off turns them off. Each applies on support's
 next request. Support sees these switches but can't change them. It can still change anything
-else you can, including a value it can't read.
+else you can, including a value it can't read, but it can't delete the organization.
 
 ## Destructive actions ask first
 
@@ -140,7 +140,7 @@ allowed.
 ## Delete an organization
 
 Deleting an organization removes it with its settings and tokens, and disconnects your servers
-from it. It can't be undone.
+from it. It can't be undone. Only an owner can delete it.
 
 1. Delete every project in it. **Delete organization** stays disabled until you do.
 2. **Cancel Pro first.** Deleting the organization doesn't cancel it: go to
