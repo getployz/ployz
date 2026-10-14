@@ -536,6 +536,29 @@ class Pool(unittest.TestCase):
         self.assertEqual([entry["id"] for entry in boat.read(boat.POOL) + boat.read(boat.RETIRING)], ["bx_b2", "bx_b1"])
         self.assertEqual(provider.record()["sandboxes"]["machine-1"]["state"], "running")
 
+    def test_a_sandbox_this_key_may_not_delete_is_stopped_and_frees_its_pool_slot(self):
+        forbidden = result(1, {"event": "error", "code": "api_key_action_forbidden", "status": 403})
+        provider = self.park(["bake-b", "bake-a"], [parked("bx_b1", 1, image="bake-b", at=1), parked("bx_b2", 2, image="bake-b", at=2)],
+                             answers={("delete", "bx_b1"): forbidden})
+        self.assertIn(["stop", "bx_b1"], self.calls)
+        self.assertEqual([entry["id"] for entry in boat.read(boat.POOL)], ["bx_b2", "bx_new"])
+        self.assertEqual(boat.read(boat.RETIRING), [])
+        self.assertEqual(provider.record()["sandboxes"]["machine-1"]["state"], "parked")
+
+    def test_reap_stops_a_sandbox_this_key_may_not_delete_and_forgets_it(self):
+        boat.write(boat.BAKES, ["bake-a"])
+        boat.write(boat.POOL, [parked("bx_a", 1)])
+        forbidden = result(1, {"event": "error", "code": "api_key_action_forbidden", "status": 403})
+        calls = []
+        with unittest.mock.patch.object(boat, "boat_json", self.listing(bx_a="ready")), \
+                unittest.mock.patch.object(boat.subprocess, "run", lambda args, **kwargs: calls.append(args[2:4])
+                                           or (forbidden if args[2] == "delete" else result(0, {}))), \
+                contextlib.redirect_stderr(io.StringIO()):
+            rows = boat.reap_pool(True, True)
+        self.assertEqual(calls, [["delete", "bx_a"], ["stop", "bx_a"]])
+        self.assertEqual([(row["id"], row["action"]) for row in rows], [("bx_a", "stopped")])
+        self.assertEqual((boat.read(boat.POOL), boat.read(boat.RETIRING)), ([], []))
+
     def test_a_stale_entry_stays_in_the_pool_until_its_delete_succeeds_or_finds_it_gone(self):
         boat.write(boat.BAKES, ["bake-a"])
         boat.write(boat.POOL, [parked("bx_failed", 1), parked("bx_missing", 2)])

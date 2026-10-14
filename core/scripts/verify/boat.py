@@ -408,12 +408,27 @@ def deleted(result):
     return not result.returncode or (error(result) or {}).get("status") == 404
 
 
-def retire(dead, delete):
+def forbidden(result):
+    """Whether a `boat delete` failed because this key may not delete the sandbox, which no retry changes."""
+    return (error(result) or {}).get("status") == 403
+
+
+def retire(dead, boat):
     """Delete retiring pool entries, then drop from the pool each one Boat confirms gone; returns each delete's result.
 
-    An entry stays in the pool until then, so a failed delete or a crash leaves it for the next tidy() rather than orphaned."""
-    results = each(lambda entry: delete(entry["id"]), dead)
-    gone = {entry["id"] for entry, result in zip(dead, results) if deleted(result)}
+    An entry stays in the pool until then, so a failed delete or a crash leaves it for the next tidy() rather than orphaned.
+    A key without sandbox.delete-own never deletes one, so retire stops it instead and drops it, as destroy does."""
+    def delete(entry):
+        result = boat("delete", entry["id"], "--yes")
+        if forbidden(result):
+            stopped = boat("stop", entry["id"])
+            print(f"Stopped {entry['id']} instead of deleting it: this Boat key may not delete it; it needs the "
+                  f"sandbox.delete-own scope." if not stopped.returncode else
+                  f"Dropped {entry['id']} from the pool: this Boat key may not delete it, and boat stop failed "
+                  f"({error(stopped) or stopped.stderr.decode(errors='replace').strip()}); its auto-stop ends it.", file=sys.stderr)
+        return result
+    results = each(delete, dead)
+    gone = {entry["id"] for entry, result in zip(dead, results) if deleted(result) or forbidden(result)}
     if gone:
         with pool() as entries:
             entries[:] = [entry for entry in entries if entry["id"] not in gone]
@@ -508,11 +523,13 @@ def reap_pool(force, yes):
     rows = [dict(id=entry["id"], reason=reason, action="remove") for entry, reason in found]
     if not yes:
         return rows
-    results = retire([entry for entry, reason in found], lambda sandbox: subprocess.run(
-        [*cli(), "delete", sandbox, "--yes", "--json"], stdin=subprocess.DEVNULL, capture_output=True, timeout=60))
+    results = retire([entry for entry, reason in found], lambda *args: subprocess.run(
+        [*cli(), *args, "--json"], stdin=subprocess.DEVNULL, capture_output=True, timeout=60))
     for row, result in zip(rows, results):
         if deleted(result):
             row["action"] = "removed"
+        elif forbidden(result):
+            row["action"] = "stopped"
         else:
             row.update(action="failed", reason=str(error(result) or result.stderr.decode(errors="replace").strip()).splitlines()[0])
     return rows
@@ -631,7 +648,7 @@ class Provider:
             self.record(lambda record: record["sandboxes"].update(
                 {name: dict(id=entry["id"], state="running", created=int(time.time()), ip=entry["ip"], ssh=entry["ssh"],
                             reused=True) for name, entry in zip(names, picked)}))
-        retire(dead, lambda sandbox: self.boat("delete", sandbox, "--yes", check=False))
+        retire(dead, lambda *args: self.boat(*args, check=False))
         expected = read(fingerprints(self.run["image"]))
 
         def verify(name):
@@ -929,7 +946,7 @@ systemctl enable --now {PLOYZ_UNITS} $observe
         except RuntimeError as why:
             print(f"Deleting {entry['id']} ({name}) instead of reusing it: {why}", file=sys.stderr)
             return
-        retire(dead, lambda sandbox: self.boat("delete", sandbox, "--yes", check=False))
+        retire(dead, lambda *args: self.boat(*args, check=False))
         if not full:
             with pool() as entries:
                 # A sandbox Boat has not confirmed gone still counts, so a failed delete never lets the pool grow past its size.
