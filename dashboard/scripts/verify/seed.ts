@@ -3,8 +3,9 @@
 // Prints one line, `VERIFY_SEED <json>`: the organization slug, the session cookie, an Organization Token for the CLI
 // (`cliToken`), every write's outcome and what was skipped.
 //
-// With the fake GitHub (PLOYZ_VERIFY_GITHUB_ORIGIN set), Ada is linked to its user ada, and Bob Bobson, linked to its
-// user bob, signs in with bob@example.com and BOB_PASSWORD to his own personal organization.
+// With the fake GitHub (PLOYZ_VERIFY_GITHUB_ORIGIN set), Ada is its user ada and her organization links every
+// installation ada installed (7 acme, 8 ada), with their granted repositories cached as a sync leaves them. Bob Bobson is
+// its user bob, signs in with bob@example.com and BOB_PASSWORD to his own personal organization, which links 10 bob.
 //
 // Ada Lovelace's organization holds project `shop`, on public images so a real Server can run it:
 //   fix-api     a Branch of production (api, web) with 2 changes to save; production moved on after it branched
@@ -30,6 +31,7 @@ import { Effect } from "effect";
 import type { Change, ConfigCommand, PullRequest } from "@ployz/sdk";
 import { callStore, storeSystem } from "#/modules/config-store/config-store.server";
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
+import { linkGithubInstallation, upsertCachedGithubRepositories, upsertGithubInstallation } from "#/modules/github/github.repository";
 import { createOrganizationToken } from "#/modules/identity/organization-token.server";
 import { InngestClient, type PloyzInngest } from "#/modules/inngest/client";
 import { account, session, user } from "#/modules/identity/tables";
@@ -49,21 +51,48 @@ const env = (name: string) => {
   return value;
 };
 
-const linkFakeGithubAccount = (signedIn: { id: string; email: string }) => Effect.gen(function* () {
+type FakeGithub = {
+  users: Array<{ id: number; login: string; email: string }>;
+  installations: Array<{
+    id: number; account: { login: string; type: string }; users: string[];
+    repositories: Array<{ id: number; name: string; private: boolean; default_branch: string; awaitsGrant?: boolean }>;
+  }>;
+};
+
+// The signed-in user is their fake GitHub user, and their organization links every installation that user installed,
+// its granted repositories cached as a sync leaves them. The fake's installation webhook records and grants nothing.
+const linkFakeGithub = (signedIn: { id: string; email: string }, organizationId: string) => Effect.gen(function* () {
   const { drizzle } = yield* Database;
-  const fixture = JSON.parse(readFileSync(".verify/github.json", "utf8")) as { users: Array<{ id: number; email: string }> };
+  const fixture = JSON.parse(readFileSync(".verify/github.json", "utf8")) as FakeGithub;
   const github = fixture.users.find((u) => u.email === signedIn.email);
-  if (github) yield* drizzle.insert(account).values({ userId: signedIn.id, providerId: "github", accountId: String(github.id) });
+  if (!github) return;
+  yield* drizzle.insert(account).values({ userId: signedIn.id, providerId: "github", accountId: String(github.id) });
+  const origin = env("PLOYZ_VERIFY_GITHUB_ORIGIN");
+  const syncedAt = new Date();
+  for (const installation of fixture.installations.filter((i) => i.users.includes(github.login))) {
+    const owner = installation.account.login;
+    yield* upsertGithubInstallation({
+      installationId: installation.id, accountLogin: owner, accountType: installation.account.type, accountAvatarUrl: `${origin}/${owner}.png`,
+    });
+    yield* linkGithubInstallation({ organizationId, installationId: installation.id, connectedByUserId: signedIn.id, connectedGithubLogin: github.login });
+    yield* upsertCachedGithubRepositories({
+      installationId: installation.id, syncedAt,
+      repositories: installation.repositories.filter((r) => !r.awaitsGrant).map((r) => ({
+        id: r.id, name: r.name, full_name: `${owner}/${r.name}`, private: r.private, default_branch: r.default_branch,
+        html_url: `${origin}/${owner}/${r.name}`, repo_updated_at: syncedAt.toISOString(),
+      })),
+    });
+  }
 });
 
 const seedBob = Effect.gen(function* () {
   const { drizzle } = yield* Database;
   const [bob] = yield* drizzle.insert(user).values({ email: "bob@example.com", emailVerified: true, name: "Bob Bobson" }).returning();
   if (!bob) return yield* Effect.die("No user.");
-  yield* ensurePersonalOrganizationForUser(bob);
+  const organizationId = yield* ensurePersonalOrganizationForUser(bob);
   const password = yield* Effect.promise(() => hashPassword(BOB_PASSWORD));
   yield* drizzle.insert(account).values({ userId: bob.id, providerId: "credential", accountId: bob.id, password });
-  yield* linkFakeGithubAccount(bob);
+  yield* linkFakeGithub(bob, organizationId);
   return { email: bob.email, password: BOB_PASSWORD };
 });
 
@@ -76,7 +105,7 @@ const seed = Effect.gen(function* () {
   const organizationId = yield* ensurePersonalOrganizationForUser(ada);
   const [org] = yield* drizzle.select({ slug: organization.slug }).from(organization).where(eq(organization.id, organizationId));
   const organizationSlug = org?.slug ?? "";
-  const bob = process.env["PLOYZ_VERIFY_GITHUB_ORIGIN"] ? yield* linkFakeGithubAccount(ada).pipe(Effect.andThen(seedBob)) : null;
+  const bob = process.env["PLOYZ_VERIFY_GITHUB_ORIGIN"] ? yield* linkFakeGithub(ada, organizationId).pipe(Effect.andThen(seedBob)) : null;
 
   // A session better-auth accepts: its row plus the HMAC-signed `better-auth.session_token` cookie.
   const token = env("VERIFY_SESSION_TOKEN");
