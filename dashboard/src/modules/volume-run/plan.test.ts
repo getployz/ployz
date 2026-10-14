@@ -262,11 +262,23 @@ describe("restoreSource", () => {
   };
 
   it("names the stopped copy with the newest snapshot, never a writer", () => {
-    expect(restoreSource([member("fsn-1", "writer"), member("fsn-2", "mirror"), newer("fsn-3"), member("fsn-4", "unanswered")])).toBe("fsn-3");
+    expect(restoreSource([member("fsn-1", "writer"), member("fsn-2", "mirror"), newer("fsn-3")])).toBe("fsn-3");
     expect(restoreSource([member("fsn-1", "cut")])).toBe("fsn-1");
   });
 
   it("names none when no stopped copy holds a snapshot", () => {
-    expect(restoreSource([member("fsn-1", "writer"), member("fsn-2", "empty"), member("fsn-3", "seed"), member("fsn-4", "unanswered")])).toBeUndefined();
+    expect(restoreSource([member("fsn-1", "writer"), member("fsn-2", "empty"), member("fsn-3", "seed")])).toBeUndefined();
+  });
+
+  it("names no slot when a third Server that may hold another did not answer", () => {
+    expect(restoreSource([newer("fsn-2"), member("fsn-3", "unanswered")])).toBeUndefined();
+  });
+
+  it("names none when two different snapshots are newest within the same second", () => {
+    expect(restoreSource([member("fsn-2", "mirror"), member("fsn-3", "behind")])).toBeUndefined();
+  });
+
+  it("names either copy when the newest snapshot is the same one on both", () => {
+    expect(["fsn-2", "fsn-3"]).toContain(restoreSource([member("fsn-2", "mirror"), member("fsn-3", "cut")]));
   });
 });
