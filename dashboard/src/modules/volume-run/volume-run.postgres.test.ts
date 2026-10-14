@@ -3119,9 +3119,10 @@ describe("volume runs", () => {
 
     describe("on a committed Move whose run failed", () => {
       const failedCommit = async () => {
-        afterCut();
+        const cut = afterCut();
         const taken = await moving("committed");
         await harness.pool.query("update volume_run set state = 'failed', finished_at = now() where id = $1", [taken.id]);
+        return cut;
       };
 
       it("removing B ends the commitment: the Volume is no longer owed and a Deploy follows nothing", async () => {
@@ -3175,6 +3176,34 @@ describe("volume runs", () => {
         expect(await plan({ kind: "delete_mirror", args: { slot: "web-2", confirmed_name: null } })).toMatchObject({ ok: false, refusal: { message: owes } });
         expect(await request({ kind: "delete_mirror", args: { slot: "web-2", confirmed_name: null } })).toMatchObject({ ok: false, refusal: { message: owes } });
         expect(await request({ kind: "move", args: { to: "fsn-1" } })).toMatchObject({ ok: false, refusal: { message: owes } });
+      });
+
+      it("protects B by the id its plan observed: removing its mirror by the new name is refused while the Cluster stops answering", async () => {
+        await failedCommit();
+        machines = machines.map((fake) => fake.name === "fsn-2" ? { ...fake, name: "web-2", id: idOf("fsn-2") } : fake);
+        const volume = { environmentId: "env-1", volumeName: "data", dockerVolume, refquotaBytes: 5_000_000 };
+        const planned = await runEffect(planVolumeRun(organizationId, { volumeId, environment, kind: "delete_mirror", args: { slot: "web-2", confirmed_name: null } }));
+        expect(planned).toMatchObject({ ok: false, refusal: { message: "data finishes on web-2; ployz volume release data finishes it now" } });
+        frameFault = () => true;
+
+        const asked = { kind: "delete_mirror", args: { slot: "web-2", confirmed_name: null, machine: idOf("fsn-2") } } satisfies VolumeRunInput;
+        expect(await runEffect(insertRun({ userId, organizationId }, { volumeId, ...asked }, volume, crypto.randomUUID()))).toMatchObject({ ok: false, refusal: { code: "conflict" } });
+        expect(await request({ kind: "delete_mirror", args: { slot: "web-2", confirmed_name: null } })).toMatchObject({ ok: false, refusal: { code: "conflict" } });
+        expect((await lanes()).filter((lane) => lane.kind === "delete_mirror")).toEqual([]);
+      });
+
+      it("admits removing another mirror by the id its plan observed, reading no Server inside the admission", async () => {
+        const cut = await failedCommit();
+        machines.push({ name: "fsn-3", pool: true, copy: slotCopy(cut) });
+        const volume = { environmentId: "env-1", volumeName: "data", dockerVolume, refquotaBytes: 5_000_000 };
+        const planned = await runEffect(planVolumeRun(organizationId, { volumeId, environment, kind: "delete_mirror", args: { slot: "fsn-3", confirmed_name: "data" } }));
+        if (!planned.ok) throw new Error(planned.refusal.message);
+        expect(planned.input).toMatchObject({ kind: "delete_mirror", args: { slot: "fsn-3", machine: idOf("fsn-3") } });
+        frameFault = () => true;
+        const read = frames;
+
+        expect(await runEffect(insertRun({ userId, organizationId }, { volumeId, ...planned.input }, volume, crypto.randomUUID()))).toMatchObject({ ok: true });
+        expect(frames).toBe(read);
       });
 
       it("cuts outside B name the step that finishes the commitment, from a release and from a mirror removal, and that step is accepted", async () => {
