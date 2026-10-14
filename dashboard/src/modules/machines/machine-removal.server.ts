@@ -158,7 +158,8 @@ export class LeavingServerUnanswered extends Data.TaggedError("LeavingServerUnan
 
 /**
  * A Server that reads suspect, down or unknown counts as gone, so removing a dying Server is not blocked. One that reads
- * up but never answers writes nothing on the last try, as a Server whose pool is unusable holds no writer.
+ * up but does not answer fails the step, and on the step's last try writes nothing, as a Server whose pool is unusable
+ * holds no writer. The last try counts the step's attempts, so earlier tries may have failed for another reason.
  */
 export const observeLeavingServerActivity = Effect.fn("MachineRemoval.observeLeaving")(function* (input: {
   organizationId: string; machineId: MachineId; lastTry: boolean;
@@ -175,7 +176,7 @@ export const observeLeavingServerActivity = Effect.fn("MachineRemoval.observeLea
   const mayStillWrite = leaving?.membership === "up" && observed.unanswered.includes(id);
   if (mayStillWrite) {
     if (!input.lastTry) return yield* new LeavingServerUnanswered({ machineId: id });
-    yield* Effect.logWarning("Taking the leaving Server as writing no Volumes: it reads up, but its copies never answered.", { machineId: id });
+    yield* Effect.logWarning("Taking the leaving Server as writing no Volumes on the step's last try: it reads up, but its copies did not answer.", { machineId: id });
   }
   const writes = observed.copies.flatMap((copy) => copy.machine_id === id && copy.role === "writer" ? [copy.name] : []);
   return { machine: { id, name: leaving?.machine.name ?? null }, writes };

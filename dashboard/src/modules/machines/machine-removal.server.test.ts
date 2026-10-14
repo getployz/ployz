@@ -148,12 +148,12 @@ describe("observeLeavingServerActivity", () => {
     expect(await observe()).toMatchObject({ _tag: "Failure" });
   });
 
-  it("writes nothing on the last try when the leaving Machine reads up but its copies still do not answer", async () => {
+  it("writes nothing on the step's last try when the leaving Machine reads up but its copies do not answer", async () => {
     observed = { copies: [writerOn(other, "logs")], unanswered: [leaving] };
     expect(await observe(true)).toEqual(Exit.succeed({ machine: { id: leaving, name: "fsn-2" }, writes: [] }));
   });
 
-  it("still fails on the last try when the Cluster frame times out", async () => {
+  it("still fails on the step's last try when the Cluster frame times out", async () => {
     frame = "times out";
     expect(await observe(true)).toMatchObject({ _tag: "Failure" });
   });
