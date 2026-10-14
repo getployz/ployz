@@ -1426,11 +1426,11 @@ mod set_volume_copy {
     async fn a_floor_queued_on_the_floor_lock_across_a_reset_refuses_and_raises_no_floor() {
         let (data_dir, store, service, _fake) = fake_docker_service("ployzd-copy-reset").await;
         let turn = service.containers().unwrap().floor_turn().await;
-        let queued = tokio::spawn({
-            let service = service.clone();
-            async move { set_copy(&service, floor(5)).await }
-        });
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let mut queued = std::pin::pin!(set_copy(&service, floor(5)));
+        assert!(
+            futures_util::poll!(queued.as_mut()).is_pending(),
+            "the Floor did not queue on the floor lock"
+        );
         store
             .mutate(LocalMachineStore::begin_reset)
             .await
@@ -1438,7 +1438,7 @@ mod set_volume_copy {
             .unwrap();
         drop(turn);
 
-        let response = queued.await.unwrap();
+        let response = queued.await;
         let lower = service
             .containers()
             .unwrap()
