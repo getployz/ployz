@@ -2605,3 +2605,248 @@ async fn a_snapshot_resent_at_its_want_prunes_past_the_newest_two() {
     );
     assert_eq!(snapshot_names(&a.test, ROOT), ["w-1-3", "w-1-2"]);
 }
+
+/// A head writer path the crash table stops after each of its effects.
+#[derive(Clone, Copy, Debug)]
+enum Writing {
+    Cut,
+    Restore,
+    PromoteAPulledSlot,
+    Seed,
+    FirstPull,
+    IncrementalPull,
+    Resend,
+    SameNewestPull,
+}
+
+impl Writing {
+    /// The Volume the path writes, with its route, request and the reply that ends it.
+    fn drive(self) -> (&'static str, &'static str, Value) {
+        match self {
+            Self::Cut => (
+                "data",
+                "/Volume.Copy.Cut",
+                json!({"name": "data", "target": "f-1"}),
+            ),
+            Self::Restore => (
+                "data",
+                "/Volume.Copy.Writer",
+                json!({"name": "data", "at": "13", "epoch": 0}),
+            ),
+            Self::PromoteAPulledSlot => (
+                "data",
+                "/Volume.Copy.Writer",
+                json!({"name": "data", "at": "13", "epoch": 2}),
+            ),
+            Self::Seed => (
+                "seed",
+                "/Volume.Seed",
+                json!({"name": "data", "into": "seed", "guid": "77"}),
+            ),
+            Self::FirstPull | Self::IncrementalPull | Self::Resend => {
+                ("data", "/Volume.Copy.Pull", pull("w-1-2"))
+            }
+            Self::SameNewestPull => ("data", "/Volume.Copy.Pull", pull("w-1-1")),
+        }
+    }
+
+    fn ended(self, reply: &Value) -> bool {
+        match self {
+            Self::Cut => reply.pointer("/Ok/kind") == Some(&json!("slot")),
+            Self::Restore | Self::PromoteAPulledSlot => {
+                reply.pointer("/Ok/kind") == Some(&json!("root"))
+            }
+            Self::Seed => reply.pointer("/Ok/copy/kind") == Some(&json!("root")),
+            Self::FirstPull | Self::IncrementalPull | Self::Resend | Self::SameNewestPull => {
+                reply.pointer("/Ok/pull") == Some(&Value::Null)
+            }
+        }
+    }
+
+    fn fixture(self, test: &TestDir, port: u16) -> (PathBuf, Server) {
+        match self {
+            Self::Cut => {
+                let started = writer(test, &[("w-1-1", 11)]);
+                set_property(test, ROOT, "written@f-1", "0");
+                started
+            }
+            Self::Restore => {
+                let started = slot(test, &[("f-1", 13)]);
+                set_property(test, SLOT_FS, "ployz:cut", "on");
+                started
+            }
+            Self::PromoteAPulledSlot => {
+                let started = slot(test, &[("f-1", 13)]);
+                set_property(test, SLOT_FS, "ployz:pulled", "13");
+                started
+            }
+            Self::Seed => {
+                let started = start(test, USABLE_POOL, &["root", "volume"]);
+                set_property(
+                    test,
+                    ROOT,
+                    "snapshots",
+                    "tank/ployz/data@w-1-1\t77\t1700000000",
+                );
+                started
+            }
+            Self::FirstPull => puller(test, &["root"], port),
+            Self::IncrementalPull => {
+                let started = puller(test, &["root", "mirror", "mirror-fs"], port);
+                set_snapshots(test, SLOT_FS, &[("w-1-1", 11)]);
+                for (mark, value) in [
+                    ("ployz:cut", "on"),
+                    ("ployz:epoch", "3"),
+                    ("ployz:promote", "on"),
+                    ("ployz:seed", "11"),
+                ] {
+                    set_property(test, SLOT_FS, mark, value);
+                }
+                started
+            }
+            Self::Resend => {
+                let started = puller(test, &["root", "mirror", "mirror-fs"], port);
+                landed_before_a_restart(test, "ployz:cut", "on");
+                started
+            }
+            Self::SameNewestPull => {
+                let started = puller(test, &["root", "mirror", "mirror-fs"], port);
+                set_snapshots(test, SLOT_FS, &[("w-1-1", 11)]);
+                set_property(test, SLOT_FS, "ployz:cut", "on");
+                started
+            }
+        }
+    }
+
+    /// Whether the finished path leaves a slot a writer elsewhere holds the point of.
+    fn received(self) -> bool {
+        matches!(self, Self::FirstPull | Self::IncrementalPull)
+    }
+
+    /// Whether the fixture is such a slot before the path changes anything.
+    fn starts_received(self) -> bool {
+        matches!(self, Self::PromoteAPulledSlot)
+    }
+}
+
+/// Drives `writing` until it ends or, once `stop` has failed after its given number of
+/// earlier runs, until its request stops changing anything: the failed effect stands for
+/// the daemon stopping there.
+async fn drive(writing: Writing, test: &TestDir, socket: &Path, stop: Option<(&str, usize)>) {
+    let (_, route, request) = writing.drive();
+    let fail = test.0.join("props/fail-command");
+    if let Some((stop, earlier)) = stop {
+        fs::create_dir_all(test.0.join("props")).unwrap();
+        fs::write(test.0.join("props/fail-skip"), earlier.to_string()).unwrap();
+        fs::write(&fail, stop.strip_prefix("zfs ").unwrap()).unwrap();
+    }
+    for _ in 0..300 {
+        if stop.is_some() && !fail.exists() {
+            return;
+        }
+        let reply = post(socket, route, request.clone()).await;
+        if reply.get("Err").is_some() || writing.ended(&reply) {
+            assert!(stop.is_some() || reply.get("Ok").is_some(), "{reply}");
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("{writing:?} never ended");
+}
+
+/// The departure's verdict on the copy `name` held: whether it destroyed a slot that held
+/// a snapshot.
+async fn departure_destroys_a_point(test: &TestDir, socket: &Path, name: &str) -> bool {
+    let fs = format!("tank/ployz-mirror/{name}/fs");
+    let held = test
+        .0
+        .join(format!(
+            "{}-fs",
+            if name == "data" { "mirror" } else { "seed" }
+        ))
+        .exists()
+        && !snapshot_names(test, &fs).is_empty();
+    let before = commands(test);
+    let reply = post(socket, "/Storage.Demote", json!(null)).await;
+    assert!(reply.get("Ok").is_some(), "{reply}");
+    let destroy = format!("zfs destroy -r tank/ployz-mirror/{name}\n");
+    held && commands(test)[before.len()..].contains(&destroy)
+}
+
+/// Stops each head writer path at each effect it has, and asks the departure. Only a
+/// mirror pull that has marked the snapshot it received leaves a slot the departure
+/// destroys; every earlier stop, and every other path once it changed anything, leaves a
+/// slot it keeps.
+#[tokio::test]
+async fn every_stop_of_a_writer_path_leaves_a_slot_the_departure_keeps_until_a_pull_marked_it() {
+    for writing in [
+        Writing::Cut,
+        Writing::Restore,
+        Writing::PromoteAPulledSlot,
+        Writing::Seed,
+        Writing::FirstPull,
+        Writing::IncrementalPull,
+        Writing::Resend,
+        Writing::SameNewestPull,
+    ] {
+        let (name, _, _) = writing.drive();
+        let source = Source::start(Some(BOUND), "snapshot w-1-2 12\n").await;
+        let test = TestDir::new();
+        let (socket, server) = writing.fixture(&test, source.port);
+        drive(writing, &test, &socket, None).await;
+        let steps = effects(&commands(&test));
+        assert!(!steps.is_empty(), "{writing:?}");
+        let marked = steps
+            .iter()
+            .position(|step| step.starts_with("zfs set ployz:pulled="));
+        assert_eq!(
+            marked.is_some(),
+            writing.received(),
+            "{writing:?}: {steps:?}"
+        );
+        if let Some(marked) = marked {
+            let received = steps
+                .iter()
+                .position(|step| step.starts_with("zfs receive"))
+                .unwrap();
+            assert!(received < marked, "{writing:?}: {steps:?}");
+            for mark in ["ployz:cut", "ployz:epoch", "ployz:promote", "ployz:seed"] {
+                let inherit = format!("zfs inherit {mark} {SLOT_FS}");
+                let dropped = steps.iter().position(|step| *step == inherit);
+                assert!(
+                    dropped.is_some_and(|dropped| received < dropped && dropped < marked),
+                    "{writing:?}: {mark} is not dropped between the receive and the mark: {steps:?}"
+                );
+            }
+        }
+        assert_eq!(
+            departure_destroys_a_point(&test, &socket, name).await,
+            writing.received(),
+            "{writing:?} finished"
+        );
+        server.abort();
+
+        for (index, step) in steps.iter().enumerate() {
+            let source = Source::start(Some(BOUND), "snapshot w-1-2 12\n").await;
+            let test = TestDir::new();
+            let (socket, server) = writing.fixture(&test, source.port);
+            let earlier = steps[..index].iter().filter(|done| *done == step).count();
+            drive(writing, &test, &socket, Some((step, earlier))).await;
+            assert!(
+                !test.0.join("props/fail-command").exists(),
+                "{writing:?}: {step} never ran"
+            );
+            let received = if index == 0 {
+                writing.starts_received()
+            } else {
+                marked.is_some_and(|marked| index > marked)
+            };
+            assert_eq!(
+                departure_destroys_a_point(&test, &socket, name).await,
+                received,
+                "{writing:?} stopped at {step}"
+            );
+            server.abort();
+        }
+    }
+}
