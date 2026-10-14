@@ -93,6 +93,20 @@ started keeps going in Cloud, and the error names the tool that shows where it s
 stopped while Cloud had not yet answered its change says the change may have landed, and the
 agent can resend it without running it twice.
 
+## Search the docs
+
+`ployz docs` searches these docs from your terminal, offline. Ask a question and it prints the
+five sections that match best, each with its page and an excerpt:
+
+```sh
+ployz docs add a custom domain
+```
+
+Name a page instead to print it whole, as Markdown: `ployz docs services/domains.md`, or just
+`ployz docs domains.md`. With `--json`, a search returns `results` with each section's `path`,
+`anchor` and `excerpt`, and a page returns its `content`. Your coding agent gets the same search
+as the `docs` tool from `ployz mcp`.
+
 ## Commands from Ployz Cloud
 
 Some commands come from Ployz Cloud instead of the CLI itself, so a new one reaches you without
