@@ -1447,6 +1447,50 @@ mod set_volume_copy {
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 
+    /// A Deploy that floors the Volume while the cut stops its holder reads the holder
+    /// next and keeps a running one, so the floor must wait for the stop to land.
+    #[tokio::test]
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    async fn a_floor_raised_during_the_holder_stop_waits_for_it_and_sees_the_holder_stopped() {
+        let (data_dir, _store, service, fake) =
+            fake_docker_service("ployzd-copy-fenced-stop").await;
+        let plugin = cutting_plugin();
+        let (socket, server) = plugin.serve(&data_dir);
+        let service = service.with_volume_plugin(socket);
+        let holder = running_holder(&service, &fake).await;
+        let stop = format!("/containers/{holder}/stop");
+        let held = fake.stop_gate.write().await;
+
+        let (refused, seen_by_floor) =
+            tokio::join!(set_copy(&service, at_gen(draining_cut(0), 1)), async {
+                while !fake
+                    .requests
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|(method, path)| *method == http::Method::POST && path.ends_with(&stop))
+                {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                let floored = async {
+                    reply(&set_copy(&service, floor(2)).await);
+                    holder_status(&fake)
+                };
+                let release = async {
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    drop(held);
+                };
+                tokio::join!(floored, release).0
+            });
+        assert_eq!(seen_by_floor, vec![json!("exited")]);
+        let error = refusal(&refused);
+        assert_eq!(error.details["reason"], json!("stale"), "{error:?}");
+        assert_eq!(error.details["floor"], json!(2));
+        assert_eq!(error.details["copy"], writer_root(0, None)["Ok"]);
+        server.abort();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
     #[tokio::test]
     #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
     async fn a_floor_read_failing_after_the_drain_stops_nothing_and_leaves_its_holder_serving() {

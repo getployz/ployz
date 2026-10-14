@@ -1,5 +1,5 @@
 import { it } from "@effect/vitest";
-import type { ConfigCommand, ConfigStore } from "@ployz/sdk";
+import type { ConfigCommand, ConfigStore, RuntimeWatchView } from "@ployz/sdk";
 import { reconstructChat } from "@tanstack/ai-persistence";
 import { type AnyTextAdapter, EventType, type TokenUsage, type ModelMessage, type RunAgentResumeItem, type StreamChunk, StreamProcessor } from "@tanstack/ai";
 import { sql } from "drizzle-orm";
@@ -7,6 +7,7 @@ import { ConfigProvider, Effect, Layer, Schema } from "effect";
 import { expect, vi } from "vitest";
 import { fakeText } from "@tanstack/ai/testing";
 import { createAnthropicChat } from "@tanstack/ai-anthropic";
+import { asTestDouble } from "#/lib/test-double";
 import { agentChat, KEEPALIVE_MS, STEP_LIMIT, STEP_LIMIT_NOTE } from "#/modules/agent/agent-chat.server";
 import type { PageContext } from "#/modules/agent/page-context";
 import { FAILURES } from "#/modules/agent/provider-error";
@@ -14,6 +15,8 @@ import { PostHog, type PostHogService } from "#/modules/analytics/posthog.server
 import { agentPersistence, CLAIM_LEASE_MS, claimResume, Superseded } from "#/modules/agent/persistence.server";
 import { type ApprovalView, decideApproval, getApproval, pendingApprovals } from "#/modules/approvals/approvals.server";
 import type { Caller } from "#/modules/identity/actor";
+import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
+import type { PloyzSession } from "#/modules/runtime/ployz.server";
 import { AuthLive } from "#/server/auth.server";
 import { Database } from "#/server/database.server";
 import { acmeWeb, enrollStoreServer, seedStoreGitService, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
@@ -78,7 +81,7 @@ const sidebar = Effect.fn(function* (options: { removeWeb: boolean }) {
       from config_saved, lateral jsonb_array_elements(intent::jsonb->'services') service where environment_id = ${ENVIRONMENT}`);
   }));
   if (options.removeWeb) yield* write({ command: "remove_service", environment: here, service: "web" });
-  const caller: Caller = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "session", id: "session-1" }, role: "owner", support: null };
+  const caller: Caller = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "session", id: "session-1" }, role: "owner", support: null, via: "dashboard" };
   let runs = 0;
   const say = (content: string, forwardedProps: Forwarded = {}, model?: AnyTextAdapter) =>
     provided(agentChat(caller, { messages: [{ role: "user", content }], threadId: THREAD, runId: `run-${++runs}`, forwardedProps }, model))
@@ -260,6 +263,41 @@ it.live("a turn that posts the client's whole transcript back stores each tool r
     const saved = yield* Effect.promise(() => persistence.stores.messages.loadThread(THREAD));
     const roles = saved.map((message) => message.role);
     expect(roles).toEqual(["user", "assistant", "tool", "assistant", "user", "assistant", "tool", "assistant"]);
+  }));
+
+/** Shop's one Server, fra-1, runs the only copy of web, a Global: draining it retires web. */
+const lastGlobalCopy = Effect.provideService(OrganizationRuntime, {
+  cancel: () => Effect.void,
+  open: () => Effect.succeed({ status: "connected" as const, connected: asTestDouble<PloyzSession>()({
+    agentAsk: () => Effect.succeed({
+      servers: [{ machine: "0".repeat(32), name: "fra-1", state: "online", release: null, upgrade: null, draining: false, disk: null, namespaces: ["shop-production"] }],
+      seen: { seen_by: null, observed_at: 1, read_at: 1, age_seconds: 0, from: "server", unanswered: [] },
+    }),
+    watchFirstFrame: () => Effect.succeed(asTestDouble<RuntimeWatchView>()({
+      machines: [{ machine: { id: "0".repeat(32), name: "fra-1", accepts_services: true, runtime: { capabilities: [] } } }],
+      services: [{
+        identity: "shop-production/web",
+        service_id: "web",
+        containers: [{
+          kind: "service_container", machine_id: "0".repeat(32), runtime: { state: "running" }, created_at_unix_nanos: 1,
+          resolved_spec: { mode: { mode: "global" }, volumes: [], mounts: [] },
+        }],
+      }],
+    })),
+  }) }),
+});
+
+it.live("the sidebar asks before a Drain that destroys something, even when its request came with a person's dashboard caller", () =>
+  Effect.gen(function* () {
+    const { provided, caller, pending } = yield* sidebar({ removeWeb: false });
+    const model = fakeText();
+    model.setResponses([{ toolCalls: [{ name: "server_drain", input: { server: "fra-1", wait_seconds: 0 } }] }, { text: "Draining." }]);
+    const person: Caller = { ...caller, via: "dashboard" };
+    const asked = yield* provided(agentChat(person, { messages: [{ role: "user", content: "drain fra-1" }], threadId: THREAD, runId: "run-drain", forwardedProps: {} }, model)
+      .pipe(lastGlobalCopy, Effect.flatMap(drain)));
+
+    const approval = yield* waitingApproval(asked, pending);
+    expect(approval).toMatchObject({ status: "pending" });
   }));
 
 it.live("a Deploy that destroys web waits on a human, and runs exactly once after they approve", () =>

@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import type { AcceptedLoss, DestructiveEffect, EnvironmentRef, MachineId, ServerRef, ServiceVerb } from "@ployz/sdk";
 import { Effect, Schema } from "effect";
 import { Uuid } from "#/lib/schema";
-import { gateOperation, type OperationAsked } from "#/modules/approvals/approvals.server";
+import { gateOperation, operationDigest, type OperationAsked } from "#/modules/approvals/approvals.server";
 import type { Caller } from "#/modules/identity/actor";
 import { machineRemoveAttemptConsuming } from "#/modules/machines/machine-removal.repository";
 import { startMachineRemove } from "#/modules/machines/machine-removal.server";
@@ -58,7 +58,9 @@ export const drainServer = (caller: Caller, machineId: MachineId, call: Operatio
     return yield* admitOperation(caller.organization.id, { tool: OPERATIONS["server.drain"].idempotency, key: call.key, body: { machineId } }, Effect.gen(function* () {
       const gated = yield* gate(caller, call, plan);
       if (!gated.ok) return refused(gated.refusal);
-      return (attemptId: string) => requestCliServerDrain(actor(caller), { attemptId, machineId, targets: plan.targets, approvalId: gated.approvalId })
+      return (attemptId: string) => requestCliServerDrain(actor(caller), {
+        attemptId, machineId, targets: plan.targets, approvalId: gated.approvalId, planDigest: operationDigest(plan),
+      })
         .pipe(Effect.map((id) => ({ ok: true, id }) as const));
     }));
   });
@@ -125,7 +127,7 @@ export const runVolume = (
       const gated = yield* gate(caller, call, planned.asked);
       if (!gated.ok) return refused(gated.refusal);
     }
-    return (runId: string) => insertRun(actor(caller), input, planned.volume, runId)
+    return (runId: string) => insertRun(actor(caller), planned.input, planned.volume, runId)
       .pipe(Effect.map((inserted) => inserted.ok ? { ok: true, id: inserted.run.id } as const : inserted));
   }));
 

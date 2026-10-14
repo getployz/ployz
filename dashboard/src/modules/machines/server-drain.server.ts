@@ -3,7 +3,8 @@ import type { DrainReport, DrainScope, QualifiedService } from "@ployz/sdk";
 import { and, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { Data, Effect, Option, Schedule, Schema } from "effect";
 import type { MachineId } from "#/db/tables";
-import { gateOperation, operationDigest, trustedApproval } from "#/modules/approvals/approvals.server";
+import { listNames } from "#/lib/plural";
+import { gateOperation, operationDigest } from "#/modules/approvals/approvals.server";
 import type { Actor, Caller } from "#/modules/identity/actor";
 import { createServerDrainRequestedEvent, type ServerDrainRequestedEventData } from "#/modules/inngest/events";
 import { ownedNamespaces } from "#/modules/machines/namespace-cleanup.server";
@@ -20,6 +21,7 @@ import {
   type RequestServerDrainInput,
 } from "#/modules/machines/server-drain";
 import { planDrain } from "#/modules/machines/server-operations.server";
+import { splitQualifiedService } from "#/modules/machines/server-services";
 import { serverDrainAttempt } from "#/modules/machines/tables";
 import { serversLackingEnsure } from "#/modules/runtime/daemon-compat.server";
 import { requireAccess } from "#/modules/organization/access.server";
@@ -92,24 +94,10 @@ const enqueueDrain = (row: DrainAttemptRow) =>
   enqueueEvent(createServerDrainRequestedEvent({ attemptId: row.id, organizationId: row.organizationId, machineId: row.machineId }));
 
 /**
-/**
- * A Drain of the Server as it stands now, gated like every destructive operation: it runs once a human approved
- * exactly this plan, or when it destroys nothing. Null when Cloud sees no such Server.
- */
-const gateDrain = Effect.fn("ServerDrain.gate")(function* (caller: Caller, machineId: string, approvalId: string | null) {
-  const plan = yield* planDrain(caller.organization.id, machineId);
-  if (plan === null) return null;
-  const gated = yield* gateOperation(caller, approvalId, plan);
-  return gated.ok ? { ok: true, targets: plan.targets, approvalId: gated.approvalId } as const : gated;
-});
-
-const ApprovalAsked = Schema.Struct({ approval_id: Schema.String });
-
-/**
- * Drain on a Server page: any member may. A Drain that would destroy something waits on an approval in the sidebar,
- * and the tab sends the same request again with it once approved. The admitted Drain's row takes the id the tab
- * minted and is written with its run's event, so the same request again returns it without asking again. A click
- * while another Drain is active on the Server returns that one.
+ * Drain on a Server page: any member may, and confirming it is their approval, so a plan that now stops a Service the
+ * dialog didn't show as stopping is refused. The admitted Drain's row takes the id
+ * the tab minted and is written with its run's event, so the same request again returns it. A click while another
+ * Drain is active on the Server returns that one.
  */
 export const requestServerDrain = Effect.fn("ServerDrain.request")(function* (caller: Caller, input: RequestServerDrainInput) {
   const organizationId = caller.organization.id;
@@ -130,18 +118,18 @@ export const requestServerDrain = Effect.fn("ServerDrain.request")(function* (ca
     )).orderBy(desc(serverDrainAttempt.requestedAt)).limit(1);
     return active === undefined ? null : { drain: yield* latestDrainOf(active) } satisfies RequestedServerDrain;
   });
-  // Neither asks a human: the request already has its Drain, or another one would refuse it.
   const existing = yield* sameOrActive();
   if (existing !== null) return existing;
-  const gated = yield* gateDrain(caller, input.machineId, input.approvalId ?? null);
-  if (gated === null) return yield* new NotFound({ message: "The server was not found." });
-  if (!gated.ok) {
-    const asked = Schema.decodeUnknownOption(ApprovalAsked)(gated.refusal.details);
-    if (gated.refusal.code === "approval_required" && Option.isSome(asked)) {
-      return { asking: { approvalId: asked.value.approval_id, message: gated.refusal.message } } satisfies RequestedServerDrain;
-    }
-    return yield* new Conflict({ userFacing: true, message: gated.refusal.message });
+  const plan = yield* planDrain(organizationId, input.machineId);
+  if (plan === null) return yield* new NotFound({ message: "The server was not found." });
+  const unseen = plan.effects.flatMap(({ kind, name }) =>
+    kind === "removes_service" && name !== undefined && !input.stops.includes(name) ? [splitQualifiedService(name).name] : []);
+  if (unseen.length > 0) {
+    const names = listNames(unseen);
+    return yield* new Conflict({ userFacing: true, message: `Draining now stops ${names}. Review the drain again.` });
   }
+  const gated = yield* gateOperation(caller, null, plan);
+  if (!gated.ok) return yield* new Conflict({ userFacing: true, message: gated.refusal.message });
   return yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
     const [inserted] = yield* drizzle.insert(serverDrainAttempt).values({
@@ -149,8 +137,9 @@ export const requestServerDrain = Effect.fn("ServerDrain.request")(function* (ca
       organizationId,
       machineId: input.machineId,
       requestedByUserId: caller.userId,
-      targets: [...gated.targets],
+      targets: [...plan.targets],
       approvalId: gated.approvalId,
+      planDigest: operationDigest(plan),
     }).onConflictDoNothing().returning();
     if (inserted !== undefined) {
       yield* enqueueDrain(inserted);
@@ -173,6 +162,7 @@ export const requestCliServerDrain = Effect.fn("ServerDrain.requestCli")(functio
     readonly machineId: MachineId;
     readonly targets: readonly QualifiedService[];
     readonly approvalId: string | null;
+    readonly planDigest: string;
   },
 ) {
   const { drizzle } = yield* Database;
@@ -183,6 +173,7 @@ export const requestCliServerDrain = Effect.fn("ServerDrain.requestCli")(functio
     requestedByUserId: caller.userId,
     targets: [...input.targets],
     approvalId: input.approvalId,
+    planDigest: input.planDigest,
   }).onConflictDoNothing().returning();
   if (inserted !== undefined) {
     yield* enqueueDrain(inserted);
@@ -310,16 +301,13 @@ const stateOf = Effect.fn("ServerDrain.stateOf")(function* (attemptId: string) {
 
 /**
  * A Drain waits its turn after its gate, and an earlier Drain can leave this one retiring a last copy. So it plans
- * again before it runs, and runs only if what it would destroy now is what its approval covered. Also whether the
- * plan moves anything, which decides the Servers it may land on.
+ * again before it runs, and runs only if what it would destroy now is what its gate admitted. Also whether the plan
+ * moves anything, which decides the Servers it may land on.
  */
-const stillCovered = Effect.fn("ServerDrain.stillCovered")(function* (request: DrainRequest, approvalId: string | null) {
+const stillCovered = Effect.fn("ServerDrain.stillCovered")(function* (request: DrainRequest, planDigest: string | null) {
   const plan = yield* planDrain(request.organizationId, request.machineId);
   const moves = plan === null || plan.moves.length > 0;
-  if (plan === null || plan.effects.length === 0) return { covered: true, moves };
-  if (approvalId === null) return { covered: false, moves };
-  const trusted = yield* trustedApproval(request.organizationId, approvalId);
-  return { covered: trusted.ok && trusted.approval !== "required" && trusted.approval.approved === operationDigest(plan), moves };
+  return { covered: plan === null || plan.effects.length === 0 || planDigest === operationDigest(plan), moves };
 });
 
 /**
@@ -340,9 +328,9 @@ export const executeDrainOnce = Effect.fn("ServerDrain.execute")(function* (requ
     return yield* stateOf(request.attemptId);
   }
   if (current.state !== "pending") return current;
-  const [row] = yield* drizzle.select({ targets: serverDrainAttempt.targets, approvalId: serverDrainAttempt.approvalId })
+  const [row] = yield* drizzle.select({ targets: serverDrainAttempt.targets, planDigest: serverDrainAttempt.planDigest })
     .from(serverDrainAttempt).where(eq(serverDrainAttempt.id, request.attemptId));
-  const { covered, moves } = yield* stillCovered(request, row?.approvalId ?? null);
+  const { covered, moves } = yield* stillCovered(request, row?.planDigest ?? null);
   if (!covered) {
     yield* drizzle.update(serverDrainAttempt)
       .set(refused("The drain now destroys something nobody approved. Drain the server again to review it."))

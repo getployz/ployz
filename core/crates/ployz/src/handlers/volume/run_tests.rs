@@ -478,3 +478,39 @@ fn a_wait_stops_on_a_state_this_cli_predates_and_names_it() {
         "The Move is paused for review: Cloud gave no reason"
     );
 }
+
+#[tokio::test]
+async fn a_release_cloud_plans_for_20_seconds_still_starts() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let cloud = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buf = vec![0; 8192];
+        let _ = tokio::io::AsyncReadExt::read(&mut stream, &mut buf)
+            .await
+            .unwrap();
+        // The request is in, so the client's timeout is armed; only Cloud's planning
+        // takes paused time, and the reply goes out on real time again.
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_secs(20)).await;
+        tokio::time::resume();
+        let body = json!({ "run": run("requested", "release", json!({})) }).to_string();
+        let reply = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = tokio::io::AsyncWriteExt::write_all(&mut stream, reply.as_bytes()).await;
+    });
+    let release = RunRequest {
+        environment: named(),
+        kind: VolumeRunKind::Release,
+        to: None,
+        full: None,
+        slot: None,
+        confirm: None,
+        from: None,
+    };
+    let started = start(&token(&cloud), &volume(), &release, None).await;
+    server.await.unwrap();
+    assert_eq!(started.unwrap().id.as_str(), RUN);
+}

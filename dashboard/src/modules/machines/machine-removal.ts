@@ -34,12 +34,11 @@ export const EnqueueMachineRemoveInput = Schema.Struct({
 
 export type EnqueueMachineRemoveInput = typeof EnqueueMachineRemoveInput.Type;
 
-/** Forget one offline Server: no reset, so its Volumes are lost. `requestId` keys the request; `approvalId` is the human's approval once given. */
+/** Forget one offline Server: no reset, so its Volumes are lost. `requestId` keys the request. */
 export const ForgetServerInput = Schema.Struct({
   organizationSlug: NonEmptyString,
   machineId: NonEmptyString,
   requestId: Schema.String.check(Schema.isUUID()),
-  approvalId: Schema.optional(Schema.NullOr(Schema.String.check(Schema.isUUID()))),
 });
 export type ForgetServerInput = typeof ForgetServerInput.Type;
 

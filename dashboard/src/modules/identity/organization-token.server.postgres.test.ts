@@ -21,6 +21,7 @@ const callerOf = (who: keyof typeof ids): Caller => ({
   credential: { kind: "session", id: `${who}-session` },
   role: roles[who],
   support: null,
+  via: "dashboard",
 });
 
 const tokenOf = async (who: keyof typeof ids) => (await run(createOrganizationToken(callerOf(who), { name: `${who}-ci`, expiresInDays: 1 }))).id;

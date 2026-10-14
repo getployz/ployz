@@ -50,7 +50,6 @@ const SPINNER_FILES = {
   "routes/invite/$token.tsx": "joining in flight",
   "routes/_protected/cloud/$organizationSlug/_org/~/billing.tsx": "portal opening",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/add-server-dialog.tsx": "command mint in flight",
-  "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/remove-server-section.tsx": "forget in flight",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/server-services-section.tsx": "the Drain running on the Server",
   "routes/_public/-components/LoginPanel.tsx": "sign-in in flight",
   "routes/device.tsx": "device approval in flight",

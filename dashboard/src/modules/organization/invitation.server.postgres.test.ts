@@ -49,6 +49,7 @@ const as = async (who: keyof typeof ids, name: keyof typeof COMMANDS, input: Jso
     credential: { kind: "session", id: `${who}-session` },
     role: await roleOf(ids[who]),
     support: null,
+    via: "dashboard",
   };
   const command: { invoke: (caller: Caller, raw: JsonValue, call: { approvalId: null; key: null }) => Effect.Effect<
     { ok: true; output: unknown } | { ok: false; refusal: { code: string; message: string } },
