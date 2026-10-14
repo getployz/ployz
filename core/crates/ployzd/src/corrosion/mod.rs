@@ -13,7 +13,7 @@ pub(crate) mod fake_cluster;
 #[cfg(test)]
 mod integration_tests;
 #[cfg(test)]
-mod store_tests;
+pub(crate) mod store_tests;
 
 pub(crate) use admin::membership_states_by_address;
 pub use admin::{AdminClient, MembershipState};
@@ -29,8 +29,8 @@ pub use service::{
     CorrosionConfig, CorrosionPaths, DEFAULT_CONTAINER_NAME, RunningCorrosion, remove_retained,
 };
 pub(crate) use store::{
-    IngressRouteAck, IngressRouteChange, LocalContainerSnapshot, LocalVolumeSnapshot,
-    ServingPointers,
+    IngressRouteAck, IngressRouteChange, IngressRouteRow, LocalContainerSnapshot,
+    LocalVolumeSnapshot, ServingPointers,
 };
 pub use store::{ReplicatedObservations, ReplicatedStore};
 
