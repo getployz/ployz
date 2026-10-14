@@ -47,7 +47,6 @@ type StepTools = Pick<PloyzStepTools, "run" | "sendEvent">;
 type EffectRunner = typeof runInngestEffect;
 
 export const MACHINE_REMOVE_RETRIES = 5;
-export const isLastTry = (attempt: number) => attempt >= MACHINE_REMOVE_RETRIES;
 
 export async function executeProcessMachineRemove({
   event,
@@ -100,7 +99,7 @@ export async function executeProcessMachineRemove({
     runEffect(observeLeavingServerActivity({
       organizationId: attempt.organizationId,
       machineId: attempt.machineId,
-      lastTry: isLastTry(stepAttempt),
+      lastTry: stepAttempt >= MACHINE_REMOVE_RETRIES,
     }, observe)),
   );
   const sent = await step.run("remove-machine", () =>
@@ -196,12 +195,12 @@ export async function executeProcessMachineRemoveOnFailure({
   event,
 }: {
   event: unknown;
-}) {
+}, runEffect: EffectRunner) {
   const decoded = decodeMachineRemoveFailureEvent(event);
   if (Option.isNone(decoded)) return;
   const attemptId = decoded.value.data.event.data.attemptId;
   const inngestRunId = decoded.value.data.run_id;
-  await runInngestEffect(
+  await runEffect(
     failOwnedMachineRemoveAttemptActivity({
       attemptId,
       inngestRunId,
@@ -248,7 +247,7 @@ export const createProcessMachineRemove = (
     triggers: [{ event: machineRemoveRequestedEventType }],
     concurrency: [{ key: "event.data.attemptId", limit: 1 }],
     onFailure: async ({ event }) =>
-      executeProcessMachineRemoveOnFailure({ event }),
+      executeProcessMachineRemoveOnFailure({ event }, runEffect),
   },
   async ({ event, step, runId, attempt }) =>
     executeProcessMachineRemove({
