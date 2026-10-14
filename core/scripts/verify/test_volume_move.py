@@ -214,6 +214,10 @@ class ClusterModel:
         # "no cursor", "no daemon procs" or "no plugin procs".
         self.unread_procs = set()
         self.restart_reply = {}
+        # The slice a Machine's plugin unit runs in when not system.slice, and a Machine where systemd names no
+        # control group for it.
+        self.plugin_slice = {}
+        self.no_group = set()
         # Machine to a line its journal read emits first that is not a JSON object.
         self.garbage_journal = {}
 
@@ -335,6 +339,11 @@ class ClusterModel:
         status = "1" if machine in self.unread_procs else "0"
         lines = [f"procs {DAEMON} absent",
                  f"procs {PLUGIN} {status} " + " ".join(plugin) if plugin or status != "0" else f"procs {PLUGIN} absent"]
+        if "ControlGroup" not in script and machine in self.plugin_slice:
+            # A read of system.slice finds no group for a unit that runs elsewhere.
+            lines[1] = f"procs {PLUGIN} absent"
+        elif "ControlGroup" in script and machine in self.no_group:
+            lines[1] = f"procs {PLUGIN} nogroup"
         dropped = {"no daemon procs": DAEMON, "no plugin procs": PLUGIN}.get(self.restart_reply.get(machine))
         lines = [line for line in lines if not (dropped and line.startswith(f"procs {dropped} "))]
         if "--show-cursor" in script and self.restart_reply.get(machine) != "no cursor":
@@ -2575,6 +2584,26 @@ finally:
         result, _ = self.run_cut(plant=lambda model: model.stuck_receive.add("machine-2"))
         self.assertFalse(result["passed"], result)
         self.assertIn("the clean-start restart is unproven on machine-2 before move", result.get("skipped") or "",
+                      result)
+
+    def test_a_plugin_outside_system_slice_is_read_in_the_control_group_systemd_names(self):
+        # Nothing in core sets Slice=, but a unit moved elsewhere read as absent from system.slice: a clean start.
+        def moved(stuck):
+            def plant(model):
+                model.plugin_slice["machine-2"] = "ployz.slice"
+                if stuck:
+                    model.stuck_receive.add("machine-2")
+            return plant
+        result, _ = self.run_cut(plant=moved(stuck=True))
+        self.assertFalse(result["passed"], result)
+        self.assertIn("ployz-volume-plugin.service still holds", result.get("skipped") or "", result)
+        result, _ = self.run_cut(plant=moved(stuck=False))
+        self.assertTrue(result["passed"], result)
+
+    def test_a_unit_systemd_names_no_control_group_for_skips_the_case(self):
+        result, _ = self.run_cut(plant=lambda model: model.no_group.add("machine-2"))
+        self.assertFalse(result["passed"], result)
+        self.assertIn("systemd named no control group for ployz-volume-plugin.service", result.get("skipped") or "",
                       result)
 
     def test_a_cgroup_procs_read_that_fails_skips_the_case(self):
