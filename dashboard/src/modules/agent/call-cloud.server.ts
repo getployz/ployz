@@ -9,7 +9,7 @@ import type { Caller } from "#/modules/identity/actor";
 import { loadOrganizationConnections } from "#/modules/machines/connections.server";
 import { UNREACHABLE_MESSAGE } from "#/modules/machines/server-operations.server";
 import type { ServerPolicyChange } from "#/modules/machines/server-policy";
-import type { Admission } from "#/modules/operations/keyed.server";
+import { admittedAt, type Admission } from "#/modules/operations/keyed.server";
 import { dashedAttempt, operationsOn, serverNames } from "#/modules/operations/operation-history.server";
 import {
   actService,
@@ -180,8 +180,9 @@ const act = Effect.fn("CallCloud.act")(function* (caller: Caller, { attempt, dig
     if (!admission.ok) return { ok: false, refusal: admission.refusal } as const;
     const id = dashedAttempt(admission.id);
     const [run] = yield* operationsOn(organizationId, subject, id, 1);
+    const requested = run === undefined ? yield* admittedAt(organizationId, attempt) : null;
     return answer<Operation>(run ?? {
-      attempt: id, run: what, state: "accepted", requested_at: Math.floor(Date.now() / 1000), ended_at: null, reason: null, servers: [], kept: [], unanswered: [],
+      attempt: id, run: what, state: "accepted", requested_at: Math.floor((requested ?? new Date()).getTime() / 1000), ended_at: null, reason: null, servers: [], kept: [], unanswered: [],
     });
   });
   switch (action.action) {

@@ -164,14 +164,18 @@ describe("callCloud", () => {
         digest: "d".repeat(64),
         action: set,
       };
+      const attempt = attemptIdOf(ORGANIZATION, "server_set", act.attempt);
+      // Catches an attempt another Organization's same request key would share.
+      expect(attemptIdOf(DRAIN, "server_set", act.attempt)).not.toBe(attempt);
       const heard = yield* callCloud(caller, { act }).pipe(Effect.provide(services));
-      expect(heard).toEqual({ ok: true, value: expect.objectContaining({ run: "set web-2", state: "accepted" }) });
-      const id = `server-policy-${attemptIdOf(ORGANIZATION, "server_set", act.attempt)}`;
+      expect(heard).toEqual({ ok: true, value: expect.objectContaining({ attempt, run: "set web-2", state: "accepted" }) });
+      const id = `server-policy-${attempt}`;
       expect(send.mock.calls).toEqual([[expect.objectContaining({
         id,
         data: { organizationId: ORGANIZATION, machineId: MACHINE, change: { acceptsServices: false, acceptsIngress: false, buildConcurrency: 2 } },
       })]]);
-      // Catches a replayed act queuing the change again, however long after the first.
+      // Catches a replayed act queuing the change again, or answering a different time, however long after the first.
+      yield* Effect.sleep("1100 millis");
       const replayed = yield* callCloud(caller, { act }).pipe(Effect.provide(services));
       expect(replayed).toEqual(heard);
       expect(send).toHaveBeenCalledTimes(1);
