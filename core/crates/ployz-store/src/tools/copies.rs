@@ -200,7 +200,7 @@ pub(crate) struct VolumeMirror {
 
 impl Tool for VolumeMirror {
     const NAME: &'static str = "volume_mirror";
-    const DESCRIPTION: &'static str = "Make a Volume's one mirror current. With server, copy it there as <volume>-<server>; without, send what changed since the last sync. full recopies a mirror that diverged.";
+    const DESCRIPTION: &'static str = "Make a Volume's one mirror current. With server, copy it there as <volume>-<server>; without, hand the mirror what changed since its last pull and answer without waiting for the download. full recopies a mirror that diverged, as a run.";
     const GATE: Gate = Gate::Cloud;
     const READ_ONLY: bool = false;
     const LOCAL_NEXT: Option<&'static str> = Some("environment_show");

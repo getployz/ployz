@@ -689,24 +689,18 @@ export type CopyAnswer =
   | { readonly ok: false; readonly reason: CopyRefusal; readonly copy: VolumeCopy | null; readonly message: string };
 
 /**
- * One SetVolumeCopy. A refusal is an answer, since the run decides what follows it; only a failure to ask fails the
- * attempt, so the step retries.
+ * Who a SetVolumeCopy is for: a run, a Deploy following another run's lane without owning its row, or the rowless
+ * mirror sync at the Volume's newest gen.
  */
-export const setVolumeCopy = Effect.fn("VolumeRun.setVolumeCopy")(function* (
-  ctx: RunContext,
-  inngestRunId: string,
-  machine: MachineRef,
-  expect: ExpectedCopy,
-  want: WantedCopy,
-) {
-  yield* requireOwner(ctx.id, inngestRunId);
-  return yield* sendSetCopy(ctx, machine, expect, want);
-});
+export type CopyAsker = Pick<RunContext, "organizationId" | "dockerVolume" | "volumeName" | "gen">;
 
-/** SetVolumeCopy with the run's gen, for a run that follows another run's lane and so does not own its row. */
-export const sendSetCopy = Effect.fn("VolumeRun.sendSetCopy")(function* (ctx: RunContext, machine: MachineRef, expect: ExpectedCopy, want: WantedCopy) {
-  const session = yield* openSession(ctx.organizationId);
-  return yield* session.volumeSwitch(machine.id, { command: "set_volume_copy", payload: { name: ctx.dockerVolume, expect, want, gen: ctx.gen } }).pipe(
+/**
+ * One SetVolumeCopy. A refusal is an answer, since the caller decides what follows it; only a failure to ask fails,
+ * so a run's step retries.
+ */
+export const askCopy = Effect.fn("VolumeRun.askCopy")(function* (asker: CopyAsker, machine: MachineRef, expect: ExpectedCopy, want: WantedCopy) {
+  const session = yield* openSession(asker.organizationId);
+  return yield* session.volumeSwitch(machine.id, { command: "set_volume_copy", payload: { name: asker.dockerVolume, expect, want, gen: asker.gen } }).pipe(
     Effect.map((reply): CopyAnswer => ({ ok: true, copy: reply.copy })),
     Effect.catch((error) => {
       const refused = decodeCopyRefused("cause" in error ? error.cause : undefined);
@@ -716,11 +710,22 @@ export const sendSetCopy = Effect.fn("VolumeRun.sendSetCopy")(function* (ctx: Ru
       const { reason } = refused.value.details;
       // SAFETY: the Machine sends the copy it holds, as the SDK's VolumeCopy.
       const copy = refused.value.details.copy as VolumeCopy | null;
-      const message = switchFailureMessage(reason, ctx, machine) ?? `${machine.name} is busy with ${ctx.volumeName}`;
+      const message = switchFailureMessage(reason, asker, machine) ?? `${machine.name} is busy with ${asker.volumeName}`;
       return Effect.succeed<CopyAnswer>({ ok: false, reason, copy, message });
     }),
   );
 }, Effect.scoped);
+
+export const setVolumeCopy = Effect.fn("VolumeRun.setVolumeCopy")(function* (
+  ctx: RunContext,
+  inngestRunId: string,
+  machine: MachineRef,
+  expect: ExpectedCopy,
+  want: WantedCopy,
+) {
+  yield* requireOwner(ctx.id, inngestRunId);
+  return yield* askCopy(ctx, machine, expect, want);
+});
 
 export const inspectCopy = (ctx: RunContext, inngestRunId: string, machine: MachineRef) =>
   sendSwitch(ctx, inngestRunId, machine, { command: "inspect_volume_copy", payload: { name: ctx.dockerVolume } }).pipe(
@@ -803,44 +808,65 @@ export const commitMove = Effect.fn("VolumeRun.commit")(function* (ctx: Pick<Run
 });
 
 /**
- * The point of no return: the commit, then B becomes the writer at G and creates the Service from the newest stopped
- * Container elsewhere. One step, so B is never told to start by a run that does not own the commit, and the spec never
+ * Where B starts: `from` is the Machine whose stopped Container B copies, or null when the run does not know it, so the
+ * one stopped Container on any other Machine.
+ */
+type WriterStart = {
+  readonly to: MachineRef;
+  readonly from: MachineRef | null;
+  readonly expect: ExpectedCopy;
+  readonly at: SnapshotGuid;
+  readonly epoch: number;
+};
+
+/**
+ * The point of no return: the commit, then B becomes the writer at G and creates the Service from A's stopped
+ * Container. One step, so B is never told to start by a run that does not own the commit, and the spec never
  * lands in a step result. A B that already runs the Service is left alone.
  */
 export const commitAndStart = Effect.fn("VolumeRun.commitAndStart")(function* (
   ctx: RunContext,
   inngestRunId: string,
-  start: { readonly to: MachineRef; readonly expect: ExpectedCopy; readonly at: SnapshotGuid; readonly epoch: number },
+  start: WriterStart,
 ) {
   const { to } = start;
   if (!(yield* commitMove(ctx, inngestRunId, to.id))) {
     const lost: CopyAnswer = { ok: false, reason: "stale", copy: null, message: `a newer run took ${ctx.volumeName} before ${to.name} started it` };
     return lost;
   }
-  return yield* startWriter(ctx, start);
+  return yield* startWriter(ctx, inngestRunId, start);
 });
 
-/** B becomes the writer at G and creates the Service from the newest stopped Container elsewhere; a B already running it is left alone. */
-export const startWriter = Effect.fn("VolumeRun.startWriter")(function* (
-  ctx: RunContext,
-  start: { readonly to: MachineRef; readonly expect: ExpectedCopy; readonly at: SnapshotGuid; readonly epoch: number },
-) {
-  const { to } = start;
+/**
+ * B becomes the writer at G and creates the Service from the source's stopped Container; a B already running it is left
+ * alone. `ownedBy` is the Inngest run that must still own the row when B is told, or null for a Deploy following
+ * another run's committed lane, which owns no row.
+ */
+export const startWriter = Effect.fn("VolumeRun.startWriter")(function* (ctx: RunContext, ownedBy: string | null, start: WriterStart) {
+  const { to, from } = start;
   const containers = yield* serviceContainers(ctx.organizationId, ctx.dockerVolume);
   if (containers.some((container) => container.machine_id === to.id && container.runtime.state === "running")) {
     const running: CopyAnswer = { ok: true, copy: null };
     return running;
   }
-  const [holder] = containers
-    .filter((container) => container.machine_id !== to.id && container.runtime.state !== "running")
-    .sort((a, b) => b.created_at_unix_nanos - a.created_at_unix_nanos);
-  if (holder === undefined) return yield* Effect.fail(new NonRetriableError(`${ctx.volumeName} has no stopped Service container to start on ${to.name}`));
+  const stopped = containers.filter((container) =>
+    container.runtime.state !== "running" && (from === null ? container.machine_id !== to.id : container.machine_id === from.id));
+  const [holder] = stopped;
+  if (holder === undefined) {
+    return yield* Effect.fail(new NonRetriableError(`${ctx.volumeName} has no stopped Service container${from === null ? "" : ` on ${from.name}`} to start on ${to.name}`));
+  }
+  if (stopped.length > 1) {
+    const named = yield* Effect.forEach(stopped, (container) => machineNamed(ctx.organizationId, container.machine_id));
+    const on = from?.name ?? named.map((machine) => machine.name ?? machine.id).join(" and ");
+    return yield* Effect.fail(new NonRetriableError(`${ctx.volumeName} has ${stopped.length} stopped Service containers on ${on}; starting it on ${to.name} needs exactly one`));
+  }
   const session = yield* openSession(ctx.organizationId);
   const { container } = yield* session.inspectContainer(holder.machine_id, holder.container_id).pipe(
     Effect.mapError((error) => new Error(`reading ${holder.resolved_spec.name}'s spec: ${sdkFailureMessage(error)}`)),
   );
   const spec = container.resolved_spec;
-  return yield* sendSetCopy(ctx, to, start.expect, {
+  if (ownedBy !== null) yield* requireOwner(ctx.id, ownedBy);
+  return yield* askCopy(ctx, to, start.expect, {
     kind: "writer",
     at: start.at,
     epoch: start.epoch,

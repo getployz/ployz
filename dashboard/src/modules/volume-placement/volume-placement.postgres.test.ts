@@ -243,17 +243,17 @@ describe("volume placement", () => {
   it("requests a run once the Deploy that stamped the Volume has ended, as staging does, and not while it runs", async () => {
     await stage("web-1", ["web-2"]);
     await run(stampPlacements(organizationId, [volumeId], "dep-1"));
-    const sync = () => run(requestUnclaimedRun({ userId: null, organizationId }, { volumeId, environment, kind: "sync", args: { full: false } }));
-    expect(await sync()).toMatchObject({ ok: false, refusal: { message: "A Deploy is moving this Volume. Wait for it to finish." } });
+    const request = () => run(requestUnclaimedRun({ userId: null, organizationId }, { volumeId, environment, kind: "delete_mirror", args: { slot: "web-3", confirmed_name: null } }));
+    expect(await request()).toMatchObject({ ok: false, refusal: { message: "A Deploy is moving this Volume. Wait for it to finish." } });
     inFlight = false;
-    expect(await sync()).toMatchObject({ ok: true });
+    expect(await request()).toMatchObject({ ok: true });
     expect((await harness.pool.query("select count(*)::int as runs from volume_run")).rows).toEqual([{ runs: 1 }]);
   });
 
   it("refuses a run when a Deploy stamps the Volume between the caller's check and the insert", async () => {
     await stage("web-1", ["web-2"]);
     between = { query: "volumes", run: () => run(stampPlacements(organizationId, [volumeId], "dep-1")) };
-    const requested = await run(requestUnclaimedRun({ userId: null, organizationId }, { volumeId, environment, kind: "sync", args: { full: false } }));
+    const requested = await run(requestUnclaimedRun({ userId: null, organizationId }, { volumeId, environment, kind: "delete_mirror", args: { slot: "web-3", confirmed_name: null } }));
     expect(requested).toMatchObject({ ok: false, refusal: { message: "A Deploy is moving this Volume. Wait for it to finish." } });
     expect((await harness.pool.query("select count(*)::int as runs from volume_run")).rows).toEqual([{ runs: 0 }]);
   });

@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import type { MachineName } from "@ployz/sdk";
+import type { MachineId, MachineName } from "@ployz/sdk";
 import { and, eq, inArray } from "drizzle-orm";
 import { Effect } from "effect";
 import { NonRetriableError } from "inngest";
@@ -7,6 +7,7 @@ import { expectOf, observedEpoch, oldCopy } from "#/modules/volume-run/plan";
 import { volumeRun } from "#/modules/volume-run/tables";
 import { ACTIVE_VOLUME_RUN_STATES, type AnsweredMember, copyName, type Member, type VolumeRunArgs, type VolumeRunKind } from "#/modules/volume-run/volume-run";
 import {
+  askCopy,
   contextOf,
   ended,
   keptOn,
@@ -16,7 +17,6 @@ import {
   pastReturn,
   requeueTakenMoves,
   type RunContext,
-  sendSetCopy,
   setVolumeCopy,
   startWriter,
   takeDeployLane,
@@ -24,10 +24,14 @@ import {
 } from "#/modules/volume-run/volume-run.server";
 import { Database } from "#/server/database.server";
 
-/** Plain JSON: a step result. A took lane is the Deploy's own row; a followed lane is the other run's row, read once. */
+/**
+ * Plain JSON: a step result. A took lane is the Deploy's own row; a followed lane is the other run's row, read once.
+ * `machine` is the Server the lane committed to, by id, so a rename since cannot redirect the Deploy; null follows `to`
+ * by name.
+ */
 export type DeployLane =
   | { readonly kind: "took"; readonly run: RunContext; readonly resume: VolumeRunArgs["move"] | null }
-  | { readonly kind: "follow"; readonly run: RunContext; readonly to: MachineName; readonly epoch: number | null };
+  | { readonly kind: "follow"; readonly run: RunContext; readonly to: MachineName; readonly machine: MachineId | null; readonly epoch: number | null };
 
 const CLOUD = (organizationId: string) => ({ userId: null, organizationId });
 
@@ -65,7 +69,7 @@ export const placeDeployVolumes = Effect.fn("VolumeRun.placeDeploy")(function* (
       if (pastReturn(lane)) {
         const to = yield* laneTarget(lane);
         if (to === null) return yield* Effect.fail(new NonRetriableError(`${lane.volumeName} is moving to a Server its run never named`));
-        placed.push({ kind: "follow", run: contextOf(lane), to, epoch: lane.epoch });
+        placed.push({ kind: "follow", run: contextOf(lane), to, machine: lane.current ?? pinned(lane), epoch: lane.epoch });
         continue;
       }
       // SAFETY: a move row's args are a Destination; a deploy row's were written from a VolumeRunArgs["deploy"].
@@ -82,6 +86,9 @@ export const placeDeployVolumes = Effect.fn("VolumeRun.placeDeploy")(function* (
     return placed;
   }));
 });
+
+// SAFETY: a move row's args are a Destination.
+const pinned = (lane: Pick<typeof volumeRun.$inferSelect, "kind" | "args">) => (lane.kind === "move" ? (lane.args as VolumeRunArgs["move"]).machine ?? null : null);
 
 const answered = (members: readonly Member[]) => members.filter((member): member is AnsweredMember => member.answered);
 
@@ -145,19 +152,19 @@ const retriable = (reason: string) => reason === "busy" || reason === "mismatch"
 const fenceFollowed = Effect.fn("VolumeRun.fenceFollowed")(function* (lane: Extract<DeployLane, { kind: "follow" }>) {
   const { run, to } = lane;
   const members = answered(yield* observeVolumeMembers(run.organizationId, run.dockerVolume));
-  const b = members.find((member) => member.machine.name === to);
+  const b = members.find((member) => (lane.machine === null ? member.machine.name === to : member.machine.id === lane.machine));
   if (b === undefined) return yield* Effect.fail(new Error(`${to} did not answer for ${run.volumeName}`));
-  const copy = b.view.copy;
-  if (copy?.kind === "root" && run.kind === "restore") return { on: to };
-  if (copy === null || copy.newest === null) return yield* Effect.fail(new NonRetriableError(`${run.volumeName} has no copy on ${to} to deploy`));
-  const epoch = copy.kind === "root" ? copy.epoch : lane.epoch;
-  if (epoch === null) return yield* Effect.fail(new Error(`${run.volumeName}'s run on ${to} has not chosen an epoch yet`));
   const machine: MachineRef = b.machine;
+  const copy = b.view.copy;
+  if (copy?.kind === "root" && run.kind === "restore") return { on: machine.name };
+  if (copy === null || copy.newest === null) return yield* Effect.fail(new NonRetriableError(`${run.volumeName} has no copy on ${machine.name} to deploy`));
+  const epoch = copy.kind === "root" ? copy.epoch : lane.epoch;
+  if (epoch === null) return yield* Effect.fail(new Error(`${run.volumeName}'s run on ${machine.name} has not chosen an epoch yet`));
   const started = run.kind === "restore"
-    ? yield* sendSetCopy(run, machine, expectOf(copy), { kind: "writer", at: copy.newest.guid, epoch, start: null })
-    : yield* startWriter(run, { to: machine, expect: expectOf(copy), at: copy.newest.guid, epoch });
+    ? yield* askCopy(run, machine, expectOf(copy), { kind: "writer", at: copy.newest.guid, epoch, start: null })
+    : yield* startWriter(run, null, { to: machine, from: null, expect: expectOf(copy), at: copy.newest.guid, epoch });
   if (!started.ok) return yield* Effect.fail(retriable(started.reason) ? new Error(started.message) : new NonRetriableError(started.message));
-  return { on: to };
+  return { on: machine.name };
 });
 
 export const fenceDeployVolume = (lane: DeployLane, inngestRunId: string) =>

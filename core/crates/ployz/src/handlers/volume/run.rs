@@ -1,6 +1,7 @@
-//! Volume runs: a Mirror, Sync, Mirror removal, Move, Release or Restore of one Volume,
+//! Volume runs: a Mirror, full Sync, Mirror removal, Move, Release or Restore of one Volume,
 //! which Ployz Cloud runs across its Servers. The CLI starts one, reads them back, and with `--wait`
-//! follows one until it ends. Without Cloud there are none: Volumes stay put.
+//! follows one until it ends. A plain Sync is no run: Cloud hands the Mirror its pull and answers.
+//! Without Cloud there are none: Volumes stay put.
 
 use std::time::Duration;
 
@@ -270,11 +271,11 @@ pub(super) fn mirror_command() -> Command {
 pub(super) fn sync_command() -> Command {
     store::scoped(
         Command::new("sync")
-            .about("Send what changed since the last sync to a Volume's Mirror (Ployz Cloud)"),
+            .about("Hand a Volume's Mirror what changed since its last pull (Ployz Cloud); `volume show` follows the download"),
     )
     .arg(positional("volume", true))
-    .arg(switch("full", None).help("Copy everything again, for a Mirror that fell behind for good"))
-    .arg(wait_flag())
+    .arg(switch("full", None).help("Copy everything again as a run, for a Mirror that fell behind for good"))
+    .arg(wait_flag().requires("full"))
 }
 
 pub(super) fn move_command() -> Command {
@@ -363,20 +364,71 @@ pub(super) fn mirror(root: &ArgMatches) -> Result<(), Error> {
 pub(super) fn sync(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let volume = store::volume_name(matches, "volume")?;
-    let full = matches.get_flag("full");
-    let started = if full {
-        format!("full Sync of Volume {volume}'s Mirror")
-    } else {
-        format!("Sync of Volume {volume}'s Mirror")
-    };
+    if !matches.get_flag("full") {
+        return hand_off(root, &volume);
+    }
+    let started = format!("full Sync of Volume {volume}'s Mirror");
     request(root, &volume, started, |environment| RunRequest {
         environment,
         kind: VolumeRunKind::Sync,
         to: None,
-        full: Some(full),
+        full: Some(true),
         slot: None,
         confirm: None,
         from: None,
+    })
+}
+
+/// What `POST volumes/{id}/sync` asks for.
+#[derive(Debug, Serialize, PartialEq)]
+pub(crate) struct SyncRequest {
+    pub(crate) environment: RunEnvironment,
+}
+
+/// What the Mirror sync did, one line per Mirror.
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct Synced {
+    pub(crate) lines: Vec<String>,
+}
+
+/// Have Cloud hand Volume `volume`'s Mirror its next pull. It answers once the Mirror has it,
+/// without waiting for the download.
+pub(crate) async fn sync_mirror(
+    credential: &Credential,
+    volume: &VolumeId,
+    request: &SyncRequest,
+) -> Result<Synced, StoreCallError> {
+    let body = serde_json::to_value(request)
+        .map_err(|error| crate::cloud_login::LoginError::Reply(error.to_string()))?;
+    cloud_account::refusable(
+        credential,
+        Method::POST,
+        &format!("volumes/{volume}/sync"),
+        Some(&body),
+    )
+    .await
+}
+
+fn hand_off(root: &ArgMatches, volume: &VolumeName) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let store = store::store(root)?;
+    let (runtime, credential) = cloud(store.backend())?;
+    let (volume_id, environment) = located(&store, matches, volume)?;
+    let asked = SyncRequest {
+        environment: RunEnvironment {
+            project: environment.project,
+            environment: environment.name,
+        },
+    };
+    let synced = runtime
+        .block_on(sync_mirror(credential, &volume_id, &asked))
+        .map_err(|error| store.fail(error))?;
+    let show = store::next(matches, &["volume", "show", volume.as_str()]);
+    crate::ui::finish(&Next::new(&synced, Some(show.clone())), || {
+        for line in &synced.lines {
+            crate::ui::stream(format_args!("{line}"));
+        }
+        crate::ui::hint(&Hint::Next(show.clone()));
     })
 }
 

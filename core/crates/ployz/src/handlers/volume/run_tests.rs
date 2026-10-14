@@ -140,6 +140,8 @@ fn a_mirror_names_its_server_and_a_removal_names_its_mirror() {
     let error = parsed(&["ployz", "volume", "mirror", "rm"]).unwrap_err();
     assert!(error.to_string().contains("VOLUME-SERVER"), "{error}");
     assert!(parsed(&["ployz", "volume", "sync", "data", "--to", "web-2"]).is_err());
+    let error = parsed(&["ployz", "volume", "sync", "data", "--wait"]).unwrap_err();
+    assert!(error.to_string().contains("--full"), "{error}");
     let error = parsed(&["ployz", "volume", "move", "data"]).unwrap_err();
     assert!(error.to_string().contains("--to"), "{error}");
     assert!(parsed(&["ployz", "volume", "release", "data", "--to", "web-2"]).is_err());
@@ -211,13 +213,13 @@ async fn each_kind_posts_only_its_own_fields() {
                 environment: named(),
                 kind: VolumeRunKind::Sync,
                 to: None,
-                full: Some(false),
+                full: Some(true),
                 slot: None,
                 confirm: None,
                 from: None,
             },
-            json!({ "environment": { "project": "shop", "environment": "production" }, "kind": "sync", "full": false }),
-            json!({ "full": false }),
+            json!({ "environment": { "project": "shop", "environment": "production" }, "kind": "sync", "full": true }),
+            json!({ "full": true }),
         ),
         (
             RunRequest {
@@ -401,4 +403,30 @@ fn a_yielded_run_says_a_deploy_took_its_volume() {
         error.message,
         "The Move gave way to a Deploy: a Deploy took the Volume"
     );
+}
+
+#[tokio::test]
+async fn a_plain_sync_posts_its_environment_and_reads_back_the_lines() {
+    let cloud = fake_cloud(|route, sent| {
+        assert_eq!(route, format!("POST /api/cli/volumes/{VOLUME}/sync"));
+        let sent: Value = serde_json::from_str(sent).unwrap();
+        assert_eq!(
+            sent,
+            json!({ "environment": { "project": "shop", "environment": "production" } })
+        );
+        (
+            200,
+            json!({ "lines": ["data-web-2 is pulling w-3-1700000000"] }),
+        )
+    });
+    let synced = sync_mirror(
+        &token(&cloud),
+        &volume(),
+        &SyncRequest {
+            environment: named(),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(synced.lines, ["data-web-2 is pulling w-3-1700000000"]);
 }

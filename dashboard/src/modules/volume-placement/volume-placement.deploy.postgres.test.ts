@@ -1,4 +1,4 @@
-import type { ConfigCommand, ConfigCommitted, ConfigStore, CopyObservation, MachineId, VolumeKind } from "@ployz/sdk";
+import type { ConfigCommand, ConfigCommitted, ConfigStore, CopyObservation, MachineId, VolumeKind, WantedCopy } from "@ployz/sdk";
 import { Effect } from "effect";
 import { Inngest } from "inngest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -11,7 +11,9 @@ import {
 import { listPlacements, stagePlacement, stampPlacements, writeAdmitted } from "#/modules/volume-placement/volume-placement.server";
 import { placementTargets } from "#/modules/volume-placement/volume-placement";
 import type { Member } from "#/modules/volume-run/volume-run";
-import { member } from "#/modules/volume-run/volume-run.test-fixture";
+import type { CopyAsk } from "#/modules/volume-placement/mirror-sync.server";
+import type { CopyAnswer } from "#/modules/volume-run/volume-run.server";
+import { COPIES, member } from "#/modules/volume-run/volume-run.test-fixture";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import type { Database } from "#/server/database.server";
 import type { SecretEncryption } from "#/utils/encrypted-secret.server";
@@ -502,33 +504,48 @@ describe("deploying a Volume placement", () => {
 
   describe("refreshing mirrors", () => {
     const copy = (server: string, role: "writer" | "slot") => ({ machine_id: web(server), name: "shop-production_vol-vol1", role });
+    let asked: string[];
+    beforeEach(() => { asked = []; });
+    const ask: CopyAsk = (_asker, machine, _expect, want: WantedCopy) => {
+      asked.push(`${want.kind} ${machine.name}`);
+      const newest = { name: "w-1-5", guid: "12", created_unix_seconds: 1_790_000_100 };
+      return Effect.succeed<CopyAnswer>(want.kind === "snapshot" ? { ok: true, copy: { ...COPIES.writer, newest } } : { ok: true, copy: COPIES.pulling });
+    };
     const refresh = (copies: CopyObservation["copies"], blockers: string[] = []) =>
-      run(refreshMirrors(organizationId, null, () => Effect.succeed(copies), () => Effect.succeed(blockers)));
-    const requestedKinds = async () => (await harness.pool.query(`select kind from volume_run`)).rows.map((row) => row.kind);
+      run(refreshMirrors(organizationId, null, () => Effect.succeed(copies), () => Effect.succeed(blockers), () => Effect.succeed(members), ask));
+    const runKinds = async () => (await harness.pool.query(`select kind from volume_run`)).rows.map((row) => row.kind);
 
-    it("syncs a copy the dashboard has no record for, as the CLI made it a mirror", async () => {
-      expect(await refresh([copy("web-1", "writer"), copy("web-2", "slot")])).toHaveLength(1);
-      expect(await requestedKinds()).toEqual(["sync"]);
+    it("syncs a copy the dashboard has no record for, as the CLI made it a mirror, and inserts no run", async () => {
+      members = [member("web-1", "writer"), member("web-2", "mirror")];
+      expect(await refresh([copy("web-1", "writer"), copy("web-2", "slot")])).toMatchObject([{ lines: ["data-web-2 is pulling w-1-5"] }]);
+      expect(asked).toEqual(["snapshot web-1", "mirror web-2"]);
+      expect(await runKinds()).toEqual([]);
     });
 
-    it("never refreshes a detached copy", async () => {
+    it("never refreshes a detached copy, and says the Volume has no mirror", async () => {
       await run(stagePlacement(organizationId, { environment, volumeId, staged: null, mirrors: [] }));
-      expect(await refresh([copy("web-2", "writer"), copy("web-1", "slot")])).toEqual([]);
+      members = [member("web-2", "writer"), member("web-1", "mirror")];
+      expect(await refresh([copy("web-2", "writer"), copy("web-1", "slot")])).toMatchObject([{ lines: ["data has no mirror"] }]);
+      expect(asked).toEqual([]);
     });
 
-    it("syncs when an old primary came back, so the run demotes it", async () => {
+    it("requests the demoting run when an old primary came back", async () => {
       await run(stagePlacement(organizationId, { environment, volumeId, staged: null, mirrors: [] }));
-      expect(await refresh([copy("web-2", "writer"), copy("web-1", "writer")])).toHaveLength(1);
+      members = [member("web-2", "writer"), member("web-1", "writer")];
+      expect(await refresh([copy("web-2", "writer"), copy("web-1", "writer")])).toMatchObject([{ sync: { kind: "demoting" } }]);
+      expect(await runKinds()).toEqual(["sync"]);
     });
 
-    it("leaves a Volume a Deploy is moving to that Deploy", async () => {
+    it("leaves a Volume a Deploy is moving to that Deploy, and says so", async () => {
       await stageMove("web-2", ["web-2"]);
-      expect(await refresh([copy("web-1", "writer"), copy("web-2", "slot")])).toEqual([]);
+      members = [member("web-1", "writer"), member("web-2", "mirror")];
+      expect(await refresh([copy("web-1", "writer"), copy("web-2", "slot")])).toMatchObject([{ sync: { kind: "deploying" } }]);
+      expect(asked).toEqual([]);
     });
 
     it("skips an organization while a Server with storage runs an older daemon", async () => {
       expect(await refresh([copy("web-1", "writer"), copy("web-2", "slot")], ["db-old"])).toEqual([]);
-      expect(await requestedKinds()).toEqual([]);
+      expect(await runKinds()).toEqual([]);
     });
   });
 
