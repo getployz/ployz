@@ -2,9 +2,7 @@ import "@tanstack/react-start/server-only";
 import crypto from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type { EncryptedSecretValue } from "#/db/tables";
-import { createRequire } from "node:module";
-import type * as PloyzSdk from "@ployz/sdk";
-import type { EnrollmentSnapshot, MachineId, RegisterRequest } from "@ployz/sdk";
+import { allocateEnrollment, type EnrollmentSnapshot, type MachineId, type RegisterRequest } from "@ployz/sdk";
 import { and, eq, isNull } from "drizzle-orm";
 import { Effect, Option, Schema } from "effect";
 import {
@@ -253,11 +251,6 @@ const loadPairingRow = Effect.fn("MachineEnrollment.loadPairing")(
       .limit(1);
   },
 );
-
-// SAFETY: the SDK exports this synchronous Rust policy through CommonJS.
-const { allocateEnrollment } = createRequire(import.meta.url)("@ployz/sdk") as Pick<
-  typeof PloyzSdk, "allocateEnrollment"
->;
 
 export const reserveEnrollmentAssignment = Effect.fn(
   "MachineEnrollment.reserveAssignment",

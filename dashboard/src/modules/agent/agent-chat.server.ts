@@ -1,8 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { randomUUID } from "node:crypto";
-import { createRequire } from "node:module";
-import type * as PloyzSdk from "@ployz/sdk";
-import type { Act, Answer, Ask, ConfigCommand, ConfigWritten, DiffView, JsonValue, Place, Write } from "@ployz/sdk";
+import { type Act, agentResume, agentStart, type Answer, type Ask, type ConfigCommand, type ConfigWritten, type DiffView, type JsonValue, type Place, type Write } from "@ployz/sdk";
 import {
   type AnyTextAdapter,
   chat,
@@ -49,9 +47,6 @@ import type { Caller } from "#/modules/identity/actor";
 import { answerForSupport, refusalForSupport } from "#/modules/support-access/support-view";
 import { projectJsonValue } from "#/lib/json";
 import { uuidFrom } from "#/server/uuid-from";
-
-// SAFETY: the package exports this named CommonJS SDK surface at runtime.
-const { agentResume, agentStart } = createRequire(import.meta.url)("@ployz/sdk") as Pick<typeof PloyzSdk, "agentResume" | "agentStart">;
 
 type Gated = { outcome: ToolOutcome } | { asking: { approvalId: string; message: string } };
 type Run = <A, E>(effect: Effect.Effect<A, E, AgentServices>) => Promise<A>;

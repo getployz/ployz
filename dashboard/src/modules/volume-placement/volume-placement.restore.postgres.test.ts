@@ -1,7 +1,5 @@
-import { createRequire } from "node:module";
 import { it } from "@effect/vitest";
-import type * as PloyzSdk from "@ployz/sdk";
-import type { ConfigCommand, ConfigStore, CreateVolume, Mount } from "@ployz/sdk";
+import { type ConfigCommand, type ConfigStore, type CreateVolume, type Mount, RpcError } from "@ployz/sdk";
 import { sql } from "drizzle-orm";
 import { Effect, Option } from "effect";
 import { expect, vi } from "vitest";
@@ -19,8 +17,6 @@ import type { Member } from "#/modules/volume-run/volume-run";
 import { member } from "#/modules/volume-run/volume-run.test-fixture";
 import { Database } from "#/server/database.server";
 import { acmeWeb, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
-
-const { RpcError } = createRequire(import.meta.url)("@ployz/sdk") as Pick<typeof PloyzSdk, "RpcError">;
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000d001";
 const SOURCE = "00000000-0000-4000-8000-00000000d004";
