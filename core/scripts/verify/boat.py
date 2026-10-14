@@ -307,8 +307,20 @@ def pick(entries, image, up, owned, want):
     return picked, dead
 
 
-def stale(entries, states, image, force):
-    """Parked sandboxes reap removes, with why: stopped, gone, of another bake, or every one under --force."""
+def sandbox_states():
+    """The state of every sandbox this Boat key can see, by id."""
+    return {sandbox["id"]: sandbox["state"] for sandbox in boat_json("list", "--all")["sandboxes"]}
+
+
+def kept_bakes():
+    """Bakes this host still keeps or a run still uses; a parked sandbox of any other bake is retired.
+
+    Another checkout can run a newer bake than this one, so no single checkout's bake decides which bakes are old."""
+    return set(read(BAKES) or []) | {record["image"] for record in records() if record.get("image")}
+
+
+def stale(entries, states, kept, force=False):
+    """Parked sandboxes to remove, with why: gone, stopped, of a retired bake, or every one under --force."""
     found = []
     for entry in entries:
         state = states.get(entry["id"])
@@ -316,8 +328,8 @@ def stale(entries, states, image, force):
             found.append((entry, "gone"))
         elif state not in UP_STATES:
             found.append((entry, state))
-        elif entry["image"] != image:
-            found.append((entry, "older bake"))
+        elif entry["image"] not in kept:
+            found.append((entry, "retired bake"))
         elif force:
             found.append((entry, "--force"))
     return found
@@ -383,11 +395,11 @@ def pooled():
     return counts
 
 
-def reap_pool(core, force, yes):
-    """Pool rows for reap: sandboxes stopped, gone, or of an older bake; with yes, delete them and drop them from the pool."""
-    states = {sandbox["id"]: sandbox["state"] for sandbox in boat_json("list", "--all")["sandboxes"]}
+def reap_pool(force, yes):
+    """Pool rows for reap: sandboxes stale() names; with yes, delete them and drop them from the pool."""
     with pool() as entries:
-        found = stale(entries, states, bake_name(corrosion_image(core)), force)
+        # States read under the lock cannot miss a sandbox a run parks or claims meanwhile.
+        found = stale(entries, sandbox_states(), kept_bakes(), force)
         if yes:
             entries[:] = [entry for entry in entries if all(entry is not other for other, reason in found)]
     rows = []
@@ -423,7 +435,7 @@ def runs():
     found = list(records())
     if not found:
         return []
-    states = {sandbox["id"]: sandbox["state"] for sandbox in boat_json("list", "--all")["sandboxes"]}
+    states = sandbox_states()
     return [dict(id=record["run"], provider="boat", owner=record.get("owner", {}), created=record.get("created"),
                  machines=sorted((dict(name=name, sandbox=entry["id"], status=status(states.get(entry["id"])), rss=0,
                                        memory=MEMORY, created=entry.get("created", record.get("created")))

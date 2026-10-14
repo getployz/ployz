@@ -578,7 +578,7 @@ def reap(args):
     if not args.runs and shutil.which(boat.cli()[0]):
         try:
             rows += [dict(run=row["id"], action=row["action"], reason=row["reason"], age="", machines="pooled", ram="", owner="", checkout="")
-                     for row in boat.reap_pool(CORE, args.force, args.yes)]
+                     for row in boat.reap_pool(args.force, args.yes)]
         except (RuntimeError, OSError, subprocess.SubprocessError) as error:
             print(f"Skipping the Boat pool: {str(error).splitlines()[0]}", file=sys.stderr)
     print(table(rows, ["run", "action", "reason", "age", "machines", "ram", "owner", "checkout"]))

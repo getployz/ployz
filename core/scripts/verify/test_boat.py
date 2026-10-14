@@ -347,7 +347,8 @@ class Pool(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
-        for name, value in [("REGISTRY", Path(directory.name)), ("POOL", Path(directory.name) / boat.POOL.name)]:
+        for name, value in [("REGISTRY", Path(directory.name)), ("POOL", Path(directory.name) / boat.POOL.name),
+                            ("BAKES", Path(directory.name) / boat.BAKES.name)]:
             self.addCleanup(setattr, boat, name, getattr(boat, name))
             setattr(boat, name, value)
 
@@ -438,14 +439,32 @@ class Pool(unittest.TestCase):
             with unittest.mock.patch.object(boat, "POOL_SIZE", 0), self.assertRaisesRegex(RuntimeError, "need up to 3, 1 left"):
                 boat.preflight(3, Path("."))
 
-    def test_reap_takes_stopped_gone_and_older_bakes_and_all_under_force(self):
-        entries = [parked("bx_up", 1), parked("bx_stopped", 2), parked("bx_gone", 3), parked("bx_old", 4, image="bake-b")]
-        states = {"bx_up": "ready", "bx_stopped": "stopped", "bx_old": "idle"}
-        found = [(entry["id"], reason) for entry, reason in boat.stale(entries, states, "bake-a", False)]
-        self.assertEqual(found, [("bx_stopped", "stopped"), ("bx_gone", "gone"), ("bx_old", "older bake")])
-        found = [entry["id"] for entry, reason in boat.stale(entries, states, "bake-a", True)]
-        self.assertEqual(found, ["bx_up", "bx_stopped", "bx_gone", "bx_old"])
+    def test_reap_takes_stopped_gone_and_retired_bakes_and_all_under_force(self):
+        entries = [parked("bx_up", 1), parked("bx_stopped", 2), parked("bx_gone", 3), parked("bx_old", 4, image="bake-c"),
+                   parked("bx_sibling", 5, image="bake-b")]
+        states = {"bx_up": "ready", "bx_stopped": "stopped", "bx_old": "idle", "bx_sibling": "idle"}
+        found = [(entry["id"], reason) for entry, reason in boat.stale(entries, states, {"bake-a", "bake-b"})]
+        self.assertEqual(found, [("bx_stopped", "stopped"), ("bx_gone", "gone"), ("bx_old", "retired bake")])
+        found = [entry["id"] for entry, reason in boat.stale(entries, states, {"bake-a", "bake-b"}, True)]
+        self.assertEqual(found, ["bx_up", "bx_stopped", "bx_gone", "bx_old", "bx_sibling"])
 
+    def test_a_bake_the_ledger_or_any_run_still_uses_is_kept(self):
+        boat.write(boat.BAKES, ["bake-a", "bake-b"])
+        boat.write(boat.registry("run9"), dict(run="run9", image="bake-z", sandboxes={}))
+        self.assertEqual(boat.kept_bakes(), {"bake-a", "bake-b", "bake-z"})
+
+    def test_reap_reads_sandbox_states_under_the_pool_lock_and_keeps_a_sibling_bake(self):
+        boat.write(boat.BAKES, ["bake-a", "bake-b"])
+        boat.write(boat.POOL, [parked("bx_a", 1), parked("bx_b", 2, image="bake-b"), parked("bx_c", 3, image="bake-c")])
+        held = []
+
+        def listing(*args):
+            held.append(self.locked())
+            return dict(sandboxes=[dict(id=sandbox, state="ready") for sandbox in ["bx_a", "bx_b", "bx_c"]])
+        with unittest.mock.patch.object(boat, "boat_json", listing):
+            rows = boat.reap_pool(False, False)
+        self.assertEqual(held, [True])
+        self.assertEqual([(row["id"], row["reason"]) for row in rows], [("bx_c", "retired bake")])
 
 if __name__ == "__main__":
     unittest.main()
