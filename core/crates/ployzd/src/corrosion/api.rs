@@ -479,7 +479,7 @@ mod tests {
                         if read == 0 {
                             break;
                         }
-                        request.extend_from_slice(&buffer[..read]);
+                        request.extend_from_slice(buffer.get(..read).unwrap());
                     }
                     received.fetch_add(1, Ordering::SeqCst);
                     drop(stream);

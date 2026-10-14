@@ -5,9 +5,9 @@ use std::{collections::BTreeSet, path::PathBuf, sync::Arc};
 use ployz_core::{
     CapabilityAdvertisement, CertificateMaterialChange, CertificateMaterialPublished,
     ContainerList, ContainerObservation, ContractDescription, EnvironmentValues, LiveLogTarget,
-    LocalMachinePhase, LogMetadata, LogOrigin, MachineLogService, MachineRpc, OpaquePayload,
-    PROTOCOL_MAJOR, Rpc, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, ServingPointerRead,
-    op,
+    LocalMachinePhase, LogMetadata, LogOrigin, MachineLogService, MachineRpc, NotPointerPublisher,
+    OpaquePayload, PROTOCOL_MAJOR, Rpc, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
+    ServingPointerRead, op,
 };
 use serde_json::Value;
 use tonic::{Request, Response, Status};
@@ -126,6 +126,20 @@ impl MachineService {
             return Err(unavailable("Machine is not participating"));
         }
         self.replicated()
+    }
+
+    /// The replicated store, only on the Machine this one sees as the pointer publisher.
+    async fn pointer_replicated(&self) -> Result<&ReplicatedStore, RpcError> {
+        let replicated = self.ready_replicated()?;
+        let publisher = match self.local.pointer_publisher().await {
+            Ok(publisher) => publisher,
+            Err(LocalMachineError::Cluster(error)) => return Err(cluster_store_error(error)),
+            Err(_) => return Err(unavailable("Cluster store is not available")),
+        };
+        if publisher != self.local_record().id() {
+            return Err(NotPointerPublisher { publisher }.rpc_error());
+        }
+        Ok(replicated)
     }
 
     fn containers(&self) -> Result<&ContainerRuntime, RpcError> {
@@ -631,7 +645,7 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::PublishServingPointer>(request)?;
-        let replicated = match self.ready_replicated() {
+        let replicated = match self.pointer_replicated().await {
             Ok(replicated) => replicated,
             Err(error) => return respond(error),
         };
@@ -653,7 +667,7 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::ReadServingPointer>(request)?;
-        let replicated = match self.ready_replicated() {
+        let replicated = match self.pointer_replicated().await {
             Ok(replicated) => replicated,
             Err(error) => return respond(error),
         };

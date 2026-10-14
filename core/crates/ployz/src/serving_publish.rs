@@ -1,13 +1,15 @@
 //! The only writer of Serving Pointer rows: one compare-and-set per publish.
 //!
-//! Every read and publish goes to the lowest-id Machine that invites RPC, so every
-//! compare-and-set for a Cluster runs on one Corrosion node.
+//! Every read and publish goes to the lowest-id Machine that invites RPC. That Machine
+//! answers only if it sees itself as the lowest such Machine, and otherwise refuses
+//! naming the one it sees, so every compare-and-set runs on one Corrosion node unless a
+//! partition leaves two Machines each seeing every lower id down.
 
 use std::time::Duration;
 
 use ployz_core::rpc::op;
 use ployz_core::{
-    ContainerObservation, DeploymentLogId, LiveServices, MachineTarget,
+    ContainerObservation, DeploymentLogId, LiveServices, MachineTarget, NotPointerPublisher,
     PublishServingPointerRequest, QualifiedService, ReadServingPointerRequest, RpcError,
     ServingPointer, ServingPointerPublication,
 };
@@ -21,29 +23,74 @@ pub(crate) const AMEND_RETRIES: u32 = 3;
 
 /// What pointer publishing needs from a Cluster.
 pub(crate) trait PointerClient {
-    async fn read_pointer(
+    /// The Machine pointer reads and publishes go to.
+    async fn pointer_publisher(&mut self) -> Result<MachineTarget, RpcError>;
+    /// Read at `at`, moving `at` to the publisher it names if it refuses.
+    async fn read_pointer_at(
         &mut self,
+        at: &mut MachineTarget,
         service: &QualifiedService,
     ) -> Result<Option<ServingPointer>, RpcError>;
-    async fn publish_pointer(
+    /// Publish at `at`, moving `at` to the publisher it names if it refuses.
+    async fn publish_pointer_at(
         &mut self,
+        at: &mut MachineTarget,
         request: PublishServingPointerRequest,
     ) -> Result<ServingPointerPublication, RpcError>;
-}
 
-impl PointerClient for Client {
     async fn read_pointer(
         &mut self,
         service: &QualifiedService,
     ) -> Result<Option<ServingPointer>, RpcError> {
-        self.serving_pointer(service).await
+        let mut at = self.pointer_publisher().await?;
+        self.read_pointer_at(&mut at, service).await
+    }
+}
+
+impl PointerClient for Client {
+    async fn pointer_publisher(&mut self) -> Result<MachineTarget, RpcError> {
+        self.publisher().await
     }
 
-    async fn publish_pointer(
+    async fn read_pointer_at(
         &mut self,
+        at: &mut MachineTarget,
+        service: &QualifiedService,
+    ) -> Result<Option<ServingPointer>, RpcError> {
+        let request = ReadServingPointerRequest {
+            service: service.clone(),
+        };
+        let read = match self
+            .read::<op::ReadServingPointer>(request.clone(), at)
+            .await
+        {
+            Err(error) => match NotPointerPublisher::from_error(&error) {
+                Some(refusal) => {
+                    *at = MachineTarget::from(&refusal.publisher);
+                    self.read::<op::ReadServingPointer>(request, at).await
+                }
+                None => Err(error),
+            },
+            read => read,
+        };
+        read.map(|read| read.pointer)
+    }
+
+    async fn publish_pointer_at(
+        &mut self,
+        at: &mut MachineTarget,
         request: PublishServingPointerRequest,
     ) -> Result<ServingPointerPublication, RpcError> {
-        self.publish_serving_pointer(request).await
+        match self.publish_once(request.clone(), at).await {
+            Err(error) => match NotPointerPublisher::from_error(&error) {
+                Some(refusal) => {
+                    *at = MachineTarget::from(&refusal.publisher);
+                    self.publish_once(request, at).await
+                }
+                None => Err(error),
+            },
+            publication => publication,
+        }
     }
 }
 
@@ -57,18 +104,11 @@ impl Client {
         &mut self,
         service: &QualifiedService,
     ) -> Result<Option<ServingPointer>, RpcError> {
-        let target = self.publisher().await?;
-        self.read::<op::ReadServingPointer>(
-            ReadServingPointerRequest {
-                service: service.clone(),
-            },
-            &target,
-        )
-        .await
-        .map(|read| read.pointer)
+        self.read_pointer(service).await
     }
 
-    /// Write `request.pointer` only if the row still holds `request.read`. Never retried.
+    /// Write `request.pointer` only if the row still holds `request.read`. A refusal
+    /// is retried once at the Machine it names; nothing else is retried.
     ///
     /// # Errors
     ///
@@ -77,8 +117,16 @@ impl Client {
         &mut self,
         request: PublishServingPointerRequest,
     ) -> Result<ServingPointerPublication, RpcError> {
-        let target = self.publisher().await?;
-        self.call_unretried::<op::PublishServingPointer>(request, Some(&target), PUBLISH_TIMEOUT)
+        let mut at = self.publisher().await?;
+        self.publish_pointer_at(&mut at, request).await
+    }
+
+    async fn publish_once(
+        &mut self,
+        request: PublishServingPointerRequest,
+        at: &MachineTarget,
+    ) -> Result<ServingPointerPublication, RpcError> {
+        self.call_unretried::<op::PublishServingPointer>(request, Some(at), PUBLISH_TIMEOUT)
             .await
             .map_err(RpcError::from)
     }
@@ -113,7 +161,7 @@ pub(crate) enum Amendment {
     Outdated,
 }
 
-/// Apply `change` to the Service's pointer, re-reading and retrying up to
+/// Apply `change` to the Service's pointer at one publisher, re-reading and retrying up to
 /// [`AMEND_RETRIES`] times when another writer wins. `change` answers `None` when the
 /// pointer already holds what it wants.
 ///
@@ -126,7 +174,8 @@ pub(crate) async fn amend_pointer<C: PointerClient>(
     deploy: Option<&DeploymentLogId>,
     change: impl Fn(&ServingPointer) -> Option<ServingPointer>,
 ) -> Result<Amendment, RpcError> {
-    let Some(mut current) = client.read_pointer(service).await? else {
+    let mut at = client.pointer_publisher().await?;
+    let Some(mut current) = client.read_pointer_at(&mut at, service).await? else {
         return Ok(Amendment::NoPointer);
     };
     for retries in 0..=AMEND_RETRIES {
@@ -141,7 +190,7 @@ pub(crate) async fn amend_pointer<C: PointerClient>(
             read: Some(current),
             pointer,
         };
-        match client.publish_pointer(request).await? {
+        match client.publish_pointer_at(&mut at, request).await? {
             ServingPointerPublication::Published => return Ok(Amendment::Published { retries }),
             ServingPointerPublication::Superseded { current: None } => {
                 return Ok(Amendment::NoPointer);

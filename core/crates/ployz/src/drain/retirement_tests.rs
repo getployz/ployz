@@ -215,18 +215,24 @@ struct PointedServer {
 }
 
 impl PointerClient for PointedServer {
-    async fn read_pointer(
-        &mut self,
-        service: &QualifiedService,
-    ) -> Result<Option<ployz_core::ServingPointer>, RpcError> {
-        self.row.read_pointer(service).await
+    async fn pointer_publisher(&mut self) -> Result<ployz_core::MachineTarget, RpcError> {
+        self.row.pointer_publisher().await
     }
 
-    async fn publish_pointer(
+    async fn read_pointer_at(
         &mut self,
+        at: &mut ployz_core::MachineTarget,
+        service: &QualifiedService,
+    ) -> Result<Option<ployz_core::ServingPointer>, RpcError> {
+        self.row.read_pointer_at(at, service).await
+    }
+
+    async fn publish_pointer_at(
+        &mut self,
+        at: &mut ployz_core::MachineTarget,
         request: ployz_core::PublishServingPointerRequest,
     ) -> Result<ployz_core::ServingPointerPublication, RpcError> {
-        self.row.publish_pointer(request).await
+        self.row.publish_pointer_at(at, request).await
     }
 }
 
@@ -370,18 +376,24 @@ struct SlowLister {
 }
 
 impl PointerClient for SlowLister {
-    async fn read_pointer(
-        &mut self,
-        service: &QualifiedService,
-    ) -> Result<Option<ployz_core::ServingPointer>, RpcError> {
-        self.server.read_pointer(service).await
+    async fn pointer_publisher(&mut self) -> Result<ployz_core::MachineTarget, RpcError> {
+        self.server.pointer_publisher().await
     }
 
-    async fn publish_pointer(
+    async fn read_pointer_at(
         &mut self,
+        at: &mut ployz_core::MachineTarget,
+        service: &QualifiedService,
+    ) -> Result<Option<ployz_core::ServingPointer>, RpcError> {
+        self.server.read_pointer_at(at, service).await
+    }
+
+    async fn publish_pointer_at(
+        &mut self,
+        at: &mut ployz_core::MachineTarget,
         request: ployz_core::PublishServingPointerRequest,
     ) -> Result<ployz_core::ServingPointerPublication, RpcError> {
-        self.server.publish_pointer(request).await
+        self.server.publish_pointer_at(at, request).await
     }
 }
 
@@ -394,5 +406,131 @@ impl CopyLister for SlowLister {
         self.listings += 1;
         tokio::time::sleep(Duration::from_secs(20)).await;
         self.server.copies_on(machine_id, service).await
+    }
+}
+
+mod rpc {
+    use std::sync::{Arc, Mutex};
+
+    use ployz_core::{
+        ContainerList, LocalMachinePhase, MachineDetails, MachineList, MachineObservation,
+        MembershipObservation, OpaquePayload, RpcRequestBody, RpcResponse, ServingPointer,
+        ServingPointerPublication, ServingPointerRead,
+    };
+    use tonic::{Request, Response};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn a_pointed_global_on_an_ineligible_server_retires_through_its_pointer() {
+        let mut drained = machine('1', "drained");
+        drained.accepts_services = false;
+        let service = global_on(&drained, "app", 'a');
+        let copy = running_on(&drained, 'a');
+        let row = Arc::new(Mutex::new(Some(pointer('d', &['a'], &[]))));
+        let ensured = Arc::new(Mutex::new(0_u32));
+        let observed = drained.clone();
+        let shared = row.clone();
+        let removals = ensured.clone();
+        let (mut client, server) =
+            crate::connect::test_support::rpc_client(move |rpc: Request<OpaquePayload>| {
+                let drained = observed.clone();
+                let copy = copy.clone();
+                let row = shared.clone();
+                let removals = removals.clone();
+                async move {
+                    #[expect(
+                        clippy::wildcard_enum_match_arm,
+                        reason = "fixture answers only what pointed retirement sends"
+                    )]
+                    let response = match rpc.into_inner().decode_request().unwrap().body {
+                        RpcRequestBody::DescribeContract(_) => {
+                            RpcResponse::from(ployz_core::ContractDescription {
+                                machine_id: drained.id,
+                                protocol_major: ployz_core::PROTOCOL_MAJOR,
+                                daemon_version: "fixture".into(),
+                                capabilities: Default::default(),
+                            })
+                        }
+                        RpcRequestBody::Inspect(_) => RpcResponse::from(MachineDetails {
+                            id: drained.id,
+                            public_key: drained.public_key,
+                            machine: Some(drained.clone()),
+                            phase: LocalMachinePhase::Participating,
+                            advertised_endpoints: Vec::new(),
+                            store_version: Default::default(),
+                            rtts: Vec::new(),
+                            management_clients: Vec::new(),
+                            storage: None,
+                            upgrade: None,
+                            telemetry: None,
+                            token: None,
+                        }),
+                        RpcRequestBody::ListMachines(_) => RpcResponse::from(MachineList {
+                            enrollment: None,
+                            machines: vec![MachineObservation::new(
+                                drained,
+                                MembershipObservation::Up,
+                            )],
+                        }),
+                        RpcRequestBody::ListContainers(_) => {
+                            let retired = row
+                                .lock()
+                                .unwrap()
+                                .as_ref()
+                                .is_some_and(|row| row.retiring.contains(&copy.container_id));
+                            RpcResponse::from(ContainerList {
+                                containers: if retired {
+                                    Vec::new()
+                                } else {
+                                    vec![copy.clone()]
+                                },
+                            })
+                        }
+                        RpcRequestBody::ReadServingPointer(_) => {
+                            RpcResponse::from(ServingPointerRead {
+                                pointer: row.lock().unwrap().clone(),
+                            })
+                        }
+                        RpcRequestBody::PublishServingPointer(request) => {
+                            let mut row = row.lock().unwrap();
+                            RpcResponse::from(if *row == request.read {
+                                *row = Some(request.pointer);
+                                ServingPointerPublication::Published
+                            } else {
+                                ServingPointerPublication::Superseded {
+                                    current: row.clone(),
+                                }
+                            })
+                        }
+                        RpcRequestBody::EnsureContainer(_) => {
+                            *removals.lock().unwrap() += 1;
+                            RpcResponse::from(RpcError {
+                                code: RpcErrorCode::Conflict,
+                                message: "a pointed Global is not removed directly".into(),
+                                details: serde_json::Value::Null,
+                                cause: Vec::new(),
+                            })
+                        }
+                        other => panic!("unexpected RPC: {other:?}"),
+                    };
+                    Ok(Response::new(response.encode().unwrap()))
+                }
+            })
+            .await;
+        let slot = service.observed_global_slot().unwrap();
+        client
+            .retire_slot(&drained.id, &slot, &CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(
+            *row.lock().unwrap(),
+            Some(ServingPointer {
+                containers: Vec::new(),
+                ..pointer('d', &[], &['a'])
+            })
+        );
+        assert_eq!(*ensured.lock().unwrap(), 0);
+        server.abort();
     }
 }

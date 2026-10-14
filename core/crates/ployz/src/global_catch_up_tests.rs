@@ -342,18 +342,24 @@ struct FakeCatchUpClient {
 }
 
 impl PointerClient for FakeCatchUpClient {
-    async fn read_pointer(
-        &mut self,
-        service: &QualifiedService,
-    ) -> Result<Option<ployz_core::ServingPointer>, RpcError> {
-        self.row.read_pointer(service).await
+    async fn pointer_publisher(&mut self) -> Result<ployz_core::MachineTarget, RpcError> {
+        self.row.pointer_publisher().await
     }
 
-    async fn publish_pointer(
+    async fn read_pointer_at(
         &mut self,
+        at: &mut ployz_core::MachineTarget,
+        service: &QualifiedService,
+    ) -> Result<Option<ployz_core::ServingPointer>, RpcError> {
+        self.row.read_pointer_at(at, service).await
+    }
+
+    async fn publish_pointer_at(
+        &mut self,
+        at: &mut ployz_core::MachineTarget,
         request: ployz_core::PublishServingPointerRequest,
     ) -> Result<ployz_core::ServingPointerPublication, RpcError> {
-        self.row.publish_pointer(request).await
+        self.row.publish_pointer_at(at, request).await
     }
 }
 

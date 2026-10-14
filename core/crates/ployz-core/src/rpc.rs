@@ -1190,6 +1190,37 @@ pub struct ServingPointerRead {
     pub pointer: Option<ServingPointer>,
 }
 
+/// Refusal of a Serving Pointer read or publish by a Machine that is not the lowest-id
+/// Machine inviting RPC in its own Membership Observation.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "reason", rename = "not_pointer_publisher")]
+pub struct NotPointerPublisher {
+    /// The Machine the refusing Machine sees as the publisher.
+    pub publisher: MachineId,
+}
+
+impl NotPointerPublisher {
+    /// The refusal carried by `error`, if it is one.
+    #[must_use]
+    pub fn from_error(error: &RpcError) -> Option<Self> {
+        Self::deserialize(&error.details).ok()
+    }
+
+    /// An RPC error that carries this refusal in `details`.
+    #[must_use]
+    pub fn rpc_error(&self) -> RpcError {
+        RpcError {
+            code: RpcErrorCode::Unavailable,
+            message: format!(
+                "Serving Pointers are published by Machine {}",
+                self.publisher
+            ),
+            details: serde_json::to_value(self).unwrap_or(Value::Null),
+            cause: Vec::new(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct MachineUpdated {
     pub machine: Machine,

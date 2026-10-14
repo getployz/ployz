@@ -498,11 +498,7 @@ impl LocalMachine {
         }
         let replicated = self.replicated()?;
         let machines = replicated.machines().await?.observations;
-        let states = match &self.cluster {
-            Some(cluster) => cluster.admin.membership_states().await?,
-            None => Vec::new(),
-        };
-        let states = membership_states_by_address(states);
+        let states = self.membership_states().await?;
         let entry_id = local.id();
         Ok(MachineList {
             enrollment: Some(ployz_core::EnrollmentSnapshot {
@@ -517,6 +513,36 @@ impl LocalMachine {
             }
             .overlay(machines, &entry_id),
         })
+    }
+
+    /// The lowest-id Machine that invites RPC in this Machine's Membership Observation.
+    /// Only that Machine answers Serving Pointer reads and publishes, so every
+    /// compare-and-set it sees runs on one Corrosion node.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::ClusterStoreUnavailable`] when the Cluster store is missing and
+    /// [`Error::Cluster`] when replicated or admin I/O fails.
+    pub async fn pointer_publisher(&self) -> Result<MachineId, Error> {
+        let machines = self.replicated()?.machines().await?.observations;
+        let states = self.membership_states().await?;
+        let local_id = self.record().id();
+        Ok(synthesize_membership(machines, &local_id, &states)
+            .iter()
+            .filter(|observation| observation.invites_rpc())
+            .map(|observation| observation.machine.id)
+            .min()
+            .unwrap_or(local_id))
+    }
+
+    async fn membership_states(
+        &self,
+    ) -> Result<BTreeMap<ManagementAddress, MembershipEvidence>, Error> {
+        let states = match &self.cluster {
+            Some(cluster) => cluster.admin.membership_states().await?,
+            None => Vec::new(),
+        };
+        Ok(membership_states_by_address(states))
     }
 
     /// Apply a local Machine update and best-effort publish it.
