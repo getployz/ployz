@@ -84,6 +84,16 @@ describe("heldOff", () => {
     expect(heldOff(copies, servers, id("b"))).toEqual({ data: "fsn-a" });
   });
 
+  it("names no copy when a Move committed before the observation left two slots and no writer", () => {
+    const copies: ObservedCopy[] = [{ machine_id: id("c"), name: "data", role: "slot" }, { machine_id: id("a"), name: "data", role: "slot" }];
+    expect(heldOff(copies, servers, id("b"))).toEqual({});
+  });
+
+  it("names the only slot off the leaving Server", () => {
+    expect(heldOff([{ machine_id: id("a"), name: "data", role: "slot" }, { machine_id: id("b"), name: "data", role: "slot" }], servers, id("b")))
+      .toEqual({ data: "fsn-a" });
+  });
+
   it("names no copy on the leaving Server", () => {
     expect(heldOff([{ machine_id: id("b"), name: "data", role: "writer" }], servers, id("b"))).toEqual({});
   });

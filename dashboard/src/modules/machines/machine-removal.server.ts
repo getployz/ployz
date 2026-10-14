@@ -171,15 +171,21 @@ export const observeLeavingServerActivity = Effect.fn("MachineRemoval.observeLea
 });
 
 /**
- * A copy on another Server, by Docker Volume: what a lane committed to the leaving Server names to restore from. A
- * writer wins over a slot: a lane commits only after its source's cut, so a writer seen before the commit is a slot by
- * the time the lane ends, holding the cut's snapshot. Other slots' snapshots are not observed here, so one may lack any.
+ * The copy on another Server, by Docker Volume, that a lane committed to the leaving Server names to restore from: the
+ * writer, which the source's cut makes a slot holding the newest snapshot by the time the lane ends, or else the only
+ * copy. Slots' snapshots are not observed here, so several slots and no writer name none: the Move's source is one of
+ * them, but another may be a slot whose Server did not answer when the Move planned, holding older data.
  */
 export function heldOff(copies: readonly ObservedCopy[], servers: readonly MachineIdentity[], leaving: MachineId) {
-  const held: Record<string, MachineName> = {};
-  for (const copy of copies) {
+  const off = copies.flatMap((copy) => {
     const holder = copy.machine_id === leaving ? undefined : servers.find((server) => server.id === copy.machine_id);
-    if (holder !== undefined && (copy.role === "writer" || held[copy.name] === undefined)) held[copy.name] = holder.name;
+    return holder === undefined ? [] : [{ ...copy, holder: holder.name }];
+  });
+  const held: Record<string, MachineName> = {};
+  for (const name of new Set(off.map((copy) => copy.name))) {
+    const copiesOf = off.filter((copy) => copy.name === name);
+    const source = copiesOf.find((copy) => copy.role === "writer") ?? (copiesOf.length === 1 ? copiesOf[0] : undefined);
+    if (source !== undefined) held[name] = source.holder;
   }
   return held;
 }

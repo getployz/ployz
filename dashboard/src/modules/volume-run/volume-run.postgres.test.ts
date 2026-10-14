@@ -1034,7 +1034,7 @@ describe("volume runs", () => {
 
       await runEffect(releaseLanesOff(organizationId, fsn("fsn-2"), []));
 
-      expect(await lanes()).toMatchObject([{ id: move.id, state: "failed", message: "data's writer was on fsn-2 (removed). No copy on another server is known." }]);
+      expect(await lanes()).toMatchObject([{ id: move.id, state: "failed", message: "data's writer was on fsn-2 (removed). No other server's copy is known to hold its newest data." }]);
     });
 
     it("removing a Server leaves a committed lane bound elsewhere alone", async () => {
