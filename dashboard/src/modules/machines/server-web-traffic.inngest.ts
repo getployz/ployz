@@ -1,7 +1,7 @@
 import { Option, Schema } from "effect";
 import { attemptLifecycle } from "#/modules/inngest/attempt-lifecycle";
 import type { PloyzStepTools } from "#/modules/inngest/client";
-import { serverWebTrafficRequestedEventType } from "#/modules/inngest/events";
+import { createClusterDomainSyncRequestedEvent, serverWebTrafficRequestedEventType } from "#/modules/inngest/events";
 import { machineIdStringSchema } from "#/modules/machines/enrollment";
 import {
   bindWebTrafficRun,
@@ -11,7 +11,7 @@ import {
 } from "#/modules/machines/server-web-traffic.server";
 import type { runInngestEffect } from "#/server/run.server";
 
-type StepTools = Pick<PloyzStepTools, "run">;
+type StepTools = Pick<PloyzStepTools, "run" | "sendEvent">;
 type EffectRunner = typeof runInngestEffect;
 
 const ServerWebTrafficRequestedData = Schema.Struct({
@@ -22,7 +22,8 @@ const ServerWebTrafficRequestedData = Schema.Struct({
 
 /**
  * One web traffic change: bind the run to its row → claim the row, ask the Engine once and record its answer. Only
- * the last step touches the Engine, and a retry of it never asks again (see `executeWebTrafficOnce`).
+ * the last step touches the Engine, and a retry of it never asks again (see `executeWebTrafficOnce`). Then DNS catches
+ * up: turning the role back on over a proxy that kept running changes no container, so nothing else would tell it.
  */
 export async function applyServerWebTraffic(
   { event, step, runId }: { event: { data: unknown }; step: StepTools; runId: string },
@@ -35,7 +36,9 @@ export async function applyServerWebTraffic(
   if (request === null) return { skipped: "invalid" as const };
   const bound = await step.run("bind-run", () => runEffect(bindWebTrafficRun(request, runId)));
   if (bound.kind === "settled") return { attemptId: request.attemptId, state: bound.state };
-  return step.run("execute-once", () => runEffect(executeWebTrafficOnce(request, runId)));
+  const ended = await step.run("execute-once", () => runEffect(executeWebTrafficOnce(request, runId)));
+  await step.sendEvent("sync-cluster-domain", createClusterDomainSyncRequestedEvent({ organizationId: request.organizationId }));
+  return ended;
 }
 
 const lifecycle = attemptLifecycle({
