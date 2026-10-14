@@ -748,7 +748,8 @@ class VolumeMove:
         if entries is None:
             return None
         for entry in entries:
-            if identity := self.identity(case, marks, entry["line"]):
+            # A release line carries its hold's identity but is the hold's end, never the event a trigger credits.
+            if RELEASE_LINE not in entry["line"] and (identity := self.identity(case, marks, entry["line"])):
                 return dict(machine=machine, kind=case["trigger"], line=entry["line"][:300], cursor=entry["cursor"],
                             boot_id=entry["boot_id"], identity=identity, poll_end_mono=time.monotonic())
         return None
