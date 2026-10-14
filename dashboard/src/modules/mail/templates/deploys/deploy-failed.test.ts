@@ -9,8 +9,8 @@ const deployment = (fields: Partial<DeploymentView>) => asTestDouble<DeploymentV
 const source = (service: string, repository = "acme/web") => asTestDouble<GitSource>()({
   service, repository, branch: "feature/login", commit: "8a7ed6e9f0c1d2b3a4f5e6d7c8b9a0f1e2d3c4b5",
 });
-const serviceNode = (id: string, name: string) =>
-  ({ type: "service" as const, id, name, outcome: "not_attempted" as const, rows: [] });
+const serviceNode = (id: string, name: string, outcome: "failed" | "not_attempted" | "deployed" = "not_attempted") =>
+  ({ type: "service" as const, id, name, outcome, rows: [] });
 const mail = (fields: Partial<DeploymentView>, sources = [source("web")]) =>
   deployFailedMail({ origin: "https://ployz.dev", organization: { name: "Shop", slug: "shop co" }, deployment: deployment(fields), sources });
 
@@ -55,17 +55,25 @@ it("names Services as authored, not by their Private DNS names", () => {
     nodes: [serviceNode("svc web", "web"), serviceNode("svc api", "api")],
     runtime_names: { api: "private-api" },
   }, [source("web"), source("private-api", "acme/api")]);
+  expect(failed.subject).toBe("api failed to deploy to shop / pr 7");
   expect(failed.facts?.[0]).toEqual({ label: "Repository", value: "acme/api", mono: true });
-  expect(failed.facts).toContainEqual({ label: "Services", value: "web, api" });
 });
 
-it("counts several Services, names no source when no build failed, and falls back to the Environment when the deploy had no Git source", () => {
-  expect(mail({}, [source("web"), source("api"), source("web")])).toMatchObject({
+it("names the Service that failed, not the deploy's only Git source", () => {
+  const failed = mail({ nodes: [serviceNode("svc web", "web", "deployed"), serviceNode("svc db", "db", "failed")] });
+  expect(failed.subject).toBe("db failed to deploy to shop / pr 7");
+  expect(mail({ nodes: [serviceNode("svc web", "web"), serviceNode("svc db", "db")] }).subject).toBe("A deploy to shop / pr 7 failed");
+  expect(mail({ nodes: [serviceNode("svc web", "web")] }).subject).toBe("web failed to deploy to shop / pr 7");
+});
+
+it("counts several failed Services, names no source when no build failed, and falls back to the Environment when nothing names a Service", () => {
+  const both = [serviceNode("svc web", "web", "failed"), serviceNode("svc api", "api", "failed")];
+  expect(mail({ nodes: both }, [source("web"), source("api")])).toMatchObject({
     subject: "2 services failed to deploy to shop / pr 7",
     paragraphs: ["GitHub started this deploy. The logs show what went wrong."],
     facts: expect.arrayContaining([{ label: "Services", value: "web, api" }]),
   });
-  expect(mail({}, [source("web"), source("api")]).facts?.map((fact) => fact.label)).toEqual(["Services", "Environment", "Error"]);
+  expect(mail({ nodes: both }, [source("web"), source("api")]).facts?.map((fact) => fact.label)).toEqual(["Services", "Environment", "Error"]);
   const bare = mail({}, []);
   expect(bare).toMatchObject({ subject: "A deploy to shop / pr 7 failed", title: "A deploy to pr 7 failed", preview: "The logs show what went wrong." });
   expect(bare.facts?.map((fact) => fact.label)).toEqual(["Environment", "Error"]);
