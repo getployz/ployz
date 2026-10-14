@@ -344,6 +344,73 @@ fn a_local_store_cannot_answer_for_github() {
     );
 }
 
+/// Cloud's side of github_ls for `acme/api` at `main`: a tree query keeps the
+/// named path and everything under it, and a file query returns its text.
+fn acme_api(cloud: Cloud) -> Result<Value, RpcError> {
+    const FILES: [&str; 3] = ["Dockerfile", "Dockerfile.cloud", "src/main.rs"];
+    match cloud {
+        Cloud::Ask(CloudQuery::GithubTree(tree)) => {
+            let path = tree.path.unwrap_or_default();
+            let paths = FILES
+                .into_iter()
+                .filter(|file| {
+                    path.is_empty()
+                        || *file == path
+                        || file
+                            .strip_prefix(path.as_str())
+                            .is_some_and(|rest| rest.starts_with('/'))
+                })
+                .collect::<Vec<_>>();
+            Ok(
+                json!({ "repository": "acme/api", "ref": "main", "paths": paths, "truncated": false }),
+            )
+        }
+        Cloud::Ask(CloudQuery::GithubFile(file)) => Ok(json!({
+            "repository": "acme/api", "ref": "main", "path": file.path, "size": 12, "content": "FROM alpine\n",
+        })),
+        Cloud::Ask(query) => panic!("github_ls asked {query:?}"),
+        Cloud::Act(act) => panic!("github_ls acted {act:?}"),
+    }
+}
+
+#[test]
+fn github_ls_reads_a_top_level_file() {
+    let read = drive(
+        &shop(),
+        in_org(),
+        "github_ls",
+        json!({ "repository": "acme/api", "path": "Dockerfile" }),
+        "call-1",
+        &mut acme_api,
+    )
+    .ok();
+    assert_eq!(read["path"], "Dockerfile");
+    assert_eq!(read["content"], "FROM alpine\n");
+}
+
+#[test]
+fn github_ls_refuses_a_path_the_repository_does_not_have() {
+    let refusal = drive(
+        &shop(),
+        in_org(),
+        "github_ls",
+        json!({ "repository": "acme/api", "path": "README.md" }),
+        "call-1",
+        &mut acme_api,
+    )
+    .refused();
+    assert_eq!(refusal.code, RpcErrorCode::NotFound);
+    assert_eq!(refusal.message, "No file or directory at that path");
+    assert_eq!(refusal.field.as_deref(), Some("path"));
+    assert_eq!(
+        refusal.next,
+        [Call::new(
+            "github_ls",
+            json!({ "repository": "acme/api", "ref": "main" })
+        )]
+    );
+}
+
 #[test]
 fn an_unknown_tool_names_the_closest() {
     let refusal = call(&shop(), "deploi", json!({}), "call-1").refused();
