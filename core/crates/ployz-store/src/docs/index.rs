@@ -116,8 +116,8 @@ impl Index {
         }
     }
 
-    /// The best `limit` sections for `query`, best first, with their scores.
-    pub(crate) fn search(&self, query: &str, limit: usize) -> Vec<(&Section, f32)> {
+    /// The best `limit` sections for `query`, best first.
+    pub(crate) fn search(&self, query: &str, limit: usize) -> Vec<&Section> {
         // With no term left, the parser would match every section.
         let terms = self.terms(query);
         if terms.is_empty() {
@@ -139,11 +139,11 @@ impl Index {
             return Vec::new();
         };
         top.into_iter()
-            .filter_map(|(score, address)| {
+            .filter_map(|(_, address)| {
                 let found = self.searcher.doc::<TantivyDocument>(address).ok()?;
                 let at = found.get_first(self.at)?.as_u64()?;
                 let section = self.sections.get(usize::try_from(at).ok()?)?;
-                Some((section, score))
+                Some(section)
             })
             .collect()
     }
