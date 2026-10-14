@@ -230,6 +230,11 @@ impl ContainerRuntime {
         self.stopping.borrow().keys().copied().collect()
     }
 
+    #[cfg(test)]
+    pub(crate) fn spec_store_path_for_test(&self) -> &std::path::Path {
+        self.specs.path_for_test()
+    }
+
     /// Drop what the daemon remembers about a container Docker no longer has.
     async fn forget(&self, container_id: &ContainerId) {
         self.checks

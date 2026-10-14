@@ -1517,6 +1517,7 @@ mod tests {
         named: Arc<Mutex<BTreeMap<String, serde_json::Value>>>,
         requests: Arc<Mutex<Vec<(axum::http::Method, String)>>>,
         inspect_hold: Arc<Mutex<Option<Arc<tokio::sync::Barrier>>>>,
+        on_stop: Arc<Mutex<Option<crate::docker::test_support::StopHook>>>,
         data_dir: std::path::PathBuf,
         a: ContainerId,
         b: ContainerId,
@@ -1613,6 +1614,7 @@ mod tests {
                 named,
                 requests: fake.requests.clone(),
                 inspect_hold: fake.inspect_hold.clone(),
+                on_stop: fake.on_stop.clone(),
                 data_dir,
                 a,
                 b,
@@ -1637,6 +1639,21 @@ mod tests {
                 .any(|(_, path)| *path == stop)
         }
 
+        fn withdrawn_at_stop(&self) -> Arc<Mutex<Vec<StopRequest>>> {
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let record = Arc::clone(&seen);
+            let containers = self.host.containers.clone();
+            *self.on_stop.lock().unwrap() = Some(Box::new(move |id: &str| {
+                let id = ContainerId::parse(id).unwrap();
+                let withdrawn = containers.stopping_ids_for_test().contains(&id);
+                record.lock().unwrap().push(StopRequest {
+                    container: id,
+                    withdrawn,
+                });
+            }));
+            seen
+        }
+
         fn exit(&self, container: ContainerId) {
             let id = container.to_string();
             let mut named = self.named.lock().unwrap();
@@ -1646,6 +1663,12 @@ mod tests {
                 .unwrap();
             named["State"] = serde_json::json!({"Status": "exited", "ExitCode": 0});
         }
+    }
+
+    #[derive(Debug, PartialEq)]
+    struct StopRequest {
+        container: ContainerId,
+        withdrawn: bool,
     }
 
     impl Drop for RealMachine {
@@ -1970,6 +1993,63 @@ mod tests {
 
         assert!(matches!(outcome, Outcome::Retired));
         assert_eq!(*host.retired.lock().unwrap(), vec![id("a")]);
+    }
+
+    #[tokio::test]
+    async fn a_retired_container_is_withdrawn_when_docker_receives_its_stop() {
+        let cluster = FakeCluster::start();
+        let store = cluster.store();
+        let machine = RealMachine::start(&cluster).await;
+        let withdrawn_at_stop = machine.withdrawn_at_stop();
+        let mut stopping = JoinSet::new();
+        round(
+            &machine.host,
+            &store,
+            &mut Retirer::default(),
+            &mut stopping,
+        )
+        .await;
+
+        assert!(matches!(
+            next_outcome(&mut stopping).await,
+            Outcome::Retired
+        ));
+        assert_eq!(
+            *withdrawn_at_stop.lock().unwrap(),
+            vec![StopRequest {
+                container: machine.a,
+                withdrawn: true,
+            }]
+        );
+        assert!(machine.host.containers.stopping_ids_for_test().is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_explicitly_stopped_container_is_withdrawn_when_docker_receives_its_stop() {
+        use ployz_core::{ContainerLocator, ContainerWant, Drain, StopOptions};
+        let cluster = FakeCluster::start();
+        let machine = RealMachine::start(&cluster).await;
+        let withdrawn_at_stop = machine.withdrawn_at_stop();
+
+        machine
+            .host
+            .machine
+            .ensure_container(ContainerWant::Stopped {
+                container: ContainerLocator::Id(machine.a),
+                drain: Drain::NONE,
+                stop: StopOptions::default(),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            *withdrawn_at_stop.lock().unwrap(),
+            vec![StopRequest {
+                container: machine.a,
+                withdrawn: true,
+            }]
+        );
+        assert!(machine.host.containers.stopping_ids_for_test().is_empty());
     }
 
     #[tokio::test]

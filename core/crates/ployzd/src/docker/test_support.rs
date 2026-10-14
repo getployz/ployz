@@ -21,6 +21,8 @@ use bollard::Docker;
 use super::*;
 use ployz_core::{Machine, MachineGateway, MachineId, ResolvedServiceSpec, VolumeSource};
 
+pub(crate) type StopHook = Box<dyn Fn(&str) + Send>;
+
 #[derive(Clone, Default)]
 pub(crate) struct FakeDocker {
     pub(crate) named_containers: Option<Arc<Mutex<BTreeMap<String, serde_json::Value>>>>,
@@ -46,6 +48,7 @@ pub(crate) struct FakeDocker {
     /// brings the Container back for every inspect after that.
     pub(crate) restart_after_stop: Arc<AtomicBool>,
     pub(crate) stopped_once: Arc<Mutex<BTreeSet<String>>>,
+    pub(crate) on_stop: Arc<Mutex<Option<StopHook>>>,
     pub(crate) list_warnings: Arc<Mutex<Vec<String>>>,
     /// Another start attaches the network first, so this connect finds it attached.
     pub(crate) connect_raced: Arc<AtomicBool>,
@@ -133,6 +136,17 @@ async fn fake_docker(
             if method == Method::DELETE {
                 containers.remove(&name);
                 return StatusCode::NO_CONTENT.into_response();
+            }
+            if method == Method::POST
+                && path.ends_with("/stop")
+                && let Some(hook) = fake.on_stop.lock().unwrap().as_ref()
+            {
+                hook(
+                    container
+                        .get("Id")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap(),
+                );
             }
             if method == Method::POST && (path.ends_with("/start") || path.ends_with("/stop")) {
                 if fake.refuse_stop.load(Ordering::SeqCst) && path.ends_with("/stop") {
