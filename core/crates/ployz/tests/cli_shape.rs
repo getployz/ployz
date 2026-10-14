@@ -356,7 +356,7 @@ fn json_results_and_errors_are_one_stdout_object_with_distinct_exit_codes() {
 fn docs_answers_offline_from_the_binary() {
     let (code, json, stderr) = run_json(&["docs", "add", "a", "custom", "domain", "--json"]);
     assert_eq!(code, Some(0), "{stderr}");
-    assert_eq!(json["query"], "add a custom domain");
+    assert_eq!(json.pointer("/query").unwrap(), "add a custom domain");
     assert_eq!(
         json.pointer("/results/0/path").unwrap(),
         "services/domains.md"
@@ -368,9 +368,10 @@ fn docs_answers_offline_from_the_binary() {
 
     let (code, json, stderr) = run_json(&["docs", "domains.md", "--json"]);
     assert_eq!(code, Some(0), "{stderr}");
-    assert_eq!(json["path"], "services/domains.md");
+    assert_eq!(json.pointer("/path").unwrap(), "services/domains.md");
     assert!(
-        json["content"]
+        json.pointer("/content")
+            .unwrap()
             .as_str()
             .unwrap()
             .contains("## Add a custom domain")
