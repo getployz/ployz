@@ -52,7 +52,7 @@ pub(crate) struct Replica<'a> {
 /// stopped before any of it ran. A Service with no recorded work is waiting.
 pub(crate) fn service_row<'a>(
     service: QualifiedService,
-    depth: u32,
+    depth: Option<u32>,
     replicas: impl IntoIterator<Item = Replica<'a>>,
 ) -> Row {
     let replicas: Vec<_> = replicas.into_iter().collect();
@@ -210,7 +210,7 @@ impl Direct {
             .map(|service| {
                 service_row(
                     QualifiedService::new(self.namespace.clone(), service.clone()),
-                    self.depths.get(service).copied().unwrap_or(0),
+                    Some(self.depths.get(service).copied().unwrap_or(0)),
                     self.rows
                         .values()
                         .filter(|(row, _)| row.service == *service)

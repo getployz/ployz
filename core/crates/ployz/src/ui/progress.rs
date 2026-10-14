@@ -90,7 +90,8 @@ impl Subject {
 /// One Service of a Deploy graph: the depth it starts at and its replicas' progress.
 pub(crate) struct GraphService {
     pub service: QualifiedService,
-    pub depth: u32,
+    /// `None` until the Deploy is planned.
+    pub depth: Option<u32>,
     /// Replicas whose work completed.
     pub ready: usize,
     /// Replicas this Deploy works on; 0 before any work is recorded.
@@ -612,7 +613,9 @@ fn body<'a>(
     for (graph, row) in graph {
         if depth != Some(graph.depth) {
             depth = Some(graph.depth);
-            lines.push((format!("depth {}", graph.depth), Tone::Muted));
+            if let Some(at) = graph.depth {
+                lines.push((format!("depth {at}"), Tone::Muted));
+            }
         }
         lines.push((
             format!("  {}", row_text(row, frame, tick)),
@@ -742,7 +745,10 @@ fn changes(
                 .map(|detail| format!(" ({detail})"))
                 .unwrap_or_default();
             let depth = match &row.subject {
-                Subject::Service(graph) => format!(" (depth {})", graph.depth),
+                Subject::Service(graph) => graph
+                    .depth
+                    .map(|depth| format!(" (depth {depth})"))
+                    .unwrap_or_default(),
                 Subject::ServiceOnServer { .. }
                 | Subject::Unlocated(_)
                 | Subject::Operation { .. }

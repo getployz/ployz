@@ -37,8 +37,7 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
             .preview
             .as_ref()
             .and_then(|preview| preview.depths.get(runtime))
-            .copied()
-            .unwrap_or(0);
+            .copied();
         let mut row = service_row(
             QualifiedService::new(view.namespace.clone(), runtime.clone()),
             depth,
@@ -509,11 +508,13 @@ mod tests {
         for node in &mut view.nodes {
             node.outcome = NodeStatus::Unchanged;
         }
-        view.preview = Some(DeployPreview::new(
-            Vec::new(),
-            Vec::new(),
-            view.namespace.clone(),
-        ));
+        let mut preview = DeployPreview::new(Vec::new(), Vec::new(), view.namespace.clone());
+        preview.depths = [
+            ("private-web".parse().unwrap(), 0),
+            ("api".parse().unwrap(), 1),
+        ]
+        .into();
+        view.preview = Some(preview);
         view.deployment.warnings = vec![
             DeploymentWarning::IngressUnchecked {
                 cause: "lab-1 went unobserved (connection refused)".into(),
@@ -575,6 +576,8 @@ mod tests {
             ));
             assert_eq!(row.detail.as_deref(), Some(detail));
             assert_eq!(row.state, state);
+            let lines = crate::ui::progress::live_lines(&frame, 0, 80, 40, false);
+            assert!(!lines.iter().any(|line| line.starts_with("depth ")));
         }
         view.builds.first_mut().unwrap().status = BuildStatus::Reused;
         view.deployment.status = DeploymentStatus::Applied;

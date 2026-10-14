@@ -147,7 +147,7 @@ fn graph_frame(groups: &[ServiceGroup], services: &[(&str, &[&str])]) -> Frame {
                 let states: Vec<_> = states.iter().map(|state| row_state(state)).collect();
                 service_row(
                     QualifiedService::new(namespace.clone(), name.clone()),
-                    depths.get(&name).copied().unwrap_or(0),
+                    Some(depths.get(&name).copied().unwrap_or(0)),
                     states.iter().map(|state| Replica {
                         machine: MachineId::random(),
                         state,
