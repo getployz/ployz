@@ -1,9 +1,10 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "c70fda32-8a38-4c09-9d9c-28315336e4ee",
+  "id": "d3f9a4c9-c5be-41af-a055-f99bb5c62863",
   "prevIds": [
-    "326d7611-db6b-4403-8862-7aae19fe167c"
+    "c084e388-0a68-4a36-83b7-cf7400bb503b",
+    "c41e45dc-b24e-4297-9d46-9e513e2f1952"
   ],
   "ddl": [
     {
@@ -4045,6 +4046,19 @@
       "table": "volume_run"
     },
     {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "held_by",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "volume_run"
+    },
+    {
       "type": "uuid",
       "typeSchema": null,
       "notNull": false,
@@ -7156,6 +7170,27 @@
       "method": "btree",
       "concurrently": false,
       "name": "volume_run_one_active_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "volume_run"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "volume_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": "\"held_by\" is not null",
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "volume_run_held_idx",
       "entityType": "indexes",
       "schema": "public",
       "table": "volume_run"
