@@ -9,11 +9,11 @@ anything, it stops and asks you.
 
 The agent works in the project and environment you're looking at, unless you name another. It
 can create a project, add and change services, [configs](../services/configs.md), volumes and
-domains, review what's staged, publish and deploy. It can list an environment's deployments,
-follow one to its end, redeploy a failed, cancelled or unknown one, start a queued one now, and
-cancel one, like the [deployment page](../deploy/deployments.md#redeploy-or-cancel-a-deployment)'s
-buttons. It can also read your GitHub repositories and work on your servers. It doesn't create
-environments.
+domains, review what's staged, restore or undo a saved version, publish and deploy. It can list an
+environment's deployments, follow one to its end, redeploy a failed, cancelled or unknown one, start
+a queued one now, and cancel one, like the
+[deployment page](../deploy/deployments.md#redeploy-or-cancel-a-deployment)'s buttons. It can also
+read your GitHub repositories and work on your servers. It doesn't create environments.
 
 ## What it can do on your servers
 

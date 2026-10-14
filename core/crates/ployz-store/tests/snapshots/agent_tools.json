@@ -1269,6 +1269,51 @@
       "read_only": false
     },
     {
+      "description": "Stage a Saved revision's whole configuration, or with undo only the reverse of its changes. Staged; publish or deploy asks a human if it removes something. Sealed values and Volume data do not come back. Never asks a human to approve.",
+      "gate": "never",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "accept_overwrite": {
+            "description": "Only from a refusal, when the member accepted losing the Staged changes it named.",
+            "type": "boolean"
+          },
+          "environment": {
+            "description": "Environment name, e.g. staging. Omit for the one you are in.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "project": {
+            "description": "Project name. Omit for the one you are in.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "revision": {
+            "description": "Saved revision number. review shows the latest as saved_revision.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "undo": {
+            "description": "Reverse only what this revision changed, keeping later ones.",
+            "type": "boolean"
+          },
+          "version": {
+            "description": "Only from a refusal, with accept_overwrite.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "revision"
+        ],
+        "type": "object"
+      },
+      "name": "history",
+      "output_schema": {
+        "type": "object"
+      },
+      "read_only": false
+    },
+    {
       "description": "Save everything Staged as the next Saved revision, without deploying. Usually call deploy instead: it publishes and deploys. If the change removes a Service, a Volume, or a live domain, this waits for a human to approve. It may stop to ask a human to approve; call it alone, never alongside another tool.",
       "gate": "store",
       "input_schema": {
