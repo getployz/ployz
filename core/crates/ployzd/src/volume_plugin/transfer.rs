@@ -89,19 +89,20 @@ impl Receives {
         });
     }
 
-    /// Stops the receive task of `name` and returns once it ended, so ZFS no longer holds
-    /// its slot busy.
-    pub(super) async fn stop(&self, name: &DockerVolumeName) {
-        let finished = self
+    /// Stops every receive task and returns once each ended, so ZFS holds no slot busy
+    /// and no receive changes a slot afterwards.
+    pub(super) async fn stop_all(&self) {
+        let finished: Vec<CancellationToken> = self
             .0
             .lock()
             .expect("receive registry is not poisoned")
-            .get(&name.0)
+            .values()
             .map(|task| {
                 task.stop.cancel();
                 task.finished.clone()
-            });
-        if let Some(finished) = finished {
+            })
+            .collect();
+        for finished in finished {
             finished.cancelled().await;
         }
     }

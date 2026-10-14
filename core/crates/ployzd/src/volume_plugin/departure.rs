@@ -36,6 +36,9 @@ impl VolumeStorage {
             return Ok(Vec::new());
         };
         let _pool_guard = self.pool.lock_mutation().await?;
+        // Every receive starts under admission, so once these stop no slot changes
+        // between the scan and the decisions taken from it.
+        self.receives.stop_all().await;
         let datasets = self.datasets(&pool).await?;
         let names: BTreeSet<&str> = datasets
             .iter()
@@ -113,7 +116,6 @@ impl VolumeStorage {
             }
             Departure::Departed => false,
             Departure::Mirror => {
-                self.receives.stop(name).await;
                 self.zfs(&["destroy", "-r", &slot_parent(pool, name)])
                     .await?;
                 self.receives.forget(name);
