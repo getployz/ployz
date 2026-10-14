@@ -132,8 +132,9 @@ const KIND_WORDS = {
   deploy: "deploy",
 } satisfies Record<VolumeRunKind, string>;
 
+// A Machine may already be destroying the copy, and no floor retracts that, so a release cannot promise to stop it.
 export const volumeBusyMessage = (lane: Pick<VolumeRunRow, "kind" | "volumeName">) =>
-  `VolumeBusy: ${lane.volumeName} is busy with a ${KIND_WORDS[lane.kind]}; ployz volume release ${lane.volumeName} stops it`;
+  `VolumeBusy: ${lane.volumeName} is busy with a ${KIND_WORDS[lane.kind]}; ${lane.kind === "delete_mirror" ? "it finishes on its own" : `ployz volume release ${lane.volumeName} stops it`}`;
 
 export const finishesThere = (volumeName: string, server: string) => `${volumeName} is starting on ${server}; it finishes there`;
 

@@ -602,6 +602,14 @@ describe("volume runs", () => {
       expect((await request({ kind: "sync", args: { full: false } })).ok).toBe(true);
     });
 
+    it("a mirror removal under way says it finishes on its own, since a release cannot retract a destroy a Machine started", async () => {
+      await requested({ kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null } });
+
+      expect(await request({ kind: "sync", args: { full: false } })).toMatchObject({
+        ok: false, refusal: { code: "conflict", message: "VolumeBusy: data is busy with a mirror removal; it finishes on its own" },
+      });
+    });
+
     it("a request whose insert lost to a run that ended before its read inserts again, on the now free Volume", async () => {
       const first = await requested({ kind: "mirror", args: { to: "fsn-2" } });
       const other = await harness.pool.connect();
