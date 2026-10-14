@@ -55,7 +55,6 @@ stage() {
     "$BOLD" "$BLUE" "$_STAGE_INDEX" "$TOTAL_STAGES" "$1" "$RESET"
 }
 
-# say "..." prints a plain instruction line.
 say()  { printf '  %s\n' "$1"; }
 # step "..." is a numbered-feeling action the human takes in the browser.
 step() { printf '  %s•%s %s\n' "$BLUE" "$RESET" "$1"; }

@@ -1,7 +1,6 @@
 export const ENVIRONMENT_ROUTE_FROM =
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug";
 
-/** The Environment route's params. */
 export type EnvironmentRouteParams = { organizationSlug: string; projectSlug: string; environmentSlug: string };
 
 export const ENVIRONMENT_INDEX_ROUTE_TO =
