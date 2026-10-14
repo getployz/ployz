@@ -405,7 +405,8 @@ const TAKE_ROUNDS = 3;
 
 /**
  * The insert waits on any lane committing concurrently, so a conflict means a lane landed between the read and the
- * insert; the next round reads it under the lock and takes it over too.
+ * insert; the next round reads it under the lock and takes it over too. A lane that ended before the read leaves the
+ * Volume free, so any taker inserts again.
  */
 const takeLane = Effect.fn("VolumeRun.takeLane")(function* (caller: Caller, { input, volume, id, lane: only }: LaneTaker, end: LaneEnd | null, inngestRunId: string | null = null) {
   const { drizzle } = yield* Database;
@@ -441,6 +442,7 @@ const takeLane = Effect.fn("VolumeRun.takeLane")(function* (caller: Caller, { in
     }
     if (end !== null && round < TAKE_ROUNDS) continue;
     const active = yield* activeLane(input.volumeId, true);
+    if (active === undefined && round < TAKE_ROUNDS) continue;
     if (active === undefined) return yield* new LaneChurn({ message: `runs on ${volume.volumeName} keep landing and ending; try again` });
     return yield* new LaneRefused({ refusal: yield* laneRefusal(active, input.kind), busy: volumeRunView(active) });
   }

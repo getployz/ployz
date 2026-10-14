@@ -601,6 +601,26 @@ describe("volume runs", () => {
       await execute(first.id);
       expect((await request({ kind: "sync", args: { full: false } })).ok).toBe(true);
     });
+
+    it("a request whose insert lost to a run that ended before its read inserts again, on the now free Volume", async () => {
+      const first = await requested({ kind: "mirror", args: { to: "fsn-2" } });
+      const other = await harness.pool.connect();
+      try {
+        await other.query("begin");
+        await other.query("select id from volume_run where id = $1 for update", [first.id]);
+        const second = request({ kind: "sync", args: { full: false } });
+        while ((await harness.pool.query("select 1 from pg_stat_activity where wait_event_type = 'Lock'")).rowCount === 0) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        await other.query("update volume_run set state = 'done', finished_at = now() where id = $1", [first.id]);
+        await other.query("commit");
+
+        expect(await second).toMatchObject({ ok: true, run: { kind: "sync", state: "requested" } });
+      } finally {
+        other.release();
+      }
+      expect((await rows()).map((row) => [row.kind, row.state])).toEqual([["mirror", "done"], ["sync", "requested"]]);
+    });
   });
 
 
