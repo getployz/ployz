@@ -74,8 +74,8 @@ service and its address.
 
 ![Deployment #1 building express-hello-world, with Build and Deploy logs](../images/deployment-page-build.png)
 
-Until the first deploy finishes, the service's card can read **Not running** with a warning.
-That's expected. If the deployment fails, its page says why; see
+While the first deploy runs, the service's card reads **Starting**. If the deployment fails,
+its page says why; see
 [Troubleshooting deployments](../troubleshooting/deployments.md).
 
 ## Open your app

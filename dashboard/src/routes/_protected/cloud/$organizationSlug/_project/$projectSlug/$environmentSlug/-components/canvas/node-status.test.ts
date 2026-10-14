@@ -70,6 +70,7 @@ describe("runtimeLine", () => {
     const exited = (code: number) => ({ ...container("exited"), runtime: { state: "exited", code } });
     expect(runtimeLine(service, null, deploying)).toMatchObject({ word: "Starting", tone: "quiet", down: false });
     expect(runtimeLine({ ...service, change: "create" }, null, deploying)).toMatchObject({ word: "Starting", tone: "quiet" });
+    expect(runtimeLine({ ...service, change: "delete" }, null, deploying)).toMatchObject({ word: "Not running", down: true });
     expect(runtimeLine(service, null, { ...deploying, lens: { ...observed, status: "unavailable" } })).toMatchObject({ word: "Not running", tone: "quiet" });
     expect(runtimeLine(service, runtime(), deploying)).toMatchObject({ word: "Not running", tone: "bad", down: true });
     expect(runtimeLine(service, runtime(exited(0)), deploying)).toMatchObject({ word: "Stopped", tone: "bad", down: true });

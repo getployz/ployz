@@ -80,7 +80,8 @@ export function runtimeLine(
       return lens.observedAt === null ? line("Status unavailable", "quiet")
         : { ...evidenceLine(runtime, !lens.incomplete, desiredReplicas, deploying, false), tone: "quiet", down: false, since: new Date(lens.observedAt), checkFailing: false };
     case "observed":
-      return evidenceLine(runtime, !lens.incomplete, desiredReplicas, deploying, deploying);
+      // A Deploy that removes it stops it for good: nothing is starting.
+      return evidenceLine(runtime, !lens.incomplete, desiredReplicas, deploying, deploying && service.change !== "delete");
   }
 }
 
