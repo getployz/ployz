@@ -13,7 +13,7 @@ describe("renderMail", () => {
       [
         "api is down",
         "",
-        "Health checks on api have failed since 14:02 UTC. We'll email you when it's back up.",
+        "Visitors can't reach api. Checks have failed since 14:02 UTC. We'll email you when it's back up.",
         "",
         `View incident: ${ORIGIN}/cloud/acme/shop/production/uptime`,
         "",
@@ -36,7 +36,7 @@ describe("renderMail", () => {
     expect(html).toContain(`href="${ORIGIN}/api/unsubscribe?token=sample"`);
     expect(html).toContain(`href="${ORIGIN}/cloud/account"`);
     expect(html).toContain(`src="${ORIGIN}/assets/logo-mark.png"`);
-    expect(html).toContain("Health checks have failed since 14:02 UTC.");
+    expect(html).toContain("Checks have failed since 14:02 UTC.");
   });
 
   it("leaves out the unsubscribe link and the facts when the email has none", async () => {
