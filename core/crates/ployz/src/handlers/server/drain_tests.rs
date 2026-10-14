@@ -1,3 +1,5 @@
+//! Golden fixtures for the lines the CLI prints for a Drain report.
+
 use ployz_core::{Machine, MachineId, MachineName, QualifiedService, WireGuardPublicKey};
 
 use super::{line, remaining};
