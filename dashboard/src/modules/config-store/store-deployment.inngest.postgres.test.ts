@@ -6,12 +6,16 @@ import { Effect, Layer, Schema } from "effect";
 import { Inngest } from "inngest";
 import { eq } from "drizzle-orm";
 import { Header } from "tar";
-import { expect } from "vitest";
+import { expect, vi } from "vitest";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { createCancelStoreDeployment, createDeployToFirstServer, createRunStoreDeployment } from "#/modules/config-store/store-deployment.inngest";
 import { failStoreDeploymentUnrun, recordStoreDeploymentRun, unclaimedStoreDeployments } from "#/modules/config-store/store-deployment.server";
 import { GithubObservationError, type GithubApiService } from "#/modules/github/github-observation.api";
-import { configDeploymentAdmittedEvent, createConfigFirstServerJoinedEvent } from "#/modules/inngest/events";
+import { member, user } from "#/modules/identity/tables";
+import {
+  configDeploymentAdmittedEvent, createConfigFirstServerJoinedEvent, type DeploymentTrigger, mailSendRequestedEvent,
+} from "#/modules/inngest/events";
+import { notificationPreference } from "#/modules/notifications/tables";
 import { volumePlacement } from "#/modules/volume-placement/tables";
 import { Database } from "#/server/database.server";
 import { makeInngestEffectRunner } from "#/server/run.server";
@@ -30,9 +34,9 @@ const UNSTORED = "00000000-0000-4000-8000-00000000a106";
 const SECRET = "s3cr3t-never-in-a-step";
 const here = { project: null, environment: null };
 
-const admitted = (deploymentId: string) => ({
+const admitted = (deploymentId: string, trigger?: DeploymentTrigger) => ({
   name: configDeploymentAdmittedEvent,
-  data: { organizationId: ORGANIZATION, environmentId: ENVIRONMENT, deploymentId },
+  data: { organizationId: ORGANIZATION, environmentId: ENVIRONMENT, deploymentId, trigger },
 });
 
 it.live(
@@ -243,6 +247,72 @@ it.live(
         outcome: { type: "not_executed", reason: "The source branch no longer exists." },
         builds: [],
       });
+    }),
+  60_000,
+);
+
+it.live(
+  "a deploy GitHub started mails each member who wants it once when it fails; one anybody else started mails no one",
+  () =>
+    Effect.gen(function* () {
+      const inngest = new Inngest({ id: "store-deployment-mail-test" });
+      const send = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
+      const services = yield* Layer.build(yield* storeTestCloud({ github: github({ branchGone: false, heads: 0, archives: [] }), inngest }));
+      const ada = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
+      const [bob, cy] = yield* Effect.gen(function* () {
+        const { drizzle } = yield* Database;
+        const members = yield* drizzle.insert(user)
+          .values([{ email: "bob@example.test", name: "Bob" }, { email: "cy@example.test", name: "Cy" }])
+          .returning({ id: user.id });
+        yield* drizzle.insert(member).values(members.map(({ id }) => ({ userId: id, organizationId: ORGANIZATION, role: "member" as const })));
+        yield* drizzle.insert(notificationPreference).values({ userId: members[1]?.id ?? "", type: "deploy-failed", channel: "none" });
+        return members.map(({ id }) => id);
+      }).pipe(Effect.provide(services));
+      const store = yield* seedStoreGitService(ORGANIZATION, { project: PROJECT, environment: ENVIRONMENT, service: SERVICE }, "public")
+        .pipe(Effect.provide(services));
+      const admit = (id: string) => Effect.promise(() => store.write(ORGANIZATION, {
+        command: "admit", admit: "deploy", id, environment: here, services: [], version: null, accept_volume_loss: [],
+      }));
+      const worker = createRunStoreDeployment(inngest, makeInngestEffectRunner((program) => Effect.runPromise(program.pipe(Effect.provide(services)))));
+      const run = (deploymentId: string, trigger?: DeploymentTrigger) =>
+        Effect.promise(() => new InngestTestEngine({ function: worker, events: [admitted(deploymentId, trigger)] }).execute());
+      const mails = () => send.mock.calls.flatMap(([payload]) => [payload].flat())
+        .filter((event) => event.name === mailSendRequestedEvent)
+        .map((event) => ({ id: event.id, ...(event.data as { to: string; subject: string; html: string; text: string }) }));
+
+      yield* admit(DEPLOYED);
+      expect((yield* run(DEPLOYED, "github")).result).toMatchObject({ ran: { id: DEPLOYED, status: "failed" } });
+      const told = mails();
+      expect(told.map((mail) => [mail.to, mail.id])).toEqual(expect.arrayContaining([
+        ["ada@example.test", `mail-deployment:${DEPLOYED}:failed:${ada}`],
+        ["bob@example.test", `mail-deployment:${DEPLOYED}:failed:${bob}`],
+      ]));
+      expect(told).toHaveLength(2);
+      expect(told.map((mail) => mail.id)).not.toContain(`mail-deployment:${DEPLOYED}:failed:${cy}`);
+      const [mail] = told;
+      expect(mail?.subject).toBe("Deploy failed: web in shop / production");
+      expect(mail?.html).toContain(`http://localhost:3000/cloud/shop/shop/production/deployments/${DEPLOYED}?logs=deploy`);
+      for (const line of ["acme/web", HEAD.slice(0, 7), "No Server is enrolled in this Organization"]) {
+        expect(mail?.text).toContain(line);
+      }
+
+      // Inngest drops a sent event whose ID it has already seen.
+      send.mockClear();
+      expect((yield* run(DEPLOYED, "github")).result).toMatchObject({ nothingToRun: expect.any(String) });
+      expect(mails()).toEqual([]);
+      const onFailure = worker.opts.onFailure;
+      if (onFailure === undefined) return expect.fail("the worker records abandoned runs");
+      yield* Effect.promise(() =>
+        // SAFETY: the failure handler reads only the failed run's ID and its triggering event.
+        Promise.resolve(onFailure({ event: { data: { run_id: "never-claimed", event: admitted(DEPLOYED, "github") } } } as never)));
+      expect(new Set(mails().map((again) => again.id))).toEqual(new Set(told.map((first) => first.id)));
+
+      send.mockClear();
+      yield* admit(CANCELLED);
+      expect((yield* run(CANCELLED, "user")).result).toMatchObject({ ran: { id: CANCELLED, status: "failed" } });
+      yield* admit(LOST);
+      expect((yield* run(LOST)).result).toMatchObject({ ran: { id: LOST, status: "failed" } });
+      expect(mails()).toEqual([]);
     }),
   60_000,
 );

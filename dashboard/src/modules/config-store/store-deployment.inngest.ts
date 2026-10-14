@@ -2,6 +2,7 @@ import {
   cancelStoreDeploymentRun, deployToFirstServer, failStoreDeploymentUnrun, forgetStoreDeploymentRun, publishedEnvironments, recordStoreDeploymentRun, runStoreDeployment, type StoreEffectRunner,
   stopStoreDeploymentRun, storeDeploymentRunner, unclaimedStoreDeployments,
 } from "#/modules/config-store/store-deployment.server";
+import { mailFailedGithubDeploy } from "#/modules/config-store/deploy-failed-mail.server";
 import { serversLackingEnsure } from "#/modules/runtime/daemon-compat.server";
 import type { PloyzInngest } from "#/modules/inngest/client";
 import { decodeInngestEnvelope } from "#/modules/inngest/envelope";
@@ -42,7 +43,9 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Store
       onFailure: async ({ event }) => {
         const { organizationId, deploymentId } = event.data.event.data;
         await runEffect(finishDeployVolumes(event.data.run_id, "failed"));
-        return runEffect(stopStoreDeploymentRun(organizationId, deploymentId, event.data.run_id));
+        const stopped = await runEffect(stopStoreDeploymentRun(organizationId, deploymentId, event.data.run_id));
+        await runEffect(mailFailedGithubDeploy(event.data.event.data));
+        return stopped;
       },
     },
     async ({ event, step, runId }) => {
@@ -50,13 +53,17 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Store
       const lacking = await step.run("servers-lacking", () => runEffect(serversLackingEnsure(event.data.organizationId)));
       if (lacking.length > 0) {
         const failure = `Deploys need a newer Ployz on ${lacking.join(", ")}`;
-        return step.run("servers-failed", () => runEffect(failStoreDeploymentUnrun(event.data.organizationId, event.data.environmentId, event.data.deploymentId, runId, failure)));
+        const failed = await step.run("servers-failed", () => runEffect(failStoreDeploymentUnrun(event.data.organizationId, event.data.environmentId, event.data.deploymentId, runId, failure)));
+        await step.run("mail-failure", () => runEffect(mailFailedGithubDeploy(event.data)));
+        return failed;
       }
       const github = await step.run("plan-builds", () => runEffect(planStoreGithubBuilds(event.data)));
       await Promise.all(github.map((target) => walkGithub(event.data.organizationId, target, step, runEffect)));
       const storage = await walkPlacement(event.data, step, runEffect);
       if (storage.kind === "failed") {
-        return step.run("storage-failed", () => runEffect(failStoreDeploymentUnrun(event.data.organizationId, event.data.environmentId, event.data.deploymentId, runId, storage.message, storage.restore)));
+        const failed = await step.run("storage-failed", () => runEffect(failStoreDeploymentUnrun(event.data.organizationId, event.data.environmentId, event.data.deploymentId, runId, storage.message, storage.restore)));
+        await step.run("mail-failure", () => runEffect(mailFailedGithubDeploy(event.data)));
+        return failed;
       }
       if (storage.kind === "done") {
         await step.run("refresh-mirrors", () => runEffect(refreshMirrors(event.data.organizationId, event.data.environmentId)));
@@ -67,6 +74,9 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Store
       const ran = await step.run("run-deployment", () => runEffect(runStoreDeployment(event.data, storeDeploymentRunner(runId))));
       await step.run("finish-volumes", () => runEffect(finishDeployVolumes(runId, "done")));
       const applied = "ran" in ran && ran.ran.status === "applied";
+      if ("ran" in ran && (ran.ran.status === "failed" || ran.ran.status === "unknown")) {
+        await step.run("mail-failure", () => runEffect(mailFailedGithubDeploy(event.data)));
+      }
       // A failed Deployment can still have advanced Applied State, so the checks follow it either way. Only an applied
       // one is probed: a failed one may have stopped partway, and the schedule still checks what it reached.
       await step.run("sync-uptime", () =>

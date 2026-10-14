@@ -7,22 +7,22 @@ import { configDeploymentAdmittedEvent } from "#/modules/inngest/events";
 
 const admitted = {
   name: configDeploymentAdmittedEvent,
-  data: { organizationId: "org", environmentId: "env", deploymentId: "dep" },
+  data: { organizationId: "org", environmentId: "env", deploymentId: "dep", trigger: "github" as const },
 };
 
-async function stepsOf(remove: boolean) {
+async function stepsOf(remove: boolean, status: "applied" | "failed" | "unknown" = "applied") {
   const order: string[] = [];
   const results = new Map<string, unknown>([
     ["servers-lacking", []],
     ["plan-builds", []],
     ["placement-0", { kind: "stopped" }],
     ["place-volumes", []],
-    ["run-deployment", { ran: { id: "dep", status: "applied", remove } }],
+    ["run-deployment", { ran: { id: "dep", status, remove } }],
     ["finish-volumes", null],
     ["sweep", { deployments: [], closing: [] }],
     ["delete-orphan-mirrors", []],
   ]);
-  const ids = ["record-run", ...results.keys(), "sync-uptime", "forget-run"];
+  const ids = ["record-run", ...results.keys(), "mail-failure", "sync-uptime", "forget-run"];
   await new InngestTestEngine({
     function: createRunStoreDeployment(new Inngest({ id: "store-deployment-order-test" })),
     events: [admitted],
@@ -41,6 +41,20 @@ describe("an applied Deployment's orphan mirror scan", () => {
     const order = await stepsOf(false);
     expect(order).not.toContain("sweep");
     expect(order.at(-1)).toBe("delete-orphan-mirrors");
+  });
+});
+
+describe("a Deployment's failure email", () => {
+  it("is sent once it ended failed or unknown, before the checks follow it", async () => {
+    for (const status of ["failed", "unknown"] as const) {
+      const order = await stepsOf(false, status);
+      expect(order.slice(order.indexOf("run-deployment"), order.indexOf("sync-uptime")))
+        .toEqual(["run-deployment", "finish-volumes", "mail-failure"]);
+    }
+  });
+
+  it("is never sent for one that applied", async () => {
+    expect(await stepsOf(false)).not.toContain("mail-failure");
   });
 });
 
