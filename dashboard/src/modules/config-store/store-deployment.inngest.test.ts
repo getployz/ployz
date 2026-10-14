@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { InngestTestEngine } from "@inngest/test";
 import { Inngest } from "inngest";
 import { describe, expect, it } from "vitest";
@@ -15,7 +16,9 @@ async function stepsOf(remove: boolean) {
     ["servers-lacking", []],
     ["plan-builds", []],
     ["placement-0", { kind: "stopped" }],
+    ["place-volumes", []],
     ["run-deployment", { ran: { id: "dep", status: "applied", remove } }],
+    ["finish-volumes", null],
     ["sweep", { deployments: [], closing: [] }],
     ["delete-orphan-mirrors", []],
   ]);
@@ -38,5 +41,16 @@ describe("an applied Deployment's orphan mirror scan", () => {
     const order = await stepsOf(false);
     expect(order).not.toContain("sweep");
     expect(order.at(-1)).toBe("delete-orphan-mirrors");
+  });
+});
+
+const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
+
+describe("a Deploy's storage steps", () => {
+  it("never sleep or wait on a run the Deploy did not start", () => {
+    const deployment = read("./store-deployment.inngest.ts");
+    expect(deployment).not.toContain("placement-wait");
+    expect(deployment).not.toContain("step.sleep");
+    expect(read("../volume-placement/volume-placement.deploy.server.ts")).not.toContain("listActiveVolumeRuns");
   });
 });

@@ -191,6 +191,18 @@ const slotAt = (copy: VolumeCopy | null): SlotAt | null =>
 const pulled = (copy: VolumeCopy | null, target: Snapshot) =>
   copy?.kind === "slot" && copy.pull === null && copy.newest?.guid === target.guid;
 
+const MAX_DRIFTS = 3;
+
+async function askPullFollowingDrift(steps: RunSteps, id: string, B: MachineRef, copy: VolumeCopy | null, want: WantedCopy, still: string) {
+  let expect = expectOf(copy);
+  for (let drift = 0; ; drift += 1) {
+    const answer = await setCopy(steps, drift === 0 ? id : `${id}-drift-${drift}`, B, expect, want, still);
+    if (answer.ok) return answer.copy;
+    if (answer.reason !== "mismatch" || answer.copy?.kind !== "slot" || drift === MAX_DRIFTS) throw new NonRetriableError(answer.message);
+    expect = expectOf(answer.copy);
+  }
+}
+
 /**
  * B pulls `target` from A and the run asks again until the pull lands. Every check resends the same request: it finishes
  * a landed pull, leaves a running one alone, and resumes one a restart of B stopped.
@@ -201,7 +213,7 @@ async function pull(steps: RunSteps, prefix: string, ctx: { readonly B: MachineR
   const slot = copyName(run.volumeName, B.name);
   const want: WantedCopy = { kind: "mirror", from: ctx.from, target: target.name, drain: DRAIN_MS };
   const still = `${slot} is still busy`;
-  let copy = await mustSet(steps, `${prefix}-pull`, B, expectOf(ctx.copy), want, still);
+  let copy = await askPullFollowingDrift(steps, `${prefix}-pull`, B, ctx.copy, want, still);
   for (let poll = 0; poll < MAX_POLLS; poll += 1) {
     if (pulled(copy, target)) return copy;
     const failure = copy?.kind === "slot" ? copy.pull?.failure ?? null : null;
@@ -209,7 +221,7 @@ async function pull(steps: RunSteps, prefix: string, ctx: { readonly B: MachineR
     // A landed pull still verifying keeps `pull` set, so only an idle copy skips the wait.
     const idle = copy?.kind === "slot" && copy.pull === null;
     if (!idle) await step.sleep(`${prefix}-wait-${poll}`, POLL_INTERVAL);
-    copy = await mustSet(steps, `${prefix}-repull-${poll}`, B, expectOf(copy), want, still);
+    copy = await askPullFollowingDrift(steps, `${prefix}-repull-${poll}`, B, copy, want, still);
   }
   throw new NonRetriableError(`${slot} is still receiving ${target.name} after ${MAX_POLLS} checks`);
 }
@@ -532,6 +544,13 @@ async function sweepOrphans(step: Pick<PloyzStepTools, "run">, runEffect: Effect
   return { orphanRuns };
 }
 
+/** What a run's `inngest/function.finished` event says to close its row with: the failure it ended on, or none. */
+export const finishedVolumeRun = <Input>(event: Input) => {
+  const finished = decodeInngestEnvelope(inngestFunctionFinishedEnvelopeSchema)(event);
+  const error = finished.data.error;
+  return { functionId: finished.data.function_id, runId: finished.data.run_id, end: { error: error === undefined || error === null ? null : error.message } };
+};
+
 const isRunVolume = (functionId: string) =>
   functionId === RUN_VOLUME_FUNCTION_ID || functionId.endsWith(`-${RUN_VOLUME_FUNCTION_ID}`);
 
@@ -562,12 +581,9 @@ export const createCloseFinishedVolumeRun = (inngest: PloyzInngest, runEffect: E
       }],
     },
     async ({ event, step }) => {
-      const finished = await step.run("decode-finished", () =>
-        decodeInngestEnvelope(inngestFunctionFinishedEnvelopeSchema)(event));
-      if (!isRunVolume(finished.data.function_id)) return { skipped: true };
-      const error = finished.data.error;
-      const end = { error: error === undefined || error === null ? null : error.message };
-      return { closed: await step.run("close-run", () => runEffect(closeVolumeRun(finished.data.run_id, end))) };
+      const finished = await step.run("decode-finished", () => finishedVolumeRun(event));
+      if (!isRunVolume(finished.functionId)) return { skipped: true };
+      return { closed: await step.run("close-run", () => runEffect(closeVolumeRun(finished.runId, finished.end))) };
     },
   );
 

@@ -205,6 +205,26 @@ describe("deploying a Volume placement", () => {
       .toEqual(expect.arrayContaining([{ id: volumeId, deploymentId: "dep-1" }, { id: "vol2", deploymentId: "dep-1" }]));
   });
 
+  it("leaves a restore staged, and records no failure, when its seed was taken over rather than failed", async () => {
+    const source = [member("web-1", "writer"), member("web-2", "mirror")];
+    const byVolume: MemberInspector = (_, _environment, id) => Effect.succeed(id === "vol2" ? [] : source);
+    await stageMove("web-2", ["web-2"]);
+    await run(stagePlacement(organizationId, { environment, volumeId: "vol2", mirrors: [], staged: {
+      primary: web("web-1"), mirrors: [], deletes: [],
+      seed: { sourceVolumeId: volumeId, sourceName: "data", dockerVolume: "shop-production_vol-vol2", point: { guid: "11", name: "ployz-1", at: 1_790_000_000 } },
+    } }));
+    await run(stampPlacements(organizationId, [volumeId, "vol2"], "dep-1"));
+    const seeding = await run(advancePlacement(organizationId, "dep-1", null, byVolume, answered));
+    if (seeding.kind !== "wait") throw new Error("expected a run");
+
+    await endRun(seeding.wait.runId, "yielded", "a Deploy took this run over");
+    expect(await run(advancePlacement(organizationId, "dep-1", seeding.wait, byVolume, answered)))
+      .toEqual({ kind: "failed", message: "data: a Deploy took this run over" });
+    expect(await failedRestores()).toBe(0);
+    expect((await run(listPlacements(organizationId))).find((row) => row.volumeId === "vol2"))
+      .toMatchObject({ staged: { seed: { sourceVolumeId: volumeId } }, deploymentId: null });
+  });
+
   it("takes over a restore a superseded Deploy stamped, and runs it", async () => {
     const source = [member("web-1", "writer"), member("web-2", "mirror")];
     const byVolume: MemberInspector = (_, _environment, id) => Effect.succeed(id === "vol2" ? [] : source);
@@ -276,17 +296,104 @@ describe("deploying a Volume placement", () => {
     });
   });
 
-  it("waits for a run it didn't start, then plans again", async () => {
+  const land = (kind: string, args: string, state = "running", phase = "warm") => harness.pool.query(`
+    insert into volume_run (organization_id, environment_id, volume_id, volume_name, docker_volume, kind, args, state, phase)
+    values ($1, 'env-1', $2, 'data', 'shop-production_vol-vol1', $3, $4, $5, $6) returning id`, [organizationId, volumeId, kind, args, state, phase]);
+  const runRows = async () => (await harness.pool.query(`select id, kind, state, message from volume_run order by created_at`)).rows;
+  const failedRestores = async () => (await harness.pool.query(`select count(*)::int as count from failed_restore`)).rows[0].count;
+  const stageRestore = async () => {
+    await run(stagePlacement(organizationId, { environment, volumeId: "vol2", mirrors: [], staged: {
+      primary: web("web-1"), mirrors: [], deletes: [],
+      seed: { sourceVolumeId: volumeId, sourceName: "data", dockerVolume: "shop-production_vol-vol2", point: { guid: "11", name: "ployz-1", at: 1_790_000_000 } },
+    } }));
+  };
+
+  it("takes over a warm run it didn't start, and never requests it again", async () => {
     members = [member("web-1", "writer"), member("web-2", "mirror")];
-    const other = await harness.pool.query(`
-      insert into volume_run (organization_id, environment_id, volume_id, volume_name, docker_volume, kind, args, state)
-      values ($1, 'env-1', $2, 'data', 'shop-production_vol-vol1', 'sync', '{"full":false}', 'running') returning id`, [organizationId, volumeId]);
+    const other = (await land("move", '{"to":"web-2"}')).rows[0].id;
     await stageMove("web-2", ["web-2"]);
-    const waiting = await run(advancePlacement(organizationId, "dep-1", null, inspect, answered));
-    expect(waiting).toEqual({ kind: "wait", wait: { runId: other.rows[0].id, volumeId, step: null } });
-    await endRun(other.rows[0].id, "failed");
-    expect(await run(advancePlacement(organizationId, "dep-1", waiting.kind === "wait" ? waiting.wait : null, inspect, answered)))
-      .toMatchObject({ kind: "wait", wait: { step: { mirrors: [] } } });
+    const started = await run(advancePlacement(organizationId, "dep-1", null, inspect, answered));
+    expect(started).toMatchObject({ kind: "wait", wait: { volumeId, step: { mirrors: [] } } });
+    if (started.kind !== "wait") throw new Error("expected a run");
+    expect(await runRows()).toEqual([
+      { id: other, kind: "move", state: "yielded", message: "a Deploy took this run over" },
+      { id: started.wait.runId, kind: "move", state: "requested", message: null },
+    ]);
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ name: "volume/run.taken", data: { runId: other } }));
+
+    await endRun(started.wait.runId, "done");
+    members = [member("web-2", "writer"), member("web-1", "mirror")];
+    expect(await run(advancePlacement(organizationId, "dep-1", started.wait, inspect, answered))).toEqual({ kind: "done" });
+    expect((await runRows()).map((row) => row.state)).toEqual(["yielded", "done"]);
+  });
+
+  it("fails on a run past its return, leaving the change staged for the next Deploy", async () => {
+    members = [member("web-1", "writer"), member("web-2", "mirror")];
+    const committed = (await land("move", '{"to":"web-2"}', "running", "committed")).rows[0].id;
+    await stageMove("web-2", ["web-2"]);
+    await run(stagePlacement(organizationId, { environment, volumeId: "vol2", mirrors: [], staged: { primary: web("web-1"), mirrors: [web("web-2")], deletes: [] } }));
+    await run(stampPlacements(organizationId, ["vol2"], "dep-1"));
+    expect(await run(advancePlacement(organizationId, "dep-1", null, inspect, answered)))
+      .toEqual({ kind: "failed", message: "VolumeBusy: data is starting on web-2; it finishes there" });
+    expect(await placement()).toMatchObject({ staged: { primary: web("web-2") }, deploymentId: null });
+    expect((await run(listPlacements(organizationId))).find((row) => row.volumeId === "vol2")).toMatchObject({ staged: { mirrors: [web("web-2")] }, unreached: true, deploymentId: null });
+    expect((await runRows()).map((row) => row.id)).toEqual([committed]);
+  });
+
+  it("fails on a run past its return on a restore's source, without failing the restore", async () => {
+    const byVolume: MemberInspector = (_, _environment, id) => Effect.succeed(id === "vol2" ? [] : members);
+    members = [member("web-1", "writer"), member("web-2", "mirror")];
+    await land("move", '{"to":"web-2"}', "running", "committed");
+    await stageRestore();
+    await run(stampPlacements(organizationId, ["vol2"], "dep-1"));
+    expect(await run(advancePlacement(organizationId, "dep-1", null, byVolume, answered)))
+      .toEqual({ kind: "failed", message: "VolumeBusy: data is starting on web-2; it finishes there" });
+    expect((await run(listPlacements(organizationId))).find((row) => row.volumeId === "vol2")).toMatchObject({ staged: { seed: { sourceVolumeId: volumeId } }, deploymentId: null });
+    expect(await failedRestores()).toBe(0);
+    expect((await runRows()).map((row) => row.kind)).toEqual(["move"]);
+  });
+
+  describe("a lane that lands after the placement read the Volume and before it takes the lane", () => {
+    const lanes = [
+      { kind: "sync", args: '{"full":false}', state: "running" },
+      { kind: "release", args: "{}", state: "requested" },
+      { kind: "delete_mirror", args: '{"slot":null,"confirmed_name":null}', state: "requested" },
+    ];
+
+    it.each(lanes)("$kind yields to the restore's seed, and the move follows", async ({ kind, args, state }) => {
+      const restored = [member("web-1", "writer")];
+      const source = [member("web-1", "writer"), member("web-2", "mirror")];
+      let landed: string | null = null;
+      let seeded = false;
+      const landing: MemberInspector = (_, _environment, id) => Effect.promise(async () => {
+        if (landed === null) landed = (await land(kind, args, state)).rows[0].id;
+        return id === "vol2" ? (seeded ? restored : []) : source;
+      });
+      await stageMove("web-2", ["web-2"]);
+      await stageRestore();
+      await run(stampPlacements(organizationId, [volumeId, "vol2"], "dep-1"));
+
+      const seeding = await run(advancePlacement(organizationId, "dep-1", null, landing, answered));
+      expect(seeding).toMatchObject({ kind: "wait", wait: { volumeId: "vol2", step: { change: { kind: "seed" } } } });
+      if (seeding.kind !== "wait") throw new Error("expected a run");
+      expect(await runRows()).toEqual([
+        { id: landed, kind, state: "yielded", message: "a Deploy took this run over" },
+        { id: seeding.wait.runId, kind: "seed", state: "requested", message: null },
+      ]);
+      expect(await failedRestores()).toBe(0);
+      expect((await run(listPlacements(organizationId))).map((row) => row.deploymentId)).toEqual(["dep-1", "dep-1"]);
+
+      await endRun(seeding.wait.runId, "done");
+      seeded = true;
+      const moving = await run(advancePlacement(organizationId, "dep-1", seeding.wait, landing, answered));
+      expect(moving).toMatchObject({ kind: "wait", wait: { volumeId, step: { change: { kind: "move" } } } });
+      if (moving.kind !== "wait") throw new Error("expected a run");
+      await endRun(moving.wait.runId, "done");
+      members = [member("web-2", "writer"), member("web-1", "mirror")];
+      const after: MemberInspector = (_, _environment, id) => Effect.succeed(id === "vol2" ? restored : members);
+      expect(await run(advancePlacement(organizationId, "dep-1", moving.wait, after, answered))).toEqual({ kind: "done" });
+      expect((await runRows()).map((row) => row.state)).toEqual(["yielded", "done", "done"]);
+    });
   });
 
   it("restores before it moves the source, running the copy on the source", async () => {

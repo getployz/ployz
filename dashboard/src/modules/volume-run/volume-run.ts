@@ -7,7 +7,10 @@ export type VolumeRunPhase = (typeof VOLUME_RUN_PHASES)[number];
 
 export const ACTIVE_VOLUME_RUN_STATES = ["requested", "running"] as const satisfies readonly VolumeRunState[];
 
-export const VOLUME_RUN_KINDS = ["mirror", "sync", "delete_mirror", "move", "release", "restore", "seed"] as const;
+/** The kinds a caller requests. A `deploy` row is never requested; a Deploy inserts it as its own lane. */
+export const VOLUME_RUN_REQUEST_KINDS = ["mirror", "sync", "delete_mirror", "move", "release", "restore", "seed"] as const;
+export type VolumeRunRequestKind = (typeof VOLUME_RUN_REQUEST_KINDS)[number];
+export const VOLUME_RUN_KINDS = [...VOLUME_RUN_REQUEST_KINDS, "deploy"] as const;
 export type VolumeRunKind = (typeof VOLUME_RUN_KINDS)[number];
 
 /** The sidebar also pins the Machine it resolved, so a renamed or reused Server name can't redirect the run. */
@@ -25,12 +28,15 @@ export type VolumeRunArgs = {
     readonly guid: string;
     readonly name: string;
   };
+  /** A Deploy's own lane while its Services run; `resume` is the move it took over, requested again once it ends. */
+  deploy: { readonly deployment: string; readonly resume: Destination | null };
 };
 export type AnyVolumeRunArgs = VolumeRunArgs[VolumeRunKind];
 
 export type VolumeRunInput = {
-  [K in VolumeRunKind]: { readonly kind: K; readonly args: VolumeRunArgs[K] }
-}[VolumeRunKind];
+  [K in VolumeRunRequestKind]: { readonly kind: K; readonly args: VolumeRunArgs[K] }
+}[VolumeRunRequestKind];
+export type VolumeLaneInput = VolumeRunInput | { readonly kind: "deploy"; readonly args: VolumeRunArgs["deploy"] };
 
 export const VOLUME_RUN_UNCLAIMED_LIMIT_MS = 10 * 60_000;
 export const VOLUME_RUN_RUNNING_CHECK_MS = 15 * 60_000;
