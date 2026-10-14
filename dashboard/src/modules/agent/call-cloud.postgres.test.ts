@@ -7,7 +7,7 @@ import { asTestDouble } from "#/lib/test-double";
 import { callCloud } from "#/modules/agent/call-cloud.server";
 import { decideApproval } from "#/modules/approvals/approvals.server";
 import type { Caller } from "#/modules/identity/actor";
-import { UNREACHABLE_MESSAGE } from "#/modules/machines/server-operations.server";
+import { freshApproval, freshOperationDigest, UNREACHABLE_MESSAGE } from "#/modules/machines/server-operations.server";
 import { serverDrainAttempt } from "#/modules/machines/tables";
 import { attemptIdOf } from "#/modules/operations/keyed.server";
 import { OrganizationRuntime, type ScopedRuntimeClientSession } from "#/modules/runtime/organization-runtime.server";
@@ -238,6 +238,52 @@ describe("callCloud", () => {
       expect(decided).toMatchObject({ ok: true });
       const approved = yield* callCloud(caller, { act }, approval_id).pipe(runtime(observing(false), []), Effect.provide(services));
       expect(approved).toEqual({ ok: true, value: expect.objectContaining({ run: "set web-2", state: "accepted" }) });
+      expect(send).toHaveBeenCalledTimes(1);
+    }));
+
+  // Catches an approval for web off authorizing a change that also turns other policy off, or a reread that supersedes
+  // an approval for the whole change.
+  it.live("an approval for turning web traffic off covers no other value a replayed change sets, and one for the whole change does", () =>
+    Effect.gen(function* () {
+      const inngest = new Inngest({ id: "call-cloud-test" });
+      const send = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
+      const services = yield* Layer.build(yield* storeTestCloud({ inngest }));
+      const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
+      const caller: Caller = { ...member, userId };
+      const off = {
+        action: "set_server",
+        server: { machine: MACHINE, name: "web-2" },
+        accepts_builds: null,
+        accepts_services: null,
+        accepts_ingress: false,
+        build_concurrency: { action: "keep" },
+      } as const satisfies Act["action"];
+      const asked = yield* callCloud(caller, { act: { attempt: "1".repeat(32), digest: "d".repeat(64), action: off } })
+        .pipe(runtime(observing(false), []), Effect.provide(services));
+      const { approval, approval_id } = Schema.decodeUnknownSync(Asked)(asked.ok ? null : asked.refusal.details);
+      expect(yield* decideApproval(caller, approval_id, { approve: { digest: approval } }).pipe(Effect.provide(services))).toMatchObject({ ok: true });
+
+      for (const [attempt, more] of [
+        ["2", { accepts_services: false }],
+        ["3", { accepts_builds: false }],
+        ["4", { build_concurrency: { action: "set", value: 1 } }],
+      ] as const) {
+        const replayed = yield* callCloud(caller, { act: { attempt: attempt.repeat(32), digest: "d".repeat(64), action: { ...off, ...more } } }, approval_id)
+          .pipe(runtime(observing(false), []), Effect.provide(services));
+        expect(replayed).toEqual({ ok: false, refusal: expect.objectContaining({ code: "approval_required" }) });
+      }
+      expect(send).not.toHaveBeenCalled();
+
+      const whole = { attempt: "5".repeat(32), digest: "d".repeat(64), action: { ...off, accepts_services: false } } as const satisfies Act;
+      const askedWhole = yield* callCloud(caller, { act: whole }).pipe(runtime(observing(false), []), Effect.provide(services));
+      const asking = Schema.decodeUnknownSync(Asked)(askedWhole.ok ? null : askedWhole.refusal.details);
+      const reread = yield* freshApproval(ORGANIZATION, asking.approval_id).pipe(runtime(observing(false), []), Effect.provide(services));
+      expect(reread).toMatchObject({ status: "pending" });
+      const decided = yield* decideApproval(caller, asking.approval_id, { approve: { digest: asking.approval } }, freshOperationDigest)
+        .pipe(runtime(observing(false), []), Effect.provide(services));
+      expect(decided).toMatchObject({ ok: true });
+      const ran = yield* callCloud(caller, { act: whole }, asking.approval_id).pipe(runtime(observing(false), []), Effect.provide(services));
+      expect(ran).toEqual({ ok: true, value: expect.objectContaining({ run: "set web-2", state: "accepted" }) });
       expect(send).toHaveBeenCalledTimes(1);
     }));
 });

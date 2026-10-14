@@ -5,6 +5,7 @@ import { getApproval, operationDigest, type OperationDigest, pendingApprovals } 
 import type { OperationAsked } from "#/modules/approvals/approvals.server";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { ownedNamespaces } from "#/modules/machines/namespace-cleanup.server";
+import { machineUpdateForPolicyChange, type ServerPolicyChange } from "#/modules/machines/server-policy";
 import { SYSTEM_NAMESPACE, splitQualifiedService } from "#/modules/machines/server-services";
 import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
 import { firstRuntimeFrame, OrganizationRuntime, RUNTIME_FRAME_TIMEOUT_MS } from "#/modules/runtime/organization-runtime.server";
@@ -98,9 +99,10 @@ const servesWeb = ({ machine }: RuntimeWatchView["machines"][number]) => machine
 
 /**
  * What turning web traffic off on `machineId` loses: every domain the Cluster serves, when no other Server with a
- * public IP takes web traffic. Null when the frame has no such Server.
+ * public IP takes web traffic. The preview is the whole `change`, so approving web off approves nothing else it carries.
+ * Null when the frame has no such Server.
  */
-export function ingressOffPlan(frame: RuntimeWatchView, machineId: string): OperationAsked | null {
+export function ingressOffPlan(frame: RuntimeWatchView, machineId: string, change: ServerPolicyChange): OperationAsked | null {
   const name = serverName(frame, machineId);
   if (name === undefined) return null;
   const last = frame.machines.some((observed) => observed.machine.id === machineId && servesWeb(observed))
@@ -110,7 +112,7 @@ export function ingressOffPlan(frame: RuntimeWatchView, machineId: string): Oper
     subject: `server:${machineId}`,
     verb: "set",
     name,
-    preview: { server: machineId, accepts_ingress: false },
+    preview: { server: machineId, ...machineUpdateForPolicyChange(change) },
     effects: domains.map((hostname) => ({ kind: "removes_domain", name: hostname, node: hostname, path: `domains/${hostname}` })),
   };
 }
@@ -190,8 +192,10 @@ export const planDrain = Effect.fn("ServerOperations.planDrain")(function* (orga
   return drainPlan(frame, new Set(yield* ownedNamespaces(organizationId)), machineId);
 });
 
-export const planIngressOff = Effect.fn("ServerOperations.planIngressOff")(function* (organizationId: string, machineId: string) {
-  return ingressOffPlan(yield* observe(organizationId), machineId);
+export const planIngressOff = Effect.fn("ServerOperations.planIngressOff")(function* (
+  organizationId: string, machineId: string, change: ServerPolicyChange,
+) {
+  return ingressOffPlan(yield* observe(organizationId), machineId, change);
 });
 
 const ownedOrSystem = (organizationId: string, namespace: string) => namespace === SYSTEM_NAMESPACE
@@ -253,7 +257,7 @@ export const planRemove = Effect.fn("ServerOperations.planRemove")(function* (
  * An operation approval's preview recomputed on read, so a changed Cluster supersedes it. A Server no longer observed,
  * or a Namespace an Environment owns by now, no longer applies. When the Cluster can't be read, the stored preview stands.
  */
-export const freshOperationDigest: OperationDigest<Effect.Services<ReturnType<typeof planClean>>> = (organizationId, subject, verb, stored) => {
+export const freshOperationDigest: OperationDigest<Effect.Services<ReturnType<typeof planClean>>> = (organizationId, subject, verb, stored, preview) => {
   const separator = subject.indexOf(":");
   const key = subject.slice(separator + 1);
   const fresh = Effect.gen(function* () {
@@ -267,8 +271,8 @@ export const freshOperationDigest: OperationDigest<Effect.Services<ReturnType<ty
         if (yield* ownedOrSystem(organizationId, key)) return null;
         return operationDigest(yield* planClean(organizationId, key));
       case "set": {
-        const plan = ingressOffPlan(yield* observe(organizationId), key);
-        return plan === null || plan.effects.length === 0 ? null : operationDigest(plan);
+        const plan = ingressOffPlan(yield* observe(organizationId), key, { acceptsIngress: false });
+        return plan === null || plan.effects.length === 0 ? null : operationDigest({ ...plan, preview });
       }
       case "remove":
       case "forget": {

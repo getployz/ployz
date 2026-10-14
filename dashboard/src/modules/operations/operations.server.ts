@@ -72,7 +72,7 @@ export const upgradeServer = (caller: Caller, input: { readonly machineId: strin
 
 export const setServer = (caller: Caller, machineId: MachineId, change: ServerPolicyChange, call: OperationCall) =>
   admitOperation(caller.organization.id, { tool: OPERATIONS["server.set"].idempotency, key: call.key, body: { machineId, change } }, Effect.gen(function* () {
-    const plan = change.acceptsIngress === false ? yield* planIngressOff(caller.organization.id, machineId) : null;
+    const plan = change.acceptsIngress === false ? yield* planIngressOff(caller.organization.id, machineId, change) : null;
     if (plan !== null) {
       const gated = yield* gate(caller, call, plan);
       if (!gated.ok) return refused(gated.refusal);
