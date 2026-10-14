@@ -136,7 +136,7 @@ const registerAgent = Effect.fn(function* (shop: Shop) {
 });
 
 /** The whole connect dance Bo's agent does: authorize, consent on /connect for Shop, and trade the code for tokens. */
-const connectTokens = Effect.fn(function* (shop: Shop, clientId: string) {
+const connectTokens = Effect.fn(function* (shop: Shop, clientId: string, pageQuery: (signed: string) => string = (signed) => signed) {
   const verifier = randomBytes(32).toString("base64url");
   const authorize = new URL("/api/auth/oauth2/authorize", origin);
   authorize.search = new URLSearchParams({
@@ -147,7 +147,7 @@ const connectTokens = Effect.fn(function* (shop: Shop, clientId: string) {
   const toConnect = new URL(asked.headers.get("location") ?? expect.fail(`authorize answered ${asked.status} with no redirect`), origin);
   expect(toConnect.pathname).toBe("/connect");
   const decided = yield* shop.provided(connectAgent(new Headers({ cookie: shop.cookie }), {
-    organizationId: ORGANIZATION, accept: true, oauthQuery: toConnect.search.slice(1),
+    organizationId: ORGANIZATION, accept: true, oauthQuery: pageQuery(toConnect.search.slice(1)),
   }));
   const code = new URL(decided.url).searchParams.get("code") ?? expect.fail(`consent answered ${decided.url}`);
   const issued = yield* authJson(shop, "/api/auth/oauth2/token", {
@@ -288,6 +288,13 @@ it.live("revoking the grant turns its token away, and connecting again issues on
     const renewed = yield* connect(shop, clientId);
     expect((yield* raw(shop, renewed)).status).toBe(200);
     expect((yield* raw(shop, old)).status).toBe(401);
+  }).pipe(Effect.scoped), 30_000);
+
+it.live("a parameter the browser adds to /connect leaves the consent standing", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const issued = yield* connectTokens(shop, yield* registerAgent(shop), (signed) => `${signed}&utm_source=newsletter`);
+    expect((yield* raw(shop, issued.access_token)).status).toBe(200);
   }).pipe(Effect.scoped), 30_000);
 
 it.live("disconnecting stops the grant's refresh token, even after the agent connects again", () =>

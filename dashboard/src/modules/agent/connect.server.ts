@@ -37,6 +37,20 @@ export const connectChoices = Effect.fn("Connect.choices")(function* (headers: H
 });
 
 /**
+ * The part of the /connect page's query that better-auth signed: `sig`, the `ba_param` list, and the parameters it
+ * names. Anything else the browser picked up would break the signature. Mirrors `buildSignedOAuthQuery` in
+ * @better-auth/oauth-provider's client, which the package doesn't export.
+ */
+const signedOAuthQuery = (pageQuery: string) => {
+  const params = new URLSearchParams(pageQuery);
+  const named = new Set(params.getAll("ba_param"));
+  if (!params.has("sig") || named.size === 0) return pageQuery;
+  const signed = new URLSearchParams();
+  for (const [key, value] of params) if (key === "sig" || key === "ba_param" || named.has(key)) signed.append(key, value);
+  return signed.toString();
+};
+
+/**
  * The member's answer on /connect. The grant is bound to the Organization they picked, which must be one they belong
  * to; their session's active Organization is left alone.
  */
@@ -56,7 +70,7 @@ export const connectAgent = Effect.fn("Connect.decide")(function* (
   if (membership === undefined) return yield* new Forbidden({ message: "You are not a member of that Organization." });
   return yield* mcp.consent(
     headers,
-    { oauthQuery: input.oauthQuery, accept: input.accept },
+    { oauthQuery: signedOAuthQuery(input.oauthQuery), accept: input.accept },
     { userId: signedIn.user.id, sessionId: signedIn.session.id, organizationId: membership.organizationId },
   );
 });
