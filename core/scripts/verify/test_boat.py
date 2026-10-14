@@ -135,7 +135,10 @@ class Registry(unittest.TestCase):
 
     def fake(self, args, check=True, **kwargs):
         self.calls.append(args[2:-1])
-        return self.answers.get(tuple(args[2:4]), result(0, {}))
+        answer = self.answers.get(tuple(args[2:4]), result(0, {}))
+        if check and answer.returncode:
+            raise RuntimeError(f"{args[2:-1]} failed")
+        return answer
 
     def registered(self, **sandboxes):
         self.provider.create()
@@ -156,6 +159,59 @@ class Registry(unittest.TestCase):
         self.assertEqual(self.calls, [["delete", "bx_a", "--yes"], ["stop", "bx_a"]])
         self.assertIn("sandbox.delete-own", said.getvalue())
         self.assertEqual(json.loads(boat.registry("run1").read_text())["sandboxes"]["machine-1"]["state"], "stopped")
+
+    def test_a_failed_stop_still_cleans_the_rest_then_fails(self):
+        self.registered(**{"machine-1": dict(id="bx_a", state="running"), "machine-2": dict(id="bx_b", state="running")})
+        self.answers[("delete", "bx_a")] = result(1, {"event": "error", "code": "api_key_action_forbidden", "status": 403})
+        self.answers[("stop", "bx_a")] = result(1, {"event": "error", "code": "internal", "status": 500})
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaisesRegex(RuntimeError, "bx_a"):
+            self.provider.destroy()
+        self.assertEqual(self.calls, [["delete", "bx_a", "--yes"], ["stop", "bx_a"], ["delete", "bx_b", "--yes"]])
+
+    def test_a_machine_without_an_ssh_endpoint_raises_a_handled_error(self):
+        self.registered(**{"machine-1": dict(id="bx_a", state="running")})
+        with self.assertRaisesRegex(RuntimeError, "machine-1 has no SSH endpoint"):
+            self.provider.exec(dict(name="machine-1"), ["true"])
+        boat.registry("run1").unlink()
+        with self.assertRaisesRegex(RuntimeError, "machine-1 has no SSH endpoint"):
+            self.provider.exec(dict(name="machine-1"), ["true"])
+
+    def test_teardown_destroys_even_when_evidence_fails(self):
+        backend = unittest.mock.Mock()
+        backend.exec.side_effect = KeyError("ssh")
+        run = dict(machines=[dict(name="machine-1")], manifest=self.run["manifest"])
+        with unittest.mock.patch.object(cluster, "save"), contextlib.suppress(KeyError):
+            cluster.teardown(run, None, backend)
+        backend.destroy.assert_called_once()
+
+    def test_prepare_spares_a_bake_a_live_run_uses(self):
+        bakes = [f"{boat.BAKED}{day}" + "0" * 8 for day in ["10", "11", "12", "13"]]
+        ledger = boat.REGISTRY / "bakes.ledger"
+        boat.write(ledger, bakes)
+        boat.write(boat.registry("live"), dict(run="live", image=bakes[0], sandboxes={}))
+        service = boat.REGISTRY / "core/crates/ployzd/src/corrosion/service.rs"
+        service.parent.mkdir(parents=True)
+        service.write_text('pub const IMAGE: &str = "corrosion:test";')
+        self.provider.core = boat.REGISTRY / "core"
+        named = [dict(name=name, status="ready", createdAt=f"2026-10-{name[-10:-8]}") for name in bakes]
+        removed = []
+
+        def fake(*args, check=True, **kwargs):
+            if args[:2] == ("snapshot", "rm"):
+                removed.append(args[2])
+                return result(0, {})
+            raise RuntimeError("stop before baking")
+        self.provider.boat = fake
+        with unittest.mock.patch.object(boat, "BAKES", ledger), \
+             unittest.mock.patch.object(boat, "boat_json", return_value=dict(named=named)), \
+             unittest.mock.patch.object(boat, "bootstrap", return_value="key"), \
+             unittest.mock.patch("boat.shutil.which", return_value="/bin/true"), \
+             unittest.mock.patch.object(boat.Provider, "create", side_effect=RuntimeError("stop before baking")), \
+             unittest.mock.patch.object(boat.Provider, "destroy"), \
+             contextlib.suppress(RuntimeError), contextlib.redirect_stderr(io.StringIO()):
+            self.provider.prepare()
+        self.assertEqual(removed, [bakes[1]])
+        self.assertIn(self.run["image"], boat.read(ledger))
 
     def test_a_failed_delete_still_deletes_the_rest_then_fails(self):
         self.registered(**{"machine-1": dict(id="bx_a", state="running"), "machine-2": dict(id="bx_b", state="running")})

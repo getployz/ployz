@@ -388,7 +388,10 @@ systemctl enable --now {PLOYZ_UNITS} $observe
                 "-o", "ControlPath=" + str(self.control / (self.run["id"] + "-%C"))]
 
     def exec(self, node, args, **kwargs):
-        host, port = endpoint(self.sandbox(node)["ssh"])
+        destination = ((self.record() or {}).get("sandboxes", {}).get(node["name"]) or {}).get("ssh")
+        if not destination:
+            raise RuntimeError(f"{node['name']} has no SSH endpoint yet")
+        host, port = endpoint(destination)
         return self.commands(["ssh", *self.options(), "-p", port, "root@" + host, shlex.join(args)], **kwargs)
 
     def push(self, node, source, destination):
@@ -431,7 +434,10 @@ systemctl enable --now {PLOYZ_UNITS} $observe
                 failures.append(f"boat delete {entry['id']} failed: {failure or result.stderr.decode(errors='replace')}")
                 continue
             if entry.get("state") != "stopped":
-                self.boat("stop", entry["id"])
+                stopped = self.boat("stop", entry["id"], check=False)
+                if stopped.returncode:
+                    failures.append(f"boat stop {entry['id']} failed: {error(stopped) or stopped.stderr.decode(errors='replace')}")
+                    continue
                 self.mark(name, state="stopped")
             print(f"Stopped {entry['id']} ({name}): this Boat key may not delete it; it needs the sandbox.delete-own scope "
                   f"and to have created the sandbox.", file=sys.stderr)
@@ -454,14 +460,16 @@ systemctl enable --now {PLOYZ_UNITS} $observe
         with (REGISTRY / "bake.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             named = boat_json("snapshots")["named"]
+            ours = read(BAKES) or []
             if any(snapshot["name"] == self.run["image"] and snapshot["status"] == "ready" for snapshot in named):
                 return
-            ours = read(BAKES) or []
+
             # Prune first; the account caps named snapshots.
             for name in stale_bakes(named, self.run["image"], ours, images_in_use()):
                 if not self.boat("snapshot", "rm", name, check=False).returncode:
                     ours.remove(name)
-            write(BAKES, ours)
+            # The name hashes this host's bootstrap key, so it is ours even if the save outlives a timeout here.
+            write(BAKES, [*ours, self.run["image"]])
             print(f"Baking Boat snapshot {self.run['image']} (first run of this recipe only).", file=sys.stderr)
             bake = Provider(dict(id="bake-" + uuid.uuid4().hex[:10], manifest=str(BOOTSTRAP / "bake" / "cluster.json"),
                                  owner=self.run.get("owner", {}), image=SNAPSHOT, corrosion=self.run["corrosion"]),
@@ -478,5 +486,4 @@ systemctl enable --now {PLOYZ_UNITS} $observe
                 except (RuntimeError, OSError, subprocess.SubprocessError) as error:
                     print(f"Deleting the bake sandbox also failed: {error}", file=sys.stderr)
                 raise
-            write(BAKES, [*ours, self.run["image"]])
             bake.destroy()
