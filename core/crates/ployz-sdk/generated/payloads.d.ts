@@ -2702,7 +2702,7 @@ export type OrganizationId = string;
 
 export type OrganizationRemoved = { organization: OrganizationId, };
 
-export type Outcome = { "type": "executed", summary: JsonValue, reason: string | null, cause: Array<string>, } | { "type": "not_executed", reason: string, cause: Array<string>, needs_upload: Array<ServiceName>, } | { "type": "never_ran" } | { "type": "forgotten" };
+export type Outcome = { "type": "executed", summary: JsonValue, reason: string | null, cause: Array<string>, services: Array<ServiceOutcome>, } | { "type": "not_executed", reason: string, cause: Array<string>, needs_upload: Array<ServiceName>, } | { "type": "never_ran" } | { "type": "forgotten" };
 
 export type OwnedNamespace = { namespace: Namespace, project: ProjectName, environment: EnvironmentName, };
 
@@ -3313,7 +3313,11 @@ failedServices: Array<ServiceName>,
  * Services with planned operations an earlier failure stopped before any ran.
  * Ordered by name.
  */
-unattemptedServices: Array<ServiceName>, };
+unattemptedServices: Array<ServiceName>,
+/**
+ * Where each Service group ended, as the runner reported it.
+ */
+services: Array<ServiceOutcome>, };
 
 export type RuntimeOutcomeSummary = { "type": "success",
 /**
@@ -3580,7 +3584,7 @@ export type ServiceQuery = { environment: EnvironmentRef, service: ServiceName, 
 
 export type ServiceRestartPolicy = 'unless-stopped' | 'always' | 'on-failure' | 'no';
 
-export type ServiceResult = "new" | "old" | "not_started";
+export type ServiceResult = "new" | "old" | "not_started" | "unconfirmed";
 
 export type ServiceRoute = { id: string, hostname: string, targetPort: number | null, };
 

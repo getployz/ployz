@@ -212,7 +212,7 @@ it("words a Deployment that takes its Environment off the Servers as the Branch 
 it("keeps the deepest execution failure cause in the Deployment banner", () => {
   const outcome: Outcome = {
     type: "executed", summary: null, reason: "remove Container failed",
-    cause: ["the daemon is busy", "connection refused"],
+    cause: ["the daemon is busy", "connection refused"], services: [],
   };
   expect(outcomeReason(outcome)).toBe("remove Container failed: connection refused");
   expect(outcome.cause).toEqual(["the daemon is busy", "connection refused"]);
@@ -230,9 +230,9 @@ it("keeps the deepest preparation failure cause in the Deployment banner", () =>
 it("preserves reasons without a cause and outcomes without a reason", () => {
   expect(outcomeReason(null)).toBeUndefined();
   expect(outcomeReason({ type: "never_ran" })).toBeUndefined();
-  expect(outcomeReason({ type: "executed", summary: null, reason: null, cause: ["connection refused"] })).toBeUndefined();
-  expect(outcomeReason({ type: "executed", summary: null, reason: "", cause: [] })).toBe("");
-  expect(outcomeReason({ type: "executed", summary: null, reason: "Cancelled", cause: [] })).toBe("Cancelled");
+  expect(outcomeReason({ type: "executed", summary: null, reason: null, cause: ["connection refused"], services: [] })).toBeUndefined();
+  expect(outcomeReason({ type: "executed", summary: null, reason: "", cause: [], services: [] })).toBe("");
+  expect(outcomeReason({ type: "executed", summary: null, reason: "Cancelled", cause: [], services: [] })).toBe("Cancelled");
   expect(outcomeReason({ type: "not_executed", reason: "No source", needs_upload: [], cause: [] })).toBe("No source");
   expect(outcomeReason(asTestDouble<Outcome>()({ type: "executed", summary: null, reason: "Old execution failure" }))).toBe("Old execution failure");
   expect(outcomeReason(asTestDouble<Outcome>()({ type: "not_executed", reason: "Old preparation failure", needs_upload: [] }))).toBe("Old preparation failure");
