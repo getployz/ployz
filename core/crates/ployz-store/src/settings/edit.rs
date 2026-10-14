@@ -169,16 +169,17 @@ pub(crate) fn edit(
     for (path, step) in steps {
         editing.apply(path, step)?;
     }
-    // The source is now final. Every Setting set must mean something to it; unsetting never
-    // has to, and an empty Service takes build settings for the uploads it builds.
+    for (path, step) in others {
+        editing.apply(path, step)?;
+    }
+    // Every Setting set must mean something to the source the edit leaves; unsetting never
+    // has to, and an empty Service takes build settings for the uploads it builds. Checked
+    // last, so a value of the wrong shape is named for its shape first.
     for (service, setting) in set {
         let config = &editing.environment.service(&service)?.config;
         if !setting.applies(config) {
             return Err(setting.not_for(&service, &config.source));
         }
-    }
-    for (path, step) in others {
-        editing.apply(path, step)?;
     }
     let Editing {
         tx,
