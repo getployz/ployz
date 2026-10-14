@@ -462,8 +462,6 @@ fn retargeting_the_pull_request_forgets_its_edits() {
     assert_eq!(row(&store, &who, "web.env.A").ride, Ride::Rides);
 }
 
-// The merge.
-
 const MERGE: &str = "3333333333333333333333333333333333333333";
 const LATER: &str = "4444444444444444444444444444444444444444";
 
@@ -1222,8 +1220,6 @@ fn the_check_says_nothing_deploys_from_a_branch_no_environment_tracks() {
         })
     );
 }
-
-// Review findings.
 
 /// Pull request `number` from `head_branch` onto `target`, as GitHub said at `updated`.
 fn event(
@@ -2164,8 +2160,6 @@ fn a_merge_that_moves_a_git_service_to_another_repository_never_pins_the_old_bui
         [("web", None)]
     );
 }
-
-// Node removals.
 
 fn node(name: &str) -> NodeName {
     NodeName::parse(name).unwrap()
