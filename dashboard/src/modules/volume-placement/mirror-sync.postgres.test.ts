@@ -141,6 +141,14 @@ describe("the mirror sync", () => {
       .toEqual([{ machine_id: web("web-2"), failure: "set_volume_copy on web-2: connection refused" }]);
   });
 
+  it("fails the sync when the cluster itself is gone, and blames no mirror for it", async () => {
+    const disconnected: CopyAsk = (asker, machine, expected, want) => want.kind === "mirror"
+      ? Effect.fail(new Error("The cluster is disconnected."))
+      : ask(asker, machine, expected, want);
+    await expect(run(syncMirrors(organizationId, volume, () => Effect.succeed(members), disconnected))).rejects.toThrow("The cluster is disconnected.");
+    expect((await harness.pool.query(`select machine_id from volume_mirror_status where failure is not null`)).rows).toEqual([]);
+  });
+
   it("takes no snapshot when a pull in flight can't be resent, and still resends the others", async () => {
     await harness.pool.query(`update volume_placement set mirrors = '["${web("web-2")}", "${web("web-3")}"]'`);
     members = [member("web-1", "writer"), member("web-2", "pulling"), member("web-3", "pulling")];
