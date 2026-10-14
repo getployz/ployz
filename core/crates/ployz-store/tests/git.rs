@@ -920,7 +920,7 @@ fn setting_a_repository_or_an_image_switches_the_source_in_one_write() {
         (&json!("acme/web"), &json!("main"), &Value::Null)
     );
 
-    // Build settings written in the same edit as the switch survive it.
+    // A repository Service takes a root directory and build settings.
     store
         .write_trusted(
             &who,
@@ -957,4 +957,262 @@ fn setting_a_repository_or_an_image_switches_the_source_in_one_write() {
         (&Value::Null, &json!("railpack"), &Value::Null),
         "{back}"
     );
+}
+
+#[test]
+fn every_setting_set_must_apply_to_the_source_the_whole_edit_leaves() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse(SERVICE).unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("web").unwrap(),
+                image: Some("nginx:1".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    let refused = |changes: Vec<Change>, message: &str| {
+        let error = store
+            .write_trusted(&who, &edit(changes), &evidence())
+            .unwrap_err();
+        assert_eq!(error.code, RpcErrorCode::InvalidArgument, "{error:?}");
+        assert_eq!(error.message, message, "{error:?}");
+    };
+    let image_build = "buildMethod: needs a repository source, and web runs an image";
+
+    // An image Service takes no build setting, alone or beside a new image, in either order.
+    refused(
+        vec![set("web.buildMethod", json!("dockerfile"))],
+        image_build,
+    );
+    refused(
+        vec![
+            set("web.image", json!("nginx:2")),
+            set("web.buildMethod", json!("dockerfile")),
+        ],
+        image_build,
+    );
+    refused(
+        vec![
+            set("web.buildCommand", json!("npm run build")),
+            set("web.image", json!("nginx:2")),
+        ],
+        "buildCommand: needs a repository source, and web runs an image",
+    );
+    // An image and a repository in one edit: the later one is the source, and the other
+    // no longer applies to it.
+    refused(
+        vec![
+            set("web.image", json!("nginx:2")),
+            set("web.repository", json!("acme/web")),
+        ],
+        "image: needs an image source, and web builds a repository",
+    );
+    refused(
+        vec![
+            set("web.repository", json!("acme/web")),
+            set("web.image", json!("nginx:2")),
+        ],
+        "repository: needs a repository source, and web runs an image",
+    );
+    // Unsetting is never refused.
+    store
+        .write(&who, &edit(vec![unset("web.buildMethod")]))
+        .unwrap();
+    assert_eq!(source(&store, &who), SourceKind::Image);
+    assert_eq!(values(&store, &who)["image"], json!("nginx:1"));
+
+    // Switching to a repository in the same edit is fine, in either order, even for a
+    // branch that only a repository Service has.
+    store
+        .write_trusted(
+            &who,
+            &edit(vec![
+                set("web.branch", json!("dev")),
+                set("web.buildMethod", json!("dockerfile")),
+                set("web.repository", json!("acme/web")),
+                set("web.dockerfilePath", json!("web.Dockerfile")),
+            ]),
+            &evidence(),
+        )
+        .unwrap();
+    assert_eq!(source(&store, &who), SourceKind::Git);
+    let built = values(&store, &who);
+    assert_eq!(
+        (
+            &built["branch"],
+            &built["buildMethod"],
+            &built["dockerfilePath"]
+        ),
+        (
+            &json!("dev"),
+            &json!("dockerfile"),
+            &json!("web.Dockerfile")
+        ),
+        "{built}"
+    );
+
+    // A repository Service switching to an image takes no build or repository setting in
+    // the same edit, in either order. The refusal names the Setting.
+    for (path, value) in [
+        ("web.buildMethod", json!("railpack")),
+        ("web.branch", json!("main")),
+        ("web.rootDir", json!("/apps/web")),
+        ("web.autoDeploy", json!(false)),
+    ] {
+        let named = format!("{}: ", path.trim_start_matches("web."));
+        for changes in [
+            vec![set(path, value.clone()), set("web.image", json!("nginx:4"))],
+            vec![set("web.image", json!("nginx:4")), set(path, value.clone())],
+        ] {
+            let error = store
+                .write_trusted(&who, &edit(changes), &evidence())
+                .unwrap_err();
+            assert_eq!(error.code, RpcErrorCode::InvalidArgument, "{error:?}");
+            assert!(error.message.starts_with(&named), "{error:?}");
+        }
+    }
+    let patch = Change::Patch {
+        path: SettingPath::parse("web").unwrap(),
+        value: json!({ "image": "nginx:4", "buildCommand": "make" }),
+    };
+    refused(
+        vec![patch],
+        "buildCommand: needs a repository source, and web runs an image",
+    );
+    assert_eq!(source(&store, &who), SourceKind::Git);
+    assert_eq!(values(&store, &who), built);
+
+    // Nothing hidden survives the switch: a later repository builds with the defaults.
+    store
+        .write(&who, &edit(vec![set("web.image", json!("nginx:4"))]))
+        .unwrap();
+    store
+        .write_trusted(
+            &who,
+            &edit(vec![set("web.repository", json!("acme/web"))]),
+            &evidence(),
+        )
+        .unwrap();
+    let back = values(&store, &who);
+    assert_eq!(
+        (
+            &back["buildMethod"],
+            &back["dockerfilePath"],
+            &back["buildCommand"]
+        ),
+        (&json!("railpack"), &Value::Null, &Value::Null),
+        "{back}"
+    );
+
+    // An empty Service builds uploads, so it takes build settings.
+    store
+        .write(&who, &edit(vec![unset("web.repository")]))
+        .unwrap();
+    assert_eq!(source(&store, &who), SourceKind::Empty);
+    store
+        .write(
+            &who,
+            &edit(vec![set("web.buildMethod", json!("dockerfile"))]),
+        )
+        .unwrap();
+    assert_eq!(values(&store, &who)["buildMethod"], json!("dockerfile"));
+}
+
+fn image_service() -> (ConfigStore, Actor) {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse(SERVICE).unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("web").unwrap(),
+                image: Some("nginx:1".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    (store, who)
+}
+
+fn unset(path: &str) -> Change {
+    Change::Unset {
+        path: SettingPath::parse(path).unwrap(),
+    }
+}
+
+#[test]
+fn unsetting_a_setting_the_source_lacks_is_accepted_and_changes_nothing() {
+    let (store, who) = image_service();
+    let before = values(&store, &who);
+    for path in [
+        "web.repository",
+        "web.branch",
+        "web.rootDir",
+        "web.buildMethod",
+        "web.dockerfilePath",
+        "web.buildCommand",
+        "web.autoDeploy",
+        "web.waitForCi",
+        "web.watchPaths",
+        "web.preferredBuilder",
+    ] {
+        store
+            .write_trusted(&who, &edit(vec![unset(path)]), &evidence())
+            .unwrap_or_else(|error| panic!("{path}: {error:?}"));
+        assert_eq!(source(&store, &who), SourceKind::Image, "{path}");
+        assert_eq!(values(&store, &who), before, "{path}");
+    }
+
+    let (store, who) = shop();
+    store
+        .write_trusted(&who, &create("acme/web", Some("dev")), &evidence())
+        .unwrap();
+    let before = values(&store, &who);
+    for path in ["web.image", "web.registryCredential"] {
+        store
+            .write_trusted(&who, &edit(vec![unset(path)]), &evidence())
+            .unwrap_or_else(|error| panic!("{path}: {error:?}"));
+        assert_eq!(source(&store, &who), SourceKind::Git, "{path}");
+        assert_eq!(values(&store, &who), before, "{path}");
+    }
+}
+
+#[test]
+fn a_source_switch_lands_the_same_in_every_key_order() {
+    let changes = [
+        unset("web.image"),
+        set("web.repository", json!("acme/web")),
+        set("web.branch", json!("dev")),
+    ];
+    let orders = [
+        [0, 1, 2],
+        [0, 2, 1],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+    ];
+    for order in orders {
+        let (store, who) = image_service();
+        let changes = order.map(|index| changes[index].clone()).to_vec();
+        store
+            .write_trusted(&who, &edit(changes), &evidence())
+            .unwrap_or_else(|error| panic!("{order:?}: {error:?}"));
+        assert_eq!(source(&store, &who), SourceKind::Git, "{order:?}");
+        assert_eq!(
+            values(&store, &who),
+            json!({
+                "repository": "acme/web", "branch": "dev", "buildMethod": "railpack",
+                "maxRetries": 10, "privateDns": "web", "replicas": 1,
+                "restartPolicy": "unless-stopped", "autoDeploy": true, "waitForCi": false,
+                "watchPaths": [],
+            }),
+            "{order:?}"
+        );
+    }
 }

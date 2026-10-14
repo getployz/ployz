@@ -10,5 +10,6 @@
 # Change workflow
 
 - GitHub CI is the PR gate. Locally, run only focused checks: typecheck, lint, fmt, and the tests for the code you changed. Don't run a full suite (`pnpm pr:check`, `pnpm test`, `cargo nextest run`, workspace clippy) locally, except to reproduce a CI failure.
+- Opening, reviewing, verifying and landing PRs: follow [docs/agents/landing.md](docs/agents/landing.md).
 
 Draw a diagram where one picture compresses many words: how systems relate, flows, forks. Show UI with screenshots or prototypes, never ASCII.

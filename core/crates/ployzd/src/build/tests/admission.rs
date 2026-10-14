@@ -26,7 +26,6 @@ async fn build_revocation_rejects_new_and_queued_work_but_preserves_admitted_upl
     assert!(matches!(terminal(&mut rejected).await, Outcome::Failed {
         stage: Stage::Admission, message, ..
     } if message.contains("does not accept Builds")));
-    // Admission remains owned by the first stream after revocation.
     assert!(Admission::try_acquire_with(&fixture.policy).is_err());
     drop(first);
     assert!(matches!(

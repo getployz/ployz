@@ -94,7 +94,6 @@ const SERVICE_ROUTE_TO = "/cloud/$organizationSlug/$projectSlug/$environmentSlug
 const taken = (service: ServiceListing, services: readonly ServiceListing[], name: string) =>
   services.some((other) => other.id !== service.id && (other.name === name || other.private_dns === name));
 
-/** A DNS label no other Service here has as its name or Private DNS. */
 function nameSchema(service: ServiceListing, services: readonly ServiceListing[]) {
   return Schema.String.check(Schema.makeFilter<string>((name) =>
     dnsLabelError(name) ?? (taken(service, services, name) ? `A service here is already named ${name}.` : undefined)));
@@ -290,7 +289,6 @@ const hint = (name: ServiceSettingName, setting: SettingSchema) => HINTS.has(nam
 /** What an unset limit means, shown in its empty field. */
 const UNSET = new Map<ServiceSettingName, string>([["cpuLimit", "No limit"], ["memLimit", "No limit"]]);
 
-/** Suffixes after a number, as before the Store: "3 replicas". */
 const SUFFIXES = new Map<ServiceSettingName, string>([["replicas", "replicas"], ["memLimit", "GB"], ["cpuLimit", "vCPUs"]]);
 
 /** What each restart policy does, shown under its choice. */
@@ -591,7 +589,6 @@ function StoreReplicasCapped({ params, volume }: {
         <FieldDescription>
           Limited to 1 while <strong>{volume.name}</strong> is attached.{" "}
           <span className="inline-flex align-middle"><InfoHint>{SHARED_VOLUME_WHY}</InfoHint></span>{" "}
-          {/* Never broken across lines. */}
           <Link className="whitespace-nowrap" to={ENVIRONMENT_RESOURCE_ROUTE_TO} params={{ ...params, resourceId: volume.id }}>Allow shared writes</Link>
         </FieldDescription>
       </FieldContent>

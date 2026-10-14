@@ -9,7 +9,7 @@ import { inject } from "vitest";
 import { describe, expect, test } from "vitest";
 
 const execFile = promisify(execFileCallback);
-const migration = "20261014065748_org_github_links";
+const migration = "20261014173812_org_github_links";
 const migrations = resolve("drizzle");
 
 async function migrate(databaseUrl: string, folder: string) {

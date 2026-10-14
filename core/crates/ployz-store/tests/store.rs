@@ -332,9 +332,10 @@ fn set_stages_text_values_and_unset_restores_the_default() {
             ),
         )
         .unwrap();
+    // The new image applies first, so the other changes land on it.
     assert_eq!(
         paths(&edited.staged),
-        ["web.replicas", "web.startCommand", "web.image"]
+        ["web.image", "web.replicas", "web.startCommand"]
     );
     assert!(edited.immediate.is_empty());
     assert_eq!(edited.environment.revision, Revision(3));

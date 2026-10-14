@@ -39,7 +39,6 @@ pub(crate) enum Step {
     Install,
     /// POST the identity until Cloud answers.
     Enroll,
-    /// Prepare storage.
     Storage,
     /// Found or join, through the final callback.
     Join,
@@ -136,7 +135,6 @@ impl SetupReport {
         self.current = (step, Instant::now());
     }
 
-    /// Record the running step as finished.
     fn finish(&mut self) {
         let (name, since) = self.current;
         self.finished.push(StepTime {

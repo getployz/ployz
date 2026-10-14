@@ -54,7 +54,8 @@ impl PlacementConstraint {
         parse().ok_or(PlacementConstraintError(expression))
     }
 
-    /// Borrow the canonical expression.
+    /// The normalized text: no spaces around the operator, `node.id` or `node.labels.` in
+    /// lowercase, and a lowercase value.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0

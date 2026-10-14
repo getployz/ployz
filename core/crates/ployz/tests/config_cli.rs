@@ -769,7 +769,6 @@ fn an_agent_creates_and_edits_an_image_service() {
         assert_eq!(got.pointer("/settings/0/value"), Some(&json!(1)));
         assert_eq!(got.get("domains"), None);
 
-        // Healthcheck and Private DNS set and unset like any Setting.
         let value = |path: &str| ok(store, &["get", path])["settings"][0]["value"].clone();
         ok(store, &["set", "web.healthcheck=/up"]);
         assert_eq!(
@@ -966,7 +965,6 @@ fn an_agent_adds_checks_and_removes_domains() {
         let again = ok(store, &["domain", "add", "web"]);
         assert_eq!((&again["staged"], again.get("next")), (&json!([]), None));
 
-        // Its generated prefix changes, staged; another generated domain can't take it.
         let set = ok(store, &["domain", "set", "web", "Shop"]);
         assert_eq!(set["domain"]["prefix"], json!("shop"));
         assert_eq!(set["staged"], json!(["web"]));
@@ -1082,7 +1080,6 @@ fn an_agent_lists_moves_the_default_and_removes_environments_without_servers() {
         assert_eq!(cleared["environments"][0]["branch_setup"], json!([]));
         failed(store, &["env", "setup"], 2);
 
-        // Unconfirmed, it names what goes and the exact retry; nothing changes.
         let unconfirmed = error(store, &["env", "rm", "production"]);
         assert_eq!(unconfirmed["code"], json!("confirmation_required"));
         assert_eq!(unconfirmed["details"]["services"], json!(["web"]));
@@ -1323,7 +1320,6 @@ fn an_agent_lists_and_removes_a_project_without_servers() {
             json!(["production", "staging"])
         );
 
-        // Unconfirmed, it names every Environment with what goes, and the exact retry.
         let unconfirmed = error(store, &["project", "rm", "shop"]);
         assert_eq!(unconfirmed["code"], json!("confirmation_required"));
         assert_eq!(
@@ -1422,7 +1418,6 @@ fn an_agent_branches_an_environment_without_servers() {
             json!("${{ db.PLOYZ_PRIVATE_DOMAIN }}")
         );
 
-        // An Own Copy of a node it owns already is refused.
         assert_eq!(
             error(store, &["env", "copy", "db", "--env", "fix-web"])["code"],
             json!("conflict")
@@ -1484,7 +1479,6 @@ fn an_agent_marks_settings_never_sync_without_servers() {
             labels(&marked["never_synced"]),
             ["web.env.APP_ENV", "web.source"]
         );
-        // `get` lists them by RowId, in RowId order.
         let mut rows: Vec<&str> = marked["never_synced"]
             .as_array()
             .unwrap()
@@ -1809,7 +1803,6 @@ fn an_agent_adds_mounts_detaches_and_removes_volumes() {
             ok(store, &["volume", "add", "logs", "--docker"])["volume"]["storage"],
             json!({"kind":"docker"})
         );
-        // A rename is staged; a name another Volume has is refused.
         let taken = error(store, &["volume", "rename", "logs", "data"]);
         assert_eq!(taken["code"], "conflict", "{taken}");
         let renamed = ok(store, &["volume", "rename", "logs", "cache"]);
@@ -2364,7 +2357,6 @@ fn setting_paths_complete_from_the_store_and_the_catalog() {
         };
         assert_eq!(complete("w").trim(), "web.");
         assert_eq!(complete("web.me").trim(), "web.memLimit");
-        // The Environment's own variables and mounts complete too.
         ok(store, &["set", "web.env.LOG_LEVEL=info"]);
         ok(store, &["volume", "add", "data", "--mount", "web:/data"]);
         assert!(complete("web.env").contains("web.env.LOG_LEVEL"));
@@ -2593,7 +2585,6 @@ fn an_agent_plans_deploys_and_reads_the_deployment() {
         assert_eq!(shown["id"], json!(id));
         assert_eq!(shown.get("next"), None);
 
-        // `status` says what is deploying, or what needs attention.
         let status = ok(store, &["status"]);
         let show = json!(format!("ployz deployment show {}", deployed["number"]));
         assert_eq!(status["next"], show);
@@ -2604,7 +2595,6 @@ fn an_agent_plans_deploys_and_reads_the_deployment() {
         assert_eq!(listed["deployments"][0]["id"], json!(id));
         assert_eq!(listed["next_cursor"], Value::Null);
         failed(store, &["deployment", "show", "not-an-id"], 2);
-        // Its number, as everything prints it, names it too.
         let number = shown["number"].to_string();
         assert_eq!(ok(store, &["deployment", "show", &number])["id"], json!(id));
         let hashed = format!("#{number}");
@@ -2718,7 +2708,6 @@ fn an_agent_retries_a_failed_deployment_and_reads_its_logs() {
         assert_ne!(id, failed_id);
         assert_eq!(retried["next"], json!("ployz deployment show 2"));
 
-        // An ended Deployment can't start or be cancelled; the refusal shows it.
         let show = json!("ployz deployment show 1");
         for verb in ["start", "cancel"] {
             let refused = error(store, &["deployment", verb, &failed_id]);
@@ -2843,7 +2832,6 @@ fn up_ships_a_directory_without_git() {
             Some(1),
             "{services}"
         );
-        // Its root Dockerfile builds it.
         let (_, method) = in_dir(
             store,
             home.path(),
@@ -2917,7 +2905,6 @@ fn two_linked_directories_act_on_their_own_environments() {
         assert_eq!(got.pointer("/environment/name"), Some(&json!("production")));
         assert_eq!(got.get("settings"), Some(&json!([])));
 
-        // Renaming the Project moves this device's links with it.
         let renamed = run(b.path(), &["project", "rename", "shop", "store"], &[]);
         assert_eq!(renamed.get("links"), Some(&json!(2)));
         let got = run(b.path(), &["get"], &[]);
@@ -2992,7 +2979,6 @@ fn missing_ambiguous_and_foreign_scope_name_the_fix() {
         let dir = tempfile::tempdir().unwrap();
         let run = |args: &[&str]| in_dir(store, home.path(), dir.path(), args, &[]);
 
-        // Nothing yet: status still says who, and what to do first.
         let (code, status) = run(&["status"]);
         assert_eq!(code, Some(0), "{status}");
         assert_eq!(status.get("environment"), Some(&Value::Null));
@@ -3121,7 +3107,6 @@ fn a_repository_service_is_checked_by_cloud() {
         let diff = ok(store, &["diff"]);
         assert!(diff.to_string().contains("web.source"), "{diff}");
 
-        // An empty Service connects a repository by setting it; unset disconnects it.
         ok(store, &["service", "add", "blank"]);
         ok(store, &["set", "blank.repository=acme/web"]);
         let got = ok(store, &["get", "blank"]);
@@ -3182,7 +3167,6 @@ fn github_lists_branches_reads_files_and_disconnects_in_cloud() {
     assert_eq!(pending["next"], "ployz github connect --wait");
 }
 
-/// Run `ployz --json ARGS` against `store` with `input` on stdin; returns (exit code, stdout).
 /// `NODE`, or `NODE.name`: a row as reads name it.
 fn label(row: &Value) -> String {
     match row["name"].as_str() {
@@ -3195,6 +3179,7 @@ fn labels(rows: &Value) -> Vec<String> {
     rows.as_array().unwrap().iter().map(label).collect()
 }
 
+/// Run `ployz --json ARGS` against `store` with `input` on stdin; returns (exit code, stdout).
 fn piped(store: &Target, args: &[&str], input: &str) -> (Option<i32>, String) {
     let home = tempfile::tempdir().unwrap();
     let mut command = store.command(home.path());

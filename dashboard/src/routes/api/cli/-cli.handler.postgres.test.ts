@@ -267,13 +267,11 @@ it.live(
         assert.strictEqual((yield* cli("DELETE", `tokens/${token.id}`, bob)).status, 404);
         assert.strictEqual((yield* cli("DELETE", "tokens/not-a-uuid", alice)).status, 404);
 
-        // Expired.
         yield* database.drizzle.update(organizationToken)
           .set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(organizationToken.id, token.id));
         assert.strictEqual((yield* cli("GET", "tokens", { bearer: token.secret })).status, 401);
         assert.isTrue((yield* cli("GET", "tokens", alice)).json.tokens?.[0]?.expired);
 
-        // Its maker left the Organization.
         const second = (yield* cli("POST", "tokens", alice, { name: "ci-2", expires_in_days: 1 })).json.token
           ?? assert.fail("no token");
         assert.strictEqual((yield* cli("GET", "tokens", { bearer: second.secret })).status, 200);
@@ -284,7 +282,6 @@ it.live(
         assert.strictEqual((yield* cli("GET", "tokens", alice)).status, 403);
         yield* database.drizzle.insert(member).values(membership ?? assert.fail("no membership"));
 
-        // Revoked.
         const removed = yield* cli("DELETE", `tokens/${second.id}`, alice);
         assert.deepStrictEqual(removed.json.removed, { id: second.id, kind: "token" });
         assert.strictEqual((yield* cli("GET", "tokens", { bearer: second.secret })).status, 401);

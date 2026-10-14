@@ -49,7 +49,6 @@ function RouteComponent() {
   const { organizationSlug } = Route.useParams();
   const { section = "general", connect, offer } = Route.useSearch();
   const navigate = useNavigate({ from: Route.fullPath });
-  // Only a Cloud with Ployz support offers to let it in.
   const supportAvailable = useQuery(organizationStateQueryOptions(organizationSlug)).data?.supportAvailable === true;
 
   return (

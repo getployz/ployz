@@ -109,7 +109,6 @@ describe("CustomDomainDialog", () => {
     );
   });
 
-  // Saving is optimistic: a failed write rolls back and toasts in the service writer.
   it("closes as soon as the route is submitted", async () => {
     const onClose = vi.fn();
     const onSubmit = vi.fn();

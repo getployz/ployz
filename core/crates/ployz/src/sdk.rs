@@ -1,8 +1,3 @@
-//! Native Cloud session: connect, observe_enrollment, register,
-//! about, publish_certificate_material, runtime.watch, prepare, build, preview, run,
-//! preview_namespace_removal, remove_volumes, Data Loss for Machine, Namespace, and
-//! Cluster destroy, remove_machine, drain_machine, request and inspect a Machine
-//! Upgrade, destroy_namespace, destroy_cluster, and close.
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 

@@ -1,10 +1,5 @@
 import type { CaretToken } from "./variable-template";
 
-/**
- * A producer a value can reference via `${{ }}`. Pure data shared by the
- * autocomplete hook and its tests; the React layer derives these from the live
- * services collection.
- */
 export type ReferenceTargetKind = "self" | "service" | "managed";
 
 export type ReferenceTarget = {

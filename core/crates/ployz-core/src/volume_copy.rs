@@ -579,7 +579,6 @@ mod tests {
             failure: None,
         };
         let table: &[Row] = &[
-            // Writer wants.
             (
                 "writer at want",
                 Some(root(1, false, Some(g.clone()))),
@@ -708,7 +707,6 @@ mod tests {
                 writer(10, 1, true),
                 Refuse(Mismatch),
             ),
-            // Mirror wants.
             (
                 "the cut",
                 Some(root(1, false, Some(w.clone()))),
@@ -822,7 +820,6 @@ mod tests {
                 mirror(true, "f-1"),
                 Refuse(Mismatch),
             ),
-            // Snapshot wants.
             (
                 "snapshot at want prunes whatever expect",
                 Some(root(1, false, Some(g.clone()))),
@@ -879,7 +876,6 @@ mod tests {
                 snapshot_want("f-2"),
                 Refuse(NoTransition),
             ),
-            // Forget wants.
             (
                 "forget at want on a bare root",
                 Some(root(1, false, None)),

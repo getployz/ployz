@@ -281,7 +281,6 @@ fn run(command: &Value) -> (bool, String) {
 
 #[test]
 fn setup_commands_run_after_the_own_command_each_as_it_would_alone() {
-    // Without Setup Commands the hook is exactly today's.
     assert_eq!(
         lower_hook(Some("migrate"), Value::Null).unwrap(),
         json!(["/bin/sh", "-c", "migrate"])

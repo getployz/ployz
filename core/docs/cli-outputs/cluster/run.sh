@@ -71,7 +71,6 @@ head_json() { # capture the first N lines of a streaming --json command
 }
 ip_of() { docker inspect -f "{{(index .NetworkSettings.Networks \"$NET\").IPAddress}}" "$NET-$1"; }
 
-# --- Cluster ----------------------------------------------------------------
 mkdir -p "$HOME/.ssh" "$HOME/bin"; ssh-keygen -q -t ed25519 -N '' -f "$HOME/.ssh/id_ed25519"
 # ssh reads ~ from passwd, not $HOME: pin known_hosts to the throwaway HOME.
 printf 'Host *\n  UserKnownHostsFile %s/.ssh/known_hosts\n  IdentityFile %s/.ssh/id_ed25519\n' "$HOME" "$HOME" >"$HOME/.ssh/config"
@@ -99,7 +98,6 @@ for i in $(seq 0 $((COUNT - 1))); do
 done
 IP0=$(ip_of 0); IP1=$(ip_of 1); IP2=$(ip_of 2); IP3=$(ip_of 3)
 
-# --- server add (setup/provisioning output) ---------------------------------
 S=$CAPTURES/server.md
 need m "$S" "server add: found a Cluster (pipe)" -- $P server add --standalone --no-install "root@$IP0" --name alpha
 need t "$S" "server add: join a second Server" -- $P server add --standalone --no-install "root@$IP1" --name beta
@@ -110,7 +108,6 @@ need t "$S" "server add: found a second, separate Cluster (rich ingress progress
 m "$S" "server add: unreachable destination" -- $P server add --standalone --no-install root@10.255.255.1 --ssh-timeout 3
 m "$S" "server add: without --standalone (needs Cloud login)" -- $P server add "root@$IP2"
 
-# --- server read commands ---------------------------------------------------
 c "$S" "server ls" -- $P server ls
 c "$S" "server ls --json" -- $P server ls --json
 c "$S" "server inspect" -- $P server inspect alpha
@@ -127,7 +124,6 @@ m "$S" "server set (no change flags)" -- $P server set gamma
 m "$S" "server upgrade (same version)" -- $P server upgrade 0.2.3 gamma
 m "$S" "server forget (standalone)" -- $P server forget
 
-# --- Project + Services through the hidden Store, then deploy ----------------
 D=$CAPTURES/deploy.md
 need m "$D" "project new" -- $P project new shop
 need m "$D" "service add web" -- $P service add web --image alpine:3.23.3
@@ -157,7 +153,6 @@ m "$D" "deploy that fails (pipe)" -- $P deploy
 need m "$D" "restore image" -- $P set web.image=alpine:3.23.3
 need m "$D" "deploy restore" -- $P deploy
 
-# --- service lifecycle -------------------------------------------------------
 V=$CAPTURES/service.md
 c "$V" "service ls" -- $P service ls
 c "$V" "service inspect" -- $P service inspect web
@@ -173,7 +168,6 @@ rc=0; timeout 4 $P service port-forward web 0:80 >"$HOME/pf.out" 2>"$HOME/pf.err
 rc=0; timeout 4 $P service port-forward web 0:80 --json >"$HOME/pf.out" 2>"$HOME/pf.err" || rc=$?; echo "# exit $rc" >>"$HOME/pf.err"
 { echo '### service port-forward --json (killed after 4s)'; echo; echo 'stdout:'; echo '```'; cat "$HOME/pf.out"; echo '```'; echo; echo 'stderr:'; echo '```'; cat "$HOME/pf.err"; echo '```'; echo; } >>"$V"
 
-# --- ps / logs / exec -------------------------------------------------------
 L=$CAPTURES/ps-logs-exec.md
 c "$L" "ps" -- $P ps
 c "$L" "ps --json" -- $P ps --json
@@ -187,7 +181,6 @@ c "$L" "exec --json" -- $P exec web --json -- echo hi
 c "$L" "exec failing command" -- $P exec web -- sh -c 'echo oops >&2; exit 3'
 c "$L" "exec unknown service" -- $P exec nope -- true
 
-# --- volumes ----------------------------------------------------------------
 O=$CAPTURES/volume.md
 m "$O" "volume add --docker on a 2-replica Service (refused)" -- $P volume add data --docker --mount web:/data
 m "$O" "volume add --docker" -- $P volume add data --docker --mount api:/data
@@ -210,7 +203,6 @@ m "$O" "volume inspect unknown" -- $P volume inspect nope
 
 m "$O" "build without a Cloud Build Grant" -- $P build --grant x --deployment 1 --commit abc --fingerprint f
 
-# --- partial fan-out and errors ---------------------------------------------
 E=$CAPTURES/errors.md
 c "$E" "server inspect unknown" -- $P server inspect nope
 c "$E" "service inspect unknown" -- $P service inspect nope
@@ -229,7 +221,6 @@ docker start "$NET-2" >/dev/null
 ready "$NET-2" 60
 sleep 5
 
-# --- drain and rm ------------------------------------------------------------
 t "$S" "server drain (live)" -- $P server drain beta
 m "$S" "server drain --json (rerun)" -- $P server drain beta --json
 m "$S" "server set --accepts-services=true" -- $P server set beta --accepts-services=true
