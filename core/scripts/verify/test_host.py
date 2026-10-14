@@ -97,6 +97,7 @@ class PoolCapacity(unittest.TestCase):
         self.assertEqual(shortfalls(8, 2 * GiB, 64 * GiB, 128 * GiB, [], *space), [])
         self.assertEqual([problem.split(":")[0] for problem in shortfalls(9, 2 * GiB, 64 * GiB, 128 * GiB, [], *space)], ["Disk"])
 
+
 class Sizes(unittest.TestCase):
     def test_incus_units(self):
         self.assertEqual((size("2GiB"), size("512MiB"), size("1GB"), size("1024")), (2 * GiB, GiB // 2, 10**9, 1024))
