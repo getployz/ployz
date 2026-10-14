@@ -142,8 +142,8 @@ other servers wait: automatic upgrades skip that release until a newer one is ou
 tagged **Upgrade failed**, and the top of the page offers **Upgrade to `0.2.2`** to carry on yourself.
 On the server's page, **Show details** has the exact error to copy, and **Try again** retries. Once an upgrade of that release succeeds, automatic upgrades pick it up again.
 
-Every member of the organization gets one email about it, naming the server, the release, and where
-it stopped. Members who set **Failed automatic upgrades** to **None** under
+Every member of the organization gets one email about it, naming the server, the release, and
+whether it went back to the release it ran before. Members who set **Failed automatic upgrades** to **None** under
 [Notifications](../account/notifications.md) don't. An upgrade you start by hand sends no email.
 
 ### Upgrade one server

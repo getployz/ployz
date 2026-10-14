@@ -18,21 +18,24 @@ export type UpgradeFailedMail = {
   readonly origin: string;
 };
 
-const versions = ({ fromVersion, targetVersion }: UpgradeFailure) => {
-  if (fromVersion !== "" && targetVersion !== null) return `${fromVersion} to ${targetVersion}`;
-  if (targetVersion !== null) return `To ${targetVersion}`;
-  return fromVersion === "" ? null : `From ${fromVersion}`;
-};
+/** Stages at and after the swap: a stop here may leave the new release half in place. */
+const AFTER_SWAP = new Set(["activating", "restarting", "readiness"]);
 
-const ending = ({ outcome, stage, error }: UpgradeFailure) => {
-  const at = stage === null ? "" : ` at ${stage}`;
+/** Where the Server was left, in the daemon's own terms: its failure text ends `; restored <v>` or `; restore failed: …`. */
+const whereLeft = ({ fromVersion, outcome, stage, error }: UpgradeFailure) => {
+  const unchanged = fromVersion === "" ? "Nothing changed" : `Still on ${fromVersion}`;
+  const swapped = stage !== null && AFTER_SWAP.has(stage);
   switch (outcome) {
-    case "failed":
-      return error === null ? `Failed${at}` : `Failed${at}: ${error}`;
+    case "failed": {
+      const restored = error === null ? null : /; restored (\S+)$/.exec(error);
+      if (restored) return `Rolled back to ${restored[1]}`;
+      if (error?.includes("; restore failed:")) return "Couldn't roll back";
+      return unchanged;
+    }
     case "interrupted":
-      return `Interrupted${at}`;
+      return swapped ? "Stopped partway through" : unchanged;
     case "unknown":
-      return stage === null ? "Outcome unknown" : `Outcome unknown, last seen at ${stage}`;
+      return "Stopped reporting partway through";
   }
 };
 
@@ -40,25 +43,19 @@ const ending = ({ outcome, stage, error }: UpgradeFailure) => {
 export function upgradeFailedMail({ organization, failures, origin }: UpgradeFailedMail): Omit<MailContent, "unsubscribe"> {
   const [first] = failures;
   const one = failures.length === 1;
-  const servers = one ? first.name : `${failures.length} Servers`;
-  const target = first.targetVersion === null ? "" : ` to ${first.targetVersion}`;
+  const servers = one ? first.name : `${failures.length} servers`;
+  const release = failures.find((failure) => failure.targetVersion !== null)?.targetVersion ?? null;
+  const skip = release === null ? null : `Automatic upgrades skip ${release} until a newer release is out or you upgrade a server to it yourself.`;
   return {
-    subject: `Automatic upgrade failed on ${servers}`,
-    preview: `${first.name} didn't upgrade${target}.`,
+    subject: release === null ? `${servers} didn't upgrade` : `${servers} didn't upgrade to ${release}`,
+    preview: one ? `${whereLeft(first)}.` : `Ployz stopped the automatic upgrade in ${organization.name}.`,
     title: `${servers} didn't upgrade`,
-    paragraphs: [
-      failures.some((failure) => failure.targetVersion !== null)
-        ? `An automatic upgrade in ${organization.name} didn't finish. Automatic upgrades skip this release until an Upgrade of it succeeds.`
-        : `An automatic upgrade in ${organization.name} didn't finish.`,
-    ],
+    paragraphs: [[`Ployz stopped the automatic upgrade in ${organization.name}.`, skip].filter((line) => line !== null).join(" ")],
     action: one
-      ? { label: "View Server", url: `${origin}/cloud/${organization.slug}/~/servers/${first.machineId}` }
-      : { label: "View Servers", url: `${origin}/cloud/${organization.slug}/~/servers` },
-    facts: failures.map((failure) => ({
-      label: failure.name,
-      value: [versions(failure), ending(failure)].filter((part) => part !== null).join(". "),
-    })),
-    reason: `You're getting this because you're a member of ${organization.name} on Ployz.`,
+      ? { label: "View server", url: `${origin}/cloud/${organization.slug}/~/servers/${first.machineId}` }
+      : { label: "View servers", url: `${origin}/cloud/${organization.slug}/~/servers` },
+    facts: failures.map((failure) => ({ label: failure.name, value: whereLeft(failure) })),
+    reason: `You're getting this as a member of ${organization.name} on Ployz.`,
   };
 }
 

@@ -591,9 +591,9 @@ describe("roll-out-server-upgrade", () => {
         expect(runIds.size).toBe(1);
         const [runId] = [...runIds];
         expect(new Set(queued.map(({ id }) => id))).toEqual(new Set([`mail-upgrade-rollout:${runId}:${userId}`, `mail-upgrade-rollout:${runId}:${otherUserId}`]));
-        expect(queued[0]?.subject).toBe("Automatic upgrade failed on web-2");
-        expect(queued[0]?.text).toContain("web-2: 0.2.1 to 0.2.2. Failed at readiness: readiness timed out; restored 0.2.1");
-        expect(queued[0]?.text).toContain(`View Server: https://cloud.example.com/cloud/acme/~/servers/${serverId("2")}`);
+        expect(queued[0]?.subject).toBe("web-2 didn't upgrade to 0.2.2");
+        expect(queued[0]?.text).toContain("web-2: Rolled back to 0.2.1");
+        expect(queued[0]?.text).toContain(`View server: https://cloud.example.com/cloud/acme/~/servers/${serverId("2")}`);
         expect(queued[0]?.text).not.toContain("web-1");
       });
 
@@ -606,7 +606,7 @@ describe("roll-out-server-upgrade", () => {
 
         const queued = mails();
         expect(queued).toHaveLength(2);
-        expect(queued[0]?.text).toContain("web-1: 0.2.1 to 0.2.2. Outcome unknown, last seen at activating");
+        expect(queued[0]?.text).toContain("web-1: Stopped reporting partway through");
       });
 
       it("an automatic rollout that succeeds mails nobody", async () => {
@@ -673,7 +673,7 @@ describe("roll-out-server-upgrade", () => {
 
         const queued = mails();
         expect(new Set(queued.map(({ id }) => id))).toEqual(new Set([`mail-upgrade-rollout:run-9:${userId}`, `mail-upgrade-rollout:run-9:${otherUserId}`]));
-        expect(queued[0]?.text).toContain("web-2: 0.2.1 to 0.2.2. Outcome unknown, last seen at restarting");
+        expect(queued[0]?.text).toContain("web-2: Stopped reporting partway through");
       });
 
       it("the hourly sweep mails an automatic attempt it closes for a lost run", async () => {
@@ -686,7 +686,7 @@ describe("roll-out-server-upgrade", () => {
 
         const queued = mails();
         expect(new Set(queued.map(({ id }) => id))).toEqual(new Set([`mail-upgrade-rollout:run-7:${userId}`, `mail-upgrade-rollout:run-7:${otherUserId}`]));
-        expect(queued[0]?.text).toContain("web-3: 0.2.1 to 0.2.2. Outcome unknown, last seen at activating");
+        expect(queued[0]?.text).toContain("web-3: Stopped reporting partway through");
       });
 
       it("a sweep retried after its send failed mails the Rollout it already closed", async () => {
