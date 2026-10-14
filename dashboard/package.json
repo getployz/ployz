@@ -60,6 +60,7 @@
     "@polar-sh/better-auth": "^2.0.0",
     "@polar-sh/checkout": "^0.4.1",
     "@polar-sh/sdk": "^1.0.0",
+    "@posthog/mcp": "0.22.3",
     "@shadcn/react": "^0.3.1",
     "@tailwindcss/vite": "^4.2.4",
     "@tanstack/ai": "0.68.0",
