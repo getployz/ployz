@@ -16,10 +16,10 @@ use ployz_store::tools::{
     WAIT_CAP_SECONDS, Write, Writes, catalog, example, lint, resume, start,
 };
 use ployz_store::{
-    Actor, Admit, ConfigStore, CreateEnvironment, CreateProject, CreateService, CreateVolume,
-    Deploy, DeploymentId, EnvironmentId, EnvironmentName, EnvironmentRef, EnvironmentsQuery,
-    NamespacesQuery, OrganizationId, ProjectId, ProjectName, RowTracker, RunEvidence, RunnerId,
-    SealingKey, ServiceLineageId, VolumeId, VolumeName,
+    Actor, Admit, ConfigStore, ConfigsQuery, CreateEnvironment, CreateProject, CreateService,
+    CreateVolume, Deploy, DeploymentId, EnvironmentId, EnvironmentName, EnvironmentRef,
+    EnvironmentsQuery, NamespacesQuery, OrganizationId, ProjectId, ProjectName, RowTracker,
+    RunEvidence, RunnerId, SealingKey, ServiceLineageId, VolumeId, VolumeName,
 };
 use serde_json::{Value, json};
 
@@ -514,6 +514,48 @@ fn a_stale_revision_is_refused_with_a_fresh_read() {
         stale.next,
         [Call::new("service_inspect", json!({ "service": "web" }))]
     );
+}
+
+#[test]
+fn config_write_sets_permissions_and_a_later_write_keeps_them() {
+    let store = shop();
+    let file = |store: &ConfigStore| {
+        let view = store.read(&who(), &ConfigsQuery::default()).unwrap();
+        let file = view.configs[0].config.files[0].clone();
+        (file.mode.to_string(), file.uid, file.gid)
+    };
+    call(
+        &store,
+        "config_write",
+        json!({
+            "config": "app",
+            "files": { "app.conf": "a" },
+            "mode": "0440",
+            "uid": 1000,
+            "gid": 1001
+        }),
+        "write-1",
+    )
+    .ok();
+    assert_eq!(file(&store), ("0440".to_owned(), 1000, 1001));
+    call(
+        &store,
+        "config_write",
+        json!({ "config": "app", "files": { "app.conf": "b" } }),
+        "write-2",
+    )
+    .ok();
+    assert_eq!(file(&store), ("0440".to_owned(), 1000, 1001));
+
+    let refusal = call(
+        &store,
+        "config_write",
+        json!({ "config": "app", "files": { "app.conf": "c" }, "mode": "1777" }),
+        "write-3",
+    )
+    .refused();
+    assert_eq!(refusal.code, RpcErrorCode::InvalidArgument);
+    assert_eq!(refusal.field.as_deref(), Some("mode"));
 }
 
 #[test]
