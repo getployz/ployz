@@ -6,10 +6,18 @@ import { Label } from "#/components/ui/label";
 import { NativeSelect, NativeSelectOption } from "#/components/ui/native-select";
 import { Spinner } from "#/components/ui/spinner";
 import { connectAgentServerFn, connectChoicesServerFn } from "#/modules/agent/connect.functions";
+import { remoteAgentsEnabled } from "#/modules/agent/connect.server";
+import { runAppEffect } from "#/server/run.server";
 import { LoginPanel } from "#/routes/_public/-components/LoginPanel";
 
 // An agent's OAuth authorize request lands here twice: signed out to sign in, then signed in to grant access.
 export const Route = createFileRoute("/connect")({
+  server: {
+    handlers: {
+      ANY: async ({ request, next }) =>
+        (await runAppEffect(remoteAgentsEnabled, { signal: request.signal })) ? next() : new Response(null, { status: 404 }),
+    },
+  },
   head: () => ({ meta: [{ title: "Connect an agent to Ployz" }] }),
   loader: () => connectChoicesServerFn(),
   component: ConnectPage,

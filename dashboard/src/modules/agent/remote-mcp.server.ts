@@ -145,6 +145,7 @@ export const serveMcpMetadata = Effect.fn("RemoteMcp.metadata")(function* (reque
   const auth = yield* Auth;
   if (auth.mcp === null) return notFound();
   if (request.method === "OPTIONS") return preflight();
+  if (request.method !== "GET" && request.method !== "HEAD") return new Response(null, { status: 405, headers: { ...CORS, Allow: "GET, HEAD, OPTIONS" } });
   const url = new URL(request.url);
   if (url.pathname === AUTHORIZATION_SERVER) url.pathname = `${AUTHORIZATION_SERVER}/api/auth`;
   return withHeaders(yield* auth.handler(new Request(url, request)), CORS);

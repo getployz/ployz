@@ -23,6 +23,12 @@ const hostedMcp = Effect.gen(function* () {
   return { auth, mcp: auth.mcp };
 });
 
+/** Whether this Cloud takes remote agents. A Self-hosted Cloud answers every request to /connect with a 404. */
+export const remoteAgentsEnabled = Effect.gen(function* () {
+  const auth = yield* Auth;
+  return auth.mcp !== null;
+});
+
 export const connectChoices = Effect.fn("Connect.choices")(function* (headers: Headers) {
   const { auth } = yield* hostedMcp;
   const signedIn = yield* auth.getSession(headers);

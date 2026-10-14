@@ -7,5 +7,5 @@ const handle = ({ request }: { request: Request }) =>
   runAppEffect(serveRemoteMcp(request), { signal: request.signal }).catch(publicErrorResponse);
 
 export const Route = createFileRoute("/mcp")({
-  server: { handlers: { GET: handle, POST: handle, DELETE: handle, OPTIONS: handle } },
+  server: { handlers: { ANY: handle } },
 });

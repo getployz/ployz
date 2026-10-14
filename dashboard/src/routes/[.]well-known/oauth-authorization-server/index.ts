@@ -7,5 +7,5 @@ const handle = ({ request }: { request: Request }) =>
   runAppEffect(serveMcpMetadata(request), { signal: request.signal }).catch(publicErrorResponse);
 
 export const Route = createFileRoute("/.well-known/oauth-authorization-server/")({
-  server: { handlers: { GET: handle, OPTIONS: handle } },
+  server: { handlers: { ANY: handle } },
 });
