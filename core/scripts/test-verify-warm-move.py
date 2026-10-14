@@ -1310,7 +1310,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("checks", nargs="*", help="check names; all when none")
     parser.add_argument("--manifest", type=Path, help="a ready run started with --cloud and the fault build")
-    parser.add_argument("--provider", choices=["incus", "boat"], default="incus", help="where a booted run's Machines live")
+    parser.add_argument("--provider", choices=["incus", "boat"], default="boat", help="where a booted run's Machines live")
     parser.add_argument("--list", action="store_true")
     args = parser.parse_args()
     names = [name for name, *_ in CHECKS]

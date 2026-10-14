@@ -524,7 +524,9 @@ def preflight(args):
     module = importlib.import_module(args.provider)
     if args.provider == "boat":
         if args.memory or args.disk:
-            raise RuntimeError("--memory and --disk size Incus VMs; every Boat sandbox is the small type")
+            raise RuntimeError("--memory and --disk size Incus VMs; every Boat sandbox is the small type, so add --provider incus")
+        if not shutil.which(module.cli()[0]):
+            raise RuntimeError("The boat CLI is not on PATH; install it, set BOAT_CLI, or add --provider incus")
         module.preflight(args.machines, CORE)
         return
     memory = host.size(args.memory or module.DEFAULT_SIZES["memory"])
@@ -731,14 +733,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     actions = parser.add_subparsers(dest="action", required=True)
     launch = actions.add_parser("up", help="Boot a new disposable cluster")
-    launch.add_argument("--provider", choices=PROVIDERS, default="incus",
-                        help="Where Machines run: incus VMs on this host, or boat sandboxes")
+    launch.add_argument("--provider", choices=PROVIDERS, default="boat",
+                        help="Where Machines run: boat sandboxes (default), or incus VMs on this host")
     launch.add_argument("--machines", type=int, choices=range(1, 9), default=1)
     daemon_help = ("[MACHINE=]SOURCE, repeatable. SOURCE is checkout, main (main's CI build, stale), stable, beta or an exact release version; "
                    "a bare SOURCE sets every Machine and MACHINE=SOURCE overrides one")
     launch.add_argument("--daemon", action="append", metavar="[MACHINE=]SOURCE", help=daemon_help + "; checkout by default")
-    launch.add_argument("--memory", help="RAM per Machine VM as an Incus size; 2GiB by default; Incus only")
-    launch.add_argument("--disk", help="Root disk per Machine VM, which bounds its Machine Pool; 24GiB by default; Incus only")
+    launch.add_argument("--memory", help="RAM per Machine VM as an Incus size; 2GiB by default; needs --provider incus")
+    launch.add_argument("--disk", help="Root disk per Machine VM, which bounds its Machine Pool; 24GiB by default; needs --provider incus")
     pairing = launch.add_mutually_exclusive_group()
     pairing.add_argument("--cloud", action="store_true",
                          help="Start this checkout's dashboard verify instance and enroll through it; down stops it")
