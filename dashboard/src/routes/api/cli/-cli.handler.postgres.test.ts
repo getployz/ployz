@@ -111,11 +111,15 @@ const enroll = Effect.fn(function* (organizationId: string, machineId: string, f
 
 const cliLayer = Effect.fn(function* (
   ployz: Layer.Layer<Ployz> = fakeServers().layer,
-  overrides: { readonly runtime?: Layer.Layer<OrganizationRuntime>; readonly inngest?: Inngest } = {},
+  overrides: {
+    readonly runtime?: Layer.Layer<OrganizationRuntime>;
+    readonly inngest?: Inngest;
+    readonly env?: Record<string, string>;
+  } = {},
 ) {
   const testDatabase = yield* postgresTestDatabase;
   const provider = ConfigProvider.fromEnv({
-    env: { ...testConfigEnvironment(), NODE_ENV: "test", DATABASE_URL: testDatabase.url.href },
+    env: { ...testConfigEnvironment(), NODE_ENV: "test", DATABASE_URL: testDatabase.url.href, ...overrides.env },
   });
   const configLayer = AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(provider)));
   const databaseLayer = DatabaseLive.pipe(Layer.provide(configLayer));
@@ -507,12 +511,12 @@ it.live(
   "github lists the caller's installations and a readable repository's branches, and disconnects one",
   () =>
     Effect.gen(function* () {
-      const layer = yield* cliLayer();
+      const layer = yield* cliLayer(undefined, { env: { PLOYZ_VERIFY_GITHUB_ORIGIN: "http://127.0.0.1:4555" } });
       yield* Effect.gen(function* () {
         const alice = yield* signUp("alice");
         const empty = yield* cli("GET", "github", alice);
         assert.deepInclude(empty.json, { linked: false, ready: false, installations: [], repositories: [] });
-        assert.match(empty.json.install_url ?? "", /^https:\/\/github\.com\/apps\/.+\/installations\/new$/);
+        assert.match(empty.json.install_url ?? "", /^http:\/\/127\.0\.0\.1:4555\/apps\/.+\/installations\/new$/);
 
         const database = yield* Database;
         const [row] = yield* database.drizzle.select({ userId: member.userId }).from(member)
@@ -557,10 +561,10 @@ it.live(
 
         const removed = yield* cli("DELETE", "github/7", alice);
         assert.deepStrictEqual(removed.json.disconnected, { id: 7, account: "acme" });
-        assert.strictEqual(removed.json.uninstall_url, "https://github.com/organizations/acme/settings/installations/7");
+        assert.strictEqual(removed.json.uninstall_url, "http://127.0.0.1:4555/organizations/acme/settings/installations/7");
         assert.strictEqual((yield* cli("DELETE", "github/7", alice)).status, 404);
         const personal = yield* cli("DELETE", "github/8", alice);
-        assert.strictEqual(personal.json.uninstall_url, "https://github.com/settings/installations/8");
+        assert.strictEqual(personal.json.uninstall_url, "http://127.0.0.1:4555/settings/installations/8");
         assert.deepInclude((yield* cli("GET", "github", alice)).json, { ready: false, installations: [] });
       }).pipe(Effect.provide(layer));
     }),
