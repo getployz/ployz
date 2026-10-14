@@ -53,6 +53,8 @@ export const volumeRun = pgTable(
     /** The Service spec seen when the run started; Restore reads it once that Service's Server is gone. */
     serviceSpec: jsonb("service_spec").$type<ServiceSpec>(),
     inngestRunId: text("inngest_run_id"),
+    /** The Inngest run of a Deploy that holds this Volume beside this row's run, which it neither took nor holds. */
+    heldBy: text("held_by"),
     requestedByUserId: uuid("requested_by_user_id").references(() => user.id, { onDelete: "set null" }),
     message: text("message"),
     createdAt,
@@ -63,6 +65,7 @@ export const volumeRun = pgTable(
     uniqueIndex("volume_run_one_active_idx")
       .on(table.volumeId)
       .where(sql`${table.state} in ('requested', 'running')`),
+    index("volume_run_held_idx").on(table.volumeId).where(sql`${table.heldBy} is not null`),
     index("volume_run_latest_idx").on(table.organizationId, table.volumeId, table.createdAt.desc()),
     check("volume_run_kind_check", sql`${table.kind} in (${sqlStringLiterals(VOLUME_RUN_KINDS)})`),
     check("volume_run_state_check", sql`${table.state} in (${sqlStringLiterals(VOLUME_RUN_STATES)})`),

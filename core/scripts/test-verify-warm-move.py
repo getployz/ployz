@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Prove Warm Move end to end on real Machines paired with Cloud: Restore, removal, demotion, deletion,
-stale SetVolumeCopy replays, deploys mid-Move, Release, mirror reuse and slow or failing starts.
+stale SetVolumeCopy replays, deploys mid-Move, Moves mid-Deploy, Release, mirror reuse and slow or failing starts.
 
   python3 scripts/test-verify-warm-move.py --list
   python3 scripts/test-verify-warm-move.py [--manifest M] [check ...]
@@ -1004,6 +1004,59 @@ def deploy_mid_move(vc):
 
 # Release after a stopped Move
 
+# A Move asked for during a Deploy's run is refused, the Deploy ends on one Machine, and the Move runs once it ends
+
+def move_mid_deploy(vc):
+    phys = vc.physical("mike")
+    vc.seed(A, phys, 1)
+    probe_out = vc.out / "move_mid_deploy-probe.txt"
+    with probe_out.open("w") as output:
+        probe = subprocess.Popen([str(HELPER), "probe", str(vc.manifest), "mikedb"], stdout=output,
+                                 stderr=subprocess.STDOUT)
+    try:
+        time.sleep(10)
+        vc.slow_runc(A, "mike", phys, 30)
+        samples, stop = [], threading.Event()
+        sampler = threading.Thread(target=sample_running, args=(vc, phys, (B, A), samples, stop), daemon=True)
+        sampler.start()
+        try:
+            deploying = background(vc.plain_deploy, "mikedb")
+            held = vc.wait_start_log(A, "mike")
+            code_m, asked, data = vc.start_run("volume", "move", "mike", "--to", B)
+            asked = asked and vc.wait_run("mike", asked["id"])
+            code_d, deployed = deploying.result()
+        finally:
+            stop.set()
+            sampler.join()
+            vc.plain_runc(A, "mike")
+        after_deploy = vc.live(phys)
+        _, again, again_data = vc.move("mike", B)
+        ready = vc.ready(B, phys)
+        rows = vc.rows(B, phys)
+        running = vc.live(phys)
+        probing = probe.poll() is None
+    finally:
+        probe.send_signal(2)
+        probe.wait(timeout=600)
+    report = next((found for found in map(parse_json, reversed(probe_out.read_text().splitlines()))
+                   if isinstance(found, dict) and "lost" in found), None)
+    _, listed = vc.cli("volume", "runs", "mike")
+    open_rows = [row for row in run_rows(listed) if row.get("state") not in TERMINAL]
+    refusal = text_of(asked, data)
+    vc.verdict("move_mid_deploy",
+               holding(held) and code_m != 0 and asked is None and "mike is deploying; the Deploy ends its run" in refusal
+               and code_d == 0 and samples and not overlaps(samples)
+               and not [at for at, live in samples if not isinstance(live, dict)]
+               and len(after_deploy[A]) == 1 and not after_deploy[B]
+               and done(again) and ready and len(running[B]) == 1 and not running[A] and rows.split(",")[:1] == ["1"]
+               and report is not None and report["lost"] == [] and report["acked"] > 0 and not open_rows,
+               f"runc create held on {A}: {held}; move asked during the Deploy exit {code_m}: {refusal[:400]}; "
+               f"deploy exit {code_d} {say(deployed)[:300]}; samples {len(samples)}, overlaps {overlaps(samples)}; "
+               f"after the Deploy {after_deploy}; move again {text_of(again, again_data)[:300]}; ready on {B}={ready}; "
+               f"running {running}; kept rows {rows!r}; probe running until stopped={probing} {say(report)[:600]}; "
+               f"open runs {open_rows}")
+
+
 def settled(row):
     return row is not None and row.get("state") in TERMINAL
 
@@ -1207,6 +1260,7 @@ CHECKS = [
     ("delete_mirrored_environment", 2, [("foxtrot", DOOMED)], delete_mirrored_environment),
     ("stale_set_volume_copy_refused", 2, [("delta", None)], stale_replay_refused),
     ("deploy_mid_move", 2, [("charlie", None)], deploy_mid_move),
+    ("move_mid_deploy", 2, [("mike", None)], move_mid_deploy),
     ("release_after_stopped_move", 2, [("bravo", None)], release_after_stopped_move),
     ("thaw_takes_15_seconds", 2, [("bravo", None)], thaw_takes_15_seconds),
     ("move_twice_reuses_mirror", 2, [("golf", None)], move_twice_reuses_mirror),
