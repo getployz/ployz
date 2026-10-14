@@ -3,13 +3,13 @@ import { Item, ItemContent, ItemGroup, ItemTitle } from "#/components/ui/item";
 import type { WebTrafficReach } from "#/modules/machines/server-web-traffic-view";
 
 const empty = {
-  away: "This stops the web server still running here.",
+  away: "This asks the web server here to stop.",
   last: "No other server takes web traffic.",
   shared: "Your other servers keep taking web traffic.",
 } satisfies Record<WebTrafficReach, string>;
 
 const listed = {
-  away: "This stops the web server still running here. These may still point at it:",
+  away: "This asks the web server here to stop. These may still point here:",
   last: "No other server takes web traffic. These stop working:",
   shared: "Your other servers keep serving these:",
 } satisfies Record<WebTrafficReach, string>;

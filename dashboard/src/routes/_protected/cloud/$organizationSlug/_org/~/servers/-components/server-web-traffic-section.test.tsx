@@ -33,7 +33,7 @@ it("warns that more domains may stop when some weren't reported", () => {
 
 it("never promises other servers keep serving once this one is out of web traffic", () => {
   render(<WebTrafficDialog serverName="web-1" domains={["a.example.com"]} partial={false} reach="away" open onOpenChange={() => {}} onConfirm={() => {}} />);
-  expect(screen.getByText("This stops the web server still running here. These may still point at it:")).toBeTruthy();
+  expect(screen.getByText("This asks the web server here to stop. These may still point here:")).toBeTruthy();
   expect(screen.getByText("a.example.com")).toBeTruthy();
   expect(screen.queryByText(/other server/)).toBeNull();
 });
