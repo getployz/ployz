@@ -199,7 +199,7 @@ describe("plan_from_copies_table", () => {
       ok: false,
       refusal: {
         code: "volume_switching",
-        message: "data has unfinished cuts on fsn-1 and fsn-2, so release cannot pick a writer; server rm fsn-1, then ployz volume release data",
+        message: "data has unfinished cuts on fsn-1 and fsn-2, so release cannot pick a writer; ployz server rm fsn-1, then ployz volume release data",
       },
     });
   });
@@ -219,7 +219,7 @@ describe("plan_from_copies_table", () => {
       ok: false,
       refusal: {
         code: "volume_switching",
-        message: "data has unfinished cuts on fsn-1 and fsn-2 and fsn-3, so release cannot pick a writer; server rm fsn-1 and fsn-3, then ployz volume release data",
+        message: "data has unfinished cuts on fsn-1 and fsn-2 and fsn-3, so release cannot pick a writer; ployz server rm fsn-1 and fsn-3, then ployz volume release data",
       },
     });
   });
@@ -230,7 +230,7 @@ describe("plan_from_copies_table", () => {
       ok: false,
       refusal: {
         code: "volume_switching",
-        message: "data has unfinished cuts on fsn-1 and fsn-2, so release cannot pick a writer; server rm fsn-1 and fsn-4, then ployz volume move data --to fsn-3",
+        message: "data has unfinished cuts on fsn-1 and fsn-2, so release cannot pick a writer; ployz server rm fsn-1 and fsn-4, then ployz volume move data --to fsn-3",
       },
     });
   });
@@ -254,9 +254,32 @@ describe("plan_from_copies_table", () => {
       ok: false,
       refusal: {
         code: "volume_switching",
-        message: "data has unfinished cuts on fsn-1 and fsn-2, so release cannot pick a writer; server rm fsn-1, then ployz volume release data",
+        message: "data has unfinished cuts on fsn-1 and fsn-2, so release cannot pick a writer; ployz server rm fsn-1, then ployz volume release data",
       },
     });
+  });
+
+  it.each<[string, Member[], string, string]>([
+    [
+      "of three cuts with the top two tied, keeps the one that holds a snapshot",
+      [member("fsn-1", "cut", { epoch: 7 }), member("fsn-2", "cut", { epoch: 9 }), bare("fsn-3", 9)],
+      "volume_switching",
+      "data has unfinished cuts on fsn-1 and fsn-2 and fsn-3, so release cannot pick a writer; ployz server rm fsn-1 and fsn-3, then ployz volume release data",
+    ],
+    [
+      "of tied cuts with no snapshot, keeps the first by Server name and moves it onto the mirror",
+      [bare("fsn-2", 9), bare("fsn-1", 9), member("fsn-3", "mirror")],
+      "volume_switching",
+      "data has unfinished cuts on fsn-2 and fsn-1, so release cannot pick a writer; ployz server rm fsn-2, then ployz volume move data --to fsn-3",
+    ],
+    [
+      "moves a lone cut with no snapshot onto the first of two slots and removes the other",
+      [bare("fsn-2", 9), member("fsn-4", "behind"), member("fsn-3", "mirror")],
+      "no_copy",
+      "data on fsn-2 stopped before its first snapshot; ployz server rm fsn-4, then ployz volume move data --to fsn-3",
+    ],
+  ])("%s", (_, members, code, message) => {
+    expect(planFromCopies(release, members)).toEqual({ ok: false, refusal: { code, message } });
   });
 
   it("names both copies when two writers tie", () => {
@@ -321,23 +344,45 @@ describe("plan_from_copies_table", () => {
   });
 });
 
+const named = (members: readonly Member[], role: Role) => members.filter((each) => roleOf(each) === role).map((each) => each.machine.name).sort();
+
+/** The cut every remedy keeps: highest epoch, then holds a snapshot, then first by Server name. */
+function keptCut(members: readonly Member[]) {
+  const rank = (each: Member): [number, number] => {
+    const copy = each.answered ? each.view.copy : null;
+    return copy?.kind === "root" ? [copy.epoch, copy.newest === null ? 0 : 1] : [0, 0];
+  };
+  const [kept] = members.filter((each) => roleOf(each) === "cutting").sort((a, b) => {
+    const [ae, as] = rank(a);
+    const [be, bs] = rank(b);
+    return be - ae || bs - as || a.machine.name.localeCompare(b.machine.name);
+  });
+  if (kept === undefined) throw new Error("no cut to keep");
+  return kept.machine.name;
+}
+
 function follow(input: PlanInput, members: readonly Member[]) {
   const planned = planFromCopies(input, members);
   if (planned.ok) throw new Error(`planned ${planned.phase.kind}, not a refusal`);
-  const step = /; (?:server rm (.+), then )?ployz volume (release|move) data(?: --to (.+))?$/.exec(planned.refusal.message);
+  const step = /; (?:ployz server rm (.+), then )?ployz volume (release|move) data(?: --to (.+))?$/.exec(planned.refusal.message);
   if (step === null) throw new Error(`no step in: ${planned.refusal.message}`);
   const [, removed, verb, to] = step;
   const gone = removed?.split(" and ") ?? [];
   expect(members.map((each) => each.machine.name)).toEqual(expect.arrayContaining(gone));
   const left = members.filter((each) => !gone.includes(each.machine.name));
-  const empty = left.find((each) => each.answered && each.view.copy === null)?.machine.name ?? "no empty Server";
+  const kept = keptCut(members);
+  expect(named(left, "cutting")).toEqual([kept]);
+  const slots = named(members, "mirror");
   if (verb === "release") {
-    expect(planFromCopies(release, left)).toMatchObject({ ok: true, phase: { kind: "release" } });
+    expect(named(left, "mirror")).toEqual(slots);
+    expect(outcome(release, left)).toBe(`release cut ${kept}`);
     return;
   }
-  const anyServer = to === "<another server>";
-  expect(planFromCopies(move(anyServer ? empty : to ?? ""), left)).toMatchObject({ ok: true, phase: { kind: "move", start: "cut" } });
-  if (!anyServer) expect(outcome(move(empty), left)).toBe("refuse second_mirror");
+  expect(to).toBe(slots[0] ?? "<another server>");
+  expect(named(left, "mirror")).toEqual(slots.slice(0, 1));
+  const target = slots[0] ?? left.find((each) => roleOf(each) === "empty")?.machine.name ?? "no empty Server";
+  expect(outcome(move(target), left)).toBe(`move ${kept}->${target} at cut`);
+  if (slots.length > 0) expect(outcome(move(named(left, "empty")[0] ?? "no empty Server"), left)).toBe("refuse second_mirror");
 }
 
 describe("follow every next step a refusal names", () => {
