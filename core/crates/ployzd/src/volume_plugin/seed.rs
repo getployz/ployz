@@ -6,7 +6,7 @@
 use std::process::Stdio;
 
 use axum::{Json, extract::State};
-use ployz_core::{RpcError, SeedVolumeRequest, SnapshotGuid, SwitchError, VolumeCopyView};
+use ployz_core::{RpcError, SeedVolumeRequest, SwitchError, VolumeCopyView};
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
@@ -112,9 +112,7 @@ impl VolumeStorage {
         let storage = self.clone();
         let snapshot = format!("{source}@{}", point.name);
         self.receives.spawn(&into, |stop| async move {
-            storage
-                .copy_snapshot(&snapshot, &fs, bound, guid, &stop)
-                .await
+            storage.copy_snapshot(&snapshot, &fs, bound, &stop).await
         });
         self.seeded(&pool, &into).await
     }
@@ -181,7 +179,6 @@ impl VolumeStorage {
         snapshot: &str,
         fs: &str,
         bound: u64,
-        guid: SnapshotGuid,
         stop: &CancellationToken,
     ) -> Result<(), String> {
         let mut send = Command::new(&self.zfs)
@@ -199,9 +196,6 @@ impl VolumeStorage {
             .into_owned_fd()
             .map_err(|error| format!("could not hand the send stream over: {error}"))?;
         let refquota = format!("refquota={bound}");
-        // The mark lands with the completed copy, so a departure before the landing keeps
-        // it as this Machine's own.
-        let seed = format!("{SEED_PROPERTY}={guid}");
         let mut receive = Command::new(&self.zfs)
             .args([
                 "receive",
@@ -211,8 +205,6 @@ impl VolumeStorage {
                 "readonly=on",
                 "-o",
                 &refquota,
-                "-o",
-                &seed,
                 fs,
             ])
             .stdin(Stdio::from(stream))

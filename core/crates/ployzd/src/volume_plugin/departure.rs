@@ -12,8 +12,7 @@ use ployzd::machine_pool::MachinePool;
 use super::{
     Dataset, DockerVolumeName, MIRROR_ROOT, Place, VolumeStorage,
     inspect::internal,
-    seed::SEED_PROPERTY,
-    storage::{CUT_PROPERTY, EPOCH_PROPERTY, PROMOTE_PROPERTY, slot_fs, slot_parent},
+    storage::{CUT_PROPERTY, EPOCH_PROPERTY, slot_fs, slot_parent},
 };
 
 /// Prefix of the snapshot a departure takes on each root before demoting it.
@@ -152,10 +151,11 @@ impl VolumeStorage {
         })
     }
 
-    /// Whether this Machine wrote the slot's copy or set out to: a departure or a Move's cut
-    /// left a root there, and a restore or a seed marked it before landing it. Only this
-    /// Machine sets these marks, and a send carries no properties, so a received mirror
-    /// has none of them.
+    /// Whether the slot's copy may be the only one: a departure or a Move's cut left a
+    /// root there, or a restore marked it before landing it. Only this Machine sets these
+    /// marks and a send carries no properties, so a received copy has none. A seed is left
+    /// unmarked on purpose: it copies a point of a root on this Machine, which the same
+    /// departure seals with all its snapshots, so destroying the seed loses nothing.
     async fn written_here(&self, fs: &str) -> super::Result<bool> {
         let departed = self.snapshot_names(fs).await?.iter().any(|snapshot| {
             snapshot
@@ -165,12 +165,7 @@ impl VolumeStorage {
         if departed {
             return Ok(true);
         }
-        for mark in [
-            CUT_PROPERTY,
-            EPOCH_PROPERTY,
-            PROMOTE_PROPERTY,
-            SEED_PROPERTY,
-        ] {
+        for mark in [CUT_PROPERTY, EPOCH_PROPERTY] {
             if self.property(fs, mark).await?.is_some() {
                 return Ok(true);
             }
