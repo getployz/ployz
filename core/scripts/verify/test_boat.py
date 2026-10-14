@@ -338,5 +338,72 @@ class Registry(unittest.TestCase):
         self.assertEqual(self.provider.record()["sandboxes"]["machine-2"]["ssh"], "213.32.24.158:19040")
 
 
+def parked(sandbox, node, image="bake-a", at=0):
+    return dict(id=sandbox, image=image, ip=f"2001:db8:0:{node}::1", ssh=f"203.0.113.{node}:22", parked_at=at)
+
+
+class Pool(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        for name, value in [("REGISTRY", Path(directory.name)), ("POOL", Path(directory.name) / boat.POOL.name)]:
+            self.addCleanup(setattr, boat, name, getattr(boat, name))
+            setattr(boat, name, value)
+
+    def test_fingerprint_ignores_hold_names_and_order_but_not_a_leftover(self):
+        fresh = boat.fingerprint("== containers\nhold-1|alpine:3.20|running|1\nzed|redis|running|\n== volumes\n== zpools\n")
+        reset = boat.fingerprint("== containers\nzed|redis|running|\nhold-9|alpine:3.20|running|1\n== volumes\n\n== zpools\n")
+        self.assertEqual(boat.differences(fresh, reset), [])
+        dirty = boat.fingerprint("== containers\nhold-9|alpine:3.20|running|1\nzed|redis|running|\nweb|nginx|exited|\n"
+                                 "== volumes\nlocal data\n== zpools\n")
+        self.assertEqual(boat.differences(fresh, dirty), ["containers (-[] +['web|nginx|exited|'])", "volumes (-[] +['local data'])"])
+        self.assertIn("ssh (-[] +['exit 255'])", boat.differences(fresh, {**fresh, "ssh": ["exit 255"]}))
+
+    def test_a_run_claims_its_own_bake_newest_first_one_per_node_up_to_its_size(self):
+        entries = [parked("bx_old", 1, at=1), parked("bx_new", 1, at=3), parked("bx_two", 2, at=2), parked("bx_three", 3, at=0),
+                   parked("bx_other", 4, image="bake-b", at=9), parked("bx_down", 5, at=8), parked("bx_taken", 6, at=7)]
+        up = {"bx_old", "bx_new", "bx_two", "bx_three", "bx_other", "bx_taken"}
+        picked, dead = boat.pick(entries, "bake-a", up, {"bx_taken"}, 2)
+        self.assertEqual([entry["id"] for entry in picked], ["bx_new", "bx_two"])
+        self.assertEqual([entry["id"] for entry in dead], ["bx_down"])
+        picked, _ = boat.pick(entries, "bake-a", up, {"bx_taken"}, 5)
+        self.assertEqual([entry["id"] for entry in picked], ["bx_new", "bx_two", "bx_three"])
+
+    def test_the_ledger_keeps_what_one_lock_saves_and_is_no_run_record(self):
+        with boat.pool() as entries:
+            entries.append(parked("bx_a", 1, at=5))
+        with boat.pool() as entries:
+            self.assertEqual(entries, [parked("bx_a", 1, at=5)])
+            entries.clear()
+        self.assertEqual(boat.read(boat.POOL), [])
+        with boat.pool() as entries:
+            entries.append(parked("bx_b", 2))
+        self.assertEqual(list(boat.REGISTRY.glob("*.json")), [])
+        self.assertEqual(boat.pooled(), {"bake-a": 1})
+        self.assertEqual(boat.images_in_use(), {"bake-a"})
+
+    def test_preflight_budgets_only_the_machines_the_pool_cannot_cover(self):
+        boat.write(boat.POOL, [parked("bx_a", 1), parked("bx_b", 2), parked("bx_c", 2), parked("bx_d", 3, image="bake-b")])
+        answers = dict(list=dict(sandboxes=[dict(id=sandbox, state="ready") for sandbox in ["bx_a", "bx_b", "bx_c", "bx_d"]]),
+                       limits=dict(maxActiveSandboxes=100, activeSandboxes=0, starts=dict(
+                           minute=dict(remaining=1), hour=dict(remaining=60), day=dict(remaining=200), unlimited=False)))
+        with unittest.mock.patch.object(boat, "boat_json", lambda *args: answers[args[0]]), \
+                unittest.mock.patch.object(boat, "corrosion_image", lambda core: "corrosion"), \
+                unittest.mock.patch.object(boat, "bake_name", lambda corrosion: "bake-a"):
+            boat.preflight(3, Path("."))
+            with self.assertRaisesRegex(RuntimeError, "Starts this minute: need up to 2, 1 left"):
+                boat.preflight(4, Path("."))
+            with unittest.mock.patch.object(boat, "POOL_SIZE", 0), self.assertRaisesRegex(RuntimeError, "need up to 3, 1 left"):
+                boat.preflight(3, Path("."))
+
+    def test_reap_takes_stopped_gone_and_older_bakes_and_all_under_force(self):
+        entries = [parked("bx_up", 1), parked("bx_stopped", 2), parked("bx_gone", 3), parked("bx_old", 4, image="bake-b")]
+        states = {"bx_up": "ready", "bx_stopped": "stopped", "bx_old": "idle"}
+        found = [(entry["id"], reason) for entry, reason in boat.stale(entries, states, "bake-a", False)]
+        self.assertEqual(found, [("bx_stopped", "stopped"), ("bx_gone", "gone"), ("bx_old", "older bake")])
+        found = [entry["id"] for entry, reason in boat.stale(entries, states, "bake-a", True)]
+        self.assertEqual(found, ["bx_up", "bx_stopped", "bx_gone", "bx_old"])
+
+
 if __name__ == "__main__":
     unittest.main()

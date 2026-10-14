@@ -1,6 +1,7 @@
 """Boat sandbox backend for verify-cluster's disposable-Machine contract."""
 
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 import fcntl
 import hashlib
 import host
@@ -29,6 +30,8 @@ TTL = int(os.environ.get("PLOYZ_VERIFY_BOAT_TTL", 3600))
 # prepare-guest.sh pulls these into the Incus image; SNAPSHOT keeps no Docker images, so each Machine pulls them at boot.
 IMAGES = ["caddy:2", "nginx:1.29-alpine", "nginx:1.27-alpine", "postgres:16-alpine", "alpine:3.20", "traefik/whoami:v1.10.3"]
 UP_STATES = {"ready", "idle", "running", "cloning"}
+# Registry states of a sandbox the run no longer holds.
+GONE = {"deleted", "parked"}
 REGISTRY = Path.home() / ".cache" / "ployz" / "verify" / "boat"
 # prepare() bakes SNAPSHOT plus BAKE into a named snapshot whose authorized_keys holds this key, so Machines
 # skip the image pulls and `boat exec`.
@@ -66,6 +69,68 @@ SETTLE = ("idle=0; for i in $(seq 120); do if [ -z \"$(systemctl list-jobs --no-
 # The ployz units live in /etc/systemd/system, where `systemctl mask` refuses them, so power off disables those.
 PLOYZ_UNITS = "ployz.socket ployz.service ployz-volume-plugin.socket"
 DOCKER_UNITS = "docker.service docker.socket containerd.service"
+# `down` parks a sandbox it proved clean here, and the next `up` of the same bake claims it instead of spending a start.
+POOL = REGISTRY / "pool.ledger"
+POOL_SIZE = int(os.environ.get("PLOYZ_VERIFY_BOAT_POOL", 6))
+# The bake's own ployz install, relative to /; a run's install overwrites it, so reset restores it from STASH.
+INSTALLED = ("usr/local/bin/ployz* etc/systemd/system/ployz* etc/systemd/system/*.wants/ployz* etc/docker/daemon.json "
+             "etc/modprobe.d/ployz* etc/modules-load.d/ployz* var/lib/ployz")
+STASH = "/var/lib/ployz-verify-bake.tar"
+KEEP_INSTALL = f"""
+if [ ! -e {STASH} ]; then
+    cd / && shopt -s nullglob && found=()
+    for path in {INSTALLED}; do if [ -e "$path" ] || [ -L "$path" ]; then found+=("$path"); fi; done
+    tar -cpf {STASH}.next "${{found[@]}}" && sync {STASH}.next && mv {STASH}.next {STASH}
+fi
+"""
+# What a run can leave behind, as a fresh clone of the bake shows it; reset must bring every section back.
+FINGERPRINT = SETTLE + r"""
+section() { printf '== %s\n' "$1"; }
+section containers; docker ps -a --format '{{.Names}}|{{.Image}}|{{.State}}|{{.Label "ployz.verify.hold"}}' 2>&1
+section images; docker image ls --format '{{.Repository}}:{{.Tag}}' 2>&1
+section volumes; docker volume ls --format '{{.Driver}} {{.Name}}' 2>&1
+section networks; docker network ls --format '{{.Name}} {{.Driver}}' 2>&1
+section zpools; if command -v zpool >/dev/null; then zpool list -H -o name 2>&1; fi
+section links; ip -br link | awk '{print $1}'
+section paths; find /var/lib/ployz /run/ployz /var/lib/ployz-volumes /var/lib/ployz-mirror /var/lib/ployz-machine-pool \
+    /opt/ployz-verify /run/ployz-containerd -printf '%p %y\n' 2>/dev/null
+section units; find /etc/systemd/system /run/systemd/system -name 'ployz*' -printf '%p %y %l\n' 2>/dev/null
+section contents; find /usr/local/bin /etc/systemd/system /etc/docker /etc/modprobe.d /etc/modules-load.d -maxdepth 1 \
+    -type f \( -name 'ployz*' -o -name daemon.json \) -exec sha256sum {} + 2>/dev/null
+find /var/lib/ployz -type f -exec sha256sum {} + 2>/dev/null
+section unit-files; systemctl list-unit-files --no-legend 'ployz*'
+section enabled; systemctl list-unit-files --no-legend --state=enabled | awk '{print $1}'
+section listening; ss -Hlntu | awk '{print $1, $5}'
+section authorized; sha256sum /root/.ssh/authorized_keys
+true
+"""
+# Returns the guest to the bake: what uninstall.sh removes, everything else a run makes, then the bake's install.
+RESET = r"""
+stash=$1 key=$2
+systemctl unmask docker.service docker.socket containerd.service >/dev/null
+units=$(systemctl list-units --all --plain --no-legend 'ployz*' | awk '{print $1}')
+if [ -n "$units" ]; then systemctl stop $units; fi
+systemctl start docker
+others=$(docker ps -aq --filter label=ployz.verify.hold=1 | sort | comm -13 - <(docker ps -aq | sort))
+if [ -n "$others" ]; then docker rm -f $others >/dev/null; fi
+volumes=$(docker volume ls -q)
+if [ -n "$volumes" ]; then docker volume rm -f $volumes >/dev/null; fi
+networks=$(docker network ls --format '{{.Name}}' | grep -vxE 'bridge|host|none' || true)
+if [ -n "$networks" ]; then docker network rm $networks >/dev/null; fi
+docker image prune -af >/dev/null
+observe="$(docker info -f '{{.DockerRootDir}}')/ployz-observe"
+if command -v zpool >/dev/null; then for pool in $(zpool list -H -o name); do zpool destroy -f "$pool"; done; fi
+for link in $(ip -o link show type wireguard | awk -F': ' '{print $2}' | cut -d@ -f1); do ip link del "$link"; done
+if ip link show ployz >/dev/null 2>&1; then ip link del ployz; fi
+cd / && shopt -s nullglob
+rm -rf """ + INSTALLED + r""" run/systemd/system/ployz* run/ployz run/ployz-containerd var/lib/ployz-volumes \
+    var/lib/ployz-mirror var/lib/ployz-machine-pool opt/ployz-verify "$observe"
+tar -xpf "$stash" -C /
+install -d -m 700 /root/.ssh
+printf '%s\n' "$key" > /root/.ssh/authorized_keys
+chmod 600 /root/.ssh/authorized_keys
+sync
+"""
 
 
 def cli():
@@ -193,7 +258,123 @@ def stale_bakes(named, current, ours, in_use):
 
 
 def images_in_use():
-    return {record["image"] for record in records() if record.get("image")}
+    return ({record["image"] for record in records() if record.get("image")}
+            | {entry["image"] for entry in read(POOL) or []})
+
+
+def registered():
+    """Ids some run's registry holds and has neither deleted nor parked."""
+    return {entry["id"] for record in records() for entry in record.get("sandboxes", {}).values()
+            if entry.get("id") and entry.get("state") not in GONE}
+
+
+@contextmanager
+def pool():
+    """The parked sandboxes, locked against every other run on this host; changes to the list are saved on exit."""
+    REGISTRY.mkdir(parents=True, exist_ok=True)
+    with (REGISTRY / "pool.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        entries = read(POOL) or []
+        yield entries
+        write(POOL, entries)
+
+
+def pick(entries, image, up, owned, want):
+    """Parked sandboxes a run of `image` may claim, newest first and one per node, and the dead ones of that bake."""
+    picked, nodes, dead = [], set(), []
+    for entry in sorted(entries, key=lambda entry: -entry["parked_at"]):
+        if entry["image"] != image or entry["id"] in owned:
+            continue
+        if entry["id"] not in up:
+            dead.append(entry)
+        elif len(picked) < want and boat_node(entry["ip"]) not in nodes:
+            picked.append(entry)
+            nodes.add(boat_node(entry["ip"]))
+    return picked, dead
+
+
+def stale(entries, states, image, force):
+    """Parked sandboxes reap removes, with why: stopped, gone, of another bake, or every one under --force."""
+    found = []
+    for entry in entries:
+        state = states.get(entry["id"])
+        if state is None:
+            found.append((entry, "gone"))
+        elif state not in UP_STATES:
+            found.append((entry, state))
+        elif entry["image"] != image:
+            found.append((entry, "older bake"))
+        elif force:
+            found.append((entry, "--force"))
+    return found
+
+
+def fingerprint(text):
+    """FINGERPRINT's output by section, with each hold container's generated name replaced."""
+    fields, current = {}, None
+    for line in text.splitlines():
+        if line.startswith("== "):
+            current = fields.setdefault(line[3:], [])
+        elif current is not None and line.strip():
+            if line.count("|") == 3 and line.endswith("|1"):
+                line = "hold|" + line.split("|", 1)[1]
+            current.append(line)
+    return {name: sorted(lines) for name, lines in fields.items()}
+
+
+def differences(expected, actual):
+    """Each section that differs, with the lines only one side has."""
+    found = []
+    for name in sorted(expected.keys() | actual.keys()):
+        if expected.get(name) != actual.get(name):
+            lost = sorted(set(expected.get(name, [])) - set(actual.get(name, [])))
+            gained = sorted(set(actual.get(name, [])) - set(expected.get(name, [])))
+            found.append(f"{name} (-{lost[:3]} +{gained[:3]})")
+    return found
+
+
+def fingerprints(image):
+    return REGISTRY / f"{image}.fingerprint"
+
+
+def corrosion_image(core):
+    return re.search(r'pub const IMAGE: &str = "([^"]+)"', (core / "crates/ployzd/src/corrosion/service.rs").read_text()).group(1)
+
+
+def bake_name(corrosion):
+    recipe = json.dumps([SNAPSHOT, BAKE, SETTLE, IMAGES, corrosion, bootstrap()])
+    return BAKED + hashlib.sha256(recipe.encode()).hexdigest()[:10]
+
+
+def pooled():
+    """How many sandboxes are parked, per bake."""
+    counts = {}
+    for entry in read(POOL) or []:
+        counts[entry["image"]] = counts.get(entry["image"], 0) + 1
+    return counts
+
+
+def reap_pool(core, force, yes):
+    """Pool rows for reap: sandboxes stopped, gone, or of an older bake; with yes, delete them and drop them from the pool."""
+    states = {sandbox["id"]: sandbox["state"] for sandbox in boat_json("list", "--all")["sandboxes"]}
+    with pool() as entries:
+        found = stale(entries, states, bake_name(corrosion_image(core)), force)
+        if yes:
+            entries[:] = [entry for entry in entries if all(entry is not other for other, reason in found)]
+    rows = []
+    for entry, reason in found:
+        row = dict(id=entry["id"], reason=reason, action="remove")
+        rows.append(row)
+        if not yes:
+            continue
+        result = subprocess.run([*cli(), "delete", entry["id"], "--yes", "--json"], stdin=subprocess.DEVNULL, capture_output=True, timeout=60)
+        if result.returncode and (error(result) or {}).get("status") != 404:
+            with pool() as entries:
+                entries.append(entry)
+            row.update(action="failed", reason=str(error(result) or result.stderr.decode(errors="replace").strip()).splitlines()[0])
+        else:
+            row["action"] = "removed"
+    return rows
 
 
 def boat_json(*args):
@@ -217,7 +398,7 @@ def runs():
     return [dict(id=record["run"], provider="boat", owner=record.get("owner", {}), created=record.get("created"),
                  machines=sorted((dict(name=name, sandbox=entry["id"], status=status(states.get(entry["id"])), rss=0,
                                        memory=MEMORY, created=entry.get("created", record.get("created")))
-                                  for name, entry in record["sandboxes"].items() if entry["state"] != "deleted"),
+                                  for name, entry in record["sandboxes"].items() if entry["state"] not in GONE),
                                  key=lambda machine: machine["name"]))
             for record in found]
 
@@ -238,8 +419,12 @@ def shortfalls(machines, limits):
     return problems
 
 
-def preflight(machines):
-    problems = shortfalls(machines, boat_json("limits"))
+def preflight(machines, core):
+    fresh = machines
+    if POOL_SIZE:
+        up = {sandbox["id"] for sandbox in boat_json("list")["sandboxes"] if sandbox["state"] in UP_STATES}
+        fresh -= len(pick(read(POOL) or [], bake_name(corrosion_image(core)), up, registered(), machines)[0])
+    problems = shortfalls(fresh, boat_json("limits"))
     if problems:
         raise RuntimeError("Boat cannot start the run now.\n" + "\n".join(problems))
 
@@ -283,6 +468,54 @@ class Provider:
             raise RuntimeError(f"Boat registry already exists for this run: {self.registry}")
         write(self.registry, dict(run=self.run["id"], manifest=self.run["manifest"], owner=self.run.get("owner", {}),
                                   image=self.run.get("image"), created=int(time.time()), sandboxes={}))
+        if POOL_SIZE and self.run.get("image") not in (None, SNAPSHOT):
+            self.claim()
+
+    def claim(self):
+        """Give Machines parked sandboxes of this bake, each proven clean again; start() launches the rest."""
+        names = [node["name"] for node in self.run.get("machines", [])]
+        up = {sandbox["id"] for sandbox in boat_json("list")["sandboxes"] if sandbox["state"] in UP_STATES}
+        owned = registered()
+        with pool() as entries:
+            picked, dead = pick(entries, self.run["image"], up, owned, len(names))
+            entries[:] = [entry for entry in entries if entry not in picked and entry not in dead and entry["id"] not in owned]
+            # The registry takes them before the pool lets go, so no other run or reap can.
+            self.record(lambda record: record["sandboxes"].update(
+                {name: dict(id=entry["id"], state="running", created=int(time.time()), ip=entry["ip"], ssh=entry["ssh"],
+                            reused=True) for name, entry in zip(names, picked)}))
+        for entry in dead:
+            self.boat("delete", entry["id"], "--yes", check=False)
+        expected = read(fingerprints(self.run["image"]))
+
+        def verify(name):
+            node, sandbox = dict(name=name), self.sandbox(dict(name=name))["id"]
+            extended = self.boat("extend", sandbox, "--ttl", TTL, check=False)
+            if extended.returncode:
+                return self.discard(name, f"extend failed: {error(extended) or extended.stderr.decode(errors='replace').strip()}")
+            found = differences(expected or {}, self.fingerprint(node)) if expected else ["no fingerprint of this bake"]
+            if found:
+                return self.discard(name, "differs from a fresh clone in " + "; ".join(found))
+        each(verify, names[:len(picked)])
+
+    def discard(self, name, why):
+        """Delete a claimed sandbox that is not provably clean, so start() launches a fresh one in its place."""
+        sandbox = self.sandbox(dict(name=name))["id"]
+        print(f"{name}: not reusing {sandbox}: {why}", file=sys.stderr)
+        result = self.boat("delete", sandbox, "--yes", check=False)
+        gone = not result.returncode or (error(result) or {}).get("status") == 404
+
+        def drop(record):
+            entry = record["sandboxes"].pop(name)
+            if not gone:
+                # down deletes it; it never runs as a Machine.
+                record["sandboxes"][f"{name}-discarded"] = {**entry, "reused": False, "discarded": True}
+        self.record(drop)
+
+    def fingerprint(self, node):
+        result = self.exec(node, ["bash", "-c", FINGERPRINT], check=False, timeout=120)
+        if result.returncode:
+            return {"ssh": [f"exit {result.returncode}: {result.stderr.decode(errors='replace').strip()[-200:]}"]}
+        return fingerprint(result.stdout.decode(errors="replace"))
 
     def launch(self, node):
         before = time.time()
@@ -304,7 +537,8 @@ class Provider:
                 continue
             if failure and failure.get("code") == "boat_direct_failed" and not created:
                 # The create may have run without telling us its id; never retry it blind.
-                known = {entry["id"] for record in records() for entry in record.get("sandboxes", {}).values()}
+                known = ({entry["id"] for record in records() for entry in record.get("sandboxes", {}).values()}
+                         | {entry["id"] for entry in read(POOL) or []})
                 unknown = [sandbox["id"] for sandbox in boat_json("list", "--all")["sandboxes"]
                            if sandbox["id"] not in known and sandbox["createdAt"] >= time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(before - 5))]
                 raise RuntimeError(f"{node['name']}: boat new failed with boat_direct_failed; sandboxes created since then "
@@ -326,7 +560,8 @@ class Provider:
         return bool(placed)
 
     def start(self, node):
-        for attempt in range(PLACEMENTS):
+        reused = self.record()["sandboxes"].get(node["name"], {}).get("reused")
+        for attempt in range(0 if reused else PLACEMENTS):
             sandbox = self.launch(node)
             info = json.loads(self.boat("info", sandbox).stdout)["sandbox"]
             if self.place(node["name"], info):
@@ -334,18 +569,24 @@ class Provider:
             # Peers on one node share an on-link /80 and their WireGuard over IPv6 never handshakes.
             self.boat("delete", sandbox, "--yes")
         else:
-            raise RuntimeError(f"{node['name']}: Boat kept placing the sandbox on a node another Machine uses")
+            if not reused:
+                raise RuntimeError(f"{node['name']}: Boat kept placing the sandbox on a node another Machine uses")
         if self.run["image"] == SNAPSHOT:
             self.install_key(node, sandbox)
         self.wait_agent(node)
-        # A baked sandbox already holds BAKE's result.
-        bake = BAKE if self.run["image"] == SNAPSHOT else ""
+        # A baked sandbox already holds BAKE's result; it keeps its own ployz install for reset to restore.
+        bake = BAKE if self.run["image"] == SNAPSHOT else KEEP_INSTALL
         self.exec(node, ["bash", "-ec", f"""
 {SETTLE}
 main=$(systemctl show -p MainPID --value ssh.service)
 for pid in $(pgrep -f {LISTENER}); do [ "$pid" = "$main" ] || kill "$pid"; done
 if [ -n "$(ss -Hlun 'sport = :51820')" ]; then echo "UDP port 51820 is taken" >&2; exit 1; fi
 {bake}""", "boot", self.run["corrosion"], *IMAGES], timeout=600)
+        if POOL_SIZE and not reused and self.run["image"] != SNAPSHOT and not fingerprints(self.run["image"]).exists():
+            # The first fresh clone of a bake records what reset must return every later sandbox to.
+            captured = self.fingerprint(node)
+            if "ssh" not in captured:
+                write(fingerprints(self.run["image"]), captured)
 
     def install_key(self, node, sandbox):
         key = (self.private / "id_ed25519.pub").read_text().strip()
@@ -471,9 +712,13 @@ systemctl enable --now {PLOYZ_UNITS} $observe
             return
         if record["run"] != self.run["id"]:
             raise RuntimeError(f"Refusing to delete another run's sandboxes: {self.registry}")
+        if POOL_SIZE and self.run.get("image") not in (None, SNAPSHOT):
+            each(self.park, [name for name, entry in record["sandboxes"].items()
+                             if entry.get("state") == "running" and entry.get("ssh") and not entry.get("discarded")])
+            record = read(self.registry)
         failures = []
         for name, entry in record["sandboxes"].items():
-            if entry.get("state") == "deleted" or not entry.get("id"):
+            if entry.get("state") in GONE or not entry.get("id"):
                 continue
             result = self.boat("delete", entry["id"], "--yes", check=False)
             failure = error(result) or {}
@@ -493,8 +738,53 @@ systemctl enable --now {PLOYZ_UNITS} $observe
                   f"and to have created the sandbox.", file=sys.stderr)
         if failures:
             raise RuntimeError("\n".join(failures))
-        if all(entry.get("state") == "deleted" for entry in read(self.registry)["sandboxes"].values()):
+        if all(entry.get("state") in GONE for entry in read(self.registry)["sandboxes"].values()):
             self.registry.unlink()
+
+    def park(self, name):
+        """Reset a sandbox to its bake, prove it, and put it in the pool; anything unproven is left for delete."""
+        node, entry, image = dict(name=name), self.sandbox(dict(name=name)), self.run["image"]
+        expected = read(fingerprints(image))
+        try:
+            if not expected:
+                raise RuntimeError("no fingerprint of this bake to prove it against")
+            reset = self.exec(node, ["bash", "-ec", RESET, "reset", STASH, bootstrap()], check=False, timeout=300)
+            if reset.returncode:
+                raise RuntimeError(f"reset exited {reset.returncode}: {reset.stderr.decode(errors='replace').strip()[-300:]}")
+            self.reboot(node)
+            found = differences(expected, self.fingerprint(node))
+            if found:
+                raise RuntimeError("differs from a fresh clone in " + "; ".join(found))
+            extended = self.boat("extend", entry["id"], "--ttl", TTL, check=False)
+            if extended.returncode:
+                raise RuntimeError(f"extend failed: {error(extended) or extended.stderr.decode(errors='replace').strip()}")
+        except (RuntimeError, subprocess.TimeoutExpired) as why:
+            print(f"Deleting {entry['id']} ({name}) instead of reusing it: {why}", file=sys.stderr)
+            return
+        with pool() as entries:
+            if len(entries) >= POOL_SIZE:
+                print(f"Deleting {entry['id']} ({name}): the pool already holds {POOL_SIZE}.", file=sys.stderr)
+                return
+            entries.append(dict(id=entry["id"], image=image, ip=entry["ip"], ssh=entry["ssh"], parked_at=int(time.time())))
+            self.mark(name, state="parked")
+
+    def reboot(self, node):
+        """Reboot the guest, which costs no Boat start, and wait until SSH answers from the new boot."""
+        boot = self.exec(node, ["cat", "/proc/sys/kernel/random/boot_id"], timeout=30).stdout
+        self.exec(node, ["sh", "-c", "sync; setsid sh -c 'sleep 1; echo b > /proc/sysrq-trigger' >/dev/null 2>&1 < /dev/null &"])
+        host, port = endpoint(self.sandbox(node)["ssh"])
+        time.sleep(3)
+        self.commands(["ssh", *self.options(), "-p", port, "-O", "exit", "root@" + host], check=False)
+        deadline = time.monotonic() + 240
+        while time.monotonic() < deadline:
+            result = self.exec(node, ["cat", "/proc/sys/kernel/random/boot_id"], check=False, timeout=15)
+            if not result.returncode and result.stdout and result.stdout != boot:
+                return
+            if not result.returncode:
+                time.sleep(1)
+                self.commands(["ssh", *self.options(), "-p", port, "-O", "exit", "root@" + host], check=False)
+            time.sleep(2)
+        raise RuntimeError("SSH did not answer from a new boot within 240 s")
 
     def prepare(self):
         if not shutil.which(cli()[0]):
@@ -502,10 +792,8 @@ systemctl enable --now {PLOYZ_UNITS} $observe
         if not shutil.which("zstd"):
             raise RuntimeError("zstd not found; install it")
         self.run["bootstrap_release"] = SNAPSHOT_RELEASE
-        self.run["corrosion"] = re.search(r'pub const IMAGE: &str = "([^"]+)"',
-                                          (self.core / "crates/ployzd/src/corrosion/service.rs").read_text()).group(1)
-        recipe = json.dumps([SNAPSHOT, BAKE, SETTLE, IMAGES, self.run["corrosion"], bootstrap()])
-        self.run["image"] = BAKED + hashlib.sha256(recipe.encode()).hexdigest()[:10]
+        self.run["corrosion"] = corrosion_image(self.core)
+        self.run["image"] = bake_name(self.run["corrosion"])
         # One baked snapshot per recipe; simultaneous runs don't bake it twice.
         with (REGISTRY / "bake.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
