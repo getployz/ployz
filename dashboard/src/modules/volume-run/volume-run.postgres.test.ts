@@ -2075,7 +2075,7 @@ describe("volume runs", () => {
 
       const output = await execute(run.id);
 
-      expect(output.error).toBeDefined();
+      expect(output.result).toMatchObject({ refused: { code: "no_copy" } });
       expect(verbs).toEqual(["floor@fsn-1", "floor@fsn-2"]);
       expect(named("fsn-1").copy).toMatchObject({ kind: "root", readonly: true });
       expect(await rows()).toMatchObject([{ state: "failed", message: "data on fsn-1 stopped before its first snapshot; volume move data --to <another server> again" }]);
@@ -2460,6 +2460,19 @@ describe("volume runs", () => {
         refusal: { code: "conflict", message: "VolumeBusy: data is busy with a mirror refresh; ployz volume release data stops it", details: { run: expect.objectContaining({ id: busy.id }) } },
       });
       expect((await rows()).map((row) => row.id)).toEqual([busy.id]);
+      expect(send).not.toHaveBeenCalled();
+    });
+
+    it("a Release of a cut root with no snapshot is refused before any row, with the move to run again", async () => {
+      named("fsn-1").copy = writerCopy(null, 0, true);
+
+      const admitted = await run({ kind: "release", args: {} });
+
+      expect(admitted).toMatchObject({
+        ok: false,
+        refusal: { code: "conflict", message: "data on fsn-1 stopped before its first snapshot; volume move data --to <another server> again" },
+      });
+      expect(await rows()).toEqual([]);
       expect(send).not.toHaveBeenCalled();
     });
 

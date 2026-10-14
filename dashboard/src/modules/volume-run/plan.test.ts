@@ -233,15 +233,39 @@ describe("plan_from_copies_table", () => {
     });
   });
 
+  it("keeps the newer cut though it holds no snapshot, and moves it again once it stands alone", () => {
+    const kept = { ...member("fsn-2", "cut"), view: { copy: { ...COPIES.cut, epoch: 9, newest: null } } };
+    expect(planFromCopies(release, [member("fsn-1", "cut", { epoch: 8 }), kept])).toEqual({
+      ok: false,
+      refusal: {
+        code: "volume_switching",
+        message: "data has unfinished cuts on fsn-1 and fsn-2, so release cannot pick a writer; server rm fsn-1, then ployz volume move data --to <another server>",
+      },
+    });
+    expect(outcome(move("fsn-3"), [kept, member("fsn-3", "mirror")])).toBe("move fsn-2->fsn-3 at cut");
+  });
+
   it.each([
-    ["their epochs tie", [member("fsn-1", "cut", { epoch: 9 }), member("fsn-2", "cut", { epoch: 9 })]],
-    ["the newer holds no snapshot", [member("fsn-1", "cut", { epoch: 8 }), { ...member("fsn-2", "cut"), view: { copy: { ...COPIES.cut, epoch: 9, newest: null } } }]],
-  ])("leaves the Server to keep unnamed when two unfinished cuts %s", (_, members) => {
+    ["release", release],
+    ["sync", sync()],
+    ["seed", seed],
+    ["mirror rm", remove(null)],
+    ["move onto its own Server", move("fsn-2")],
+  ])("sends %s on a lone cut with no snapshot to move it again, not to a release that cannot resume it", (_, input) => {
+    const cut = { ...member("fsn-2", "cut"), view: { copy: { ...COPIES.cut, epoch: 9, newest: null } } };
+    expect(planFromCopies(input, [cut, member("fsn-3", "mirror")])).toEqual({
+      ok: false,
+      refusal: { code: "no_copy", message: "data on fsn-2 stopped before its first snapshot; volume move data --to <another server> again" },
+    });
+  });
+
+  it("limits the Servers to remove to the tied cuts, not the mirror beside them", () => {
+    const members = [member("fsn-1", "cut", { epoch: 9 }), member("fsn-2", "cut", { epoch: 9 }), member("fsn-3", "mirror")];
     expect(planFromCopies(release, members)).toEqual({
       ok: false,
       refusal: {
         code: "volume_switching",
-        message: "data has unfinished cuts on fsn-1 and fsn-2, so release cannot pick a writer; server rm all but one, then ployz volume release data",
+        message: "data has unfinished cuts on fsn-1 and fsn-2, so release cannot pick a writer; server rm all but one of fsn-1 and fsn-2, then ployz volume release data",
       },
     });
   });
