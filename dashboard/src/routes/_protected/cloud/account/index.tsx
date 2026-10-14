@@ -1,8 +1,8 @@
 import { createFileRoute, Link, redirect } from "@tanstack/react-router";
+import { requireAccountOrganizationSlug } from "#/collections/route-data";
 import { DashboardPage } from "#/components/dashboard-page";
 import { PloyzMark } from "#/components/icons/ployz-logo";
 import { buttonVariants } from "#/components/ui/button-variants";
-import { organizationStateQueryOptions } from "#/modules/organization/organization-state.queries";
 import { AccountSections, prefetchAccount } from "../$organizationSlug/_org/-components/account-sections";
 
 /**
@@ -12,9 +12,7 @@ import { AccountSections, prefetchAccount } from "../$organizationSlug/_org/-com
 export const Route = createFileRoute("/_protected/cloud/account/")({
   beforeLoad: async ({ context, cause }) => {
     if (cause === "preload") return;
-    const slug = context.session.session.activeOrganizationSlug
-      ?? (await context.queryClient.ensureQueryData(organizationStateQueryOptions()))
-        .organizations.find((organization) => organization.access === "member")?.slug;
+    const slug = await requireAccountOrganizationSlug(context, context.session.session.activeOrganizationSlug);
     if (slug) throw redirect({ to: "/cloud/$organizationSlug/~/account", params: { organizationSlug: slug }, replace: true });
   },
   loader: ({ context }) =>
