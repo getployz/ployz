@@ -36,11 +36,10 @@ export type PolarConfiguration =
       readonly productId: string;
     };
 
-const POSTSHIBA_ORIGIN = "https://app.postshiba.com";
-
 /** PostShiba sends Cloud's email; null (every variable unset) is Off. */
 export type MailConfiguration = {
-  readonly origin: string;
+  /** A verify lab's fake PostShiba; null sends to PostShiba. */
+  readonly verifyOrigin: string | null;
   readonly apiKey: Redacted.Redacted<string>;
   readonly teamId: string;
   readonly clusterId: string;
@@ -186,7 +185,7 @@ const resolveMailConfiguration = Effect.fn("Config.resolveMail")(function* (
     });
   }
   const origin = yield* resolveVerifyOrigin(input.nodeEnv, "PLOYZ_VERIFY_POSTSHIBA_ORIGIN", input.verifyPostshibaOrigin);
-  return { origin: origin ?? POSTSHIBA_ORIGIN, apiKey, teamId, clusterId, from } satisfies MailConfiguration;
+  return { verifyOrigin: origin ?? null, apiKey, teamId, clusterId, from } satisfies MailConfiguration;
 });
 
 const resolveVerifyOrigin = Effect.fn("Config.resolveVerifyOrigin")(function* (
