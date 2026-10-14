@@ -464,25 +464,30 @@ impl ZfsChild {
         self.kill_fails = true;
     }
 
-    /// Kills the process unless it already exited, and waits for it.
+    /// Kills the process unless it already exited, and waits for it. A failed kill still
+    /// waits, holding the task's finish, so the departure names a child it cannot stop.
     pub(super) async fn reap(mut self) {
         let Some(mut child) = self.child.take() else {
             return;
         };
-        match self.kill(&mut child).await {
-            Ok(()) => {}
-            // Already waited for.
-            Err(error) if error.kind() == std::io::ErrorKind::InvalidInput => {}
-            Err(error) => tracing::warn!(%error, "could not kill a zfs process"),
+        if let Err(error) = self.start_kill(&mut child) {
+            tracing::warn!(%error, "could not kill a zfs process");
+        }
+        if let Err(error) = child.wait().await {
+            tracing::warn!(%error, "could not wait for a killed zfs process");
         }
     }
 
-    async fn kill(&self, child: &mut Child) -> std::io::Result<()> {
+    fn start_kill(&self, child: &mut Child) -> std::io::Result<()> {
         #[cfg(test)]
         if self.kill_fails {
             return Err(std::io::Error::other("injected kill failure"));
         }
-        child.kill().await
+        match child.start_kill() {
+            // Already waited for.
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidInput => Ok(()),
+            result => result,
+        }
     }
 }
 
