@@ -190,7 +190,7 @@ async fn a_flip_retires_the_replaced_copy_and_removes_a_draining_one_after_the_s
             deploy: run_id(),
             containers: vec![kept, new],
             previous: Some(older),
-            retiring: vec![replaced],
+            retiring: vec![draining, replaced],
         }
     );
     assert_eq!(
@@ -199,6 +199,174 @@ async fn a_flip_retires_the_replaced_copy_and_removes_a_draining_one_after_the_s
     );
     assert_eq!(*client.removed_after.lock().unwrap(), [(draining, 1)]);
     client.assert_done();
+}
+
+#[tokio::test]
+async fn a_flip_keeps_a_retiring_copy_its_plan_never_saw() {
+    let machine = machine('1');
+    let kept = container('a');
+    let replaced = container('b');
+    let pending = container('c');
+    let new = container('d');
+    let older = DeploymentLogId::parse("older").unwrap();
+    let plan = vec![global_replacement(
+        &machine,
+        &replaced,
+        UpdateOrder::StartFirst,
+    )];
+    let client = Scripted::new(vec![created(
+        Call::Run(machine, ContainerKind::ServiceContainer),
+        &new,
+    )]);
+    client.pointers.lock().unwrap().insert(
+        api(),
+        ServingPointer {
+            deploy: older.clone(),
+            containers: vec![kept, replaced],
+            previous: None,
+            retiring: vec![pending],
+        },
+    );
+    let mut groups = crate::deploy::planning::test_groups(&plan);
+    groups.first_mut().unwrap().kept = vec![kept];
+
+    let outcome = execute_groups(&plan, groups, &client).await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    let publications = client.publications();
+    let [publication] = publications.as_slice() else {
+        panic!("one pointer flip");
+    };
+    assert_eq!(
+        publication.pointer,
+        ServingPointer {
+            deploy: run_id(),
+            containers: vec![kept, new],
+            previous: Some(older),
+            retiring: vec![pending, replaced],
+        }
+    );
+    assert!(
+        client.pins().is_empty(),
+        "no copy leaves the row before the flip"
+    );
+    assert!(client.removed_after.lock().unwrap().is_empty());
+    client.assert_done();
+}
+
+#[tokio::test]
+async fn a_scale_down_retires_the_copy_it_removes_before_removing_it() {
+    let machine = machine('1');
+    let kept = container('a');
+    let removed = container('b');
+    let older = DeploymentLogId::parse("older").unwrap();
+    let plan = vec![DeployOperation::RemoveContainer {
+        machine_id: machine,
+        container_id: removed,
+        purpose: ployz_core::RemoveContainerPurpose::Rollout,
+    }];
+    let client = Scripted::new(vec![ok(Call::Remove(machine, removed))]);
+    client.pointers.lock().unwrap().insert(
+        api(),
+        ServingPointer {
+            deploy: older.clone(),
+            containers: vec![kept, removed],
+            previous: None,
+            retiring: Vec::new(),
+        },
+    );
+
+    let outcome = execute_groups(&plan, scale_down_groups(&[kept]), &client).await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    let publications = client.publications();
+    let [publication] = publications.as_slice() else {
+        panic!("one pointer flip before the removal");
+    };
+    assert_eq!(
+        publication.pointer,
+        ServingPointer {
+            deploy: run_id(),
+            containers: vec![kept],
+            previous: Some(older),
+            retiring: vec![removed],
+        }
+    );
+    assert_eq!(*client.removed_after.lock().unwrap(), [(removed, 1)]);
+    client.assert_done();
+}
+
+#[tokio::test]
+async fn a_removal_of_a_copy_the_row_still_points_at_is_refused() {
+    let machine = machine('1');
+    let kept = container('a');
+    let removed = container('b');
+    let plan = vec![DeployOperation::RemoveContainer {
+        machine_id: machine,
+        container_id: removed,
+        purpose: ployz_core::RemoveContainerPurpose::Rollout,
+    }];
+    let client = Scripted::new(Vec::new());
+    client.pointers.lock().unwrap().insert(
+        api(),
+        ServingPointer {
+            deploy: DeploymentLogId::parse("older").unwrap(),
+            containers: vec![kept, removed],
+            previous: None,
+            retiring: Vec::new(),
+        },
+    );
+    let mut groups = scale_down_groups(&[kept]);
+    groups.first_mut().unwrap().publish = false;
+
+    let outcome = execute_groups(&plan, groups, &client).await;
+
+    assert!(
+        matches!(
+            &outcome,
+            DeployOutcome::Failed {
+                failed: FailedOperation::Operation {
+                    error: ExecutionError::Machine {
+                        action: MachineAction::RemoveContainer,
+                        error,
+                    },
+                    ..
+                },
+                ..
+            } if error.code == RpcErrorCode::Conflict
+        ),
+        "{outcome:?}"
+    );
+    assert!(client.removed_after.lock().unwrap().is_empty());
+    client.assert_done();
+}
+
+/// The two groups planning builds for a Service that only sheds copies: the
+/// Service's own flip over `kept`, then its rollout removals.
+fn scale_down_groups(kept: &[ContainerId]) -> Vec<crate::deploy::schedule::ServiceGroup> {
+    let service = ServiceName::parse("api").unwrap();
+    vec![
+        crate::deploy::schedule::ServiceGroup {
+            service: Some(service.clone()),
+            dependencies: Vec::new(),
+            steps: Vec::new(),
+            publish: true,
+            kept: kept.to_vec(),
+        },
+        crate::deploy::schedule::ServiceGroup {
+            service: None,
+            dependencies: vec![service],
+            steps: vec![crate::deploy::schedule::Step::Serial(0)],
+            publish: false,
+            kept: Vec::new(),
+        },
+    ]
 }
 
 #[tokio::test(start_paused = true)]
@@ -543,25 +711,8 @@ async fn a_rollback_that_keeps_a_retiring_copy_repoints_it_before_removing_the_o
             retiring: vec![kept],
         },
     );
-    let service = ServiceName::parse("api").unwrap();
-    let groups = vec![
-        crate::deploy::schedule::ServiceGroup {
-            service: Some(service.clone()),
-            dependencies: Vec::new(),
-            steps: Vec::new(),
-            publish: true,
-            kept: vec![kept],
-        },
-        crate::deploy::schedule::ServiceGroup {
-            service: None,
-            dependencies: vec![service],
-            steps: vec![crate::deploy::schedule::Step::Serial(0)],
-            publish: false,
-            kept: Vec::new(),
-        },
-    ];
 
-    let outcome = execute_groups(&plan, groups, &client).await;
+    let outcome = execute_groups(&plan, scale_down_groups(&[kept]), &client).await;
 
     assert!(
         matches!(outcome, DeployOutcome::Success { .. }),
@@ -577,9 +728,10 @@ async fn a_rollback_that_keeps_a_retiring_copy_repoints_it_before_removing_the_o
             deploy: run_id(),
             containers: vec![kept],
             previous: Some(current),
-            retiring: Vec::new(),
+            retiring: vec![removed],
         }
     );
+    assert_eq!(*client.removed_after.lock().unwrap(), [(removed, 1)]);
     client.assert_done();
 }
 
@@ -612,18 +764,27 @@ async fn a_stop_first_replacement_publishes_its_new_container() {
         matches!(outcome, DeployOutcome::Success { .. }),
         "{outcome:?}"
     );
-    let publications = client.publications();
-    let [publication] = publications.as_slice() else {
-        panic!("one pointer flip");
-    };
+    let pointers: Vec<_> = [client.pins(), client.publications()]
+        .concat()
+        .into_iter()
+        .map(|publication| publication.pointer)
+        .collect();
     assert_eq!(
-        publication.pointer,
-        ServingPointer {
-            deploy: run_id(),
-            containers: vec![new],
-            previous: Some(older),
-            retiring: Vec::new(),
-        }
+        pointers,
+        [
+            ServingPointer {
+                deploy: older.clone(),
+                containers: Vec::new(),
+                previous: Some(older.clone()),
+                retiring: vec![old],
+            },
+            ServingPointer {
+                deploy: run_id(),
+                containers: vec![new],
+                previous: Some(older),
+                retiring: vec![old],
+            },
+        ]
     );
     client.assert_done();
 }

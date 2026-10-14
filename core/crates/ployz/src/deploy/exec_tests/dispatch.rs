@@ -101,6 +101,19 @@ async fn dispatches_the_complete_algebra() {
             completed: operations,
         }
     );
+    let pins = client.pins();
+    let [amendment] = pins.as_slice() else {
+        panic!("the stop of the pointed copy amends the admitted row");
+    };
+    assert_eq!(
+        amendment.pointer,
+        ServingPointer {
+            deploy: older.clone(),
+            containers: vec![removed],
+            previous: Some(older.clone()),
+            retiring: vec![old],
+        }
+    );
     let publications = client.publications();
     let [publication] = publications.as_slice() else {
         panic!("one pointer flip for the one Service");
@@ -111,7 +124,7 @@ async fn dispatches_the_complete_algebra() {
             deploy: run_id(),
             containers: vec![new_run, replacement, nested],
             previous: Some(older),
-            retiring: vec![old],
+            retiring: vec![old, removed],
         }
     );
     client.assert_done();

@@ -33,6 +33,7 @@ use super::{
     StopAttempt,
     schedule::{Action, Event, Schedule, ServiceGroup, Task, TaskKind, starts_container},
 };
+use crate::serving_publish::{AMEND_RETRIES, Applied, Protection, Rotation, succession};
 
 pub(super) use super::progress::Progress;
 
@@ -592,7 +593,11 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
         })
         .collect();
     let mut schedule = Schedule::new(plan.groups().to_vec(), tasks);
-    let mut admitted = BTreeMap::new();
+    let rows = Rows {
+        namespace: &plan.namespace,
+        groups: plan.groups(),
+        admitted: tokio::sync::Mutex::new(BTreeMap::new()),
+    };
     for group in 0..plan.groups().len() {
         let Some(service) = schedule.group(group).publishing_service() else {
             continue;
@@ -602,7 +607,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
         let machine_id = operation_at(operations, first).machine_id();
         match await_routed_pin(&client, run, &service, machine_id, cancellation).await {
             Ok(Pin::Admitted(row)) => {
-                admitted.insert(group, row);
+                rows.admitted.lock().await.insert(group, row);
             }
             Ok(Pin::Superseded) => {
                 progress.settle_unexecuted();
@@ -619,39 +624,42 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
     }
 
     let mut started: BTreeMap<usize, Vec<(MachineId, ContainerId)>> = BTreeMap::new();
-    let mut replaced: BTreeMap<usize, Vec<ContainerId>> = BTreeMap::new();
     let mut awaiting_flip: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
     let mut unread = BTreeSet::new();
     let mut stop = None;
     let mut blocked_since: Option<Instant> = None;
     let mut blocked_before = Vec::new();
-    let (progress, client, slots) = (&progress, &client, &slots);
+    let (progress, client, slots, rows) = (&progress, &client, &slots, &rows);
     let mut inflight = FuturesUnordered::new();
 
     loop {
         for action in schedule.next() {
-            inflight.push(match action {
-                Action::Start(index) => Either::Left(async move {
-                    let result = if cancellation.is_cancelled() {
-                        Err(ExecutionError::Cancelled.into())
-                    } else {
-                        execute_operation(
-                            operation_at(operations, index),
-                            index,
-                            progress,
-                            client,
-                            cancellation,
-                            slots,
-                        )
-                        .await
-                    };
-                    Done::Task(index, result)
+            let next = match action {
+                Action::Start(index) => Either::Left({
+                    let group = schedule.group_of(index);
+                    async move {
+                        let result = if cancellation.is_cancelled() {
+                            Err(ExecutionError::Cancelled.into())
+                        } else {
+                            execute_operation(
+                                operation_at(operations, index),
+                                index,
+                                progress,
+                                client,
+                                cancellation,
+                                slots,
+                                rows,
+                                group,
+                            )
+                            .await
+                        };
+                        Done::Task(index, result)
+                    }
                 }),
                 Action::Publish(group) => {
                     let spec = schedule.group(group).clone();
                     let new = started.get(&group).cloned().unwrap_or_default();
-                    let old = replaced.get(&group).cloned().unwrap_or_default();
-                    let current = admitted.get(&group).cloned();
+                    let current = rows.admitted.lock().await.get(&group).cloned();
                     Either::Right(async move {
                         let result = if cancellation.is_cancelled() {
                             Err(ExecutionError::Cancelled)
@@ -660,12 +668,13 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                                 plan.namespace.clone(),
                                 spec.service.clone().expect("only Service groups publish"),
                             );
-                            publish_group(client, run, service, current, &spec, &new, &old).await
+                            publish_group(client, run, service, current, &spec, &new).await
                         };
                         Done::Publish(group, result)
                     })
                 }
-            });
+            };
+            inflight.push(next);
         }
         let blocked = schedule.blocked_on_acks();
         if blocked != blocked_before {
@@ -700,14 +709,6 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                 }
                 match result {
                     Ok(_) => {
-                        if let DeployOperation::ReplaceContainer(replacement) = operation
-                            && replacement.spec.update.order != UpdateOrder::StopFirst
-                        {
-                            replaced
-                                .entry(group)
-                                .or_default()
-                                .push(replacement.old_container_id);
-                        }
                         if schedule.group(group).publish && starts_container(operation) {
                             awaiting_flip.entry(group).or_default().push(index);
                         } else {
@@ -1081,9 +1082,8 @@ fn strength(policy: PullPolicy) -> u8 {
 }
 
 /// Points the Service at the Containers it keeps plus the ones this Deploy
-/// started. Start-first copies this Deploy replaced retire behind `previous`;
-/// with no pointer to name as `previous`, nothing retires. The CAS value is
-/// `current`, the row this Deploy admitted before any start, so a row another
+/// started; `succession` retires the rest. The CAS value is `current`, the row
+/// this Deploy admitted (amended only by its own stops), so a row another
 /// Deploy wrote since answers Superseded.
 async fn publish_group<C: MachineOperations>(
     client: &C,
@@ -1092,7 +1092,6 @@ async fn publish_group<C: MachineOperations>(
     current: Option<ServingPointer>,
     group: &ServiceGroup,
     started: &[(MachineId, ContainerId)],
-    replaced: &[ContainerId],
 ) -> Result<ServingPointerPublication, ExecutionError> {
     let mut containers = group.kept.clone();
     for (_, id) in started {
@@ -1100,22 +1099,7 @@ async fn publish_group<C: MachineOperations>(
             containers.push(*id);
         }
     }
-    let previous = current.as_ref().map(|current| current.deploy.clone());
-    let retiring = if previous.is_some() {
-        replaced
-            .iter()
-            .copied()
-            .filter(|id| !containers.contains(id))
-            .collect()
-    } else {
-        Vec::new()
-    };
-    let pointer = ServingPointer {
-        deploy: run.clone(),
-        containers,
-        previous,
-        retiring,
-    };
+    let pointer = succession(current.as_ref(), run.clone(), containers);
     client
         .publish_pointer(PublishServingPointerRequest {
             service,
@@ -1126,6 +1110,134 @@ async fn publish_group<C: MachineOperations>(
         .map_err(|error| machine_error(MachineAction::PublishServingPointer, error))
 }
 
+/// The rows this Deploy admitted, one per publishing group. A stop of an
+/// admitted copy amends its group's row first, under the lock, so the flip's
+/// compare-and-set reads the amended row.
+struct Rows<'a> {
+    namespace: &'a Namespace,
+    groups: &'a [ServiceGroup],
+    admitted: tokio::sync::Mutex<BTreeMap<usize, ServingPointer>>,
+}
+
+impl Rows<'_> {
+    /// The Service whose row a stop or removal in `group` must read: the
+    /// group's own, or for rollout removals the Service they follow. Copies of
+    /// a Service the Deploy removes have no row to read here.
+    fn service_of(&self, group: usize, operation: &DeployOperation) -> Option<QualifiedService> {
+        let group = self.groups.get(group)?;
+        let name = match (&group.service, group.dependencies.as_slice()) {
+            (Some(name), _) => name,
+            (None, [followed]) if TaskKind::of(operation) == TaskKind::Unroute => followed,
+            (None, _) => return None,
+        };
+        Some(QualifiedService::new(self.namespace.clone(), name.clone()))
+    }
+
+    /// Refuses a removal of a copy the row read now points at.
+    async fn unpointed<C: MachineOperations>(
+        &self,
+        client: &C,
+        group: usize,
+        operation: &DeployOperation,
+        copy: &ContainerId,
+    ) -> Result<(), ExecutionError> {
+        let Some(service) = self.service_of(group, operation) else {
+            return Ok(());
+        };
+        let read = client
+            .read_pointer(&service)
+            .await
+            .map_err(|error| machine_error(MachineAction::ReadServingPointer, error))?;
+        match Protection::of(read.pointer, copy) {
+            Protection::Unnamed | Protection::Retiring => Ok(()),
+            Protection::Pointed(row) => Err(pointed(MachineAction::RemoveContainer, copy, &row)),
+        }
+    }
+
+    /// Moves `copy` from the admitted row's `containers` into `retiring` before
+    /// a stop, so no Machine routes to a stopped copy by right of the row. Each
+    /// lost compare-and-set re-reads, as `amend_pointer` does; a row of another
+    /// Deploy means this one was superseded.
+    async fn retire_before_stop<C: MachineOperations>(
+        &self,
+        client: &C,
+        group: usize,
+        operation: &DeployOperation,
+        copy: &ContainerId,
+    ) -> Result<(), ExecutionError> {
+        let Some(service) = self.service_of(group, operation) else {
+            return Ok(());
+        };
+        let mut admitted = self.admitted.lock().await;
+        let mut current = client
+            .read_pointer(&service)
+            .await
+            .map_err(|error| machine_error(MachineAction::ReadServingPointer, error))?
+            .pointer;
+        for _ in 0..=AMEND_RETRIES {
+            let row = match Protection::of(current, copy) {
+                Protection::Unnamed | Protection::Retiring => return Ok(()),
+                Protection::Pointed(row) => row,
+            };
+            if admitted
+                .get(&group)
+                .is_some_and(|admitted| admitted.deploy != row.deploy)
+            {
+                return Err(pointed(MachineAction::StopContainer, copy, &row));
+            }
+            let Applied::Next(next) = Rotation::leaving([*copy]).apply(&row) else {
+                return Ok(());
+            };
+            let publication = client
+                .publish_pointer(PublishServingPointerRequest {
+                    service: service.clone(),
+                    read: Some(row),
+                    pointer: next.clone(),
+                })
+                .await
+                .map_err(|error| machine_error(MachineAction::PublishServingPointer, error))?;
+            match publication {
+                ServingPointerPublication::Published => {
+                    admitted.insert(group, next);
+                    return Ok(());
+                }
+                ServingPointerPublication::Superseded { current: newer } => current = newer,
+            }
+        }
+        Err(machine_error(
+            MachineAction::PublishServingPointer,
+            RpcError {
+                code: RpcErrorCode::Conflict,
+                message: format!(
+                    "lost the Serving Pointer of {service} to other writers {} times",
+                    AMEND_RETRIES + 1
+                ),
+                details: serde_json::Value::Null,
+                cause: Vec::new(),
+            },
+        ))
+    }
+}
+
+fn pointed(action: MachineAction, copy: &ContainerId, row: &ServingPointer) -> ExecutionError {
+    machine_error(
+        action,
+        RpcError {
+            code: RpcErrorCode::Conflict,
+            message: format!(
+                "Container {copy} is pointed at by Deploy {}; it leaves the Serving Pointer before it stops",
+                row.deploy
+            ),
+            details: serde_json::Value::Null,
+            cause: Vec::new(),
+        },
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one call site; the rows travel with the slots"
+)]
 async fn execute_operation<C: MachineOperations>(
     operation: &DeployOperation,
     index: usize,
@@ -1133,6 +1245,8 @@ async fn execute_operation<C: MachineOperations>(
     client: &C,
     cancellation: &CancellationToken,
     slots: &Slots<'_>,
+    rows: &Rows<'_>,
+    group: usize,
 ) -> Result<Option<ContainerId>, OperationFailure> {
     progress.set_running(index, OperationPhase::Starting);
     match operation {
@@ -1182,6 +1296,8 @@ async fn execute_operation<C: MachineOperations>(
             container_id,
             ..
         } => {
+            rows.retire_before_stop(client, group, operation, container_id)
+                .await?;
             progress.set_running(index, OperationPhase::StoppingContainer);
             stop(client, machine_id, container_id, Drain::DEFAULT, None)
                 .await
@@ -1193,6 +1309,8 @@ async fn execute_operation<C: MachineOperations>(
             container_id,
             purpose,
         } => {
+            rows.unpointed(client, group, operation, container_id)
+                .await?;
             progress.set_running(index, OperationPhase::RemovingContainer);
             gone(
                 client,
@@ -1213,6 +1331,8 @@ async fn execute_operation<C: MachineOperations>(
                 Some(replacement.old_container_id),
             );
             if replacement.spec.update.order == UpdateOrder::StopFirst {
+                rows.retire_before_stop(client, group, operation, &replacement.old_container_id)
+                    .await?;
                 return replace_stop_first(
                     client,
                     index,

@@ -184,6 +184,13 @@ impl Client {
 /// | retiring -> gone    | every up Machine acknowledged the row                             | ployzd retire |
 /// | unnamed -> gone     | a read immediately before each stop or removal shows no row naming it | drain, retirement, catch-up |
 /// | pointed -> gone     | never directly: pointed -> retiring first                         |     |
+///
+/// A Deploy succeeds the row it admitted with a row of its own; see `succession`.
+///
+/// | transition          | evidence                                                          | who |
+/// |---------------------|-------------------------------------------------------------------|-----|
+/// | pointed -> retiring | the admitted row names the id in `containers` and the succeeding Deploy's plan does not keep it | deploy |
+/// | retiring -> pointed | the succeeding Deploy's plan keeps the copy (a rollback)          | deploy |
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct Rotation {
     pub(crate) joining: Vec<Join>,
@@ -231,7 +238,7 @@ impl Rotation {
 
     /// A row that gains its first retiring id names its own deploy in `previous`, so a
     /// Machine that cannot see every pointed copy yet keeps routing the retiring ones.
-    fn apply(&self, current: &ServingPointer) -> Applied {
+    pub(crate) fn apply(&self, current: &ServingPointer) -> Applied {
         let mut next = current.clone();
         next.retiring.retain(|id| !self.pruning.contains(id));
         for join in &self.joining {
@@ -264,11 +271,47 @@ impl Rotation {
 }
 
 #[derive(Debug, Eq, PartialEq)]
-enum Applied {
+pub(crate) enum Applied {
     Unchanged,
     Next(ServingPointer),
     /// `current` carries no evidence for a joining copy.
     Unproven,
+}
+
+/// The row `deploy` publishes over `admitted` to point at `containers`, the copies its
+/// plan kept plus the ones it started. Every admitted copy the plan drops rotates into
+/// `retiring`, and `admitted`'s own retiring ids stay there until a complete listing
+/// proves them absent. With no admitted row nothing retires: no row names the old
+/// copies, so a read before each stop or removal finds them unnamed.
+pub(crate) fn succession(
+    admitted: Option<&ServingPointer>,
+    deploy: DeploymentLogId,
+    containers: Vec<ContainerId>,
+) -> ServingPointer {
+    let Some(admitted) = admitted else {
+        return ServingPointer {
+            deploy,
+            containers,
+            previous: None,
+            retiring: Vec::new(),
+        };
+    };
+    let dropped = admitted
+        .containers
+        .iter()
+        .filter(|id| !containers.contains(id))
+        .copied();
+    let mut next = match Rotation::leaving(dropped).apply(admitted) {
+        Applied::Next(next) => next,
+        Applied::Unchanged | Applied::Unproven => admitted.clone(),
+    };
+    next.retiring.retain(|id| !containers.contains(id));
+    ServingPointer {
+        deploy,
+        containers,
+        previous: Some(admitted.deploy.clone()),
+        retiring: next.retiring,
+    }
 }
 
 /// The ids `read.retiring` names that `listed`, a complete listing taken after `read`,
@@ -292,16 +335,23 @@ pub(crate) enum Protection {
     Retiring,
 }
 
+impl Protection {
+    /// What the row just read says about `copy`.
+    pub(crate) fn of(read: Option<ServingPointer>, copy: &ContainerId) -> Self {
+        match read {
+            Some(pointer) if pointer.containers.contains(copy) => Self::Pointed(pointer),
+            Some(pointer) if pointer.retiring.contains(copy) => Self::Retiring,
+            _ => Self::Unnamed,
+        }
+    }
+}
+
 pub(crate) async fn protection<C: PointerClient>(
     client: &mut C,
     service: &QualifiedService,
     copy: &ContainerId,
 ) -> Result<Protection, RpcError> {
-    Ok(match client.read_pointer(service).await? {
-        Some(pointer) if pointer.containers.contains(copy) => Protection::Pointed(pointer),
-        Some(pointer) if pointer.retiring.contains(copy) => Protection::Retiring,
-        _ => Protection::Unnamed,
-    })
+    Ok(Protection::of(client.read_pointer(service).await?, copy))
 }
 
 /// What amending one Service's pointer came to.
