@@ -252,7 +252,7 @@ fn serve(
         ),
         (Some(_), "/api/cli/github/branches?repository=acme%2Fweb") => (
             200,
-            json!({ "repository": "acme/web", "access": "installation", "default_branch": "main", "branches": ["dev", "main"] }),
+            json!({ "repository": "acme/web", "access": "connected", "default_branch": "main", "branches": ["dev", "main"] }),
         ),
         (
             Some(_),

@@ -44,9 +44,9 @@ const origin = "http://localhost:3000";
 
 /** GitHub: the private acme/web (through installation 7) has branches main and dev, a Dockerfile and a src directory. */
 const github = fakeGithubApi({
-  "https://api.github.com/repos/acme/web/branches?per_page=100&page=1": [{ name: "main" }, { name: "dev" }],
-  "https://api.github.com/repos/acme/web/commits/main": { commit: { tree: { sha: "a".repeat(40) } } },
-  [`https://api.github.com/repos/acme/web/git/trees/${"a".repeat(40)}?recursive=1`]: {
+  "/repos/acme/web/branches?per_page=100&page=1": [{ name: "main" }, { name: "dev" }],
+  "/repos/acme/web/commits/main": { commit: { tree: { sha: "a".repeat(40) } } },
+  [`/repos/acme/web/git/trees/${"a".repeat(40)}?recursive=1`]: {
     truncated: false,
     tree: [
       { path: "Dockerfile", type: "blob", mode: "100644" },
@@ -54,10 +54,10 @@ const github = fakeGithubApi({
       { path: "src/main.ts", type: "blob", mode: "100644" },
     ],
   },
-  "https://api.github.com/repos/acme/web/contents/Dockerfile?ref=main": {
+  "/repos/acme/web/contents/Dockerfile?ref=main": {
     type: "file", size: 12, encoding: "base64", content: Buffer.from("FROM alpine\n").toString("base64"),
   },
-  "https://api.github.com/repos/acme/web/contents/src?ref=main": [{ path: "src/main.ts" }],
+  "/repos/acme/web/contents/src?ref=main": [{ path: "src/main.ts" }],
 });
 
 const encryption = makeSecretEncryption("fixture-server-access-encryption-1234567890");
@@ -111,11 +111,15 @@ const enroll = Effect.fn(function* (organizationId: string, machineId: string, f
 
 const cliLayer = Effect.fn(function* (
   ployz: Layer.Layer<Ployz> = fakeServers().layer,
-  overrides: { readonly runtime?: Layer.Layer<OrganizationRuntime>; readonly inngest?: Inngest } = {},
+  overrides: {
+    readonly runtime?: Layer.Layer<OrganizationRuntime>;
+    readonly inngest?: Inngest;
+    readonly env?: Record<string, string>;
+  } = {},
 ) {
   const testDatabase = yield* postgresTestDatabase;
   const provider = ConfigProvider.fromEnv({
-    env: { ...testConfigEnvironment(), NODE_ENV: "test", DATABASE_URL: testDatabase.url.href },
+    env: { ...testConfigEnvironment(), NODE_ENV: "test", DATABASE_URL: testDatabase.url.href, ...overrides.env },
   });
   const configLayer = AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(provider)));
   const databaseLayer = DatabaseLive.pipe(Layer.provide(configLayer));
@@ -507,18 +511,21 @@ it.live(
   "github lists the caller's installations and a readable repository's branches, and disconnects one",
   () =>
     Effect.gen(function* () {
-      const layer = yield* cliLayer();
+      const layer = yield* cliLayer(undefined, { env: { PLOYZ_VERIFY_GITHUB_ORIGIN: "http://127.0.0.1:4555" } });
       yield* Effect.gen(function* () {
         const alice = yield* signUp("alice");
         const empty = yield* cli("GET", "github", alice);
         assert.deepInclude(empty.json, { linked: false, ready: false, installations: [], repositories: [] });
-        assert.match(empty.json.install_url ?? "", /^https:\/\/github\.com\/apps\/.+\/installations\/new$/);
+        assert.match(empty.json.install_url ?? "", /^http:\/\/127\.0\.0\.1:4555\/apps\/.+\/installations\/new$/);
 
         const database = yield* Database;
         const [row] = yield* database.drizzle.select({ userId: member.userId }).from(member)
           .where(eq(member.organizationId, alice.organization.id));
         const userId = row?.userId ?? assert.fail("no member");
-        yield* database.drizzle.insert(githubInstallation).values({ userId, installationId: 7, accountLogin: "acme", accountType: "Organization" });
+        yield* database.drizzle.insert(githubInstallation).values([
+          { userId, installationId: 7, accountLogin: "acme", accountType: "Organization" },
+          { userId, installationId: 8, accountLogin: "alice", accountType: "User" },
+        ]);
         yield* database.drizzle.insert(githubRepositoryCache).values({
           userId, installationId: 7, repositoryId: 11, name: "web", fullName: "acme/web", defaultBranch: "main",
           private: true, htmlUrl: "https://github.com/acme/web", repoUpdatedAt: new Date(),
@@ -526,10 +533,10 @@ it.live(
         const connected = yield* cli("GET", "github", alice);
         assert.deepInclude(connected.json, { ready: true });
         assert.deepStrictEqual(connected.json.installations?.map(({ id, account, repositories }) => ({ id, account, repositories })),
-          [{ id: 7, account: "acme", repositories: 1 }]);
+          [{ id: 7, account: "acme", repositories: 1 }, { id: 8, account: "alice", repositories: 0 }]);
 
         const branches = yield* cli("GET", "github/branches?repository=ACME/web", alice);
-        assert.deepInclude(branches.json, { access: "installation", branches: ["dev", "main"] });
+        assert.deepInclude(branches.json, { access: "connected", branches: ["dev", "main"] });
         assert.strictEqual((yield* cli("GET", "github/branches?repository=acme/secret", alice)).status, 404);
 
         const tree = yield* cli("GET", "github/tree?repository=acme%2Fweb&path=src", alice);
@@ -554,8 +561,10 @@ it.live(
 
         const removed = yield* cli("DELETE", "github/7", alice);
         assert.deepStrictEqual(removed.json.disconnected, { id: 7, account: "acme" });
-        assert.strictEqual(removed.json.uninstall_url, "https://github.com/organizations/acme/settings/installations/7");
+        assert.strictEqual(removed.json.uninstall_url, "http://127.0.0.1:4555/organizations/acme/settings/installations/7");
         assert.strictEqual((yield* cli("DELETE", "github/7", alice)).status, 404);
+        const personal = yield* cli("DELETE", "github/8", alice);
+        assert.strictEqual(personal.json.uninstall_url, "http://127.0.0.1:4555/settings/installations/8");
         assert.deepInclude((yield* cli("GET", "github", alice)).json, { ready: false, installations: [] });
       }).pipe(Effect.provide(layer));
     }),
