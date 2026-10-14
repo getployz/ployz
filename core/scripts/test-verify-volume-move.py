@@ -1307,8 +1307,13 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
         result["failures"] = assess(states, lost) + busy + judge(result, side, baseline)
         if case["trigger"] and not result.get("triggered"):
             result["failures"].append("the trigger never fired before the run ended")
-        if result.get("triggered") and (unowned := self.outside_run(case, result) or self.unclaimed(result["run"])):
-            result["failures"].append(unowned)
+        if result.get("triggered"):
+            try:
+                unowned = self.outside_run(case, result)
+            except Skipped as skip:
+                unowned, result["skipped"] = None, str(skip)
+            if unowned := unowned or self.unclaimed(result["run"]):
+                result["failures"].append(unowned)
         if result.get("triggered") and result["triggered"]["kind"] not in ("receiving", "committed") and (
                 stale := self.requalify(case, side, result)):
             result["failures"].append(stale)
@@ -1336,6 +1341,9 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
             got = "absent" if states[destination]["readonly"].get(self.fs()) in (None, "absent") else "present"
             if got != want:
                 result["failures"].append(f"the mirror on {destination} ended {got}, not {want}")
+        if "skipped" in result:
+            # A skip says only that nothing places the action inside the run, so it never hides a failure found here.
+            result["failures"].append(result.pop("skipped") if result["failures"] else f"Skipped: {result['skipped']}")
         result["passed"] = not result["failures"]
         if not result["passed"]:
             result["heal"] = self.heal(destination)
