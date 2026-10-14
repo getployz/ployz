@@ -194,7 +194,8 @@ describe("Permissions dialog", () => {
     expect(failure({ mode: "0644", uid: "-1", gid: "0" })).toContain("User ID is a whole number, like 1000.");
     expect(failure({ mode: "0644", uid: "0", gid: "1.5" })).toContain("Group ID is a whole number, like 1000.");
     expect(failure({ mode: "0644", uid: "4294967296", gid: "0" })).toContain("User ID is a whole number, like 1000.");
-    expect(parse({ mode: "0644", uid: "4294967295", gid: "0" })).toEqual(Result.succeed({ mode: "0644", uid: 4294967295, gid: 0 }));
+    expect(parse({ mode: "0644", uid: "4294967294", gid: "0" })).toEqual(Result.succeed({ mode: "0644", uid: 4294967294, gid: 0 }));
+    expect(Result.isFailure(parse({ mode: "0644", uid: "4294967295", gid: "0" }))).toBe(true);
   });
 
   it("hands back only the fields the user changed, so an owner set elsewhere survives a mode change", () => {

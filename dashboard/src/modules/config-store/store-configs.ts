@@ -53,8 +53,8 @@ export function fileAccessLabel(access: FileAccess) {
   return executableToggle(access) ? access.mode : `${access.mode} · ${access.uid}:${access.gid}`;
 }
 
-/** The largest user or group ID the Store accepts: a u32. */
-const MAX_ID = 4_294_967_295;
+/** The largest user or group ID a file can take: u32::MAX means "leave unchanged" to chown. */
+const MAX_ID = 4_294_967_294;
 
 const modeText = Schema.Trim.check(Schema.makeFilter<string>((mode) => /^0?[0-7]{3}$/u.test(mode)
   ? undefined : "Mode is three octal digits, like 0644.")).pipe(
