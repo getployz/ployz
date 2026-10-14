@@ -1563,6 +1563,32 @@ fn held_child(stop: &Stop, gate: &Path) -> ZfsChild {
     child
 }
 
+/// A kill the kernel refuses leaves the child running, so the reap must still wait for it:
+/// otherwise the task finishes early and the departure judges a slot the child still holds.
+#[tokio::test]
+async fn a_reap_whose_kill_fails_holds_its_task_until_the_child_exits() {
+    let test = TestDir::new();
+    let gate = test.0.join("gate");
+    let receives = Receives::default();
+    let name: DockerVolumeName = "data".parse().unwrap();
+    receives.spawn(&name, |stop| {
+        let mut child = held_child(&stop, &gate);
+        child.fail_kill();
+        async move {
+            child.reap().await;
+            Ok(())
+        }
+    });
+    assert_eq!(
+        receives.stop_all(Duration::from_millis(200)).await,
+        ["data"],
+        "the departure lost a child whose kill failed"
+    );
+    fs::remove_file(&gate).unwrap();
+    assert!(receives.stop_all(Duration::from_secs(5)).await.is_empty());
+    assert!(!receives.running(&name));
+}
+
 /// A task of `name` that panics while `gate` holds its child, answered once its failure
 /// is published and the child is still alive.
 async fn panicked_with_a_held_child(receives: &Receives, name: &DockerVolumeName, gate: &Path) {

@@ -422,6 +422,8 @@ pub(super) struct ZfsChild {
     finish: Arc<DropGuard>,
     #[cfg(test)]
     spared: bool,
+    #[cfg(test)]
+    kill_fails: bool,
 }
 
 impl ZfsChild {
@@ -433,6 +435,8 @@ impl ZfsChild {
             finish: Arc::clone(&stop.finish),
             #[cfg(test)]
             spared: false,
+            #[cfg(test)]
+            kill_fails: false,
         })
     }
 
@@ -454,17 +458,31 @@ impl ZfsChild {
         self.spared = true;
     }
 
+    /// Makes [`Self::reap`]'s kill fail, as one refused by the kernel does.
+    #[cfg(test)]
+    pub(super) fn fail_kill(&mut self) {
+        self.kill_fails = true;
+    }
+
     /// Kills the process unless it already exited, and waits for it.
     pub(super) async fn reap(mut self) {
         let Some(mut child) = self.child.take() else {
             return;
         };
-        match child.kill().await {
+        match self.kill(&mut child).await {
             Ok(()) => {}
             // Already waited for.
             Err(error) if error.kind() == std::io::ErrorKind::InvalidInput => {}
             Err(error) => tracing::warn!(%error, "could not kill a zfs process"),
         }
+    }
+
+    async fn kill(&self, child: &mut Child) -> std::io::Result<()> {
+        #[cfg(test)]
+        if self.kill_fails {
+            return Err(std::io::Error::other("injected kill failure"));
+        }
+        child.kill().await
     }
 }
 
