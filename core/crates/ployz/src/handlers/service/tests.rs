@@ -95,7 +95,7 @@ fn ps_names_servers_and_shows_a_container_id_only_on_rows_that_read_the_same() {
     let name = MachineName::parse("machine-1").unwrap();
     let names = HashMap::from([(MachineId::parse("b".repeat(32)).unwrap(), &name)]);
     let mut out = Vec::new();
-    process_table(&containers, true, &names)
+    process_table(&containers, true, &names, &HashSet::new())
         .write(&mut out, false)
         .unwrap();
     assert_eq!(
@@ -110,7 +110,7 @@ fn ps_names_servers_and_shows_a_container_id_only_on_rows_that_read_the_same() {
     );
 
     let mut out = Vec::new();
-    process_table(&containers[1..], true, &names)
+    process_table(&containers[1..], true, &names, &HashSet::new())
         .write(&mut out, false)
         .unwrap();
     assert_eq!(
@@ -120,6 +120,88 @@ fn ps_names_servers_and_shows_a_container_id_only_on_rows_that_read_the_same() {
              web\tservice\tmachine-1\trunning\n\
              api\tservice\t{}\trunning\n",
             "e".repeat(12)
+        )
+    );
+}
+
+#[test]
+fn ps_folds_a_services_superseded_containers_into_one_draining_row() {
+    let running = || ContainerRuntimeObservation::Running {
+        health: HealthObservation::NotConfigured,
+    };
+    let web = ['a', 'b', 'c', 'd']
+        .map(|id| ServiceContainer::try_from(observation(id, 'f', "web", running())).unwrap());
+    let stopped = ServiceContainer::try_from(observation(
+        'e',
+        'f',
+        "web",
+        ContainerRuntimeObservation::Exited { code: 0 },
+    ))
+    .unwrap();
+    let mut containers = web.iter().map(ContainerRef::Service).collect::<Vec<_>>();
+    containers.push(ContainerRef::Service(&stopped));
+    let name = MachineName::parse("machine-1").unwrap();
+    let names = HashMap::from([(MachineId::parse("f".repeat(32)).unwrap(), &name)]);
+    let superseded = |ids: &[char]| {
+        ids.iter()
+            .map(|id| ContainerId::parse(id.to_string().repeat(64)).unwrap())
+            .collect::<HashSet<_>>()
+    };
+    let render = |retiring: &HashSet<ContainerId>| {
+        let mut out = Vec::new();
+        process_table(&containers, true, &names, retiring)
+            .write(&mut out, false)
+            .unwrap();
+        let json = serde_json::to_value(process_rows(&containers, retiring)).unwrap();
+        let draining = json
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| {
+                assert!(entry.get("container_id").is_some());
+                entry.get("draining").cloned()
+            })
+            .collect::<Vec<_>>();
+        (String::from_utf8(out).unwrap(), draining)
+    };
+    let yes = Some(json!(true));
+
+    assert_eq!(
+        render(&superseded(&[])),
+        (
+            "SERVICE\tKIND\tSERVER\tSTATE\tCONTAINER\n\
+             web\tservice\tmachine-1\trunning\taaaaaaaaaaaa\n\
+             web\tservice\tmachine-1\trunning\tbbbbbbbbbbbb\n\
+             web\tservice\tmachine-1\trunning\tcccccccccccc\n\
+             web\tservice\tmachine-1\trunning\tdddddddddddd\n\
+             web\tservice\tmachine-1\texited with code 0\teeeeeeeeeeee\n"
+                .into(),
+            vec![None; 5]
+        )
+    );
+    // A superseded Container that is not running keeps its own row.
+    assert_eq!(
+        render(&superseded(&['b', 'e'])),
+        (
+            "SERVICE\tKIND\tSERVER\tSTATE\tCONTAINER\n\
+             web\tservice\tmachine-1\trunning\taaaaaaaaaaaa\n\
+             web\tservice\tmachine-1\tdraining 1\t-\n\
+             web\tservice\tmachine-1\trunning\tcccccccccccc\n\
+             web\tservice\tmachine-1\trunning\tdddddddddddd\n\
+             web\tservice\tmachine-1\texited with code 0\teeeeeeeeeeee\n"
+                .into(),
+            vec![None, yes.clone(), None, None, None]
+        )
+    );
+    assert_eq!(
+        render(&superseded(&['a', 'b', 'c'])),
+        (
+            "SERVICE\tKIND\tSERVER\tSTATE\tCONTAINER\n\
+             web\tservice\tmachine-1\tdraining 3\t-\n\
+             web\tservice\tmachine-1\trunning\tdddddddddddd\n\
+             web\tservice\tmachine-1\texited with code 0\teeeeeeeeeeee\n"
+                .into(),
+            vec![yes.clone(), yes.clone(), yes, None, None]
         )
     );
 }
