@@ -73,7 +73,8 @@ service stays **Online**, with an amber **⚠** on its card.
 
 ## My app exits as soon as it starts
 
-`container … failed health monitoring: exited with code 1`, or ending in `restarting`
+**The Container exited**, **The Container is restarting** or **The Container stopped**, with
+`container … failed health monitoring: exited with code 1` or ending in `restarting`
 
 The new replica stopped right after it started, and the old version kept running. Any exit code
 can show here.

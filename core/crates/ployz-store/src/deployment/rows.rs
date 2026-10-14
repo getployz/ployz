@@ -234,11 +234,15 @@ impl From<&ExecutionError> for Failure {
                     HealthFailure::Runtime {
                         observation: ContainerRuntimeObservation::Restarting,
                         ..
-                    } => "The Container kept restarting",
+                    } => "The Container is restarting",
                     HealthFailure::Runtime {
                         observation: ContainerRuntimeObservation::Exited { .. },
                         ..
                     } => "The Container exited",
+                    HealthFailure::Runtime {
+                        observation: ContainerRuntimeObservation::Dead,
+                        ..
+                    } => "The Container stopped",
                     HealthFailure::Cancelled
                     | HealthFailure::TimedOut { .. }
                     | HealthFailure::Runtime { .. } => "The Container failed its health check",
@@ -631,7 +635,7 @@ mod tests {
     fn a_container_that_stops_running_is_not_called_unhealthy() {
         assert_eq!(
             reason(ContainerRuntimeObservation::Restarting),
-            "The Container kept restarting"
+            "The Container is restarting"
         );
         assert_eq!(
             reason(ContainerRuntimeObservation::Exited { code: 1 }),
@@ -639,7 +643,7 @@ mod tests {
         );
         assert_eq!(
             reason(ContainerRuntimeObservation::Dead),
-            "The Container failed its health check"
+            "The Container stopped"
         );
     }
 }

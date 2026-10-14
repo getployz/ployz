@@ -93,7 +93,15 @@ fn input(value: &Value) -> Result<Option<Credential>, RpcError> {
             "expected {\"secret\": \"…\"} with an optional username, or {\"secret\": true} to keep the stored one; a secret comes from --secret or --patch -",
         )
     };
-    let fields = value.as_object().ok_or_else(invalid)?;
+    // The CLI sends `web.registryCredential={"secret":true}` as JSON text.
+    let parsed = value
+        .as_str()
+        .and_then(|text| serde_json::from_str::<Value>(text).ok());
+    let fields = parsed
+        .as_ref()
+        .unwrap_or(value)
+        .as_object()
+        .ok_or_else(invalid)?;
     if fields
         .keys()
         .any(|key| key != "username" && key != "secret")

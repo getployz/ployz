@@ -163,8 +163,13 @@ fn a_new_secret_applies_at_once_and_admission_freezes_what_a_deployment_pulls_wi
     assert_eq!(paths(&edited.staged), [PATH]);
     assert_eq!(paths(&edited.immediate), [PATH]);
     assert_eq!(value(&store, PATH), json!({ "secret": true }));
-    // Sending back what reads show, or the same credential, changes nothing.
-    for same in [json!({ "secret": true }), first] {
+    // Sending back what reads show, as an object or as `set`'s JSON text, or the same
+    // credential, changes nothing.
+    for same in [
+        json!({ "secret": true }),
+        json!(r#"{"secret":true}"#),
+        first,
+    ] {
         let edited = set(&store, PATH, same).unwrap();
         assert!(edited.staged.is_empty() && edited.immediate.is_empty());
     }
@@ -306,6 +311,7 @@ fn a_credential_arrives_only_as_a_secret_and_is_never_echoed() {
     for (path, bad) in [
         (PATH, json!("plain-token")),
         (PATH, json!({ "secret": "" })),
+        (PATH, json!(r#"{"secret":""}"#)),
         (PATH, json!({ "secret": false })),
         (PATH, json!({ "password": "plain-token" })),
         (PATH, json!({ "username": "octocat", "secret": true })),
