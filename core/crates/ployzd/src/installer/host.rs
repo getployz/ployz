@@ -23,6 +23,7 @@ use super::{
 use ployz_build::{MINIMUM_BUILDX, MINIMUM_DOCKER_API, MINIMUM_DOCKER_RELEASE};
 
 const INSTALL_UNITS_TIMEOUT: Duration = Duration::from_secs(10);
+const USAGE_ERROR: i32 = 2;
 
 const DOCKER_DAEMON_CONFIG: &str = r#"{
   "features": { "containerd-snapshotter": true },
@@ -189,9 +190,29 @@ pub(super) async fn install_units(paths: &InstallPaths) -> Result<(), Error> {
         .arg("--systemd-dir")
         .arg(&paths.systemd_dir)
         .kill_on_drop(true);
-    match timeout(INSTALL_UNITS_TIMEOUT, command.output()).await {
-        Ok(Ok(output)) if output.status.success() => Ok(()),
-        _ => write_units(&paths.bin_dir, &paths.run_dir, &paths.systemd_dir),
+    let stage = "write systemd units with the installed release";
+    let output = timeout(INSTALL_UNITS_TIMEOUT, command.output())
+        .await
+        .map_err(|_| Error::Command {
+            stage: stage.into(),
+            message: format!("timed out after {}s", INSTALL_UNITS_TIMEOUT.as_secs()),
+        })?
+        .map_err(|source| Error::Io { stage, source })?;
+    match output.status.code() {
+        Some(0) => Ok(()),
+        // Releases before install-units reject the subcommand as a usage error.
+        Some(USAGE_ERROR) => write_units(&paths.bin_dir, &paths.run_dir, &paths.systemd_dir),
+        _ => {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+            Err(Error::Command {
+                stage: stage.into(),
+                message: if stderr.is_empty() {
+                    format!("exited with {}", output.status)
+                } else {
+                    stderr
+                },
+            })
+        }
     }
 }
 

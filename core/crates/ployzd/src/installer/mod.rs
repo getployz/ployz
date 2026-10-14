@@ -489,6 +489,7 @@ mod tests {
             "success",
             "install-only",
             "installed-units",
+            "failed-units",
             "same-target",
             "missing",
             "missing-tar",
@@ -584,7 +585,7 @@ mod tests {
         let paths = InstallPaths::at(&root);
         fs::create_dir_all(&paths.bin_dir).unwrap();
         let existing = match case {
-            "success" | "install-only" | "installed-units" => None,
+            "success" | "install-only" | "installed-units" | "failed-units" => None,
             "same-target" => Some(write_existing_daemon(&paths, "1.2.3")),
             _ => Some(write_existing_daemon(&paths, "1.2.2")),
         };
@@ -594,7 +595,7 @@ mod tests {
         if case == "missing-tar" {
             fs::remove_file(root.join("commands/tar")).unwrap();
         }
-        if case == "installed-units" {
+        if matches!(case, "installed-units" | "failed-units") {
             fs::create_dir_all(&paths.systemd_dir).unwrap();
         }
 
@@ -631,13 +632,29 @@ mod tests {
             }
             "installed-units" => {
                 result.unwrap();
+                let written = format!(
+                    "written by installed 1.2.3 for {} {}\n",
+                    paths.bin_dir.display(),
+                    paths.run_dir.display()
+                );
                 for unit in ["ployz.service", "ployz-volume-plugin.service"] {
                     assert_eq!(
                         fs::read_to_string(paths.systemd_dir.join(unit)).unwrap(),
-                        "written by installed 1.2.3\n",
+                        written,
                         "{unit} was not written by the installed daemon"
                     );
                 }
+            }
+            "failed-units" => {
+                let error = result.unwrap_err().to_string();
+                assert!(
+                    error.contains("units: permission denied"),
+                    "a failing install-units surfaces its stderr: {error}"
+                );
+                assert!(
+                    !paths.systemd_dir.join("ployz.service").exists(),
+                    "a failing install-units does not fall back to this release's units"
+                );
             }
             "same-target" => {
                 let outcome = result.unwrap();
@@ -698,6 +715,9 @@ mod tests {
             "rejected-executable" => "case \"$1\" in version) echo 9.9.9 ;; esac",
             "hung-executable" => "case \"$1\" in version) sleep 1; echo 1.2.3 ;; esac",
             "installed-units" => INSTALLED_UNITS_DAEMON,
+            "failed-units" => {
+                "case \"$1\" in version) echo 1.2.3 ;; install-units) echo 'units: permission denied' >&2; exit 1 ;; *) exit 2 ;; esac"
+            }
             _ => "case \"$1\" in version) echo 1.2.3 ;; *) exit 2 ;; esac",
         };
         write_script(&payload.join("ployzd"), daemon);
@@ -775,18 +795,20 @@ mod tests {
   version) echo 1.2.3 ;;
   install-units)
     while [ $# -gt 1 ]; do
-      case "$1" in --systemd-dir) dir=$2 ;; esac
+      case "$1" in --bin-dir) bin=$2 ;; --run-dir) run=$2 ;; --systemd-dir) dir=$2 ;; esac
       shift
     done
     for unit in ployz.service ployz.socket ployz-volume-plugin.socket ployz-volume-plugin.service; do
-      echo "written by installed 1.2.3" > "$dir/$unit"
+      echo "written by installed 1.2.3 for $bin $run" > "$dir/$unit"
     done ;;
   *) exit 2 ;;
 esac"#;
 
     pub(super) fn write_existing_daemon(paths: &InstallPaths, version: &str) -> Vec<u8> {
         fs::create_dir_all(&paths.bin_dir).unwrap();
-        let existing = format!("#!/bin/sh\n[ \"$1\" = version ] && echo {version}\n").into_bytes();
+        let existing =
+            format!("#!/bin/sh\ncase \"$1\" in version) echo {version} ;; *) exit 2 ;; esac\n")
+                .into_bytes();
         fs::write(paths.bin_dir.join("ployzd"), &existing).unwrap();
         fs::set_permissions(
             paths.bin_dir.join("ployzd"),
