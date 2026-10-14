@@ -39,7 +39,8 @@ export function ServerMeters({ organizationSlug, server }: { organizationSlug: s
 }
 
 function Readings({ now }: { now: ServerNow }) {
-  if (now.type !== "meters") return null;
+  // Disk shows only on the Server's page, so a row with a fresh disk reading alone stays empty too.
+  if (now.type !== "meters" || (now.cpu === null && now.memory === null)) return null;
   return (
     <div className="flex gap-4 text-xs text-muted-foreground">
       {METERS.map(({ label, fraction }) => {

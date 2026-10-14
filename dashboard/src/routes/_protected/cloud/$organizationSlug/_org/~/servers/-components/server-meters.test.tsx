@@ -4,8 +4,10 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { serverStatus } from "#/modules/machines/server-status";
 import * as functions from "#/modules/metrics/metrics.functions";
+import * as model from "#/modules/metrics/metrics-model";
 import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
 import { ServerMeters } from "./server-meters";
+import * as now from "./server-now";
 
 afterEach(() => {
   cleanup();
@@ -68,4 +70,20 @@ it("reads an online Server only when its meters show", () => {
   viewport({ wide: true });
   showRow("up");
   expect(reads).toHaveBeenCalledTimes(1);
+});
+
+it("shows CPU and memory, and stays empty when only a disk reading is fresh", async () => {
+  viewport({ wide: true });
+  vi.spyOn(functions, "readServerMetricsServerFn").mockResolvedValue({} as never);
+  vi.spyOn(model, "serverMetrics").mockReturnValue({} as never);
+  const reads = vi.spyOn(now, "serverNow").mockReturnValue({ type: "meters", cpu: 0.47, memory: null, disk: null });
+  const shown = showRow("up");
+  await screen.findByText("CPU");
+  expect(shown.container.textContent).toMatch(/^CPU47%.*Memory–$/);
+  cleanup();
+
+  reads.mockReturnValue({ type: "meters", cpu: null, memory: null, disk: { used: 23, total: 100 } });
+  const { container, client } = showRow("up");
+  await waitFor(() => expect(client.getQueryCache().getAll()[0]?.state.status).toBe("success"));
+  expect(container.textContent).toBe("");
 });
