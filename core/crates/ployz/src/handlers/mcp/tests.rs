@@ -284,7 +284,7 @@ fn fixed(place: Place) -> Locate {
 
 fn on_cloud(fake: &Fake, place: Place) -> Server {
     Server {
-        keys: |_, _, tool| format!("call-{tool}"),
+        keys: |_, id| format!("call-{}", json!(id)),
         ..Server::new(
             Account {
                 config: PathBuf::from("/nonexistent/config.toml"),
@@ -334,7 +334,7 @@ fn shop() -> ConfigStore {
 
 fn on_local(place: Place) -> Server {
     Server {
-        keys: |_, _, tool| format!("call-{tool}"),
+        keys: |_, id| format!("call-{}", json!(id)),
         ..Server::new(
             Account::default(),
             Store::Local(Arc::new(shop()), who()),
@@ -1936,8 +1936,7 @@ mod published {
             keys: call_key,
             ..on_published(&fake, home.path()).await
         };
-        let key =
-            RequestKey::effective(None, &call_key(&server.session, &RequestId::Number(2), ""));
+        let key = RequestKey::effective(None, &call_key(&server.session, &RequestId::Number(2)));
         let mut client = Client::initialized(server, json!({})).await;
         let entry = agent_facing().into_iter().next().unwrap();
         let arguments = arguments(&entry);
