@@ -44,11 +44,11 @@ export function githubBuildRepositoryKey(repository: Pick<GithubBuildRepository,
 }
 
 /** GitHub's new-file page with the workflow filled in. The user commits it or opens a PR; Cloud never writes. */
-export function githubBuildWorkflowUrl(input: { fullName: string; defaultBranch: string }) {
+export function githubBuildWorkflowUrl(input: { web: string; fullName: string; defaultBranch: string }) {
   const params = new URLSearchParams({
     filename: `.github/workflows/${GITHUB_BUILD_WORKFLOW_FILE}`,
     value: GITHUB_BUILD_WORKFLOW,
   });
   const [owner = "", name = ""] = input.fullName.split("/");
-  return `https://github.com/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/new/${input.defaultBranch.split("/").map(encodeURIComponent).join("/")}?${params.toString()}`;
+  return `${input.web}/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/new/${input.defaultBranch.split("/").map(encodeURIComponent).join("/")}?${params.toString()}`;
 }

@@ -590,7 +590,7 @@ pub(super) fn handler(path: &str) -> Option<Runnable> {
         "restart" => cloud(Never, restart),
         "rm" => cloud(Never, authored::remove),
         "start" => cloud(Never, |root| lifecycle(root, &[ContainerAction::Start])),
-        "stop" => cloud(Always, |root| lifecycle(root, &[ContainerAction::Stop])),
+        "stop" => cloud(Never, |root| lifecycle(root, &[ContainerAction::Stop])),
         _ => return None,
     })
 }

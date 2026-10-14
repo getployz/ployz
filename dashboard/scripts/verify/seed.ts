@@ -3,6 +3,9 @@
 // Prints one line, `VERIFY_SEED <json>`: the organization slug, the session cookie, an Organization Token for the CLI
 // (`cliToken`), every write's outcome and what was skipped.
 //
+// With the fake GitHub (PLOYZ_VERIFY_GITHUB_ORIGIN set), Ada is linked to its user ada, and Bob Bobson, linked to its
+// user bob, signs in with bob@example.com and BOB_PASSWORD to his own personal organization.
+//
 // Ada Lovelace's organization holds project `shop`, on public images so a real Server can run it:
 //   fix-api     a Branch of production (api, web) with 2 changes to save; production moved on after it branched
 //   staging     a kept Branch of production (api, worker) that includes search's changes, then sets one itself
@@ -20,14 +23,16 @@
 // Servers that enroll next, so the queued Deploy and blog's pull requests are skipped: the Store admits none, and opens
 // no PR Environment, before a Server joins.
 import { createHash, createHmac, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { eq, sql } from "drizzle-orm";
+import { hashPassword } from "better-auth/crypto";
 import { Effect } from "effect";
 import type { Change, ConfigCommand, PullRequest } from "@ployz/sdk";
 import { callStore, storeSystem } from "#/modules/config-store/config-store.server";
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import { createOrganizationToken } from "#/modules/identity/organization-token.server";
 import { InngestClient, type PloyzInngest } from "#/modules/inngest/client";
-import { session, user } from "#/modules/identity/tables";
+import { account, session, user } from "#/modules/identity/tables";
 import { organizationMachine } from "#/modules/machines/tables";
 import { ensurePersonalOrganizationForUser } from "#/modules/organization/organization-state.server";
 import { organization } from "#/modules/organization/tables";
@@ -36,12 +41,31 @@ import { Database } from "#/server/database.server";
 import { AppRuntime } from "#/server/runtime.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 
+const BOB_PASSWORD = "verify-bob-password";
 const MACHINE_ID = "0123456789abcdef0123456789abcdef";
 const env = (name: string) => {
   const value = process.env[name];
   if (!value) throw new Error(`seed.ts needs ${name}`);
   return value;
 };
+
+const linkFakeGithubAccount = (signedIn: { id: string; email: string }) => Effect.gen(function* () {
+  const { drizzle } = yield* Database;
+  const fixture = JSON.parse(readFileSync(".verify/github.json", "utf8")) as { users: Array<{ id: number; email: string }> };
+  const github = fixture.users.find((u) => u.email === signedIn.email);
+  if (github) yield* drizzle.insert(account).values({ userId: signedIn.id, providerId: "github", accountId: String(github.id) });
+});
+
+const seedBob = Effect.gen(function* () {
+  const { drizzle } = yield* Database;
+  const [bob] = yield* drizzle.insert(user).values({ email: "bob@example.com", emailVerified: true, name: "Bob Bobson" }).returning();
+  if (!bob) return yield* Effect.die("No user.");
+  yield* ensurePersonalOrganizationForUser(bob);
+  const password = yield* Effect.promise(() => hashPassword(BOB_PASSWORD));
+  yield* drizzle.insert(account).values({ userId: bob.id, providerId: "credential", accountId: bob.id, password });
+  yield* linkFakeGithubAccount(bob);
+  return { email: bob.email, password: BOB_PASSWORD };
+});
 
 const seed = Effect.gen(function* () {
   const { drizzle } = yield* Database;
@@ -52,6 +76,7 @@ const seed = Effect.gen(function* () {
   const organizationId = yield* ensurePersonalOrganizationForUser(ada);
   const [org] = yield* drizzle.select({ slug: organization.slug }).from(organization).where(eq(organization.id, organizationId));
   const organizationSlug = org?.slug ?? "";
+  const bob = process.env["PLOYZ_VERIFY_GITHUB_ORIGIN"] ? yield* linkFakeGithubAccount(ada).pipe(Effect.andThen(seedBob)) : null;
 
   // A session better-auth accepts: its row plus the HMAC-signed `better-auth.session_token` cookie.
   const token = env("VERIFY_SESSION_TOKEN");
@@ -62,7 +87,7 @@ const seed = Effect.gen(function* () {
   if (!signedIn) return yield* Effect.die("No session.");
   const cookie = encodeURIComponent(`${token}.${createHmac("sha256", env("BETTER_AUTH_SECRET")).update(token).digest("base64")}`);
   const { secret: cliToken } = yield* createOrganizationToken(
-    { userId: ada.id, organization: { id: organizationId, slug: organizationSlug }, credential: { kind: "session", id: signedIn.id }, support: null, via: "dashboard" },
+    { userId: ada.id, organization: { id: organizationId, slug: organizationSlug }, credential: { kind: "session", id: signedIn.id }, role: "owner", support: null, via: "dashboard" },
     { name: "verify", expiresInDays: 30 },
   );
 
@@ -243,7 +268,7 @@ const seed = Effect.gen(function* () {
     yield* write("blog pr-146 excludes LOG_LEVEL", { command: "never_sync", environment: blog("pr-146"), rows: ["web.env.LOG_LEVEL"] });
   }
 
-  return { organizationSlug, cookie, cliToken, writes, skipped };
+  return { organizationSlug, cookie, cliToken, bob, writes, skipped };
 });
 
 // Without real Servers no Inngest answers, and the SDK retries each refused send for about 1.8 s. Refuse it at once.

@@ -24,10 +24,11 @@ const BoundaryResult = Schema.Union([
 ]);
 type BoundaryResult = typeof BoundaryResult.Type;
 const decodeBoundaryResult = Schema.decodeUnknownSync(BoundaryResult);
-const GithubInstallResult = Schema.Struct({
-  url: Schema.String,
+const GithubWebResult = Schema.Struct({
+  origin: Schema.String,
+  installUrl: Schema.String,
 });
-const decodeGithubInstallResult = Schema.decodeUnknownSync(GithubInstallResult);
+const decodeGithubWebResult = Schema.decodeUnknownSync(GithubWebResult);
 
 type BoundaryData = {
   readonly action: "actor" | "fail" | "dispose";
@@ -153,18 +154,18 @@ it(
           const githubTransformed = await vite.transformRequest(
             "/src/modules/github/github.functions.ts",
           );
-          const githubInstallServerFnId = /getGithubInstallUrlServerFn\s*=[^\n]*?createClientRpc\("([^"]+)"\)/u.exec(
+          const githubWebServerFnId = /getGithubWebServerFn\s*=[^\n]*?createClientRpc\("([^"]+)"\)/u.exec(
             githubTransformed?.code ?? "",
           )?.[1];
-          if (githubInstallServerFnId === undefined) {
-            throw new Error("TanStack did not compile the GitHub install server function.");
+          if (githubWebServerFnId === undefined) {
+            throw new Error("TanStack did not compile the GitHub web server function.");
           }
           const baseFetch: typeof fetch = (input, init) => {
             const url = input instanceof Request ? input.url : String(input);
             return fetch(new URL(url, origin), init);
           };
           const rpc = createClientRpc(serverFnId);
-          const githubInstallRpc = createClientRpc(githubInstallServerFnId);
+          const githubWebRpc = createClientRpc(githubWebServerFnId);
           const invoke = async (data: BoundaryData, signal?: AbortSignal) => {
             const frame = await runWithStartContext({
               getRouter: () => {
@@ -187,7 +188,7 @@ it(
               onExcessProperty: "error",
             });
           };
-          const invokeGithubInstall = async (authenticated: boolean) => {
+          const invokeGithubWeb = async (authenticated: boolean) => {
             const frame = await runWithStartContext({
               getRouter: () => {
                 throw new Error("The client RPC test does not use a router.");
@@ -197,7 +198,7 @@ it(
               contextAfterGlobalMiddlewares: {},
               executedRequestMiddlewares: new Set(),
               handlerType: "serverFn",
-            }, () => githubInstallRpc({
+            }, () => githubWebRpc({
               method: "GET",
               data: undefined,
               headers: authenticated
@@ -206,7 +207,7 @@ it(
               fetch: baseFetch,
             }));
             if (frame.error) throw frame.error;
-            return decodeGithubInstallResult(frame.result, {
+            return decodeGithubWebResult(frame.result, {
               onExcessProperty: "error",
             });
           };
@@ -255,13 +256,14 @@ it(
               );
             }
 
-            await expect(invokeGithubInstall(false)).rejects.toEqual({
+            await expect(invokeGithubWeb(false)).rejects.toEqual({
               _tag: "PublicError",
               code: "UNAUTHORIZED",
               message: "Authentication is required.",
             });
-            await expect(invokeGithubInstall(true)).resolves.toEqual({
-              url: "https://github.com/apps/test-app/installations/new",
+            await expect(invokeGithubWeb(true)).resolves.toEqual({
+              origin: "https://github.com",
+              installUrl: "https://github.com/apps/test-app/installations/new",
             });
           } finally {
             await expect(invoke({ action: "dispose" })).resolves.toEqual({

@@ -6,7 +6,7 @@
 use axum::{Json, extract::State};
 use ployz_core::{
     CopyRefusal, DockerVolumeName as WireName, RpcError, SendSource, SendStream,
-    SetVolumeCopyRefused, SnapshotName, VolumeCopy, VolumeGen,
+    SetVolumeCopyRefused, SnapshotName, VolumeCopy, VolumeGen, error_chain::inline,
 };
 use ployzd::{
     faults::{Identity, Want},
@@ -822,13 +822,13 @@ impl VolumeStorage {
             .timeout(self.receive_stall)
             .build()
             .map_err(|error| {
-                internal(format!("could not build the bound client: {error}").into())
+                internal(format!("could not build the bound client: {}", inline(&error)).into())
             })?;
         let response = client
             .get(&url)
             .send()
             .await
-            .map_err(|error| internal(format!("GET {url}: {error}").into()))?;
+            .map_err(|error| internal(format!("GET {url}: {}", inline(&error)).into()))?;
         if response.status() == reqwest::StatusCode::NOT_FOUND {
             let reason = response.text().await.unwrap_or_default();
             return Err(refuse(
@@ -842,10 +842,10 @@ impl VolumeStorage {
         }
         let body = response
             .error_for_status()
-            .map_err(|error| internal(format!("GET {url}: {error}").into()))?
+            .map_err(|error| internal(format!("GET {url}: {}", inline(&error)).into()))?
             .text()
             .await
-            .map_err(|error| internal(format!("GET {url}: {error}").into()))?;
+            .map_err(|error| internal(format!("GET {url}: {}", inline(&error)).into()))?;
         body.trim()
             .parse()
             .map_err(|error| internal(format!("GET {url} answered {body:?}: {error}").into()))
