@@ -11,7 +11,7 @@ use axum::{Router, body::Body, extract::Request, http::StatusCode, response::Int
 use tokio::{net::TcpListener, process::Command, sync::Semaphore};
 use tokio_util::sync::CancellationToken;
 
-use super::super::transfer::{Receives, ZfsChild};
+use super::super::transfer::{Receives, Stop, ZfsChild};
 
 use super::first_pool_tests::fake_first_pool;
 use super::inspect_tests::{set_property, start};
@@ -1352,7 +1352,7 @@ async fn a_receive_that_stalls_answers_only_once_its_child_is_gone() {
                 SLOT_FS,
                 BOUND,
                 "test",
-                &CancellationToken::new(),
+                &Stop::unowned(),
             )
             .await;
         // No await between the answer and the check: a child only killed on drop is
@@ -1367,8 +1367,8 @@ async fn a_receive_that_stalls_answers_only_once_its_child_is_gone() {
 }
 
 /// A child the kill leaves running past its owner, as a `zfs` blocked in the kernel is.
-fn slow_child() -> (ZfsChild, u32) {
-    let mut child = ZfsChild::spawn(Command::new("sleep").arg("1.5")).unwrap();
+fn slow_child(stop: &Stop) -> (ZfsChild, u32) {
+    let mut child = ZfsChild::spawn(Command::new("sleep").arg("1.5"), stop).unwrap();
     child.spare_from_kill();
     let pid = child.id().unwrap();
     (child, pid)
@@ -1389,11 +1389,14 @@ async fn stopped_after(receives: &Receives, pid: u32) -> bool {
 async fn a_zfs_child_dropped_without_a_reap_is_killed() {
     let receives = Receives::default();
     let name: DockerVolumeName = "data".parse().unwrap();
-    let child = ZfsChild::spawn(Command::new("sleep").arg("30")).unwrap();
-    let pid = child.id().unwrap();
-    receives.spawn(&name, |_stop| async move {
-        drop(child);
-        Ok(())
+    let mut pid = 0;
+    receives.spawn(&name, |stop| {
+        let child = ZfsChild::spawn(Command::new("sleep").arg("30"), &stop).unwrap();
+        pid = child.id().unwrap();
+        async move {
+            drop(child);
+            Ok(())
+        }
     });
     assert!(stopped_after(&receives, pid).await);
 }
@@ -1402,10 +1405,14 @@ async fn a_zfs_child_dropped_without_a_reap_is_killed() {
 async fn a_receive_task_finishes_only_once_a_dropped_child_exits() {
     let receives = Receives::default();
     let name: DockerVolumeName = "data".parse().unwrap();
-    let (child, pid) = slow_child();
-    receives.spawn(&name, |_stop| async move {
-        drop(child);
-        Ok(())
+    let mut pid = 0;
+    receives.spawn(&name, |stop| {
+        let (child, spawned) = slow_child(&stop);
+        pid = spawned;
+        async move {
+            drop(child);
+            Ok(())
+        }
     });
     assert!(
         stopped_after(&receives, pid).await,
@@ -1419,12 +1426,16 @@ async fn a_receive_task_finishes_only_once_a_dropped_child_exits() {
 async fn a_receive_task_whose_second_spawn_fails_finishes_once_the_first_child_exits() {
     let receives = Receives::default();
     let name: DockerVolumeName = "data".parse().unwrap();
-    let (send, pid) = slow_child();
-    receives.spawn(&name, |_stop| async move {
-        let _send = send;
-        let _receive = ZfsChild::spawn(&mut Command::new("/nonexistent/zfs"))
-            .map_err(|error| format!("could not run zfs receive: {error}"))?;
-        Ok(())
+    let mut pid = 0;
+    receives.spawn(&name, |stop| {
+        let (send, spawned) = slow_child(&stop);
+        pid = spawned;
+        async move {
+            let _send = send;
+            let _receive = ZfsChild::spawn(&mut Command::new("/nonexistent/zfs"), &stop)
+                .map_err(|error| format!("could not run zfs receive: {error}"))?;
+            Ok(())
+        }
     });
     assert!(
         stopped_after(&receives, pid).await,
@@ -1437,10 +1448,14 @@ async fn a_receive_task_whose_second_spawn_fails_finishes_once_the_first_child_e
 async fn a_receive_task_that_panics_with_a_live_child_finishes_once_it_exits() {
     let receives = Receives::default();
     let name: DockerVolumeName = "data".parse().unwrap();
-    let (child, pid) = slow_child();
-    receives.spawn(&name, |_stop| async move {
-        let _child = child;
-        panic!("the receive task broke");
+    let mut pid = 0;
+    receives.spawn(&name, |stop| {
+        let (child, spawned) = slow_child(&stop);
+        pid = spawned;
+        async move {
+            let _child = child;
+            panic!("the receive task broke");
+        }
     });
     assert!(
         stopped_after(&receives, pid).await,

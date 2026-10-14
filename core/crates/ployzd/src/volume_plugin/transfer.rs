@@ -15,7 +15,7 @@ use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
     process::{Child, Command},
 };
-use tokio_util::sync::CancellationToken;
+use tokio_util::sync::{CancellationToken, DropGuard};
 
 use super::{DockerVolumeName, VolumeStorage};
 
@@ -37,6 +37,29 @@ struct ReceiveTask {
     outcome: Arc<Mutex<Option<Result<(), String>>>>,
     stop: CancellationToken,
     finished: CancellationToken,
+}
+
+/// A receive task's stop signal and a share of its finish. The task has finished once
+/// every share is gone, and a `zfs` child dropped unreaped keeps one until it exits.
+#[derive(Clone)]
+pub(super) struct Stop {
+    token: CancellationToken,
+    finish: Arc<DropGuard>,
+}
+
+impl Stop {
+    /// A stop no receive task waits on.
+    #[cfg(test)]
+    pub(super) fn unowned() -> Self {
+        Self {
+            token: CancellationToken::new(),
+            finish: Arc::new(CancellationToken::new().drop_guard()),
+        }
+    }
+
+    pub(super) async fn cancelled(&self) {
+        self.token.cancelled().await;
+    }
 }
 
 impl Receives {
@@ -64,14 +87,11 @@ impl Receives {
             .remove(&name.0);
     }
 
-    /// Runs `work` as the receive task of `name`. `work` gets the token
-    /// [`Self::stop_all`] cancels; once it fires, `work` kills and reaps its `zfs`
-    /// children before returning. A panic is recorded as the task's failure.
-    pub(super) fn spawn<F>(
-        &self,
-        name: &DockerVolumeName,
-        work: impl FnOnce(CancellationToken) -> F,
-    ) where
+    /// Runs `work` as the receive task of `name`. `work` gets the [`Stop`]
+    /// [`Self::stop_all`] fires; once it does, `work` kills and reaps its `zfs` children
+    /// before returning. A panic is recorded as the task's failure.
+    pub(super) fn spawn<F>(&self, name: &DockerVolumeName, work: impl FnOnce(Stop) -> F)
+    where
         F: Future<Output = Result<(), String>> + Send + 'static,
     {
         let task = ReceiveTask {
@@ -80,14 +100,18 @@ impl Receives {
             finished: CancellationToken::new(),
         };
         let outcome = Arc::clone(&task.outcome);
-        let finished = task.finished.clone().drop_guard();
-        let work = work(task.stop.clone());
+        let stop = Stop {
+            token: task.stop.clone(),
+            finish: Arc::new(task.finished.clone().drop_guard()),
+        };
+        let held = stop.clone();
+        let work = work(stop);
         self.0
             .lock()
             .expect("receive registry is not poisoned")
             .insert(name.0.clone(), task);
         tokio::spawn(async move {
-            let _finished = finished;
+            let _held = held;
             let result = std::panic::AssertUnwindSafe(work)
                 .catch_unwind()
                 .await
@@ -96,8 +120,8 @@ impl Receives {
         });
     }
 
-    /// Stops every receive task and waits until each ended, so ZFS holds no slot busy
-    /// and no receive changes a slot afterwards. Answers the names still running once
+    /// Stops every receive task and waits until each ended and its `zfs` children
+    /// exited, so ZFS holds no slot busy and no receive changes a slot afterwards. Answers the names still running once
     /// `deadline` passes.
     pub(super) async fn stop_all(&self, deadline: Duration) -> Vec<String> {
         let finished: Vec<(String, CancellationToken)> = self
@@ -157,7 +181,7 @@ impl VolumeStorage {
         fs: &str,
         bound: u64,
         fault: &'static str,
-        stop: &CancellationToken,
+        stop: &Stop,
     ) -> Result<(), ReceiveFailure> {
         let opened = self.open_stream(from, stream, stop).await?;
         self.receive_opened(opened, fs, bound, fault, stop).await
@@ -169,7 +193,7 @@ impl VolumeStorage {
         &self,
         from: ManagementAddress,
         stream: &SendStream,
-        stop: &CancellationToken,
+        stop: &Stop,
     ) -> Result<OpenedStream, ReceiveFailure> {
         tokio::select! {
             biased;
@@ -222,7 +246,7 @@ impl VolumeStorage {
         fs: &str,
         bound: u64,
         fault: &'static str,
-        stop: &CancellationToken,
+        stop: &Stop,
     ) -> Result<(), ReceiveFailure> {
         let refquota = format!("refquota={bound}");
         let mut child = ZfsChild::spawn(
@@ -240,6 +264,7 @@ impl VolumeStorage {
                 .stdin(Stdio::piped())
                 .stdout(Stdio::null())
                 .stderr(Stdio::piped()),
+            stop,
         )
         .map_err(|error| ReceiveFailure::Failed(format!("could not run zfs receive: {error}")))?;
         let pumped = {
@@ -358,14 +383,18 @@ impl VolumeStorage {
 /// one still exiting holds its dataset busy for the next destroy.
 pub(super) struct ZfsChild {
     child: Option<Child>,
+    finish: Arc<DropGuard>,
     #[cfg(test)]
     spared: bool,
 }
 
 impl ZfsChild {
-    pub(super) fn spawn(command: &mut Command) -> std::io::Result<Self> {
+    /// Spawns a child of the receive task `stop` belongs to, which finishes only once the
+    /// child has exited.
+    pub(super) fn spawn(command: &mut Command, stop: &Stop) -> std::io::Result<Self> {
         command.spawn().map(|child| Self {
             child: Some(child),
+            finish: Arc::clone(&stop.finish),
             #[cfg(test)]
             spared: false,
         })
@@ -404,7 +433,7 @@ impl ZfsChild {
 }
 
 /// Only an early return or a panic gets here; every other path reaps. Dropping cannot
-/// await, so it blocks on the kill, which takes milliseconds.
+/// await, so a reaper waits for the exit and holds the task's finish until then.
 impl Drop for ZfsChild {
     fn drop(&mut self) {
         let Some(mut child) = self.child.take() else {
@@ -414,16 +443,16 @@ impl Drop for ZfsChild {
         let spared = self.spared;
         #[cfg(not(test))]
         let spared = false;
-        if !spared && child.start_kill().is_err() {
-            return;
+        if !spared && let Err(error) = child.start_kill() {
+            tracing::warn!(%error, "could not kill a zfs process");
         }
-        for _ in 0..100 {
-            match child.try_wait() {
-                Ok(None) => std::thread::sleep(Duration::from_millis(10)),
-                Ok(Some(_)) | Err(_) => return,
+        let finish = Arc::clone(&self.finish);
+        tokio::spawn(async move {
+            let _finish = finish;
+            if let Err(error) = child.wait().await {
+                tracing::warn!(%error, "could not wait for a killed zfs process");
             }
-        }
-        tracing::warn!(pid = ?child.id(), "a killed zfs process did not exit within a second");
+        });
     }
 }
 

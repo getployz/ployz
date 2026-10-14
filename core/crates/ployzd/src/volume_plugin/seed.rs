@@ -8,14 +8,13 @@ use std::process::Stdio;
 use axum::{Json, extract::State};
 use ployz_core::{RpcError, SeedVolumeRequest, SnapshotGuid, SwitchError, VolumeCopyView};
 use tokio::process::Command;
-use tokio_util::sync::CancellationToken;
 
 use super::{
     VolumeStorage,
     inspect::internal,
     mirror,
     storage::{PROMOTE_PROPERTY, PULL_PROPERTY, root_dataset, slot_fs, slot_parent},
-    transfer::{ZfsChild, exited},
+    transfer::{Stop, ZfsChild, exited},
 };
 
 /// On a seed's copy once its receive completed, and on the root it lands as: the guid of
@@ -184,7 +183,7 @@ impl VolumeStorage {
         guid: SnapshotGuid,
         fs: &str,
         bound: u64,
-        stop: &CancellationToken,
+        stop: &Stop,
     ) -> Result<(), String> {
         let mut send = ZfsChild::spawn(
             Command::new(&self.zfs)
@@ -192,6 +191,7 @@ impl VolumeStorage {
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped()),
+            stop,
         )
         .map_err(|error| format!("could not run zfs send: {error}"))?;
         let stream = send
@@ -217,6 +217,7 @@ impl VolumeStorage {
                 .stdin(Stdio::from(stream))
                 .stdout(Stdio::null())
                 .stderr(Stdio::piped()),
+            stop,
         )
         .map_err(|error| format!("could not run zfs receive: {error}"))?;
         let exits = {

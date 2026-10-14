@@ -14,7 +14,6 @@ use ployzd::{
         BOUND_PATH_PREFIX, CopyRequest, CutRequest, PullRequest, SnapshotRequest, WriterRequest,
     },
 };
-use tokio_util::sync::CancellationToken;
 
 use super::{
     Dataset, DockerVolumeName, VolumeError, VolumeStorage,
@@ -25,7 +24,7 @@ use super::{
         CUT_PROPERTY, DATASET_ROOT, EPOCH_PROPERTY, PROMOTE_PROPERTY, PULL_PROPERTY,
         RESUME_TOKEN_PROPERTY, slot_fs, slot_parent,
     },
-    transfer::ReceiveFailure,
+    transfer::{ReceiveFailure, Stop},
 };
 
 type Copy = Option<VolumeCopy>;
@@ -703,7 +702,7 @@ impl VolumeStorage {
         stream: SendStream,
         fs: &str,
         bound: u64,
-        stop: &CancellationToken,
+        stop: &Stop,
     ) -> Result<(), String> {
         let fault = "SetVolumeCopy.MirrorToMirror";
         match self.receive(from, &stream, fs, bound, fault, stop).await {
