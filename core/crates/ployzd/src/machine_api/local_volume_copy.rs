@@ -175,8 +175,8 @@ impl MachineService {
                     .local
                     .cut_volume_copy(name.clone(), r#gen, drain, move || async move {
                         // This closure runs only past the Busy re-check, so the line means every
-                        // holder is stopped, whoever signalled it. The verify harness times that
-                        // moment from it.
+                        // holder is stopped, whoever signalled it. The verify harness credits that
+                        // moment by this line's Volume, target and gen, after its restart cursor.
                         tracing::info!(
                             volume = %request.name,
                             target = %request.target,
