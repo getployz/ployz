@@ -634,7 +634,9 @@ class ClusterModel:
             if self.mutation == "release-changes-row":
                 self.row("release", "failed")
             message = f"{volume_move.VOLUME} is starting on {lane['destination']}; it finishes there"
-            return 1, json.dumps(dict(error=dict(code="conflict", message=message)))
+            # Cloud's refusal carries the active lane it read, the way laneRefusal returns volumeRunView(lane).
+            run = dict(lane["row"], id="run-other") if self.mutation == "refusal-other-run" else lane["row"]
+            return 1, json.dumps(dict(error=dict(code="conflict", message=message, details=dict(run=run))))
         if lane:
             self.take("cancelled")
             self.running = {self.writer: self.current}
@@ -2878,7 +2880,7 @@ finally:
 
     def test_a_committed_trigger_credits_only_the_first_runs_own_row_while_it_runs(self):
         # The committed credit is a row read: the first run's row must record the committed phase and still run.
-        case = next(case for case in volume_move.CASES if case["name"] == "deploy-committed")
+        case = next(case for case in volume_move.CASES if case["name"] == "undo-after-cut")
         for label, reads in (("this run committed and running", None),
                              ("committed but already ended", "committed|done"),
                              ("running but not yet committed", "copying|running")):
@@ -2904,6 +2906,29 @@ finally:
                 else:
                     self.assertIsNotNone(first)
                     self.assertIn("the trigger never fired before the run ended", result["failures"], result)
+
+    def test_a_deploy_that_follows_a_committed_lane_skips_since_no_row_places_it(self):
+        # Cloud follows a committed lane with no row, so once the move ended nothing proves the Deploy came first.
+        case = next(case for case in volume_move.CASES if case["name"] == "deploy-committed")
+        summary, model = self.run_cases([case])
+        result = summary["cases"][0]
+        self.assertFalse(result["passed"], result)
+        self.assertIn("a followed committed lane leaves no row", self.recorded(case["name"]).get("skipped") or "",
+                      result)
+        self.assertEqual(model.runs[0]["state"], "done")
+
+    def test_a_release_on_a_committed_lane_is_credited_only_by_a_refusal_naming_the_first_run(self):
+        # The refusal carries the lane Cloud read inside the release, so it must be the first run's.
+        case = next(case for case in volume_move.CASES if case["name"] == "undo-after-cut")
+        for mutation, passed in ((None, True), ("refusal-other-run", False)):
+            with self.subTest(mutation):
+                self.setUp()
+                summary, _ = self.run_cases([case], mutation)
+                result = summary["cases"][0]
+                self.assertEqual(result["passed"], passed, result)
+                if not passed:
+                    self.assertTrue(any(failure.startswith("the release's refusal names run run-other, not the first")
+                                        for failure in result["failures"]), result)
 
     def test_each_deploy_and_undo_defect_fails_with_a_message_naming_it(self):
         cases = {row["name"]: row for row in volume_move.CASES}
