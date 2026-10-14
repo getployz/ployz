@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import type { Approval, ConfigCommand, ConfigCommitted, ConfigQuery, ConfigTrusted, ConfigView, ConfigWritten, DeploymentSummary, PullRequestRef, SystemEvent } from "@ployz/sdk";
+import type { Approval, ConfigCommand, GithubBuild, ConfigCommitted, ConfigQuery, ConfigTrusted, ConfigView, ConfigWritten, DeploymentSummary, PullRequestRef, SystemEvent } from "@ployz/sdk";
 import { eq } from "drizzle-orm";
 import { Effect, Option } from "effect";
 import { gatherDomainEvidence, systemDomainEvidence } from "#/modules/config-store/domain-evidence.server";
@@ -7,8 +7,9 @@ import { gatherGitEvidence } from "#/modules/config-store/git-evidence.server";
 import { gatherVolumeEvidence } from "#/modules/config-store/volume-evidence.server";
 import type { Actor } from "#/modules/identity/actor";
 import { user } from "#/modules/identity/tables";
-import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
+import { cloudStore, refusedWith, storeTry } from "#/modules/config-store/store-sdk.server";
 import { commandEnvironment, StoreRefused } from "#/modules/config-store/store.contract";
+import { deploymentRun } from "#/modules/config-store/tables";
 import { requireAccess } from "#/modules/organization/access.server";
 import { answerForSupport, viewForSupport } from "#/modules/support-access/support-view";
 import { sendInngestEvent } from "#/modules/inngest/client";
@@ -17,11 +18,13 @@ import {
   createConfigDeploymentStartedEvent,
   createConfigPrCheckRequestedEvent,
   createConfigSweepRequestedEvent,
+  createGithubBuildRunCompletedEvent,
   type ConfigDeploymentAdmittedEventData,
   type DeploymentTrigger,
 } from "#/modules/inngest/events";
 import { Database } from "#/server/database.server";
 import { PostHog } from "#/modules/analytics/posthog.server";
+import { installationAccess } from "#/modules/github/github-access";
 import { cancelGithubRun } from "#/modules/github/github-build.server";
 import { countOrganizationMachines, loadOrganizationConnections } from "#/modules/machines/connections.server";
 import { writeAdmitted } from "#/modules/volume-placement/volume-placement.server";
@@ -34,16 +37,56 @@ export const readStore = <Q extends ConfigQuery>(organizationId: string, query: 
   );
 
 /**
+ * Cancel a run Cloud dispatched, as Cloud itself through the installation that runs it: the Organization's own token
+ * is refused once it disconnected. A run that already ended is fine. GitHub refuses every token of an installation it
+ * suspended or uninstalled, so those runs end at the runner's next refused call to Cloud instead.
+ */
+export const cancelDispatchedGithubRun = (run: GithubBuild["run"]) =>
+  cancelGithubRun({ access: installationAccess(run.installation_id), fullName: run.repository, runId: run.run_id }).pipe(
+    Effect.catch((error) => Effect.logWarning("Could not cancel a GitHub run Cloud dispatched.", { runId: run.run_id, error })),
+  );
+
+/**
  * Stop a Deployment's builds still on GitHub: fail them and cancel their runs. Their Build Grants expire by
  * themselves. Idempotent. Its cancellation, and a worker that gave up on it, call it.
  */
 export const cancelStoreGithubBuilds = Effect.fn("ConfigStore.cancelGithubBuilds")(function* (deploymentId: string) {
   const store = yield* cloudStore;
   const builds = yield* storeTry(() => store.githubCancel(deploymentId));
-  yield* Effect.forEach(builds, ({ run }) => cancelGithubRun({ installationId: run.installation_id, fullName: run.repository, runId: run.run_id }).pipe(
-    Effect.ignore,
-  ), { concurrency: 4, discard: true });
+  yield* Effect.forEach(builds, (build) => cancelDispatchedGithubRun(build.run), { concurrency: 4, discard: true });
   return builds.length;
+});
+
+/**
+ * Stop the GitHub builds that `organizationIds` run through `installationId` once they can't use it: disconnected,
+ * suspended or uninstalled. Call it after that change is recorded. Each run is cancelled and its walk woken, so the
+ * walk looks now rather than at its next interval, finds the change, and fails the Deployment with it. Idempotent: an
+ * ended run answers 409, and the walk ignores a wake for a build it already failed.
+ */
+export const stopGithubInstallationBuilds = Effect.fn("ConfigStore.stopGithubInstallationBuilds")(function* (
+  installationId: number, organizationIds: ReadonlyArray<string>,
+) {
+  const store = yield* cloudStore;
+  const { drizzle } = yield* Database;
+  const stopped: string[] = [];
+  for (const organizationId of organizationIds) {
+    const runs = yield* drizzle.select({ deploymentId: deploymentRun.deploymentId }).from(deploymentRun)
+      .where(eq(deploymentRun.organizationId, organizationId));
+    for (const { deploymentId } of runs) {
+      const view = yield* storeTry(() => store.read(organizationId, { query: "deployment", id: deploymentId })).pipe(
+        Effect.catchIf(refusedWith("not_found"), () => Effect.succeed(null)));
+      for (const build of view?.builds ?? []) {
+        if (build.status !== "building") continue;
+        const github = yield* storeTry(() => store.githubBuild(`${deploymentId}.${build.service}`)).pipe(
+          Effect.catchIf(refusedWith("not_found"), () => Effect.succeed(null)));
+        if (github === null || github.status !== "building" || github.run.installation_id !== installationId) continue;
+        yield* cancelDispatchedGithubRun(github.run);
+        yield* sendInngestEvent(createGithubBuildRunCompletedEvent({ id: `stopped-${github.id}`, runId: github.run.run_id }));
+        stopped.push(github.id);
+      }
+    }
+  }
+  return stopped;
 });
 
 /**

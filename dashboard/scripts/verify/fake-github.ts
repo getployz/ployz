@@ -1,7 +1,7 @@
 // The fake GitHub a FAKE_GITHUB=1 verify lab points every GitHub URL at: the App's API, its install and OAuth pages,
 // tarballs, and a control route that signs and posts webhooks to Cloud. up.sh runs it with runner.mjs until down.sh
 // stops it. Prints `VERIFY_FAKE_GITHUB <url>` once listening, then one line per request.
-import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
+import { createHash, createHmac, generateKeyPairSync, randomBytes, randomUUID, sign } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { dirname } from "node:path";
@@ -12,7 +12,19 @@ type Repository = {
   id: number; name: string; private: boolean; default_branch: string; branches: string[];
   awaitsGrant?: boolean;
   files: Record<string, string>;
+  pullRequests?: PullRequestSeed[];
 };
+type PullRequest = {
+  number: number; title: string; author: string; head_branch: string; head_sha: string; base_branch: string;
+  state: "open" | "closed"; merged: boolean; merge_commit_sha: string | null; commits: number; updated_at: string;
+};
+type PullRequestSeed = Pick<PullRequest, "number" | "head_branch"> & Partial<PullRequest>;
+type WebhookInput = {
+  event?: string; action?: string; installation?: number; sender?: string; repositories?: string[];
+  repository?: string; number?: number; head_branch?: string; target_branch?: string; merged?: boolean;
+  ref?: string; head_sha?: string; conclusion?: string; run_id?: number;
+};
+type Run = { repository: string; status: "in_progress" | "completed"; conclusion: string | null };
 type Installation = { id: number; account: { id: number; login: string; type: "User" | "Organization" }; users: string[]; repositories: Repository[] };
 type Fixture = {
   app: { slug: string; afterInstall: { callbackPath: string | null } };
@@ -21,6 +33,9 @@ type Fixture = {
 };
 
 const FIXTURE_PATH = ".verify/github.json";
+const BUILD_WORKFLOW = ".github/workflows/ployz-build.yml";
+const GITHUB_ACTIONS_APP = { id: 15368, slug: "github-actions" };
+const SUSPENDED = { status: 403, json: { message: "This installation has been suspended" } } as const;
 const site = {
   "Dockerfile": "FROM nginx:1.27-alpine\nCOPY index.html /usr/share/nginx/html/index.html\n",
   "index.html": "<!doctype html><title>fake</title><h1>Hello from the fake GitHub</h1>\n",
@@ -84,6 +99,14 @@ export async function run() {
   const codes = new Map<string, User>();
   let origin = "";
   let checkRunId = 1;
+  let checkSuiteId = 1;
+  let runId = 30001;
+  const suspended = new Map<number, User>();
+  const pulls = new Map<string, PullRequest>();
+  const checkSuites = new Map<number, { repositoryId: number; suite: object }>();
+  const runs = new Map<number, Run>();
+  const signingKey = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const jwk = { ...signingKey.publicKey.export({ format: "jwk" }), kid: "verify-1", alg: "RS256", use: "sig" };
 
   const user = (login: string | undefined) => fixture.users.find((u) => u.login === login);
   const installation = (id: number) =>
@@ -99,6 +122,16 @@ export async function run() {
     return branch === undefined ? undefined : commitSha(i, r, branch);
   };
 
+  const pullKey = (r: Repository, number: number) => `${r.id}#${number}`;
+  const pullRequest = (i: Installation, r: Repository, seed: PullRequestSeed): PullRequest => ({
+    title: `Pull request #${seed.number}`, author: i.users[0] ?? "ghost", head_sha: commitSha(i, r, seed.head_branch),
+    base_branch: r.default_branch, state: "open", merged: false, merge_commit_sha: null, commits: 1,
+    updated_at: "2026-10-01T00:00:00Z", ...seed,
+  });
+  for (const { installation: i, repository: r } of located) {
+    for (const seed of r.pullRequests ?? []) pulls.set(pullKey(r, seed.number), pullRequest(i, r, seed));
+  }
+
   const repositoryJson = (i: Installation, r: Repository) => ({
     id: r.id, node_id: `R_${r.id}`, name: r.name, full_name: fullName(i, r), private: r.private,
     owner: { login: i.account.login, type: i.account.type }, default_branch: r.default_branch,
@@ -112,6 +145,20 @@ export async function run() {
       : `${origin}/settings/installations/${i.id}`,
     permissions: { metadata: "read", contents: "read", pull_requests: "read", checks: "write", actions: "write" },
     repository_selection: "selected",
+    ...suspension(i),
+  });
+  const suspension = (i: Installation) => {
+    const by = suspended.get(i.id);
+    return by === undefined
+      ? { suspended_at: null, suspended_by: null }
+      : { suspended_at: "2026-10-01T00:00:00Z", suspended_by: { id: by.id, login: by.login, type: "User" } };
+  };
+  const pullJson = (i: Installation, r: Repository, p: PullRequest) => ({
+    number: p.number, state: p.state, title: p.title, user: { login: p.author, type: "User" },
+    head: { ref: p.head_branch, sha: p.head_sha, repo: repositoryJson(i, r) },
+    base: { ref: p.base_branch, sha: commitSha(i, r, p.base_branch), repo: repositoryJson(i, r) },
+    merged: p.merged, merge_commit_sha: p.merge_commit_sha, commits: p.commits, updated_at: p.updated_at,
+    html_url: `${origin}/${fullName(i, r)}/pull/${p.number}`,
   });
 
   type Caller = { installationId?: number; user?: User };
@@ -137,13 +184,15 @@ export async function run() {
   }
   const sender = (u: User) => ({ id: u.id, login: u.login, type: "User" });
 
-  async function sendWebhook(input: { event?: string; action?: string; installation?: number; sender?: string; repositories?: string[] }) {
+  async function sendWebhook(input: WebhookInput) {
     const target = fixture.installations.find((i) => i.id === input.installation);
     const from = user(input.sender) ?? user(target?.users[0]);
     if (!target || !from) return { status: 400, body: "Unknown installation or sender." };
     if (input.event === "installation") {
       if (input.action === "deleted") removedInstallations.add(target.id);
       if (input.action === "created") removedInstallations.delete(target.id);
+      if (input.action === "suspend") suspended.set(target.id, from);
+      if (input.action === "unsuspend") suspended.delete(target.id);
       return webhook("installation", {
         action: input.action, sender: sender(from),
         installation: installationJson(target), repositories: listed(target).map((r) => repositoryJson(target, r)),
@@ -161,7 +210,82 @@ export async function run() {
         repositories_added: input.action === "added" ? repositories : [], repositories_removed: input.action === "removed" ? repositories : [],
       });
     }
-    return { status: 400, body: "event must be installation or installation_repositories." };
+    if (input.event === "pull_request" || input.event === "push" || input.event === "check_suite" || input.event === "workflow_run") {
+      const r = target.repositories.find((candidate) => fullName(target, candidate) === input.repository);
+      if (!r) return { status: 400, body: "Unknown repository for this installation." };
+      return repositoryWebhook(input, target, r, from);
+    }
+    return { status: 400, body: "event must be installation, installation_repositories, pull_request, push, check_suite or workflow_run." };
+  }
+
+  async function repositoryWebhook(input: WebhookInput, i: Installation, r: Repository, from: User) {
+    const common = { installation: { id: i.id }, repository: repositoryJson(i, r), sender: sender(from) };
+    const now = new Date().toISOString();
+    if (input.event === "push") {
+      const branch = /^refs\/heads\/(.+)$/.exec(input.ref ?? "")?.[1];
+      if (branch === undefined) return { status: 400, body: "ref must be refs/heads/<branch>." };
+      const after = commitSha(i, r, branch);
+      return webhook("push", {
+        ...common, ref: input.ref, before: sha1("before", after), after, created: false, deleted: false, forced: false,
+        pusher: { name: from.login, email: from.email },
+      });
+    }
+    if (input.event === "workflow_run") {
+      const id = Number(input.run_id);
+      const run = runs.get(id);
+      if (!run || run.repository !== fullName(i, r)) return { status: 400, body: "Unknown run for this repository." };
+      if (input.action === "completed") Object.assign(run, { status: "completed", conclusion: input.conclusion ?? "success" });
+      return webhook("workflow_run", {
+        ...common, action: input.action, workflow_run: { id, path: BUILD_WORKFLOW, status: run.status, conclusion: run.conclusion },
+      });
+    }
+    if (input.event === "check_suite") {
+      const completed = input.action === "completed";
+      const suite = {
+        id: checkSuiteId++, head_branch: r.default_branch, head_sha: input.head_sha ?? commitSha(i, r, r.default_branch),
+        status: completed ? "completed" : "queued", conclusion: completed ? input.conclusion ?? "success" : null,
+        updated_at: now, app: GITHUB_ACTIONS_APP,
+      };
+      checkSuites.set(suite.id, { repositoryId: r.id, suite });
+      return webhook("check_suite", { ...common, action: input.action, check_suite: suite });
+    }
+    if (typeof input.number !== "number") return { status: 400, body: "number is required." };
+    const before = pulls.get(pullKey(r, input.number))
+      ?? pullRequest(i, r, { number: input.number, author: from.login, head_branch: input.head_branch ?? `pr-${input.number}` });
+    const headBranch = input.head_branch ?? before.head_branch;
+    const p: PullRequest = {
+      ...before, head_branch: headBranch, base_branch: input.target_branch ?? before.base_branch, updated_at: now,
+      head_sha: headBranch === before.head_branch ? before.head_sha : commitSha(i, r, headBranch),
+    };
+    if (input.action === "synchronize") Object.assign(p, { head_sha: sha1("synchronize", p.head_sha), commits: p.commits + 1 });
+    if (input.action === "opened" || input.action === "reopened") p.state = "open";
+    if (input.action === "closed") {
+      const merged = input.merged ?? false;
+      Object.assign(p, { state: "closed", merged, merge_commit_sha: merged ? sha1("merge", p.head_sha) : null });
+    }
+    pulls.set(pullKey(r, p.number), p);
+    const changes = p.base_branch === before.base_branch
+      ? {}
+      : { base: { ref: { from: before.base_branch }, sha: { from: commitSha(i, r, before.base_branch) } } };
+    return webhook("pull_request", {
+      ...common, action: input.action, number: p.number, pull_request: pullJson(i, r, p),
+      ...(input.action === "edited" ? { changes } : {}),
+    });
+  }
+
+  type TokenInput = {
+    aud?: string; repository_id?: number | string; run_id?: number | string; job_workflow_ref?: string;
+    event_name?: string; expiresInSeconds?: number;
+  };
+  function idToken(input: TokenInput) {
+    const now = Math.floor(Date.now() / 1000);
+    const part = (value: object) => Buffer.from(JSON.stringify(value)).toString("base64url");
+    const unsigned = `${part({ alg: "RS256", typ: "JWT", kid: jwk.kid })}.${part({
+      iss: origin, aud: input.aud, iat: now, nbf: now, exp: now + (input.expiresInSeconds ?? 300),
+      repository_id: String(input.repository_id), run_id: String(input.run_id), job_workflow_ref: input.job_workflow_ref,
+      event_name: input.event_name ?? "workflow_dispatch",
+    })}`;
+    return `${unsigned}.${sign("RSA-SHA256", Buffer.from(unsigned), signingKey.privateKey).toString("base64url")}`;
   }
 
   function page(title: string, links: Array<{ href: string; label: string }>, script = "") {
@@ -199,6 +323,10 @@ export async function run() {
 
   type Reply = { status: number; json?: unknown; html?: string; body?: Buffer | string; type?: string; location?: string };
   const notFound: Reply = { status: 404, json: { message: "Not Found", documentation_url: "https://docs.github.com/rest" } };
+  const pullReply = (i: Installation, r: Repository, number: number): Reply => {
+    const p = pulls.get(pullKey(r, number));
+    return p ? { status: 200, json: pullJson(i, r, p) } : notFound;
+  };
 
   async function route(request: IncomingMessage, body: string): Promise<Reply> {
     const url = new URL(request.url ?? "/", origin);
@@ -207,16 +335,38 @@ export async function run() {
     const path = `/${segments.join("/")}`;
     const who = caller(request);
     let m: RegExpExecArray | null;
+    if (who.installationId !== undefined && suspended.has(who.installationId)) return SUSPENDED;
 
     if (method === "POST" && path === "/_fake/webhook") {
       const result = await sendWebhook(JSON.parse(body || "{}"));
       return { status: result.status, body: result.body, type: "text/plain" };
+    }
+    if (method === "POST" && path === "/_fake/oidc") {
+      const input = JSON.parse(body || "{}") as TokenInput;
+      if (input.aud === undefined || input.job_workflow_ref === undefined || input.repository_id === undefined || input.run_id === undefined) {
+        return { status: 400, body: "aud, repository_id, run_id and job_workflow_ref are required.", type: "text/plain" };
+      }
+      return { status: 200, json: { token: idToken(input) } };
+    }
+    if (method === "POST" && path === "/_fake/run") {
+      const input = JSON.parse(body || "{}") as { repository?: string; run_id?: number; status?: string };
+      const target = runs.get(Number(input.run_id));
+      if (!target || target.repository !== input.repository || (input.status !== "completed" && input.status !== "in_progress")) {
+        return { status: 400, body: "Unknown run for this repository, or status is not completed or in_progress.", type: "text/plain" };
+      }
+      Object.assign(target, { status: input.status, conclusion: input.status === "completed" ? "success" : null });
+      return { status: 200, json: { id: Number(input.run_id), ...target } };
+    }
+    if (path === "/.well-known/jwks") return { status: 200, json: { keys: [jwk] } };
+    if (path === "/.well-known/openid-configuration") {
+      return { status: 200, json: { issuer: origin, jwks_uri: `${origin}/.well-known/jwks`, id_token_signing_alg_values_supported: ["RS256"] } };
     }
 
     if ((m = /^\/app\/installations\/(\d+)(\/access_tokens)?$/.exec(path))) {
       const i = installation(Number(m[1]));
       if (!i) return notFound;
       if (!m[2]) return { status: 200, json: installationJson(i) };
+      if (suspended.has(i.id)) return SUSPENDED;
       const minted = token("ghs");
       installationTokens.set(minted, i.id);
       return { status: 201, json: { token: minted, expires_at: new Date(Date.now() + 3600_000).toISOString(), permissions: installationJson(i).permissions } };
@@ -291,17 +441,23 @@ export async function run() {
       const target = fixture.installations.find((i) => i.id === id);
       const from = user(url.searchParams.get("login") ?? target?.users[0]);
       if (!target || !from) return notFound;
-      const delivered = await sendWebhook({ event: "installation", action: "created", installation: id, sender: from.login });
+      const setupAction = url.searchParams.get("setup_action") === "update" ? "update" : "install";
+      const deliver = () => sendWebhook({ event: "installation", action: "created", installation: id, sender: from.login });
+      let delivered: { status: number } | undefined;
+      if (setupAction === "install" && url.searchParams.get("order") === "callback-first") {
+        setTimeout(() => void deliver().catch((error: unknown) => console.log(`${new Date().toISOString()} deferred installation webhook failed: ${String(error)}`)), 700);
+      }
+      else if (setupAction === "install") delivered = await deliver();
       const { callbackPath } = fixture.app.afterInstall;
       if (callbackPath === null) {
-        return { status: 200, html: page(`Installed on ${target.account.login} (Cloud answered ${delivered.status})`, [], "setTimeout(() => window.close(), 800)") };
+        return { status: 200, html: page(`Installed on ${target.account.login} (Cloud answered ${delivered?.status ?? "nothing yet"})`, [], "setTimeout(() => window.close(), 800)") };
       }
       const code = token("code");
       codes.set(code, from);
       const back = new URL(callbackPath, cloud);
       back.searchParams.set("code", code);
       back.searchParams.set("installation_id", String(id));
-      back.searchParams.set("setup_action", "install");
+      back.searchParams.set("setup_action", setupAction);
       const state = url.searchParams.get("state");
       if (state !== null) back.searchParams.set("state", state);
       return { status: 302, location: back.toString() };
@@ -314,6 +470,8 @@ export async function run() {
       if (rest === "") return { status: 200, json: repositoryJson(found.installation, found.repository) };
       if (/^\/commits\/[0-9a-f]{40}\/check-runs$/.test(rest)) return { status: 200, json: { total_count: 0, check_runs: [] } };
       if (/^\/check-runs(\/\d+)?$/.test(rest) && method !== "GET") return { status: 200, json: { id: checkRunId++ } };
+      const pull = /^\/pulls\/(\d+)$/.exec(rest);
+      if (pull) return pullReply(found.installation, found.repository, Number(pull[1]));
       return notFound;
     }
     if ((m = /^\/repos\/([^/]+)\/([^/]+)(\/.*)?$/.exec(path))) {
@@ -360,6 +518,29 @@ export async function run() {
       if ((n = /^\/compare\/([0-9a-f]{40})\.\.\.([0-9a-f]{40})$/.exec(rest))) {
         const identical = n[1] === n[2];
         return { status: 200, json: { status: identical ? "identical" : "ahead", base_commit: { sha: n[1] }, files: identical ? [] : Object.keys(r.files).map((filename) => ({ filename })) } };
+      }
+      if ((n = /^\/pulls\/(\d+)$/.exec(rest))) return pullReply(i, r, Number(n[1]));
+      if ((n = /^\/check-suites\/(\d+)$/.exec(rest))) {
+        const recorded = checkSuites.get(Number(n[1]));
+        return recorded?.repositoryId === r.id ? { status: 200, json: recorded.suite } : notFound;
+      }
+      if ((n = /^\/actions\/workflows\/ployz-build\.yml(\/dispatches)?$/.exec(rest))) {
+        if (r.files[BUILD_WORKFLOW] === undefined) return notFound;
+        if (!n[1]) return { status: 200, json: { id: r.id, name: "Ployz build", path: BUILD_WORKFLOW, state: "active" } };
+        if (method !== "POST") return notFound;
+        const id = runId++;
+        runs.set(id, { repository: fullName(i, r), status: "in_progress", conclusion: null });
+        return { status: 200, json: { workflow_run_id: id, run_url: `${origin}/repos/${fullName(i, r)}/actions/runs/${id}`, html_url: `${origin}/${fullName(i, r)}/actions/runs/${id}` } };
+      }
+      if ((n = /^\/actions\/runs\/(\d+)(\/cancel)?$/.exec(rest))) {
+        const id = Number(n[1]);
+        const recorded = runs.get(id);
+        if (recorded?.repository !== fullName(i, r)) return notFound;
+        if (!n[2]) return { status: 200, json: { id, path: BUILD_WORKFLOW, ...recorded } };
+        if (method !== "POST") return notFound;
+        if (recorded.status === "completed") return { status: 409, json: { message: "Cannot cancel a workflow run that is completed." } };
+        Object.assign(recorded, { status: "completed", conclusion: "cancelled" });
+        return { status: 202, json: {} };
       }
       if ((n = /^\/tarball\/([0-9a-f]{40})$/.exec(rest))) {
         if (!shaOrBranchHead(i, r, n[1] ?? "")) return notFound;

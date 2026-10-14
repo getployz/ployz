@@ -490,7 +490,6 @@ mod tests {
             )
         };
         set("db.env.MODE", json!("fast")).unwrap();
-        // A third writer is still refused.
         assert_eq!(
             set("db.replicas", json!(3)).unwrap_err().code,
             ployz_core::RpcErrorCode::Conflict

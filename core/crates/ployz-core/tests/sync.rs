@@ -548,7 +548,6 @@ fn only_the_senders_own_changes_start_ticked() {
     };
     assert!(ticked(&format!("{API}:startCommand")));
     assert!(!ticked(&format!("{API}:preDeployCommand")));
-    // Unticked rows can still be picked.
     let next = next_of(&plan, &[format!("{API}:preDeployCommand")]);
     assert_eq!(
         find(&next["services"], "lineageId", API)["config"]["preDeployCommand"],
@@ -573,7 +572,6 @@ fn removals_and_equal_secrets_produce_no_rows_in_a_sync_and_land_as_they_are() {
     // api's credential has another id here, but credentials compare by presence.
     assert!(rows.iter().all(|r| !r.contains(":source")), "{rows:#?}");
 
-    // As it is, each removal lands.
     let copy = compare(Some(&parent()), &from, &parent(), Way::Copy);
     let mut next = next_of(
         &copy,
@@ -1105,7 +1103,6 @@ fn a_sync_lands_its_picks_and_advances_the_base_by_exactly_them() {
         ],
     );
 
-    // As it is, the sealed value lands.
     let mut carried = next_of(
         &compare(Some(&parent()), &from, &into, Way::Copy),
         &table_picks(),
@@ -1939,7 +1936,6 @@ fn sync_conflicts_start_unticked_follow_unchanged() {
     let sync = compare(Some(&parent()), &from, &into, Way::Sync);
     assert!(!ticked(&sync, &start));
     assert!(ticked(&sync, &pre));
-    // Unticked, a conflict can still be picked.
     let next = next_of(&sync, std::slice::from_ref(&start));
     assert_eq!(
         find(&next["services"], "lineageId", API)["config"]["startCommand"],

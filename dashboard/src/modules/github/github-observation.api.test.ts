@@ -1,18 +1,21 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ConfigProvider, Effect, Layer } from "effect";
+import { organizationAccess } from "#/modules/github/github-access";
 import { GithubApi, GithubApiLive, resolveGithubRepository } from "#/modules/github/github-observation.api";
 import { getGithubAppInstallUrl } from "#/modules/github/github.server";
 import { AppConfig } from "#/server/config.server";
 import { testConfigEnvironment } from "#/test/config-environment";
+import { GithubTokensUnchecked } from "#/test/fake-github";
 
 const sha = "a".repeat(40);
+const acme = organizationAccess("org", 7);
 
 function configured(origin: { readonly PLOYZ_VERIFY_GITHUB_ORIGIN?: string }) {
   const env = { ...testConfigEnvironment(), DATABASE_URL: "postgres://unused", GITHUB_APP_SLUG: "ployz-test", NODE_ENV: "test", ...origin };
   const config = Layer.effect(AppConfig, AppConfig.make).pipe(
     Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env }))),
   );
-  return GithubApiLive.pipe(Layer.provideMerge(config));
+  return GithubApiLive.pipe(Layer.provideMerge(GithubTokensUnchecked), Layer.provideMerge(config));
 }
 
 afterEach(() => vi.unstubAllGlobals());
@@ -33,8 +36,8 @@ describe("GitHub origins", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const installUrl = await Effect.runPromise(Effect.gen(function* () {
-      const repository = yield* resolveGithubRepository(7, 42);
-      const response = yield* (yield* GithubApi).archive({ installationId: 7, repository, sha });
+      const repository = yield* resolveGithubRepository(acme, 42);
+      const response = yield* (yield* GithubApi).archive({ access: acme, repository, sha });
       expect(yield* Effect.promise(() => response.text())).toBe("tarball");
       return getGithubAppInstallUrl((yield* AppConfig).github);
     }).pipe(Effect.provide(configured(origin))));

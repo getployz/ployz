@@ -1,5 +1,6 @@
 import { Effect, Schema } from "effect";
 import { describe, expect, it } from "vitest";
+import { organizationAccess } from "./github-access";
 import { checkGithubBuildWorkflow } from "./github-build.server";
 import { GITHUB_BUILD_WORKFLOW, githubBuildWorkflowUrl } from "./github-build-workflow";
 import { GithubApi, GithubObservationError, type GithubObservationErrorCode } from "./github-observation.api";
@@ -24,9 +25,11 @@ type Reply = { body: unknown } | { error: GithubObservationErrorCode; status: nu
 
 function check(replies: { repository: Reply; workflow?: Reply }) {
   const urls: string[] = [];
-  return Effect.runPromise(checkGithubBuildWorkflow(7, 42).pipe(
+  return Effect.runPromise(checkGithubBuildWorkflow(organizationAccess("org", 7), 42).pipe(
     Effect.provideService(GithubApi, {
       archive: () => Effect.die("unused"),
+      app: () => Effect.die("unused"),
+      installationRepositories: () => Effect.die("unused"),
       json: (request) => {
         urls.push(request.path);
         const reply = request.path.endsWith("/repositories/42") ? replies.repository : replies.workflow;

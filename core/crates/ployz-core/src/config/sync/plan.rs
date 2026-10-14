@@ -34,7 +34,6 @@ pub struct Sides<'intent> {
     pub from: &'intent Intent,
     /// The receiver.
     pub into: &'intent Intent,
-    /// Each side's generated-address suffix.
     pub hostnames: Hostnames,
 }
 
@@ -55,7 +54,6 @@ pub enum Way {
 
 /// The caller's context for a comparison.
 pub struct Policy {
-    /// How the changes travel.
     pub way: Way,
     /// Rows `from` marked Never sync.
     pub from_marks: BTreeSet<RowId>,
@@ -129,7 +127,6 @@ pub enum Arrives {
 /// One row that differs between the sides, and what a move does with it.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct PlannedRow {
-    /// Which row.
     pub id: RowId,
     /// What the sides last shared there; redacted.
     pub base: Cell,
@@ -139,7 +136,6 @@ pub struct PlannedRow {
     pub into: Cell,
     /// The new node's row, which must be picked too.
     pub requires: Option<RowId>,
-    /// Whether it moves.
     pub verdict: Verdict,
 }
 
@@ -179,7 +175,6 @@ struct PreparedLanding<'plan> {
 /// One landed row: what to [`put`] back to rewind the base or undo the landing.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Landed {
-    /// Which row.
     pub row: RowId,
     /// What the base held before; redacted.
     pub prior: Cell,

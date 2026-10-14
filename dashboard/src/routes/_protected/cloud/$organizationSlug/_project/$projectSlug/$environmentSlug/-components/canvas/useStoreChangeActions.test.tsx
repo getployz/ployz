@@ -61,7 +61,6 @@ it("asks before a Deploy deletes Volume data, then admits accepting exactly what
   test.write.mockResolvedValueOnce(refusal("confirmation_required", loss)).mockResolvedValueOnce(admitted);
 
   act(() => { fireEvent.click(screen.getByText("Deploy now")); });
-  // Every Volume that goes, on the Servers holding it; the user types where.
   await screen.findByText("pg-data");
   expect(screen.getByText("hetzner-1")).toBeTruthy();
   expect(screen.getByText("Deletes data")).toBeTruthy();
@@ -75,7 +74,6 @@ it("asks before a Deploy deletes Volume data, then admits accepting exactly what
   ]);
   await waitFor(() => expect(screen.queryByText("pg-data")).toBeNull());
   expect(toast.error).not.toHaveBeenCalled();
-  // The admitted Deploy, the second admission's own id, opens.
   expect(admittedIds).toHaveLength(1);
   expect(test.admits()[1]).toMatchObject({ id: admittedIds[0] });
 });

@@ -302,7 +302,6 @@ pub(crate) async fn start(store: &CredentialStore, cloud: &str) -> Result<Start,
                     pending,
                     resumed: true,
                 },
-                // Denied or expired: ask for a fresh code below.
                 Err(LoginError::Denied | LoginError::Expired) => {
                     request_code(store, &http, cloud).await?
                 }

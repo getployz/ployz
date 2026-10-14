@@ -84,7 +84,6 @@ async fn ployz_build_pushes_into_a_machine_with_a_build_grant() {
             digest.strip_prefix("sha256:").unwrap()
         )
     );
-    // The Machine holds the pushed tag as exactly the reported content.
     let held = cluster
         .machine_shell(
             0,

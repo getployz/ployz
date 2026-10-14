@@ -17,7 +17,6 @@ pub enum Tone {
     Muted,
     /// Names you act on.
     Name,
-    /// URLs.
     Link,
     /// Hint labels: `next:`, `inspect:`, `retry:`, `undo:`, `valid:`.
     Label,

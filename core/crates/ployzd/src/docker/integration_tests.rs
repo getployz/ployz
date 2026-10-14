@@ -1214,7 +1214,6 @@ async fn image_cleanup_lists_tag_times_and_removes_only_unused_references() {
         )
         .await
         .unwrap();
-    // A distinct image that no Container uses.
     let (repo, tag) = unused.rsplit_once(':').unwrap();
     docker
         .client

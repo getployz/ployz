@@ -142,12 +142,13 @@ describe("AppConfig", () => {
       const real = yield* load(requiredEnvironment);
       assert.deepStrictEqual(real.github.origins, {
         api: "https://api.github.com", web: "https://github.com", codeload: "https://codeload.github.com",
+        oidc: "https://token.actions.githubusercontent.com",
       });
 
       const lab = { ...requiredEnvironment, NODE_ENV: "development" };
       const fake = yield* load({ ...lab, PLOYZ_VERIFY_GITHUB_ORIGIN: "http://127.0.0.1:4555" });
       assert.deepStrictEqual(fake.github.origins, {
-        api: "http://127.0.0.1:4555", web: "http://127.0.0.1:4555", codeload: "http://127.0.0.1:4555",
+        api: "http://127.0.0.1:4555", web: "http://127.0.0.1:4555", codeload: "http://127.0.0.1:4555", oidc: "http://127.0.0.1:4555",
       });
 
       const refused = [

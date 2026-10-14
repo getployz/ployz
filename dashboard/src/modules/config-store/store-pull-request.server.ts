@@ -6,11 +6,11 @@ import { storePrCheckRun } from "./store-pull-requests";
 import { admittedEvents, callStore, storeSystem } from "#/modules/config-store/config-store.server";
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import { StoreGithubFailure, mergedInto, pullRequestEvent } from "#/modules/config-store/store-github.server";
-import { fetchInstallationPullRequest, postInstallationCheckRun } from "#/modules/github/github-observation.api";
-import { githubRepositoryCache } from "#/modules/github/tables";
-import { member } from "#/modules/identity/tables";
+import { installationAccess } from "#/modules/github/github-access";
+import { fetchInstallationPullRequest, githubLacksPermission, postInstallationCheckRun } from "#/modules/github/github-observation.api";
+import { githubRepositoryCache, organizationGithubInstallation } from "#/modules/github/tables";
 import type { GithubPullRequestReceivedEventData } from "#/modules/github/github-ingestion.contracts";
-import { listGithubInstallationOrganizationIds } from "#/modules/github/github.repository";
+import { listLinkedOrganizationIds } from "#/modules/github/github.repository";
 import type { ConfigDeploymentAdmittedEventData, ConfigPrCheckRequestedEventData, DeploymentTrigger } from "#/modules/inngest/events";
 import { organization } from "#/modules/organization/tables";
 import { AppConfig } from "#/server/config.server";
@@ -39,18 +39,19 @@ const collect = Effect.fn("StorePullRequest.collect")(function* (
 });
 
 /**
- * A pull request, as each Organization of the installation's members sees it: Cloud reads its facts from GitHub now,
+ * A pull request, as each Organization linked to the installation sees it: Cloud reads its facts from GitHub now,
  * never the webhook's, and the Store keeps the newest by GitHub's `updated_at`, so a late delivery can't reopen a
  * closed one. The Store makes, retracks and closes PR Environments.
  */
 export const observeStorePullRequest = Effect.fn("StorePullRequest.observe")(function* (payload: GithubPullRequestReceivedEventData) {
   const done: StoreOutcome = { deployments: [], closing: [], check: false };
-  const organizations = yield* listGithubInstallationOrganizationIds(payload.installationId);
+  const organizations = yield* listLinkedOrganizationIds(payload.installationId);
   if (organizations.length === 0) return done;
-  const live = yield* fetchInstallationPullRequest(payload.installationId, payload.repositoryId, payload.number);
+  const access = installationAccess(payload.installationId);
+  const live = yield* fetchInstallationPullRequest(access, payload.repositoryId, payload.number);
   const { updatedAt } = live;
   if (updatedAt === null) return yield* new StoreGithubFailure({ message: "GitHub sent a pull request without updated_at." });
-  const targetHead = yield* mergedInto(payload.installationId, payload.repositoryId, live);
+  const targetHead = yield* mergedInto(access, payload.repositoryId, live);
   const event: SystemEvent = pullRequestEvent(payload.repositoryId, payload.number, { ...live, updatedAt }, targetHead);
   for (const organizationId of organizations) {
     yield* collect(organizationId, yield* storeSystem(organizationId, event), done, "github");
@@ -107,16 +108,20 @@ export const closeStoreEnvironments = Effect.fn("StorePullRequest.close")(functi
 });
 
 /**
- * A Store write named the pull request (a Conditional Sync, for one): publish its check again, through the GitHub
- * installation a member of the Organization reads the repository with.
+ * A Store write named the pull request (a Conditional Sync, for one): publish its check again, through a GitHub
+ * installation the Organization links that holds the repository.
  */
 export const publishRequestedStorePrCheck = Effect.fn("StorePullRequest.publishRequestedCheck")(function* (
   request: ConfigPrCheckRequestedEventData,
 ) {
   const { drizzle } = yield* Database;
   const [found] = yield* drizzle.select({ installationId: githubRepositoryCache.installationId }).from(githubRepositoryCache)
-    .innerJoin(member, eq(member.userId, githubRepositoryCache.userId))
-    .where(and(eq(member.organizationId, request.organizationId), eq(githubRepositoryCache.repositoryId, request.repositoryId)))
+    .innerJoin(organizationGithubInstallation, and(
+      eq(organizationGithubInstallation.installationId, githubRepositoryCache.installationId),
+      eq(organizationGithubInstallation.organizationId, request.organizationId),
+    ))
+    .where(eq(githubRepositoryCache.repositoryId, request.repositoryId))
+    .orderBy(githubRepositoryCache.installationId)
     .limit(1);
   if (!found) return "skipped" as const;
   return yield* publishStorePrCheck({ installationId: found.installationId, repositoryId: request.repositoryId, number: request.number });
@@ -132,7 +137,7 @@ export const publishStorePrCheck = Effect.fn("StorePullRequest.publishCheck")(fu
 }) {
   const store = yield* cloudStore;
   const config = yield* AppConfig;
-  const organizations = yield* listGithubInstallationOrganizationIds(payload.installationId);
+  const organizations = yield* listLinkedOrganizationIds(payload.installationId);
   const views: { organizationId: string; view: PullRequestView }[] = [];
   for (const organizationId of organizations) {
     const view = yield* storeTry(() => store.read(organizationId, { query: "pull_request", repository_id: payload.repositoryId, number: payload.number }));
@@ -147,12 +152,13 @@ export const publishStorePrCheck = Effect.fn("StorePullRequest.publishCheck")(fu
     config.app.url.href,
   );
   if (!run) return "skipped" as const;
-  return yield* postInstallationCheckRun(payload.installationId, payload.repositoryId, {
+  if (views.length === 0) return "skipped" as const;
+  return yield* postInstallationCheckRun(installationAccess(payload.installationId), payload.repositoryId, {
     ...run,
     externalId: `${payload.repositoryId}:${payload.number}`,
   }).pipe(
     Effect.as("posted" as const),
-    Effect.catchIf((error) => error.status === 403 && !error.retriable, (error) =>
+    Effect.catchIf(githubLacksPermission, (error) =>
       Effect.logWarning("The PR check was not posted: the installation lacks Checks: write.", { payload, error }).pipe(Effect.as("forbidden" as const))),
   );
 });

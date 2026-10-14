@@ -3,6 +3,7 @@
 
 use std::collections::BTreeMap;
 
+use ployz_core::DockerfileFacts;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -79,14 +80,25 @@ impl Tool for GithubLs {
             GithubFileBody::Text { content } => (Some(content), None),
             GithubFileBody::Withheld { note } => (None, Some(note)),
         };
+        let dockerfile = content
+            .as_deref()
+            .filter(|_| is_dockerfile(&file.path))
+            .map(DockerfileFacts::parse);
         Ok(json!({
             "repository": file.repository,
             "ref": file.git_ref,
             "path": file.path,
             "content": content,
             "note": note,
+            "dockerfile": dockerfile,
         }))
     }
+}
+
+/// `Dockerfile`, `Dockerfile.cloud` or `cloud.Dockerfile`, in any case.
+fn is_dockerfile(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path).to_ascii_lowercase();
+    name == "dockerfile" || name.starts_with("dockerfile.") || name.ends_with(".dockerfile")
 }
 
 /// Nothing at `path`: list its parent instead.
@@ -132,9 +144,14 @@ fn listing(tree: &GithubTreeView, path: Option<&str>, globbed: bool) -> Value {
         .into_iter()
         .map(|(path, kind)| json!({ "path": path, "kind": kind }))
         .collect::<Vec<_>>();
-    let note = tree
-        .truncated
-        .then_some("GitHub cut this listing short; narrow it with path or match");
+    let note = match (tree.truncated, entries.is_empty(), globbed) {
+        (true, ..) => Some("GitHub cut this listing short; narrow it with path or match"),
+        (false, true, true) => {
+            Some("No file matches; the path may not exist or the glob matches nothing")
+        }
+        (false, true, false) => Some("This repository has no files at that ref"),
+        (false, false, _) => None,
+    };
     json!({
         "repository": tree.repository,
         "ref": tree.git_ref,

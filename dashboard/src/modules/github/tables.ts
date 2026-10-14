@@ -1,35 +1,43 @@
 import { createdAt, updatedAt } from "#/db/tables";
 import { user } from "#/modules/identity/tables";
-import { bigint, boolean, index, integer, pgTable, primaryKey, text, timestamp, unique, uuid } from "drizzle-orm/pg-core";
+import { organization } from "#/modules/organization/tables";
+import { bigint, boolean, index, integer, pgTable, primaryKey, text, timestamp, uuid } from "drizzle-orm/pg-core";
 
-export const githubInstallation = pgTable(
-  "github_installation",
+export const githubInstallation = pgTable("github_installation", {
+  installationId: integer("installation_id").primaryKey(),
+  accountLogin: text("account_login").notNull(),
+  accountType: text("account_type").notNull(),
+  accountAvatarUrl: text("account_avatar_url"),
+  suspendedAt: timestamp("suspended_at", { mode: "date", withTimezone: true }),
+  createdAt,
+  updatedAt,
+});
+
+export const organizationGithubInstallation = pgTable(
+  "organization_github_installation",
   {
-    id: uuid("id").defaultRandom().primaryKey(),
-    userId: uuid("user_id")
+    organizationId: uuid("organization_id")
       .notNull()
-      .references(() => user.id, { onDelete: "cascade" }),
-    installationId: integer("installation_id").notNull(),
-    accountLogin: text("account_login").notNull(),
-    accountType: text("account_type").notNull(),
-    accountAvatarUrl: text("account_avatar_url"),
-    createdAt,
-    updatedAt,
+      .references(() => organization.id, { onDelete: "cascade" }),
+    installationId: integer("installation_id")
+      .notNull()
+      .references(() => githubInstallation.installationId, { onDelete: "cascade" }),
+    connectedByUserId: uuid("connected_by_user_id").references(() => user.id, { onDelete: "set null" }),
+    connectedGithubLogin: text("connected_github_login").notNull(),
+    connectedAt: timestamp("connected_at", { mode: "date", withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [
-    unique().on(table.userId, table.installationId),
-    index("github_installation_user_idx").on(table.userId),
-    index("github_installation_installation_id_idx").on(table.installationId),
+    primaryKey({ columns: [table.organizationId, table.installationId] }),
+    index("organization_github_installation_installation_idx").on(table.installationId),
   ],
 );
 
 export const githubRepositoryCache = pgTable(
   "github_repository_cache",
   {
-    userId: uuid("user_id")
+    installationId: integer("installation_id")
       .notNull()
-      .references(() => user.id, { onDelete: "cascade" }),
-    installationId: integer("installation_id").notNull(),
+      .references(() => githubInstallation.installationId, { onDelete: "cascade" }),
     repositoryId: bigint("repository_id", { mode: "number" }).notNull(),
     name: text("name").notNull(),
     fullName: text("full_name").notNull(),
@@ -48,11 +56,7 @@ export const githubRepositoryCache = pgTable(
       .notNull(),
   },
   (table) => [
-    primaryKey({
-      columns: [table.userId, table.installationId, table.repositoryId],
-    }),
-    index("github_repository_cache_installation_idx").on(table.installationId),
-    index("github_repository_cache_user_idx").on(table.userId),
+    primaryKey({ columns: [table.installationId, table.repositoryId] }),
     index("github_repository_cache_full_name_idx").on(table.fullName),
   ],
 );

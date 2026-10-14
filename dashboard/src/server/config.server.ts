@@ -15,11 +15,12 @@ import {
 const Uuid = Schema.String.check(Schema.isUUID());
 const DEFAULT_HOSTED_DNS_URL = new URL("https://dns.ployz.app/");
 const DEFAULT_POSTHOG_HOST = new URL("https://us.i.posthog.com");
-export type GithubOrigins = { readonly api: string; readonly web: string; readonly codeload: string };
+export type GithubOrigins = { readonly api: string; readonly web: string; readonly codeload: string; readonly oidc: string };
 const GITHUB_ORIGINS: GithubOrigins = {
   api: "https://api.github.com",
   web: "https://github.com",
   codeload: "https://codeload.github.com",
+  oidc: "https://token.actions.githubusercontent.com",
 };
 const NonEmptySecret = Schema.Redacted(Schema.NonEmptyString);
 const EncryptionSecret = Schema.Redacted(
@@ -212,7 +213,7 @@ const resolveGithubOrigins = Effect.fn("Config.resolveGithubOrigins")(function* 
 ) {
   const origin = yield* resolveVerifyOrigin(input.nodeEnv, "PLOYZ_VERIFY_GITHUB_ORIGIN", input.verifyGithubOrigin);
   if (origin === undefined) return GITHUB_ORIGINS;
-  return { api: origin, web: origin, codeload: origin } satisfies GithubOrigins;
+  return { api: origin, web: origin, codeload: origin, oidc: origin } satisfies GithubOrigins;
 });
 
 /** Comma-separated user ids, taken exactly: no email or domain matching. */

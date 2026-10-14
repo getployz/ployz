@@ -22,7 +22,6 @@ spec.loader.exec_module(volume_move)
 
 PHYSICAL = "verify-production_vol-1"
 CALL_LIMIT = 6000
-# The cancel undos the table ran before release replaced them: the cancel and runner checks still hold to them.
 CANCEL_UNDOS = {
     "undo-before-cut": dict(name="undo-before-cut", cell="Writer>Writer", step="3-cut", op="move", machine="writer",
                             fault_on="writer", fault="kill-daemon:SetVolumeCopy.WriterToMirror", trigger="fault",
@@ -1385,9 +1384,7 @@ class VolumeMoveTests(unittest.TestCase):
         cases = {case["name"]: case for case in volume_move.CASES + volume_move.soak_cases()}
         # (case, how the first run ends, when it ends, when the trigger appears, whether the case may pass)
         for name, ended, ends, trips, passes in (
-                # Opus's repro: the claimed move fails before its snapshot, and a later sync trips the armed kill.
                 ("kill-snapshot", "failed", 0.5, 1.0, False),
-                # Codex's repro: the claimed move fails before any SetVolumeCopy, and a later sync's pull trips it.
                 ("kill-pull", "failed", 0.5, 1.0, False),
                 # A request no run picked up closes lost, and a sync after it trips the armed kill.
                 ("kill-snapshot", "lost", 0.5, 1.0, False),
@@ -1573,8 +1570,6 @@ class VolumeMoveTests(unittest.TestCase):
 
     def test_a_receive_an_earlier_sync_left_running_is_not_credited_to_the_first_run(self):
         cases = {case["name"]: case for case in volume_move.soak_cases()}
-        # Codex r3 finding 1: a sync holds the Volume, starts a receive and ends while the receive runs on; the first
-        # move sends no effect and fails, or is never claimed and closes lost.
         for name, state, ends, receive_ends in (
                 ("soak-1-rounds-runner-kill", "failed", 1, 30),
                 ("soak-1-rounds-kill-ployz-writer", "failed", 1, 30),
@@ -1608,7 +1603,6 @@ class VolumeMoveTests(unittest.TestCase):
         case = next(case for case in volume_move.soak_cases() if case["name"] == "soak-4-final-runner-kill")
         # (name, Machine clock offsets, exec latency, host second of the final-pull fault, first run end, passes)
         for name, offsets, latency, final, ends, passes in (
-                # Codex r3 finding 2: the warm-round fault at +2 is stamped +22, after the writer's stop at +10.
                 ("trigger Machine 20 s ahead, no final fault", {"machine-2": 20.0}, 0.0, None, 11, False),
                 ("writer 20 s ahead, a real final fault", {"machine-1": 20.0}, 0.0, 12, 13, True),
                 ("no skew, a real final fault", {}, 0.0, 11, 13, True),
@@ -1769,14 +1763,12 @@ class VolumeMoveTests(unittest.TestCase):
             self.assertIn("the trigger never fired before the run ended", result["failures"], result)
 
     def test_a_pull_admitted_before_its_receive_exists_is_not_credited_to_the_first_run(self):
-        # Codex r4 finding 1 and Opus S1: no process exists at the clean start, and the receive spawns 30 s later.
         for name in ("soak-1-rounds-runner-kill", "soak-1-rounds-kill-ployz-writer", "soak-1-rounds-kill-docker-other"):
             with self.subTest(name):
                 result, _ = self.run_with(name, lambda model: self.admit_pull(model, "machine-2", 30, 40))
                 self.assert_not_credited(result)
 
     def test_a_cut_an_earlier_move_left_waiting_in_the_daemon_is_not_credited_to_the_first_run(self):
-        # Codex r4's detached cut: the cut waits for the admission turn and stops the writer after the clean start.
         def waiting(model):
             model.task("machine-1", model.clock() + 20, "cut", lambda: model.stop("machine-1"))
         result, model = self.run_with("soak-3-cut-runner-kill", waiting)
@@ -1792,7 +1784,6 @@ class VolumeMoveTests(unittest.TestCase):
         self.assert_not_credited(result)
 
     def test_a_clock_that_steps_after_calibration_fails_the_case(self):
-        # Codex r4 finding 2 and Opus S2: a warm-round fault at +2, the writer's stop at +10, and maybe a final fault.
         for name, machine, step, final, ends, passes in (
                 ("trigger Machine steps forward 20 s", "machine-2", 20.0, None, 11, False),
                 ("writer steps back 9 s", "machine-1", -9.0, None, 11, False),
@@ -1820,8 +1811,6 @@ class VolumeMoveTests(unittest.TestCase):
                                         for failure in result["failures"]), result["failures"])
 
     def test_a_trigger_is_owned_by_when_its_line_was_stamped_not_by_when_a_poll_saw_it(self):
-        # Codex bot round 8: the fault trigger polls every second, so a fault the first run made at +1.2 is seen at
-        # +2, after that run ended at +1.5. A fault a later run made after the first run ended still fails.
         for ends, trips, passes in ((1.5, 1.2, True), (1.2, 1.5, False)):
             with self.subTest(ends=ends, trips=trips):
                 def effect(begun, model=None, trips=trips):
@@ -1840,9 +1829,6 @@ class VolumeMoveTests(unittest.TestCase):
                     self.assertIn("before the trigger", result["failures"][0])
 
     def test_a_slow_move_whose_clock_drifts_within_its_bound_passes(self):
-        # Codex bot round 8: the case end can come some 4000 s after calibration, so a fixed 0.5 s allowance fails a
-        # valid case whose clock slews 300 ppm. The fault lands at +600, the first run fails at +2390, and its rerun
-        # takes 1790 s.
         def drifting(model):
             self.model = model
             model.rate["machine-2"] = 300e-6
@@ -1883,8 +1869,6 @@ class VolumeMoveTests(unittest.TestCase):
         self.assertTrue(result["passed"], result)
 
     def test_a_cancel_restarts_the_runner_exactly_once_even_when_its_lookup_raises(self):
-        # Codex bot round 8: act kills the runner before cancel, and an inngest_run that raises inside cancel left
-        # the runner dead for every later case.
         undo = CANCEL_UNDOS["undo-before-cut"]
         clean = volume_move.CASES[0]
         for raises in (False, True):
@@ -1930,8 +1914,6 @@ class VolumeMoveTests(unittest.TestCase):
                     self.assertIn("psql exited 1", results[undo["name"]]["failures"][0])
 
     def test_a_clean_start_read_that_does_not_prove_it_ran_skips_the_case(self):
-        # Codex r4 finding 3: the clean-start read fails while the leftover it would have shown is real, and the
-        # trigger polls that follow succeed.
         for unreadable in ("exec", "pgrep", "pull"):
             with self.subTest(unreadable):
                 def leftover(model, unreadable=unreadable):

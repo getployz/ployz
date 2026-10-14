@@ -11,10 +11,11 @@ use serde_json::{Value, json};
 use ts_rs::TS;
 
 use crate::error;
+use crate::git::GitSetting;
 use crate::id::{Revision, VolumeName};
 use crate::policy::{self, Policy};
 use crate::registry;
-use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
+use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
 use crate::sealing::SealingKey;
 use crate::settings::{Apply, ServiceSetting, SettingPath, Target};
 use crate::storage::Tx;
@@ -32,7 +33,8 @@ pub struct Edit {
     /// Refuse with `conflict` unless Working State is still at this revision.
     #[serde(default)]
     pub expect: Option<Revision>,
-    /// The changes, applied in order.
+    /// The changes, applied in order, except that image and repository changes go first.
+    /// Every Setting set must apply to the source the whole edit leaves.
     pub changes: Vec<Change>,
 }
 
@@ -132,12 +134,95 @@ pub(crate) fn edit(
             json!({}),
         ));
     }
-    let mut environment = scope::lock(tx, who, &edit.environment)?;
+    let environment = scope::lock(tx, who, &edit.environment)?;
     environment.expect(edit.expect)?;
     let before = environment.working.clone();
-    let (mut staged, mut immediate) = (Vec::new(), Vec::new());
-    let mut typed_addresses: Vec<TypedAddresses> = Vec::new();
-    for (path, step) in expand(&edit.changes)? {
+    let mut steps = expand(&edit.changes)?;
+    // Each Setting set, judged against the source the whole edit leaves.
+    let mut set = Vec::new();
+    for (path, step) in &steps {
+        if let (Step::Set(_), Some(Target::Setting(setting))) = (step, path.target()) {
+            set.push((path.settings_of()?.clone(), *setting));
+        }
+    }
+    // The source changes go first, unsets before sets, so the order of keys never matters.
+    steps.sort_by_key(|(path, step)| match (path.target(), step) {
+        (Some(Target::Setting(setting)), step) if is_source(*setting) => {
+            u8::from(matches!(step, Step::Set(_)))
+        }
+        _ => 2,
+    });
+    let others = steps.iter().position(
+        |(path, _)| !matches!(path.target(), Some(Target::Setting(setting)) if is_source(*setting)),
+    );
+    let others = steps.split_off(others.unwrap_or(steps.len()));
+    let mut editing = Editing {
+        tx,
+        who,
+        sealing,
+        trusted,
+        environment,
+        staged: Vec::new(),
+        immediate: Vec::new(),
+        typed_addresses: Vec::new(),
+    };
+    for (path, step) in steps {
+        editing.apply(path, step)?;
+    }
+    for (path, step) in others {
+        editing.apply(path, step)?;
+    }
+    // Every Setting set must mean something to the source the edit leaves; unsetting never
+    // has to, and an empty Service takes build settings for the uploads it builds. Checked
+    // last, so a value of the wrong shape is named for its shape first.
+    for (service, setting) in set {
+        let config = &editing.environment.service(&service)?.config;
+        if !setting.applies(config) {
+            return Err(setting.not_for(&service, &config.source));
+        }
+    }
+    let Editing {
+        tx,
+        mut environment,
+        staged,
+        immediate,
+        typed_addresses,
+        ..
+    } = editing;
+    crate::git::check_sources(&before, &environment.working, trusted)?;
+    if environment.working != before {
+        scope::save_working(tx, &mut environment)?;
+    }
+    Ok(Edited {
+        environment: environment.summary,
+        staged,
+        immediate,
+        typed_addresses,
+    })
+}
+
+/// Whether `setting` chooses the Service's source.
+const fn is_source(setting: ServiceSetting) -> bool {
+    matches!(
+        setting,
+        ServiceSetting::Image | ServiceSetting::Git(GitSetting::Repository)
+    )
+}
+
+/// One Environment mid-edit, and the Setting paths changed so far.
+struct Editing<'a> {
+    tx: &'a mut dyn Tx,
+    who: &'a Actor,
+    sealing: &'a SealingKey,
+    trusted: &'a Trusted,
+    environment: Environment,
+    staged: Vec<SettingPath>,
+    immediate: Vec<SettingPath>,
+    typed_addresses: Vec<TypedAddresses>,
+}
+
+impl Editing<'_> {
+    fn apply(&mut self, path: SettingPath, step: Step) -> Result<(), RpcError> {
         let service = path.settings_of()?;
         let value = match step {
             Step::Set(value) => Some(value),
@@ -154,10 +239,10 @@ pub(crate) fn edit(
                 };
                 let renamed = SettingPath::at(service, Target::Variable(to.clone()));
                 let rewrote =
-                    variables::rename(&mut environment, service, key, &to, update_references)?;
+                    variables::rename(&mut self.environment, service, key, &to, update_references)?;
                 if let Some(rewrote) = rewrote {
                     // What the variable types moves with it.
-                    for typed in &mut typed_addresses {
+                    for typed in &mut self.typed_addresses {
                         if typed.path == path {
                             typed.path = renamed.clone();
                         }
@@ -166,22 +251,29 @@ pub(crate) fn edit(
                         .into_iter()
                         .map(|(service, key)| SettingPath::at(&service, Target::Variable(key)));
                     for changed in [renamed, path].into_iter().chain(rewrote) {
-                        if !staged.contains(&changed) {
-                            staged.push(changed);
+                        if !self.staged.contains(&changed) {
+                            self.staged.push(changed);
                         }
                     }
                 }
-                continue;
+                return Ok(());
             }
         };
         // Only the last change to a variable decides what it types.
-        typed_addresses.retain(|typed| typed.path != path);
+        self.typed_addresses.retain(|typed| typed.path != path);
         // A new credential applies at once; turning one on or off is staged.
         if let Some(Target::Setting(setting @ ServiceSetting::RegistryCredential)) = path.target() {
             let changed = match &value {
-                Some(value) => registry::set(tx, who, &mut environment, service, value, sealing)?,
+                Some(value) => registry::set(
+                    &mut *self.tx,
+                    self.who,
+                    &mut self.environment,
+                    service,
+                    value,
+                    self.sealing,
+                )?,
                 None => {
-                    let config = &mut environment.service_mut(service)?.config;
+                    let config = &mut self.environment.service_mut(service)?.config;
                     let was = setting.value(config, &Policy::default());
                     setting.unset(config)?;
                     registry::Changed {
@@ -191,24 +283,26 @@ pub(crate) fn edit(
                 }
             };
             for (changed, list) in [
-                (changed.staged, &mut staged),
-                (changed.rotated, &mut immediate),
+                (changed.staged, &mut self.staged),
+                (changed.rotated, &mut self.immediate),
             ] {
                 if changed && !list.contains(&path) {
                     list.push(path.clone());
                 }
             }
-            continue;
+            return Ok(());
         }
         if let Some(Target::Setting(ServiceSetting::Policy(setting))) = path.target() {
-            let node = environment.service(service)?;
-            if policy::set(tx, who, &environment.summary.id, node, *setting, value)?
-                && !immediate.contains(&path)
+            let node = self.environment.service(service)?;
+            let id = self.environment.summary.id.clone();
+            if policy::set(&mut *self.tx, self.who, &id, node, *setting, value)?
+                && !self.immediate.contains(&path)
             {
-                immediate.push(path.clone());
+                self.immediate.push(path.clone());
             }
-            continue;
+            return Ok(());
         }
+        let environment = &mut self.environment;
         let (changed, apply) = match (path.target(), value) {
             // A Private DNS name addresses one Service: none other has it as a name.
             (Some(Target::Setting(setting @ ServiceSetting::PrivateDns)), value) => {
@@ -219,8 +313,8 @@ pub(crate) fn edit(
                     .ok_or_else(|| setting.invalid("expected a lowercase DNS label"))?;
                 let id = environment.service(service)?.id.clone();
                 crate::names::refuse_taken(
-                    tx,
-                    &environment,
+                    &mut *self.tx,
+                    environment,
                     crate::names::Name::Service(name.as_str()),
                     Some(&id),
                 )?;
@@ -233,7 +327,7 @@ pub(crate) fn edit(
                 let config = &mut environment.service_mut(service)?.config;
                 let was = setting.value(config, &Policy::default());
                 match value {
-                    Some(value) => setting.set(config, value, trusted)?,
+                    Some(value) => setting.set(config, value, self.trusted)?,
                     None => setting.unset(config)?,
                 }
                 (
@@ -258,24 +352,25 @@ pub(crate) fn edit(
             }
             (Some(Target::Variable(key)), Some(value)) => {
                 let (changed, typed) =
-                    variables::set(&mut environment, service, key, value, sealing)?;
-                typed_addresses.extend(typed.map(|Typed { services, instead }| TypedAddresses {
-                    path: path.clone(),
-                    services,
-                    instead,
-                }));
+                    variables::set(environment, service, key, value, self.sealing)?;
+                self.typed_addresses
+                    .extend(typed.map(|Typed { services, instead }| TypedAddresses {
+                        path: path.clone(),
+                        services,
+                        instead,
+                    }));
                 (changed, Apply::Staged)
             }
             (Some(Target::Exported(key)), Some(value)) => (
-                variables::set_exported(&mut environment, service, key, value)?,
+                variables::set_exported(environment, service, key, value)?,
                 Apply::Staged,
             ),
             (Some(Target::Variable(key)), None) => (
-                variables::unset(&mut environment, service, key, false)?,
+                variables::unset(environment, service, key, false)?,
                 Apply::Staged,
             ),
             (Some(Target::Exported(key)), None) => (
-                variables::unset(&mut environment, service, key, true)?,
+                variables::unset(environment, service, key, true)?,
                 Apply::Staged,
             ),
             (Some(Target::Mount(volume)), Some(value)) => {
@@ -286,12 +381,12 @@ pub(crate) fn edit(
                     ));
                 };
                 (
-                    crate::volume::attach(&mut environment, service, volume, mount)?,
+                    crate::volume::attach(environment, service, volume, mount)?,
                     Apply::Staged,
                 )
             }
             (Some(Target::Mount(volume)), None) => (
-                crate::volume::detach(&mut environment, service, volume)?,
+                crate::volume::detach(environment, service, volume)?,
                 Apply::Staged,
             ),
             (Some(Target::ConfigMount(config)), Some(value)) => {
@@ -303,40 +398,31 @@ pub(crate) fn edit(
                 };
                 let name = config.resolve([&environment.working])?.name.clone();
                 (
-                    crate::config_item::attach(&mut environment, service, &name, dir)?,
+                    crate::config_item::attach(environment, service, &name, dir)?,
                     Apply::Staged,
                 )
             }
             (Some(Target::ConfigMount(config)), None) => {
                 let name = config.resolve([&environment.working])?.name.clone();
                 (
-                    crate::config_item::detach(&mut environment, service, &name)?,
+                    crate::config_item::detach(environment, service, &name)?,
                     Apply::Staged,
                 )
             }
             (None, _) => return Err(crate::settings::name_a_setting(path.node())),
         };
         if !changed {
-            continue;
+            return Ok(());
         }
         let list = match apply {
-            Apply::Staged => &mut staged,
-            Apply::Immediate => &mut immediate,
+            Apply::Staged => &mut self.staged,
+            Apply::Immediate => &mut self.immediate,
         };
         if !list.contains(&path) {
             list.push(path);
         }
+        Ok(())
     }
-    crate::git::check_sources(&before, &environment.working, trusted)?;
-    if environment.working != before {
-        scope::save_working(tx, &mut environment)?;
-    }
-    Ok(Edited {
-        environment: environment.summary,
-        staged,
-        immediate,
-        typed_addresses,
-    })
 }
 
 /// Every change as one path to set (with its value), unset, or rename.

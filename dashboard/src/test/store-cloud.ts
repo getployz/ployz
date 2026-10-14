@@ -7,7 +7,7 @@ import { Polar, type PolarService } from "#/modules/billing/polar-provider.serve
 import { cloudStore, CloudStoreLive } from "#/modules/config-store/store-sdk.server";
 import { GithubRepositories, GithubRepositoriesLive } from "#/modules/github/github-cli.server";
 import { GithubApi, type GithubApiService } from "#/modules/github/github-observation.api";
-import { githubInstallation } from "#/modules/github/tables";
+import { githubInstallation, organizationGithubInstallation } from "#/modules/github/tables";
 import { member, user } from "#/modules/identity/tables";
 import { InngestClient } from "#/modules/inngest/client";
 import { organization } from "#/modules/organization/tables";
@@ -78,7 +78,8 @@ export const seedStoreOrganization = Effect.fn(function* (id: string, named: { n
   const userId = owner?.id ?? "";
   yield* drizzle.insert(organization).values({ id, ...named });
   yield* drizzle.insert(member).values({ userId, organizationId: id, role: "owner" });
-  yield* drizzle.insert(githubInstallation).values({ userId, installationId: 7, accountLogin: "acme", accountType: "Organization" });
+  yield* drizzle.insert(githubInstallation).values({ installationId: 7, accountLogin: "acme", accountType: "Organization" });
+  yield* drizzle.insert(organizationGithubInstallation).values({ organizationId: id, installationId: 7, connectedByUserId: userId, connectedGithubLogin: "ada" });
   return userId;
 });
 

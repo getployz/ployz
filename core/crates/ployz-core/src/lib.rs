@@ -3,6 +3,7 @@
 pub mod config;
 mod container_metadata;
 pub mod decode;
+mod dockerfile;
 pub mod domain;
 mod enrollment;
 pub mod error_chain;
@@ -27,6 +28,7 @@ mod volume_copy;
 mod volume_switch;
 
 pub use container_metadata::*;
+pub use dockerfile::DockerfileFacts;
 pub use domain::*;
 pub use framing::*;
 pub use host_config::*;
