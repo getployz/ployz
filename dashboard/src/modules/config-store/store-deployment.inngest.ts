@@ -76,10 +76,10 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Store
       const lanes = await step.run("place-volumes", () => runEffect(placeDeployVolumes(organizationId, environmentId, deploymentId, runId)));
       for (const lane of lanes) await step.run(`fence-${lane.run.volumeId}`, () => runEffect(fenceDeployVolume(lane, runId)));
       const ran = await step.run("run-deployment", () => runEffect(runStoreDeployment(event.data, storeDeploymentRunner(runId))));
-      await step.run("finish-volumes", () => runEffect(finishDeployVolumes(runId, "done")));
       if (lanes.some((lane) => lane.kind === "follow" && lane.ended)) {
         await step.run("release-followed", () => runEffect(releaseFollowed(environmentId, runId, lanes)));
       }
+      await step.run("finish-volumes", () => runEffect(finishDeployVolumes(runId, "done")));
       const applied = "ran" in ran && ran.ran.status === "applied";
       // A failed Deployment can still have advanced Applied State, so the checks follow it either way. Only an applied
       // one is probed: a failed one may have stopped partway, and the schedule still checks what it reached.

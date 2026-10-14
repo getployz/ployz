@@ -140,7 +140,9 @@ export const runVolume = (
       if (!gated.ok) return refused(gated.refusal);
     }
     return (runId: string) => admitRun(actor(caller), planned.input, planned.volume, runId)
-      .pipe(Effect.map((inserted) => inserted.ok ? { ok: true, id: inserted.run.id } as const : inserted));
+      .pipe(Effect.map((inserted) => inserted.ok
+        ? { ok: true, id: inserted.run.id } as const
+        : { ok: false, refusal: inserted.refusal, busy: inserted.busy } as const));
   }));
 
 export const actService = (

@@ -8,17 +8,18 @@ import { expectOf, observedEpoch, oldCopy, restoreLine, restoreSource } from "#/
 import { volumeRun } from "#/modules/volume-run/tables";
 import { ACTIVE_VOLUME_RUN_STATES, type AnsweredMember, copyName, dockerVolumeName, type Member, type VolumeRunArgs, type VolumeRunKind } from "#/modules/volume-run/volume-run";
 import {
+  admitRun,
   askCopy,
   commitment,
   contextOf,
   type CopyAnswer,
   ended,
   holdDeployLane,
-  insertRun,
   keptOn,
   laneInputOf,
   laneTarget,
   type MachineRef,
+  nameRefusal,
   observeMembers,
   observeVolumeMembers,
   owedCommitments,
@@ -290,17 +291,28 @@ const fenceFollowed = Effect.fn("VolumeRun.fenceFollowed")(function* (lane: Foll
 export const fenceDeployVolume = (lane: DeployLane, inngestRunId: string) =>
   lane.kind === "took" ? fenceTaken(lane.run, inngestRunId) : fenceFollowed(lane);
 
+/** The Deploy's holds and stamps, on one Volume or on all of them. */
+const dropHolds = Effect.fn("VolumeRun.dropHolds")(function* (inngestRunId: string, volumeId?: string) {
+  const { drizzle } = yield* Database;
+  const on = volumeId === undefined ? undefined : eq(volumeRun.volumeId, volumeId);
+  const held = sql`${volumeRun.args}->>'hold' = 'true'`;
+  yield* drizzle.delete(volumeRun).where(and(eq(volumeRun.inngestRunId, inngestRunId), eq(volumeRun.kind, "deploy"), held, on));
+  yield* drizzle.update(volumeRun).set({ heldBy: null }).where(and(eq(volumeRun.heldBy, inngestRunId), on));
+});
+
 /**
  * After the Deploy ran, each ended commitment it followed gets a Cloud release, which inherits it and settles it on B.
- * The ID is the Deploy's and the Volume's, so a retried step finds its own release and requests none. The release is
- * admitted only while the Volume still finishes on the followed Machine. A refusal is logged: either the commitment
- * settled first, or the lane that refused owns the Volume now.
+ * The Deploy's hold and stamp on that Volume go in the transaction that admits the release, so no run claims the lane
+ * between. The ID is the Deploy's and the Volume's, so a retried step finds its own release and requests none. The
+ * release is admitted only while the Volume still finishes on the followed Machine. A refusal is logged: either the
+ * commitment settled first, or the lane that refused owns the Volume now.
  */
 export const releaseFollowed = Effect.fn("VolumeRun.releaseFollowed")(function* (
   environmentId: string,
   inngestRunId: string,
   lanes: readonly DeployLane[],
 ) {
+  const database = yield* Database;
   const requested: string[] = [];
   for (const lane of lanes) {
     if (lane.kind !== "follow" || !lane.ended) continue;
@@ -312,18 +324,22 @@ export const releaseFollowed = Effect.fn("VolumeRun.releaseFollowed")(function* 
       requested.push(id);
       continue;
     }
-    const release = yield* insertRun(
-      CLOUD(run.organizationId),
-      { volumeId: run.volumeId, kind: "release", args: { follows } },
-      { environmentId, volumeName: run.volumeName, dockerVolume: run.dockerVolume, refquotaBytes: run.refquotaBytes },
-      id,
-    );
+    const release = yield* database.transaction(Effect.gen(function* () {
+      yield* dropHolds(inngestRunId, run.volumeId);
+      return yield* admitRun(
+        CLOUD(run.organizationId),
+        { volumeId: run.volumeId, kind: "release", args: { follows } },
+        { environmentId, volumeName: run.volumeName, dockerVolume: run.dockerVolume, refquotaBytes: run.refquotaBytes },
+        id,
+      );
+    }));
     if (release.ok) {
       requested.push(release.run.id);
       continue;
     }
-    const note = `${run.volumeName}'s release on ${lane.to} was not requested after its Deploy: ${release.refusal.message}`;
-    yield* refusedAsSettled(release.refusal) ? Effect.logInfo(note) : Effect.logWarning(note);
+    const { refusal } = yield* nameRefusal(release);
+    const note = `${run.volumeName}'s release on ${lane.to} was not requested after its Deploy: ${refusal.message}`;
+    yield* refusedAsSettled(refusal) ? Effect.logInfo(note) : Effect.logWarning(note);
   }
   return requested;
 });
@@ -339,9 +355,7 @@ export const finishDeployVolumes = Effect.fn("VolumeRun.finishDeploy")(function*
   const database = yield* Database;
   return yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
-    const held = sql`${volumeRun.args}->>'hold' = 'true'`;
-    yield* drizzle.delete(volumeRun).where(and(eq(volumeRun.inngestRunId, inngestRunId), eq(volumeRun.kind, "deploy"), held));
-    yield* drizzle.update(volumeRun).set({ heldBy: null }).where(eq(volumeRun.heldBy, inngestRunId));
+    yield* dropHolds(inngestRunId);
     const rows = yield* drizzle.update(volumeRun).set(ended(state, DEPLOY_ENDS[state]))
       .where(and(eq(volumeRun.inngestRunId, inngestRunId), eq(volumeRun.kind, "deploy"), eq(volumeRun.state, "running")))
       .returning();

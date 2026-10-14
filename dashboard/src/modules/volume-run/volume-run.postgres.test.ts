@@ -3410,6 +3410,29 @@ describe("volume runs", () => {
         expect((await lanes()).filter((lane) => lane.kind === "release")).toMatchObject([{ id: first, state: "failed" }, { id: newer.id, state: "failed" }]);
       });
 
+      it("the release takes the lane as the Deploy's hold drops, so a mirror removal asked next waits on the release", async () => {
+        await failedCommit();
+        const placed = await place();
+
+        const [released] = await runEffect(releaseFollowed("env-1", DEPLOY, placed));
+
+        expect((await lanes()).filter((lane) => lane.kind !== "move")).toMatchObject([{ id: released, kind: "release", state: "requested", args: { follows: idOf("fsn-2") } }]);
+        expect(await request({ kind: "delete_mirror", args: { slot: "fsn-3", confirmed_name: null, machine: idOf("fsn-3") } }))
+          .toMatchObject({ ok: false, busy: expect.objectContaining({ id: released, kind: "release" }) });
+      });
+
+      it("a mirror removal the Deploy stamped beside it no longer counts as deploying once the release is asked", async () => {
+        await failedCommit();
+        const mirror = await requested({ kind: "delete_mirror", args: { slot: "fsn-3", confirmed_name: null, machine: idOf("fsn-3") } });
+        const placed = await place();
+        await harness.pool.query("update volume_run set state = 'done', finished_at = now() where id = $1", [mirror.id]);
+
+        const [released] = await runEffect(releaseFollowed("env-1", DEPLOY, placed));
+
+        expect(released).toBeDefined();
+        expect((await harness.pool.query("select id from volume_run where held_by is not null")).rows).toEqual([]);
+      });
+
       it.each([
         ["finished on B", "done", "fsn-2"],
         ["handed to another Server", "failed", "fsn-3"],

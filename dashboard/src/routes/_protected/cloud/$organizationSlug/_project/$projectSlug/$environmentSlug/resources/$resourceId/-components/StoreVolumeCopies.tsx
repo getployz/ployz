@@ -43,7 +43,7 @@ export function useVolumeCopies(organizationSlug: string, environment: Environme
   const members = useVolumeMembers(organizationSlug, environment, volume.id).data;
   const rows = useVolumePlacements(organizationSlug).data ?? [];
   const running = useActiveVolumeRuns(organizationSlug).data?.find((run) => run.volume_id === volume.id) ?? null;
-  const owed = useVolumeOwed(organizationSlug, volume.id).data ?? false;
+  const owed = useVolumeOwed(organizationSlug, volume.id).data ?? true;
   const placement = useStagePlacement(organizationSlug, environment, volume);
   const restore = useStageRestore(organizationSlug, environment, volume);
   const deleteCopy = useDeleteCopy(organizationSlug, environment, volume);
@@ -81,7 +81,7 @@ export type CopiesPanelProps = {
   members: readonly Member[] | undefined;
   rows: readonly PlacementRow[];
   running: VolumeRunView | null;
-  /** A committed Move still owed its finish: no move or mirror is offered until a release finishes it. */
+  /** A committed Move owed its finish, or not known yet: no move or mirror is offered until a release finishes it. */
   owed: boolean;
   copies: VolumeCopies | null;
   servers: readonly CopyServer[];
@@ -137,7 +137,7 @@ function CopiesView({ volume, members, row, rows, owed, copies, target, servers,
     {offer ? <Alert variant="destructive">
       <AlertTitle>{offer.down.name} is not answering</AlertTitle>
       <AlertDescription>{offer.lostAfter ? `Changes after ${lossTime(offer.lostAfter)} lost` : "Recent changes lost"}</AlertDescription>
-      {accepting.includes(offer.mirror.id) ? <AlertAction>
+      {!owed && accepting.includes(offer.mirror.id) ? <AlertAction>
         <Button variant="outline" size="sm" disabled={locked} onClick={() => edit({ kind: "move", to: offer.mirror.id })}>Use mirror</Button>
       </AlertAction> : null}
     </Alert> : null}
