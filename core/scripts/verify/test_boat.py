@@ -251,6 +251,13 @@ class Registry(unittest.TestCase):
         with unittest.mock.patch("sys.stderr", new_callable=io.StringIO):
             self.assertEqual([record["run"] for record in boat.records()], ["run1"])
 
+    def test_down_fails_on_a_403_for_another_reason_instead_of_stopping(self):
+        self.registered(**{"machine-1": dict(id="bx_a", state="running")})
+        self.answers[("delete", "bx_a")] = result(1, {"event": "error", "code": "sandbox_locked", "status": 403})
+        with self.assertRaisesRegex(RuntimeError, "sandbox_locked"):
+            self.provider.destroy()
+        self.assertEqual(self.calls, [["delete", "bx_a", "--yes"]])
+
     def test_a_failed_stop_still_cleans_the_rest_then_fails(self):
         self.registered(**{"machine-1": dict(id="bx_a", state="running"), "machine-2": dict(id="bx_b", state="running")})
         self.answers[("delete", "bx_a")] = result(1, {"event": "error", "code": "api_key_action_forbidden", "status": 403})
@@ -495,16 +502,17 @@ class Pool(unittest.TestCase):
             self.assertNotEqual(boat.fingerprints("bake-a"), saved)
         self.assertEqual(boat.fingerprints("bake-a"), saved)
 
-    def park(self, ledger, pool, answers=None):
-        """Park machine-1 as bx_new with POOL_SIZE 2; returns the provider."""
+    def park(self, ledger, pool, answers=None, retiring=()):
+        """Park machine-1 as bx_new with POOL_SIZE 2 beside `pool` and the `retiring` entries; returns the provider."""
         boat.write(boat.BAKES, ledger)
         limits = dict(maxActiveSandboxes=100, activeSandboxes=0, starts=dict(unlimited=True))
-        listing = self.listing(**{entry["id"]: "ready" for entry in pool if entry["id"] != "bx_gone"}, bx_new="ready")
+        listing = self.listing(**{entry["id"]: "ready" for entry in [*pool, *retiring] if entry["id"] != "bx_gone"}, bx_new="ready")
         with unittest.mock.patch.object(boat, "boat_json", lambda *args: limits if args[0] == "limits" else listing()), \
                 unittest.mock.patch.object(boat, "POOL_SIZE", 2), contextlib.redirect_stderr(io.StringIO()):
             provider = self.provider("machine-1", answers=answers)
             provider.create()
             boat.write(boat.POOL, pool)
+            boat.write(boat.RETIRING, [dict(entry, retiring=True) for entry in retiring])
             provider.mark("machine-1", id="bx_new", state="running", ip="2001:db8:0:9::1", ssh="203.0.113.9:22")
             boat.write(boat.fingerprints("bake-a"), {"containers": []})
             provider.reboot = lambda node: None
@@ -569,6 +577,64 @@ class Pool(unittest.TestCase):
         self.assertEqual(boat.read(boat.RETIRING), [])
         self.assertEqual(newer.record()["sandboxes"]["machine-1"]["state"], "parked")
         self.assertNotIn("bx_x", states)
+
+    def test_a_retiring_sandbox_boat_never_deletes_holds_one_slot_and_blocks_no_park_under_the_cap(self):
+        failed = result(1, {"event": "error", "code": "internal", "status": 500})
+        provider = self.park(["bake-a"], [], answers={("delete", "bx_stuck"): failed}, retiring=[parked("bx_stuck", 1)])
+        self.assertEqual([entry["id"] for entry in boat.read(boat.POOL)], ["bx_new"])
+        self.assertEqual([entry["id"] for entry in boat.read(boat.RETIRING)], ["bx_stuck"])
+        self.assertEqual(provider.record()["sandboxes"]["machine-1"]["state"], "parked")
+        boat.registry("run1").unlink()
+        # At the cap it still holds its slot, and the live sandbox beside it stays.
+        provider = self.park(["bake-a"], [parked("bx_a", 2)], answers={("delete", "bx_stuck"): failed}, retiring=[parked("bx_stuck", 1)])
+        self.assertEqual([entry["id"] for entry in boat.read(boat.POOL)], ["bx_a"])
+        self.assertEqual([entry["id"] for entry in boat.read(boat.RETIRING)], ["bx_stuck"])
+        self.assertEqual(provider.record()["sandboxes"]["machine-1"]["state"], "running")
+
+    def test_park_displaces_nothing_a_retiring_sandboxs_delete_frees(self):
+        provider = self.park(["bake-b", "bake-a"], [parked("bx_b1", 2, image="bake-b", at=1)], retiring=[parked("bx_r", 1)])
+        self.assertEqual([entry["id"] for entry in boat.read(boat.POOL)], ["bx_b1", "bx_new"])
+        self.assertEqual(boat.read(boat.RETIRING), [])
+        self.assertEqual([call for call in self.calls if call[0] == "delete"], [["delete", "bx_r", "--yes"]])
+        self.assertEqual(provider.record()["sandboxes"]["machine-1"]["state"], "parked")
+
+    def test_park_displaces_nothing_when_every_older_sandbox_together_cannot_make_room(self):
+        # A pool over the cap, as after PLOYZ_VERIFY_BOAT_POOL shrinks.
+        pool = [parked("bx_b1", 1, image="bake-b"), parked("bx_a1", 2), parked("bx_a2", 3)]
+        provider = self.park(["bake-b", "bake-a"], pool)
+        self.assertEqual(boat.read(boat.POOL), pool)
+        self.assertEqual([call for call in self.calls if call[0] == "delete"], [])
+        self.assertEqual(provider.record()["sandboxes"]["machine-1"]["state"], "running")
+
+    def test_a_forbidden_delete_keeps_a_running_sandbox_retiring_until_its_stop_succeeds(self):
+        forbidden = result(1, {"event": "error", "code": "api_key_action_forbidden", "status": 403})
+        stuck = result(1, {"event": "error", "code": "internal", "status": 500})
+        provider = self.park(["bake-a"], [parked("bx_a", 2)], retiring=[parked("bx_r", 1)],
+                             answers={("delete", "bx_r"): forbidden, ("stop", "bx_r"): stuck})
+        self.assertIn(["stop", "bx_r"], self.calls)
+        self.assertEqual([entry["id"] for entry in boat.read(boat.RETIRING)], ["bx_r"])
+        self.assertEqual(provider.record()["sandboxes"]["machine-1"]["state"], "running")
+
+    def test_a_forbidden_delete_drops_a_sandbox_boat_lists_as_stopped_without_stopping_it(self):
+        boat.write(boat.BAKES, ["bake-a"])
+        boat.write(boat.RETIRING, [dict(parked("bx_r", 1), retiring=True)])
+        forbidden = result(1, {"event": "error", "code": "api_key_action_forbidden", "status": 403})
+        calls = []
+        with unittest.mock.patch.object(boat, "boat_json", self.listing(bx_r="stopped")), \
+                unittest.mock.patch.object(boat.subprocess, "run", lambda args, **kwargs: calls.append(args[2:4])
+                                           or (forbidden if args[2] == "delete" else result(1, {}))), \
+                contextlib.redirect_stderr(io.StringIO()):
+            rows = boat.reap_pool(False, True)
+        self.assertEqual(calls, [["delete", "bx_r"]])
+        self.assertEqual([(row["id"], row["action"]) for row in rows], [("bx_r", "stopped")])
+        self.assertEqual((boat.read(boat.POOL), boat.read(boat.RETIRING)), ([], []))
+
+    def test_a_403_for_another_reason_is_retried_rather_than_stopped(self):
+        refused = result(1, {"event": "error", "code": "sandbox_locked", "status": 403})
+        provider = self.park(["bake-a"], [parked("bx_a", 2)], retiring=[parked("bx_r", 1)], answers={("delete", "bx_r"): refused})
+        self.assertNotIn(["stop", "bx_r"], self.calls)
+        self.assertEqual([entry["id"] for entry in boat.read(boat.RETIRING)], ["bx_r"])
+        self.assertEqual(provider.record()["sandboxes"]["machine-1"]["state"], "running")
 
     def test_a_sandbox_this_key_may_not_delete_is_stopped_and_frees_its_pool_slot(self):
         forbidden = result(1, {"event": "error", "code": "api_key_action_forbidden", "status": 403})
