@@ -182,7 +182,7 @@ const archive = (() => {
 function github(state: { branchGone: boolean; heads: number; archives: string[] }): GithubApiService {
   return {
     json: (request) => {
-      if (request.url.includes("/git/ref/")) {
+      if (request.path.includes("/git/ref/")) {
         state.heads += 1;
         if (state.branchGone) {
           return Effect.fail(new GithubObservationError({ code: "not_found", operation: request.operation, retriable: false, message: "gone" }));

@@ -509,6 +509,7 @@ describe("organization enrollment coordinator", () => {
         capture: (input) => Effect.sync(() => void captured.push(input)),
         identify: () => Effect.void,
         identifyOrganization: () => Effect.void,
+        toolCall: () => Effect.void,
       };
       const result = await Effect.runPromise(recordMachineSetupReport({ token, report }).pipe(
         Effect.result,

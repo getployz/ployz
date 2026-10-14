@@ -10,7 +10,7 @@ use std::{
 };
 
 use futures_util::{FutureExt as _, StreamExt as _};
-use ployz_core::{ManagementAddress, SendStream};
+use ployz_core::{ManagementAddress, SendStream, error_chain::inline};
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
     process::{Child, Command},
@@ -257,20 +257,22 @@ impl VolumeStorage {
             .read_timeout(self.receive_stall)
             .build()
             .map_err(|error| {
-                ReceiveFailure::Failed(format!("could not build the receive client: {error}"))
+                ReceiveFailure::Failed(format!(
+                    "could not build the receive client: {}",
+                    inline(&error)
+                ))
             })?;
-        let response = client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|error| ReceiveFailure::Failed(format!("GET {url}: {error}")))?;
+        let response =
+            client.get(&url).send().await.map_err(|error| {
+                ReceiveFailure::Failed(format!("GET {url}: {}", inline(&error)))
+            })?;
         if response.status() == reqwest::StatusCode::NOT_FOUND {
             let reason = response.text().await.unwrap_or_default();
             return Err(ReceiveFailure::NoStream(format!("GET {url}: {reason}")));
         }
         let response = response
             .error_for_status()
-            .map_err(|error| ReceiveFailure::Failed(format!("GET {url}: {error}")))?;
+            .map_err(|error| ReceiveFailure::Failed(format!("GET {url}: {}", inline(&error))))?;
         Ok(OpenedStream { url, response })
     }
 
@@ -355,7 +357,7 @@ impl VolumeStorage {
                     }
                 }
                 Err(error) => {
-                    broke = Some(error.to_string());
+                    broke = Some(inline(&error));
                     break;
                 }
             }

@@ -34,7 +34,7 @@ export const checkGithubBuildWorkflow = Effect.fn("Github.checkBuildWorkflow")(
     const api = yield* GithubApi;
     const repository = yield* api.json({
       installationId,
-      url: `https://api.github.com/repositories/${repositoryId}`,
+      path: `/repositories/${repositoryId}`,
       operation: "resolve_repository",
       schema: repositorySchema,
     }).pipe(
@@ -44,7 +44,7 @@ export const checkGithubBuildWorkflow = Effect.fn("Github.checkBuildWorkflow")(
     if (repository === null) return { fullName: null, defaultBranch: null, readiness: "no_permission" as const };
     const readiness: GithubBuildReadiness = yield* api.json({
       installationId,
-      url: `https://api.github.com/repos/${repository.full_name}/actions/workflows/${GITHUB_BUILD_WORKFLOW_FILE}`,
+      path: `/repos/${repository.full_name}/actions/workflows/${GITHUB_BUILD_WORKFLOW_FILE}`,
       operation: "fetch_workflow",
       schema: workflowSchema,
     }).pipe(
@@ -71,7 +71,7 @@ export const dispatchGithubBuildWorkflow = Effect.fn("Github.dispatchBuildWorkfl
   const api = yield* GithubApi;
   const run = yield* api.json({
     installationId: input.installationId,
-    url: `https://api.github.com/repos/${input.fullName}/actions/workflows/${GITHUB_BUILD_WORKFLOW_FILE}/dispatches`,
+    path: `/repos/${input.fullName}/actions/workflows/${GITHUB_BUILD_WORKFLOW_FILE}/dispatches`,
     operation: "dispatch_workflow",
     schema: dispatchedRunSchema,
     method: "POST",
@@ -89,7 +89,7 @@ export const cancelGithubRun = Effect.fn("Github.cancelRun")(function* (input: {
   const api = yield* GithubApi;
   yield* api.json({
     installationId: input.installationId,
-    url: `https://api.github.com/repos/${input.fullName}/actions/runs/${input.runId}/cancel`,
+    path: `/repos/${input.fullName}/actions/runs/${input.runId}/cancel`,
     operation: "cancel_run",
     schema: Schema.Unknown,
     method: "POST",
@@ -103,7 +103,7 @@ export const githubRunCompleted = Effect.fn("Github.runCompleted")(function* (in
   const api = yield* GithubApi;
   const run = yield* api.json({
     installationId: input.installationId,
-    url: `https://api.github.com/repos/${input.fullName}/actions/runs/${input.runId}`,
+    path: `/repos/${input.fullName}/actions/runs/${input.runId}`,
     operation: "fetch_run",
     schema: runStatusSchema,
   });

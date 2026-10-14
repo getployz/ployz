@@ -343,7 +343,7 @@ pub(super) fn record(config: &Path, environment: EnvironmentSummary) -> Result<L
 /// Returns how many moved.
 pub(super) fn rename_project(
     config: &Path,
-    acting: Option<&Organization>,
+    acting: Option<&str>,
     old: &ProjectName,
     new: &ProjectName,
 ) -> Result<usize, Error> {
@@ -356,7 +356,7 @@ pub(super) fn rename_project(
         let same = link
             .organization
             .as_ref()
-            .is_some_and(|linked| linked.id == acting.id);
+            .is_some_and(|linked| linked.id == acting);
         if same && &link.project == old {
             link.project = new.clone();
             moved += 1;
