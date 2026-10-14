@@ -83,19 +83,7 @@ pub enum BuildVariables {
 impl BuildVariables {
     /// The `ARG` names `dockerfile` declares, in every stage.
     fn declared(dockerfile: &str) -> Self {
-        let names = crate::build::dockerfile_instructions(dockerfile)
-            .into_iter()
-            .filter(|(keyword, _)| keyword == "ARG")
-            .flat_map(|(_, arguments)| {
-                arguments
-                    .split_whitespace()
-                    .filter_map(|word| word.split('=').next())
-                    .filter(|name| !name.is_empty())
-                    .map(str::to_owned)
-                    .collect::<Vec<_>>()
-            })
-            .collect();
-        Self::Declared(names)
+        Self::Declared(ployz_core::DockerfileFacts::parse(dockerfile).args)
     }
 
     fn reads(&self, name: &str) -> bool {
