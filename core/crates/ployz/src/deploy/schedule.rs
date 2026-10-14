@@ -34,7 +34,8 @@ pub struct ServiceGroup {
     pub service: Option<ServiceName>,
     pub dependencies: Vec<ServiceName>,
     pub steps: Vec<Step>,
-    /// Flip this Service's pointer once its steps complete.
+    /// Flip this Service's pointer once its steps complete. A group without a
+    /// Service never publishes.
     pub publish: bool,
     /// Current Containers of the Service no operation of this Deploy names;
     /// the flip keeps pointing at them.
@@ -362,7 +363,7 @@ impl Schedule {
                 pending: step_tasks(tasks),
                 running: BTreeSet::new(),
             },
-            None if group.publish => Phase::Publishing,
+            None if group.publishing_service().is_some() => Phase::Publishing,
             None => Phase::Done,
         }
     }
@@ -862,6 +863,24 @@ mod tests {
         schedule.apply(Event::Published(0));
         assert_eq!(starts(&mut schedule), vec![1]);
         schedule.apply(Event::Completed(1));
+        assert!(schedule.finished());
+    }
+
+    #[test]
+    fn a_group_without_a_service_never_publishes() {
+        let mut schedule = Schedule::new(
+            vec![ServiceGroup {
+                service: None,
+                dependencies: Vec::new(),
+                steps: vec![Step::Serial(0)],
+                publish: true,
+                kept: Vec::new(),
+            }],
+            vec![start('1')],
+        );
+        assert_eq!(starts(&mut schedule), vec![0]);
+        schedule.apply(Event::Completed(0));
+        assert_eq!(publishes(&mut schedule), Vec::<usize>::new());
         assert!(schedule.finished());
     }
 }
