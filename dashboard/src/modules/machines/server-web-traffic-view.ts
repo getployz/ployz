@@ -22,11 +22,12 @@ export const webTrafficChecked = (view: WebTrafficView) =>
 
 type IngressServer = { readonly id: string; readonly acceptsIngress: boolean; readonly publicIp: string | null };
 
-/** Turning `server` off stops every domain: it serves them now, and no other online Server would. */
+/** Turning `server` off stops every domain: it takes web traffic now, and no other online Server would. */
 export const lastWebTrafficServer = (
   server: IngressServer,
   servers: ReadonlyArray<{ readonly machine: IngressServer; readonly status: ServerStatus }>,
 ) =>
+  server.acceptsIngress &&
   server.publicIp !== null &&
   !servers.some((other) =>
     other.machine.id !== server.id && other.machine.acceptsIngress && other.machine.publicIp !== null && !needsAttention(other.status));

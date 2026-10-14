@@ -104,4 +104,8 @@ describe("lastWebTrafficServer", () => {
   it("is never last without a public IP, since no domain points here", () => {
     expect(lastWebTrafficServer({ ...here, publicIp: null }, [])).toBe(false);
   });
+
+  it("is never last once its role is off, since routing already left it", () => {
+    expect(lastWebTrafficServer({ ...here, acceptsIngress: false }, [])).toBe(false);
+  });
 });
