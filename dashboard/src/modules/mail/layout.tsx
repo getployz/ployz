@@ -117,7 +117,7 @@ function PlainMail({ content, origin }: { content: MailContent; origin: string }
               </>
             ) : null}
             <Link href={`${origin}/cloud/account`} style={footerLink}>
-              Notification settings
+              Manage emails
             </Link>
           </Text>
         </Container>
@@ -137,7 +137,7 @@ const plainText = (content: MailContent, origin: string) =>
     "--",
     content.reason,
     ...(content.unsubscribe ? [`${content.unsubscribe.label}: ${content.unsubscribe.url}`] : []),
-    `Notification settings: ${origin}/cloud/account`,
+    `Manage emails: ${origin}/cloud/account`,
   ].join("\n");
 
 /** `origin` is this Cloud's public URL: the logo and the settings link point at it. */
