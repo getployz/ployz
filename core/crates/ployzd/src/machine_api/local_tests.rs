@@ -2574,3 +2574,331 @@ mod ensure_container {
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 }
+
+mod serving_pointer {
+    use std::path::{Path, PathBuf};
+
+    use futures_util::{SinkExt, StreamExt};
+    use ployz_core::{
+        DeploymentLogId, Machine, NotPointerPublisher, OpaquePayload, PublishServingPointerRequest,
+        QualifiedService, ReadServingPointerRequest, Rpc, RpcError, ServingPointer,
+        ServingPointerPublication, ServingPointerRead,
+    };
+    use serde_json::{Value, json};
+    use tokio::net::UnixListener;
+    use tokio_util::codec::LengthDelimitedCodec;
+
+    use super::*;
+    use crate::corrosion::{
+        AdminClient, ReplicatedStore,
+        store_tests::{corrosion_db, identity_store},
+    };
+
+    fn admin_socket(dir: &Path, states: Vec<Value>) -> PathBuf {
+        let path = dir.join(format!("admin-{}.sock", MachineId::random()));
+        let listener = UnixListener::bind(&path).unwrap();
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let mut framed = LengthDelimitedCodec::builder()
+                    .big_endian()
+                    .length_field_length(4)
+                    .new_framed(stream);
+                framed.next().await;
+                for state in &states {
+                    let frame = serde_json::to_vec(&json!({ "Json": state })).unwrap();
+                    framed.send(frame.into()).await.unwrap();
+                }
+                framed
+                    .send(serde_json::to_vec(&json!("Success")).unwrap().into())
+                    .await
+                    .unwrap();
+            }
+        });
+        path
+    }
+
+    fn machine_one() -> Machine {
+        serde_json::from_value(json!({
+            "id": "0".repeat(32),
+            "name": "machine-1",
+            "subnet": "10.210.1.0/24",
+            "labels": {}, "accepts_builds": true, "accepts_services": true, "accepts_ingress": true,
+            "public_key": crate::network::WireGuardPrivateKey::from_bytes([7; 32]).public_key(),
+            "advertised_endpoints": ["192.0.2.7:51820"],
+        }))
+        .unwrap()
+    }
+
+    fn alive(machine: &Machine) -> Value {
+        let address = std::net::SocketAddr::new(
+            machine.management_address().0.into(),
+            ployz_core::CORROSION_GOSSIP_PORT,
+        );
+        json!({ "id": { "addr": address }, "state": "Alive" })
+    }
+
+    async fn machine(
+        dir: &Path,
+        rows: &[Machine],
+        states: Vec<Value>,
+    ) -> (MachineService, tokio::task::JoinHandle<()>) {
+        serve(dir, enrolled(dir), corrosion_db(), rows, states).await
+    }
+
+    fn enrolled(dir: &Path) -> LocalMachineStore {
+        let mut local = LocalMachineStore::open(dir.join(MachineId::random().as_str())).unwrap();
+        local
+            .enroll(ployz_core::EnrollRequest {
+                role: ployz_core::EnrollAs::Founder {
+                    initial_policy: Default::default(),
+                    name: ployz_core::MachineName::parse("local").unwrap(),
+                    cluster_network: "10.210.0.0/16".parse().unwrap(),
+                    public_ip: None,
+                    advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(
+                        "192.0.2.1:51820".parse().unwrap(),
+                    )],
+                },
+                wireguard_mtu: None,
+            })
+            .unwrap();
+        local
+    }
+
+    async fn serve(
+        dir: &Path,
+        local: LocalMachineStore,
+        db: rusqlite::Connection,
+        rows: &[Machine],
+        states: Vec<Value>,
+    ) -> (MachineService, tokio::task::JoinHandle<()>) {
+        let (replicated, task): (ReplicatedStore, _) = identity_store(db).await;
+        for row in rows {
+            replicated
+                .machine_publication()
+                .await
+                .publish(row)
+                .await
+                .unwrap();
+        }
+        let service = MachineService::with_cluster(
+            RecordOwner::spawn(local).unwrap(),
+            Some((replicated, AdminClient::new(admin_socket(dir, states)))),
+        );
+        (service, task)
+    }
+
+    fn api() -> QualifiedService {
+        QualifiedService::parse("app/api").unwrap()
+    }
+
+    fn pointer(deploy: &str, container: &str) -> ServingPointer {
+        ServingPointer {
+            deploy: DeploymentLogId::parse(deploy).unwrap(),
+            containers: vec![ContainerId::parse(container.repeat(64)).unwrap()],
+            previous: None,
+            retiring: Vec::new(),
+        }
+    }
+
+    fn answer<T: Rpc>(response: tonic::Response<OpaquePayload>) -> Result<T::Response, RpcError> {
+        let response = response.into_inner().decode_response().unwrap();
+        if let ployz_core::RpcResponseBody::Error(error) = &response.body {
+            return Err(error.clone());
+        }
+        Ok(response.decode::<T>().unwrap())
+    }
+
+    async fn publish(
+        service: &MachineService,
+        read: Option<ServingPointer>,
+        pointer: ServingPointer,
+    ) -> Result<ServingPointerPublication, RpcError> {
+        let request = op::PublishServingPointer::into_request(PublishServingPointerRequest {
+            service: api(),
+            read,
+            pointer,
+        });
+        answer::<op::PublishServingPointer>(
+            service
+                .publish_serving_pointer(Request::new(request.encode().unwrap()))
+                .await
+                .unwrap(),
+        )
+    }
+
+    async fn read(service: &MachineService) -> Result<ServingPointerRead, RpcError> {
+        let request =
+            op::ReadServingPointer::into_request(ReadServingPointerRequest { service: api() });
+        answer::<op::ReadServingPointer>(
+            service
+                .read_serving_pointer(Request::new(request.encode().unwrap()))
+                .await
+                .unwrap(),
+        )
+    }
+
+    #[tokio::test]
+    async fn publish_answers_published_then_superseded_with_the_current_row() {
+        let dir = std::env::temp_dir().join(format!("ployzd-pointer-{}", MachineId::random()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (service, task) = machine(&dir, &[], Vec::new()).await;
+
+        assert_eq!(
+            publish(&service, None, pointer("d1", "a")).await,
+            Ok(ServingPointerPublication::Published)
+        );
+        assert_eq!(
+            publish(&service, None, pointer("d2", "b")).await,
+            Ok(ServingPointerPublication::Superseded {
+                current: Some(pointer("d1", "a"))
+            })
+        );
+        assert_eq!(
+            read(&service).await.unwrap().pointer,
+            Some(pointer("d1", "a"))
+        );
+        task.abort();
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn machines_that_disagree_on_machine_one_never_both_publish() {
+        let dir = std::env::temp_dir().join(format!("ployzd-pointer-{}", MachineId::random()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let one = machine_one();
+        let (sees_one_down, first) = machine(&dir, std::slice::from_ref(&one), Vec::new()).await;
+        let (sees_one_up, second) =
+            machine(&dir, std::slice::from_ref(&one), vec![alive(&one)]).await;
+
+        let outcomes = [
+            publish(&sees_one_down, None, pointer("d1", "a")).await,
+            publish(&sees_one_up, None, pointer("d2", "b")).await,
+        ];
+        let refusal = NotPointerPublisher { publisher: one.id };
+        assert_eq!(outcomes[0], Ok(ServingPointerPublication::Published));
+        let refused = outcomes[1].as_ref().unwrap_err();
+        assert_eq!(
+            NotPointerPublisher::from_error(refused),
+            Some(refusal.clone())
+        );
+        let read_refused = read(&sees_one_up).await.unwrap_err();
+        assert_eq!(
+            NotPointerPublisher::from_error(&read_refused),
+            Some(refusal)
+        );
+        first.abort();
+        second.abort();
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_machine_whose_active_peer_has_no_roster_row_refuses_to_publish() {
+        let dir = std::env::temp_dir().join(format!("ployzd-pointer-{}", MachineId::random()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (mut low, mut high) = (enrolled(&dir), enrolled(&dir));
+        if low.record().id() > high.record().id() {
+            std::mem::swap(&mut low, &mut high);
+        }
+        let low_machine = low.record().machine().unwrap().clone();
+        let high_machine = high.record().machine().unwrap().clone();
+        let both_alive = || vec![alive(&low_machine), alive(&high_machine)];
+        let (low, low_task) = serve(
+            &dir,
+            low,
+            corrosion_db(),
+            &[low_machine.clone(), high_machine.clone()],
+            both_alive(),
+        )
+        .await;
+        let (high, high_task) = serve(
+            &dir,
+            high,
+            corrosion_db(),
+            std::slice::from_ref(&high_machine),
+            both_alive(),
+        )
+        .await;
+
+        let outcomes = [
+            publish(&low, None, pointer("d1", "a")).await,
+            publish(&high, None, pointer("d2", "b")).await,
+        ];
+        assert_eq!(outcomes[0], Ok(ServingPointerPublication::Published));
+        let refused = outcomes[1].as_ref().unwrap_err();
+        assert_eq!(refused.code, RpcErrorCode::Unavailable, "{refused:?}");
+        assert!(
+            refused
+                .message
+                .contains(&low_machine.management_address().0.to_string()),
+            "{refused:?}"
+        );
+        assert_eq!(read(&low).await.unwrap().pointer, Some(pointer("d1", "a")));
+        let unwritten = high.replicated().unwrap().serving_pointer(&api()).await;
+        assert_eq!(
+            unwritten.unwrap(),
+            None,
+            "a Machine that cannot see its active peer's row never elects itself"
+        );
+        low_task.abort();
+        high_task.abort();
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_machine_whose_lower_peer_has_an_unreadable_row_refuses_to_publish() {
+        let dir = std::env::temp_dir().join(format!("ployzd-pointer-{}", MachineId::random()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (mut low, mut high) = (enrolled(&dir), enrolled(&dir));
+        if low.record().id() > high.record().id() {
+            std::mem::swap(&mut low, &mut high);
+        }
+        let low_machine = low.record().machine().unwrap().clone();
+        let high_machine = high.record().machine().unwrap().clone();
+        let both_alive = || vec![alive(&low_machine), alive(&high_machine)];
+        let high_db = corrosion_db();
+        high_db
+            .execute(
+                "INSERT INTO machines (id, info) VALUES (?, '{}')",
+                [low_machine.id.as_str()],
+            )
+            .unwrap();
+        let (low, low_task) = serve(
+            &dir,
+            low,
+            corrosion_db(),
+            &[low_machine.clone(), high_machine.clone()],
+            both_alive(),
+        )
+        .await;
+        let (high, high_task) = serve(
+            &dir,
+            high,
+            high_db,
+            std::slice::from_ref(&high_machine),
+            both_alive(),
+        )
+        .await;
+
+        let outcomes = [
+            publish(&low, None, pointer("d1", "a")).await,
+            publish(&high, None, pointer("d2", "b")).await,
+        ];
+        assert_eq!(outcomes[0], Ok(ServingPointerPublication::Published));
+        let refused = outcomes[1].as_ref().unwrap_err();
+        assert_eq!(refused.code, RpcErrorCode::Unavailable, "{refused:?}");
+        assert!(
+            refused.message.contains(low_machine.id.as_str()),
+            "{refused:?}"
+        );
+        assert_eq!(read(&low).await.unwrap().pointer, Some(pointer("d1", "a")));
+        let unwritten = high.replicated().unwrap().serving_pointer(&api()).await;
+        assert_eq!(
+            unwritten.unwrap(),
+            None,
+            "the refused publish wrote nothing"
+        );
+        low_task.abort();
+        high_task.abort();
+        std::fs::remove_dir_all(dir).ok();
+    }
+}

@@ -30,6 +30,7 @@ mod provisioning;
 mod published;
 pub mod sdk;
 pub mod service;
+pub mod serving_publish;
 mod setup_report;
 mod setup_retry;
 pub mod ui;

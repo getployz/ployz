@@ -8,7 +8,8 @@ use ployz_core::{
     LIST_VOLUMES_CAPABILITY, LOG_HISTORY_CAPABILITY, MACHINE_STORAGE_OBSERVATION_CAPABILITY,
     METRIC_HISTORY_CAPABILITY, MINT_BUILD_GRANT_CAPABILITY, PREPARE_VOLUMES_CAPABILITY,
     PRUNE_IMAGES_CAPABILITY, PUBLISH_CERTIFICATE_MATERIAL_CAPABILITY,
-    PULL_IMAGE_FROM_MACHINE_CAPABILITY, REGISTER_MACHINE_CAPABILITY, REMOVE_VOLUME_CAPABILITY,
+    PUBLISH_SERVING_POINTER_CAPABILITY, PULL_IMAGE_FROM_MACHINE_CAPABILITY,
+    READ_SERVING_POINTER_CAPABILITY, REGISTER_MACHINE_CAPABILITY, REMOVE_VOLUME_CAPABILITY,
     REQUEST_MACHINE_UPGRADE_CAPABILITY, RUNTIME_WATCH_CAPABILITY, Rpc, SEED_VOLUME_CAPABILITY,
     SET_MANAGEMENT_CLIENT_CAPABILITY, SET_VOLUME_COPY_CAPABILITY, TAIL_LOGS_CAPABILITY,
     UPDATE_MACHINE_CAPABILITY, VOLUME_FLOOR_CAPABILITY, op,
@@ -71,6 +72,11 @@ fn catalogued_capabilities_keep_stable_spellings() {
             PUBLISH_CERTIFICATE_MATERIAL_CAPABILITY,
             "ployz.certificates.publish.v1",
         ),
+        (
+            PUBLISH_SERVING_POINTER_CAPABILITY,
+            "ployz.serving.publish.v1",
+        ),
+        (READ_SERVING_POINTER_CAPABILITY, "ployz.serving.read.v1"),
         (UPDATE_MACHINE_CAPABILITY, "ployz.machine.update.v1"),
         (LEAVE_MACHINE_CAPABILITY, "ployz.machine.leave.v1"),
         (FORGET_MACHINE_CAPABILITY, "ployz.machine.forget.v1"),
@@ -139,7 +145,12 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
     );
     assert_eq!(
         names(CapabilityAdvertisement::Cluster),
-        ["ployz.certificates.publish.v1", "ployz.runtime.watch.v1",]
+        [
+            "ployz.certificates.publish.v1",
+            "ployz.serving.publish.v1",
+            "ployz.serving.read.v1",
+            "ployz.runtime.watch.v1",
+        ]
     );
 }
 

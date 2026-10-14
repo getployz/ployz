@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 
 use clap::ArgMatches;
-use ployz_core::{Machine, MachineName, MachineTarget, RpcError};
+use ployz_core::{Machine, MachineName, MachineTarget, QualifiedService, RpcError};
 use ployz_store::NamespacesQuery;
 use reqwest::Method;
 use serde::Deserialize;
@@ -230,7 +230,11 @@ fn remaining(report: &DrainReport) -> Result<String, String> {
             "Still on {server}: {}",
             services
                 .iter()
-                .map(ToString::to_string)
+                .map(|service| if still_retiring(report, service) {
+                    format!("{service} (retiring)")
+                } else {
+                    service.to_string()
+                })
                 .collect::<Vec<_>>()
                 .join(", ")
         )),
@@ -238,6 +242,12 @@ fn remaining(report: &DrainReport) -> Result<String, String> {
             "Cannot observe Services on Server {server}: {error}"
         )),
     }
+}
+
+fn still_retiring(report: &DrainReport, service: &QualifiedService) -> bool {
+    report.services.iter().any(|drained| {
+        drained.service == *service && matches!(drained.outcome, DrainOutcome::Moved { .. })
+    })
 }
 
 #[cfg(test)]

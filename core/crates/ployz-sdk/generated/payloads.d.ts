@@ -1449,8 +1449,8 @@ stopped: DrainStop | null,
  */
 remaining: Remaining,
 /**
- * Every chosen Service left the Server, the Drain ran to its end, and what remains
- * was observed.
+ * Every chosen Service left the Server or moved, the Drain ran to its end, and what
+ * remains was observed. A moved Service's old copy may still be retiring.
  */
 complete: boolean, };
 
@@ -3857,7 +3857,7 @@ export type StageHistory = { environment: EnvironmentRef, revision: Revision, ac
 
 export type Start = { deployment: DeploymentId, };
 
-export type StayReason = { "kind": "unobserved", server: MachineRef, } | { "kind": "mid_rollout" } | { "kind": "global" } | { "kind": "bind_mount", server: MachineRef, } | { "kind": "volume", server: MachineRef, } | { "kind": "no_destination", detail: string, };
+export type StayReason = { "kind": "unobserved", server: MachineRef, } | { "kind": "mid_rollout" } | { "kind": "global" } | { "kind": "bind_mount", server: MachineRef, } | { "kind": "volume", server: MachineRef, } | { "kind": "no_destination", detail: string, } | { "kind": "pointer_unread", detail: string, };
 
 export type Step = { "step": "read", asks: Array<Ask>, } | { "step": "write", write: Write, } | { "step": "wait", ms: number, then: Array<Ask>, } | { "step": "done", result: ToolResult, };
 
