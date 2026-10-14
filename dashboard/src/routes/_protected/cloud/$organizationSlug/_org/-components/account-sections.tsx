@@ -115,7 +115,7 @@ function AccountNotificationsSection() {
 function deviceLabel(row: AccountSessionRow) {
   const agent = row.userAgent ?? "";
   if (row.cli) return `Ployz CLI ${agent.split(/[/\s]/)[1] ?? ""}`.trim();
-  const browser = /Edg\//.test(agent) ? "Edge" : /Firefox\//.test(agent) ? "Firefox" : /Chrome\//.test(agent) ? "Chrome" : /Safari\//.test(agent) ? "Safari" : null;
+  const browser = /Edg(iOS)?\//.test(agent) ? "Edge" : /F(irefox|xiOS)\//.test(agent) ? "Firefox" : /C(hrome|riOS)\//.test(agent) ? "Chrome" : /Safari\//.test(agent) ? "Safari" : null;
   const os = /iPhone|iPad/.test(agent) ? "iOS" : /Android/.test(agent) ? "Android" : /Mac OS X/.test(agent) ? "macOS" : /Windows/.test(agent) ? "Windows" : /Linux/.test(agent) ? "Linux" : null;
   if (browser && os) return `${browser} on ${os}`;
   return browser ?? os ?? "Unknown device";
