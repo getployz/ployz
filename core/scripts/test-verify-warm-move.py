@@ -96,8 +96,11 @@ def say(data):
     return json.dumps(data)
 
 
+TIMED_OUT = "timed out after"
+
+
 def holding(held):
-    return bool(held) and not held.startswith("timed out after")
+    return bool(held) and not held.startswith(TIMED_OUT)
 
 
 def done(row):
@@ -300,7 +303,7 @@ class Cluster:
             if self.row(volume, row["id"]).get("state") in TERMINAL:
                 return None
             time.sleep(1)
-        return f"timed out after {limit}s"
+        return f"{TIMED_OUT} {limit}s"
 
     def wrap_runc(self, machine, tag, phys, body):
         """Replace the Machine's runc with a wrapper that runs `body` before creating a container that mounts `phys`.
@@ -333,7 +336,7 @@ class Cluster:
             if began:
                 return began
             time.sleep(1)
-        return f"timed out after {limit}s"
+        return f"{TIMED_OUT} {limit}s"
 
     # Cloud runs
 

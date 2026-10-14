@@ -114,7 +114,6 @@ class Recovery(unittest.TestCase):
         def fail(timeout):
             output = communicate(timeout)
             self.deploy.returncode = 3
-            self.deploy.deployment["status"] = "failed"
             return output
 
         self.deploy.communicate = fail
