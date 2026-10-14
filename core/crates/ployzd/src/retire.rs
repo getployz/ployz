@@ -291,6 +291,7 @@ impl Retirer {
             .flat_map(|(_, pointer)| &pointer.retiring)
             .collect();
         self.absent.retain(|id| retiring.contains(id));
+        self.present.retain(|id| retiring.contains(id));
     }
 
     fn track(&mut self, candidates: &[Candidate], now: Instant) {
@@ -1404,6 +1405,35 @@ mod tests {
         let (store, server) = identity_store(db).await;
         round(&host, &store, &mut retirer, &mut stopping).await;
         assert!(retirer.absent.is_empty());
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn present_ids_are_forgotten_once_no_pointer_retires_them() {
+        let db = corrosion_db();
+        insert_pointer(&db, pointers().get(&service()).unwrap());
+        let one = machine("one", 1);
+        let (store, server) = identity_store(db).await;
+        let host = FakeHost::new(&[id("a"), id("b")], ackers(&[&one]));
+        let mut retirer = Retirer::default();
+        let mut stopping = JoinSet::new();
+        round(&host, &store, &mut retirer, &mut stopping).await;
+        assert!(retirer.present.contains(&id("a")));
+        server.abort();
+
+        let db = corrosion_db();
+        insert_pointer(
+            &db,
+            &ServingPointer {
+                deploy: deploy("d3"),
+                containers: vec![id("b")],
+                previous: Some(deploy("d2")),
+                retiring: Vec::new(),
+            },
+        );
+        let (store, server) = identity_store(db).await;
+        round(&host, &store, &mut retirer, &mut stopping).await;
+        assert!(retirer.present.is_empty());
         server.abort();
     }
 
