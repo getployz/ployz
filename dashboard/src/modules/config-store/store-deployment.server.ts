@@ -215,7 +215,7 @@ export const unclaimedStoreDeployments = Effect.fn("StoreDeployment.unclaimed")(
     if (Option.isSome(view) && view.value.in_flight) held.add(view.value.environment.id);
   }
   return unclaimed.filter((found) => !held.has(found.environment)).map((found): ConfigDeploymentAdmittedEventData => ({
-    organizationId: found.organization, environmentId: found.environment, deploymentId: found.deployment,
+    organizationId: found.organization, environmentId: found.environment, deploymentId: found.deployment, trigger: "user",
   }));
 });
 
