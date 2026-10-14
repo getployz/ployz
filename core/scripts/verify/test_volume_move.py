@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise the volume move checks with a command model, without Incus, Cloud or ZFS."""
 
+import ast
 from contextlib import redirect_stdout
 from datetime import datetime, timezone
 import importlib.util
@@ -13,6 +14,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
@@ -795,7 +798,7 @@ class FakeProbe:
         ack = len(self.model.acks) + 1
         self.model.acks.append(ack)
         with self.log.open("a") as handle:
-            handle.write(json.dumps(dict(at=self.clock(), t=self.clock(), ack=ack)) + "\n")
+            handle.write(json.dumps(dict(at=self.model.clock.wall(), t=self.model.clock.mono(), ack=ack)) + "\n")
 
     def send_signal(self, _):
         pass
@@ -815,12 +818,22 @@ class Clock:
         self.probe = None
         self.offset = 0.0
         self.rate = 0.0
+        self.mono_rate = 0.0
 
     def __call__(self):
         return self.now
 
     def wall(self):
         return self.now + self.offset + self.rate * (self.now - 1000.0)
+
+    def mono(self):
+        """The host's monotonic clock: it never steps, but it may run fast or slow."""
+        return 50.0 + (self.now - 1000.0) * (1 + self.mono_rate)
+
+    def time(self):
+        """The `time` module the harness reads: every clock in it is this host's, so perturbing the host moves it."""
+        return SimpleNamespace(time=self.wall, monotonic=self.mono, sleep=self.sleep,
+                               strftime=lambda fmt, *_: time.strftime(fmt, time.gmtime(self.wall())))
 
     def advance(self, seconds):
         self.now += seconds
@@ -857,9 +870,10 @@ class VolumeMoveTests(unittest.TestCase):
         model.pid_file = self.root / "dashboard" / ".verify" / "run" / "worker.pid"
         model.pid_file.write_text("100\n")
         model.workers = {100}
-        patcher = mock.patch.object(volume_move, "alive", lambda pid: pid in model.workers, create=True)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        for name, value in (("alive", lambda pid: pid in model.workers), ("time", clock.time())):
+            patcher = mock.patch.object(volume_move, name, value, create=True)
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
         def spawn(command, stdout, stderr):
             logs = len(list((self.root / "evidence").iterdir()))
@@ -2724,7 +2738,7 @@ finally:
 
         def slew(name, rate):
             if name == "host":
-                clock.rate = rate
+                clock.rate = clock.mono_rate = rate
             elif name == "cloud":
                 model.cloud["rate"] = rate
             else:
@@ -2910,6 +2924,33 @@ finally:
             decided.append(dict({key: value for key, value in case.items() if key != "gap"}, failures=failures,
                                 triggered=credited))
         return dict(passed=summary["passed"], error=summary["error"], cases=decided)
+
+    def test_the_harness_reads_only_the_host_clocks_the_model_perturbs(self):
+        # The property test perturbs the `time` module the harness sees, so a clock read from anywhere else would
+        # run on the real clock and hide from it. Only monotonic deadlines, sleeps and the evidence name are sanctioned.
+        tree = ast.parse(Path(spec.origin).read_text())
+        reads = sorted({node.attr for node in ast.walk(tree)
+                        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "time"})
+        self.assertEqual(reads, ["monotonic", "sleep", "strftime"])
+        imported = {alias.name.split(".")[0] for node in ast.walk(tree) if isinstance(node, (ast.Import, ast.ImportFrom))
+                    for alias in node.names} | {node.module.split(".")[0] for node in ast.walk(tree)
+                                                if isinstance(node, ast.ImportFrom) and node.module}
+        self.assertFalse(imported & {"datetime", "calendar"}, imported)
+        self.assertFalse([node.lineno for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
+                          and node.module == "time"])
+
+    def test_a_host_wall_clock_step_moves_no_deadline(self):
+        # Opus N1: deadlines read the monotonic clock, so stepping the host's realtime clock an hour either way while
+        # the case waits neither cuts a wait short nor stretches it.
+        clean = volume_move.CASES[0]
+        for delta in (3600.0, -3600.0):
+            with self.subTest(delta):
+                self.setUp()
+                checks, model = self.checks()
+                model.at(model.clock() + 2, lambda delta=delta: model.clock.step(delta))
+                with redirect_stdout(io.StringIO()):
+                    summary = checks.run_all([clean])
+                self.assertTrue(summary["cases"][0]["passed"], summary["cases"][0])
 
     def test_no_clock_step_or_slew_anywhere_changes_any_verdict(self):
         # The four facts never read a clock, so every Machine, Cloud and the host may step and slew at random while
