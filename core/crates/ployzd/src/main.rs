@@ -81,6 +81,8 @@ enum Command {
         attempt: MachineUpgradeAttemptId,
     },
     /// Write this release's systemd unit files for an installer running another release.
+    ///
+    /// Other releases' installers call these flags; renaming one makes them exit 2 and write their own units.
     #[command(hide = true)]
     InstallUnits {
         #[arg(long)]
