@@ -7,7 +7,7 @@
 
 `run` plays every case below in order, or only the named ones:
   clean             a move with no fault
-  deploy-plain      a Deploy with no move: it lands this case's version on the writer
+  deploy-plain      a Deploy with no move: it lands this case's version on the writer, and its seconds are the baseline
   deploy-warm       a Deploy while B's warm pull is held: the move yields, the app stays on A, one requeue
   deploy-after-cut  a Deploy after the cut, before commit: the move yields, the app goes back to A, one requeue
   deploy-committed  a Deploy after commit: it follows the move to B, no requeue
@@ -66,6 +66,12 @@ LEASE_FILE = "le" + "ase.rs"
 SERVICE = "db"
 VOLUME = "data"
 IMAGE = "postgres:16-alpine"
+# A plain Deploy measured 10.3 s p50, 12.3 s p95 and 17.5 s max by CLI wall time on one Incus VM, and the disk
+# flip it may meet holds at most 0.78 s. A Deploy that takes the lane adds one floor call and at most one promote
+# (1.3 s max measured), so 20 s over the baseline covers the measured spread twice over and still fails a Deploy
+# that sat out more than 20 s of a hold. The release by disarm alone passes such a Deploy, since the disarm follows
+# it whenever it returns inside the hold. Wall time here can only fail a case; credit rests on the release.
+DEPLOY_MARGIN = 20
 # A SetVolumeCopy held 90 s outlasts Cloud's 10 s call, but Inngest retries the step for about 2.5 min, so the move
 # survives the hold.
 HOLD = 90
@@ -116,7 +122,7 @@ CASES = [
     dict(name="clean", cell=None, step="move", op="move", machine="writer", fault=None, trigger=None,
          action="none", recover="rerun", expect=dict(move="done", writer="other")),
     dict(name="deploy-plain", cell=None, step="deploy", op=None, machine="writer", fault=None, trigger=None,
-         action="deploy", recover="rerun", expect=dict(writer="writer", version=True)),
+         action="deploy", recover="rerun", expect=dict(baseline=True, writer="writer", version=True)),
     held(dict(name="deploy-warm", cell="Mirror>Mirror", step="1-rounds", op="move", machine="other",
               mirror="present", trigger="fault", action="deploy", recover="rerun",
               expect=dict(move="yielded", requeues=1, writer="other", on_writer=True, inside_hold=True,
@@ -371,7 +377,7 @@ def assess(states, lost, *, bound=SNAPSHOT_BOUND):
     return failures
 
 
-def judge(result, side):
+def judge(result, side, baseline):
     """The case's own expectations, beyond the one-writer health `assess` checks."""
     expect, failures = result.get("expect", {}), []
     move, action = result.get("run") or {}, result.get("acted") or {}
@@ -393,6 +399,8 @@ def judge(result, side):
         if expect.get("inside_hold") and result.get("released") != "disarm":
             failures.append(f"the hold was released by {result.get('released')}, not the disarm after the Deploy: "
                             "the Deploy did not land inside it")
+        if expect.get("inside_hold") and baseline is not None and action["seconds"] > baseline + DEPLOY_MARGIN:
+            failures.append(f"the Deploy took {action['seconds']}s, over the {baseline}s baseline plus {DEPLOY_MARGIN}s")
         if expect.get("version") and result.get("version") != result["name"]:
             failures.append(f"{SERVICE} runs VC_DEPLOY={result.get('version')}, not this case's Deploy")
     if action.get("case") == "release":
@@ -1186,7 +1194,7 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
             return [row], [f"recovery {op} was refused as busy: {reply[:300]}"]
         return [self.wait_run(row)], []
 
-    def run_case(self, case):
+    def run_case(self, case, baseline=None):
         self.case_name = case["name"]
         writer = self.writer()
         other = self.other(writer)
@@ -1242,7 +1250,7 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
                       version=self.version())
         lost = self.lost()
         result["probe"] = dict(lost=lost)
-        result["failures"] = assess(states, lost) + busy + judge(result, side)
+        result["failures"] = assess(states, lost) + busy + judge(result, side, baseline)
         if case["trigger"] and not result.get("triggered"):
             result["failures"].append("the trigger never fired before the run ended")
         if result.get("triggered") and (unowned := self.outside_run(case, result) or self.unclaimed(result["run"])):
@@ -1301,13 +1309,13 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
 
     def run_all(self, cases):
         self.out.mkdir(parents=True, exist_ok=True)
-        results, escaped = [], None
+        results, escaped, baseline = [], None, None
         try:
             self.setup()
             self.start_probe()
             for case in cases:
                 try:
-                    result = self.run_case(case)
+                    result = self.run_case(case, baseline)
                 except (AssertionError, RuntimeError, subprocess.TimeoutExpired) as error:
                     result = dict(case, passed=False, failures=[f"{type(error).__name__}: {error}"[:2000]])
                     if isinstance(error, Skipped):
@@ -1326,6 +1334,8 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
                     result["failures"].append(f"the run stopped after this case: {reason}"[:2000])
                 (self.out / f"{case['name']}.json").write_text(json.dumps(result, indent=2) + "\n")
                 results.append(result)
+                if result.get("expect", {}).get("baseline") and result["passed"]:
+                    baseline = result["acted"]["seconds"]
                 if not heal["healed"]:
                     break
         except BaseException as error:
@@ -1340,15 +1350,15 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
                 cleanup = None if escaped else error
                 escaped = escaped or f"{type(error).__name__}: {error}"[:2000]
             try:
-                summary = self.summarize(results, report, escaped)
+                summary = self.summarize(results, report, escaped, baseline)
             except Interrupted as error:
                 # The first signal of the run landed here; the handler is disarmed now, so this write completes.
-                summary = self.summarize(results, report, escaped or f"{type(error).__name__}: {error}")
+                summary = self.summarize(results, report, escaped or f"{type(error).__name__}: {error}", baseline)
             if cleanup:
                 raise cleanup
         return summary
 
-    def summarize(self, results, report, escaped):
+    def summarize(self, results, report, escaped, baseline=None):
         acks = read_acks(self.probe_log)
         for result in results:
             if "settled" in result:
@@ -1359,6 +1369,7 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
             manifest=str(self.manifest), head=subprocess.run(["git", "-C", str(REPO), "rev-parse", "HEAD"],
                                                               capture_output=True, text=True).stdout.strip(),
             physical=self.physical, size_gb=self.size_gb, probe=report, downtime=downtime(results),
+            deploy_baseline_seconds=baseline,
             passed=not escaped and all(result["passed"] for result in results) and bool(report)
             and not report.get("lost"),
             error=escaped,

@@ -610,6 +610,9 @@ class ClusterModel:
         elif lane:
             if self.mutation == "deploy-waits":
                 self.clock.now = max(self.clock(), lane["until"])
+            elif self.mutation == "deploy-stalls":
+                # Waits on the move for part of the hold, then returns before the disarm releases it.
+                self.clock.now += 40
             lane = self.take("yielded")
             requeues = {"requeue-none": 0, "requeue-twice": 2}.get(self.mutation, 1)
             # An unrelated move, say one a user asked for, lands where the requeue would.
@@ -978,6 +981,7 @@ class VolumeMoveTests(unittest.TestCase):
                 row = cases[name]
                 self.assertEqual((row["fault_on"], row["fault"], row["trigger"]),
                                  ("other", f"delay-rpc:SetVolumeCopy.{transition}:{row['hold']}", trigger))
+                self.assertGreater(row["hold"], 17.5 + volume_move.DEPLOY_MARGIN)
 
     def test_cases_keep_the_clean_move_the_deploys_both_undos_and_one_kill_per_cell(self):
         self.assertEqual([row["name"] for row in volume_move.CASES],
@@ -2803,7 +2807,11 @@ finally:
             credited = json.loads(out.read_text()).get("triggered") if out.exists() else None
             if credited:
                 credited = {key: value for key, value in credited.items() if key != "poll_end_mono"}
-            decided.append(dict({key: value for key, value in case.items() if key != "gap"}, triggered=credited))
+            # The Deploy-time bound reads the host clock and can only fail a case, so its seconds are not a verdict.
+            failures = [re.sub(r"took [0-9.]+s, over the [0-9.]+s", "took Ns, over the Ns", failure)
+                        for failure in case["failures"]]
+            decided.append(dict({key: value for key, value in case.items() if key != "gap"}, failures=failures,
+                                triggered=credited))
         return dict(passed=summary["passed"], error=summary["error"], cases=decided)
 
     def test_no_clock_step_or_slew_anywhere_changes_any_verdict(self):
@@ -2825,6 +2833,7 @@ finally:
     def test_each_deploy_and_undo_case_passes_against_a_correct_model(self):
         summary, model = self.run_cases(volume_move.CASES[:7])
         self.assertTrue(summary["passed"], json.dumps(summary["cases"], indent=1))
+        self.assertEqual(summary["deploy_baseline_seconds"], PLAIN_DEPLOY)
         runs = {case["name"]: case["run"] for case in summary["cases"]}
         self.assertEqual([runs[name] for name in ("deploy-warm", "deploy-after-cut", "deploy-committed",
                                                   "undo-before-cut", "undo-after-cut")],
@@ -2876,6 +2885,7 @@ finally:
              "the Deploy printed 'Provisioned Volume status has an invalid mountpoint'"),
             ("requeue-unrelated", "deploy-warm", "0 requeued moves, expected 1"),
             ("cut-other-gen", "deploy-after-cut", "the trigger never fired before the run ended"),
+            ("deploy-stalls", "deploy-warm", f"over the {PLAIN_DEPLOY}s baseline plus {volume_move.DEPLOY_MARGIN}s"),
         ]
         for mutation, name, message in planted:
             with self.subTest(mutation):
