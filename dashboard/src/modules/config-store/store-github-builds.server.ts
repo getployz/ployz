@@ -165,9 +165,8 @@ export type StoreGithubCheck = "waiting" | "done" | { failed: string };
  * One look at a dispatched build, after its run completed (the webhook), its final report came, or a wait timed out.
  * A Deployment cancelled or replaced meanwhile stops it. An Organization that can't use the installation any more
  * (disconnected, or GitHub suspended or uninstalled it) can't read what GitHub built, so its builds stop and the
- * Deployment fails with why. A run past its budget
- * is cancelled and ended. A run that hasn't checked in by the start limit (`startLimit`: another Builder follows) is
- * skipped and cancelled; GitHub keeps one that started.
+ * Deployment fails with why. A run past its budget is cancelled and ended. A run that hasn't checked in by the start
+ * limit (`startLimit`: another Builder follows) is skipped and cancelled; GitHub keeps one that started.
  */
 export const checkStoreGithubBuild = Effect.fn("StoreGithub.check")(function* (
   organizationId: string, target: StoreGithubTarget, seen: { ended: boolean; startLimit: boolean },
