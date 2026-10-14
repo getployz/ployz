@@ -438,7 +438,7 @@ def read_acks(path):
         except json.JSONDecodeError:
             continue
         if "ack" in event:
-            acks.append((event["ack"], event["at"]))
+            acks.append((event["ack"], event["t"]))
     return sorted(acks, key=lambda ack: ack[1])
 
 
@@ -461,11 +461,11 @@ def downtime(results):
 
 class VolumeMove:
     def __init__(self, manifest, *, pool="ployz", runner=subprocess.run, spawn=subprocess.Popen,
-                 sleep=time.sleep, clock=time.time, size_gb=None, out=None):
+                 size_gb=None, out=None):
         self.manifest = Path(manifest)
         self.run = json.loads(self.manifest.read_text())
         self.pool = pool
-        self.runner, self.spawn, self.sleep, self.clock = runner, spawn, sleep, clock
+        self.runner, self.spawn = runner, spawn
         self.size_gb = size_gb
         self.machines = [machine["name"] for machine in self.run["machines"][:2]]
         self.out = Path(out) if out else self.manifest.parent / "evidence" / f"volume-move-{time.strftime('%Y%m%dT%H%M%S')}"
@@ -538,15 +538,15 @@ class VolumeMove:
         return None, None
 
     def healthy(self, limit=300):
-        deadline = self.clock() + limit
+        deadline = time.monotonic() + limit
         while True:
             machine, container = self.running_container()
             if container and not self.sh(machine, f"/usr/bin/docker exec {container} pg_isready -U postgres",
                                          check=False).returncode:
                 return machine
-            if self.clock() >= deadline:
+            if time.monotonic() >= deadline:
                 return None
-            self.sleep(3)
+            time.sleep(3)
 
     def setup(self):
         first, second = self.machines
@@ -585,13 +585,13 @@ class VolumeMove:
         self.probe_errors = (self.out / "probe.stderr").open("w")
         self.probe = self.spawn([str(HELPER), "probe", str(self.manifest), SERVICE], stdout=self.probe_output,
                                 stderr=self.probe_errors)
-        deadline = self.clock() + 300
+        deadline = time.monotonic() + 300
         while not (self.probe_log and read_acks(self.probe_log)):
             created = sorted(set(evidence.glob(f"ackprobe-{SERVICE}-*.jsonl")) - before)
             self.probe_log = created[-1] if created else None
-            if self.probe.poll() is not None or self.clock() >= deadline:
+            if self.probe.poll() is not None or time.monotonic() >= deadline:
                 raise RuntimeError("The probe never acknowledged an insert")
-            self.sleep(1)
+            time.sleep(1)
 
     def stop_probe(self):
         if not self.probe:
@@ -832,7 +832,7 @@ class VolumeMove:
         """
         for machine in self.machines:
             self.cursor[machine] = self.proven_restart(machine, op)
-        self.sleep(STOP_HOLD)
+        time.sleep(STOP_HOLD)
         writer = self.writer()
         ready = self.sh(writer, f"c=$(/usr/bin/docker ps -q --filter volume={shlex.quote(self.physical)} "
                                 "--filter status=running); test -n \"$c\" && /usr/bin/docker exec $c pg_isready -U postgres",
@@ -865,7 +865,7 @@ class VolumeMove:
                     mirror=["volume", "mirror", VOLUME, "--to", destination],
                     release=["volume", "release", VOLUME])
         args["mirror-rm"] = ["volume", "mirror", "rm", f"{VOLUME}-{destination}"]
-        began = self.clock()
+        began = time.monotonic()
         deadline = began + BUSY_LIMIT
         holder = skip = receiver = waited_on = work = None
         armed = checked = restarted = False
@@ -884,7 +884,7 @@ class VolumeMove:
                     (receiver, work), waited_on = found[0], found[0][0]
                 else:
                     receiver = None
-                if self.clock() >= deadline and (active or found):
+                if time.monotonic() >= deadline and (active or found):
                     # A restart leaves `pull` set until a run asks again, so a pull with no receive by the limit is
                     # left to the barrier, which ends any task behind it.
                     if found and not restarted and all(kind == "a pull" for _, (kind, _) in found):
@@ -897,14 +897,14 @@ class VolumeMove:
                         break
                 elif active or found:
                     restarted = False
-                    self.sleep(4)
+                    time.sleep(4)
                     continue
                 if not restarted:
                     self.barrier(op)
                     restarted = True
                     continue
                 settled = {row["id"] for row in listed}
-                self.since = self.clock()
+                self.since = time.monotonic()
                 checked = True
                 if arm:
                     arm()
@@ -925,12 +925,12 @@ class VolumeMove:
                 # A retry would let the fault fire inside that run and pass the case on its fault line.
                 skip = f"a run took the Volume while the fault was armed on {op}"
                 break
-            if self.clock() >= deadline:
+            if time.monotonic() >= deadline:
                 skip = f"VolumeBusy past {BUSY_LIMIT}s on {op}"
                 break
             # The run that refused this request may leave work behind, so start clean again after it.
             checked = restarted = False
-            self.sleep(4)
+            time.sleep(4)
         if checked and not skip:
             accepted = {row["id"] for row in run_rows(data)} if code == 0 else set()
             self.started_runs |= accepted
@@ -942,7 +942,7 @@ class VolumeMove:
             holder_row = holder or {}
             record = dict(case=self.case_name, op=op, holder=holder_row.get("id"), kind=holder_row.get("kind"),
                           receive_on=waited_on, stale=sorted(f"{machine}: {detail}" for machine, (_, detail) in stale),
-                          waited_seconds=round(self.clock() - began, 1),
+                          waited_seconds=round(time.monotonic() - began, 1),
                           started_by_harness=holder_row.get("id") in self.started_runs)
             self.busy_waits.append(record)
             print(json.dumps(dict(volume_busy_wait=record)), flush=True)
@@ -960,10 +960,10 @@ class VolumeMove:
     def wait_idle(self, deadline):
         """A cron sync or a run left from an earlier case holds the Volume; wait it out until the deadline."""
         holder = None
-        while self.clock() < deadline and (
+        while time.monotonic() < deadline and (
                 (rows := self.runs()) is None or (active := [row for row in rows if row.get("state") not in TERMINAL])):
             holder = holder or (active[0] if rows is not None else None)
-            self.sleep(4)
+            time.sleep(4)
         return holder
 
     def approve(self, reply):
@@ -989,13 +989,13 @@ class VolumeMove:
     def wait_run(self, row, limit=1800):
         if row is None or row.get("state") in TERMINAL | {"refused"}:
             return row
-        deadline = self.clock() + limit
+        deadline = time.monotonic() + limit
         last = row
-        while self.clock() < deadline:
+        while time.monotonic() < deadline:
             last = next((dict(row, **found) for found in self.runs() or [] if found["id"] == row["id"]), last)
             if last.get("state") in TERMINAL:
                 return last
-            self.sleep(4)
+            time.sleep(4)
         return dict(last, state=f"still {last.get('state')} after {limit}s")
 
     def row(self, row):
@@ -1010,7 +1010,7 @@ class VolumeMove:
         while True:
             rows = [row for row in self.listed_runs("the settle") if row["id"] not in known]
             if not rows:
-                self.sleep(4)
+                time.sleep(4)
                 rows = [row for row in self.listed_runs("the settle") if row["id"] not in known]
                 if not rows:
                     return ended[::-1]
@@ -1020,13 +1020,13 @@ class VolumeMove:
 
     def wait_trigger(self, case, row, side, limit=900):
         """The credited event, or None once the first run ends without one."""
-        deadline = self.clock() + limit
-        while self.clock() < deadline:
+        deadline = time.monotonic() + limit
+        while time.monotonic() < deadline:
             if credited := self.trigger(case, side, row):
                 return credited
             if (now := self.row(row)) and now["state"] in TERMINAL:
                 return None
-            self.sleep(1 if case["trigger"] == "fault" else 0.5)
+            time.sleep(1 if case["trigger"] == "fault" else 0.5)
         return None
 
     def runner_state(self, state):
@@ -1097,7 +1097,7 @@ class VolumeMove:
         self.runner_state("kill")
         alive_after = alive(old)
         after = self.row(row)
-        self.sleep(5)
+        time.sleep(5)
         self.runner_state("start")
         new = int(pid_file.read_text())
         return [dict(kill="runner", pid=old, alive_before=alive_before, alive_after_kill=alive_after, new_pid=new,
@@ -1117,10 +1117,10 @@ class VolumeMove:
 
     def deploy(self, name):
         self.cli("set", f"{SERVICE}.env.VC_DEPLOY={name}")
-        began = self.clock()
+        began = time.monotonic()
         result = self.command("cli", "--timeout", 1500, self.manifest, "--", "--json", "deploy", check=False,
                               timeout=1500)
-        seconds = round(self.clock() - began, 2)
+        seconds = round(time.monotonic() - began, 2)
         output = result.stdout + result.stderr
         return dict(exit_code=result.returncode, seconds=seconds, running_after=self.running_on(),
                     mount_errors=[error for error in MOUNT_ERRORS if error in output], output=output[-1500:])
@@ -1170,7 +1170,7 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
 """, check=False)
             after = self.row(row)
             fields = dict(line.split("=", 1) for line in kill.stdout.splitlines() if "=" in line)
-            self.sleep(3)
+            time.sleep(3)
             self.sh(machine, "systemctl start docker.service ployz.service", check=False)
             return [check_kill(dict(fields, kill=unit, machine=machine))], after
         return [], self.row(row)
@@ -1253,7 +1253,7 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
         side = dict(writer=writer, other=other)
         destination = other
         self.prepare(case, other)
-        started = self.clock()
+        started = time.monotonic()
         known = {row["id"] for row in self.listed_runs(case["name"])}
         # Arm only once the Volume is idle: a cron sync crosses the same SetVolumeCopy points and would trip it.
         plan = arming(case, side)
@@ -1298,7 +1298,7 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
                 result["recovery"].append(self.wait_run(self.start_op(op, destination)))
         self.healthy()
         states = self.states()
-        result.update(ended=self.clock(), states=states, final_writer=final_writer(states), runs=(self.runs() or [])[:6],
+        result.update(ended=time.monotonic(), states=states, final_writer=final_writer(states), runs=(self.runs() or [])[:6],
                       version=self.version())
         lost = self.lost()
         result["probe"] = dict(lost=lost)
@@ -1337,7 +1337,7 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
         result["passed"] = not result["failures"]
         if not result["passed"]:
             result["heal"] = self.heal(destination)
-        result["settled"] = self.clock()
+        result["settled"] = time.monotonic()
         self.evidence(case["name"])
         (self.out / f"{case['name']}.json").write_text(json.dumps(result, indent=2) + "\n")
         print(json.dumps(dict(case=case["name"], passed=result["passed"], final_writer=result["final_writer"],

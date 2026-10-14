@@ -787,8 +787,8 @@ class ClusterModel:
 
 
 class FakeProbe:
-    def __init__(self, log, model, clock):
-        self.log, self.model, self.clock = log, model, clock
+    def __init__(self, log, model):
+        self.log, self.model = log, model
         self.stdout = None
 
     def poll(self):
@@ -828,7 +828,7 @@ class Clock:
 
     def mono(self):
         """The host's monotonic clock: it never steps, but it may run fast or slow."""
-        return 50.0 + (self.now - 1000.0) * (1 + self.mono_rate)
+        return 1000.0 + (self.now - 1000.0) * (1 + self.mono_rate)
 
     def time(self):
         """The `time` module the harness reads: every clock in it is this host's, so perturbing the host moves it."""
@@ -877,13 +877,12 @@ class VolumeMoveTests(unittest.TestCase):
 
         def spawn(command, stdout, stderr):
             logs = len(list((self.root / "evidence").iterdir()))
-            probe = FakeProbe(self.root / "evidence" / f"ackprobe-db-{logs}.jsonl", model, clock.wall)
+            probe = FakeProbe(self.root / "evidence" / f"ackprobe-db-{logs}.jsonl", model)
             probe.stdout = stdout
             probe.ack()
             clock.probe = probe
             return probe
-        checks = volume_move.VolumeMove(self.manifest, runner=model, spawn=spawn, sleep=clock.sleep,
-                                        clock=clock.wall, out=self.root / "out")
+        checks = volume_move.VolumeMove(self.manifest, runner=model, spawn=spawn, out=self.root / "out")
         return checks, model
 
     def run_cases(self, cases, mutation=None):
@@ -2723,10 +2722,9 @@ finally:
 
     def perturb(self, model, label, number, seen):
         """Every clock the harness could read starts off, slews, and keeps stepping 20 s either way while the run
-        goes on, as seed `label number` draws it. Only the host's drift is bounded, to 60 s: it feeds deadlines, and
-        a deadline that crossed would change what the case does, not what it credits. Slews alternate sign with the
-        number so two seeds cover both."""
-        rng, clock, drift = random.Random(f"{label} {number}"), model.clock, dict.fromkeys(self.CLOCKS, 0.0)
+        goes on, as seed `label number` draws it. The host's monotonic clock slews with its realtime one and never
+        steps. Slews alternate sign with the number so two seeds cover both."""
+        rng, clock = random.Random(f"{label} {number}"), model.clock
 
         def move(name, delta):
             if name == "host":
@@ -2746,11 +2744,8 @@ finally:
 
         def arm(name):
             delta = rng.choice((-20.0, 20.0))
-            if name == "host" and abs(drift[name] + delta) > 60:
-                delta = -delta
 
             def step():
-                drift[name] += delta
                 move(name, delta)
                 seen[name].add("stepped ahead" if delta > 0 else "stepped behind")
                 arm(name)
