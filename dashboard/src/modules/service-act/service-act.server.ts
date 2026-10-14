@@ -15,6 +15,7 @@ import {
   legOf,
   legsOf,
   type LegStep,
+  progressOf,
   SERVICE_ACT_PENDING_LIMIT_MS,
   SERVICE_ACT_RUNNING_LIMIT_MS,
   type ServiceActBefore,
@@ -256,18 +257,34 @@ export const closeStaleServiceActs = Effect.fn("ServiceAct.closeStale")(function
   return { failed: failed.length, unknown: unknown.length };
 });
 
+const actsOf = (
+  organizationId: string,
+  subject: { readonly environment: string; readonly service: string },
+  attempt: string | null,
+  limit: number,
+) =>
+  Effect.flatMap(Database, ({ drizzle }) =>
+    drizzle.select().from(serviceAct).where(and(
+      eq(serviceAct.organizationId, organizationId),
+      eq(serviceAct.environmentId, subject.environment),
+      eq(serviceAct.service, subject.service),
+      attempt === null ? undefined : eq(serviceAct.id, attempt),
+    )).orderBy(desc(serviceAct.requestedAt), desc(serviceAct.id)).limit(limit));
+
 export const serviceOperations = Effect.fn("ServiceAct.operations")(function* (
   organizationId: string,
   subject: { readonly environment: string; readonly service: string },
   attempt: string | null,
   limit: number,
 ) {
-  const { drizzle } = yield* Database;
-  const rows = yield* drizzle.select().from(serviceAct).where(and(
-    eq(serviceAct.organizationId, organizationId),
-    eq(serviceAct.environmentId, subject.environment),
-    eq(serviceAct.service, subject.service),
-    attempt === null ? undefined : eq(serviceAct.id, attempt),
-  )).orderBy(desc(serviceAct.requestedAt), desc(serviceAct.id)).limit(limit);
-  return rows.map(operationOf);
+  return (yield* actsOf(organizationId, subject, attempt, limit)).map(operationOf);
+});
+
+/** How far a Service's latest restart, start or stop got, or null when it never had one. */
+export const latestServiceAct = Effect.fn("ServiceAct.latest")(function* (
+  organizationId: string,
+  subject: { readonly environment: string; readonly service: string },
+) {
+  const [row] = yield* actsOf(organizationId, subject, null, 1);
+  return row === undefined ? null : progressOf(row);
 });

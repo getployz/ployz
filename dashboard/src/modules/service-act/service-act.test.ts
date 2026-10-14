@@ -1,6 +1,6 @@
 import type { MachineId } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
-import { endOf, type ServiceActBefore, type ServiceActLeg } from "./service-act";
+import { endOf, progressOf, type ServiceActBefore, type ServiceActLeg } from "./service-act";
 
 const before: ServiceActBefore = { copies: [{ server: "a", machine: "m-a", container: "web-1", state: "running", hook: false }], unanswered: [{ machine: "m-b" as MachineId, name: "b" }] };
 const moved: ServiceActLeg[] = [{ server: "a", machine: "m-a", container: "web-1", hook: false, stop: "done", start: "done", reason: null }];
@@ -26,14 +26,34 @@ describe("endOf", () => {
     expect(endOf(before, [], { machine: "m-b" as MachineId, name: "old-b" })).toEqual({ state: "unknown", reason: "b didn't answer." });
   });
 
-  it("never reads a restart that stopped rolling as done, and names the Server that didn't come back", () => {
+  it("never reads a restart that stopped rolling as done, and numbers the container that didn't come back", () => {
     const answered: ServiceActBefore = { ...before, unanswered: [] };
     const halted: ServiceActLeg[] = [
-      { server: "a", machine: "m-a", container: "web-1", hook: false, stop: "done", start: "failed", reason: "a couldn't start it." },
-      { server: "b", machine: "m-b", container: "web-2", hook: false, stop: null, start: null, reason: null },
+      { server: "a", machine: "m-a", container: "web-1", hook: false, stop: "done", start: "done", reason: null },
+      { server: "a", machine: "m-a", container: "web-2", hook: false, stop: "done", start: "failed", reason: "a couldn't start it." },
+      { server: "b", machine: "m-b", container: "web-3", hook: false, stop: null, start: null, reason: null },
     ];
-    expect(endOf(answered, halted, null)).toEqual({ state: "failed", reason: "a didn't come back, so Cloud left b alone." });
-    expect(endOf(answered, halted.map((leg) => leg.server === "a" ? { ...leg, start: "unknown" as const } : leg), null))
-      .toEqual({ state: "unknown", reason: "a didn't come back, so Cloud left b alone." });
+    const reason = "Container 2 on a didn't come back. a couldn't start it. The rest are untouched.";
+    expect(endOf(answered, halted, null)).toEqual({ state: "failed", reason });
+    expect(endOf(answered, halted.map((leg) => leg.container === "web-2" ? { ...leg, start: "unknown" as const } : leg), null))
+      .toEqual({ state: "unknown", reason });
+  });
+});
+
+describe("progressOf", () => {
+  const legs: ServiceActLeg[] = [
+    { server: "a", machine: "m-a", container: "hook-1", hook: true, stop: "done", start: null, reason: null },
+    { server: "a", machine: "m-a", container: "web-1", hook: false, stop: "done", start: "done", reason: null },
+    { server: "b", machine: "m-b", container: "web-2", hook: false, stop: "done", start: "sent", reason: null },
+    { server: "b", machine: "m-b", container: "web-3", hook: false, stop: null, start: null, reason: null },
+  ];
+  const act = { id: "act-1", state: "running" as const, legs, reason: null };
+
+  it("counts a restart by the containers it starts again, hooks aside", () => {
+    expect(progressOf({ ...act, verb: "restart" })).toMatchObject({ total: 3, done: 1 });
+  });
+
+  it("counts a stop by every container it stops, hooks included", () => {
+    expect(progressOf({ ...act, verb: "stop" })).toMatchObject({ total: 4, done: 3 });
   });
 });

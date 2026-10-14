@@ -67,8 +67,18 @@ server after the service is deleted.
 
 ## Restart, stop or open a shell
 
-The dashboard can't restart or stop a service, or run a command in it, yet. These are CLI-only
-for now:
+Open the service and click **⋮** next to its name. A running service offers **Restart** and
+**Stop**. A stopped one offers **Start**, and shows a **Start** button in its header too.
+
+- **Restart** goes one container at a time, across every server, so the others keep serving.
+  The header counts them, like **Restarting 4/12**. If a container doesn't come back, the restart
+  stops there and leaves the rest untouched. The service shows why, like **Container 4 on web-2
+  didn't come back**, with **Retry**.
+- **Stop** asks first: every container stops on every server until you start the service or
+  deploy.
+- **Start** starts every stopped container.
+
+The dashboard can't run a command in a service yet. The CLI does all four:
 
 ```sh
 ployz service restart web          # stop, then start, with the same settings
