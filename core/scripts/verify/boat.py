@@ -132,8 +132,9 @@ def shortfalls(machines, limits):
         problems.append(f"Active sandboxes: need {machines}, {headroom} of {limits['maxActiveSandboxes']} free")
     if limits["starts"].get("unlimited"):
         return problems
-    # Every launch fires at once but a relaunch waits on a full boot, so the minute window only sees first launches.
-    for window, need in [("minute", machines), ("hour", machines * PLACEMENTS), ("day", machines * PLACEMENTS)]:
+    # A relaunch follows a boot of well under a minute, so every window may see every placement.
+    need = machines * PLACEMENTS
+    for window in ["minute", "hour", "day"]:
         remaining = limits["starts"][window]["remaining"]
         if need > remaining:
             problems.append(f"Starts this {window}: need up to {need}, {remaining} left")
@@ -192,6 +193,10 @@ class Provider:
             if failure and failure.get("code") == "boat_starting" and not created:
                 time.sleep(min(2 ** attempt, 10))
                 continue
+            if failure and failure.get("code") == "rate_limited" and not created:
+                # Other runs can spend this minute's starts after our preflight read them.
+                time.sleep(15)
+                continue
             if failure and failure.get("code") == "boat_direct_failed" and not created:
                 # The create may have run without telling us its id; never retry it blind.
                 known = {entry["id"] for path in REGISTRY.glob("*.json") for entry in (read(path) or {}).get("sandboxes", {}).values()}
@@ -200,7 +205,7 @@ class Provider:
                 raise RuntimeError(f"{node['name']}: boat new failed with boat_direct_failed; sandboxes created since then "
                                    f"that no run owns: {', '.join(unknown) or 'none'}. Delete any that are yours.")
             raise RuntimeError(f"{node['name']}: boat new failed: {failure or result.stderr.decode(errors='replace')}")
-        raise RuntimeError(f"{node['name']}: boat new kept answering boat_starting")
+        raise RuntimeError(f"{node['name']}: boat new kept answering boat_starting or rate_limited")
 
     def place(self, name, info):
         """Record a sandbox's address unless a peer in this run already holds its node; True when recorded."""
@@ -313,7 +318,7 @@ systemctl enable --now {PLOYZ_UNITS} $observe
         return ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
                 "-o", "LogLevel=ERROR", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15",
                 "-i", str(self.private / "id_ed25519"), "-o", "ControlMaster=auto", "-o", "ControlPersist=300",
-                "-o", "ControlPath=" + str(self.control / "%C")]
+                "-o", "ControlPath=" + str(self.control / (self.run["id"] + "-%C"))]
 
     def exec(self, node, args, **kwargs):
         host, port = endpoint(self.sandbox(node)["ssh"])
@@ -341,6 +346,7 @@ systemctl enable --now {PLOYZ_UNITS} $observe
             return
         if record["run"] != self.run["id"]:
             raise RuntimeError(f"Refusing to delete another run's sandboxes: {self.registry}")
+        failures = []
         for name, entry in record["sandboxes"].items():
             if entry.get("state") == "deleted" or not entry.get("id"):
                 continue
@@ -350,12 +356,15 @@ systemctl enable --now {PLOYZ_UNITS} $observe
                 self.mark(name, state="deleted")
                 continue
             if failure.get("status") != 403:
-                raise RuntimeError(f"boat delete {entry['id']} failed: {failure or result.stderr.decode(errors='replace')}")
+                failures.append(f"boat delete {entry['id']} failed: {failure or result.stderr.decode(errors='replace')}")
+                continue
             if entry.get("state") != "stopped":
                 self.boat("stop", entry["id"])
                 self.mark(name, state="stopped")
             print(f"Stopped {entry['id']} ({name}): this Boat key may not delete it; it needs the sandbox.delete-own scope "
                   f"and to have created the sandbox.", file=sys.stderr)
+        if failures:
+            raise RuntimeError("\n".join(failures))
         if all(entry.get("state") == "deleted" for entry in read(self.registry)["sandboxes"].values()):
             self.registry.unlink()
 

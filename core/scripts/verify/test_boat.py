@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 
 sys.dont_write_bytecode = True
 here = Path(__file__).resolve().parent
@@ -65,7 +66,7 @@ class Limits(unittest.TestCase):
         problems = boat.shortfalls(3, self.limits(active=98, minute=2))
         self.assertEqual(len(problems), 2)
         self.assertIn("Active sandboxes: need 3, 2 of 100 free", problems)
-        self.assertIn("Starts this minute: need up to 3, 2 left", problems)
+        self.assertIn("Starts this minute: need up to 9, 2 left", problems)
 
     def test_hour_and_day_budget_every_relaunch(self):
         problems = boat.shortfalls(3, self.limits(hour=8, day=9))
@@ -120,6 +121,24 @@ class Registry(unittest.TestCase):
         self.assertEqual(self.calls, [["delete", "bx_a", "--yes"], ["stop", "bx_a"]])
         self.assertIn("sandbox.delete-own", said.getvalue())
         self.assertEqual(json.loads(boat.registry("run1").read_text())["sandboxes"]["machine-1"]["state"], "stopped")
+
+    def test_a_failed_delete_still_deletes_the_rest_then_fails(self):
+        self.registered(**{"machine-1": dict(id="bx_a", state="running"), "machine-2": dict(id="bx_b", state="running")})
+        self.answers[("delete", "bx_a")] = result(1, {"event": "error", "code": "internal", "status": 500})
+        with self.assertRaisesRegex(RuntimeError, "bx_a"):
+            self.provider.destroy()
+        self.assertEqual(self.calls, [["delete", "bx_a", "--yes"], ["delete", "bx_b", "--yes"]])
+        self.assertEqual(json.loads(boat.registry("run1").read_text())["sandboxes"]["machine-2"]["state"], "deleted")
+
+    def test_a_rate_limited_create_waits_and_retries(self):
+        self.registered()
+        self.run["image"] = "ployz-verify-024"
+        answers = iter([result(1, {"event": "error", "code": "rate_limited", "status": 429}),
+                        result(0, {"event": "created", "id": "bx_new"})])
+        self.provider.commands = lambda args, check=True, **kwargs: next(answers)
+        with unittest.mock.patch("boat.time.sleep") as slept:
+            self.assertEqual(self.provider.launch(dict(name="machine-1")), "bx_new")
+        slept.assert_called_once()
 
     def test_down_touches_no_sandbox_outside_the_registry(self):
         boat.write(boat.registry("other"), dict(run="other", sandboxes={"machine-1": dict(id="bx_z", state="running")}))

@@ -503,8 +503,16 @@ def table(rows, columns):
 
 def host_runs():
     """Every verify run on this host, from any checkout and provider."""
-    return [{**found, "provider": name} for name in PROVIDERS if name != "incus" or shutil.which("incus")
-            for found in importlib.import_module(name).runs()]
+    found = []
+    for name in PROVIDERS:
+        if name == "incus" and not shutil.which("incus"):
+            continue
+        try:
+            found += [{**run, "provider": name} for run in importlib.import_module(name).runs()]
+        except (RuntimeError, OSError, subprocess.SubprocessError) as error:
+            # One provider being unreachable must not hide or block the other's runs.
+            print(f"Skipping {name} runs: {str(error).splitlines()[0]}", file=sys.stderr)
+    return found
 
 
 def preflight(args):
