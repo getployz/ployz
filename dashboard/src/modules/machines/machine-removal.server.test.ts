@@ -85,7 +85,7 @@ describe("observeLeavingServerActivity", () => {
   let observed: CopyObservation | null;
   let waited: number | null;
 
-  const observe = () => {
+  const observe = (lastTry = false) => {
     const session = asTestDouble<PloyzSession>()({
       watchFirstFrame: (timeoutMs: number) => {
         waited = timeoutMs;
@@ -103,7 +103,7 @@ describe("observeLeavingServerActivity", () => {
     const observeCopies = () => observed === null
       ? Effect.fail(new PloyzProviderError({ operation: "observe copies", cause: new Error("transport error") }))
       : Effect.succeed(observed);
-    return Effect.runPromiseExit(observeLeavingServerActivity({ organizationId: "org-1", machineId: leaving }, observeCopies).pipe(
+    return Effect.runPromiseExit(observeLeavingServerActivity({ organizationId: "org-1", machineId: leaving, lastTry }, observeCopies).pipe(
       Effect.provideService(OrganizationRuntime, asTestDouble<OrganizationRuntime["Service"]>()({
         open: () => Effect.succeed({ status: "connected" as const, connected: session }),
       })),
@@ -146,6 +146,16 @@ describe("observeLeavingServerActivity", () => {
   it("fails, for the step to retry, when the leaving Machine reads up but its copies do not answer", async () => {
     observed = { copies: [writerOn(other, "logs")], unanswered: [leaving] };
     expect(await observe()).toMatchObject({ _tag: "Failure" });
+  });
+
+  it("writes nothing on the last try when the leaving Machine reads up but its copies still do not answer", async () => {
+    observed = { copies: [writerOn(other, "logs")], unanswered: [leaving] };
+    expect(await observe(true)).toEqual(Exit.succeed({ machine: { id: leaving, name: "fsn-2" }, writes: [] }));
+  });
+
+  it("still fails on the last try when the Cluster frame times out", async () => {
+    frame = "times out";
+    expect(await observe(true)).toMatchObject({ _tag: "Failure" });
   });
 
   it("writes nothing when the leaving Machine is down and its copies do not answer", async () => {

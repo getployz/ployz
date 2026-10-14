@@ -6,6 +6,8 @@ import {
   createCancelMachineRemove,
   createProcessMachineRemove,
   decodeMachineRemoveFailureEvent,
+  isLastTry,
+  MACHINE_REMOVE_RETRIES,
 } from "#/modules/machines/machine-removal.inngest";
 
 describe("machine remove Inngest boundary", () => {
@@ -180,5 +182,11 @@ describe("machine remove Inngest boundary", () => {
       "release-server",
       "complete-succeeded",
     ]);
+  });
+
+  it("observes the leaving Server as its last try only on the step's final attempt", () => {
+    expect(isLastTry(0)).toBe(false);
+    expect(isLastTry(MACHINE_REMOVE_RETRIES - 1)).toBe(false);
+    expect(isLastTry(MACHINE_REMOVE_RETRIES)).toBe(true);
   });
 });
