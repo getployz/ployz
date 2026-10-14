@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { and, eq, isNull, or } from "drizzle-orm";
-import { Data, Effect, Redacted } from "effect";
+import { Effect, Redacted } from "effect";
 import { member, user } from "#/modules/identity/tables";
 import { renderMail, type MailContent } from "#/modules/mail/layout";
 import { queueMail } from "#/modules/mail/mail.inngest";
@@ -32,8 +32,6 @@ export type OrganizationMail = {
   readonly content: Omit<MailContent, "unsubscribe">;
 };
 
-export class MailRenderFailed extends Data.TaggedError("MailRenderFailed")<{ readonly cause: unknown }> {}
-
 /** Render `content` once per recipient, each with their own unsubscribe link, and queue it keyed `key:userId`. */
 export const queueOrganizationMail = Effect.fn("Notifications.queueOrganizationMail")(function* (mail: OrganizationMail) {
   const config = yield* AppConfig;
@@ -44,10 +42,7 @@ export const queueOrganizationMail = Effect.fn("Notifications.queueOrganizationM
       const token = signUnsubscribeToken(Redacted.value(config.encryptionSecret), { userId: recipient.userId, type: mail.type });
       const url = `${origin}/api/mail/unsubscribe?token=${token}`;
       const unsubscribe = { label: NOTIFICATION_TYPES[mail.type].unsubscribe, url };
-      const rendered = yield* Effect.tryPromise({
-        try: () => renderMail({ ...mail.content, unsubscribe }, origin),
-        catch: (cause) => new MailRenderFailed({ cause }),
-      });
+      const rendered = yield* Effect.promise(() => renderMail({ ...mail.content, unsubscribe }, origin));
       const headers = { "List-Unsubscribe": `<${url}>`, "List-Unsubscribe-Post": "List-Unsubscribe=One-Click" };
       yield* queueMail({ to: recipient.email, ...rendered, headers }, `${mail.key}:${recipient.userId}`);
     }),
