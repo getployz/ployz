@@ -4,7 +4,8 @@ import { Cause, ConfigProvider, Effect, Layer } from "effect";
 import { Inngest } from "inngest";
 import { Auth, AuthLive, CLI_CLIENT_ID, Unauthorized } from "#/server/auth.server";
 import { AppConfig } from "#/server/config.server";
-import { DatabaseLive } from "#/server/database.server";
+import { Database, DatabaseLive } from "#/server/database.server";
+import { verification } from "#/modules/identity/tables";
 import { Polar } from "#/modules/billing/polar-provider.server";
 import { InngestClient } from "#/modules/inngest/client";
 import {
@@ -25,7 +26,7 @@ const authLayer = Effect.gen(function* () {
   );
   const databaseLayer = DatabaseLive.pipe(Layer.provide(configLayer));
   return AuthLive.pipe(
-    Layer.provide(Layer.mergeAll(
+    Layer.provideMerge(Layer.mergeAll(
       configLayer,
       databaseLayer,
       Layer.succeed(Polar, { mode: "self_hosted" }),
@@ -223,6 +224,30 @@ it.live(
         yield* call(`/device?user_code=${userCode}`, { cookie });
         assert.strictEqual((yield* call("/device/deny", { cookie, body: { userCode } })).status, 200);
         assert.strictEqual((yield* poll()).json?.error, "access_denied");
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "sends a new GitHub user back to where they signed in from, and only a plain sign-in to the welcome",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* authLayer;
+
+      yield* Effect.gen(function* () {
+        const auth = yield* Auth;
+        const { drizzle } = yield* Database;
+        const newUserURL = (callbackURL: string) => Effect.gen(function* () {
+          yield* drizzle.delete(verification);
+          const response = yield* auth.signInGithub(new Headers({ origin }), callbackURL);
+          assert.strictEqual(response.status, 200);
+          const [row] = yield* drizzle.select({ value: verification.value }).from(verification);
+          return (JSON.parse(row?.value ?? "{}") as { newUserURL?: string }).newUserURL;
+        });
+
+        assert.strictEqual(yield* newUserURL("/invite/invite-token"), "/invite/invite-token");
+        assert.strictEqual(yield* newUserURL("/cloud"), "/cloud?welcome=true");
       }).pipe(Effect.provide(layer));
     }),
   60_000,

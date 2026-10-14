@@ -281,7 +281,7 @@ const makeAuth = Effect.gen(function* () {
     signInGithub: (headers, callbackURL) => Effect.tryPromise({
       try: () => instance.api.signInSocial({
         headers,
-        body: { provider: "github", callbackURL, newUserCallbackURL: "/cloud?welcome=true" },
+        body: { provider: "github", callbackURL, newUserCallbackURL: callbackURL === "/cloud" ? "/cloud?welcome=true" : callbackURL },
         asResponse: true,
       }),
       catch: (cause) => new AuthenticationUnavailable({ cause }),
