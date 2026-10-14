@@ -71,10 +71,13 @@ class Commands:
         return result
 
 
+PROVIDERS = ["incus", "boat"]
+
+
 def provider(run, commands):
     # A backend implements prepare/create/start/exec/push/address/ssh/destroy.
     # The manifest binds subsequent operations to the provider that created it.
-    if run["provider"] != "incus":
+    if run["provider"] not in PROVIDERS:
         raise RuntimeError(f"Unknown provider: {run['provider']}")
     return importlib.import_module(run["provider"]).Provider(run, commands, CORE)
 
@@ -498,9 +501,20 @@ def table(rows, columns):
                      for row in [{column: column.upper() for column in columns}, *rows])
 
 
+def host_runs():
+    """Every verify run on this host, from any checkout and provider."""
+    return [{**found, "provider": name} for name in PROVIDERS if name != "incus" or shutil.which("incus")
+            for found in importlib.import_module(name).runs()]
+
+
 def preflight(args):
     """Refuse a launch the shared host cannot hold, naming the runs that hold it."""
     module = importlib.import_module(args.provider)
+    if args.provider == "boat":
+        if args.memory or args.disk:
+            raise RuntimeError("--memory and --disk size Incus VMs; every Boat sandbox is the small type")
+        module.preflight(args.machines)
+        return
     memory = host.size(args.memory or module.DEFAULT_SIZES["memory"])
     meminfo = {line.split(":")[0]: int(line.split()[1]) * 1024 for line in Path("/proc/meminfo").read_text().splitlines()}
     try:
@@ -522,9 +536,8 @@ def preflight(args):
 
 
 def reap(args):
-    module = importlib.import_module("incus")
     now, rows = time.time(), []
-    for found in module.runs():
+    for found in host_runs():
         if args.runs and found["id"] not in args.runs:
             continue
         remove, reason = host.verdict(found, now, int(args.older_than * 3600), args.force)
@@ -545,7 +558,7 @@ def reap(args):
             # The manifest is gone, so evidence goes to the host cache.
             directory = Path.home() / ".cache" / "ployz" / "verify" / "reaped" / found["id"]
             directory.mkdir(parents=True, exist_ok=True)
-            run = dict(id=found["id"], manifest=str(directory / "cluster.json"), provider="incus", provider_state={},
+            run = dict(id=found["id"], manifest=str(directory / "cluster.json"), provider=found["provider"], provider_state={},
                        machines=[dict(name=machine["name"]) for machine in found["machines"]])
             commands = Commands(run)
             provider(run, commands).destroy()
@@ -700,13 +713,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     actions = parser.add_subparsers(dest="action", required=True)
     launch = actions.add_parser("up", help="Boot a new disposable cluster")
-    launch.add_argument("--provider", choices=["incus"], default="incus")
+    launch.add_argument("--provider", choices=PROVIDERS, default="incus",
+                        help="Where Machines run: incus VMs on this host, or boat sandboxes")
     launch.add_argument("--machines", type=int, choices=range(1, 9), default=1)
     daemon_help = ("[MACHINE=]SOURCE, repeatable. SOURCE is checkout, main (main's CI build, stale), stable, beta or an exact release version; "
                    "a bare SOURCE sets every Machine and MACHINE=SOURCE overrides one")
     launch.add_argument("--daemon", action="append", metavar="[MACHINE=]SOURCE", help=daemon_help + "; checkout by default")
-    launch.add_argument("--memory", help="RAM per Machine VM as an Incus size; 2GiB by default")
-    launch.add_argument("--disk", help="Root disk per Machine VM, which bounds its Machine Pool; 24GiB by default")
+    launch.add_argument("--memory", help="RAM per Machine VM as an Incus size; 2GiB by default; Incus only")
+    launch.add_argument("--disk", help="Root disk per Machine VM, which bounds its Machine Pool; 24GiB by default; Incus only")
     pairing = launch.add_mutually_exclusive_group()
     pairing.add_argument("--cloud", action="store_true",
                          help="Start this checkout's dashboard verify instance and enroll through it; down stops it")
@@ -755,7 +769,7 @@ def main():
         return 0
     if args.action == "ls":
         now = time.time()
-        rows = [describe(found, now) for found in importlib.import_module("incus").runs()]
+        rows = [describe(found, now) for found in host_runs()]
         print(json.dumps({"runs": rows}) if args.json else table(rows, ["run", "age", "machines", "ram", "owner", "checkout"]))
         return 0
     if args.action == "reap":

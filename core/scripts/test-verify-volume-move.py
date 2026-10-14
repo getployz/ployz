@@ -1301,9 +1301,9 @@ def main():
         return 1 if hits else 0
     cases = select_cases(soak_cases() if args.soak else CASES, args.case)
     manifest = json.loads(args.manifest.read_text())
-    if manifest["provider"] != "incus" or manifest["state"] != "ready" or len(manifest["machines"]) != 2 \
+    if manifest["provider"] not in ["incus", "boat"] or manifest["state"] != "ready" or len(manifest["machines"]) != 2 \
             or "cloud" not in manifest:
-        raise RuntimeError("Use a ready two-Machine Incus vc started with --cloud")
+        raise RuntimeError("Use a ready two-Machine Incus or Boat vc started with --cloud")
     checks = VolumeMove(args.manifest, size_gb=args.size_gb if args.soak else None)
     summary = checks.run_all(cases)
     print(json.dumps(dict(summary=str(checks.out / "summary.json"), passed=summary["passed"],

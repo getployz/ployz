@@ -1224,11 +1224,11 @@ def run_checks(manifest, selected):
     return vc
 
 
-def boot(machines):
+def boot(machines, provider):
     env = dict(os.environ)
     if FAULT_BUILD not in env.get("PLOYZ_VERIFY_CARGO_ARGS", ""):
         env["PLOYZ_VERIFY_CARGO_ARGS"] = (env.get("PLOYZ_VERIFY_CARGO_ARGS", "") + " " + FAULT_BUILD).strip()
-    result = subprocess.run([str(HELPER), "up", "--machines", str(machines), "--daemon", "checkout", "--cloud"],
+    result = subprocess.run([str(HELPER), "up", "--provider", provider, "--machines", str(machines), "--daemon", "checkout", "--cloud"],
                             cwd=CORE, env=env, stdout=subprocess.PIPE, text=True, timeout=7200)
     lines = result.stdout.strip().splitlines()
     manifest = Path(lines[-1]) if lines else None
@@ -1243,6 +1243,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("checks", nargs="*", help="check names; all when none")
     parser.add_argument("--manifest", type=Path, help="a ready run started with --cloud and the fault build")
+    parser.add_argument("--provider", choices=["incus", "boat"], default="incus", help="where a booted run's Machines live")
     parser.add_argument("--list", action="store_true")
     args = parser.parse_args()
     names = [name for name, *_ in CHECKS]
@@ -1255,12 +1256,12 @@ def main():
         parser.error(f"no check named {unknown}; --list shows them")
     selected = [check for check in CHECKS if not args.checks or check[0] in args.checks]
     needed = max(machines for _, machines, _, _ in selected)
-    manifest = args.manifest or boot(needed)
+    manifest = args.manifest or boot(needed, args.provider)
     try:
         run = json.loads(manifest.read_text())
-        if run.get("provider") != "incus" or run.get("state") != "ready" or "cloud" not in run \
+        if run.get("provider") not in ["incus", "boat"] or run.get("state") != "ready" or "cloud" not in run \
                 or len(run["machines"]) < needed:
-            raise CheckError(f"use a ready Incus run started with --cloud and at least {needed} Machines")
+            raise CheckError(f"use a ready Incus or Boat run started with --cloud and at least {needed} Machines")
         vc = run_checks(manifest, selected)
     finally:
         if not args.manifest:

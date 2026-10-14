@@ -104,8 +104,8 @@ def main():
     parser.add_argument("--pool", default="ployz")
     args = parser.parse_args()
     run = json.loads(args.manifest.read_text())
-    if run["provider"] != "incus" or run["state"] != "ready" or not run["machines"]:
-        raise RuntimeError("Use a ready Incus vc")
+    if run["provider"] not in ["incus", "boat"] or run["state"] != "ready" or not run["machines"]:
+        raise RuntimeError("Use a ready Incus or Boat vc")
     checks = VolumeFences(args.manifest, pool=args.pool)
     results = dict(slot=checks.slot_scenario())
     print(json.dumps(dict(manifest=str(args.manifest), results=results)), flush=True)
