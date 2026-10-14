@@ -145,7 +145,7 @@ export const STORE_COMMANDS = {
     ui: { sender: `${ENV}/-components/canvas/useStoreChangeActions.tsx` },
   },
   admit: {
-    cli: { paths: ["deploy", "up", "deployment retry", "env shutdown"] },
+    cli: { paths: ["deploy", "up", "deployment retry", "env shutdown", "project rm", "env rm"] },
     agent: { tools: ["deploy"] },
     ui: { sender: `${ENV}/-components/StoreDeploymentPage.tsx` },
   },

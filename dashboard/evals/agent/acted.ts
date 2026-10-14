@@ -1,4 +1,10 @@
-export const TAPE_WRITES = new Set(["set", "service_add", "service_rm", "volume_add", "volume_rm", "discard", "domain_add", "domain_rm", "domain_set"]);
+/** Names recorded tapes in `golden/` still call, though no current tool has them. */
+export const LEGACY_TAPE_TOOLS = {
+  set: "T2, T7 and T10 tapes write Settings with it; service_update replaced it.",
+  service_rm: "S1 and T15 tapes remove a Service with it; service_remove replaced it.",
+} as const satisfies Record<string, string>;
+
+export const TAPE_WRITES = new Set(["set", "service_add", "service_rm", "volume_add", "discard", "domain_add"]);
 
 export const ACTS = new Set([
   "service_restart", "service_start", "service_stop", "server_drain", "server_upgrade", "server_clean", "volume_mirror",
@@ -6,7 +12,6 @@ export const ACTS = new Set([
 ]);
 
 export const STORE_WRITES = new Set([
-  ...TAPE_WRITES, "deploy", "publish", "config_add", "config_put", "config_mount", "service_add", "project_new", "project_create", "env_new",
-  "service_update", "service_rename", "service_remove", "volume_update", "volume_remove", "domain_update", "domain_remove",
-  "config_write", "config_remove", "deployment_cancel", "environment_pr",
+  ...TAPE_WRITES, "deploy", "publish", "project_create", "service_update", "service_rename", "service_remove", "volume_update",
+  "volume_remove", "domain_update", "domain_remove", "config_write", "config_remove", "deployment_cancel", "environment_pr",
 ]);
