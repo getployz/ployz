@@ -32,7 +32,7 @@ import { type Requirement, requirementFor, requirements, serverSupports } from "
 import { observeVolumeCopies, type PloyzSdkError, sdkFailureMessage, setVolumeCopyRefusal } from "#/modules/runtime/ployz.server";
 import {
   alreadyOn, newestGuid, type PlanInput, type Planned, planForwardRelease, planFromCopies, type Refusal, type RefusalCode, type ReleaseFrom, restoreSource,
-  writerRemovedMessage,
+  unfinishedCutsBefore, writerRemovedMessage,
 } from "#/modules/volume-run/plan";
 import { isBehind, isCurrent, releaseLine } from "#/modules/server-upgrade/server-upgrade";
 import { channelRelease, organizationReleaseChannel } from "#/modules/server-upgrade/server-upgrade.server";
@@ -403,6 +403,11 @@ export const planVolumeRun = Effect.fn("VolumeRun.plan")(function* (
   const members = yield* observeVolumeMembers(organizationId, volume.dockerVolume, input).pipe(Effect.option);
   if (Option.isNone(members)) return { ok: false, refusal: unanswered } satisfies VolumeRunPlan;
   if (pending !== null && input.kind === "release") return yield* planForward(volume, input, pending, members.value);
+  if (pending !== null && input.kind === "delete_mirror") {
+    const target = members.value.find((member): member is AnsweredMember => member.answered && member.machine.id === pending.current);
+    const cuts = target === undefined ? null : unfinishedCutsBefore(volume.volumeName, target, members.value);
+    if (cuts !== null) return { ok: false, refusal: { code: "conflict", message: cuts, details: null } } satisfies VolumeRunPlan;
+  }
   const planned = planFromCopies({ ...input, volumeName: volume.volumeName, orphan: false }, members.value);
   if (!planned.ok) {
     const { code, message } = planned.refusal;

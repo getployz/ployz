@@ -192,6 +192,13 @@ data finishes on web-2; ployz volume release data finishes it now
 Restoring the volume stays open, except while a release waits for a silent server. Once a restore
 takes over, the move no longer needs finishing.
 
+A cut left unfinished on another server blocks that finish. Release and removing another mirror both
+name every such server to remove first:
+
+```
+data has unfinished cuts on web-1 and web-3, so release cannot finish it on web-2; ployz server rm web-1 and web-3, then ployz volume release data
+```
+
 While a move is still running past the point where `web-2` was told to start your service, the
 move can only finish there, so Release is refused:
 

@@ -305,15 +305,26 @@ export function planForwardRelease(volumeName: string, to: Member["machine"], me
   if (!target.answered || copy === null || copy.newest === null) {
     return { kind: "blocked", message: `${volumeName}'s Move committed, but ${to.name} holds no copy to start` + restoreLine(volumeName, restoreSource(members)) };
   }
-  const root = members.find((member) => member !== target && member.answered && member.view.copy?.kind === "root");
-  if (root !== undefined) {
-    const holder = root.machine.name;
+  const writer = members.find((member) => member !== target && roleOf(member) === "writer");
+  if (writer !== undefined) {
+    const holder = writer.machine.name;
     return {
       kind: "blocked",
       message: `${copyName(volumeName, holder)} is still a writer copy, so ${volumeName} can't finish on ${to.name}; ployz volume restore ${volumeName} --from ${holder} keeps ${holder}'s data`,
     };
   }
+  const cuts = unfinishedCutsBefore(volumeName, target, members);
+  if (cuts !== null) return { kind: "blocked", message: cuts };
   return { kind: "ready", target, copy: { ...copy, newest: copy.newest }, removeOn };
+}
+
+/** A release finishes an owed Move on `target` only once no cut is left outside it, so every cut goes first. */
+export function unfinishedCutsBefore(volumeName: string, target: AnsweredMember, members: readonly Member[]): string | null {
+  const cuts = members.filter((member): member is AnsweredMember => member !== target && roleOf(member) === "cutting").sort(byServer);
+  if (cuts.length === 0 || !holds(target)) return null;
+  const { remove, step } = releaseOrMoveOntoSlot(volumeName, target, []);
+  const each = cuts.length === 1 ? "an unfinished cut" : "unfinished cuts";
+  return `${volumeName} has ${each} on ${servers(cuts)}, so release cannot finish it on ${target.machine.name}; ${serverRm([...cuts, ...remove])}${step}`;
 }
 
 /**
