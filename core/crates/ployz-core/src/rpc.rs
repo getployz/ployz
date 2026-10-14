@@ -1210,6 +1210,11 @@ impl NotPointerPublisher {
     /// The refusal carried by `error`, if it is one.
     #[must_use]
     pub fn from_error(error: &RpcError) -> Option<Self> {
+        let tagged =
+            error.details.get("reason").and_then(Value::as_str) == Some("not_pointer_publisher");
+        if error.code != RpcErrorCode::Unavailable || !tagged {
+            return None;
+        }
         Self::deserialize(&error.details).ok()
     }
 
@@ -1818,5 +1823,34 @@ mod streaming_routing_tests {
         ] {
             assert_eq!(super::capability_of(path), None);
         }
+    }
+}
+
+#[cfg(test)]
+mod not_pointer_publisher_tests {
+    use super::*;
+
+    #[test]
+    fn only_an_unavailable_error_tagged_as_the_refusal_redirects() {
+        let refusal = NotPointerPublisher {
+            publisher: MachineId::parse("1".repeat(32)).unwrap(),
+        };
+        let error = refusal.rpc_error();
+        assert_eq!(
+            NotPointerPublisher::from_error(&error),
+            Some(refusal.clone())
+        );
+
+        let untagged = RpcError {
+            details: serde_json::json!({ "publisher": refusal.publisher }),
+            ..error.clone()
+        };
+        assert_eq!(NotPointerPublisher::from_error(&untagged), None);
+
+        let other_code = RpcError {
+            code: RpcErrorCode::Conflict,
+            ..error
+        };
+        assert_eq!(NotPointerPublisher::from_error(&other_code), None);
     }
 }
