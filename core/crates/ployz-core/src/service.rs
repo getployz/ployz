@@ -5,9 +5,9 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
-    Container, ContainerObservation, ContainerRef, ContainerRuntimeObservation, HookContainer,
-    Machine, PartialResult, QualifiedService, ResolvedServiceSpec, ServiceContainer, ServiceId,
-    ServiceMode, ServiceSelector,
+    Container, ContainerId, ContainerObservation, ContainerRef, ContainerRuntimeObservation,
+    DeploymentLogId, HookContainer, Machine, PartialResult, QualifiedService, ResolvedServiceSpec,
+    ServiceContainer, ServiceId, ServiceMode, ServiceSelector,
 };
 
 mod eligibility;
@@ -57,28 +57,33 @@ impl ServiceObservation {
     /// create canonical Service intent.
     #[must_use]
     pub fn observed_global_slot_spec(&self) -> Option<&ResolvedServiceSpec> {
-        let spec = &self
-            .containers
-            .iter()
-            .max_by_key(|container| {
-                let observation = container.as_observation();
-                (
-                    observation.created_at_unix_nanos,
-                    observation.container_id.as_str(),
-                )
-            })?
-            .as_observation()
-            .resolved_spec;
+        let spec = &self.newest_container()?.as_observation().resolved_spec;
         (spec.mode == ServiceMode::Global).then_some(spec)
     }
 
     /// Observer-derived Global identity and newest Resolved Service Spec.
     #[must_use]
     pub fn observed_global_slot(&self) -> Option<ObservedGlobalSlotSpec> {
-        let spec = self.observed_global_slot_spec()?;
+        let source = self.newest_container()?.as_observation();
+        let spec = &source.resolved_spec;
+        if spec.mode != ServiceMode::Global {
+            return None;
+        }
         Some(ObservedGlobalSlotSpec {
             identity: QualifiedService::new(self.identity.namespace.clone(), spec.name.clone()),
             resolved_spec: spec.clone(),
+            source: source.container_id,
+            source_deploy: source.deploy_label(),
+        })
+    }
+
+    fn newest_container(&self) -> Option<&ServiceContainer> {
+        self.containers.iter().max_by_key(|container| {
+            let observation = container.as_observation();
+            (
+                observation.created_at_unix_nanos,
+                observation.container_id.as_str(),
+            )
         })
     }
 
@@ -103,9 +108,17 @@ impl ServiceObservation {
 pub struct ObservedGlobalSlotSpec {
     identity: QualifiedService,
     resolved_spec: ResolvedServiceSpec,
+    source: ContainerId,
+    source_deploy: Option<DeploymentLogId>,
 }
 
 impl ObservedGlobalSlotSpec {
+    /// The Container whose spec this is, and the deploy its label names.
+    #[must_use]
+    pub fn provenance(&self) -> (ContainerId, Option<&DeploymentLogId>) {
+        (self.source, self.source_deploy.as_ref())
+    }
+
     /// Qualified identity of the observed Global Service.
     #[must_use]
     pub fn identity(&self) -> &QualifiedService {

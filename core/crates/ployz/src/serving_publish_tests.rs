@@ -64,6 +64,36 @@ fn service() -> QualifiedService {
     QualifiedService::parse("app/api").unwrap()
 }
 
+/// `new` joins carrying the spec of `old`, which leaves.
+pub(crate) fn replacing(new: char, old: char) -> Rotation {
+    Rotation {
+        joining: vec![Join {
+            copy: container(new),
+            provenance: Provenance {
+                source: container(old),
+                source_deploy: None,
+            },
+        }],
+        leaving: vec![container(old)],
+        pruning: Vec::new(),
+    }
+}
+
+/// `new` joins carrying the spec of an unnamed copy labelled with `deploy`.
+pub(crate) fn labelled(new: char, deploy: char) -> Rotation {
+    Rotation {
+        joining: vec![Join {
+            copy: container(new),
+            provenance: Provenance {
+                source: container('0'),
+                source_deploy: Some(DeploymentLogId::parse(format!("dep-{deploy}")).unwrap()),
+            },
+        }],
+        leaving: Vec::new(),
+        pruning: Vec::new(),
+    }
+}
+
 #[tokio::test]
 async fn amending_a_service_with_no_pointer_writes_nothing() {
     let mut fake = FakeRow::default();
@@ -72,7 +102,7 @@ async fn amending_a_service_with_no_pointer_writes_nothing() {
         &service(),
         None,
         &CancellationToken::new(),
-        |current| rotated(current, &[container('2')], &[], None),
+        &replacing('2', '1'),
     )
     .await
     .unwrap();
@@ -94,7 +124,7 @@ async fn a_lost_amendment_retries_over_the_winner_and_keeps_both_changes() {
         &service(),
         None,
         &CancellationToken::new(),
-        |current| rotated(current, &[container('2')], &[container('1')], None),
+        &replacing('2', '1'),
     )
     .await
     .unwrap();
@@ -118,7 +148,7 @@ async fn an_amendment_gives_up_after_three_lost_retries() {
         &service(),
         None,
         &CancellationToken::new(),
-        |current| rotated(current, &[container('2')], &[], None),
+        &labelled('2', 'a'),
     )
     .await
     .unwrap_err();
@@ -126,14 +156,22 @@ async fn an_amendment_gives_up_after_three_lost_retries() {
     assert_eq!(*fake.publishes.lock().unwrap(), AMEND_RETRIES + 1);
 }
 
+#[derive(Clone, Copy)]
+enum Stall {
+    Publisher,
+    Read,
+    Publish,
+}
+
+/// Never answers the call `stall` names.
 struct Stalled {
     row: FakeRow,
-    publisher: bool,
+    stall: Stall,
 }
 
 impl PointerClient for Stalled {
     async fn pointer_publisher(&mut self) -> Result<MachineTarget, RpcError> {
-        if self.publisher {
+        if matches!(self.stall, Stall::Publisher) {
             std::future::pending::<()>().await;
         }
         self.row.pointer_publisher().await
@@ -141,10 +179,13 @@ impl PointerClient for Stalled {
 
     async fn read_pointer_at(
         &mut self,
-        _at: &mut MachineTarget,
-        _service: &QualifiedService,
+        at: &mut MachineTarget,
+        service: &QualifiedService,
     ) -> Result<Option<ServingPointer>, RpcError> {
-        std::future::pending().await
+        if matches!(self.stall, Stall::Read) {
+            std::future::pending::<()>().await;
+        }
+        self.row.read_pointer_at(at, service).await
     }
 
     async fn publish_pointer_at(
@@ -152,71 +193,207 @@ impl PointerClient for Stalled {
         at: &mut MachineTarget,
         request: PublishServingPointerRequest,
     ) -> Result<ServingPointerPublication, RpcError> {
+        if matches!(self.stall, Stall::Publish) {
+            std::future::pending::<()>().await;
+        }
         self.row.publish_pointer_at(at, request).await
     }
 }
 
+async fn cancelled_amendment(stall: Stall) -> (RpcError, FakeRow) {
+    let row = FakeRow::default();
+    *row.row.lock().unwrap() = Some(pointer('a', &['1'], &[]));
+    let mut stalled = Stalled {
+        row: row.clone(),
+        stall,
+    };
+    let (service, cancellation) = (service(), CancellationToken::new());
+    let rotation = replacing('2', '1');
+    let amending = amend_pointer(&mut stalled, &service, None, &cancellation, &rotation);
+    tokio::pin!(amending);
+    tokio::select! {
+        amended = &mut amending => panic!("returned before cancel: {amended:?}"),
+        () = tokio::task::yield_now() => {}
+    }
+    cancellation.cancel();
+    let error = tokio::time::timeout(Duration::from_secs(1), amending)
+        .await
+        .expect("cancellation returns promptly")
+        .unwrap_err();
+    assert_eq!(error.code, ployz_core::RpcErrorCode::Unavailable);
+    (error, row)
+}
+
 #[tokio::test]
 async fn cancelling_a_pending_publisher_lookup_or_pointer_read_publishes_nothing() {
-    for publisher in [true, false] {
-        let row = FakeRow::default();
-        *row.row.lock().unwrap() = Some(pointer('a', &['1'], &[]));
-        let mut stalled = Stalled {
-            row: row.clone(),
-            publisher,
-        };
-        let (service, cancellation) = (service(), CancellationToken::new());
-        let amending = amend_pointer(&mut stalled, &service, None, &cancellation, |current| {
-            rotated(current, &[container('2')], &[], None)
-        });
-        tokio::pin!(amending);
-        tokio::select! {
-            amended = &mut amending => panic!("returned before cancel: {amended:?}"),
-            () = tokio::task::yield_now() => {}
-        }
-        cancellation.cancel();
-        let error = tokio::time::timeout(Duration::from_secs(1), amending)
-            .await
-            .expect("cancellation returns promptly")
-            .unwrap_err();
-        assert_eq!(error.code, ployz_core::RpcErrorCode::Unavailable);
+    for stall in [Stall::Publisher, Stall::Read] {
+        let (error, row) = cancelled_amendment(stall).await;
         assert!(error.message.contains("cancelled before"), "{error:?}");
         assert_eq!(*row.publishes.lock().unwrap(), 0);
         assert_eq!(*row.row.lock().unwrap(), Some(pointer('a', &['1'], &[])));
     }
 }
 
-#[test]
-fn rotation_with_a_complete_listing_drops_retiring_ids_that_are_gone() {
-    let current = pointer('a', &['1'], &['8', '9']);
-    let listed = [container('1'), container('2'), container('9')];
+#[tokio::test]
+async fn cancelling_a_sent_publish_says_it_may_have_been_written() {
+    let (error, _) = cancelled_amendment(Stall::Publish).await;
     assert_eq!(
-        rotated(
-            &current,
-            &[container('2')],
-            &[container('1')],
-            Some(&listed)
-        ),
-        Some(pointer('a', &['2'], &['9', '1'])),
+        error.message,
+        "cancelled after sending the Serving Pointer of app/api; it may have been written"
+    );
+}
+
+#[test]
+fn a_rotation_prunes_only_retiring_ids_the_listing_lacked_before_the_read() {
+    let read = pointer('a', &['1'], &['8', '9']);
+    let listed = [container('1'), container('2'), container('9')];
+    let rotation = Rotation {
+        joining: vec![Join {
+            copy: container('2'),
+            provenance: Provenance {
+                source: container('1'),
+                source_deploy: None,
+            },
+        }],
+        leaving: vec![container('1')],
+        pruning: absent_retiring(&read, &listed),
+    };
+    assert_eq!(rotation.pruning, [container('8')]);
+    assert_eq!(
+        rotation.apply(&read),
+        Ok(Some(pointer('a', &['2'], &['9', '1']))),
         "8 is gone from the listing; 9 still runs and keeps retiring"
     );
+    let later = pointer('a', &['1'], &['8', '9', '7']);
     assert_eq!(
-        rotated(&current, &[], &[], Some(&[container('1')])),
-        Some(pointer('a', &['1'], &[])),
+        rotation.apply(&later),
+        Ok(Some(pointer('a', &['2'], &['9', '7', '1']))),
+        "7 retired after the listing; the listing proves nothing about it"
+    );
+    let prune_only = Rotation {
+        pruning: vec![container('8'), container('9')],
+        ..Rotation::default()
+    };
+    assert_eq!(
+        prune_only.apply(&read),
+        Ok(Some(pointer('a', &['1'], &[]))),
         "pruning alone is a change worth publishing"
     );
 }
 
 #[test]
-fn rotation_joins_retires_and_reports_no_change() {
+fn a_rotation_joins_with_evidence_retires_named_ids_and_reports_no_change() {
     let current = pointer('a', &['1', '2'], &['9']);
     assert_eq!(
-        rotated(&current, &[container('3')], &[container('1')], None),
-        Some(pointer('a', &['2', '3'], &['9', '1']))
+        replacing('3', '1').apply(&current),
+        Ok(Some(pointer('a', &['2', '3'], &['9', '1'])))
     );
     assert_eq!(
-        rotated(&current, &[container('2')], &[container('9')], None),
-        None
+        labelled('3', 'a').apply(&current),
+        Ok(Some(pointer('a', &['1', '2', '3'], &['9']))),
+        "a source labelled with the row's deploy is evidence without being named"
+    );
+    assert_eq!(
+        Rotation::leaving([container('9')]).apply(&current),
+        Ok(None)
+    );
+    assert_eq!(
+        Rotation::leaving([container('7')]).apply(&current),
+        Ok(None),
+        "an id the row does not name never enters retiring"
+    );
+    assert_eq!(
+        replacing('2', '1').apply(&current),
+        Ok(Some(pointer('a', &['2'], &['9', '1']))),
+        "a copy already pointed joins without evidence"
+    );
+}
+
+#[test]
+fn a_join_without_evidence_is_refused() {
+    let current = pointer('b', &['1'], &[]);
+    assert_eq!(
+        replacing('3', '7').apply(&current),
+        Err(container('3')),
+        "7 is neither named nor labelled with dep-b"
+    );
+    assert_eq!(labelled('3', 'a').apply(&current), Err(container('3')));
+}
+
+#[tokio::test]
+async fn an_amendment_joining_without_evidence_is_outdated_and_writes_nothing() {
+    let mut fake = FakeRow::default();
+    *fake.row.lock().unwrap() = Some(pointer('b', &['1'], &[]));
+    let amended = amend_pointer(
+        &mut fake,
+        &service(),
+        Some(&DeploymentLogId::parse("dep-b").unwrap()),
+        &CancellationToken::new(),
+        &labelled('3', 'a'),
+    )
+    .await
+    .unwrap();
+    assert_eq!(amended, Amendment::Outdated);
+    assert_eq!(*fake.publishes.lock().unwrap(), 0);
+    assert_eq!(*fake.row.lock().unwrap(), Some(pointer('b', &['1'], &[])));
+}
+
+#[tokio::test]
+async fn an_amendment_losing_its_evidence_to_a_newer_row_is_outdated() {
+    let mut fake = FakeRow::default();
+    *fake.row.lock().unwrap() = Some(pointer('a', &['1'], &[]));
+    fake.interlopers
+        .lock()
+        .unwrap()
+        .push(pointer('a', &['4'], &['1']));
+    let amended = amend_pointer(
+        &mut fake,
+        &service(),
+        None,
+        &CancellationToken::new(),
+        &replacing('2', '1'),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        amended,
+        Amendment::Outdated,
+        "the winner retired the source; the copy's spec is unproven against the new row"
+    );
+    assert_eq!(
+        *fake.row.lock().unwrap(),
+        Some(pointer('a', &['4'], &['1']))
+    );
+}
+
+#[tokio::test]
+async fn a_read_immediately_before_removal_says_what_names_the_copy() {
+    let mut fake = FakeRow::default();
+    assert_eq!(
+        protection(&mut fake, &service(), &container('1'))
+            .await
+            .unwrap(),
+        Protection::Unnamed
+    );
+    let row = pointer('a', &['1'], &['2']);
+    *fake.row.lock().unwrap() = Some(row.clone());
+    assert_eq!(
+        protection(&mut fake, &service(), &container('1'))
+            .await
+            .unwrap(),
+        Protection::Pointed(row)
+    );
+    assert_eq!(
+        protection(&mut fake, &service(), &container('2'))
+            .await
+            .unwrap(),
+        Protection::Retiring
+    );
+    assert_eq!(
+        protection(&mut fake, &service(), &container('3'))
+            .await
+            .unwrap(),
+        Protection::Unnamed
     );
 }
 
@@ -369,7 +546,7 @@ mod rpc {
             &service(),
             None,
             &CancellationToken::new(),
-            |current| rotated(current, &[container('2')], &[container('1')], None),
+            &replacing('2', '1'),
         )
         .await
         .unwrap();
@@ -390,7 +567,7 @@ mod rpc {
             &service(),
             None,
             &CancellationToken::new(),
-            |current| rotated(current, &[container('2')], &[], None),
+            &labelled('2', 'a'),
         )
         .await
         .unwrap();

@@ -250,6 +250,15 @@ impl CopyLister for PointedServer {
         }
         Ok(copies)
     }
+
+    async fn remove_copy(
+        &mut self,
+        _machine_id: &MachineId,
+        copy: &ployz_core::ContainerId,
+    ) -> Result<(), RpcError> {
+        self.copies.retain(|listed| listed != copy);
+        Ok(())
+    }
 }
 
 fn pointed_server(row: &FakeRow, polls_left: Option<u32>) -> PointedServer {
@@ -266,7 +275,7 @@ async fn a_pointed_global_retires_through_the_pointer_and_waits_for_its_copies_t
     *row.row.lock().unwrap() = Some(pointer('a', &['1', '2'], &[]));
     let mut server = pointed_server(&row, Some(2));
     let service = QualifiedService::parse("app/api").unwrap();
-    let pointed = retire_pointed(
+    retire_copies(
         &mut server,
         &MachineId::parse("b".repeat(32)).unwrap(),
         &service,
@@ -275,7 +284,6 @@ async fn a_pointed_global_retires_through_the_pointer_and_waits_for_its_copies_t
     )
     .await
     .unwrap();
-    assert!(pointed);
     assert_eq!(*row.row.lock().unwrap(), Some(pointer('a', &['1'], &['2'])));
     assert!(server.copies.is_empty());
 }
@@ -285,7 +293,7 @@ async fn a_pointed_global_still_there_after_the_wait_is_not_retired() {
     let row = FakeRow::default();
     *row.row.lock().unwrap() = Some(pointer('a', &['1', '2'], &[]));
     let mut server = pointed_server(&row, None);
-    let error = retire_pointed(
+    let error = retire_copies(
         &mut server,
         &MachineId::parse("b".repeat(32)).unwrap(),
         &QualifiedService::parse("app/api").unwrap(),
@@ -298,10 +306,10 @@ async fn a_pointed_global_still_there_after_the_wait_is_not_retired() {
 }
 
 #[tokio::test]
-async fn a_global_with_no_pointer_is_left_to_today_s_removal() {
+async fn an_unnamed_global_copy_is_removed_at_once() {
     let row = FakeRow::default();
     let mut server = pointed_server(&row, None);
-    let pointed = retire_pointed(
+    retire_copies(
         &mut server,
         &MachineId::parse("b".repeat(32)).unwrap(),
         &QualifiedService::parse("app/api").unwrap(),
@@ -310,8 +318,32 @@ async fn a_global_with_no_pointer_is_left_to_today_s_removal() {
     )
     .await
     .unwrap();
-    assert!(!pointed);
     assert_eq!(*row.row.lock().unwrap(), None);
+    assert!(server.copies.is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_pointed_copy_is_never_removed_while_an_unnamed_one_beside_it_is() {
+    let row = FakeRow::default();
+    *row.row.lock().unwrap() = Some(pointer('a', &['1', '2'], &[]));
+    let mut server = pointed_server(&row, None);
+    server.copies.push(container('9'));
+    let error = retire_copies(
+        &mut server,
+        &MachineId::parse("b".repeat(32)).unwrap(),
+        &QualifiedService::parse("app/api").unwrap(),
+        Duration::from_secs(30),
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.message.contains("still retiring"), "{error:?}");
+    assert_eq!(
+        *row.row.lock().unwrap(),
+        Some(pointer('a', &['1'], &['2'])),
+        "only the id the pointer named is amended into retiring"
+    );
+    assert_eq!(server.copies, [container('2')], "the pointed copy stays");
 }
 
 #[tokio::test(start_paused = true)]
@@ -324,7 +356,7 @@ async fn a_cancelled_drain_stops_waiting_for_a_pointed_global_at_once() {
     let service = QualifiedService::parse("app/api").unwrap();
     let started = tokio::time::Instant::now();
     let (outcome, ()) = tokio::join!(
-        retire_pointed(
+        retire_copies(
             &mut server,
             &machine,
             &service,
@@ -353,7 +385,7 @@ async fn a_pointed_global_lists_no_copies_past_its_deadline() {
         server: pointed_server(&row, None),
         listings: 0,
     };
-    let error = retire_pointed(
+    let error = retire_copies(
         &mut server,
         &MachineId::parse("b".repeat(32)).unwrap(),
         &QualifiedService::parse("app/api").unwrap(),
@@ -408,15 +440,23 @@ impl CopyLister for SlowLister {
         tokio::time::sleep(LISTING).await;
         self.server.copies_on(machine_id, service).await
     }
+
+    async fn remove_copy(
+        &mut self,
+        machine_id: &MachineId,
+        copy: &ployz_core::ContainerId,
+    ) -> Result<(), RpcError> {
+        self.server.remove_copy(machine_id, copy).await
+    }
 }
 
 mod rpc {
     use std::sync::{Arc, Mutex};
 
     use ployz_core::{
-        ContainerList, LocalMachinePhase, MachineDetails, MachineList, MachineObservation,
-        MembershipObservation, OpaquePayload, RpcRequestBody, RpcResponse, ServingPointer,
-        ServingPointerPublication, ServingPointerRead,
+        ContainerList, ContainerLocator, ContainerNow, EnsuredContainer, LocalMachinePhase,
+        MachineDetails, MachineList, MachineObservation, MembershipObservation, OpaquePayload,
+        RpcRequestBody, RpcResponse, ServingPointer, ServingPointerPublication, ServingPointerRead,
     };
     use tonic::{Request, Response};
 
@@ -424,18 +464,20 @@ mod rpc {
 
     async fn retire_from_ineligible(
         initial: Option<ServingPointer>,
-        published_after_first_read: Option<ServingPointer>,
+        published_after_first_listing: Option<ServingPointer>,
     ) -> (Result<(), RpcError>, Option<ServingPointer>, u32) {
         let mut drained = machine('1', "drained");
         drained.accepts_services = false;
         let service = global_on(&drained, "app", 'a');
         let copy = running_on(&drained, 'a');
         let row = Arc::new(Mutex::new(initial));
-        let published = Arc::new(Mutex::new(published_after_first_read));
+        let published = Arc::new(Mutex::new(published_after_first_listing));
+        let removed = Arc::new(Mutex::new(false));
         let ensured = Arc::new(Mutex::new(0_u32));
         let observed = drained.clone();
         let shared = row.clone();
         let removals = ensured.clone();
+        let gone = removed.clone();
         let (mut client, server) =
             crate::connect::test_support::rpc_client(move |rpc: Request<OpaquePayload>| {
                 let drained = observed.clone();
@@ -443,6 +485,7 @@ mod rpc {
                 let row = shared.clone();
                 let published = published.clone();
                 let removals = removals.clone();
+                let removed = gone.clone();
                 async move {
                     #[expect(
                         clippy::wildcard_enum_match_arm,
@@ -479,26 +522,24 @@ mod rpc {
                             )],
                         }),
                         RpcRequestBody::ListContainers(_) => {
+                            let mut row = row.lock().unwrap();
                             let retired = row
-                                .lock()
-                                .unwrap()
                                 .as_ref()
                                 .is_some_and(|row| row.retiring.contains(&copy.container_id));
-                            RpcResponse::from(ContainerList {
-                                containers: if retired {
-                                    Vec::new()
-                                } else {
-                                    vec![copy.clone()]
-                                },
-                            })
-                        }
-                        RpcRequestBody::ReadServingPointer(_) => {
-                            let mut row = row.lock().unwrap();
-                            let read = row.clone();
+                            let listed = if retired || *removed.lock().unwrap() {
+                                Vec::new()
+                            } else {
+                                vec![copy.clone()]
+                            };
                             if let Some(first) = published.lock().unwrap().take() {
                                 *row = Some(first);
                             }
-                            RpcResponse::from(ServingPointerRead { pointer: read })
+                            RpcResponse::from(ContainerList { containers: listed })
+                        }
+                        RpcRequestBody::ReadServingPointer(_) => {
+                            RpcResponse::from(ServingPointerRead {
+                                pointer: row.lock().unwrap().clone(),
+                            })
                         }
                         RpcRequestBody::PublishServingPointer(request) => {
                             let mut row = row.lock().unwrap();
@@ -513,12 +554,27 @@ mod rpc {
                         }
                         RpcRequestBody::EnsureContainer(_) => {
                             *removals.lock().unwrap() += 1;
-                            RpcResponse::from(RpcError {
-                                code: RpcErrorCode::Conflict,
-                                message: "a pointed Global is not removed directly".into(),
-                                details: serde_json::Value::Null,
-                                cause: Vec::new(),
-                            })
+                            let pointed = row
+                                .lock()
+                                .unwrap()
+                                .as_ref()
+                                .is_some_and(|row| row.containers.contains(&copy.container_id));
+                            if pointed {
+                                RpcResponse::from(RpcError {
+                                    code: RpcErrorCode::Conflict,
+                                    message: "a pointed Global is not removed directly".into(),
+                                    details: serde_json::Value::Null,
+                                    cause: Vec::new(),
+                                })
+                            } else {
+                                *removed.lock().unwrap() = true;
+                                RpcResponse::from(EnsuredContainer::Ensured {
+                                    now: ContainerNow::Absent {
+                                        of: ContainerLocator::Id(copy.container_id),
+                                    },
+                                    health: None,
+                                })
+                            }
                         }
                         other => panic!("unexpected RPC: {other:?}"),
                     };
@@ -546,11 +602,19 @@ mod rpc {
     }
 
     #[tokio::test]
-    async fn a_first_pointer_published_before_removal_retires_the_global_through_it() {
+    async fn a_first_pointer_published_after_the_listing_retires_the_global_through_it() {
         let (retired, row, ensured) =
             retire_from_ineligible(None, Some(pointer('d', &['a'], &[]))).await;
         retired.unwrap();
         assert_eq!(row, Some(pointer('d', &[], &['a'])));
         assert_eq!(ensured, 0, "the pointed copy is never removed directly");
+    }
+
+    #[tokio::test]
+    async fn an_unpointed_global_on_an_ineligible_server_is_removed() {
+        let (retired, row, ensured) = retire_from_ineligible(None, None).await;
+        retired.unwrap();
+        assert_eq!(row, None);
+        assert_eq!(ensured, 1);
     }
 }

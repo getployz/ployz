@@ -2486,6 +2486,59 @@ mod serving_pointer {
     }
 
     #[tokio::test]
+    async fn a_machine_whose_active_peer_has_no_roster_row_refuses_to_publish() {
+        let dir = std::env::temp_dir().join(format!("ployzd-pointer-{}", MachineId::random()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (mut low, mut high) = (enrolled(&dir), enrolled(&dir));
+        if low.record().id() > high.record().id() {
+            std::mem::swap(&mut low, &mut high);
+        }
+        let low_machine = low.record().machine().unwrap().clone();
+        let high_machine = high.record().machine().unwrap().clone();
+        let both_alive = || vec![alive(&low_machine), alive(&high_machine)];
+        let (low, low_task) = serve(
+            &dir,
+            low,
+            corrosion_db(),
+            &[low_machine.clone(), high_machine.clone()],
+            both_alive(),
+        )
+        .await;
+        let (high, high_task) = serve(
+            &dir,
+            high,
+            corrosion_db(),
+            std::slice::from_ref(&high_machine),
+            both_alive(),
+        )
+        .await;
+
+        let outcomes = [
+            publish(&low, None, pointer("d1", "a")).await,
+            publish(&high, None, pointer("d2", "b")).await,
+        ];
+        assert_eq!(outcomes[0], Ok(ServingPointerPublication::Published));
+        let refused = outcomes[1].as_ref().unwrap_err();
+        assert_eq!(refused.code, RpcErrorCode::Unavailable, "{refused:?}");
+        assert!(
+            refused
+                .message
+                .contains(&low_machine.management_address().0.to_string()),
+            "{refused:?}"
+        );
+        assert_eq!(read(&low).await.unwrap().pointer, Some(pointer("d1", "a")));
+        let unwritten = high.replicated().unwrap().serving_pointer(&api()).await;
+        assert_eq!(
+            unwritten.unwrap(),
+            None,
+            "a Machine that cannot see its active peer's row never elects itself"
+        );
+        low_task.abort();
+        high_task.abort();
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
     async fn a_machine_whose_lower_peer_has_an_unreadable_row_refuses_to_publish() {
         let dir = std::env::temp_dir().join(format!("ployzd-pointer-{}", MachineId::random()));
         std::fs::create_dir_all(&dir).unwrap();

@@ -9,9 +9,9 @@ use std::time::Duration;
 
 use ployz_core::rpc::op;
 use ployz_core::{
-    ContainerObservation, DeploymentLogId, LiveServices, MachineTarget, NotPointerPublisher,
-    PublishServingPointerRequest, QualifiedService, ReadServingPointerRequest, RpcError,
-    ServingPointer, ServingPointerPublication,
+    ContainerId, ContainerObservation, DeploymentLogId, LiveServices, MachineTarget,
+    NotPointerPublisher, PublishServingPointerRequest, QualifiedService, ReadServingPointerRequest,
+    RpcError, ServingPointer, ServingPointerPublication,
 };
 
 use tokio_util::sync::CancellationToken;
@@ -146,6 +146,131 @@ impl Client {
     }
 }
 
+/// The pointer-membership contract. A copy id stands in one of four states relative to a
+/// Service's Serving Pointer row, and every change between them runs through one path:
+/// `Rotation` applied inside `amend_pointer` against the row the compare-and-set reads, or
+/// `Protection` read immediately before a stop or removal.
+///
+/// | state    | the row                                                           |
+/// |----------|-------------------------------------------------------------------|
+/// | unnamed  | names it in neither `containers` nor `retiring`                   |
+/// | pointed  | names it in `containers`: Machines route to it                    |
+/// | retiring | names it in `retiring`: Machines stop routing, then ployzd stops it |
+/// | gone     | names it or not; no listing shows it                              |
+///
+/// | transition          | evidence, read in the same step as the write                      | who |
+/// |---------------------|-------------------------------------------------------------------|-----|
+/// | unnamed -> pointed  | the writer is bound to the row's deploy, and the copy's spec came from a source copy the row names in `containers` or whose deploy label is the row's deploy | catch-up, drain |
+/// | pointed -> retiring | the row names the id in `containers`; other leaving ids are ignored | catch-up, drain, Global retirement |
+/// | retiring -> unnamed | the row read before a complete listing named it in `retiring` and that listing lacks it | catch-up |
+/// | retiring -> gone    | every up Machine acknowledged the row                             | ployzd retire |
+/// | unnamed -> gone     | a read immediately before each stop or removal shows no row naming it | drain, Global retirement, catch-up |
+/// | pointed -> gone     | never directly: pointed -> retiring first                         |     |
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct Rotation {
+    pub(crate) joining: Vec<Join>,
+    pub(crate) leaving: Vec<ContainerId>,
+    /// Retiring ids a complete listing proved absent; see `absent_retiring`.
+    pub(crate) pruning: Vec<ContainerId>,
+}
+
+/// A copy entering `containers`, with the copy whose spec it carries.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Join {
+    pub(crate) copy: ContainerId,
+    pub(crate) provenance: Provenance,
+}
+
+/// Where a copy's spec came from: the copy it was read from and that copy's deploy label.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Provenance {
+    pub(crate) source: ContainerId,
+    /// The source's `DEPLOYMENT_ID_LABEL`, when the caller observed it.
+    pub(crate) source_deploy: Option<DeploymentLogId>,
+}
+
+impl Provenance {
+    /// Whether `pointer`'s deploy owns the spec read from `source`.
+    pub(crate) fn proven_by(&self, pointer: &ServingPointer) -> bool {
+        pointer.containers.contains(&self.source)
+            || self.source_deploy.as_ref() == Some(&pointer.deploy)
+    }
+}
+
+impl Join {
+    fn proven_by(&self, pointer: &ServingPointer) -> bool {
+        self.provenance.proven_by(pointer)
+    }
+}
+
+impl Rotation {
+    pub(crate) fn leaving(ids: impl IntoIterator<Item = ContainerId>) -> Self {
+        Self {
+            leaving: ids.into_iter().collect(),
+            ..Self::default()
+        }
+    }
+
+    /// The row this rotation makes of `current`, `None` when it already holds it, or
+    /// `Err` with the first joining copy `current` carries no evidence for.
+    fn apply(&self, current: &ServingPointer) -> Result<Option<ServingPointer>, ContainerId> {
+        let mut next = current.clone();
+        next.retiring.retain(|id| !self.pruning.contains(id));
+        for join in &self.joining {
+            if next.containers.contains(&join.copy) {
+                continue;
+            }
+            if !join.proven_by(current) {
+                return Err(join.copy);
+            }
+            next.containers.push(join.copy);
+        }
+        for id in &self.leaving {
+            if !current.containers.contains(id) {
+                continue;
+            }
+            next.containers.retain(|named| named != id);
+            if !next.retiring.contains(id) {
+                next.retiring.push(*id);
+            }
+        }
+        Ok((next != *current).then_some(next))
+    }
+}
+
+/// The ids `read.retiring` names that `listed`, a complete listing taken after `read`,
+/// lacks. Only those leave `retiring` without passing through ployzd's retire.
+pub(crate) fn absent_retiring(read: &ServingPointer, listed: &[ContainerId]) -> Vec<ContainerId> {
+    read.retiring
+        .iter()
+        .filter(|id| !listed.contains(id))
+        .copied()
+        .collect()
+}
+
+/// What a read immediately before a stop or removal says about one copy.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum Protection {
+    /// No row names it; it may be stopped or removed.
+    Unnamed,
+    /// The row names it in `containers`; it leaves only through `Rotation::leaving`.
+    Pointed(ServingPointer),
+    /// The row names it in `retiring`; ployzd stops it after every Machine acknowledges.
+    Retiring,
+}
+
+pub(crate) async fn protection<C: PointerClient>(
+    client: &mut C,
+    service: &QualifiedService,
+    copy: &ContainerId,
+) -> Result<Protection, RpcError> {
+    Ok(match client.read_pointer(service).await? {
+        Some(pointer) if pointer.containers.contains(copy) => Protection::Pointed(pointer),
+        Some(pointer) if pointer.retiring.contains(copy) => Protection::Retiring,
+        _ => Protection::Unnamed,
+    })
+}
+
 /// What amending one Service's pointer came to.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Amendment {
@@ -154,9 +279,9 @@ pub(crate) enum Amendment {
     /// The change was already in the pointer.
     Unchanged,
     /// Published after `retries` lost compare-and-sets.
-    Published {
-        retries: u32,
-    },
+    Published { retries: u32 },
+    /// The row belongs to another deploy than the bound one, or carries no evidence that
+    /// its deploy owns a joining copy's spec. Nothing was written.
     Outdated,
 }
 
@@ -165,7 +290,7 @@ pub(crate) async fn amend_pointer<C: PointerClient>(
     service: &QualifiedService,
     deploy: Option<&DeploymentLogId>,
     cancellation: &CancellationToken,
-    change: impl Fn(&ServingPointer) -> Option<ServingPointer>,
+    rotation: &Rotation,
 ) -> Result<Amendment, RpcError> {
     let before_write = || {
         unavailable(format!(
@@ -189,8 +314,10 @@ pub(crate) async fn amend_pointer<C: PointerClient>(
         if deploy.is_some_and(|deploy| *deploy != current.deploy) {
             return Ok(Amendment::Outdated);
         }
-        let Some(pointer) = change(&current) else {
-            return Ok(Amendment::Unchanged);
+        let pointer = match rotation.apply(&current) {
+            Ok(Some(pointer)) => pointer,
+            Ok(None) => return Ok(Amendment::Unchanged),
+            Err(_unproven) => return Ok(Amendment::Outdated),
         };
         if cancellation.is_cancelled() {
             return Err(before_write());
@@ -258,30 +385,6 @@ pub(crate) fn complete_members<E>(
             })
             .unwrap_or_default(),
     )
-}
-
-pub(crate) fn rotated(
-    pointer: &ServingPointer,
-    joining: &[ployz_core::ContainerId],
-    leaving: &[ployz_core::ContainerId],
-    listed: Option<&[ployz_core::ContainerId]>,
-) -> Option<ServingPointer> {
-    let mut next = pointer.clone();
-    if let Some(listed) = listed {
-        next.retiring.retain(|id| listed.contains(id));
-    }
-    next.containers.retain(|id| !leaving.contains(id));
-    for id in joining {
-        if !next.containers.contains(id) {
-            next.containers.push(*id);
-        }
-    }
-    for id in leaving {
-        if !next.retiring.contains(id) && !next.containers.contains(id) {
-            next.retiring.push(*id);
-        }
-    }
-    (next != *pointer).then_some(next)
 }
 
 #[cfg(test)]

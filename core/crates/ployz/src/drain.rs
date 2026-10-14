@@ -21,9 +21,9 @@ use ts_rs::TS;
 use crate::cluster::{RoleSetting, RoleWaitError, visible_machine, wait_for_role};
 use crate::connect::{Client, ConnectError, TARGET_RPC_TIMEOUT};
 use crate::deploy::{Converged, OldCopy, Replacement, converge};
-use crate::serving_publish::{Amendment, PointerClient, amend_pointer, rotated};
+use crate::serving_publish::{Amendment, Join, PointerClient, Provenance, Rotation, amend_pointer};
 
-mod retirement;
+pub(crate) mod retirement;
 
 use retirement::{Retirement, retire_globals};
 
@@ -93,19 +93,20 @@ pub struct DrainReport {
 }
 
 impl DrainReport {
-    /// Every chosen Service left the Server, the Drain ran to its end, and what remains
-    /// was observed without any of them. A moved Service whose old copy waits for its
-    /// pointer's retirement is still pending until it leaves the listing.
+    /// Every chosen Service left the Server or moved, the Drain ran to its end, and what
+    /// remains was observed. A moved Service may still be listed: its old copy is retiring
+    /// through its pointer, and ployzd stops it once every Machine stops routing to it.
     #[must_use]
     pub fn complete(&self) -> bool {
         let Remaining::Observed { services, .. } = &self.remaining else {
             return false;
         };
         self.stopped.is_none()
-            && self
-                .services
-                .iter()
-                .all(|service| service.outcome.complete() && !services.contains(&service.service))
+            && self.services.iter().all(|service| {
+                service.outcome.complete()
+                    && (matches!(service.outcome, DrainOutcome::Moved { .. })
+                        || !services.contains(&service.service))
+            })
     }
 }
 
@@ -123,8 +124,8 @@ struct DrainReportWire {
     stopped: Option<DrainStop>,
     /// What still runs on the Server after the Drain.
     remaining: Remaining,
-    /// Every chosen Service left the Server, retiring old copies included, the Drain ran
-    /// to its end, and what remains was observed.
+    /// Every chosen Service left the Server or moved, the Drain ran to its end, and what
+    /// remains was observed. A moved Service's old copy may still be retiring.
     complete: bool,
 }
 
@@ -459,14 +460,26 @@ async fn publish_replacements_past_cancel<C: PointerClient>(
     deploy: &DeploymentLogId,
     replaced: &[Replacement],
 ) -> Result<Amendment, RpcError> {
-    let joining = replaced.iter().map(|step| step.new).collect::<Vec<_>>();
-    let leaving = replaced.iter().map(|step| step.old).collect::<Vec<_>>();
+    let rotation = Rotation {
+        joining: replaced
+            .iter()
+            .map(|step| Join {
+                copy: step.new,
+                provenance: Provenance {
+                    source: step.old,
+                    source_deploy: None,
+                },
+            })
+            .collect(),
+        leaving: replaced.iter().map(|step| step.old).collect(),
+        pruning: Vec::new(),
+    };
     amend_pointer(
         client,
         service,
         Some(deploy),
         &CancellationToken::new(),
-        |current| rotated(current, &joining, &leaving, None),
+        &rotation,
     )
     .await
 }

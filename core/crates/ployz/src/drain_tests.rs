@@ -788,7 +788,7 @@ async fn an_old_copy_a_first_pointer_named_before_removal_is_repointed_under_it(
 }
 
 #[tokio::test]
-async fn a_pointed_move_stays_pending_until_its_old_copy_leaves_the_listing() {
+async fn a_pointed_move_is_complete_while_its_old_copy_retires() {
     let still_listed = || Ok(vec![qualified("web")]);
     let mut client = Scripted {
         observations: [still_listed(), still_listed(), nothing_left()].into(),
@@ -806,13 +806,19 @@ async fn a_pointed_move_stays_pending_until_its_old_copy_leaves_the_listing() {
     };
     let first = run(&mut client, &[], &["web"], &CancellationToken::new()).await;
     assert_eq!(outcomes(&first), [entry("web", moved())]);
-    assert!(!first.complete(), "the old copy still runs: {first:?}");
+    assert!(
+        first.complete(),
+        "the old copy retires through its pointer: {first:?}"
+    );
     let retry = run(&mut client, &[], &["web"], &CancellationToken::new()).await;
     assert_eq!(
         outcomes(&retry),
         [entry("web", DrainOutcome::NothingToMove)]
     );
-    assert!(!retry.complete(), "the old copy still runs: {retry:?}");
+    assert!(
+        !retry.complete(),
+        "a retry moved nothing and cannot vouch for the listed copy: {retry:?}"
+    );
     let gone = run(&mut client, &[], &["web"], &CancellationToken::new()).await;
     assert!(gone.complete(), "{gone:?}");
 }

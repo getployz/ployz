@@ -404,6 +404,7 @@ impl CatchUpClient for FakeCatchUpClient {
         &mut self,
         machine_id: &MachineId,
         new: NewContainer,
+        _cancel: &tokio_util::sync::CancellationToken,
     ) -> Result<Option<ContainerId>, RpcError> {
         assert_eq!(machine_id, &self.machine_id);
         self.run_calls.push(new);
@@ -563,8 +564,43 @@ async fn a_healthy_copy_joins_the_pointer_and_what_it_replaced_retires() {
     .unwrap();
     assert_eq!(
         *row.row.lock().unwrap(),
+        Some(pointed("dep-a", &['b'], &['d', 'c'])),
+        "the replaced copy and a pointed copy no Machine lists both retire"
+    );
+}
+
+#[tokio::test]
+async fn a_pointed_copy_another_machine_lists_stays_pointed() {
+    let row = FakeRow::default();
+    *row.row.lock().unwrap() = Some(pointed("dep-a", &['d', 'c'], &[]));
+    let (joiner, mut client) = replacing_client(row.clone());
+    let elsewhere = machine('2', "elsewhere");
+    client.relisted = Some(vec![
+        global_service(
+            qualified("app", "api"),
+            'a',
+            Placement::default(),
+            running_on(&joiner, 'b'),
+        ),
+        global_service(
+            qualified("app", "api"),
+            'a',
+            Placement::default(),
+            running_on(&elsewhere, 'c'),
+        ),
+    ]);
+    catch_up_globals(
+        &mut client,
+        &joiner,
+        &tokio_util::sync::CancellationToken::new(),
+        |_| {},
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        *row.row.lock().unwrap(),
         Some(pointed("dep-a", &['c', 'b'], &['d'])),
-        "only the pointed copy listed here retires; one no Machine lists stays for its owner"
+        "only this Machine's replaced copy retires; one another Machine lists stays for its owner"
     );
 }
 
@@ -779,6 +815,37 @@ async fn a_newer_deploy_published_while_the_copy_starts_keeps_its_pointer() {
     );
     assert_eq!(*row.publishes.lock().unwrap(), 0);
     assert_eq!(error.unresolved, [qualified("app", "api")]);
+}
+
+#[tokio::test]
+async fn a_pointer_naming_only_absent_copies_never_gains_an_older_spec_recreation() {
+    let row = FakeRow::default();
+    *row.row.lock().unwrap() = Some(pointed("dep-q", &['7'], &[]));
+    let (joiner, mut client) = replacing_client(row.clone());
+    let error = catch_up_globals(
+        &mut client,
+        &joiner,
+        &tokio_util::sync::CancellationToken::new(),
+        |_| {},
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        client.run_calls.is_empty(),
+        "an unlabelled copy dep-q never named supplies no spec worth recreating"
+    );
+    assert_eq!(*row.publishes.lock().unwrap(), 0);
+    assert_eq!(
+        *row.row.lock().unwrap(),
+        Some(pointed("dep-q", &['7'], &[]))
+    );
+    assert_eq!(error.unresolved, [qualified("app", "api")]);
+    assert!(
+        crate::ui::chain_text(&joined_catch_up_error(error, &joiner, |args| {
+            shell_words::join(std::iter::once("ployz").chain(args.iter().copied()))
+        }))
+        .contains("a newer deploy replaced it")
+    );
 }
 
 #[tokio::test]

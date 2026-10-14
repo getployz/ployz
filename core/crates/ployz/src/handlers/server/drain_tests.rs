@@ -189,8 +189,8 @@ fn every_outcome_that_existed_prints_the_same_line() {
         Ok("Still on web-2: app/db, app/web (retiring)".to_owned())
     );
     assert!(
-        !retiring.complete(),
-        "a moved Service waits until its old copy leaves"
+        retiring.complete(),
+        "a moved Service's old copy retires through ployzd; the drain is done"
     );
     let empty = report(Remaining::Observed {
         services: Vec::new(),

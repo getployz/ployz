@@ -718,13 +718,26 @@ pub(in crate::deploy) enum MoveContainerError {
     },
 }
 
+/// Whether a move may stop or remove its old Container. `move_container` asks
+/// immediately before each destructive request, so a Serving Pointer published
+/// meanwhile keeps the old Container for that pointer's retire path.
+pub(in crate::deploy) trait RemovesOld {
+    async fn removes_old(&mut self) -> bool;
+}
+
+impl RemovesOld for bool {
+    async fn removes_old(&mut self) -> bool {
+        *self
+    }
+}
+
 pub(in crate::deploy) async fn move_container<C: MachineOperations>(
     client: &C,
     namespace: &Namespace,
     (spec, deploy): (&ResolvedServiceSpec, Option<&DeploymentLogId>),
     to: &MachineId,
     (from, old): (&MachineId, &ContainerId),
-    remove_old_once_serving: impl AsyncFnOnce() -> bool,
+    gate: &mut impl RemovesOld,
     cancellation: &CancellationToken,
 ) -> Result<ContainerId, MoveContainerError> {
     let client = RestartTolerant {
@@ -762,7 +775,7 @@ pub(in crate::deploy) async fn move_container<C: MachineOperations>(
             });
         }
     };
-    if !remove_old_once_serving().await {
+    if !gate.removes_old().await {
         return Ok(new);
     }
     // Stopped first, so a failed removal can say whether the old Container still serves.
@@ -772,6 +785,9 @@ pub(in crate::deploy) async fn move_container<C: MachineOperations>(
             error,
             old_stopped: false,
         })?;
+    if !gate.removes_old().await {
+        return Ok(new);
+    }
     remove(&client, from, old, Drain::NONE)
         .await
         .map_err(|error| MoveContainerError::OldNotRemoved {

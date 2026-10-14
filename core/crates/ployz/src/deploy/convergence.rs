@@ -18,10 +18,10 @@ use tokio_util::sync::CancellationToken;
 use ts_rs::TS;
 
 use crate::connect::{Client, ConnectError, TARGET_RPC_TIMEOUT};
-use crate::serving_publish::PointerClient;
+use crate::serving_publish::{PointerClient, Protection, protection};
 
 use super::DeploySnapshot;
-use super::exec::MoveContainerError;
+use super::exec::{MoveContainerError, RemovesOld};
 
 /// A Server as a report names it: its durable identity and the name it had then. Two
 /// Servers may share a name, so the id is what a reader links by.
@@ -504,30 +504,29 @@ async fn move_one(
         namespace: container.namespace.clone(),
         name: spec.name.clone(),
     };
-    let mut reader = client.clone();
-    let mut at_removal = AtRemoval::from(old);
-    let deploy = at_removal.replacement_deploy();
+    let mut gate = OldCopyGate {
+        at_removal: AtRemoval::of(old, &container.container_id),
+        reader: client.clone(),
+        service: &service,
+        old: &container.container_id,
+    };
+    let deploy = gate
+        .at_removal
+        .replacement_deploy()
+        .or_else(|| container.deploy_label());
     let moved = super::exec::move_container(
         &*client,
         &container.namespace,
         (&spec, deploy.as_ref()),
         &dest.id,
         (&source.id, &container.container_id),
-        async || {
-            removes_old(
-                &mut at_removal,
-                &mut reader,
-                &service,
-                &container.container_id,
-            )
-            .await
-        },
+        &mut gate,
         cancellation,
     )
     .await;
     match moved {
-        Ok(new) => match at_removal {
-            AtRemoval::Remove => Ok((Move { from, to }, None)),
+        Ok(new) => match gate.at_removal {
+            AtRemoval::Remove | AtRemoval::Retiring => Ok((Move { from, to }, None)),
             AtRemoval::Pointed(deploy) => Ok((
                 Move { from, to },
                 Some(Replacement {
@@ -571,56 +570,60 @@ async fn move_one(
     }
 }
 
+/// What the old copy's Serving Pointer says about it, from the view the move started with
+/// and then from a read immediately before each stop or removal.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(in crate::deploy) enum AtRemoval {
+    /// No pointer names it; the move stops and removes it.
     Remove,
+    /// Its pointer names it in `containers`; it leaves only through that pointer's
+    /// retiring list, so the move keeps it and reports a `Replacement`.
     Pointed(DeploymentLogId),
+    /// Its pointer already retires it; ployzd stops it after every Machine acknowledged.
+    Retiring,
+    /// The pointer could not be read; the old copy stays until it can be.
     Unread(String),
 }
 
 impl AtRemoval {
-    /// The Deploy a replacement is labelled with. A kept copy's replacement joins its
-    /// Serving Pointer's Deploy, and fallback routing finds a previous Deploy's copies
-    /// only by that label. A pointer first read at removal comes too late: the
-    /// replacement already runs unlabelled.
+    pub(in crate::deploy) fn of(old: OldCopy<'_>, copy: &ContainerId) -> Self {
+        match old {
+            OldCopy::Keep { pointer } if pointer.containers.contains(copy) => {
+                Self::Pointed(pointer.deploy.clone())
+            }
+            OldCopy::Keep { pointer } if pointer.retiring.contains(copy) => Self::Retiring,
+            OldCopy::Keep { .. } | OldCopy::Remove => Self::Remove,
+        }
+    }
+
+    /// The Deploy a kept copy's replacement is labelled with, so it joins the same Serving
+    /// Pointer. Callers label an unpointed copy's replacement with the copy's own label.
     pub(in crate::deploy) fn replacement_deploy(&self) -> Option<DeploymentLogId> {
         match self {
             Self::Pointed(deploy) => Some(deploy.clone()),
-            Self::Remove | Self::Unread(_) => None,
+            Self::Remove | Self::Retiring | Self::Unread(_) => None,
         }
     }
 }
 
-impl From<OldCopy<'_>> for AtRemoval {
-    fn from(old: OldCopy<'_>) -> Self {
-        match old {
-            OldCopy::Remove => Self::Remove,
-            OldCopy::Keep { pointer } => Self::Pointed(pointer.deploy.clone()),
-        }
-    }
+/// A move's old copy and its Serving Pointer. Each destructive step asks it again,
+/// and `at_removal` records what the latest read said.
+pub(in crate::deploy) struct OldCopyGate<'a, C> {
+    pub(in crate::deploy) at_removal: AtRemoval,
+    pub(in crate::deploy) reader: C,
+    pub(in crate::deploy) service: &'a QualifiedService,
+    pub(in crate::deploy) old: &'a ContainerId,
 }
 
-pub(in crate::deploy) async fn removes_old<C: PointerClient>(
-    at_removal: &mut AtRemoval,
-    reader: &mut C,
-    service: &QualifiedService,
-    old: &ContainerId,
-) -> bool {
-    if *at_removal == AtRemoval::Remove {
-        *at_removal = at_removal_of(reader, service, old).await;
-    }
-    *at_removal == AtRemoval::Remove
-}
-
-async fn at_removal_of<C: PointerClient>(
-    reader: &mut C,
-    service: &QualifiedService,
-    old: &ContainerId,
-) -> AtRemoval {
-    match reader.read_pointer(service).await {
-        Ok(Some(pointer)) if pointer.containers.contains(old) => AtRemoval::Pointed(pointer.deploy),
-        Ok(_) => AtRemoval::Remove,
-        Err(error) => AtRemoval::Unread(crate::ui::row(&error)),
+impl<C: PointerClient> RemovesOld for OldCopyGate<'_, C> {
+    async fn removes_old(&mut self) -> bool {
+        self.at_removal = match protection(&mut self.reader, self.service, self.old).await {
+            Ok(Protection::Unnamed) => AtRemoval::Remove,
+            Ok(Protection::Pointed(pointer)) => AtRemoval::Pointed(pointer.deploy),
+            Ok(Protection::Retiring) => AtRemoval::Retiring,
+            Err(error) => AtRemoval::Unread(crate::ui::row(&error)),
+        };
+        self.at_removal == AtRemoval::Remove
     }
 }
 
@@ -829,11 +832,164 @@ mod tests {
         ContainerId::parse(hex.to_string().repeat(64)).unwrap()
     }
 
-    fn one_move() -> Vec<Move> {
-        vec![Move {
+    fn a_to_b() -> Move {
+        Move {
             from: MachineRef::from(&machine('a', false).machine),
             to: MachineRef::from(&machine('b', true).machine),
-        }]
+        }
+    }
+
+    fn one_move() -> Vec<Move> {
+        vec![a_to_b()]
+    }
+
+    /// Moves `two_on_a`'s first copy through the real `Client` against a Machine fixture
+    /// whose Serving Pointer read answers `pointer`. Returns the move and the destructive
+    /// wants the fixture received for the old copy, in order.
+    async fn moved_through_client(
+        pointer: Option<ployz_core::ServingPointer>,
+    ) -> (
+        Result<(Move, Option<Replacement>), MoveFailure>,
+        Vec<&'static str>,
+    ) {
+        use ployz_core::{
+            ContainerDetails, ContainerLocator, ContainerNow, ContainerWant, EnsuredContainer,
+            ImageSummary, MachineImages, MachineList, OpaquePayload, RpcRequestBody, RpcResponse,
+            RunTarget, ServingPointerRead,
+        };
+        use std::sync::{Arc, Mutex};
+        use tonic::{Request, Response};
+
+        let snapshot = two_on_a();
+        let first = snapshot.containers.first().unwrap().clone();
+        let old = first.clone();
+        let spec = old.resolved_spec.clone();
+        let destructive = Arc::new(Mutex::new(Vec::new()));
+        let recorded = destructive.clone();
+        let answered = pointer.clone();
+        let (mut client, server) =
+            crate::connect::test_support::rpc_client(move |rpc: Request<OpaquePayload>| {
+                let recorded = recorded.clone();
+                let old = old.clone();
+                let spec = spec.clone();
+                let pointer = answered.clone();
+                async move {
+                    #[expect(
+                        clippy::wildcard_enum_match_arm,
+                        reason = "fixture answers only what one move sends"
+                    )]
+                    let response = match rpc.into_inner().decode_request().unwrap().body {
+                        RpcRequestBody::InspectContainer(_) => {
+                            RpcResponse::from(ContainerDetails {
+                                container: old,
+                                environment: None,
+                                image_id: Some("sha256:img".into()),
+                                last_check: None,
+                                run: None,
+                            })
+                        }
+                        RpcRequestBody::ListImages(_) => RpcResponse::from(MachineImages {
+                            containerd_store: true,
+                            images: vec![ImageSummary {
+                                id: "sha256:img".into(),
+                                repo_tags: vec![spec.container.image.clone()],
+                                created: 0,
+                                size: 0,
+                                containers: 0,
+                                platforms: Vec::new(),
+                                last_tagged: None,
+                            }],
+                            docker_root: None,
+                        }),
+                        RpcRequestBody::ListMachines(_) => RpcResponse::from(MachineList {
+                            enrollment: None,
+                            machines: vec![machine('a', false), machine('b', true)],
+                        }),
+                        RpcRequestBody::ReadServingPointer(_) => {
+                            RpcResponse::from(ServingPointerRead { pointer })
+                        }
+                        RpcRequestBody::EnsureContainer(ensure) => match ensure.want {
+                            ContainerWant::Running {
+                                container: RunTarget::New(_),
+                            } => RpcResponse::from(EnsuredContainer::Ensured {
+                                health: None,
+                                now: ContainerNow::Present(container('f', 'b', spec)),
+                            }),
+                            ContainerWant::Stopped {
+                                container: ContainerLocator::Id(id),
+                                ..
+                            } => {
+                                assert_eq!(id, old.container_id);
+                                recorded.lock().unwrap().push("stop");
+                                RpcResponse::from(EnsuredContainer::Ensured {
+                                    health: None,
+                                    now: ContainerNow::Present(old),
+                                })
+                            }
+                            ContainerWant::Gone {
+                                container: ContainerLocator::Id(id),
+                                ..
+                            } => {
+                                assert_eq!(id, old.container_id);
+                                recorded.lock().unwrap().push("gone");
+                                RpcResponse::from(EnsuredContainer::Ensured {
+                                    health: None,
+                                    now: ContainerNow::Absent {
+                                        of: ContainerLocator::Id(id),
+                                    },
+                                })
+                            }
+                            want => panic!("unexpected want {want:?}"),
+                        },
+                        body => panic!("unexpected request {body:?}"),
+                    };
+                    Ok(Response::new(response.encode().unwrap()))
+                }
+            })
+            .await;
+        let old = match &pointer {
+            Some(pointer) => OldCopy::Keep { pointer },
+            None => OldCopy::Remove,
+        };
+        let moved = ConvergenceClient::move_one(
+            &mut client,
+            &snapshot,
+            &first,
+            old,
+            &CancellationToken::new(),
+        )
+        .await;
+        server.abort();
+        let destructive = destructive.lock().unwrap().clone();
+        (moved, destructive)
+    }
+
+    #[tokio::test]
+    async fn a_client_move_keeps_a_copy_its_pointer_names_and_reports_the_replacement() {
+        let pointer = crate::serving_publish::tests::pointer('a', &['1'], &[]);
+        let (moved, destructive) = moved_through_client(Some(pointer.clone())).await;
+        let (step, replacement) = moved.unwrap();
+        assert_eq!(step, a_to_b());
+        assert_eq!(
+            replacement,
+            Some(Replacement {
+                old: id('1'),
+                new: id('f'),
+                deploy: pointer.deploy,
+            })
+        );
+        assert_eq!(
+            destructive,
+            Vec::<&str>::new(),
+            "a pointed copy leaves only through its pointer's retire path"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_client_move_of_an_unpointed_copy_stops_then_removes_it() {
+        let (moved, destructive) = moved_through_client(None).await;
+        assert_eq!(moved.unwrap(), (a_to_b(), None));
+        assert_eq!(destructive, ["stop", "gone"]);
     }
 
     #[tokio::test]

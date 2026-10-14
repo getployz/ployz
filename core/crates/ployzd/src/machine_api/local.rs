@@ -133,7 +133,10 @@ impl MachineService {
         let publisher = match self.local.pointer_publisher().await {
             Ok(publisher) => publisher,
             Err(LocalMachineError::Cluster(error)) => return Err(cluster_store_error(error)),
-            Err(error @ LocalMachineError::UnreadableLowerMachine(_)) => {
+            Err(
+                error @ (LocalMachineError::UnreadableLowerMachine(_)
+                | LocalMachineError::MissingPeerRow(_)),
+            ) => {
                 return Err(RpcError::caused(RpcErrorCode::Unavailable, &error));
             }
             Err(_) => return Err(unavailable("Cluster store is not available")),
@@ -709,7 +712,7 @@ fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Stat
             Err(Status::unavailable("Cluster is not available"))
         }
         LocalMachineError::DockerUnavailable => respond(unavailable("Docker is not available")),
-        LocalMachineError::UnreadableLowerMachine(_) => {
+        LocalMachineError::UnreadableLowerMachine(_) | LocalMachineError::MissingPeerRow(_) => {
             respond(RpcError::caused(RpcErrorCode::Unavailable, &error))
         }
         LocalMachineError::MissingAssignment => {
