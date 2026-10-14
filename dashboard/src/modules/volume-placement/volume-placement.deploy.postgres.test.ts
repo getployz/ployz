@@ -35,6 +35,8 @@ describe("deploying a Volume placement", () => {
   const statuses = new Map<string, string>();
   let members: Member[];
   let restoredStorage: VolumeKind;
+  /** Volumes discarded from the Store. */
+  const discarded = new Set<string>();
   const inspect: MemberInspector = () => Effect.succeed(members);
 
   const run = <A, E>(operation: Effect.Effect<A, E, Database | SecretEncryption | CloudStore | InngestClient | OrganizationRuntime>) => harness.runEffect(operation.pipe(
@@ -50,7 +52,8 @@ describe("deploying a Volume placement", () => {
           }
           return {
             environment: { id: "env-1", project: "shop", name: "production", revision: 1 },
-            volumes: [{ id: volumeId, name: "data", storage: { kind: "provisioned", maximumBytes: 1 } }, { id: "vol2", name: "data-1430", storage: restoredStorage }],
+            volumes: [{ id: volumeId, name: "data", storage: { kind: "provisioned", maximumBytes: 1 } }, { id: "vol2", name: "data-1430", storage: restoredStorage }]
+              .filter((volume) => !discarded.has(volume.id)),
           };
         },
       })),
@@ -81,6 +84,7 @@ describe("deploying a Volume placement", () => {
   beforeEach(async () => {
     status = "queued";
     statuses.clear();
+    discarded.clear();
     restoredStorage = { kind: "provisioned", maximumBytes: 1 };
     send.mockClear();
     await harness.pool.query(`
@@ -367,6 +371,41 @@ describe("deploying a Volume placement", () => {
       expect(await run(advancePlacement(organizationId, "dep-1", started.wait, inspect, answered))).toEqual({ kind: "failed", message: "data: web-2 did not answer" });
       expect(await placement()).toMatchObject({ mirrors: [web("web-2")], staged: null, deploymentId: null });
       expect((await runRows()).map((row) => row.state)).toEqual(["yielded", "failed"]);
+    });
+
+    it("never plans the replanned run again, even when it took over a lane too", async () => {
+      const { started } = await restoring();
+      await endRun(started.wait.runId, "failed", "web-1 holds another copy of data");
+      const warm = (await land("move", '{"to":"web-2"}')).rows[0].id;
+      members = [member("web-1", "writer"), member("web-2", "mirror")];
+      const moving = await run(advancePlacement(organizationId, "dep-1", started.wait, inspect, answered));
+      if (moving.kind !== "wait") throw new Error("expected a run");
+      expect((await runRows()).find((row) => row.id === warm)).toMatchObject({ state: "yielded", message: "a Deploy took this run over" });
+
+      await endRun(moving.wait.runId, "failed", "web-2 did not answer");
+      members = [member("web-1", "mirror"), member("web-2", "mirror")];
+      expect(await run(advancePlacement(organizationId, "dep-1", moving.wait, inspect, answered))).toEqual({ kind: "failed", message: "data: web-2 did not answer" });
+      expect((await runRows()).map((row) => row.state)).toEqual(["yielded", "failed", "yielded", "failed"]);
+    });
+
+    it("plans the Volume again before another Volume's run starts", async () => {
+      // Staged first, vol2's row comes back first from a select with no order.
+      await run(stagePlacement(organizationId, { environment, volumeId: "vol2", staged: { primary: web("web-1"), mirrors: [], deletes: [web("web-2")] }, mirrors: [] }));
+      const { started } = await restoring();
+      await run(stampPlacements(organizationId, ["vol2"], "dep-1"));
+      await endRun(started.wait.runId, "failed", "web-1 holds another copy of data");
+      members = [member("web-1", "writer"), member("web-2", "mirror")];
+      const moving = await run(advancePlacement(organizationId, "dep-1", started.wait, inspect, answered));
+      expect(moving).toMatchObject({ kind: "wait", wait: { volumeId, step: { run: { kind: "move", args: { to: "web-2" } } }, fenced: false } });
+      expect((await runRows()).map((row) => row.kind)).toEqual(["move", "restore", "move"]);
+    });
+
+    it("fails the Deploy with the run's message when the Volume left the Store before it was planned again", async () => {
+      const { started } = await restoring();
+      await endRun(started.wait.runId, "failed", "web-1 holds another copy of data");
+      discarded.add(volumeId);
+      expect(await run(advancePlacement(organizationId, "dep-1", started.wait, inspect, answered)))
+        .toEqual({ kind: "failed", message: "data: web-1 holds another copy of data" });
     });
   });
 

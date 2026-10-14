@@ -177,7 +177,8 @@ const unseededVolume = Effect.fn("VolumePlacement.unseededVolume")(function* (
  * Volume and the others, stay staged. A failed restore is dropped once the Store records the failure. A warm run already
  * on the Volume yields to the Deploy's; a run that keeps the Volume, one past its return or another Deploy's, fails the
  * Deploy, with that change and every one it never reached staged for the next Deploy. A fenced run that fails is planned
- * again from the copies its fence left, failing the Deploy only if that plans the same run; a replanned run never replans.
+ * again from the copies its fence left before any other run starts, failing the Deploy if that plans the same run or
+ * never reaches the Volume; a replanned run never replans.
  */
 export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
   organizationId: string, deploymentId: string, waited: PlacementWait | null, inspect: MemberInspector = inspectVolumeCopies,
@@ -216,7 +217,8 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
   }
   const { drizzle } = yield* Database;
   const stamped = yield* drizzle.select().from(volumePlacement)
-    .where(and(eq(volumePlacement.organizationId, organizationId), eq(volumePlacement.deploymentId, deploymentId), isNotNull(volumePlacement.staged)));
+    .where(and(eq(volumePlacement.organizationId, organizationId), eq(volumePlacement.deploymentId, deploymentId), isNotNull(volumePlacement.staged)))
+    .orderBy(volumePlacement.volumeId);
   const settled = new Set<string>();
   for (const row of stamped) if (row.staged?.seed !== undefined && (yield* restoreSettled(row.environmentId))) settled.add(row.volumeId);
   const listed = (row: { readonly volumeId: string }) => volumes.some((volume) => volume.id === row.volumeId);
@@ -234,7 +236,9 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
     return { kind: "failed", message: refusal.message } satisfies PlacementAdvance;
   }
   // A restore copies from its source first: a move staged on the source in the same Deploy may drop the restore point.
-  const ordered = [...rows].sort((a, b) => Number(b.staged?.seed !== undefined) - Number(a.staged?.seed !== undefined));
+  // The Volume being planned again comes next, so it resolves before any other Volume's run starts.
+  const rank = (row: typeof stamped[number]) => row.staged?.seed !== undefined ? 0 : row.volumeId === replanning?.waited.volumeId ? 1 : 2;
+  const ordered = [...rows].sort((a, b) => rank(a) - rank(b));
   // Sources of restores whose Volume isn't in the Store yet: a move on one waits, so the restore point stays.
   const waiting = new Set<string>();
   for (const row of ordered) {
@@ -256,11 +260,12 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
     const members = yield* inspect(organizationId, environment, row.volumeId);
     const step = nextPlacementStep(placementChanges(volume, members, placement), appliedMirrors(observePlacement(members), placement));
     if (step === null) {
+      if (row.volumeId === replanning?.waited.volumeId) replanning = null;
       // Nothing left to run, so the Servers hold what was staged.
       yield* settleClaimed(row.volumeId, deploymentId, { mirrors: [...(row.staged?.mirrors ?? [])], staged: null, deploymentId: null });
       continue;
     }
-    if (replanning?.waited.volumeId === row.volumeId && isDeepStrictEqual(step.run, replanning.waited.step.run)) {
+    if (replanning !== null && (replanning.waited.volumeId !== row.volumeId || isDeepStrictEqual(step.run, replanning.waited.step.run))) {
       return yield* failStep(organizationId, deploymentId, environment, volumes, replanning.waited, replanning.message, inspect);
     }
     // Touching the row without changing it confirms the claim right before the run starts.
@@ -280,6 +285,7 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
     const remaining = dropChange(volume, members, placement, step.change);
     return yield* fail(organizationId, deploymentId, row.volumeId, remaining, `${volume.name}: ${requested.refusal.message}`);
   }
+  if (replanning !== null) return yield* failStep(organizationId, deploymentId, environment, volumes, replanning.waited, replanning.message, inspect);
   return { kind: "done" } satisfies PlacementAdvance;
 });
 
