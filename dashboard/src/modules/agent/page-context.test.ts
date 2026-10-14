@@ -92,10 +92,14 @@ describe("placeOfPage", () => {
     expect(place({ shop: [{ id: "env-1", name: "live" }] }, shop)).toEqual({ project: "shop", environment: "live" });
   });
 
-  it("keeps the page's names when it carries no Environment id or no Environment has it", () => {
+  it("keeps the page's names when it carries no Environment id", () => {
     expect(place({ store: [{ id: "env-1", name: "production" }] }, { page: "services", project: "shop", environment: "production" }))
       .toEqual({ project: "shop", environment: "production" });
-    expect(place({}, shop)).toEqual({ project: "shop", environment: "production" });
     expect(place({}, { page: "servers" })).toEqual({ project: null, environment: null });
+  });
+
+  it("names no place when no Environment has the page's id, even where a Project took its old names", () => {
+    expect(place({}, shop)).toEqual({ project: null, environment: null });
+    expect(place({ shop: [{ id: "env-9", name: "production" }] }, shop)).toEqual({ project: null, environment: null });
   });
 });

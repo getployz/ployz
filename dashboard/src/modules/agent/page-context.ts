@@ -72,7 +72,7 @@ export type Listing = { project: string; environments: ReadonlyArray<{ id: strin
 /**
  * The Project and Environment `block` names, by their current names. The dashboard keeps a page's old names after a
  * rename, and a new Project can take an old name, so a block's Environment id decides; its names are only where to look
- * first, and the place when no Environment has that id.
+ * first. An id no Environment has names no place, since the old names may now belong to another Project.
  */
 export const placeOfPage = <E, R>(
   block: string | undefined,
@@ -90,5 +90,5 @@ export const placeOfPage = <E, R>(
     const environment = listing.environments.find((candidate) => candidate.id === id);
     if (environment !== undefined) return { project: listing.project, environment: environment.name };
   }
-  return named;
+  return { project: null, environment: null };
 });

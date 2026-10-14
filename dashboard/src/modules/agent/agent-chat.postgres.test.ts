@@ -188,6 +188,18 @@ it.live("a store tool acts in the page's Environment by id after its Project was
     expect(JSON.stringify(listed)).toContain('"api"');
   }));
 
+it.live("a store tool never acts in a Project that took the page's old name when the page's Environment is gone", () =>
+  Effect.gen(function* () {
+    const { say, store, write } = yield* sidebar({ removeWeb: false });
+    yield* write({ command: "create_project", id: "00000000-0000-4000-8000-00000000a609", name: "docs", default_environment: "00000000-0000-4000-8000-00000000a60a" });
+    const model = fakeText();
+    model.setResponses([{ toolCalls: [{ name: "service_add", input: { name: "api", image: "nginx" } }] }, { text: "Done." }]);
+    const page = { page: "architecture", project: "docs", environment: "production", environment_id: "00000000-0000-4000-8000-00000000a60b" };
+    yield* say("add an nginx service called api", { page }, model);
+    const listed = yield* Effect.promise(() => store.read(ORGANIZATION, { query: "services", environment: { project: "docs", environment: "production" } }));
+    expect(JSON.stringify(listed)).not.toContain('"api"');
+  }));
+
 it.live("a turn Claude fails tells the member what happened in plain words, never the provider's JSON", () =>
   Effect.gen(function* () {
     const { say } = yield* sidebar({ removeWeb: false });

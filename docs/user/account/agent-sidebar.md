@@ -8,7 +8,8 @@ and deployments, or ask it to change something and deploy. Before a deploy remov
 anything, it stops and asks you.
 
 The agent works in the project and environment you're looking at, unless you name another, and
-keeps working in them after either is renamed. It
+keeps working in them after either is renamed. If the environment you're looking at is gone, it
+never acts by the page's old names, since another project may have taken them. It
 can create or rename a project, add, change and rename services, [configs](../services/configs.md)
 and volumes, add and change domains, review what's staged, restore or undo a saved version, publish
 and deploy. It can list an environment's deployments, follow one to its end, redeploy a failed,
