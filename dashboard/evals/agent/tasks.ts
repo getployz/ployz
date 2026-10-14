@@ -1,6 +1,6 @@
 import type { ConfigCommand } from "@ployz/sdk";
 import { Effect, Option, Schema } from "effect";
-import { ACTS, STORE_WRITES, WRITES } from "./acted";
+import { ACTS, STORE_WRITES, TAPE_WRITES } from "./acted";
 import { environmentRef, FAILURE } from "./fixture";
 import type { Control, FleetScenario } from "./fleet";
 import { delta, type Multiset } from "./snapshot";
@@ -199,7 +199,7 @@ const t8: Task = {
   allowed: edits("staging.volumes.uploads", "staging.settings.web.mounts.uploads"),
   check: (evidence) => {
     const uploads = after(evidence).volumes["uploads"];
-    const batches = calls(evidence).filter((call) => WRITES.has(call.tool) && outcome(call).ok === true).length;
+    const batches = calls(evidence).filter((call) => TAPE_WRITES.has(call.tool) && outcome(call).ok === true).length;
     return need(
       [JSON.stringify(uploads?.storage) === JSON.stringify({ kind: "provisioned", maximumBytes: 5_000_000_000 }), `uploads is ${JSON.stringify(uploads?.storage)}`],
       [after(evidence).settings["web.mounts.uploads"] === "/data", "web does not mount uploads at /data"],
