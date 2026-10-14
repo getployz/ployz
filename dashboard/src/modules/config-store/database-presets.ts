@@ -38,7 +38,8 @@ export const DATABASE_PRESETS: readonly DatabasePreset[] = [
   },
   {
     id: "redis", label: "Redis", image: "redis:8.2", dataPath: "/data",
-    startCommand: "docker-entrypoint.sh redis-server --requirepass \"$REDIS_PASSWORD\" --save 60 1 --dir /data",
+    // An image's start command runs without a shell, so the password needs one to expand.
+    startCommand: "sh -c 'exec docker-entrypoint.sh redis-server --requirepass \"$REDIS_PASSWORD\" --save 60 1 --dir /data'",
     healthcheck: "redis-cli -h 127.0.0.1 -a \"$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG",
     env: (password) => ({
       REDIS_PASSWORD: password, REDISUSER: "default", REDISPASSWORD: "${{ REDIS_PASSWORD }}", REDISHOST: HOST,

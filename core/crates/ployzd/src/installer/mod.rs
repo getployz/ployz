@@ -293,10 +293,6 @@ fn restart_units() -> Result<(), Error> {
         "restart volume plugin",
         ["try-restart", "ployz-volume-plugin.service"],
     )?;
-    systemctl(
-        "restart Log Store",
-        ["try-restart", "ployz-observe.service"],
-    )?;
     Ok(())
 }
 

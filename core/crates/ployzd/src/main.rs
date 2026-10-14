@@ -18,10 +18,11 @@ use ployz_core::{
 use ployzd::{
     daemon::{ContainerMode, Daemon, DaemonConfig, Error, wait_until_socket_accepts},
     diag,
-    dns::{self, DnsExit, DnsSupervision},
+    dns::{self, DnsExit},
     installer::{DEFAULT_SOCKET_PATH, InstallMode, InstallRequest, Readiness},
     machine::DEFAULT_DATA_DIR,
     management::ManagementConfig,
+    runtime_unit::UnitSupervision,
 };
 use tokio::io::{AsyncWriteExt, copy, stdin, stdout};
 
@@ -217,7 +218,7 @@ async fn run(args: Args) -> Result<ExitCode, Error> {
         data_dir: args.data_dir,
         socket: args.socket,
         dns_upstreams: args.dns_upstreams,
-        dns: DnsSupervision::detect(),
+        units: UnitSupervision::detect(),
         machine_api_address: args.machine_api_address,
         containerd_socket: args.containerd_socket,
         volume_plugin_socket: args.volume_plugin_socket,

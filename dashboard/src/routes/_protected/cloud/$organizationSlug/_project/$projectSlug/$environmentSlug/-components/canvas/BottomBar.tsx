@@ -27,6 +27,9 @@ import { AddServerDialog } from "#/routes/_protected/cloud/$organizationSlug/_or
  */
 export const BottomBarSlot = createContext<HTMLElement | null>(null);
 
+/** History stages counted by the scene: a stage replaces the changes, so the Change message typed for them goes. */
+export const HistoryStages = createContext<{ count: number; staged: () => void }>({ count: 0, staged: () => {} });
+
 const DEPLOYED_SHOWS_MS = 6_000;
 /** Far more Deployments than one bar shows, so the oldest ids it forgets are long ended. */
 const WATCHED_LIMIT = 100;
@@ -46,7 +49,8 @@ type BottomBarProps = {
   onDeploy: (message: string) => void;
   /** A Deploy is being admitted: Deploy waits, so a double click admits one. */
   admitting?: boolean;
-  onPublish: (message: string) => void;
+  /** Saves without deploying; resolves true once saved. */
+  onPublish: (message: string) => Promise<boolean>;
   onDiscardAll: () => void;
   onDiscardNode: (group: ChangeGroup) => void;
   onDiscardRow: (group: ChangeGroup, path: string) => void;
@@ -65,6 +69,8 @@ type BottomBarProps = {
   proposals?: Pick<ReviewProps, "included" | "onRemoveIncluded" | "onIncludeNewer">;
   /** The Organization has no Server to deploy to: Deploy becomes Add a server; Publish still works. */
   noServers?: boolean;
+  /** Secrets without a value: the next Deploy leaves them out. */
+  notSet?: number;
 };
 
 type ReviewProps = Parameters<typeof EnvironmentChangesReview>[0];
@@ -92,13 +98,17 @@ export function BottomBar({
   proposals,
   noServers = false,
   admitting = false,
+  notSet = 0,
 }: BottomBarProps) {
   const slot = useContext(BottomBarSlot);
   const dock = useContext(AgentDock);
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const viewedId = useCanvasInspectorSelection().deploymentId;
   const [open, setOpen] = useState(false);
-  const [message, setMessage] = useState("");
+  const stages = useContext(HistoryStages).count;
+  const [typed, setTyped] = useState({ message: "", stages });
+  const message = typed.stages === stages ? typed.message : "";
+  const setMessage = (message: string) => setTyped({ message, stages });
   const [confirmingDiscard, setConfirmingDiscard] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const workspaceRef = useRef<HTMLElement | null>(null);
@@ -180,7 +190,7 @@ export function BottomBar({
   });
 
   const staged = hasChanges ? (
-    <Row staged title={totalChanges > 0 ? plural(totalChanges, "change") : "Changes to save"}
+    <Row staged title={(totalChanges > 0 ? plural(totalChanges, "change") : "Changes to save") + (notSet > 0 ? ` · ${notSet} not set` : "")}
       shortTitle={totalChanges > 0 ? plural(totalChanges, "change") : "To save"} detail={null}>
       <Button ref={triggerRef} variant="outline" aria-expanded={open} onClick={openReview}>Details</Button>
       {/* Deploying behind a running or queued attempt queues. */}
@@ -217,7 +227,8 @@ export function BottomBar({
   const reviewProps = {
     environment: params.environmentSlug, groups, totalChanges, canDeploy: deployable, canPublish,
     onClose: () => setOpen(false), onDeploy: deploy, message, onMessageChange: setMessage, admitting,
-    onPublish: () => onPublish(message),
+    // A message edited while the Save is in flight is the next one: keep it.
+    onPublish: () => void onPublish(message).then((saved) => { if (saved) setTyped((now) => now.message === message && now.stages === stages ? { message: "", stages } : now); }),
     onDiscardAll: discardAll,
     onDiscardNode, onDiscardRow,
     ...notes,

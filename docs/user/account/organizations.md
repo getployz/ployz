@@ -12,8 +12,9 @@ Ployz is built for one person today. You can't invite anyone to your organizatio
 are no teams or roles. To let a CI job act for you, make an
 [organization token](../cli/overview.md#make-an-organization-token).
 
-If you have more than one organization, switch between them under **Switch organization** in the
-account menu.
+To make another organization, open the account menu and click **Switch organization → New
+organization**. Name it, change its URL if you like, and click **Create**. You land in the new
+organization, and you own it. Switch between your organizations under **Switch organization**.
 
 In the sidebar, click **Organization** for its settings:
 

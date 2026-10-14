@@ -2,7 +2,7 @@ import type { DomainRow, NodeOutcome, RowId, ServiceListing } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
 import type { RuntimeContainerRecord } from "#/modules/runtime/runtime.collection";
 import { asTestDouble } from "#/lib/test-double";
-import { containerTrouble, deployChip, nodeIssues, publicDomain, restartedServices, runtimeLine, stagedSurface, type RuntimeLens } from "./node-status";
+import { containerTrouble, deployChip, nodeIssues, notSetLabel, publicDomain, restartedServices, runtimeLine, stagedSurface, type RuntimeLens } from "./node-status";
 
 const service: ServiceListing = { source: "image", change: null, template: null, id: "web", row: "web:node" as RowId, name: "web", private_dns: "web" };
 const container = (state: string, health?: string): RuntimeContainerRecord =>
@@ -136,30 +136,84 @@ describe("containerTrouble", () => {
   const now = Date.UTC(2026, 9, 12, 12);
   const marker = (kind: "oom" | "exit" | "restart", replica: string, server = web1, at = now - 60_000) => ({ kind, replica, server, at });
 
-  it("says nothing when each replica restarted once, as a requested restart or rollback does", () => {
-    expect(containerTrouble([marker("restart", "web-1"), marker("restart", "web-2"), marker("restart", "web-3")], now)).toBeNull();
+  const crashed = (replica: string, server = web1, at = now - 60_000) => [
+    { ...marker("exit", replica, server, at - 2_000), exitCode: 1 },
+    marker("restart", replica, server, at),
+  ];
+
+  it("says nothing when each replica crashed and came back once", () => {
+    expect(containerTrouble([...crashed("web-1"), ...crashed("web-2"), ...crashed("web-3")], now)).toBeNull();
   });
 
-  it("says Restarting when one replica restarted twice", () => {
-    expect(containerTrouble([marker("restart", "web-1"), marker("restart", "web-2"), marker("restart", "web-1")], now)).toBe("Restarting");
+  it("says Restarting when one replica crashed and came back twice", () => {
+    expect(containerTrouble([...crashed("web-1", web1, now - 5 * 60_000), ...crashed("web-2"), ...crashed("web-1")], now)).toBe("Restarting");
+  });
+
+  it("counts a restart after an OOM kill or an exit with no code only for what they are", () => {
+    const afterOom = [marker("oom", "web-1", web1, now - 3 * 60_000), marker("restart", "web-1", web1, now - 2 * 60_000)];
+    expect(containerTrouble(afterOom, now)).toBe("OOM");
+    const unknownExit = [10, 5].flatMap((ago) => [marker("exit", "web-1", web1, now - ago * 60_000), marker("restart", "web-1", web1, now - ago * 60_000 + 1_000)]);
+    expect(containerTrouble(unknownExit, now)).toBeNull();
+  });
+
+  it("needs a crash before each restart it counts", () => {
+    const once = [...crashed("web-1", web1, now - 5 * 60_000), marker("restart", "web-1", web1, now - 2 * 60_000)];
+    expect(containerTrouble(once, now)).toBeNull();
+  });
+
+  it("forgets a crash loop once the replica exits cleanly", () => {
+    const loop = [...crashed("web-1", web1, now - 8 * 60_000), ...crashed("web-1", web1, now - 6 * 60_000)];
+    const deploy = { ...marker("exit", "web-1", web1, now - 4 * 60_000), exitCode: 0 };
+    expect(containerTrouble([...loop, deploy], now)).toBeNull();
+    expect(containerTrouble([...loop, deploy, ...crashed("web-1", web1, now - 2 * 60_000)], now)).toBeNull();
+  });
+
+  it("takes an exit by a signal only a stop sends for a requested stop, and a fault signal for a crash", () => {
+    const exits = (code: number) =>
+      [8, 6].flatMap((ago) => [{ ...marker("exit", "web-1", web1, now - ago * 60_000), exitCode: code }, marker("restart", "web-1", web1, now - ago * 60_000 + 1_000)]);
+    for (const stop of [129, 130, 131, 137, 138, 140, 143]) expect(containerTrouble(exits(stop), now)).toBeNull();
+    for (const fault of [2, 132, 134, 135, 136, 139]) expect(containerTrouble(exits(fault), now)).toBe("Restarting");
+  });
+
+  it("starts a new loop when a crash comes after ten quiet minutes", () => {
+    expect(containerTrouble([...crashed("web-1", web1, now - 50 * 60_000), ...crashed("web-1", web1, now - 5 * 60_000)], now)).toBeNull();
+    expect(containerTrouble([...crashed("web-1", web1, now - 14 * 60_000), ...crashed("web-1", web1, now - 5 * 60_000)], now)).toBe("Restarting");
   });
 
   it("tells apart same-named replicas on different Servers", () => {
-    expect(containerTrouble([marker("restart", "web-1", web1), marker("restart", "web-1", web2)], now)).toBeNull();
+    expect(containerTrouble([...crashed("web-1", web1), ...crashed("web-1", web2)], now)).toBeNull();
   });
 
   it("says OOM for one OOM kill, over any restarts, and nothing for exits alone", () => {
     expect(containerTrouble([marker("oom", "web-1")], now)).toBe("OOM");
-    expect(containerTrouble([marker("restart", "web-1"), marker("restart", "web-1"), marker("oom", "web-2")], now)).toBe("OOM");
+    expect(containerTrouble([...crashed("web-1", web1, now - 5 * 60_000), ...crashed("web-1"), marker("oom", "web-2")], now)).toBe("OOM");
     expect(containerTrouble([marker("exit", "web-1"), marker("exit", "web-1")], now)).toBeNull();
     expect(containerTrouble([], now)).toBeNull();
+  });
+
+  it("says nothing for Deploys that stop a replica cleanly and start it again", () => {
+    const minute = 60_000;
+    const exited = (code: number, at: number) => ({ ...marker("exit", "nginx-1", web1, at), exitCode: code });
+    const deploys = [40, 30, 20, 10].flatMap((ago) => [exited(0, now - ago * minute), exited(0, now - ago * minute + 1_000)]);
+    const restarts = [30, 20, 10].map((ago) => marker("restart", "nginx-1", web1, now - ago * minute + 3_000));
+    expect(containerTrouble([...deploys, ...restarts].sort((a, b) => a.at - b.at), now)).toBeNull();
+  });
+
+  it("drops Restarting once a crash loop goes quiet for ten minutes", () => {
+    const minute = 60_000;
+    const crashLoop = [25, 20, 15].flatMap((ago) => [
+      { ...marker("exit", "web-1", web1, now - ago * minute), exitCode: 1 },
+      marker("restart", "web-1", web1, now - ago * minute + 2_000),
+    ]);
+    expect(containerTrouble(crashLoop, now - 6 * minute)).toBe("Restarting");
+    expect(containerTrouble(crashLoop, now - 4 * minute)).toBeNull();
   });
 
   it("counts only markers from the hour before now", () => {
     const hour = 60 * 60_000;
     expect(containerTrouble([marker("oom", "web-1", web1, now - hour + 1)], now)).toBe("OOM");
     expect(containerTrouble([marker("oom", "web-1", web1, now - hour)], now)).toBeNull();
-    expect(containerTrouble([marker("restart", "web-1", web1, now - 2 * hour), marker("restart", "web-1")], now)).toBeNull();
+    expect(containerTrouble([...crashed("web-1", web1, now - 2 * hour), ...crashed("web-1")], now)).toBeNull();
   });
 });
 
@@ -218,5 +272,15 @@ describe("stagedSurface", () => {
     expect(stagedSurface(undefined, "delete")).toBe("destructive");
     expect(stagedSurface(undefined, null)).toBeUndefined();
     expect(stagedSurface(null, "delete")).toBeUndefined();
+  });
+});
+
+describe("notSetLabel", () => {
+  it("counts every secret the Service has no value for", () => {
+    expect(notSetLabel(["STRIPE_KEY", "WEBHOOK_SECRET"])).toBe("2 not set");
+  });
+
+  it("says nothing when every secret has a value", () => {
+    expect(notSetLabel([])).toBeUndefined();
   });
 });

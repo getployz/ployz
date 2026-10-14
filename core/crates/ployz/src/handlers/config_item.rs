@@ -3,8 +3,6 @@
 //! rename and delete it. Every change is staged in Working State until a Deploy.
 //! A file reads Service variables as `${{ SERVICE.KEY }}`.
 
-use std::io::{self, IsTerminal};
-
 use super::catalog::{Approval::*, Runnable, cloud};
 use clap::{ArgAction, ArgMatches, Command};
 use ployz_core::config::{FileMode, ReviewLifecycleKind};
@@ -250,7 +248,7 @@ fn inspect(root: &ArgMatches) -> Result<(), Error> {
         );
     }
     crate::ui::finish(&view, || {
-        let _ = record.write(&mut anstream::stdout(), io::stdout().is_terminal());
+        let _ = record.write(&mut crate::ui::stdout(), crate::ui::stdout_is_terminal());
         for file in &listing.config.files {
             crate::ui::stream(format_args!(
                 "\n{} ({} bytes, mode {}, uid {}, gid {})",

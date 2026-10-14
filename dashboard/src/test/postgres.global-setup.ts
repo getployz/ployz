@@ -34,8 +34,31 @@ async function waitForPostgres(url: URL) {
   throw new Error("PostgreSQL test container did not become ready.");
 }
 
+function isRunning(pid: number) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error instanceof Error && "code" in error && error.code === "EPERM";
+  }
+}
+
+/**
+ * Removes the servers of runs whose process is gone. A run killed before its teardown leaves its
+ * container running, since `--rm` removes it only once it stops.
+ */
+async function removeOrphanedServers() {
+  const { stdout } = await docker("ps", "--all", "--filter", "name=^ployz-test-", "--format", "{{.Names}}");
+  const orphans = stdout.split("\n").filter((name) => {
+    const pid = Number(/^ployz-test-(\d+)-/.exec(name)?.[1]);
+    return pid > 0 && !isRunning(pid);
+  });
+  if (orphans.length > 0) await docker("rm", "--force", ...orphans).catch(() => undefined);
+}
+
 /** Starts a throwaway PostgreSQL server with a migrated `ployz_cloud` database. */
 export async function startPostgresServer() {
+  await removeOrphanedServers();
   const name = `ployz-test-${process.pid}-${randomUUID().slice(0, 8)}`;
   await docker(
     "run",

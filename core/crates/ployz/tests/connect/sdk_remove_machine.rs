@@ -610,8 +610,8 @@ async fn remove_machine_membership_refuses_a_server_that_answers_holding_copies(
     assert_eq!(error.code, RpcErrorCode::Conflict);
     assert_eq!(
         error.message,
-        "Server peer answers and holds copies of Volumes data, logs; removing it without a reset \
-         leaves them behind. No changes made. Drop --no-reset so the reset demotes them."
+        "Server peer answers and holds copies of Volumes data, logs; forgetting it leaves them \
+         behind. No changes made. Remove it with ployz server rm so its reset demotes them."
     );
     assert!(service.removed_machines.lock().unwrap().is_empty());
     server.abort();
@@ -637,8 +637,42 @@ async fn remove_machine_membership_refuses_a_server_whose_storage_cannot_be_read
 }
 
 #[tokio::test]
+async fn remove_machine_membership_refuses_a_server_that_answered_before_going_quiet() {
+    let (_description, peer, mut service) = cluster_with_a_held_peer(MembershipObservation::Up);
+    service.storage_unavailable_for = 1;
+    service.storage_hangs_after = Some(1);
+    let (mut client, server, _) = connected_client(service.clone()).await;
+
+    let error = client
+        .remove_machine_membership(&ployz_core::MachineTarget::from(&peer.machine.id))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::Unavailable);
+    assert!(service.removed_machines.lock().unwrap().is_empty());
+    server.abort();
+}
+
+#[tokio::test]
 async fn remove_machine_membership_removes_a_server_that_does_not_answer() {
     let (_description, peer, service) = cluster_with_a_held_peer(MembershipObservation::Down);
+    let (mut client, server, _) = connected_client(service.clone()).await;
+
+    client
+        .remove_machine_membership(&ployz_core::MachineTarget::from(&peer.machine.id))
+        .await
+        .unwrap();
+    assert!(service.reset_machines.lock().unwrap().is_empty());
+    assert_eq!(
+        service.removed_machines.lock().unwrap().as_slice(),
+        &[peer.machine.id]
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn remove_machine_membership_forgets_an_up_server_that_never_replies() {
+    let (_description, peer, mut service) = cluster_with_a_held_peer(MembershipObservation::Up);
+    service.storage_hangs_after = Some(0);
     let (mut client, server, _) = connected_client(service.clone()).await;
 
     client

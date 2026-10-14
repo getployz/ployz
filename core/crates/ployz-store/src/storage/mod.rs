@@ -48,7 +48,10 @@ const MIGRATIONS: &[(&str, Step)] = &[
         "0008_proposal_offer",
         Step::Sql(include_str!("migrations/0008_proposal_offer.sql")),
     ),
-    ("0009_offer_conditional_syncs", Step::Rust(convert::step)),
+    (
+        "0009_offer_conditional_syncs",
+        Step::Rust(|tx, backend| convert::step(tx, backend).map(Some)),
+    ),
     (
         "0010_drop_conditional_sync",
         Step::Sql(include_str!("migrations/0010_drop_conditional_sync.sql")),
@@ -69,14 +72,22 @@ const MIGRATIONS: &[(&str, Step)] = &[
         "0014_merge_removed_services",
         Step::Sql(include_str!("migrations/0014_merge_removed_services.sql")),
     ),
+    (
+        "0015_sealed_variable",
+        Step::Rust(|tx, _| {
+            tx.batch(include_str!("migrations/0015_sealed_variable.sql"))?;
+            crate::review::sealed::record_working(tx).map(|()| None)
+        }),
+    ),
 ];
 
 /// One migration.
 enum Step {
     /// A script of parameterless statements.
     Sql(&'static str),
-    /// Rust run inside the migrating transaction, for what SQL alone cannot convert.
-    Rust(fn(&mut dyn Tx, Backend) -> Result<Converted, RpcError>),
+    /// Rust run inside the migrating transaction, for what SQL alone cannot convert,
+    /// with what converting Conditional Syncs did when it is that step.
+    Rust(fn(&mut dyn Tx, Backend) -> Result<Option<Converted>, RpcError>),
 }
 
 /// Which database a migration runs on.
@@ -355,7 +366,7 @@ fn migrate(
         }
         match step {
             Step::Sql(sql) => tx.batch(sql)?,
-            Step::Rust(step) => converted = Some(step(tx, backend)?),
+            Step::Rust(step) => converted = step(tx, backend)?.or(converted),
         }
         tx.execute(
             "INSERT INTO config_migration (name) VALUES (?1)",

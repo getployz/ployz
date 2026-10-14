@@ -1,6 +1,7 @@
-//! Volume runs: a Mirror, Sync, Mirror removal, Move, Release or Restore of one Volume,
+//! Volume runs: a Mirror, full Sync, Mirror removal, Move, Release or Restore of one Volume,
 //! which Ployz Cloud runs across its Servers. The CLI starts one, reads them back, and with `--wait`
-//! follows one until it ends. Without Cloud there are none: Volumes stay put.
+//! follows one until it ends. A plain Sync is no run: Cloud hands the Mirror its pull and answers.
+//! Without Cloud there are none: Volumes stay put.
 
 use std::time::Duration;
 
@@ -71,18 +72,36 @@ pub(crate) enum VolumeRunState {
     Cancelled,
     Lost,
     NotStarted,
+    Yielded,
 }
 
-impl VolumeRunState {
-    const fn ended(self) -> bool {
-        !matches!(self, Self::Requested | Self::Running)
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum MaybeKnown<T> {
+    Known(T),
+    Unknown(String),
+}
+
+impl MaybeKnown<VolumeRunState> {
+    const fn ended(&self) -> bool {
+        match self {
+            Self::Known(VolumeRunState::Requested | VolumeRunState::Running) => false,
+            Self::Known(_) | Self::Unknown(_) => true,
+        }
     }
 
-    const fn tone(self) -> Tone {
+    const fn tone(&self) -> Tone {
         match self {
-            Self::Requested | Self::Running => Tone::Change,
-            Self::Done => Tone::Good,
-            Self::Failed | Self::Cancelled | Self::Lost | Self::NotStarted => Tone::Bad,
+            Self::Known(VolumeRunState::Requested | VolumeRunState::Running) => Tone::Change,
+            Self::Known(VolumeRunState::Done) => Tone::Good,
+            Self::Known(
+                VolumeRunState::Failed
+                | VolumeRunState::Cancelled
+                | VolumeRunState::Lost
+                | VolumeRunState::NotStarted
+                | VolumeRunState::Yielded,
+            ) => Tone::Bad,
+            Self::Unknown(_) => Tone::Muted,
         }
     }
 }
@@ -113,11 +132,11 @@ pub(crate) struct VolumeRun {
     pub(crate) id: VolumeRunId,
     pub(crate) volume_id: VolumeId,
     pub(crate) volume_name: String,
-    pub(crate) kind: VolumeRunKind,
+    pub(crate) kind: MaybeKnown<VolumeRunKind>,
     pub(crate) args: VolumeRunArgs,
     /// Cloud started it for a Volume no config holds any more.
     pub(crate) orphan: bool,
-    pub(crate) state: VolumeRunState,
+    pub(crate) state: MaybeKnown<VolumeRunState>,
     /// Why it failed or was refused.
     pub(crate) message: Option<String>,
     pub(crate) created_at: String,
@@ -212,7 +231,7 @@ pub(crate) async fn settle(
     credential: &Credential,
     mut run: VolumeRun,
 ) -> Result<VolumeRun, StoreCallError> {
-    let mut said = run.state;
+    let mut said = run.state.clone();
     while !run.state.ended() {
         tokio::time::sleep(POLL).await;
         run = get(credential, &run.id).await?;
@@ -223,7 +242,7 @@ pub(crate) async fn settle(
                 store::word(&run.state)
             ));
         }
-        said = run.state;
+        said = run.state.clone();
     }
     Ok(run)
 }
@@ -267,11 +286,11 @@ pub(super) fn mirror_command() -> Command {
 pub(super) fn sync_command() -> Command {
     store::scoped(
         Command::new("sync")
-            .about("Send what changed since the last sync to a Volume's Mirror (Ployz Cloud)"),
+            .about("Hand a Volume's Mirror what changed since its last pull (Ployz Cloud); `volume show` follows the download"),
     )
     .arg(positional("volume", true))
-    .arg(switch("full", None).help("Copy everything again, for a Mirror that fell behind for good"))
-    .arg(wait_flag())
+    .arg(switch("full", None).help("Copy everything again as a run, for a Mirror that fell behind for good"))
+    .arg(wait_flag().requires("full"))
 }
 
 pub(super) fn move_command() -> Command {
@@ -292,7 +311,7 @@ pub(super) fn move_command() -> Command {
 pub(super) fn release_command() -> Command {
     store::scoped(
         Command::new("release")
-            .about("Start a Volume's Service again where it was, ending a Move that stopped before the handover (Ployz Cloud)"),
+            .about("Stop what runs on a Volume and start its Service again where it was; a Move past its handover finishes there (Ployz Cloud)"),
     )
     .arg(positional("volume", true))
     .arg(approval_arg())
@@ -360,20 +379,71 @@ pub(super) fn mirror(root: &ArgMatches) -> Result<(), Error> {
 pub(super) fn sync(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let volume = store::volume_name(matches, "volume")?;
-    let full = matches.get_flag("full");
-    let started = if full {
-        format!("full Sync of Volume {volume}'s Mirror")
-    } else {
-        format!("Sync of Volume {volume}'s Mirror")
-    };
+    if !matches.get_flag("full") {
+        return hand_off(root, &volume);
+    }
+    let started = format!("full Sync of Volume {volume}'s Mirror");
     request(root, &volume, started, |environment| RunRequest {
         environment,
         kind: VolumeRunKind::Sync,
         to: None,
-        full: Some(full),
+        full: Some(true),
         slot: None,
         confirm: None,
         from: None,
+    })
+}
+
+/// What `POST volumes/{id}/sync` asks for.
+#[derive(Debug, Serialize, PartialEq)]
+pub(crate) struct SyncRequest {
+    pub(crate) environment: RunEnvironment,
+}
+
+/// What the Mirror sync did, one line per Mirror.
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct Synced {
+    pub(crate) lines: Vec<String>,
+}
+
+/// Have Cloud hand Volume `volume`'s Mirror its next pull. It answers once the Mirror has it,
+/// without waiting for the download.
+pub(crate) async fn sync_mirror(
+    credential: &Credential,
+    volume: &VolumeId,
+    request: &SyncRequest,
+) -> Result<Synced, StoreCallError> {
+    let body = serde_json::to_value(request)
+        .map_err(|error| crate::cloud_login::LoginError::Reply(error.to_string()))?;
+    cloud_account::refusable(
+        credential,
+        Method::POST,
+        &format!("volumes/{volume}/sync"),
+        Some(&body),
+    )
+    .await
+}
+
+fn hand_off(root: &ArgMatches, volume: &VolumeName) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let store = store::store(root)?;
+    let (runtime, credential) = cloud(store.backend())?;
+    let (volume_id, environment) = located(&store, matches, volume)?;
+    let asked = SyncRequest {
+        environment: RunEnvironment {
+            project: environment.project,
+            environment: environment.name,
+        },
+    };
+    let synced = runtime
+        .block_on(sync_mirror(credential, &volume_id, &asked))
+        .map_err(|error| store.fail(error))?;
+    let show = store::next(matches, &["volume", "show", volume.as_str()]);
+    crate::ui::finish(&Next::new(&synced, Some(show.clone())), || {
+        for line in &synced.lines {
+            crate::ui::stream(format_args!("{line}"));
+        }
+        crate::ui::hint(&Hint::Next(show.clone()));
     })
 }
 
@@ -574,37 +644,47 @@ fn approved(
 }
 
 fn ended(run: &VolumeRun, started: &str, follow: String) -> Result<(), Error> {
-    if run.state == VolumeRunState::Done {
+    if run.state == MaybeKnown::Known(VolumeRunState::Done) {
         return crate::ui::finish(&OneRun { run: run.clone() }, || {
             crate::ui::stream(format_args!("The {started} is done: run {}.", run.id));
         });
     }
     let why = run.message.as_deref().unwrap_or("Cloud gave no reason");
     let code = match run.state {
-        VolumeRunState::Lost | VolumeRunState::NotStarted => RpcErrorCode::Unavailable,
-        VolumeRunState::Requested
-        | VolumeRunState::Running
-        | VolumeRunState::Done
-        | VolumeRunState::Failed
-        | VolumeRunState::Cancelled => RpcErrorCode::Conflict,
+        MaybeKnown::Known(VolumeRunState::Lost | VolumeRunState::NotStarted) => {
+            RpcErrorCode::Unavailable
+        }
+        MaybeKnown::Known(
+            VolumeRunState::Requested
+            | VolumeRunState::Running
+            | VolumeRunState::Done
+            | VolumeRunState::Failed
+            | VolumeRunState::Cancelled
+            | VolumeRunState::Yielded,
+        )
+        | MaybeKnown::Unknown(_) => RpcErrorCode::Conflict,
     };
     Err(Error::detailed(
         code,
-        format!("The {started} {}: {why}", ended_word(run.state)),
+        format!("The {started} {}: {why}", ended_word(&run.state)),
         serde_json::json!({ "run": run }),
     )
     .hint(Hint::Inspect(follow)))
 }
 
-const fn ended_word(state: VolumeRunState) -> &'static str {
+fn ended_word(state: &MaybeKnown<VolumeRunState>) -> String {
     match state {
-        VolumeRunState::Cancelled => "was cancelled",
-        VolumeRunState::Lost => "was lost",
-        VolumeRunState::NotStarted => "never started",
-        VolumeRunState::Requested
-        | VolumeRunState::Running
-        | VolumeRunState::Done
-        | VolumeRunState::Failed => "failed",
+        MaybeKnown::Known(VolumeRunState::Cancelled) => "was cancelled".to_owned(),
+        MaybeKnown::Known(VolumeRunState::Lost) => "was lost".to_owned(),
+        MaybeKnown::Known(VolumeRunState::NotStarted) => "never started".to_owned(),
+        MaybeKnown::Known(VolumeRunState::Yielded) => "gave way to a Deploy".to_owned(),
+        MaybeKnown::Known(
+            VolumeRunState::Requested
+            | VolumeRunState::Running
+            | VolumeRunState::Done
+            | VolumeRunState::Failed,
+        ) => "failed".to_owned(),
+        MaybeKnown::Unknown(_) => format!("is {}", store::word(state)),
     }
 }
 

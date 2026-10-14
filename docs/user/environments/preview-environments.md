@@ -105,7 +105,8 @@ built. An edit you staged in production but didn't save stays staged.
 A removal deploys too: the service's containers stop and go away, and its volumes stay on the
 Machine with their data. The merge opens no approval, because it never deletes volume data.
 **Undo** in production's **History** brings the service or config back whole, settings and
-secrets included, and the next deploy starts it on the same volumes.
+secrets included, and the next deploy starts it on the same volumes. If another service took its
+name since, Undo is refused with **api exists. Rename it first.**
 
 If the merge couldn't land in production, or landed but couldn't deploy, the check says so, like
 **Didn't land in production** or **Saved in production, not deployed**, with the reason. A preview

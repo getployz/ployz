@@ -19,6 +19,7 @@ use super::{
     Dataset, DockerVolumeName, VolumeError, VolumeStorage,
     inspect::internal,
     mirror,
+    pool::UnlabeledBacking,
     storage::{
         CUT_PROPERTY, DATASET_ROOT, EPOCH_PROPERTY, PROMOTE_PROPERTY, PULL_PROPERTY,
         RESUME_TOKEN_PROPERTY, slot_fs, slot_parent,
@@ -78,6 +79,14 @@ pub(super) async fn destroy(
     Json(storage.copy_destroy(&request.name).await)
 }
 
+/// The plugin's mutation and the daemon's installation, held before the route looks
+/// for the Pool.
+struct Admitted {
+    held: super::storage::HeldMutation,
+    installation: ployzd::mutation::MutationGuard,
+    name: DockerVolumeName,
+}
+
 /// What a route sees once it holds the plugin's mutation and the daemon's installation.
 struct Scope {
     _held: super::storage::HeldMutation,
@@ -102,22 +111,78 @@ impl Scope {
 }
 
 fn refuse(reason: CopyRefusal, copy: Copy, message: String) -> RpcError {
-    SetVolumeCopyRefused { reason, copy }.rpc_error(message)
+    SetVolumeCopyRefused {
+        reason,
+        copy,
+        floor: None,
+    }
+    .rpc_error(message)
+}
+
+fn no_pool() -> RpcError {
+    internal("no usable existing Machine Pool".into())
+}
+
+fn no_room(bound: u64, name: &DockerVolumeName) -> RpcError {
+    refuse(
+        CopyRefusal::NoCapacity,
+        None,
+        format!("this Machine has no room for a {bound} byte copy of {name}"),
+    )
 }
 
 impl VolumeStorage {
-    async fn scope(&self, wire: &WireName) -> Result<Scope, RpcError> {
+    async fn admit(&self, wire: &WireName) -> Result<Admitted, RpcError> {
         let name = mirror::name(wire)?;
         let (held, installation) = self.admit_mutation().await.map_err(internal)?;
-        let pool = self.one_pool().await.map_err(internal)?;
-        let datasets = self.datasets(&pool).await.map_err(internal)?;
-        Ok(Scope {
-            _held: held,
-            _installation: installation,
-            pool,
-            datasets,
+        Ok(Admitted {
+            held,
+            installation,
             name,
         })
+    }
+
+    async fn enter(&self, admitted: Admitted, pool: MachinePool) -> Result<Scope, RpcError> {
+        let datasets = self.datasets(&pool).await.map_err(internal)?;
+        Ok(Scope {
+            _held: admitted.held,
+            _installation: admitted.installation,
+            pool,
+            datasets,
+            name: admitted.name,
+        })
+    }
+
+    async fn scope(&self, wire: &WireName) -> Result<Option<Scope>, RpcError> {
+        let admitted = self.admit(wire).await?;
+        match self.pool.one_usable().await.map_err(internal)? {
+            Some(pool) => self.enter(admitted, pool).await.map(Some),
+            None => Ok(None),
+        }
+    }
+
+    async fn first_pool(
+        &self,
+        bound: u64,
+        name: &DockerVolumeName,
+    ) -> Result<MachinePool, RpcError> {
+        let _pool_guard = self.pool.lock_mutation().await.map_err(internal)?;
+        if let Some(pool) = self.pool.one_usable().await.map_err(internal)? {
+            return Ok(pool);
+        }
+        if let Some(pool) = self
+            .pool
+            .recover(UnlabeledBacking::Remove)
+            .await
+            .map_err(internal)?
+        {
+            return Ok(pool);
+        }
+        match self.pool.create(bound).await {
+            Ok(_) => self.one_pool().await.map_err(internal),
+            Err(VolumeError::Capacity(_)) => Err(no_room(bound, name)),
+            Err(error) => Err(internal(error)),
+        }
     }
 
     async fn z(&self, args: &[&str]) -> Result<(), RpcError> {
@@ -166,14 +231,16 @@ impl VolumeStorage {
     }
 
     async fn copy_inspect(&self, name: &WireName) -> Result<Copy, RpcError> {
-        let scope = self.scope(name).await?;
+        let Some(scope) = self.scope(name).await? else {
+            return Ok(None);
+        };
         self.copy_found(&scope).await
     }
 
     /// Writer to Mirror. The daemon stopped the Container and holds its admission turn;
     /// this moves the root into the slot at `target`.
     async fn copy_cut(&self, request: &CutRequest) -> Result<Copy, RpcError> {
-        let scope = self.scope(&request.name).await?;
+        let scope = self.scope(&request.name).await?.ok_or_else(no_pool)?;
         let name = &scope.name;
         let Some(root) = scope.root()? else {
             let copy = self.copy_found(&scope).await?;
@@ -262,7 +329,7 @@ impl VolumeStorage {
     /// Writer to Snapshot: take `snapshot` when anything was written since the newest
     /// run snapshot, then keep the newest two.
     async fn copy_run_snapshot(&self, request: &SnapshotRequest) -> Result<Copy, RpcError> {
-        let scope = self.scope(&request.name).await?;
+        let scope = self.scope(&request.name).await?.ok_or_else(no_pool)?;
         let root = self.require_root(&scope).await?;
         let snapshots = self.snapshots(&root).await.map_err(internal)?;
         if !snapshots
@@ -287,7 +354,9 @@ impl VolumeStorage {
 
     /// Writer to Forget: every run snapshot dropped from the root.
     async fn copy_forget(&self, name: &WireName) -> Result<Copy, RpcError> {
-        let scope = self.scope(name).await?;
+        let Some(scope) = self.scope(name).await? else {
+            return Ok(None);
+        };
         let root = self.require_root(&scope).await?;
         let snapshots = self.snapshots(&root).await.map_err(internal)?;
         for (index, snapshot) in snapshots.iter().enumerate() {
@@ -316,7 +385,7 @@ impl VolumeStorage {
     /// Writer at `at` numbered `epoch`. A root takes the higher epoch and becomes writable
     /// again; a slot whose newest snapshot is `at` is promoted to the root first.
     async fn copy_writer(&self, request: &WriterRequest) -> Result<Copy, RpcError> {
-        let scope = self.scope(&request.name).await?;
+        let scope = self.scope(&request.name).await?.ok_or_else(no_pool)?;
         let name = &scope.name;
         let root_name = super::storage::root_dataset(&scope.pool, name);
         if let Some(root) = scope.root()? {
@@ -464,7 +533,15 @@ impl VolumeStorage {
     /// receive in flight is left alone; a landed target is bounded and pruned; anything
     /// else starts or resumes the receive.
     async fn copy_pull(&self, request: &PullRequest) -> Result<Copy, RpcError> {
-        let scope = self.scope(&request.name).await?;
+        let admitted = self.admit(&request.name).await?;
+        let (scope, fetched) = match self.pool.one_usable().await.map_err(internal)? {
+            Some(pool) => (self.enter(admitted, pool).await?, None),
+            None => {
+                let bound = self.fetch_bound(request).await?;
+                let pool = self.first_pool(bound, &admitted.name).await?;
+                (self.enter(admitted, pool).await?, Some(bound))
+            }
+        };
         let name = &scope.name;
         if scope.root()?.is_some() {
             return Err(self
@@ -507,17 +584,16 @@ impl VolumeStorage {
         let (fresh, bound) = match scope.slot() {
             Some(slot) => (false, slot.refquota),
             None => {
-                let bound = self.fetch_bound(request).await?;
+                let bound = match fetched {
+                    Some(bound) => bound,
+                    None => self.fetch_bound(request).await?,
+                };
                 if let Err(error) = self
                     .ensure_commitment(&scope.pool, &scope.datasets, bound)
                     .await
                 {
                     return Err(match error {
-                        VolumeError::Capacity(_) => refuse(
-                            CopyRefusal::NoCapacity,
-                            None,
-                            format!("this Machine has no room for a {bound} byte copy of {name}"),
-                        ),
+                        VolumeError::Capacity(_) => no_room(bound, name),
                         error => internal(error),
                     });
                 }
@@ -733,11 +809,22 @@ impl VolumeStorage {
             .map_err(|error| internal(format!("GET {url} answered {body:?}: {error}").into()))
     }
 
-    /// Mirror to Forget: the slot and its copy destroyed.
     async fn copy_destroy(&self, name: &WireName) -> Result<Copy, RpcError> {
-        let scope = self.scope(name).await?;
+        let Some(scope) = self.scope(name).await? else {
+            return Ok(None);
+        };
         let name = &scope.name;
-        if scope.root()?.is_some() {
+        if let Some(root) = scope.root()? {
+            if self.unadopted_seed(&root.name).await.map_err(internal)? {
+                ployzd::faults::kill_inside("SetVolumeCopy.SeedToForget");
+                self.z(&["destroy", "-r", &root.name]).await?;
+                if scope.slot().is_some() && !self.receives.running(name) {
+                    self.z(&["destroy", "-r", &slot_parent(&scope.pool, name)])
+                        .await?;
+                    self.receives.forget(name);
+                }
+                return self.copy_now(&scope).await;
+            }
             return Err(self
                 .refuse_found(
                     &scope,

@@ -92,6 +92,8 @@ pub(crate) enum State {
     ObservedRunning,
     Unchanged,
     Failed,
+    /// Applied, but left something to look at, such as ingress that didn't start.
+    Warned,
     NotAttempted,
     Unknown,
     Excluded,
@@ -120,6 +122,7 @@ impl State {
             Self::ObservedRunning => "running",
             Self::Unchanged => "unchanged",
             Self::Failed => "failed",
+            Self::Warned => "not running",
             Self::NotAttempted => "not attempted",
             Self::Unknown => "unknown",
             Self::Excluded => "excluded",
@@ -130,7 +133,7 @@ impl State {
         match self {
             Self::Completed | Self::ObservedRunning => Tone::Good,
             Self::Failed => Tone::Bad,
-            Self::Pending | Self::Running(_) | Self::Unknown => Tone::Change,
+            Self::Pending | Self::Running(_) | Self::Unknown | Self::Warned => Tone::Change,
             Self::Unchanged | Self::NotAttempted | Self::Excluded => Tone::Muted,
         }
     }
@@ -504,7 +507,7 @@ fn mark(state: &State, tick: usize) -> &'static str {
         State::Completed | State::ObservedRunning | State::Unchanged => "✔",
         State::Failed => "✘",
         State::Pending | State::NotAttempted | State::Excluded => "·",
-        State::Unknown => "!",
+        State::Unknown | State::Warned => "!",
     }
 }
 
@@ -729,6 +732,7 @@ fn finish(
         (State::ObservedRunning, "running"),
         (State::Unchanged, "unchanged"),
         (State::Failed, "failed"),
+        (State::Warned, "warning"),
         (State::NotAttempted, "not attempted"),
         (State::Unknown, "unknown"),
         (State::Excluded, "excluded"),

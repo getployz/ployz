@@ -641,6 +641,7 @@ fn the_merge_lands_every_riding_row_in_one_saved_revision_that_undo_takes_back()
         environment: at("production"),
         revision: landed.revision,
         action: HistoryAction::Undo,
+        change: None,
     };
     let preview = store.read(&who, &query).unwrap();
     store
@@ -650,6 +651,7 @@ fn the_merge_lands_every_riding_row_in_one_saved_revision_that_undo_takes_back()
                 environment: at("production"),
                 revision: query.revision,
                 action: query.action,
+                change: None,
                 version: preview.version,
                 accept_overwrite: false,
             },
@@ -2574,22 +2576,40 @@ fn undo_brings_a_removed_service_and_config_back_whole() {
         environment: at("production"),
         revision: landed.revision,
         action: HistoryAction::Undo,
+        change: None,
     };
     let preview = store.read(&who, &query).unwrap();
-    store
+    let staged = store
         .write(
             &who,
             &StageHistory {
                 environment: at("production"),
                 revision: query.revision,
                 action: query.action,
+                change: None,
                 version: preview.version,
                 accept_overwrite: false,
             },
         )
         .unwrap();
-    // IDs, sealed values, mounts, files, and the registry credential kept by ID.
-    assert_eq!(snapshot(&store), before);
+    assert_eq!(
+        staged
+            .not_set
+            .iter()
+            .map(|variable| format!("{}.{}", variable.service, variable.key))
+            .collect::<Vec<_>>(),
+        ["db.PASSWORD"]
+    );
+    // IDs, mounts, files, and the registry credential kept by ID come back as they were. History
+    // holds no sealed value, so the sealed PASSWORD of the removed Service comes back Not set.
+    let mut expected = before;
+    expected["db"][2]["env"]["PASSWORD"] = json!({ "secret": false });
+    for setting in expected["settings"].as_array_mut().unwrap() {
+        if setting["path"] == "db.env.PASSWORD" {
+            setting["value"] = json!({ "secret": false });
+        }
+    }
+    assert_eq!(snapshot(&store), expected);
 }
 
 #[test]
@@ -2913,6 +2933,7 @@ fn undo_merge(store: &ConfigStore, who: &Actor) {
         environment: at("production"),
         revision: landed.revision,
         action: HistoryAction::Undo,
+        change: None,
     };
     let preview = store.read(who, &query).unwrap();
     store
@@ -2922,6 +2943,7 @@ fn undo_merge(store: &ConfigStore, who: &Actor) {
                 environment: at("production"),
                 revision: query.revision,
                 action: query.action,
+                change: None,
                 version: preview.version,
                 accept_overwrite: false,
             },

@@ -216,11 +216,11 @@ impl MachineProxy {
             .map_err(|error| ployz_core::rpc::caused_status(tonic::Code::Internal, &error))?;
         poll_fn(|context| channel.poll_ready(context))
             .await
-            .map_err(|error| ployz_core::rpc::caused_status(tonic::Code::Unavailable, &error))?;
+            .map_err(|error| ployz_core::rpc::target_unanswered_status(&error))?;
         channel
             .call(request)
             .await
-            .map_err(|error| ployz_core::rpc::caused_status(tonic::Code::Unavailable, &error))
+            .map_err(|error| ployz_core::rpc::target_unanswered_status(&error))
     }
 
     fn remote_backend(&self, address: ManagementAddress) -> Result<Channel, BackendError> {

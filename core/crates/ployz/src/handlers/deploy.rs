@@ -42,7 +42,7 @@ pub(crate) fn deploy_command() -> Command {
         )
         .arg(
             switch("plan", None)
-                .help("Show what would deploy, from authored state alone; run nothing"),
+                .help("Show what would deploy, and any ingress it brings back; run nothing"),
         )
         .arg(crate::cli::reviewed_version())
         .arg(crate::cli::approval())
@@ -92,7 +92,7 @@ pub(super) fn following_args(matches: &ArgMatches) -> Vec<&str> {
 }
 
 /// How often `deploy` reads a Deployment Cloud runs while following it.
-const FOLLOW_POLL: Duration = Duration::from_secs(1);
+pub(super) const FOLLOW_POLL: Duration = Duration::from_secs(1);
 /// How long a followed Deployment may sit queued before the follow says why it waits.
 const UNCLAIMED: Duration = Duration::from_secs(30);
 
@@ -393,6 +393,9 @@ pub(super) fn execute(
     if !detached {
         finish_progress(&mut followed, disposition);
     }
+    for warning in progress::ingress_warnings(&followed.view) {
+        ui::warn(warning);
+    }
     let view = followed.view;
     let ran = if interrupted {
         Err(Error::cancelled())
@@ -671,6 +674,12 @@ struct Planned<'p> {
     plan: &'p ployz_store::PlanView,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     domain_changes: Vec<super::store::DomainLine>,
+    /// What the ingress step would do on each Server; `None` when it couldn't check.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ingress: Option<Vec<ployz_store::IngressRepair>>,
+    /// Why ingress, or an ingress Server, went unchecked.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    ingress_unchecked: Vec<String>,
 }
 
 fn plan(matches: &ArgMatches, store: &Store, services: Vec<ServiceName>) -> Result<(), Error> {
@@ -679,11 +688,17 @@ fn plan(matches: &ArgMatches, store: &Store, services: Vec<ServiceName>) -> Resu
         services,
     })?;
     let hint = store.again(&["--expect-version", plan.version.as_str()]);
+    let (ingress, ingress_unchecked) = match ingress_check(matches) {
+        Ok(check) => (Some(check.repairs), check.unchecked),
+        Err(cause) => (None, vec![cause]),
+    };
     let shown = Planned {
         domain_changes: super::store::domain_changes(
             plan.changes.iter().flat_map(|change| &change.settings),
         ),
         plan: &plan,
+        ingress,
+        ingress_unchecked,
     };
     crate::ui::finish(&Next::new(&shown, Some(hint.clone())), || {
         let where_ = format!("{}/{}", plan.environment.project, plan.environment.name);
@@ -703,6 +718,19 @@ fn plan(matches: &ArgMatches, store: &Store, services: Vec<ServiceName>) -> Resu
             }
             super::review::restarts(change);
         }
+        for repair in shown.ingress.iter().flatten() {
+            crate::ui::stream(format_args!(
+                "ingress on {}: would {}",
+                repair.server,
+                progress::ingress_verb(repair.action)
+            ));
+        }
+        for cause in &shown.ingress_unchecked {
+            crate::ui::stream(format_args!(
+                "Couldn't check ingress: {}.",
+                cause.trim_end_matches('.')
+            ));
+        }
         if !plan.unresolved.is_empty() {
             ui::stream(format_args!(
                 "Decided by the Servers when it runs: {}.",
@@ -711,6 +739,24 @@ fn plan(matches: &ArgMatches, store: &Store, services: Vec<ServiceName>) -> Resu
         }
         ui::hint(&Hint::Next(hint.clone()));
     })
+}
+
+fn ingress_check(matches: &ArgMatches) -> Result<crate::ingress::IngressCheck, String> {
+    let context = matches
+        .try_get_one::<String>("context")
+        .ok()
+        .flatten()
+        .map(String::as_str);
+    runtime()
+        .map_err(|error| error.to_string())?
+        .block_on(async {
+            let mut client = super::server::connect(matches, context)
+                .await
+                .map_err(|error| error.to_string())?;
+            crate::ingress::planned_slots(&mut client)
+                .await
+                .map_err(|error| error.to_string())
+        })
 }
 
 /// "uploaded by nick, base abc1234 + changes": where an upload came from.

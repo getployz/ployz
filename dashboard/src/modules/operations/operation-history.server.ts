@@ -24,6 +24,7 @@ const RUN_STATES = {
   missing_identities: "failed",
   unknown: "unknown",
   lost: "unknown",
+  yielded: "superseded",
   interrupted: "unknown",
 } as const satisfies Record<string, RunState>;
 

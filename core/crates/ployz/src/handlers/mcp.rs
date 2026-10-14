@@ -34,6 +34,7 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, BufReader};
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::OnceCell;
 use tokio::time::Instant;
+use tokio_util::sync::CancellationToken;
 
 use super::{Error, leaf_matches, store};
 use crate::approval::{self, Asked, Subject, Verb};
@@ -94,10 +95,13 @@ pub(super) fn serve(root: &ArgMatches) -> Result<(), Error> {
         let mut terminate = signal(SignalKind::terminate())?;
         let mut interrupt = signal(SignalKind::interrupt())?;
         let mut hangup = signal(SignalKind::hangup())?;
-        let mut pipe = signal(SignalKind::pipe())?;
+        let closed = CancellationToken::new();
         let serving = async {
             server
-                .serve(Lines::new(tokio::io::stdin(), tokio::io::stdout()))
+                .serve(Lines::new(
+                    tokio::io::stdin(),
+                    crate::ui::async_stdout(closed.clone()),
+                ))
                 .await
                 .map_err(Failure::command)?
                 .waiting()
@@ -106,11 +110,12 @@ pub(super) fn serve(root: &ArgMatches) -> Result<(), Error> {
             Ok::<_, Error>(())
         };
         tokio::select! {
-            quit = serving => quit?,
+            // A write to a closed stdout fails the serve itself before `closed` is polled.
+            quit = serving => if !closed.is_cancelled() { quit? },
             _ = terminate.recv() => {}
             _ = interrupt.recv() => {}
             _ = hangup.recv() => {}
-            _ = pipe.recv() => {}
+            () = closed.cancelled() => {}
         }
         Ok(())
     });
@@ -892,7 +897,7 @@ fn typed(write: &Write) -> Option<String> {
             None => remove.project.to_string(),
         }),
         Write::Act(Act {
-            action: Action::RemoveServer { server, .. },
+            action: Action::RemoveServer { server, .. } | Action::ForgetServer { server },
             ..
         }) => Some(server.name.to_string()),
         Write::Store(_) | Write::Act(_) => None,

@@ -26,6 +26,7 @@ export function VariableRowValue({
   onCancelEdit,
   onChangeEditValue,
   onSave,
+  onSetValue,
   onToggleReveal,
 }: {
   editing: boolean;
@@ -40,6 +41,7 @@ export function VariableRowValue({
   onCancelEdit: () => void;
   onChangeEditValue: (value: string) => void;
   onSave: () => void;
+  onSetValue: () => void;
   onToggleReveal: () => void;
 }) {
   if (editing) {
@@ -72,7 +74,10 @@ export function VariableRowValue({
   return (
     <div className="flex min-w-0 flex-1 items-center gap-1.5">
       {notSet ? (
-        <span className="min-w-0 flex-1 truncate text-xs text-warning">Not set</span>
+        <>
+          <span className="min-w-0 flex-1 truncate text-xs text-warning">Not set</span>
+          <Button type="button" variant="outline" size="xs" onClick={onSetValue}>Set value</Button>
+        </>
       ) : (
         <span className="ph-no-capture min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground">
           {isSealed || !revealed ? MASK : plainValue}

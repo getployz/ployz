@@ -37,4 +37,5 @@ not mounted. Delete it from its **Settings** tab when you no longer need it.
   server cannot fit a second copy, the deploy fails and says how much space is missing.
 - **The original's server must answer** for the copy to run. If the point's mirror is gone by then,
   the deploy fails and names the point.
-- **S3 backups are not here yet.** Keep your own copies off your servers meanwhile.
+- **Points stay on your servers.** A mirror isn't an offsite backup, and S3 backups are not here
+  yet. For a copy off your servers, see [Back up a database](databases.md#back-up-a-database).

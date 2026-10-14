@@ -11,6 +11,7 @@ use axum::{Router, body::Body, extract::Request, http::StatusCode, response::Int
 use tokio::{net::TcpListener, sync::Semaphore};
 use tokio_util::sync::CancellationToken;
 
+use super::first_pool_tests::fake_first_pool;
 use super::inspect_tests::{set_property, start};
 use super::*;
 
@@ -176,6 +177,29 @@ async fn the_cut_parks_the_root_in_the_slot_at_the_target() {
     let before = commands(&test);
     assert_eq!(post(&socket, "/Volume.Copy.Cut", request).await, reply);
     assert!(effects(&commands(&test)[before.len()..]).is_empty());
+    server.abort();
+}
+
+/// Docker drops a Volume's labels and options when Get says it does not exist.
+#[tokio::test]
+async fn docker_still_gets_a_root_cut_into_its_slot() {
+    let test = TestDir::new();
+    let (socket, server) = writer(&test, &[("w-1-1", 11)]);
+    let cut = post(
+        &socket,
+        "/Volume.Copy.Cut",
+        json!({"name": "data", "target": "f-1"}),
+    )
+    .await;
+    assert_eq!(cut.pointer("/Ok/kind"), Some(&json!("slot")), "{cut}");
+
+    let got = post(&socket, "/VolumeDriver.Get", json!({"Name": "data"})).await;
+    assert_eq!(got.get("Err"), Some(&json!("")), "{got}");
+    assert_eq!(got.pointer("/Volume/Name"), Some(&json!("data")), "{got}");
+    assert_eq!(got.pointer("/Volume/Mountpoint"), Some(&json!("")), "{got}");
+
+    let listed = post(&socket, "/VolumeDriver.List", json!({})).await;
+    assert_eq!(listed, json!({"Volumes": [], "Err": ""}));
     server.abort();
 }
 
@@ -397,7 +421,11 @@ async fn the_writer_route_restores_a_cut_root_without_hiding_it_from_docker() {
     assert_eq!(reply.pointer("/Ok/readonly"), Some(&json!(false)));
     assert!(property(&test, ROOT, "ployz:promote").is_none());
     assert!(property(&test, ROOT, "ployz:cut").is_none());
-    assert!(!commands(&test).contains("ployz:promote"));
+    assert!(
+        effects(&commands(&test))
+            .iter()
+            .all(|effect| !effect.contains("ployz:promote"))
+    );
     server.abort();
 }
 
@@ -1096,6 +1124,86 @@ async fn a_pull_converges_after_a_failure_before_the_receive_starts() {
     }
 }
 
+fn poolless(test: &TestDir, port: u16) -> (PathBuf, Server) {
+    let socket = test.0.join("plugin.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let mut storage = fake_first_pool(&test.0, 4096);
+    storage.send_port = port;
+    (socket, tokio::spawn(serve(listener, storage)))
+}
+
+#[tokio::test]
+async fn a_pull_onto_a_machine_without_a_pool_creates_the_pool_sized_for_the_writer() {
+    let source = Source::start(Some(BOUND), "").await;
+    source.hold("/volume-send/", "");
+    let test = TestDir::new();
+    let (socket, server) = poolless(&test, source.port);
+
+    let reply = post(&socket, "/Volume.Copy.Pull", pull("w-1-1")).await;
+    assert_eq!(reply.pointer("/Ok/kind"), Some(&json!("slot")), "{reply}");
+    assert_eq!(reply.pointer("/Ok/pull/target"), Some(&json!("w-1-1")));
+    let log = commands(&test);
+    assert_eq!(log.matches("zpool create").count(), 1, "{log}");
+    assert!(log.contains("fallocate -l 2147483648 "), "{log}");
+    assert_eq!(
+        fs::read_to_string(test.0.join("slot")).unwrap(),
+        format!("{BOUND}\n")
+    );
+
+    assert_eq!(
+        post(&socket, "/Volume.Copy.Pull", pull("w-1-1")).await,
+        reply
+    );
+    assert_eq!(commands(&test).matches("zpool create").count(), 1);
+    source.release();
+    server.abort();
+}
+
+#[tokio::test]
+async fn a_pull_that_fails_after_creating_the_first_pool_converges_on_resend() {
+    let source = Source::start(Some(BOUND), "").await;
+    source.hold("/volume-send/", "");
+    let test = TestDir::new();
+    fs::write(test.0.join("fail-slot-once"), "").unwrap();
+    let (socket, server) = poolless(&test, source.port);
+
+    let failed = post(&socket, "/Volume.Copy.Pull", pull("w-1-1")).await;
+    assert!(failed.get("Err").is_some(), "{failed}");
+    assert!(test.0.join("pool").exists());
+
+    let reply = post(&socket, "/Volume.Copy.Pull", pull("w-1-1")).await;
+    assert_eq!(reply.pointer("/Ok/kind"), Some(&json!("slot")), "{reply}");
+    assert_eq!(commands(&test).matches("zpool create").count(), 1);
+    assert!(test.0.join("slot").exists());
+    source.release();
+    server.abort();
+}
+
+#[tokio::test]
+async fn a_machine_without_a_pool_has_no_copy_to_inspect_forget_or_destroy() {
+    let test = TestDir::new();
+    let (socket, server) = poolless(&test, ployz_core::VOLUME_SEND_PORT);
+
+    for route in [
+        "/Volume.Copy.Inspect",
+        "/Volume.Copy.Forget",
+        "/Volume.Copy.Destroy",
+    ] {
+        assert_eq!(
+            post(&socket, route, json!({"name": "data"})).await,
+            json!({"Ok": null}),
+            "{route}"
+        );
+    }
+    let writer = json!({"name": "data", "at": "13", "epoch": 2});
+    let reply = post(&socket, "/Volume.Copy.Writer", writer).await;
+    assert!(reply.get("Err").is_some(), "{reply}");
+    let log = commands(&test);
+    assert!(!log.contains("zpool create"), "{log}");
+    assert!(!log.contains("fallocate"), "{log}");
+    server.abort();
+}
+
 #[tokio::test]
 async fn destroy_drops_the_slot_and_leaves_a_root_alone() {
     let test = TestDir::new();
@@ -1120,6 +1228,27 @@ async fn destroy_drops_the_slot_and_leaves_a_root_alone() {
     assert_eq!(reason(&reply), "no_transition");
     assert!(effects(&commands(&test)).is_empty());
     server.abort();
+}
+
+#[tokio::test]
+async fn destroy_refuses_a_root_without_both_seed_markers() {
+    for markers in [&[("ployz:promote", "on")][..], &[("ployz:seed", "77")][..]] {
+        let test = TestDir::new();
+        let (socket, server) = writer(&test, &[("w-1-1", 11)]);
+        for (property, value) in markers {
+            set_property(&test, ROOT, property, value);
+        }
+        let reply = post(&socket, "/Volume.Copy.Destroy", json!({"name": "data"})).await;
+        assert_eq!(reason(&reply), "no_transition", "{markers:?}");
+        assert_eq!(
+            reply.pointer("/Err/details/copy/seed"),
+            Some(&json!(false)),
+            "{markers:?}"
+        );
+        assert!(effects(&commands(&test)).is_empty(), "{markers:?}");
+        assert!(test.0.join("volume").exists(), "{markers:?}");
+        server.abort();
+    }
 }
 
 #[tokio::test]
@@ -1677,7 +1806,7 @@ async fn set_copy(machine: &Machine, docker: &mut Docker, set: &Set) -> Value {
                 .call("/Volume.Copy.Pull", pull(&target.to_string()))
                 .await
         }
-        (CopyTransition::MirrorToForget, WantedCopy::Forget) => {
+        (CopyTransition::MirrorToForget | CopyTransition::SeedToForget, WantedCopy::Forget) => {
             machine
                 .call("/Volume.Copy.Destroy", json!({"name": "data"}))
                 .await

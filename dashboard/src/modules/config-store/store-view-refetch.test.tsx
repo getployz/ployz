@@ -20,7 +20,7 @@ function history(revision: number): HistoryShown {
   return { ok: true, value: {
     view: "history",
     environment: { id: "env", project: "shop", name: "production", revision },
-    revisions: [{ revision, message: `Merged #${revision}`, saved_by: null, saved_at: null, predecessor: null, changes: [], total_count: 0 }],
+    revisions: [{ revision, message: `Merged #${revision}`, saved_by: null, saved_at: null, predecessor: null, changes: [], total_count: 0, linked: {} }],
     more: false,
   } };
 }

@@ -12,7 +12,7 @@ use ployz_core::{
     READ_SERVING_POINTER_CAPABILITY, REGISTER_MACHINE_CAPABILITY, REMOVE_VOLUME_CAPABILITY,
     REQUEST_MACHINE_UPGRADE_CAPABILITY, RUNTIME_WATCH_CAPABILITY, Rpc, SEED_VOLUME_CAPABILITY,
     SET_MANAGEMENT_CLIENT_CAPABILITY, SET_VOLUME_COPY_CAPABILITY, TAIL_LOGS_CAPABILITY,
-    UPDATE_MACHINE_CAPABILITY, op,
+    UPDATE_MACHINE_CAPABILITY, VOLUME_FLOOR_CAPABILITY, op,
 };
 
 /// Capability constants are generated from the catalog, so a typo would stay
@@ -89,6 +89,7 @@ fn catalogued_capabilities_keep_stable_spellings() {
         (TAIL_LOGS_CAPABILITY, "ployz.logs.tail.v1"),
         (RUNTIME_WATCH_CAPABILITY, "ployz.runtime.watch.v1"),
         (EXEC_CONTAINER_CAPABILITY, "ployz.container.exec.v1"),
+        (VOLUME_FLOOR_CAPABILITY, "ployz.volume.copy.floor.v1"),
     ];
     for (capability, spelling) in frozen {
         assert_eq!(capability, spelling);
@@ -139,6 +140,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.logs.tail.v1",
             "ployz.container.exec.v1",
             "ployz.build.v1",
+            "ployz.volume.copy.floor.v1",
         ]
     );
     assert_eq!(

@@ -36,6 +36,7 @@ pub mod mutation;
 pub mod network;
 pub mod observe;
 pub(crate) mod retire;
+pub mod runtime_unit;
 pub(crate) mod runtime_watch;
 pub mod socket_activation;
 mod storage;

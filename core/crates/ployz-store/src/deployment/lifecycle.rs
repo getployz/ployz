@@ -66,7 +66,36 @@ pub(crate) fn admit(
             targets.push(name.clone());
         }
     }
-    let number = queue(tx, environment)?;
+    let admitted_at = now();
+    let number = queue(tx, environment, |tx, number| {
+        tx.execute(
+            "INSERT INTO config_deployment \
+             (id, organization_id, environment_id, number, status, saved_revision, services, \
+              nodes, namespace, run, credentials, upload, cluster_domain, admitted, admitted_by, \
+              message) \
+             VALUES (?1, ?2, ?3, ?4, 'queued', ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            &[
+                id.as_str().into(),
+                who.organization.as_str().into(),
+                environment_id.into(),
+                i64::try_from(number)
+                    .map_err(|_| error::corrupt("Deployment number"))?
+                    .into(),
+                revision_param(saved)?.into(),
+                json_text(&targets).as_str().into(),
+                json_text(&nodes).as_str().into(),
+                frozen.namespace.as_str().into(),
+                json_text(&Run::default()).as_str().into(),
+                json_text(&frozen.credentials).as_str().into(),
+                upload.as_ref().map(json_text).as_deref().into(),
+                frozen.cluster_domain.as_ref().map(Hostname::as_str).into(),
+                admitted_at.into(),
+                who.principal.as_ref().map(Principal::as_str).into(),
+                message.as_deref().into(),
+            ],
+        )
+        .map(|_| ())
+    })?;
     let summary = DeploymentSummary {
         id: id.clone(),
         environment_id: environment.clone(),
@@ -78,39 +107,15 @@ pub(crate) fn admit(
         upload,
         remove: saved == NOTHING,
         admitted_by: who.principal.clone(),
-        admitted_at: now(),
+        admitted_at,
         started_at: None,
         ended_at: None,
         message,
         in_flight: DeploymentStatus::Queued.in_flight(),
         outcome: None,
         warnings: Vec::new(),
+        ingress: Vec::new(),
     };
-    tx.execute(
-        "INSERT INTO config_deployment \
-         (id, organization_id, environment_id, number, status, saved_revision, services, nodes, \
-          namespace, run, credentials, upload, cluster_domain, admitted, admitted_by, message) \
-         VALUES (?1, ?2, ?3, ?4, 'queued', ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
-        &[
-            id.as_str().into(),
-            who.organization.as_str().into(),
-            environment_id.into(),
-            i64::try_from(number)
-                .map_err(|_| error::corrupt("Deployment number"))?
-                .into(),
-            revision_param(saved)?.into(),
-            json_text(&summary.services).as_str().into(),
-            json_text(&nodes).as_str().into(),
-            frozen.namespace.as_str().into(),
-            json_text(&Run::default()).as_str().into(),
-            json_text(&frozen.credentials).as_str().into(),
-            summary.upload.as_ref().map(json_text).as_deref().into(),
-            frozen.cluster_domain.as_ref().map(Hostname::as_str).into(),
-            summary.admitted_at.into(),
-            who.principal.as_ref().map(Principal::as_str).into(),
-            summary.message.as_deref().into(),
-        ],
-    )?;
     Ok(summary)
 }
 
@@ -215,9 +220,15 @@ fn inherit(
     Ok(())
 }
 
-/// Supersede `environment`'s queued Deployment, if any, and number the next one.
-pub(super) fn queue(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<u64, RpcError> {
-    tx.execute(
+/// Queue the next Deployment of `environment`, written by `insert` with its number,
+/// superseding the queued one, if any. The superseded one leaves flight, so the
+/// sealed values only it kept in History go once the new one holds its revision.
+pub(super) fn queue(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+    insert: impl FnOnce(&mut dyn Tx, u64) -> Result<(), RpcError>,
+) -> Result<u64, RpcError> {
+    let superseded = tx.execute(
         "UPDATE config_deployment SET status = 'superseded' \
          WHERE environment_id = ?1 AND status = 'queued'",
         &[environment.as_str().into()],
@@ -230,7 +241,12 @@ pub(super) fn queue(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<u64,
         .first()
         .ok_or_else(|| error::corrupt("Deployment number"))?
         .int(0)?;
-    u64::try_from(number + 1).map_err(|_| error::corrupt("Deployment number"))
+    let number = u64::try_from(number + 1).map_err(|_| error::corrupt("Deployment number"))?;
+    insert(tx, number)?;
+    if superseded > 0 {
+        crate::review::scrub_sealed(tx, environment)?;
+    }
+    Ok(number)
 }
 
 /// Queue Deployment `id` shipping exactly what `source` froze: its Saved revision,
@@ -288,38 +304,41 @@ pub(crate) fn retry(
         crate::removal::guard_removal(tx, &environment)?;
     }
     let (services, nodes) = retried(tx, &stored)?;
-    let number = queue(tx, &stored.summary.environment_id)?;
     let admitted_at = now();
-    // Every other frozen column comes from the source, so a retry never re-reads
-    // authored state.
-    tx.execute(
-        "INSERT INTO config_deployment \
-         (id, organization_id, environment_id, number, status, saved_revision, services, nodes, \
-          namespace, run, credentials, upload, cluster_domain, admitted, admitted_by, message) \
-         SELECT ?1, organization_id, environment_id, ?2, 'queued', saved_revision, ?7, \
-          ?8, namespace, ?3, credentials, upload, cluster_domain, ?5, ?6, message \
-         FROM config_deployment WHERE id = ?4",
-        &[
-            id.as_str().into(),
-            i64::try_from(number)
-                .map_err(|_| error::corrupt("Deployment number"))?
-                .into(),
-            json_text(&Run::default()).as_str().into(),
-            source.as_str().into(),
-            admitted_at.into(),
-            who.principal.as_ref().map(Principal::as_str).into(),
-            json_text(&services).as_str().into(),
-            json_text(&nodes).as_str().into(),
-        ],
-    )?;
-    // A retry builds the commits its source pinned.
-    tx.execute(
-        "INSERT INTO config_build \
-         (deployment_id, service, organization_id, commit_sha, status, message, log) \
-         SELECT ?1, service, organization_id, commit_sha, 'pending', NULL, '' \
-         FROM config_build WHERE deployment_id = ?2",
-        &[id.as_str().into(), source.as_str().into()],
-    )?;
+    let number = queue(tx, &stored.summary.environment_id, |tx, number| {
+        // Every other frozen column comes from the source, so a retry never re-reads
+        // authored state.
+        tx.execute(
+            "INSERT INTO config_deployment \
+             (id, organization_id, environment_id, number, status, saved_revision, services, \
+              nodes, namespace, run, credentials, upload, cluster_domain, admitted, admitted_by, \
+              message) \
+             SELECT ?1, organization_id, environment_id, ?2, 'queued', saved_revision, ?7, \
+              ?8, namespace, ?3, credentials, upload, cluster_domain, ?5, ?6, message \
+             FROM config_deployment WHERE id = ?4",
+            &[
+                id.as_str().into(),
+                i64::try_from(number)
+                    .map_err(|_| error::corrupt("Deployment number"))?
+                    .into(),
+                json_text(&Run::default()).as_str().into(),
+                source.as_str().into(),
+                admitted_at.into(),
+                who.principal.as_ref().map(Principal::as_str).into(),
+                json_text(&services).as_str().into(),
+                json_text(&nodes).as_str().into(),
+            ],
+        )?;
+        // A retry builds the commits its source pinned.
+        tx.execute(
+            "INSERT INTO config_build \
+             (deployment_id, service, organization_id, commit_sha, status, message, log) \
+             SELECT ?1, service, organization_id, commit_sha, 'pending', NULL, '' \
+             FROM config_build WHERE deployment_id = ?2",
+            &[id.as_str().into(), source.as_str().into()],
+        )
+        .map(|_| ())
+    })?;
     Ok(DeploymentSummary {
         id: id.clone(),
         number,
@@ -333,6 +352,7 @@ pub(crate) fn retry(
         in_flight: DeploymentStatus::Queued.in_flight(),
         outcome: None,
         warnings: Vec::new(),
+        ingress: Vec::new(),
         ..stored.summary
     })
 }
@@ -505,7 +525,7 @@ pub(crate) fn claim(
         | DeploymentStatus::Unknown
         | DeploymentStatus::Cancelled => return Ok(Err(ended(id))),
         DeploymentStatus::Queued => {
-            tx.execute(
+            let taken_over = tx.execute(
                 "UPDATE config_deployment SET status = 'unknown' \
                  WHERE environment_id = ?1 AND status IN ('running', 'cancelling')",
                 &[stored.summary.environment_id.as_str().into()],
@@ -516,6 +536,9 @@ pub(crate) fn claim(
             stored.summary.started_at = Some(started);
             stored.lease = started + LEASE;
             save(tx, &mut stored)?;
+            if taken_over > 0 {
+                crate::review::scrub_sealed(tx, &stored.summary.environment_id)?;
+            }
         }
     }
     let sources = build::sources_of(tx, &stored)?;
@@ -537,8 +560,8 @@ pub(crate) fn claim(
         Some(sealing),
     )?;
     if stored.run.warnings != warnings {
-        stored.run.warnings = warnings.clone();
-        stored.summary.warnings = warnings;
+        stored.run.warnings = warnings;
+        stored.summary.warnings = stored.run.summary_warnings();
         save(tx, &mut stored)?;
     }
     let credentials = tx.query(
@@ -892,6 +915,24 @@ pub(crate) fn record(
                 },
                 DeploymentStatus::Failed,
             )
+        }
+        RunEvidence::Ingress(ingress) => {
+            running(&stored)?;
+            stored.run.ingress = ingress;
+            stored.summary.warnings = stored.run.summary_warnings();
+            stored.summary.ingress.clone_from(&stored.run.ingress);
+            save(tx, &mut stored)?;
+            Ok(stored.summary)
+        }
+        RunEvidence::IngressUnchecked(cause) => {
+            running(&stored)?;
+            let unchecked = DeploymentWarning::IngressUnchecked { cause };
+            if !stored.run.warnings.contains(&unchecked) {
+                stored.run.warnings.push(unchecked);
+            }
+            stored.summary.warnings = stored.run.summary_warnings();
+            save(tx, &mut stored)?;
+            Ok(stored.summary)
         }
         RunEvidence::UploadNeeded(services) => {
             let names = services

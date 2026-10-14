@@ -95,6 +95,9 @@ macro_rules! define_capabilities {
         /// The daemon can take a Certificate Policy from cluster state.
         pub const CERTIFICATE_POLICY_CAPABILITY: &str = "ployz.certificates.policy.v1";
 
+        /// `SetVolumeCopy` honours `gen`, takes the `floor` want and refuses `stale`.
+        pub const VOLUME_FLOOR_CAPABILITY: &str = "ployz.volume.copy.floor.v1";
+
         /// `Inspect` can report requested current local Machine storage evidence.
         pub const MACHINE_STORAGE_OBSERVATION_CAPABILITY: &str =
             "ployz.machine.storage-observation.v1";
@@ -104,6 +107,7 @@ macro_rules! define_capabilities {
             $(($stream_capability, CapabilityAdvertisement::$stream_advertisement),)+
             (EXEC_CONTAINER_CAPABILITY, CapabilityAdvertisement::Container),
             (BUILD_CAPABILITY, CapabilityAdvertisement::Container),
+            (VOLUME_FLOOR_CAPABILITY, CapabilityAdvertisement::Container),
             (CERTIFICATE_POLICY_CAPABILITY, CapabilityAdvertisement::Always),
             (
                 MACHINE_STORAGE_OBSERVATION_CAPABILITY,
@@ -977,6 +981,9 @@ pub struct ContainerDetails {
     /// The newest healthcheck result; `None` without one, or from older daemons.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_check: Option<crate::LastHealthCheck>,
+    /// Which run of the Container this is; `None` from older daemons.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<crate::ContainerRun>,
 }
 
 /// The Machine's answer to `EnsureContainer`: the Container as now observed, and
@@ -1472,6 +1479,22 @@ impl RpcError {
     }
 }
 
+/// Metadata an entry Machine's router puts on a status it made because the target
+/// Machine did not answer the forwarded call. A status the target sent never has it.
+pub const TARGET_UNANSWERED_KEY: &str = "ployz-target-unanswered";
+
+/// [`caused_status`] as `Unavailable`, marked [`TARGET_UNANSWERED_KEY`].
+#[cfg(not(target_arch = "wasm32"))]
+#[must_use]
+pub fn target_unanswered_status(error: &(dyn std::error::Error + 'static)) -> tonic::Status {
+    let mut status = caused_status(tonic::Code::Unavailable, error);
+    status.metadata_mut().insert(
+        TARGET_UNANSWERED_KEY,
+        tonic::metadata::MetadataValue::from_static("1"),
+    );
+    status
+}
+
 /// A gRPC status with `error`'s own sentence as the message and its sources in
 /// the details as `{"cause": [...]}`, read back by [`status_causes`].
 #[cfg(not(target_arch = "wasm32"))]
@@ -1725,12 +1748,13 @@ mod served_capabilities_tests {
     }
 
     #[test]
-    fn served_capabilities_cover_every_catalog_row_and_the_four_without_one() {
+    fn served_capabilities_cover_every_catalog_row_and_the_five_without_one() {
         let served = served_capabilities();
         let rows = crate::rpc_catalog!(catalog_capabilities);
         let without_row = [
             "ployz.container.exec.v1",
             "ployz.build.v1",
+            "ployz.volume.copy.floor.v1",
             "ployz.certificates.policy.v1",
             "ployz.machine.storage-observation.v1",
         ];

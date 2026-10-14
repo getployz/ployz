@@ -140,6 +140,7 @@ function ServerSettings({ organizationSlug, server, servers, stale }: {
         machine={machine}
         organizationSlug={organizationSlug}
         last={servers.length === 1}
+        offline={server.status === "offline"}
         hint={(
           <RemoveServerHint
             hint={removeHint(drain.view, server.services, strays)}

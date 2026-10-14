@@ -11,6 +11,7 @@ pub mod layout;
 pub(crate) mod metrics;
 mod query;
 mod serve;
+pub(crate) mod unit;
 
 use std::{
     fs,
@@ -41,7 +42,7 @@ const LOCK_FILE: &str = "harvester.lock";
 /// Returns an error when Docker cannot be reached, another harvester holds
 /// the store, or the store or socket cannot be created.
 pub async fn run(run_dir: &Path, data_dir: &Path) -> io::Result<()> {
-    crate::faults::check_env()?;
+    crate::faults::check()?;
     crate::faults::leak_memory();
     let docker = Docker::connect_with_defaults().map_err(io::Error::other)?;
     let docker_root = docker

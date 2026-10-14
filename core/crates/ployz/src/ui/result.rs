@@ -37,12 +37,12 @@ pub fn json() -> bool {
 /// Whether a person is at both ends, so a browser may open for them.
 #[must_use]
 pub(crate) fn interactive() -> bool {
-    !json() && io::stdin().is_terminal() && io::stdout().is_terminal()
+    !json() && io::stdin().is_terminal() && super::stdout_is_terminal()
 }
 
 /// Whether results are laid out for a person: stdout is a terminal.
 fn aligned() -> bool {
-    io::stdout().is_terminal()
+    super::stdout_is_terminal()
 }
 
 /// One line of the result on stdout; under `--json`, on stderr beside the object.
@@ -50,7 +50,7 @@ pub(crate) fn stream(line: impl Display) {
     if json() {
         let _ = writeln!(anstream::stderr(), "{line}");
     } else {
-        let _ = writeln!(anstream::stdout(), "{line}");
+        let _ = writeln!(super::stdout(), "{line}");
     }
 }
 
@@ -133,7 +133,7 @@ pub(crate) fn rows(table: &Table) {
     if table.is_empty() {
         note(table.empty_sentence());
     }
-    let _ = table.write(&mut anstream::stdout(), aligned());
+    let _ = table.write(&mut super::stdout(), aligned());
 }
 
 /// Finish with one record: `value` under `--json`, else `record` on stdout.
@@ -143,7 +143,7 @@ pub(crate) fn rows(table: &Table) {
 /// Returns a serialization or stdout write error.
 pub(crate) fn fields<T: Serialize + ?Sized>(value: &T, record: &Fields) -> Result<(), Failure> {
     finish(value, || {
-        let _ = record.write(&mut anstream::stdout(), aligned());
+        let _ = record.write(&mut super::stdout(), aligned());
     })
 }
 
@@ -175,7 +175,7 @@ pub(crate) fn show<T: Serialize + ?Sized>(value: &T) -> Result<(), Failure> {
         CAPTURED.set(Some(Some(value)));
         return Ok(());
     }
-    let mut stdout = io::stdout().lock();
+    let mut stdout = super::stdout_bytes();
     serde_json::to_writer_pretty(&mut stdout, &value)?;
     writeln!(stdout)?;
     EMITTED.set(true);
@@ -220,7 +220,7 @@ pub(crate) fn emit_committed(
 /// Returns a serialization or stdout write error.
 pub(crate) fn emit_line<T: Serialize + ?Sized>(value: &T) -> Result<(), Failure> {
     if json() {
-        let mut stdout = io::stdout().lock();
+        let mut stdout = super::stdout_bytes();
         serde_json::to_writer(&mut stdout, value)?;
         writeln!(stdout)?;
         stdout.flush()?;

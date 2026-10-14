@@ -9,18 +9,23 @@ import os
 from pathlib import Path
 import re
 import releases
+import shutil
 import subprocess
 import sys
 import time
 
 DEFAULT_SIZES = dict(memory="2GiB", disk="24GiB")
+# btrfs clones each VM root from the pool's copy of the image in about 2 s. A directory pool unpacks and converts the
+# whole image for every VM, which took 37 s here under load.
+DEFAULT_POOL, DEFAULT_POOL_CONFIG = "ployz-verify-btrfs", ["btrfs", "size=100GiB"]
 PREFIX = ([] if os.geteuid() == 0 else ["sudo", "-n"]) + ["incus", "--force-local", "--quiet"]
 # Owner fields live on the run's Incus project, so any checkout can list and reap the run.
 OWNER_KEY = "user.ployz.verify.owner."
 
 
 def query(path):
-    return json.loads(subprocess.run([*PREFIX, "query", path], capture_output=True, check=True).stdout)
+    return json.loads(subprocess.run([*PREFIX, "query", path], stdin=subprocess.DEVNULL, capture_output=True,
+                                     check=True).stdout)
 
 
 def rss(pid):
@@ -51,9 +56,23 @@ def runs():
 
 
 def capacity(pool):
-    """Free and total bytes in the storage pool that new VM roots land in."""
+    """Free and total bytes of the storage pool, then of the host disk under it (None when the pool has no host disk).
+
+    A loop file grows into the host filesystem under it, so both limit new VM roots and the reserve follows the host
+    disk. A pool on a block device or a ZFS dataset (no absolute source path) has only its own numbers."""
     space = query(f"/1.0/storage-pools/{pool}/resources")["space"]
-    return space["total"] - space["used"], space["total"]
+    own = space["total"] - space["used"], space["total"]
+    source = query(f"/1.0/storage-pools/{pool}")["config"].get("source", "")
+    if not source.startswith("/") or source.startswith("/dev/"):
+        return own, None
+    # statvfs on the file itself needs root; the nearest readable ancestor is on the same filesystem.
+    for path in [source, *Path(source).parents]:
+        try:
+            usage = shutil.disk_usage(path)
+        except OSError:
+            continue
+        return own, (usage.free, usage.total)
+    return own, None
 
 
 class Provider:
@@ -61,7 +80,7 @@ class Provider:
         self.run, self.commands, self.core = run, commands, core
         self.project = "ployz-verify-" + run["id"]
         self.bridge = "pv" + run["id"]
-        self.pool = (run["provider_state"].setdefault("storage_pool", os.environ.get("PLOYZ_VERIFY_INCUS_POOL", "ployz-verify"))
+        self.pool = (run["provider_state"].setdefault("storage_pool", os.environ.get("PLOYZ_VERIFY_INCUS_POOL", DEFAULT_POOL))
                      if "provider_state" in run else "ployz-verify")
         state = run.get("provider_state", {})
         self.sizes = {resource: state.setdefault(resource, default) for resource, default in DEFAULT_SIZES.items()}
@@ -168,9 +187,9 @@ class Provider:
             fcntl.flock(lock, fcntl.LOCK_EX)
             self.incus("info", project="default")
             if self.incus("storage", "show", self.pool, project="default", check=False).returncode:
-                if self.pool != "ployz-verify":
+                if self.pool != DEFAULT_POOL:
                     raise RuntimeError(f"Create the selected Incus storage pool first: {self.pool}")
-                self.incus("storage", "create", self.pool, "dir", project="default")
+                self.incus("storage", "create", self.pool, *DEFAULT_POOL_CONFIG, project="default")
             if not self.incus("image", "info", self.run["image"], project="default", check=False).returncode:
                 return
             print("Preparing reusable Incus image (first run only).", file=sys.stderr)
