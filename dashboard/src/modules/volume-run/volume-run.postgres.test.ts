@@ -982,6 +982,29 @@ describe("volume runs", () => {
       expect(await request({ kind: "restore", args: { from: "fsn-1" } })).toMatchObject({ ok: true, run: { kind: "restore" } });
     });
 
+    it("a warm Move that commits to B while B's removal takes it still ends, so a restore from A's copy starts", async () => {
+      const move = await warmMove();
+      const committing = await harness.pool.connect();
+      try {
+        await committing.query("begin");
+        await committing.query("select id from volume_run where id = $1 for update", [move.id]);
+        const releasing = runEffect(releaseLanesOff(organizationId, fsn("fsn-2"), [], { [dockerVolume]: "fsn-1" }));
+        while ((await harness.pool.query("select 1 from pg_stat_activity where wait_event_type = 'Lock'")).rowCount === 0) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        await committing.query("update volume_run set phase = 'committed', current = $2 where id = $1", [move.id, idOf("fsn-2")]);
+        await committing.query("commit");
+
+        expect(await releasing).toEqual([]);
+      } finally {
+        committing.release();
+      }
+      expect(await lanes()).toMatchObject([{
+        id: move.id, state: "failed", message: "data's writer was on fsn-2 (removed). Restore from fsn-1's copy: ployz volume restore data --from fsn-1",
+      }]);
+      expect(await request({ kind: "restore", args: { from: "fsn-1" } })).toMatchObject({ ok: true, run: { kind: "restore" } });
+    });
+
     it("removing a Server leaves a committed lane bound elsewhere alone", async () => {
       const move = await warmMove();
       await harness.pool.query("update volume_run set phase = 'committed', current = $2 where id = $1", [move.id, idOf("fsn-2")]);

@@ -496,7 +496,6 @@ export const releaseLanesOff = Effect.fn("VolumeRun.releaseLanesOff")(function* 
   held: Readonly<Record<string, MachineName>> = {},
 ) {
   const database = yield* Database;
-  yield* endLanesTo(organizationId, machine, held);
   const lanes = yield* database.drizzle.select().from(volumeRun).where(and(
     eq(volumeRun.organizationId, organizationId),
     inArray(volumeRun.state, ACTIVE_VOLUME_RUN_STATES),
@@ -524,6 +523,8 @@ export const releaseLanesOff = Effect.fn("VolumeRun.releaseLanesOff")(function* 
     );
     if (taken !== null) released.push(taken.run.id);
   }
+  // After the takeovers: a lane that committed before its takeover could lock it was refused, and ends here.
+  yield* endLanesTo(organizationId, machine, held);
   return released;
 });
 
