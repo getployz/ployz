@@ -1,10 +1,17 @@
 //! Departure: when a Machine leaves its cluster or is installed afresh, every root it
 //! holds becomes a sealed slot, so nothing left behind is taken for the writer and a later
 //! restore starts from an ordinary slot. Every receive stops before the slots are read, so
-//! each slot is judged as it will stay. A slot is kept only on a mark this Machine sets
-//! before it can hold the only copy and no send carries: a departure snapshot, a Move's
-//! cut, or a restore's epoch. Every other slot is a received copy, a mirror or an unlanded
-//! seed, and is destroyed: the writer or the seed's source root keeps that data.
+//! each slot is judged as it will stay. A Volume whose receive will not stop is left as it
+//! is and named in the answer; the daemon fails the departure on it once Docker has
+//! forgotten the rest, and a retry judges it after its receive has stopped.
+//!
+//! A slot is kept when it may hold the only copy of its point. A departure snapshot or a
+//! completed seed keeps it whatever else it holds: the seed's source root may since have
+//! pruned that point. A Move's cut or a restore's epoch keeps it only while no pull has
+//! landed over the point it marks, which the slot's parent records by naming the pulled
+//! snapshot. Only this Machine sets these marks and a send carries none, so every other
+//! slot is a received copy, a mirror or a partial seed, and is destroyed: the writer or
+//! the seed's source root keeps that data.
 
 use std::collections::BTreeSet;
 
