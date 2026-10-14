@@ -262,7 +262,7 @@ const enqueueRun = (row: VolumeRunRow, took?: VolumeRunKind) =>
     took,
   }));
 
-const readRow = Effect.fn("VolumeRun.readRow")(function* (id: string) {
+export const readRow = Effect.fn("VolumeRun.readRow")(function* (id: string) {
   const { drizzle } = yield* Database;
   const [row] = yield* drizzle.select().from(volumeRun).where(eq(volumeRun.id, id));
   return row;

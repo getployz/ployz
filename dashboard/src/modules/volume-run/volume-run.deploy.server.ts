@@ -23,6 +23,7 @@ import {
   observeVolumeMembers,
   owedCommitments,
   pastReturn,
+  readRow,
   requeueTakenMoves,
   type RunContext,
   setVolumeCopy,
@@ -298,8 +299,12 @@ export const releaseFollowed = Effect.fn("VolumeRun.releaseFollowed")(function* 
     if (lane.kind !== "follow" || !lane.ended) continue;
     const { run } = lane;
     const id = uuidFrom(`ployz.deploy-release:${inngestRunId}:${run.volumeId}`);
+    if ((yield* readRow(id)) !== undefined) {
+      requested.push(id);
+      continue;
+    }
     const { owed } = yield* commitment(run.volumeId);
-    if (owed === null || owed.id === id) continue;
+    if (owed === null) continue;
     const release = yield* insertRun(
       CLOUD(run.organizationId),
       { volumeId: run.volumeId, kind: "release", args: {} },
