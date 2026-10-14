@@ -286,6 +286,24 @@ async fn departure_keeps_every_slot_no_landed_pull_marked() {
             ],
         ),
         (
+            "a pulled departure snapshot",
+            &[
+                (
+                    "tank/ployz-mirror/data/fs",
+                    "snapshots",
+                    "tank/ployz-mirror/data/fs@dep-100\t12\t1700000002",
+                ),
+                ("tank/ployz-mirror/data/fs", "ployz:pulled", "12"),
+            ],
+        ),
+        (
+            "a landed pull that kept a promote",
+            &[
+                ("tank/ployz-mirror/data/fs", "ployz:pulled", "12"),
+                ("tank/ployz-mirror/data/fs", "ployz:promote", "on"),
+            ],
+        ),
+        (
             "a landed pull that kept a seed",
             &[
                 ("tank/ployz-mirror/data/fs", "ployz:pulled", "12"),

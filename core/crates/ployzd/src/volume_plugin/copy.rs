@@ -672,15 +672,11 @@ impl VolumeStorage {
             name: request.name.clone(),
             source,
         };
-        let held = match scope.fs() {
-            Some(_) => self.newest_guid(&fs).await.map_err(internal)?,
-            None => None,
-        };
         let storage = self.clone();
         let from = request.from;
         self.receives.spawn(name, |stop| async move {
             let result = match storage.pull_stream(from, stream, &fs, bound, &stop).await {
-                Ok(()) => storage.mark_pulled(&fs, held.as_deref()).await,
+                Ok(()) => storage.mark_pulled(&fs).await,
                 Err(error) => Err(error),
             };
             if let Err(error) = &result {
@@ -743,16 +739,17 @@ impl VolumeStorage {
             .map_err(|failure| failure.to_string())
     }
 
-    /// Marks the slot received from a writer elsewhere, when this pull made a newer
-    /// snapshot than the slot `held`. Any cut, restore, promote or seed mark describes a
-    /// point that writer has since built on, so each goes first: a crash between leaves a
-    /// slot with neither, which the departure keeps.
-    async fn mark_pulled(&self, fs: &str, held: Option<&str>) -> Result<(), String> {
-        let newest = self
+    /// Marks the slot received from a writer elsewhere. A receive that exits 0 made the
+    /// stream's snapshot, and a pull of the slot's own newest never starts one, so the
+    /// newest snapshot is the one a writer elsewhere sent. Any cut, restore, promote or
+    /// seed mark describes a point that writer has since built on, so each goes first: a
+    /// crash between leaves a slot with neither, which the departure keeps.
+    async fn mark_pulled(&self, fs: &str) -> Result<(), String> {
+        let Some(newest) = self
             .newest_guid(fs)
             .await
-            .map_err(|error| error.to_string())?;
-        let Some(newest) = newest.filter(|newest| Some(newest.as_str()) != held) else {
+            .map_err(|error| error.to_string())?
+        else {
             return Ok(());
         };
         for mark in [
