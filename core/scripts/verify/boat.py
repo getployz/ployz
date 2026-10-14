@@ -919,22 +919,27 @@ systemctl enable --now {PLOYZ_UNITS} $observe
         except (RuntimeError, subprocess.TimeoutExpired) as why:
             print(f"Deleting {entry['id']} ({name}) instead of reusing it: {why}", file=sys.stderr)
             return
-        dead, full = [], False
         try:
             with pool() as entries:
                 dead = tidy(entries, sandbox_states(), registered())
                 full = not self.make_room(entries, dead)
+        except RuntimeError as why:
+            print(f"Deleting {entry['id']} ({name}) instead of reusing it: {why}", file=sys.stderr)
+            return
+        retire(dead, lambda sandbox: self.boat("delete", sandbox, "--yes", check=False))
+        if not full:
+            with pool() as entries:
+                # A sandbox Boat has not confirmed gone still counts, so a failed delete never lets the pool grow past its size.
+                full = len(entries) >= POOL_SIZE
                 if not full:
                     entries.append(dict(id=entry["id"], image=image, ip=entry["ip"], ssh=entry["ssh"], parked_at=int(time.time())))
                     self.mark(name, state="parked")
-        except RuntimeError as why:
-            print(f"Deleting {entry['id']} ({name}) instead of reusing it: {why}", file=sys.stderr)
-        retire(dead, lambda sandbox: self.boat("delete", sandbox, "--yes", check=False))
         if full:
             print(f"Deleting {entry['id']} ({name}): the pool already holds {POOL_SIZE} of this bake or newer ones.", file=sys.stderr)
 
     def make_room(self, entries, dead):
-        """Whether the pool can take one more sandbox of this run's bake, marking retiring, and adding to `dead`, what it displaces.
+        """Whether the pool can take one more sandbox of this run's bake once `dead` is deleted, marking retiring, and adding
+        to `dead`, what it displaces; park() admits it only after Boat confirms those deletes.
 
         All bakes together keep POOL_SIZE, so idle sandboxes never eat the account's active headroom. This bake displaces
         the oldest sandboxes of bakes the ledger made before it, never its own or a newer bake's."""

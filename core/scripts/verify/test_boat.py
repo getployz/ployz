@@ -495,14 +495,14 @@ class Pool(unittest.TestCase):
             self.assertNotEqual(boat.fingerprints("bake-a"), saved)
         self.assertEqual(boat.fingerprints("bake-a"), saved)
 
-    def park(self, ledger, pool):
+    def park(self, ledger, pool, answers=None):
         """Park machine-1 as bx_new with POOL_SIZE 2; returns the provider."""
         boat.write(boat.BAKES, ledger)
         limits = dict(maxActiveSandboxes=100, activeSandboxes=0, starts=dict(unlimited=True))
         listing = self.listing(**{entry["id"]: "ready" for entry in pool if entry["id"] != "bx_gone"}, bx_new="ready")
         with unittest.mock.patch.object(boat, "boat_json", lambda *args: limits if args[0] == "limits" else listing()), \
                 unittest.mock.patch.object(boat, "POOL_SIZE", 2), contextlib.redirect_stderr(io.StringIO()):
-            provider = self.provider("machine-1")
+            provider = self.provider("machine-1", answers=answers)
             provider.create()
             boat.write(boat.POOL, pool)
             provider.mark("machine-1", id="bx_new", state="running", ip="2001:db8:0:9::1", ssh="203.0.113.9:22")
@@ -528,6 +528,13 @@ class Pool(unittest.TestCase):
                 self.assertEqual(boat.read(boat.POOL), pool)
                 self.assertEqual(provider.record()["sandboxes"]["machine-1"]["state"], "running")
                 boat.registry("run1").unlink()
+
+    def test_park_counts_a_displaced_sandbox_until_boat_confirms_its_delete(self):
+        failed = result(1, {"event": "error", "code": "internal", "status": 500})
+        provider = self.park(["bake-b", "bake-a"], [parked("bx_b1", 1, image="bake-b", at=1), parked("bx_b2", 2, image="bake-b", at=2)],
+                             answers={("delete", "bx_b1"): failed})
+        self.assertEqual([entry["id"] for entry in boat.read(boat.POOL) + boat.read(boat.RETIRING)], ["bx_b2", "bx_b1"])
+        self.assertEqual(provider.record()["sandboxes"]["machine-1"]["state"], "running")
 
     def test_a_stale_entry_stays_in_the_pool_until_its_delete_succeeds_or_finds_it_gone(self):
         boat.write(boat.BAKES, ["bake-a"])
