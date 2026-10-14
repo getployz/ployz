@@ -1249,7 +1249,11 @@ async fn a_pull_whose_mark_cleanup_fails_leaves_a_mirror_the_departure_destroys(
 
         post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
         let copy = landed(&socket, "w-1-2").await;
-        assert_eq!(copy.pointer("/Ok/newest/name"), Some(&json!("w-1-2")), "{copy}");
+        assert_eq!(
+            copy.pointer("/Ok/newest/name"),
+            Some(&json!("w-1-2")),
+            "{copy}"
+        );
         post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
 
         let reply = post(&socket, "/Storage.Demote", json!(null)).await;
@@ -1257,6 +1261,33 @@ async fn a_pull_whose_mark_cleanup_fails_leaves_a_mirror_the_departure_destroys(
         assert!(!test.0.join("mirror").exists(), "{mark}");
         server.abort();
     }
+}
+
+/// The epoch a promote sets describes the slot's newest point, so a promote stopped before
+/// its rename leaves a slot the departure keeps, pulled or not.
+#[tokio::test]
+async fn departure_keeps_a_pulled_slot_whose_promote_stopped_before_the_rename() {
+    let test = TestDir::new();
+    let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], 1);
+    landed_before_a_restart(&test, "ployz:cut", "on");
+    fs::write(
+        test.0.join("props/fail-command"),
+        "rename tank/ployz-mirror/data/fs tank/ployz/data",
+    )
+    .unwrap();
+
+    let reply = post(
+        &socket,
+        "/Volume.Copy.Writer",
+        json!({"name": "data", "at": "12", "epoch": 4}),
+    )
+    .await;
+    assert!(reply.get("Err").is_some(), "{reply}");
+    assert_eq!(property(&test, SLOT_FS, "ployz:cut"), None);
+    let reply = post(&socket, "/Storage.Demote", json!(null)).await;
+    assert!(reply.get("Ok").is_some(), "{reply}");
+    assert!(test.0.join("mirror-fs").exists());
+    server.abort();
 }
 
 /// A pull of the point a cut slot already holds lands nothing, so the slot never records
