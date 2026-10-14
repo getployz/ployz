@@ -236,10 +236,8 @@ impl LocalMachine {
     /// already holding a turn deadlocks.
     ///
     /// The stopping mark is set without a turn so replication tells every proxy
-    /// while the drain sleeps. The stop clears the mark whether it succeeds or
-    /// fails, so a Container that failed to stop is routed again. A daemon
-    /// restart forgets the mark; a still-running Container returns to ingress
-    /// and the resend redoes the drain.
+    /// while the drain sleeps. A daemon restart forgets the mark; a still-running
+    /// Container returns to ingress and the resend redoes the drain.
     ///
     /// Polls no proxy and reads no other Machine.
     pub(crate) async fn stop_behind_ingress(
@@ -256,7 +254,7 @@ impl LocalMachine {
         if !is_running(&observed) {
             return Ok(observed);
         }
-        containers.mark_stopping(*container);
+        let _withdrawal = containers.withdraw(*container);
         tokio::time::sleep(drain.as_duration()).await;
         let turn = self.owner.admission_lock().write_owned().await;
         let stopped = containers

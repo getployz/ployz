@@ -449,9 +449,7 @@ impl ContainerRuntime {
         let Ok(_gate) = gate.try_lock() else {
             return;
         };
-        if self.stranded().await.held.contains(container_id)
-            || self.stopping.borrow().contains(container_id)
-        {
+        if self.stranded().await.held.contains(container_id) || self.is_withdrawn(container_id) {
             return;
         }
         let result = async {
@@ -538,8 +536,6 @@ impl ContainerRuntime {
             .client
             .stop_container(container_id.as_str(), Some(options.build()))
             .await;
-        // Stopped, it is no longer routed; still running after a failed stop, it should be again.
-        self.clear_stopping(container_id);
         idempotent_lifecycle_result(container_id, result)?;
         Ok(true)
     }
@@ -933,10 +929,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_container_stays_withdrawn_until_its_last_withdrawal_drops() {
+        let (runtime, _fake, container_id) = stranded(PORT_TAKEN).await;
+        for first_released_first in [true, false] {
+            let mut observer = runtime.stopping.subscribe();
+            let first = runtime.withdraw(container_id);
+            let second = runtime.withdraw(container_id);
+            assert!(observer.has_changed().unwrap());
+            observer.mark_unchanged();
+
+            let (released, held) = if first_released_first {
+                (first, second)
+            } else {
+                (second, first)
+            };
+            drop(released);
+            assert!(runtime.is_withdrawn(&container_id));
+            assert!(!observer.has_changed().unwrap());
+
+            drop(held);
+            assert!(!runtime.is_withdrawn(&container_id));
+            assert!(
+                observer.has_changed().unwrap(),
+                "the last release wakes the observer"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn an_ingress_about_to_be_stopped_is_not_started() {
         let (runtime, fake, container_id) = stranded(PORT_TAKEN).await;
 
-        runtime.mark_stopping(container_id);
+        let _withdrawal = runtime.withdraw(container_id);
         runtime
             .start_stranded(&container_id, runtime.docker.creates())
             .await;

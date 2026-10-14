@@ -33,9 +33,8 @@ const LIST_TIMEOUT: Duration = Duration::from_secs(10);
 pub(crate) trait RetireHost: Clone + Send + Sync + 'static {
     fn local_containers(&self) -> impl Future<Output = io::Result<BTreeSet<ContainerId>>> + Send;
     fn membership(&self) -> impl Future<Output = Membership> + Send;
-    /// Take the Container out of ingress until it stops or `unmark_stopping` runs.
-    fn mark_stopping(&self, container: ContainerId);
-    fn unmark_stopping(&self, container: ContainerId);
+    type Withdrawal: Send;
+    fn withdraw(&self, container: ContainerId) -> Self::Withdrawal;
     fn drain(&self) -> impl Future<Output = ()> + Send;
     /// Stop and remove the drained Container under the Machine's exclusive
     /// admission turn, if `still_retired` answers true under that turn.
@@ -87,12 +86,10 @@ impl RetireHost for DaemonHost {
         required_ackers(machines.as_ref().clone(), &self.machine_id, states.as_ref())
     }
 
-    fn mark_stopping(&self, container: ContainerId) {
-        self.containers.mark_stopping(container);
-    }
+    type Withdrawal = crate::docker::Withdrawal;
 
-    fn unmark_stopping(&self, container: ContainerId) {
-        self.containers.clear_stopping(&container);
+    fn withdraw(&self, container: ContainerId) -> Self::Withdrawal {
+        self.containers.withdraw(container)
     }
 
     async fn drain(&self) {
@@ -490,11 +487,7 @@ async fn retire<H: RetireHost>(
         Ok(false) => return Outcome::Kept,
         Err(error) => return Outcome::Failed(io::Error::other(error)),
     }
-    host.mark_stopping(candidate.container);
-    let _marked = Marked {
-        host,
-        container: candidate.container,
-    };
+    let _withdrawal = host.withdraw(candidate.container);
     host.drain().await;
     host.remove(
         candidate.container,
@@ -508,19 +501,6 @@ async fn still_retired(
     candidate: Candidate,
 ) -> Result<bool, CorrosionError> {
     Ok(candidate.decided_deploy_still_retires(&replicated.serving_pointers().await?))
-}
-
-/// Clears the stopping mark however the retire ends: a removed Container is
-/// gone, and one kept or failed is routed again.
-struct Marked<'a, H: RetireHost> {
-    host: &'a H,
-    container: ContainerId,
-}
-
-impl<H: RetireHost> Drop for Marked<'_, H> {
-    fn drop(&mut self) {
-        self.host.unmark_stopping(self.container);
-    }
 }
 
 async fn remove_drained(
@@ -1207,6 +1187,17 @@ mod tests {
         }
     }
 
+    struct FakeWithdrawal {
+        unmarked: Arc<Mutex<Vec<ContainerId>>>,
+        container: ContainerId,
+    }
+
+    impl Drop for FakeWithdrawal {
+        fn drop(&mut self) {
+            self.unmarked.lock().unwrap().push(self.container);
+        }
+    }
+
     impl RetireHost for FakeHost {
         async fn local_containers(&self) -> io::Result<BTreeSet<ContainerId>> {
             *self.listings.lock().unwrap() += 1;
@@ -1221,12 +1212,14 @@ mod tests {
             self.ackers.clone()
         }
 
-        fn mark_stopping(&self, container: ContainerId) {
-            self.marked.lock().unwrap().push(container);
-        }
+        type Withdrawal = FakeWithdrawal;
 
-        fn unmark_stopping(&self, container: ContainerId) {
-            self.unmarked.lock().unwrap().push(container);
+        fn withdraw(&self, container: ContainerId) -> FakeWithdrawal {
+            self.marked.lock().unwrap().push(container);
+            FakeWithdrawal {
+                unmarked: self.unmarked.clone(),
+                container,
+            }
         }
 
         async fn drain(&self) {
@@ -1501,12 +1494,10 @@ mod tests {
             self.ackers.clone()
         }
 
-        fn mark_stopping(&self, container: ContainerId) {
-            self.containers.mark_stopping(container);
-        }
+        type Withdrawal = crate::docker::Withdrawal;
 
-        fn unmark_stopping(&self, container: ContainerId) {
-            self.containers.clear_stopping(&container);
+        fn withdraw(&self, container: ContainerId) -> Self::Withdrawal {
+            self.containers.withdraw(container)
         }
 
         async fn drain(&self) {}
@@ -1710,6 +1701,126 @@ mod tests {
         assert!(matches!(next_outcome(&mut stopping).await, Outcome::Kept));
         assert!(!machine.stopped(machine.a), "d3 serves A");
         assert!(machine.exists(machine.a), "d3 serves A");
+        assert!(machine.host.containers.stopping_ids_for_test().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_kept_retire_leaves_a_container_withdrawn_while_an_explicit_stop_drains_it() {
+        use ployz_core::{
+            ContainerLocator, ContainerWant, DEPLOYMENT_ID_LABEL, Drain, StopOptions,
+            service_containers, serving_containers,
+        };
+        let cluster = FakeCluster::start();
+        let store = cluster.store();
+        let machine = RealMachine::start(&cluster).await;
+        {
+            let mut named = machine.named.lock().unwrap();
+            for (id, ip, deploy) in [
+                (machine.a, "10.210.0.2", "d1"),
+                (machine.b, "10.210.0.3", "d2"),
+            ] {
+                let row = named
+                    .values_mut()
+                    .find(|row| row["Id"] == id.as_str())
+                    .unwrap();
+                row["NetworkSettings"] =
+                    serde_json::json!({"Networks": {"ployz": {"IPAddress": ip}}});
+                row.pointer_mut("/Config/Labels")
+                    .and_then(serde_json::Value::as_object_mut)
+                    .unwrap()
+                    .insert(DEPLOYMENT_ID_LABEL.to_owned(), serde_json::json!(deploy));
+            }
+        }
+        let machine_id = machine.owner.record().id();
+        let observe = |container| {
+            let containers = machine.host.containers.clone();
+            async move {
+                containers
+                    .inspect_managed(&container, &machine_id)
+                    .await
+                    .unwrap()
+            }
+        };
+        let transfer = machine.owner.admission_lock().read_owned().await;
+        let mut retiring = JoinSet::new();
+        round(
+            &machine.host,
+            &store,
+            &mut Retirer::default(),
+            &mut retiring,
+        )
+        .await;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !machine
+                .host
+                .containers
+                .stopping_ids_for_test()
+                .contains(&machine.a)
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let ensure = Arc::new(tokio::sync::Barrier::new(2));
+        let stop = Arc::new(tokio::sync::Barrier::new(2));
+        *machine.inspect_hold.lock().unwrap() = Some(ensure.clone());
+        let explicit_stop = tokio::spawn({
+            let local = machine.host.machine.clone();
+            let a = machine.a;
+            async move {
+                local
+                    .ensure_container(ContainerWant::Stopped {
+                        container: ContainerLocator::Id(a),
+                        drain: Drain::DEFAULT,
+                        stop: StopOptions::default(),
+                    })
+                    .await
+            }
+        });
+        ensure.wait().await;
+        *machine.inspect_hold.lock().unwrap() = Some(stop.clone());
+        ensure.wait().await;
+        stop.wait().await;
+        stop.wait().await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(!explicit_stop.is_finished(), "the explicit stop drains A");
+
+        let pointer = ServingPointer {
+            deploy: deploy("d3"),
+            containers: vec![machine.a],
+            previous: Some(deploy("d2")),
+            retiring: vec![machine.b],
+        };
+        cluster.write_serving_pointer(
+            &ServingPointer::key(&service()),
+            &serde_json::to_string(&pointer).unwrap(),
+        );
+        drop(transfer);
+        assert!(matches!(next_outcome(&mut retiring).await, Outcome::Kept));
+        assert!(
+            !explicit_stop.is_finished(),
+            "the explicit stop still drains A"
+        );
+
+        assert_eq!(
+            machine.host.containers.stopping_ids_for_test(),
+            BTreeSet::from([machine.a])
+        );
+        let containers = service_containers([observe(machine.a).await, observe(machine.b).await]);
+        let routed: Vec<_> = serving_containers(&containers, |_| Some(&pointer))
+            .iter()
+            .map(|container| container.as_observation().container_id)
+            .collect();
+        assert_eq!(routed, vec![machine.b], "B serves while A drains");
+
+        tokio::time::timeout(Duration::from_secs(5), explicit_stop)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(machine.stopped(machine.a));
         assert!(machine.host.containers.stopping_ids_for_test().is_empty());
     }
 
