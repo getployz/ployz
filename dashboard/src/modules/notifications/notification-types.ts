@@ -5,17 +5,17 @@ export const NOTIFICATION_TYPES = {
   uptime: {
     label: "Uptime incidents",
     description: "When a check goes down, and when it recovers.",
-    unsubscribe: "Unsubscribe from uptime emails",
+    unsubscribe: "Turn off uptime emails",
   },
   "deploy-failed": {
     label: "Failed GitHub deploys",
     description: "When a deploy from a push or pull request fails.",
-    unsubscribe: "Unsubscribe from failed deploy emails",
+    unsubscribe: "Turn off failed deploy emails",
   },
   "upgrade-failed": {
     label: "Failed automatic upgrades",
     description: "When an automatic Server upgrade fails.",
-    unsubscribe: "Unsubscribe from failed upgrade emails",
+    unsubscribe: "Turn off failed upgrade emails",
   },
 } as const;
 
