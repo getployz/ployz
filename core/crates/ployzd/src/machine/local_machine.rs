@@ -686,7 +686,7 @@ impl LocalMachine {
     /// # Errors
     ///
     /// Returns [`Error::Cleanup`] when the plugin cannot demote, a Volume's copy would not
-    /// stop, or Docker keeps a name.
+    /// stop or its demote failed, or Docker keeps a name.
     async fn depart_storage(&self) -> Result<(), Error> {
         let Some(containers) = &self.containers else {
             return Ok(());
@@ -704,11 +704,19 @@ impl LocalMachine {
                 .await
                 .map_err(|error| Error::Cleanup(format!("Docker kept Volume {name}: {error}")))?;
         }
-        if !departure.stuck.is_empty() {
-            let stuck: Vec<String> = departure.stuck.iter().map(ToString::to_string).collect();
+        let left: Vec<String> =
+            departure
+                .stuck
+                .iter()
+                .map(|name| format!("Volume {name} did not stop copying"))
+                .chain(departure.failed.iter().map(|failed| {
+                    format!("Volume {} did not depart: {}", failed.name, failed.reason)
+                }))
+                .collect();
+        if !left.is_empty() {
             return Err(Error::Cleanup(format!(
-                "the copies of Volumes {} did not stop; retry the departure",
-                stuck.join(", ")
+                "{}; retry the departure",
+                left.join("; ")
             )));
         }
         containers.clear_floors().await.map_err(|error| {

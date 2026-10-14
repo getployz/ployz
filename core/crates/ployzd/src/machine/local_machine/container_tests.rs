@@ -158,7 +158,7 @@ async fn cancelled_create_finishes_before_reset_cleanup() {
         let plugin = FakePlugin::default();
         plugin.reply(
             "Storage.Demote",
-            json!({"Ok": {"demoted": [], "stuck": []}}),
+            json!({"Ok": {"demoted": [], "stuck": [], "failed": []}}),
         );
         let (plugin, _plugin_server) = plugin.serve(&data_dir);
         let local = LocalMachine::new(owner.clone()).with_containers(Some(runtime.clone()));
@@ -340,7 +340,7 @@ async fn removal_warning_restarts_and_keeps_recovery_available_without_container
     let plugin = FakePlugin::default();
     plugin.reply(
         "Storage.Demote",
-        json!({"Ok": {"demoted": [], "stuck": []}}),
+        json!({"Ok": {"demoted": [], "stuck": [], "failed": []}}),
     );
     let (plugin, _plugin_server) = plugin.serve(&data_dir);
     let local = LocalMachine::new(owner)

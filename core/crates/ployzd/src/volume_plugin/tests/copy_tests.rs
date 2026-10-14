@@ -1091,7 +1091,10 @@ async fn departure_during_a_receive_stops_it_and_destroys_the_mirror() {
     let pid = fs::read_to_string(pid).unwrap();
 
     let reply = post(&socket, "/Storage.Demote", json!(null)).await;
-    assert_eq!(reply, json!({"Ok": {"demoted": ["data"], "stuck": []}}));
+    assert_eq!(
+        reply,
+        json!({"Ok": {"demoted": ["data"], "stuck": [], "failed": []}})
+    );
     assert!(!Path::new(&format!("/proc/{}", pid.trim())).exists());
     let copy = post(&socket, "/Volume.Copy.Inspect", json!({"name": "data"})).await;
     assert_eq!(copy, json!({"Ok": null}));
@@ -1148,7 +1151,11 @@ async fn departure_stops_a_pull_into_a_slot_it_keeps() {
         }
         fs::remove_file(test.0.join("props/stall-command")).unwrap();
         let reply = departure.await.unwrap();
-        assert_eq!(reply, json!({"Ok": {"demoted": [], "stuck": []}}), "{mark}");
+        assert_eq!(
+            reply,
+            json!({"Ok": {"demoted": [], "stuck": [], "failed": []}}),
+            "{mark}"
+        );
         assert!(test.0.join("mirror-fs").exists(), "{mark}");
         assert_eq!(property(&test, SLOT_FS, mark).as_deref(), Some(value));
         server.abort();
@@ -1181,7 +1188,7 @@ async fn a_landed_pull_drops_the_writer_marks_so_the_departure_destroys_the_mirr
         let reply = post(&socket, "/Storage.Demote", json!(null)).await;
         assert_eq!(
             reply,
-            json!({"Ok": {"demoted": ["data"], "stuck": []}}),
+            json!({"Ok": {"demoted": ["data"], "stuck": [], "failed": []}}),
             "{mark}"
         );
         assert!(!test.0.join("mirror").exists(), "{mark}");
@@ -1204,7 +1211,10 @@ async fn a_pull_of_the_slots_newest_keeps_its_cut() {
         "nothing newer landed, so the cut may still be the only copy"
     );
     let reply = post(&socket, "/Storage.Demote", json!(null)).await;
-    assert_eq!(reply, json!({"Ok": {"demoted": [], "stuck": []}}));
+    assert_eq!(
+        reply,
+        json!({"Ok": {"demoted": [], "stuck": [], "failed": []}})
+    );
     assert!(test.0.join("mirror-fs").exists());
     server.abort();
 }
@@ -1231,7 +1241,11 @@ async fn a_resend_of_the_slots_newest_keeps_its_marks_and_marks_no_pull() {
         assert_eq!(property(&test, SLOT_FS, mark).as_deref(), Some(value));
         assert_eq!(property(&test, SLOT_FS, "ployz:pulled"), None, "{mark}");
         let reply = post(&socket, "/Storage.Demote", json!(null)).await;
-        assert_eq!(reply, json!({"Ok": {"demoted": [], "stuck": []}}), "{mark}");
+        assert_eq!(
+            reply,
+            json!({"Ok": {"demoted": [], "stuck": [], "failed": []}}),
+            "{mark}"
+        );
         assert!(test.0.join("mirror-fs").exists(), "{mark}");
         server.abort();
     }
@@ -1249,7 +1263,11 @@ async fn a_pull_stopped_over_a_marked_slot_leaves_it_kept() {
         let pid = receive_pid(&test).await;
 
         let reply = post(&socket, "/Storage.Demote", json!(null)).await;
-        assert_eq!(reply, json!({"Ok": {"demoted": [], "stuck": []}}), "{mark}");
+        assert_eq!(
+            reply,
+            json!({"Ok": {"demoted": [], "stuck": [], "failed": []}}),
+            "{mark}"
+        );
         assert!(
             !Path::new(&format!("/proc/{pid}")).exists(),
             "{mark}: the receive still runs"
@@ -1281,7 +1299,11 @@ async fn a_pull_whose_mark_cleanup_fails_leaves_a_slot_the_departure_keeps() {
         assert_eq!(property(&test, SLOT_FS, "ployz:pulled"), None, "{mark}");
 
         let reply = post(&socket, "/Storage.Demote", json!(null)).await;
-        assert_eq!(reply, json!({"Ok": {"demoted": [], "stuck": []}}), "{mark}");
+        assert_eq!(
+            reply,
+            json!({"Ok": {"demoted": [], "stuck": [], "failed": []}}),
+            "{mark}"
+        );
         assert!(test.0.join("mirror-fs").exists(), "{mark}");
         server.abort();
     }
@@ -1315,7 +1337,10 @@ async fn departure_keeps_a_pulled_slot_whose_promote_stopped_before_the_rename()
         Some("4")
     );
     let reply = post(&socket, "/Storage.Demote", json!(null)).await;
-    assert_eq!(reply, json!({"Ok": {"demoted": [], "stuck": []}}));
+    assert_eq!(
+        reply,
+        json!({"Ok": {"demoted": [], "stuck": [], "failed": []}})
+    );
     assert!(test.0.join("mirror-fs").exists());
     server.abort();
 }
@@ -1330,7 +1355,10 @@ async fn departure_keeps_a_beta1_promote_that_stopped_before_the_rename() {
     set_property(&test, SLOT_FS, "ployz:promote", "on");
 
     let reply = post(&socket, "/Storage.Demote", json!(null)).await;
-    assert_eq!(reply, json!({"Ok": {"demoted": [], "stuck": []}}));
+    assert_eq!(
+        reply,
+        json!({"Ok": {"demoted": [], "stuck": [], "failed": []}})
+    );
     assert!(test.0.join("mirror-fs").exists());
     server.abort();
 }
@@ -1358,7 +1386,10 @@ async fn a_pull_of_a_cut_slots_own_newest_never_records_a_pull() {
         "Docker keeps its record for a cut Volume"
     );
     let reply = post(&socket, "/Storage.Demote", json!(null)).await;
-    assert_eq!(reply, json!({"Ok": {"demoted": [], "stuck": []}}));
+    assert_eq!(
+        reply,
+        json!({"Ok": {"demoted": [], "stuck": [], "failed": []}})
+    );
     assert!(test.0.join("mirror-fs").exists());
     server.abort();
 }
@@ -1627,7 +1658,10 @@ async fn departure_stops_a_pull_whose_writer_never_answers() {
     )
     .await
     .expect("the departure waits on a writer that never answers");
-    assert_eq!(reply, json!({"Ok": {"demoted": ["data"], "stuck": []}}));
+    assert_eq!(
+        reply,
+        json!({"Ok": {"demoted": ["data"], "stuck": [], "failed": []}})
+    );
     assert!(!test.0.join("mirror").exists());
     server.abort();
 }

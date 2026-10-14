@@ -55,7 +55,7 @@ async fn harness(initialized: bool) -> Harness {
     let plugin = FakePlugin::default();
     plugin.reply(
         "Storage.Demote",
-        json!({"Ok": {"demoted": ["data"], "stuck": []}}),
+        json!({"Ok": {"demoted": ["data"], "stuck": [], "failed": []}}),
     );
     let (client, _server) = plugin.serve(&data_dir);
     let (runtime, docker) = fake_runtime_with(FakeDocker::default()).await;
@@ -186,7 +186,7 @@ async fn a_departure_with_a_stuck_copy_forgets_the_demoted_and_fails_naming_it()
     let test = harness(true).await;
     test.plugin.reply(
         "Storage.Demote",
-        json!({"Ok": {"demoted": ["data"], "stuck": ["seed"]}}),
+        json!({"Ok": {"demoted": ["data"], "stuck": ["seed"], "failed": []}}),
     );
     let error = test.local.leave(LeaveRequest::default()).await.unwrap_err();
     assert!(
@@ -384,7 +384,7 @@ async fn a_join_whose_departure_fails_stays_uninitialized_and_retries() {
 
     test.plugin.reply(
         "Storage.Demote",
-        json!({"Ok": {"demoted": ["data"], "stuck": []}}),
+        json!({"Ok": {"demoted": ["data"], "stuck": [], "failed": []}}),
     );
     test.local.enroll(request).await.unwrap();
     assert_eq!(

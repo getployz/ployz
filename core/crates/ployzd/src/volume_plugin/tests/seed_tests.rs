@@ -359,7 +359,7 @@ async fn departure_during_a_seed_copy_stops_it_and_destroys_the_slot() {
     let reply = post(&socket, "/Storage.Demote", json!(null)).await;
     assert_eq!(
         reply,
-        json!({"Ok": {"demoted": ["data", "seed"], "stuck": []}})
+        json!({"Ok": {"demoted": ["data", "seed"], "stuck": [], "failed": []}})
     );
     assert!(!Path::new(&format!("/proc/{}", pid.trim())).exists());
     assert!(!test.0.join("seed-slot").exists());
@@ -404,7 +404,7 @@ async fn departure_keeps_a_completed_seed_whose_source_pruned_its_point() {
         let reply = post(&socket, "/Storage.Demote", json!(null)).await;
         assert_eq!(
             reply,
-            json!({"Ok": {"demoted": ["data"], "stuck": []}}),
+            json!({"Ok": {"demoted": ["data"], "stuck": [], "failed": []}}),
             "{into}"
         );
         assert!(test.0.join("seed-fs").exists(), "{into}: the seed is kept");
@@ -423,7 +423,10 @@ async fn departure_keeps_a_completed_seed_of_a_departure_snapshot() {
     let socket = completed_seed(&test, "seed", point, "77").await;
 
     let reply = post(&socket, "/Storage.Demote", json!(null)).await;
-    assert_eq!(reply, json!({"Ok": {"demoted": ["data"], "stuck": []}}));
+    assert_eq!(
+        reply,
+        json!({"Ok": {"demoted": ["data"], "stuck": [], "failed": []}})
+    );
     assert_eq!(
         snapshot_names(&test, "tank/ployz-mirror/seed/fs"),
         vec!["dep-1700000000"]
@@ -473,7 +476,10 @@ async fn departure_keeps_a_seed_whose_receive_exited_before_its_run_finished() {
     tokio::time::sleep(Duration::from_millis(200)).await;
     let _ = fs::remove_file(test.0.join("props/stall-command"));
     let reply = departure.await.unwrap();
-    assert_eq!(reply, json!({"Ok": {"demoted": ["data"], "stuck": []}}));
+    assert_eq!(
+        reply,
+        json!({"Ok": {"demoted": ["data"], "stuck": [], "failed": []}})
+    );
     assert!(test.0.join("seed-fs").exists(), "the seed is kept");
     assert_eq!(
         snapshot_names(&test, "tank/ployz-mirror/seed/fs"),
@@ -503,7 +509,10 @@ async fn departure_keeps_a_seed_whose_landing_stopped_before_the_rename() {
     );
 
     let reply = post(&socket, "/Storage.Demote", json!(null)).await;
-    assert_eq!(reply, json!({"Ok": {"demoted": ["data"], "stuck": []}}));
+    assert_eq!(
+        reply,
+        json!({"Ok": {"demoted": ["data"], "stuck": [], "failed": []}})
+    );
     assert!(test.0.join("seed-fs").exists());
 }
 
@@ -538,7 +547,7 @@ async fn departure_demotes_the_others_and_names_a_seed_whose_receive_will_not_st
     fs::remove_file(test.0.join("props/stall-command")).unwrap();
     assert_eq!(
         reply,
-        json!({"Ok": {"demoted": ["data"], "stuck": ["seed"]}}),
+        json!({"Ok": {"demoted": ["data"], "stuck": ["seed"], "failed": []}}),
         "a stuck seed leaves every other Volume to be demoted"
     );
     let again = post(&socket, "/Storage.Demote", json!(null)).await;

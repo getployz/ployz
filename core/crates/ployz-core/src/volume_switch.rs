@@ -12,12 +12,20 @@ use crate::{CopyRole, DockerVolumeName, MachineName, RpcError, RpcErrorCode, Wri
 pub const VOLUME_PLUGIN_CALL_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// What a storage departure changed. The daemon forgets each `demoted` name in Docker.
-/// A `stuck` Volume's copy would not stop, so its datasets are left as they were and the
-/// departure fails naming it; a retry demotes it once the copy has stopped.
+/// A `stuck` Volume's copy would not stop, and a `failed` Volume's demote went wrong;
+/// either way the departure fails naming it, and a retry judges it again.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct StorageDeparture {
     pub demoted: Vec<DockerVolumeName>,
     pub stuck: Vec<DockerVolumeName>,
+    pub failed: Vec<DepartureFailure>,
+}
+
+/// A Volume a storage departure could not demote, and why.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DepartureFailure {
+    pub name: DockerVolumeName,
+    pub reason: String,
 }
 
 /// ZFS `guid` of a snapshot; stable across send and receive.
