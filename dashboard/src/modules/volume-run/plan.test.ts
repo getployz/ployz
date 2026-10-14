@@ -428,9 +428,9 @@ describe("follow every next step a refusal names", () => {
   const beside: [string, Member[]][] = [
     ["no slot", []],
     ["one slot", [member("fsn-3", "mirror")]],
-    ["two slots", [member("fsn-4", "behind"), member("fsn-3", "mirror")]],
-    // The freshest slot is last by name and listed last, so picking by member order or freshness names fsn-4.
-    ["two slots listed by name", [member("fsn-3", "behind"), member("fsn-4", "mirror")]],
+    // The same two slots with only their names swapped, so a pick by anything but the name takes fsn-4 in one row.
+    ["two slots", [member("fsn-4", "behind", { id: "a", slot: "1" }), member("fsn-3", "mirror", { id: "b", slot: "2" })]],
+    ["two slots listed by name", [member("fsn-3", "behind", { id: "a", slot: "1" }), member("fsn-4", "mirror", { id: "b", slot: "2" })]],
   ];
   const cuts: [string, Member[]][] = [
     ["a newer cut with a snapshot", [member("fsn-1", "cut", { epoch: 8 }), member("fsn-2", "cut", { epoch: 9 })]],
