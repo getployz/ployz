@@ -106,6 +106,14 @@ pub struct Target {
     pub platforms: Vec<String>,
 }
 
+impl Target {
+    /// Whether the capture leaves the platform to the Builder's native one.
+    #[must_use]
+    pub fn is_native(&self) -> bool {
+        self.platforms.is_empty()
+    }
+}
+
 /// What an attempt does with its result. These outcomes are exclusive: an
 /// attempt cannot both validate and produce an image.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
