@@ -27,13 +27,13 @@ export const NO_MOUNTS_CONFIGURED = line("No mounts configured", "idle");
 
 /** What evidence says of a Service (`runtime`, null when none names it; `whole`, no Server is missing from it). */
 function evidenceLine(runtime: Pick<RuntimeServiceRecord, "containers"> | null, whole: boolean, desiredReplicas: number | null, deploying: boolean) {
-  // A Deploy in flight stops old containers and starts new ones: nothing running yet is it starting, unless one crashed.
-  const absent = deploying ? line("Starting", "quiet") : line("Not running", "bad", true);
-  if (!runtime) return whole ? absent : line("Deployed", "quiet");
+  const absent = line("Not running", "bad", true);
+  // No Server has ever named it and a Deploy is starting it: its first containers are on their way.
+  if (!runtime) return !whole ? line("Deployed", "quiet") : deploying ? line("Starting", "quiet") : absent;
   if (runtime.containers.length === 0) return absent;
   const running = runtime.containers.filter((container) => container.runtime?.state === "running");
   if (running.length === 0) return runtime.containers.every((container) => container.runtime?.state === "exited" && container.runtime.code === 0)
-    ? deploying ? absent : line("Stopped", "bad", true) : line("Crashed", "crashed", true);
+    ? line("Stopped", "bad", true) : line("Crashed", "crashed", true);
   const serving = running.filter(containerServing).length;
   if (serving === 0) return line("Starting", "quiet");
   const checkFailing = running.some((container) => container.runtime?.health === "failing");
@@ -51,7 +51,8 @@ export type RuntimeLens = Pick<ReturnType<typeof useRuntimeLens>, "status" | "in
 /**
  * A Service's status line: what runs now, from runtime evidence. Staged work never replaces it, and it never guesses:
  * before evidence it waits, and evidence that isn't current reads grey with its age.
- * `deploying`: a Deploy in flight restarts it, so nothing running, or a clean exit, reads Starting rather than down.
+ * `deploying`: a Deploy in flight restarts it. Current evidence that names no record of it then reads Starting, not Not running;
+ * any record it has still says what it says: a Service already down stays down.
  * `desiredReplicas`: how many it asks for, when known; fewer serving reads Degraded, except while a Deploy rolls them.
  */
 export function runtimeLine(
