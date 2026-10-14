@@ -466,21 +466,34 @@ export const takeDeployLane = Effect.fn("VolumeRun.takeDeployLane")(function* (c
   return { run: contextOf(row), ended };
 });
 
-export const machineNamed = Effect.fn("VolumeRun.machineNamed")(function* (organizationId: string, machine: MachineId) {
+/** The Machines the Cluster names now; none when it does not answer. */
+export const namedMachines = Effect.fn("VolumeRun.namedMachines")(function* (organizationId: string) {
   const frame = yield* openSession(organizationId).pipe(
     Effect.flatMap((session) => session.watchFirstFrame(5_000)),
     Effect.option,
   );
-  const name = Option.flatMap(frame, ({ machines }) => Option.fromNullishOr(machines.find((entry) => entry.machine.id === machine)?.machine.name));
-  return { id: machine, name: Option.getOrNull(name) };
+  return Option.match(frame, {
+    onNone: (): MachineRef[] => [],
+    onSome: ({ machines }) => machines.map(({ machine }) => ({ id: machine.id, name: machine.name })),
+  });
 }, Effect.scoped);
+
+export const machineNamed = Effect.fn("VolumeRun.machineNamed")(function* (organizationId: string, machine: MachineId) {
+  const named = (yield* namedMachines(organizationId)).find((entry) => entry.id === machine);
+  return { id: machine, name: named?.name ?? null };
+});
 
 /**
  * A Server leaving: each warm lane bound for `machine`, or on a Volume whose writer copy it holds (`writes`, by Docker
- * Volume), is taken over by a release, so the Volume's Service stays where it runs. Only requests the releases.
+ * Volume), is taken over by a release, so the Volume's Service stays where it runs. Only requests the releases. A lane
+ * past its point of no return toward `machine` can finish nowhere, so it ends failed at once, naming the copy `held`
+ * on another Server to restore from.
  */
 export const releaseLanesOff = Effect.fn("VolumeRun.releaseLanesOff")(function* (
-  organizationId: string, machine: { readonly id: MachineId; readonly name: MachineName | null }, writes: readonly string[],
+  organizationId: string,
+  machine: { readonly id: MachineId; readonly name: MachineName | null },
+  writes: readonly string[],
+  held: Readonly<Record<string, MachineName>> = {},
 ) {
   const database = yield* Database;
   const lanes = yield* database.drizzle.select().from(volumeRun).where(and(
@@ -510,7 +523,44 @@ export const releaseLanesOff = Effect.fn("VolumeRun.releaseLanesOff")(function* 
     );
     if (taken !== null) released.push(taken.run.id);
   }
+  // After the takeovers: a lane that committed before its takeover could lock it was refused, and ends here.
+  yield* endLanesTo(organizationId, machine, held);
   return released;
+});
+
+/**
+ * Ends every committed lane whose writer-to-be is `machine`; each one's Inngest run is cancelled with it. A committed Move
+ * that fails meanwhile hands its lane to a release bound for the same Server, so it looks again until none is left.
+ */
+const endLanesTo = Effect.fn("VolumeRun.endLanesTo")(function* (
+  organizationId: string,
+  machine: { readonly id: MachineId; readonly name: MachineName | null },
+  held: Readonly<Record<string, MachineName>>,
+) {
+  const database = yield* Database;
+  for (;;) {
+    const lanes = yield* database.drizzle.select().from(volumeRun).where(and(
+      eq(volumeRun.organizationId, organizationId),
+      inArray(volumeRun.state, ACTIVE_VOLUME_RUN_STATES),
+      eq(volumeRun.phase, "committed"),
+      eq(volumeRun.current, machine.id),
+    ));
+    if (lanes.length === 0) return;
+    for (const lane of lanes) {
+      const holder = held[lane.dockerVolume];
+      const lost = `${lane.volumeName}'s writer was on ${machine.name ?? machine.id} (removed)`;
+      const message = holder === undefined
+        ? `${lost}. No other server's copy is known to hold its newest data.`
+        : `${lost}. Restore from ${holder}'s copy: ployz volume restore ${lane.volumeName} --from ${holder}`;
+      yield* database.transaction(Effect.gen(function* () {
+        const { drizzle } = yield* Database;
+        const [closed] = yield* drizzle.update(volumeRun).set(ended("failed", message))
+          .where(and(eq(volumeRun.id, lane.id), inArray(volumeRun.state, ACTIVE_VOLUME_RUN_STATES), eq(volumeRun.current, machine.id)))
+          .returning({ id: volumeRun.id });
+        if (closed !== undefined) yield* enqueueEvent(createVolumeRunTakenEvent({ runId: closed.id }));
+      }));
+    }
+  }
 });
 
 export const listVolumeRuns = Effect.fn("VolumeRun.list")(function* (organizationId: string, volumeId: string) {
@@ -1114,12 +1164,15 @@ const configVolumeNames = Effect.fn("VolumeRun.configVolumeNames")(function* (or
 
 export type CopyObserver = (organizationId: string) => Effect.Effect<CopyObservation["copies"], unknown, Database | SecretEncryption>;
 
-export const observeOrganizationCopies: CopyObserver = (organizationId) =>
+export const observeOrganization = (organizationId: string) =>
   Effect.gen(function* () {
     const loaded = yield* loadOrganizationConnections(organizationId);
-    if (loaded.kind !== "ready" || loaded.connections.length === 0) return [];
-    return (yield* observeVolumeCopies(loaded.connections)).copies;
+    if (loaded.kind !== "ready" || loaded.connections.length === 0) return { copies: [], unanswered: [] } satisfies CopyObservation;
+    return yield* observeVolumeCopies(loaded.connections);
   });
+
+export const observeOrganizationCopies: CopyObserver = (organizationId) =>
+  observeOrganization(organizationId).pipe(Effect.map((observed) => observed.copies));
 
 function unheldRootNames(copies: CopyObservation["copies"], configNames: ReadonlySet<string>): string[] {
   const roots = copies.filter((copy) => copy.role !== "slot" && !configNames.has(copy.name));
