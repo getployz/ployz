@@ -414,11 +414,11 @@ def retire(dead, delete):
     return results
 
 
-def forget_fingerprints(image, keep=None):
-    """Remove every fingerprint of `image` that fingerprints() named under any key, except `keep`."""
+def forget_fingerprints(image):
+    """Remove every fingerprint of `image` that fingerprints() named under any key."""
     saved = re.compile(re.escape(image) + r"(\.[0-9a-f]{10})?\.fingerprint")
     for path in REGISTRY.glob(f"{image}.*fingerprint"):
-        if path != keep and saved.fullmatch(path.name):
+        if saved.fullmatch(path.name):
             path.unlink(missing_ok=True)
 
 
@@ -729,7 +729,6 @@ if [ -n "$(ss -Hlun 'sport = :51820')" ]; then echo "UDP port 51820 is taken" >&
             captured = self.fingerprint(node)
             if "ssh" not in captured:
                 write(fingerprints(self.run["image"]), captured)
-                forget_fingerprints(self.run["image"], keep=fingerprints(self.run["image"]))
 
     def install_key(self, node, sandbox):
         key = (self.private / "id_ed25519.pub").read_text().strip()

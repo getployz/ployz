@@ -572,7 +572,7 @@ class Pool(unittest.TestCase):
         provider.fingerprint = lambda node: {"containers": []}
         provider.start(dict(name="machine-1"))
         self.assertEqual(boat.read(boat.fingerprints("bake-a")), {"containers": []})
-        self.assertEqual([path.exists() for path in old + kept], [False, False, True, True, True])
+        self.assertEqual([path.exists() for path in kept], [True, True, True])
 
     def test_the_ledger_keeps_what_one_lock_saves_and_is_no_run_record(self):
         with boat.pool() as entries:
