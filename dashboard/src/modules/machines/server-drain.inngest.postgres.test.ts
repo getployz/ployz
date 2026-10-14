@@ -23,7 +23,7 @@ import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postg
 const organizationId = "00000000-0000-4000-8000-000000000d01";
 const userId = "00000000-0000-4000-8000-000000000d02";
 const actor = { userId };
-const caller = { userId, organization: { id: organizationId, slug: "acme" }, credential: { kind: "session" as const, id: "session-1" }, support: null };
+const caller = { userId, organization: { id: organizationId, slug: "acme" }, credential: { kind: "session" as const, id: "session-1" }, support: null, via: "dashboard" as const };
 const machineId = "a".repeat(32);
 const otherMachineId = "b".repeat(32);
 const requestId = "00000000-0000-4000-8000-0000000000a1";
@@ -238,24 +238,13 @@ describe("drain-server", () => {
     expect(drainCalls).toEqual([[machineId, { scope: "services", services: ["shop-production/api"] }]]);
   });
 
-  it("a dashboard Drain that retires the last copy of a Global asks a human, and runs once with the approval", async () => {
+  it("a dashboard Drain that retires the last copy of a Global runs without asking anyone", async () => {
     frame = frameOf("global");
-    const asked = await request();
-    if (!("asking" in asked)) return expect.fail(`the Drain ran without asking: ${JSON.stringify(asked)}`);
-    expect(await rows()).toEqual([]);
-    expect(send).not.toHaveBeenCalled();
-    const approvals = await harness.pool.query(`select id, status, command from operation_approvals`);
-    expect(approvals.rows).toEqual([{ id: asked.asking.approvalId, status: "pending", command: "drain" }]);
+    expect(await request()).toMatchObject({ drain: { attemptId: requestId, state: "pending" } });
+    expect((await harness.pool.query(`select count(*)::int as n from operation_approvals`)).rows).toEqual([{ n: 0 }]);
+    await drain();
 
-    expect(await runEffect(requestServerDrain(caller, { organizationSlug: "acme", machineId, requestId })))
-      .toMatchObject({ asking: { approvalId: asked.asking.approvalId } });
-    expect(await rows()).toEqual([]);
-
-    await harness.pool.query(`update operation_approvals set status = 'approved', decided_at = now() where id = $1`, [asked.asking.approvalId]);
-    const approved = { organizationSlug: "acme", machineId, requestId, approvalId: asked.asking.approvalId };
-    expect(await runEffect(requestServerDrain(caller, approved))).toMatchObject({ drain: { attemptId: requestId, state: "pending" } });
-    expect(await runEffect(requestServerDrain(caller, approved))).toMatchObject({ drain: { attemptId: requestId } });
-    expect((await harness.pool.query(`select approval_id from server_drain_attempt`)).rows).toEqual([{ approval_id: asked.asking.approvalId }]);
+    expect(drainCalls).toEqual([[machineId, { scope: "services", services: ["shop-production/api"] }]]);
   });
 
   it("plans again when its turn comes and refuses a destroy its gate never saw, without asking the Engine", async () => {
@@ -271,17 +260,6 @@ describe("drain-server", () => {
       refusal_message: "The drain now destroys something nobody approved. Drain the server again to review it.",
       started_at: null,
     }]);
-  });
-
-  it("runs a queued Drain whose approval covers what it destroys when its turn comes", async () => {
-    frame = frameOf("global");
-    const asked = await request();
-    if (!("asking" in asked)) return expect.fail(`the Drain ran without asking: ${JSON.stringify(asked)}`);
-    await harness.pool.query(`update operation_approvals set status = 'approved', decided_at = now() where id = $1`, [asked.asking.approvalId]);
-    await runEffect(requestServerDrain(caller, { organizationSlug: "acme", machineId, requestId, approvalId: asked.asking.approvalId }));
-    await drain();
-
-    expect(drainCalls).toEqual([[machineId, { scope: "services", services: ["shop-production/api"] }]]);
   });
 
   it("answers a CLI retry carrying the approval a Drain consumed with that Drain, not a second one", async () => {

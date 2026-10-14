@@ -423,6 +423,14 @@ it.live("an operation that destroys nothing runs without asking", () =>
     expect(yield* rows).toEqual([]);
   }));
 
+it.live("a person's destructive operation from the dashboard runs without asking and records no approval", () =>
+  Effect.gen(function* () {
+    const { provided, caller, rows } = yield* operationCloud();
+    const person: Caller = { ...caller, via: "dashboard" };
+    expect(yield* provided(gateOperation(person, null, drainOf(["shop.web"])))).toEqual({ ok: true, approvalId: null });
+    expect(yield* rows).toEqual([]);
+  }));
+
 it.live("a destructive operation waits on one approval of exactly its preview, and its retry runs once approved", () =>
   Effect.gen(function* () {
     const { provided, caller, gate, rows } = yield* operationCloud();
