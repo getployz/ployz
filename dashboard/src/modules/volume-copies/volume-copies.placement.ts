@@ -80,7 +80,7 @@ export function copiesFromPlacement(input: {
       server: observed.primary ?? (form.primary.change === null ? form.primary.server : null),
       restore: seed === undefined ? null : { label: seed.point.name },
       moveTo: moving ? form.primary.server : null,
-      busy: active !== null && ["move", "release", "restore", "seed"].includes(active.kind) ? runWords(active) : null,
+      busy: active !== null && ["move", "release", "restore", "seed", "deploy"].includes(active.kind) ? runWords(active) : null,
       snapshots: null,
     },
     elsewhere: [

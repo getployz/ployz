@@ -16,12 +16,19 @@ export type VolumeRunKind = (typeof VOLUME_RUN_KINDS)[number];
 /** The sidebar also pins the Machine it resolved, so a renamed or reused Server name can't redirect the run. */
 type Destination = { readonly to: MachineName; readonly machine?: MachineId };
 
+/**
+ * What a requested Release's plan showed: the slots it may resume from and the slots it may forget. The run refuses to
+ * resume or forget anywhere else, so it never deletes a copy the approval did not name. Cloud's own Release of a Move
+ * it ended carries none.
+ */
+export type ReleasePlan = { readonly sources: MachineId[]; readonly forgets: MachineId[] };
+
 export type VolumeRunArgs = {
   mirror: Destination;
   sync: { readonly full: boolean };
   delete_mirror: { readonly slot: MachineName | null; readonly confirmed_name: string | null };
   move: Destination;
-  release: Record<string, never>;
+  release: { readonly plan?: ReleasePlan };
   restore: { readonly from: MachineName };
   seed: {
     readonly into: { readonly volumeId: string; readonly dockerVolume: string; readonly name: string };

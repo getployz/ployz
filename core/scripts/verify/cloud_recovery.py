@@ -43,7 +43,7 @@ def recover_deploy(manifest, deploy, number, verify, cli):
     new_pid = int(pid_file.read_text())
     assert new_pid != old_pid and alive(new_pid), f"runner start did not replace worker {old_pid}: {new_pid}"
     output = deploy.communicate(timeout=900)[0]
-    assert deploy.returncode == 0 and "of verify/production: applied" in output, f"The Deploy did not complete:\n{output}"
+    assert deploy.returncode == 0, f"The Deploy did not complete:\n{output}"
     deployment = newest()
     assert deployment["id"] == interrupted and deployment["number"] == number and deployment["status"] == "applied", \
         f"The interrupted Deploy did not apply: {deployment}"

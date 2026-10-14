@@ -15,11 +15,12 @@
   undo-after-cut    `volume release` after commit: refused, the move finishes on B
   kill-*            the daemon killed inside each copy cell, one kill per cell
 
-`run` needs a ready two-Machine Incus vc with Cloud and verify faults:
+`run` needs a ready two-Machine vc, Incus or Boat, with Cloud and verify faults:
   PLOYZ_VERIFY_CARGO_ARGS='--features ployz/verify-faults,ployzd/verify-faults' \\
     scripts/verify-cluster up --machines 2 --daemon checkout --cloud
-Hold /tmp/ployz-warm-move-vc.lock across up, the run and down. `--soak` holds about 8 GB of Postgres per
-Machine copy, so give it room with `up --disk 48GiB --memory 4GiB`.
+A Boat vc (the default) needs no lock. For an Incus vc (`up --provider incus`), hold /tmp/ployz-warm-move-vc.lock
+across up, the run and down. `--soak` holds about 8 GB of Postgres per Machine copy; a Boat sandbox has that room,
+and an Incus vc needs `up --provider incus --disk 48GiB --memory 4GiB`.
 Results land in the run's evidence/volume-move-<time>/, one JSON per case and summary.json.
 """
 
@@ -1421,9 +1422,9 @@ def main():
         return 1 if hits else 0
     cases = select_cases(soak_cases() if args.soak else CASES, args.case)
     manifest = json.loads(args.manifest.read_text())
-    if manifest["provider"] != "incus" or manifest["state"] != "ready" or len(manifest["machines"]) != 2 \
+    if manifest["provider"] not in ["incus", "boat"] or manifest["state"] != "ready" or len(manifest["machines"]) != 2 \
             or "cloud" not in manifest:
-        raise RuntimeError("Use a ready two-Machine Incus vc started with --cloud")
+        raise RuntimeError("Use a ready two-Machine Incus or Boat vc started with --cloud")
     checks = VolumeMove(args.manifest, size_gb=args.size_gb if args.soak else None)
     for signum in (signal.SIGTERM, signal.SIGHUP):
         signal.signal(signum, interrupt)
