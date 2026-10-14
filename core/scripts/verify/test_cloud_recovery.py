@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Cloud recovery must kill the recorded worker and finish the same Deploy through a new one."""
+"""Cloud recovery must kill the recorded worker, then resume the Deploy or, once prepared, redeploy it."""
 
 import importlib.machinery
 import importlib.util
@@ -128,7 +128,7 @@ class Recovery(unittest.TestCase):
             return "", None
 
         self.deploy.communicate = replay
-        with self.assertRaisesRegex(AssertionError, "replayed"):
+        with self.assertRaisesRegex(AssertionError, "did not end unknown"):
             self.recover()
 
     def test_a_failed_redeploy_is_not_recovery(self):

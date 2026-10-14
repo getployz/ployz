@@ -1,4 +1,4 @@
-"""Prove that an interrupted Cloud Deploy finishes through a replacement worker."""
+"""Prove that an interrupted Cloud Deploy recovers through a replacement worker."""
 
 import json
 import os
@@ -35,20 +35,30 @@ def recover_deploy(manifest, deploy, number, verify, cli):
     verify("runner", "kill", manifest)
     assert not alive(old_pid), f"The worker {old_pid} survived runner kill"
     time.sleep(10)
-    deployment = newest()
-    assert deploy.poll() is None and deployment["id"] == interrupted and deployment["status"] == "running", \
-        f"The interrupted Deploy settled without its runner: {deployment}"
+    shown = json.loads(cli("--json", "deployment", "show", str(number)))
+    assert deploy.poll() is None and shown["id"] == interrupted and shown["status"] == "running", \
+        f"The interrupted Deploy settled without its runner: {shown}"
+    prepared = shown["preview"] is not None
 
     verify("runner", "start", manifest)
     new_pid = int(pid_file.read_text())
     assert new_pid != old_pid and alive(new_pid), f"runner start did not replace worker {old_pid}: {new_pid}"
     output = deploy.communicate(timeout=900)[0]
-    assert deploy.returncode == 0, f"The Deploy did not complete:\n{output}"
     deployment = newest()
-    assert deployment["id"] == interrupted and deployment["number"] == number and deployment["status"] == "applied", \
-        f"The interrupted Deploy did not apply: {deployment}"
+    if prepared:
+        assert deploy.returncode == 3 and deployment["id"] == interrupted and deployment["status"] == "unknown", \
+            f"A Deploy killed after its Preview did not end unknown: {deployment}\n{output}"
+        cli("deploy")
+        deployment = newest()
+        assert deployment["number"] == number + 1 and deployment["status"] == "applied", \
+            f"The redeploy did not apply: {deployment}"
+    else:
+        assert deploy.returncode == 0, f"The Deploy did not complete:\n{output}"
+        assert deployment["id"] == interrupted and deployment["number"] == number and deployment["status"] == "applied", \
+            f"The interrupted Deploy did not apply: {deployment}"
     assert not alive(old_pid) and alive(new_pid), f"The replacement worker {new_pid} did not survive recovery"
     web = [container for container in json.loads(cli("--json", "ps"))["containers"]
            if container["labels"].get("ployz.service.name") == "web"]
-    assert len(web) == 1, f"Expected one web container after the resumed Deploy: {web}"
-    return dict(deployment_id=interrupted, number=number, old_worker_pid=old_pid, new_worker_pid=new_pid)
+    assert len(web) == 1, f"Expected one web container after recovery: {web}"
+    return dict(deployment_id=interrupted, number=number, prepared=prepared, old_worker_pid=old_pid,
+                new_worker_pid=new_pid)
