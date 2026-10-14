@@ -961,6 +961,35 @@ describe("volume runs", () => {
         state: "failed", message: "data's writer was on fsn-2 (removed). Restore from fsn-1's copy: ployz volume restore data --from fsn-1",
       });
     });
+
+    it.each(["release", "move"] as const)("removing B ends a running committed %s at once, so a restore from A's copy starts", async (kind) => {
+      const move = await warmMove();
+      await harness.pool.query("update volume_run set phase = 'committed', current = $2 where id = $1", [move.id, idOf("fsn-2")]);
+      let lane = move.id;
+      if (kind === "release") {
+        await harness.pool.query("update volume_run set state = 'failed', finished_at = now() where id = $1", [move.id]);
+        lane = (await requested({ kind: "release", args: {} })).id;
+        await harness.pool.query("update volume_run set state = 'running', inngest_run_id = 'run-2', phase = 'committed', current = $2 where id = $1", [lane, idOf("fsn-2")]);
+      }
+      send.mockClear();
+
+      await runEffect(releaseLanesOff(organizationId, fsn("fsn-2"), [], { [dockerVolume]: "fsn-1" }));
+
+      expect((await lanes()).find((row) => row.id === lane)).toMatchObject({
+        state: "failed", message: "data's writer was on fsn-2 (removed). Restore from fsn-1's copy: ployz volume restore data --from fsn-1",
+      });
+      expect(send).toHaveBeenCalledWith(expect.objectContaining({ name: "volume/run.taken", data: { runId: lane } }));
+      expect(await request({ kind: "restore", args: { from: "fsn-1" } })).toMatchObject({ ok: true, run: { kind: "restore" } });
+    });
+
+    it("removing a Server leaves a committed lane bound elsewhere alone", async () => {
+      const move = await warmMove();
+      await harness.pool.query("update volume_run set phase = 'committed', current = $2 where id = $1", [move.id, idOf("fsn-2")]);
+
+      await runEffect(releaseLanesOff(organizationId, fsn("fsn-1"), [dockerVolume], { [dockerVolume]: "fsn-2" }));
+
+      expect(await lanes()).toMatchObject([{ id: move.id, state: "running", phase: "committed" }]);
+    });
   });
 
   describe("lane gen", () => {

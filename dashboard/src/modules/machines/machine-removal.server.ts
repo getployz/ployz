@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 
-import type { LocalMachineRemoved, MachineId } from "@ployz/sdk";
+import type { LocalMachineRemoved, MachineId, MachineName } from "@ployz/sdk";
 import { Data, Effect, Option } from "effect";
 import { createMachineRemoveRequestedEvent } from "#/modules/inngest/events";
 import type { Actor } from "#/modules/identity/actor";
@@ -35,7 +35,7 @@ import { dropRemovedServer, forgetEmptiedPairing } from "#/modules/machines/pair
 import { loadOrganizationConnections } from "#/modules/machines/connections.server";
 import { planRemove } from "#/modules/machines/server-operations.server";
 import { storeSystem } from "#/modules/config-store/config-store.server";
-import { machineNamed, observeOrganizationCopies, releaseLanesOff } from "#/modules/volume-run/volume-run.server";
+import { namedMachines, observeOrganizationCopies, releaseLanesOff } from "#/modules/volume-run/volume-run.server";
 
 function asMachineId(machineId: string): MachineId {
   // SAFETY: Cloud machine ids are the same strings rust brands as MachineId.
@@ -162,15 +162,23 @@ export const removeMachineActivity = Effect.fn("MachineRemoval.remove")(
 export const observeLeavingServerActivity = Effect.fn("MachineRemoval.observeLeaving")(function* (input: {
   organizationId: string; machineId: string;
 }) {
-  const machine = yield* machineNamed(input.organizationId, asMachineId(input.machineId));
+  const id = asMachineId(input.machineId);
+  const servers = yield* namedMachines(input.organizationId);
+  const machine = { id, name: servers.find((server) => server.id === id)?.name ?? null };
   const copies = yield* observeOrganizationCopies(input.organizationId).pipe(Effect.orElseSucceed(() => []));
-  const writes = copies.flatMap((copy) => copy.machine_id === machine.id && copy.role === "writer" ? [copy.name] : []);
-  return { machine, writes };
+  const writes = copies.flatMap((copy) => copy.machine_id === id && copy.role === "writer" ? [copy.name] : []);
+  // A copy on another Server, by Docker Volume: what a lane committed to the leaving Server names to restore from.
+  const held: Record<string, MachineName> = {};
+  for (const copy of copies) {
+    const holder = copy.machine_id === id ? undefined : servers.find((server) => server.id === copy.machine_id);
+    if (holder !== undefined) held[copy.name] ??= holder.name;
+  }
+  return { machine, writes, held };
 });
 
 export const releaseLeavingLanesActivity = (input: {
-  organizationId: string; machineId: string; name: string | null; writes: readonly string[];
-}) => releaseLanesOff(input.organizationId, { id: asMachineId(input.machineId), name: input.name }, input.writes);
+  organizationId: string; machineId: string; name: string | null; writes: readonly string[]; held?: Readonly<Record<string, MachineName>>;
+}) => releaseLanesOff(input.organizationId, { id: asMachineId(input.machineId), name: input.name }, input.writes, input.held);
 
 /**
  * What a removed Server leaves of Cloud's hold. A reset that didn't finish is a partial outcome: the Server may keep

@@ -165,8 +165,8 @@ the release fails and names the copy to restore from:
 data has no writer and no stopped Service on its copies; ployz volume restore data --from web-2
 ```
 
-If you remove `web-2` after it was told to start your service, the move fails and names the copy
-left:
+If you remove `web-2` after it was told to start your service, the move fails as the removal
+finishes, so you can restore right away. Its error names the copy left:
 
 ```
 data's writer was on web-2 (removed). Restore from web-1's copy: ployz volume restore data --from web-1
