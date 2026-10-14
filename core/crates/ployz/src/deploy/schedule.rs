@@ -89,7 +89,6 @@ pub(crate) enum Event {
     Failed(usize),
     Published(usize),
     PublishFailed(usize),
-    /// The flip got no answer and could not be read back.
     PublishUnconfirmed(usize),
     /// `machine` routes `service` at this Deploy's pointer.
     Acked {
@@ -212,9 +211,6 @@ impl Schedule {
             .collect()
     }
 
-    /// Where each Service group ended: done is new, started but not done is
-    /// old, never started is not started, and a flip nobody could read back is
-    /// unconfirmed.
     pub(crate) fn services(&self) -> Vec<ServiceOutcome> {
         self.slots
             .iter()

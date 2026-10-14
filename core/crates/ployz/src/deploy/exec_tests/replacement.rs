@@ -503,7 +503,6 @@ async fn a_stop_first_or_rolling_failure_restores_every_old_copy_and_removes_eve
             swap(&first, &old_first, order),
             swap(&second, &old_second, order),
         ];
-        // One stop-first step inspects every old copy before it amends the row.
         let inspect_second = || observed(Call::Inspect(second, old_second), running());
         let mut steps = vec![observed(Call::Inspect(first, old_first), running())];
         if order == UpdateOrder::StopFirst {
@@ -643,17 +642,19 @@ async fn a_stopped_copy_stays_held_until_its_deploy_publishes() {
         panic!("one amendment: {amendments:?}");
     };
     assert_eq!(
-        serde_json::to_value(&amendment.pointer).unwrap()["deciding"],
-        serde_json::json!("run"),
+        amendment.pointer.deciding,
+        Some(run_id()),
         "the stop holds its copy for this deploy"
     );
-    let published = serde_json::to_value(client.pointers.lock().unwrap().get(&api())).unwrap();
-    assert_eq!(published["deploy"], serde_json::json!("run"));
-    assert_eq!(
-        published.get("deciding"),
-        None,
-        "publishing lets the copy retire"
-    );
+    let published = client
+        .pointers
+        .lock()
+        .unwrap()
+        .get(&api())
+        .cloned()
+        .unwrap();
+    assert_eq!(published.deploy, run_id());
+    assert_eq!(published.deciding, None, "publishing lets the copy retire");
     client.assert_done();
 }
 

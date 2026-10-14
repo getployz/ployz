@@ -238,10 +238,9 @@ impl Rotation {
 
     /// A row that gains its first retiring id names its own deploy in `previous`, so a
     /// Machine that cannot see every pointed copy yet keeps routing the retiring ones.
-    /// A row an undecided Deploy holds prunes nothing: its stopped copies may restart.
     pub(crate) fn apply(&self, current: &ServingPointer) -> Applied {
         let mut next = current.clone();
-        if current.deciding.is_none() {
+        if !current.is_held() {
             next.retiring.retain(|id| !self.pruning.contains(id));
         }
         for join in &self.joining {

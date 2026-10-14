@@ -23,6 +23,12 @@ pub struct ServingPointer {
 }
 
 impl ServingPointer {
+    /// Whether an undecided Deploy holds `retiring` against retirement and pruning.
+    #[must_use]
+    pub fn is_held(&self) -> bool {
+        self.deciding.is_some()
+    }
+
     /// Cluster table key `serving/<namespace>/<service>`.
     #[must_use]
     pub fn key(service: &QualifiedService) -> String {

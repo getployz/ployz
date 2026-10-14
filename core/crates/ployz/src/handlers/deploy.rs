@@ -1018,7 +1018,7 @@ pub(super) fn say_view(view: &DeploymentView) {
         }
     }
     if let Some(ployz_store::Outcome::Executed { services, .. }) = &view.deployment.outcome {
-        for line in ended(services) {
+        for line in service_outcome_lines(services) {
             crate::ui::stream(format_args!("{line}"));
         }
     }
@@ -1047,8 +1047,7 @@ pub(super) fn say_view(view: &DeploymentView) {
     }
 }
 
-/// Where each Service ended, one line each.
-fn ended(services: &[ployz_core::ServiceOutcome]) -> Vec<String> {
+fn service_outcome_lines(services: &[ployz_core::ServiceOutcome]) -> Vec<String> {
     services
         .iter()
         .map(|ployz_core::ServiceOutcome { service, result }| {
@@ -1067,7 +1066,7 @@ fn ended(services: &[ployz_core::ServiceOutcome]) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ended, ships_all};
+    use super::{service_outcome_lines, ships_all};
     use ployz_core::ServiceName;
 
     #[test]
@@ -1080,7 +1079,7 @@ mod tests {
         ]))
         .unwrap();
         assert_eq!(
-            ended(&services),
+            service_outcome_lines(&services),
             [
                 "  web: serves its new copies",
                 "  api: still serves its old copies",

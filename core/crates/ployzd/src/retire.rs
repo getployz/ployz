@@ -255,7 +255,7 @@ impl Candidate {
             .any(|(_, pointer)| pointer.containers.contains(&self.container));
         let retiring = pointers.get(&self.service).is_some_and(|pointer| {
             pointer.deploy == self.deploy
-                && pointer.deciding.is_none()
+                && !pointer.is_held()
                 && pointer.retiring.contains(&self.container)
         });
         retiring && !pointed
@@ -304,7 +304,7 @@ impl Retirer {
             .collect();
         pointers
             .iter()
-            .filter(|(_, pointer)| pointer.deciding.is_none())
+            .filter(|(_, pointer)| !pointer.is_held())
             .flat_map(|(service, pointer)| {
                 pointer
                     .retiring
@@ -1382,11 +1382,14 @@ mod tests {
     async fn a_copy_an_undecided_deploy_stopped_is_never_retired() {
         let db = corrosion_db();
         let local = machine("local", 1);
-        let mut row = serde_json::to_value(pointers().get(&service()).unwrap()).unwrap();
-        row["deciding"] = serde_json::json!("d3");
+        let mut row = pointers().get(&service()).cloned().unwrap();
+        row.deciding = Some(deploy("d3"));
         db.execute(
             "INSERT INTO cluster (key, value) VALUES (?, ?)",
-            rusqlite::params![ServingPointer::key(&service()), row.to_string()],
+            rusqlite::params![
+                ServingPointer::key(&service()),
+                serde_json::to_string(&row).unwrap()
+            ],
         )
         .unwrap();
         db.execute(

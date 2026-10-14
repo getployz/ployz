@@ -907,7 +907,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                 started.remove(&group).unwrap_or_default()
             };
             restore_group(client, started, stopped.remove(&group).unwrap_or_default()).await;
-            rows.unretire(client, group).await;
+            rows.restore_held_copies(client, group).await;
         }
     }
 
@@ -1199,18 +1199,15 @@ struct Rows<'a> {
     operations: &'a [DeployOperation],
     run: &'a DeploymentLogId,
     admitted: std::sync::Mutex<BTreeMap<usize, ServingPointer>>,
-    /// Per group, the old copies this Deploy moved to `retiring` while holding the row.
-    held: std::sync::Mutex<BTreeMap<usize, Vec<ContainerId>>>,
-    /// The stop-first replacements of each step, sharing one inspection and amendment.
-    stop_first: Vec<StopFirstStep>,
+    held_old_copies: std::sync::Mutex<BTreeMap<usize, Vec<ContainerId>>>,
+    stop_first: Vec<StopFirstStep<'a>>,
 }
 
-struct StopFirstStep {
-    tasks: Vec<usize>,
+struct StopFirstStep<'a> {
+    tasks: Vec<(usize, &'a ployz_core::ReplacementOperation)>,
     ready: tokio::sync::OnceCell<Inspected>,
 }
 
-/// One stop-first step's old copies, inspected before the step retires them all at once.
 struct Inspected {
     old: BTreeMap<usize, Result<Option<ContainerObservation>, ExecutionError>>,
     retired: Result<(), OperationFailure>,
@@ -1230,12 +1227,18 @@ impl<'a> Rows<'a> {
                 };
                 tasks
                     .into_iter()
-                    .filter(|index| {
-                        matches!(
-                            operation_at(operations, *index),
-                            DeployOperation::ReplaceContainer(replacement)
-                                if replacement.spec.update.order.stops_first()
-                        )
+                    .filter_map(|index| {
+                        let DeployOperation::ReplaceContainer(replacement) =
+                            operation_at(operations, index)
+                        else {
+                            return None;
+                        };
+                        replacement
+                            .spec
+                            .update
+                            .order
+                            .stops_first()
+                            .then_some((index, replacement))
                     })
                     .collect::<Vec<_>>()
             })
@@ -1251,7 +1254,7 @@ impl<'a> Rows<'a> {
             operations,
             run,
             admitted: std::sync::Mutex::new(BTreeMap::new()),
-            held: std::sync::Mutex::new(BTreeMap::new()),
+            held_old_copies: std::sync::Mutex::new(BTreeMap::new()),
             stop_first,
         }
     }
@@ -1286,10 +1289,7 @@ impl<'a> Rows<'a> {
         }
     }
 
-    /// Inspects every old copy of `index`'s stop-first step, then retires the
-    /// inspected ones in one amendment held for this Deploy; returns `index`'s own
-    /// inspection.
-    async fn stop_first<C: MachineOperations>(
+    async fn inspect_and_retire_step<C: MachineOperations>(
         &self,
         client: &C,
         group: usize,
@@ -1298,19 +1298,12 @@ impl<'a> Rows<'a> {
         let step = self
             .stop_first
             .iter()
-            .find(|step| step.tasks.contains(&index))
+            .find(|step| step.tasks.iter().any(|(task, _)| *task == index))
             .expect("every stop-first replacement belongs to a step");
         let inspected = step
             .ready
             .get_or_init(|| async {
-                let replacements: Vec<_> = step
-                    .tasks
-                    .iter()
-                    .map(|index| match operation_at(self.operations, *index) {
-                        DeployOperation::ReplaceContainer(replacement) => (*index, replacement),
-                        _ => unreachable!("stop-first steps hold only replacements"),
-                    })
-                    .collect();
+                let replacements = &step.tasks;
                 let old: BTreeMap<_, _> =
                     join_all(replacements.iter().map(|(index, replacement)| async move {
                         let old = match client
@@ -1338,7 +1331,7 @@ impl<'a> Rows<'a> {
                     .collect();
                 let operation = operation_at(self.operations, index);
                 let retired = self
-                    .retire_before_stop(client, group, operation, &copies, true)
+                    .retire_before_stop(client, group, operation, &copies, Some(self.run))
                     .await;
                 Inspected { old, retired }
             })
@@ -1351,15 +1344,13 @@ impl<'a> Rows<'a> {
             .expect("the step inspected every task")?)
     }
 
-    /// Moves the pointed `copies` to `retiring` before they stop. A `hold` marks the row
-    /// as this Deploy's until it decides, so ployzd retires none of them meanwhile.
     async fn retire_before_stop<C: MachineOperations>(
         &self,
         client: &C,
         group: usize,
         operation: &DeployOperation,
         copies: &[ContainerId],
-        hold: bool,
+        deciding: Option<&DeploymentLogId>,
     ) -> Result<(), OperationFailure> {
         let Some(service) = self.service_of(group, operation) else {
             return Ok(());
@@ -1393,8 +1384,8 @@ impl<'a> Rows<'a> {
             let Applied::Next(mut next) = Rotation::leaving(leaving.clone()).apply(&row) else {
                 return Ok(());
             };
-            if hold {
-                next.deciding = Some(self.run.clone());
+            if let Some(deciding) = deciding {
+                next.deciding = Some(deciding.clone());
             }
             let publication = client
                 .publish_pointer(PublishServingPointerRequest {
@@ -1407,8 +1398,8 @@ impl<'a> Rows<'a> {
             match publication {
                 ServingPointerPublication::Published => {
                     self.admitted.lock().unwrap().insert(group, next);
-                    if hold {
-                        self.held
+                    if deciding.is_some() {
+                        self.held_old_copies
                             .lock()
                             .unwrap()
                             .entry(group)
@@ -1435,11 +1426,8 @@ impl<'a> Rows<'a> {
         .into())
     }
 
-    /// After a failed group restarted its old copies, points its row back at the copies
-    /// this Deploy held and releases the hold. Best effort: a lost write leaves the row
-    /// held until the next Deploy of the Service succeeds it.
-    async fn unretire<C: MachineOperations>(&self, client: &C, group: usize) {
-        let Some(copies) = self.held.lock().unwrap().remove(&group) else {
+    async fn restore_held_copies<C: MachineOperations>(&self, client: &C, group: usize) {
+        let Some(copies) = self.held_old_copies.lock().unwrap().remove(&group) else {
             return;
         };
         let Some(row) = self.admitted.lock().unwrap().get(&group).cloned() else {
@@ -1553,7 +1541,7 @@ async fn execute_operation<C: MachineOperations>(
             container_id,
             ..
         } => {
-            rows.retire_before_stop(client, group, operation, &[*container_id], false)
+            rows.retire_before_stop(client, group, operation, &[*container_id], None)
                 .await?;
             progress.set_running(index, OperationPhase::StoppingContainer);
             stop(client, machine_id, container_id, Drain::DEFAULT, None)
@@ -1588,7 +1576,7 @@ async fn execute_operation<C: MachineOperations>(
                 Some(replacement.old_container_id),
             );
             if replacement.spec.update.order.stops_first() {
-                let old = rows.stop_first(client, group, index).await?;
+                let old = rows.inspect_and_retire_step(client, group, index).await?;
                 return replace_stop_first(
                     client,
                     index,

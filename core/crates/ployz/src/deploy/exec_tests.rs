@@ -153,7 +153,6 @@ struct Scripted {
     superseded: Option<ServiceName>,
     /// The row lands but the reply never arrives.
     lost_reply: bool,
-    /// Reads fail once this run's row lands.
     unreadable_flip: bool,
     /// The write fails in transit and never lands.
     dropped_publish: bool,
