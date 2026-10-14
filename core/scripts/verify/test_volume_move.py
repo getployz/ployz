@@ -1558,17 +1558,19 @@ class VolumeMoveTests(unittest.TestCase):
                                   result.get("skipped") or "", result)
 
     def test_a_fault_line_from_before_the_barrier_is_behind_its_cursor_whatever_the_clock_says(self):
-        kill = volume_move.KILLS[0]
-        self.assertEqual(kill["trigger"], "fault")
+        # A Forget want names no epoch, so an earlier invocation's forget of this Volume logged the same line; only
+        # the cursor puts it behind the barrier.
+        kill = next(case for case in volume_move.KILLS if case["name"] == "kill-forget-writer")
         checks, model = self.checks()
-        model.offset["machine-2"] = 20.0
+        model.offset["machine-1"] = 20.0
         prepare = checks.prepare
 
         def an_old_fault_line(case, other):
             prepare(case, other)
-            model.log_fault("machine-2", model.clock() - 15)
+            model.log_fault("machine-1", model.clock() - 15,
+                            f'fault: killing daemon inside the effect verb="SetVolumeCopy.WriterToForget" volume={PHYSICAL}')
         checks.prepare = an_old_fault_line
-        self.first_move(model, 1)
+        self.first_move(model, 1, op=("volume", "mirror", "rm"))
         with redirect_stdout(io.StringIO()):
             result = checks.run_all([kill])["cases"][0]
         self.assertFalse(result["passed"], result)
