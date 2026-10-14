@@ -4,20 +4,8 @@ import { useStillHere } from "#/hooks/use-still-here";
 import { Trash2Icon, UnplugIcon } from "lucide-react";
 import { toast } from "sonner";
 import { DeletionDialog, type DeletionItem } from "#/components/deletion-dialog";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "#/components/ui/alert-dialog";
 import { Button } from "#/components/ui/button";
 import { ForgetServersDialog } from "../../../-components/forget-servers-dialog";
-import { Spinner } from "#/components/ui/spinner";
-import { toErrorMessage } from "#/lib/error-message";
 import {
   enqueueMachineRemoveServerFn,
   forgetServerServerFn,
@@ -179,28 +167,27 @@ function ForgetLastServerRow({ machine, organizationSlug }: { machine: RuntimeMa
 
 /**
  * Forgetting takes a Server that is gone for good out of the cluster without resetting it, then waits on the removal.
+ * The cluster lists its volumes from what it last saw; when it can't, the Server still goes with none listed.
  */
 function ForgetServerRow({ machine, organizationSlug }: { machine: RuntimeMachineRecord; organizationSlug: string }) {
   const navigate = useNavigate();
   const markHere = useStillHere();
   const [open, setOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
+
+  const load = async () => {
+    const lost = await loadMachineDataLossServerFn({ data: { organizationSlug, machineId: machine.id } })
+      .then(({ rust }) => volumes(rust), () => []);
+    return { items: lost, evidence: null };
+  };
 
   const forget = async () => {
-    setBusy(true);
     const stillHere = markHere();
-    try {
-      const answer = await forgetServerServerFn({ data: { organizationSlug, machineId: machine.id, requestId: crypto.randomUUID() } });
-      const result = await waitForMachineRemoveAttempt(organizationSlug, answer.id, () => !stillHere());
-      if (result === "aborted") return;
-      if ("missing" in result) throw new Error(`${machine.name} changed while it was being forgotten. Try again.`);
-      toast(`${machine.name} forgotten`);
-      void navigate({ to: "/cloud/$organizationSlug/~/servers", params: { organizationSlug } });
-    } catch (error) {
-      toast.error(toErrorMessage(error, `Could not forget ${machine.name}`));
-    } finally {
-      setBusy(false);
-    }
+    const answer = await forgetServerServerFn({ data: { organizationSlug, machineId: machine.id, requestId: crypto.randomUUID() } });
+    const result = await waitForMachineRemoveAttempt(organizationSlug, answer.id, () => !stillHere());
+    if (result === "aborted") return;
+    if ("missing" in result) throw new Error(`${machine.name} changed while it was being forgotten. Try again.`);
+    toast(`${machine.name} forgotten`);
+    void navigate({ to: "/cloud/$organizationSlug/~/servers", params: { organizationSlug } });
   };
 
   return (
@@ -209,27 +196,22 @@ function ForgetServerRow({ machine, organizationSlug }: { machine: RuntimeMachin
         title={`Forget ${machine.name}`}
         description="It's gone. Ployz stops waiting for it; its volumes can't be recovered."
         action={
-          <Button variant="destructive" disabled={busy} onClick={() => setOpen(true)}>
-            {busy ? <Spinner data-icon="inline-start" /> : <UnplugIcon data-icon="inline-start" />}
+          <Button variant="destructive" onClick={() => setOpen(true)}>
+            <UnplugIcon data-icon="inline-start" />
             Forget server
           </Button>
         }
       />
-      <AlertDialog open={open} onOpenChange={setOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Forget {machine.name}?</AlertDialogTitle>
-            <AlertDialogDescription>
-              Ployz takes it out of the cluster without reaching it. Its volumes{" "}
-              <span className="text-destructive">can't be recovered</span>.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction variant="destructive" onClick={() => { setOpen(false); void forget(); }}>Forget</AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <DeletionDialog
+        open={open}
+        onOpenChange={setOpen}
+        title={`Forget ${machine.name}?`}
+        place={machine.name}
+        confirmLabel="Forget"
+        sentence={<>Ployz takes it out of the cluster without reaching it. Its volumes{" "}
+          <span className="text-destructive">can't be recovered</span>.</>}
+        callbacks={{ load, confirm: forget }}
+      />
     </>
   );
 }
