@@ -42,8 +42,6 @@ pub(crate) trait CatchUpClient: PointerClient {
         &mut self,
         machine_id: &MachineId,
     ) -> Result<Option<BridgeEndpointCapacity>, Failure>;
-    /// Retire the Global slot's copies on `machine_id` and answer `true` when the Machine
-    /// is freshly ineligible for it. Unknown eligibility is an error.
     async fn retire_if_ineligible(
         &mut self,
         machine_id: &MachineId,
@@ -402,8 +400,6 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
             source_deploy: source_deploy.cloned(),
         };
         let started_under = match started_under {
-            // An unproven spec never runs here, but a Machine that no longer takes the
-            // Service still sheds its copies, as it would with no pointer at all.
             Ok(Some(pointer)) if !provenance.proven_by(&pointer) => {
                 match client
                     .retire_if_ineligible(&this_machine.id, &new, cancel)
