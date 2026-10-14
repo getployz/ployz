@@ -4,7 +4,7 @@ import { TestClock } from "effect/testing";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { WEB_TRAFFIC_RUNNING_LIMIT_MS } from "#/modules/machines/server-web-traffic";
-import { executeWebTrafficOnce } from "#/modules/machines/server-web-traffic.server";
+import { closeStaleWebTraffic, executeWebTrafficOnce } from "#/modules/machines/server-web-traffic.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { PloyzProviderError, type PloyzSdkError, type PloyzSession } from "#/modules/runtime/ployz.server";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
@@ -102,6 +102,21 @@ describe("executeWebTrafficOnce", () => {
     expect(ended).toEqual({ attemptId, state: "failed" });
     expect(role).toBe(false);
     expect(await row()).toEqual({ state: "failed", failure: "Your servers didn't answer in time. Try again." });
+  });
+
+  it("fails a lost request whose turn came long ago, however busy later changes keep the Organization", async () => {
+    await harness.pool.query(
+      `insert into server_web_traffic_attempt (id, organization_id, machine_id, requested_by_user_id, want, requested_at)
+       values ($1, $2, $3, $4, 'on', now() - interval '1 hour')`,
+      [attemptId, organizationId, machineId, userId],
+    );
+    await harness.pool.query(
+      `insert into server_web_traffic_attempt (id, organization_id, machine_id, requested_by_user_id, want, state, inngest_run_id, requested_at, started_at, ended_at)
+       values ('00000000-0000-4000-8000-0000000000e2', $1, $2, $3, 'on', 'finished', 'run-2', now() - interval '1 minute', now() - interval '1 minute', now())`,
+      [organizationId, "b".repeat(32), userId],
+    );
+    expect(await harness.runEffect(closeStaleWebTraffic())).toEqual({ unstarted: 1, lost: 0 });
+    expect((await row()).state).toBe("failed");
   });
 
   it("keeps the role off when the stop throws, since the web server may already be gone", async () => {

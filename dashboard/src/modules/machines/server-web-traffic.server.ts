@@ -302,6 +302,7 @@ export const closeStaleWebTraffic = Effect.fn("ServerWebTraffic.closeStale")(fun
       sql`greatest(server_web_traffic_attempt.requested_at, (
         select max(before.ended_at) from server_web_traffic_attempt as before
         where before.organization_id = server_web_traffic_attempt.organization_id
+          and before.requested_at < server_web_traffic_attempt.requested_at
       )) < ${new Date(now - WEB_TRAFFIC_PENDING_LIMIT_MS)}`,
     ))
     .returning({ id: serverWebTrafficAttempt.id });
