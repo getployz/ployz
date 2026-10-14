@@ -36,7 +36,7 @@ macro_rules! store_string {
                 }
             }
 
-            /// The value as text.
+            /// The value as `parse` kept it, after any normalizing.
             #[must_use]
             pub fn as_str(&self) -> &str {
                 &self.0
@@ -232,7 +232,8 @@ store_string!(
     RepositoryName, "a GitHub repository as owner/name", is_repository
 );
 store_string!(
-    /// A Git branch's name.
+    /// A Git branch name: at most `BRANCH_MAX` characters, with no whitespace, control
+    /// characters, `..` or any of `~^:?*[\`, and no leading `-` or `/` or trailing `/` or `.`.
     BranchName, "a Git branch name", is_branch
 );
 store_string!(
@@ -269,7 +270,7 @@ macro_rules! github_number {
                 }
             }
 
-            /// The number.
+            /// The number, from 1 to 2^53 - 1.
             #[must_use]
             pub const fn get(self) -> u64 {
                 self.0

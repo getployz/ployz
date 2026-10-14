@@ -28,7 +28,6 @@ use crate::storage::Tx;
 pub struct CreateService {
     /// The new Service's ID, also its lineage.
     pub id: ServiceLineageId,
-    /// The Environment to create it in.
     #[serde(default)]
     pub environment: EnvironmentRef,
     /// Its name, unique in the Environment.
@@ -46,7 +45,6 @@ pub struct CreateService {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct RenameService {
-    /// The Environment it is in.
     #[serde(default)]
     pub environment: EnvironmentRef,
     /// Its current name.
@@ -59,10 +57,8 @@ pub struct RenameService {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct RemoveService {
-    /// The Environment it is in.
     #[serde(default)]
     pub environment: EnvironmentRef,
-    /// Its name.
     pub service: ServiceName,
 }
 
@@ -81,7 +77,6 @@ pub struct ServiceStaged {
 /// A Service as results name it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct ServiceSummary {
-    /// Its durable identity.
     pub id: ServiceLineageId,
     /// Its name, which Setting paths address it by.
     pub name: ServiceName,

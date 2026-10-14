@@ -19,7 +19,6 @@ use crate::{Actor, Trusted, deployment};
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct Publish {
-    /// The Environment to publish.
     #[serde(default)]
     pub environment: EnvironmentRef,
     /// Refuse with `conflict` unless this is still the latest `diff` version, or the
@@ -41,7 +40,6 @@ pub struct Publish {
 /// The Saved revision Working State is now in.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct Published {
-    /// The Environment.
     pub environment: EnvironmentSummary,
     /// The Saved revision that now holds Working State; none when nothing was ever
     /// published and nothing is staged.
@@ -56,7 +54,6 @@ pub struct Published {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct Discard {
-    /// The Environment to discard in.
     #[serde(default)]
     pub environment: EnvironmentRef,
     /// The comparison to return to. Head preserves the deployment baseline; Saved
@@ -87,7 +84,6 @@ pub enum DiscardTarget {
 /// The Environment after a discard.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct Discarded {
-    /// The Environment.
     pub environment: EnvironmentSummary,
     /// The latest Saved revision, unchanged by Discard.
     pub saved: Option<Revision>,

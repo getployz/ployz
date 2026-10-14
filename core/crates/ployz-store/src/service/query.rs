@@ -23,7 +23,6 @@ use crate::storage::Tx;
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct ServicesQuery {
-    /// The Environment to list.
     #[serde(default)]
     pub environment: EnvironmentRef,
 }
@@ -40,7 +39,6 @@ pub struct ServicesView {
 /// One Service and what the next Deploy does to it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct ServiceListing {
-    /// The Service.
     #[serde(flatten)]
     pub service: ServiceSummary,
     /// Its node's row: what a Sync or Never sync names the whole Service by.
@@ -63,7 +61,7 @@ pub enum SourceKind {
     Uploaded,
     /// Built from a repository.
     Git,
-    /// A container image.
+    /// Pulled from a registry by reference; nothing is built.
     Image,
 }
 
@@ -71,10 +69,8 @@ pub enum SourceKind {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct ServiceQuery {
-    /// The Environment it is in.
     #[serde(default)]
     pub environment: EnvironmentRef,
-    /// Its name.
     pub service: ServiceName,
 }
 
@@ -83,7 +79,6 @@ pub struct ServiceQuery {
 pub struct ServiceView {
     /// The Environment, at the revision read.
     pub environment: EnvironmentSummary,
-    /// The Service.
     #[serde(flatten)]
     pub service: ServiceListing,
     /// The lineage its Environment copies share.
