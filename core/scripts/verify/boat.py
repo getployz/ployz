@@ -293,18 +293,14 @@ def pool():
         write(POOL, entries)
 
 
-def pick(entries, image, up, owned, want):
-    """Parked sandboxes a run of `image` may claim, newest first and one per node, and the dead ones of that bake."""
-    picked, nodes, dead = [], set(), []
+def pick(entries, image, want):
+    """Parked sandboxes of `image` a run may claim, newest first and one per node; tidy() the entries first."""
+    picked, nodes = [], set()
     for entry in sorted(entries, key=lambda entry: -entry["parked_at"]):
-        if entry["image"] != image or entry["id"] in owned:
-            continue
-        if entry["id"] not in up:
-            dead.append(entry)
-        elif len(picked) < want and boat_node(entry["ip"]) not in nodes:
+        if entry["image"] == image and len(picked) < want and boat_node(entry["ip"]) not in nodes:
             picked.append(entry)
             nodes.add(boat_node(entry["ip"]))
-    return picked, dead
+    return picked
 
 
 def sandbox_states():
@@ -333,6 +329,13 @@ def stale(entries, states, kept, force=False):
         elif force:
             found.append((entry, "--force"))
     return found
+
+
+def tidy(entries, states, owned):
+    """Drop entries some run holds and stale() ones; returns the stale ones for the caller to delete off the lock."""
+    dead = [entry for entry, reason in stale(entries, states, kept_bakes()) if entry["id"] not in owned]
+    entries[:] = [entry for entry in entries if entry not in dead and entry["id"] not in owned]
+    return dead
 
 
 def fingerprint(text):
@@ -463,8 +466,9 @@ def shortfalls(machines, limits):
 def preflight(machines, core):
     fresh = machines
     if POOL_SIZE:
-        up = {sandbox["id"] for sandbox in boat_json("list")["sandboxes"] if sandbox["state"] in UP_STATES}
-        fresh -= len(pick(read(POOL) or [], bake_name(corrosion_image(core)), up, registered(), machines)[0])
+        entries = read(POOL) or []
+        tidy(entries, sandbox_states(), registered())
+        fresh -= len(pick(entries, bake_name(corrosion_image(core)), machines))
     problems = shortfalls(fresh, boat_json("limits"))
     if problems:
         raise RuntimeError("Boat cannot start the run now.\n" + "\n".join(problems))
@@ -515,12 +519,11 @@ class Provider:
     def claim(self):
         """Give Machines parked sandboxes of this bake, each proven clean again; start() launches the rest."""
         names = [node["name"] for node in self.run.get("machines", [])]
-        up = {sandbox["id"] for sandbox in boat_json("list")["sandboxes"] if sandbox["state"] in UP_STATES}
         with pool() as entries:
-            # A park marks its run's entry parked under this lock, so ownership read here cannot go stale.
-            owned = registered()
-            picked, dead = pick(entries, self.run["image"], up, owned, len(names))
-            entries[:] = [entry for entry in entries if entry not in picked and entry not in dead and entry["id"] not in owned]
+            # A park marks its run's entry parked under this lock, so ownership and states read here cannot go stale.
+            dead = tidy(entries, sandbox_states(), registered())
+            picked = pick(entries, self.run["image"], len(names))
+            entries[:] = [entry for entry in entries if entry not in picked]
             # The registry takes them before the pool lets go, so no other run or reap can.
             self.record(lambda record: record["sandboxes"].update(
                 {name: dict(id=entry["id"], state="running", created=int(time.time()), ip=entry["ip"], ssh=entry["ssh"],
@@ -803,12 +806,21 @@ systemctl enable --now {PLOYZ_UNITS} $observe
         except (RuntimeError, subprocess.TimeoutExpired) as why:
             print(f"Deleting {entry['id']} ({name}) instead of reusing it: {why}", file=sys.stderr)
             return
-        with pool() as entries:
-            if len(entries) >= POOL_SIZE:
-                print(f"Deleting {entry['id']} ({name}): the pool already holds {POOL_SIZE}.", file=sys.stderr)
-                return
-            entries.append(dict(id=entry["id"], image=image, ip=entry["ip"], ssh=entry["ssh"], parked_at=int(time.time())))
-            self.mark(name, state="parked")
+        dead, full = [], False
+        try:
+            with pool() as entries:
+                dead = tidy(entries, sandbox_states(), registered())
+                # Only this bake's sandboxes count, so a sibling checkout's parked bake never fills the pool for this one.
+                full = sum(other["image"] == image for other in entries) >= POOL_SIZE
+                if not full:
+                    entries.append(dict(id=entry["id"], image=image, ip=entry["ip"], ssh=entry["ssh"], parked_at=int(time.time())))
+                    self.mark(name, state="parked")
+        except RuntimeError as why:
+            print(f"Deleting {entry['id']} ({name}) instead of reusing it: {why}", file=sys.stderr)
+        for other in dead:
+            self.boat("delete", other["id"], "--yes", check=False)
+        if full:
+            print(f"Deleting {entry['id']} ({name}): the pool already holds {POOL_SIZE} of this bake.", file=sys.stderr)
 
     def reboot(self, node):
         """Reboot the guest, which costs no Boat start, and wait until SSH answers from the new boot."""

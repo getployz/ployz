@@ -404,13 +404,40 @@ class Pool(unittest.TestCase):
 
     def test_a_run_claims_its_own_bake_newest_first_one_per_node_up_to_its_size(self):
         entries = [parked("bx_old", 1, at=1), parked("bx_new", 1, at=3), parked("bx_two", 2, at=2), parked("bx_three", 3, at=0),
-                   parked("bx_other", 4, image="bake-b", at=9), parked("bx_down", 5, at=8), parked("bx_taken", 6, at=7)]
-        up = {"bx_old", "bx_new", "bx_two", "bx_three", "bx_other", "bx_taken"}
-        picked, dead = boat.pick(entries, "bake-a", up, {"bx_taken"}, 2)
-        self.assertEqual([entry["id"] for entry in picked], ["bx_new", "bx_two"])
-        self.assertEqual([entry["id"] for entry in dead], ["bx_down"])
-        picked, _ = boat.pick(entries, "bake-a", up, {"bx_taken"}, 5)
-        self.assertEqual([entry["id"] for entry in picked], ["bx_new", "bx_two", "bx_three"])
+                   parked("bx_other", 4, image="bake-b", at=9)]
+        self.assertEqual([entry["id"] for entry in boat.pick(entries, "bake-a", 2)], ["bx_new", "bx_two"])
+        self.assertEqual([entry["id"] for entry in boat.pick(entries, "bake-a", 5)], ["bx_new", "bx_two", "bx_three"])
+
+    def listing(self, **states):
+        return lambda *args: dict(sandboxes=[dict(id=sandbox, state=state) for sandbox, state in states.items()])
+
+    def test_a_claim_deletes_stale_entries_of_any_bake_and_keeps_a_sibling_bakes_live_ones(self):
+        boat.write(boat.BAKES, ["bake-a", "bake-b"])
+        boat.write(boat.POOL, [parked("bx_gone", 1), parked("bx_stopped", 2), parked("bx_old", 3, image="bake-c"),
+                               parked("bx_sibling", 4, image="bake-b"), parked("bx_held", 5)])
+        boat.write(boat.registry("run9"), dict(run="run9", image="bake-a", sandboxes={"m": dict(id="bx_held", state="running")}))
+        listing = self.listing(bx_stopped="stopped", bx_old="ready", bx_sibling="ready", bx_held="ready")
+        with unittest.mock.patch.object(boat, "boat_json", listing):
+            provider = self.provider()
+            provider.create()
+        self.assertEqual([entry["id"] for entry in boat.read(boat.POOL)], ["bx_sibling"])
+        self.assertEqual(sorted(self.calls), [["delete", sandbox, "--yes"] for sandbox in ["bx_gone", "bx_old", "bx_stopped"]])
+
+    def test_park_counts_only_its_own_bake_toward_the_pool_size(self):
+        boat.write(boat.BAKES, ["bake-a", "bake-b"])
+        listing = self.listing(bx_b1="ready", bx_b2="ready", bx_new="ready")
+        with unittest.mock.patch.object(boat, "boat_json", listing), unittest.mock.patch.object(boat, "POOL_SIZE", 2):
+            provider = self.provider("machine-1")
+            provider.create()
+            boat.write(boat.POOL, [parked("bx_b1", 1, image="bake-b"), parked("bx_b2", 2, image="bake-b"), parked("bx_gone", 3)])
+            provider.mark("machine-1", id="bx_new", state="running", ip="2001:db8:0:9::1", ssh="203.0.113.9:22")
+            boat.write(boat.fingerprints("bake-a"), {"containers": []})
+            provider.reboot = lambda node: None
+            provider.fingerprint = lambda node: {"containers": []}
+            provider.park("machine-1")
+        self.assertEqual([entry["id"] for entry in boat.read(boat.POOL)], ["bx_b1", "bx_b2", "bx_new"])
+        self.assertIn(["delete", "bx_gone", "--yes"], self.calls)
+        self.assertEqual(provider.record()["sandboxes"]["machine-1"]["state"], "parked")
 
     def test_the_ledger_keeps_what_one_lock_saves_and_is_no_run_record(self):
         with boat.pool() as entries:
@@ -426,6 +453,7 @@ class Pool(unittest.TestCase):
         self.assertEqual(boat.images_in_use(), {"bake-a"})
 
     def test_preflight_budgets_only_the_machines_the_pool_cannot_cover(self):
+        boat.write(boat.BAKES, ["bake-a", "bake-b"])
         boat.write(boat.POOL, [parked("bx_a", 1), parked("bx_b", 2), parked("bx_c", 2), parked("bx_d", 3, image="bake-b")])
         answers = dict(list=dict(sandboxes=[dict(id=sandbox, state="ready") for sandbox in ["bx_a", "bx_b", "bx_c", "bx_d"]]),
                        limits=dict(maxActiveSandboxes=100, activeSandboxes=0, starts=dict(
