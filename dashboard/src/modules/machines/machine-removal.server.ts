@@ -167,10 +167,11 @@ export const observeLeavingServerActivity = Effect.fn("MachineRemoval.observeLea
   const machine = { id, name: servers.find((server) => server.id === id)?.name ?? null };
   const copies = yield* observeOrganizationCopies(input.organizationId).pipe(Effect.orElseSucceed(() => []));
   const writes = copies.flatMap((copy) => copy.machine_id === id && copy.role === "writer" ? [copy.name] : []);
-  // A copy on another Server, by Docker Volume: what a lane committed to the leaving Server names to restore from.
+  // A copy on another Server, by Docker Volume: what a lane committed to the leaving Server names to restore from. A
+  // restore refuses a writer as its source, and a copy's snapshots are not observed here, so a slot may still lack one.
   const held: Record<string, MachineName> = {};
   for (const copy of copies) {
-    const holder = copy.machine_id === id ? undefined : servers.find((server) => server.id === copy.machine_id);
+    const holder = copy.machine_id === id || copy.role === "writer" ? undefined : servers.find((server) => server.id === copy.machine_id);
     if (holder !== undefined) held[copy.name] ??= holder.name;
   }
   return { machine, writes, held };
