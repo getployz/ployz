@@ -80,9 +80,8 @@ describe("the mirror sync", () => {
     expect(await runs()).toEqual([]);
   });
 
-  it("names each sync's snapshot apart from one taken the same second", async () => {
-    let tick = 0;
-    const clock = vi.spyOn(Date, "now").mockImplementation(() => 1_790_000_000_000 + tick++);
+  it("names each sync's snapshot apart from one taken the same millisecond, above any lane run's round", async () => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1_790_000_000_000);
     const names: string[] = [];
     const naming: CopyAsk = (asker, machine, expected, want) => {
       if (want.kind === "snapshot") names.push(want.name);
@@ -94,9 +93,9 @@ describe("the mirror sync", () => {
     } finally {
       clock.mockRestore();
     }
-    expect(tick).toBeLessThan(1_000);
     expect(names).toHaveLength(2);
     expect(new Set(names).size).toBe(2);
+    for (const name of names) expect(name).toMatch(/^w-1-1790000000000\d+$/);
   });
 
   it("takes no snapshot while a lane is open, and names the lane", async () => {
