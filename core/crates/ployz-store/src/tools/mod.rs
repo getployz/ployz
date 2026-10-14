@@ -83,6 +83,7 @@ pub(crate) const TOOLS: &[Entry] = &[
     entry::<runtime::ServiceRestart>(),
     entry::<runtime::ServiceStart>(),
     entry::<runtime::ServiceStop>(),
+    entry::<server::ServerSet>(),
     entry::<server::ServerDrain>(),
     entry::<server::ServerUpgrade>(),
     entry::<server::ServerClean>(),

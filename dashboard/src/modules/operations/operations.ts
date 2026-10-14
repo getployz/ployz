@@ -3,6 +3,7 @@ import { EnqueueMachineRemoveInput, ForgetServerInput } from "#/modules/machines
 import { ForgetServersInput } from "#/modules/machines/forget-servers";
 import { RemoveNamespaceInput } from "#/modules/machines/namespace-cleanup";
 import { RequestServerDrainInput } from "#/modules/machines/server-drain";
+import { BuildConcurrencyChangeSchema, RequestServerPolicyChangeInput } from "#/modules/machines/server-policy";
 import { ForgetServer, ForgetServers, RemoveServer, UpgradeServer, VOLUME_RUN_BODIES } from "#/modules/operations/cli-wire";
 import { RequestServerUpgradeInput } from "#/modules/server-upgrade/server-upgrade";
 import { RefreshMirrorInput } from "#/modules/volume-copies/volume-copies";
@@ -12,6 +13,7 @@ import type { VolumeRunRequestKind } from "#/modules/volume-run/volume-run";
 /** The tool name a request key is scoped to: the same key under another tool is another request. */
 export const OPERATION_TOOLS = [
   "server_drain",
+  "server_set",
   "server_upgrade",
   "server_clean",
   "server_remove",
@@ -170,6 +172,39 @@ export const OPERATIONS = {
           channel: { omitted: "The dashboard upgrades along the Organization's Release Channel." },
           ingressImage: { omitted: "Only an upgrade with --context pins the ingress image." },
           wait: UI_FOLLOWS,
+        },
+      },
+    },
+  }),
+  "server.set": operation({
+    options: Schema.Struct({
+      server: Name, acceptsBuilds: Schema.Boolean, acceptsServices: Schema.Boolean, acceptsIngress: Schema.Boolean,
+      buildConcurrency: BuildConcurrencyChangeSchema,
+    }),
+    gate: "approval",
+    idempotency: "server_set",
+    surfaces: {
+      cli: { absent: "`ployz server set` updates the Server through its own connection, not Cloud." },
+      agent: {
+        tool: "server_set",
+        options: {
+          server: { via: "server" },
+          acceptsBuilds: { via: "accepts_builds" },
+          acceptsServices: { via: "accepts_services" },
+          acceptsIngress: { via: "accepts_ingress" },
+          buildConcurrency: { via: "build_concurrency" },
+        },
+      },
+      ui: {
+        fn: "requestServerPolicyChangeServerFn",
+        input: RequestServerPolicyChangeInput,
+        ungated: "The human is the one changing the Server.",
+        options: {
+          server: { via: "machineId" },
+          acceptsBuilds: { via: "change" },
+          acceptsServices: { via: "change" },
+          acceptsIngress: { via: "change" },
+          buildConcurrency: { via: "change" },
         },
       },
     },

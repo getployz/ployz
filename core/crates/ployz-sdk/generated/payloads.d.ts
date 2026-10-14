@@ -5,7 +5,7 @@ export type AcceptedLoss = { volumes: Array<string>, version: string, };
 
 export type Act = { attempt: AttemptId, digest: BodyDigest, action: Action, };
 
-export type Action = { "action": "service", environment: EnvironmentId, service: ServiceName, only: ServerRef | null, verb: ServiceVerb, } | { "action": "drain", server: ServerRef, } | { "action": "upgrade", server: ServerRef, } | { "action": "clean", leftover: Namespace, loss: AcceptedLoss | null, } | { "action": "remove_server", server: ServerRef, loss: AcceptedLoss | null, } | { "action": "forget_server", server: ServerRef, } | { "action": "volume", volume: VolumeId, run: VolumeRun, };
+export type Action = { "action": "service", environment: EnvironmentId, service: ServiceName, only: ServerRef | null, verb: ServiceVerb, } | { "action": "drain", server: ServerRef, } | { "action": "upgrade", server: ServerRef, } | { "action": "set_server", server: ServerRef, accepts_builds: boolean | null, accepts_services: boolean | null, accepts_ingress: boolean | null, build_concurrency: BuildConcurrencyUpdate, } | { "action": "clean", leftover: Namespace, loss: AcceptedLoss | null, } | { "action": "remove_server", server: ServerRef, loss: AcceptedLoss | null, } | { "action": "forget_server", server: ServerRef, } | { "action": "volume", volume: VolumeId, run: VolumeRun, };
 
 export type AddDomain = { environment: EnvironmentRef, service: ServiceName,
 /**

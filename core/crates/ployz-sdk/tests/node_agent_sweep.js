@@ -183,6 +183,7 @@ const FIXTURES = [
   ["service_restart", { service: "web", request_key: "restart-web-0001" }, "not_found"],
   ["service_start", { service: "web", request_key: "start-web-0001" }, "not_found"],
   ["service_stop", { service: "web", request_key: "stop-web-0001" }, "not_found"],
+  ["server_set", { server: "web-1", accepts_ingress: false, build_concurrency: "2" }],
   ["server_drain", { server: "web-1", wait_seconds: 0 }],
   ["server_upgrade", { server: "web-1", wait_seconds: 0 }],
   ["server_clean", { leftover: "shop-old" }],

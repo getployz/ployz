@@ -8,7 +8,9 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use ployz_core::{DeployOutcome, DeployPreview, MachineLogService, ServiceName};
+use ployz_core::{
+    BuildConcurrencyUpdate, DeployOutcome, DeployPreview, MachineLogService, ServiceName,
+};
 use ployz_core::{RpcError, RpcErrorCode};
 use ployz_store::tools::{
     Act, Action, Ask, Call, CloudQuery, Fix, Gate, INSTRUCTIONS, MetricsQuery, MetricsSince,
@@ -249,6 +251,7 @@ fn the_catalog_has_the_agreed_tools() {
             "service_restart",
             "service_start",
             "service_stop",
+            "server_set",
             "server_drain",
             "server_upgrade",
             "server_clean",
@@ -283,6 +286,7 @@ fn the_store_and_cloud_decide_who_asks_a_human() {
             ("server_drain", Gate::Cloud),
             ("server_forget", Gate::Cloud),
             ("server_remove", Gate::Cloud),
+            ("server_set", Gate::Cloud),
             ("volume_mirror", Gate::Cloud),
             ("volume_mirror_remove", Gate::Cloud),
             ("volume_move", Gate::Cloud),
@@ -790,7 +794,7 @@ fn two_organizations_create_with_the_same_key() {
 }
 
 /// The tools that need Ployz Cloud's view of the Servers.
-const CLOUD_TOOLS: [&str; 20] = [
+const CLOUD_TOOLS: [&str; 21] = [
     "server_show",
     "server_logs",
     "server_metrics",
@@ -801,6 +805,7 @@ const CLOUD_TOOLS: [&str; 20] = [
     "service_restart",
     "service_start",
     "service_stop",
+    "server_set",
     "server_drain",
     "server_upgrade",
     "server_clean",
@@ -969,50 +974,54 @@ fn an_undeployed_project_is_removed_in_one_call() {
 
 #[test]
 fn a_lost_reply_retries_with_the_key_that_names_the_same_attempt() {
-    let store = shop();
-    let mut attempts = Vec::new();
-    let mut lost = true;
-    let mut cloud = |cloud: Cloud| match cloud {
-        Cloud::Ask(CloudQuery::Servers { .. }) => Ok(servers(&[("web-2", 'b')])),
-        Cloud::Ask(query) => panic!("unexpected read: {query:?}"),
-        Cloud::Act(act) => {
-            attempts.push(act.attempt);
-            match std::mem::replace(&mut lost, false) {
-                true => Err(rpc_error("unavailable", json!({ "writes": "unknown" }))),
-                false => Ok(operation(&act, "done")),
+    for (tool, input) in [
+        ("server_drain", json!({ "server": "web-2" })),
+        ("server_upgrade", json!({ "server": "web-2" })),
+        (
+            "server_set",
+            json!({ "server": "web-2", "accepts_ingress": false }),
+        ),
+    ] {
+        let store = shop();
+        let mut attempts = Vec::new();
+        let mut lost = true;
+        let mut cloud = |cloud: Cloud| match cloud {
+            Cloud::Ask(CloudQuery::Servers { .. }) => Ok(servers(&[("web-2", 'b')])),
+            Cloud::Ask(query) => panic!("unexpected read: {query:?}"),
+            Cloud::Act(act) => {
+                attempts.push(act.attempt);
+                match std::mem::replace(&mut lost, false) {
+                    true => Err(rpc_error("unavailable", json!({ "writes": "unknown" }))),
+                    false => Ok(operation(&act, "done")),
+                }
             }
-        }
-    };
+        };
 
-    let refusal = drive(
-        &store,
-        in_org(),
-        "server_drain",
-        json!({ "server": "web-2" }),
-        "drain-1",
-        &mut cloud,
-    )
-    .refused();
-    assert_eq!(refusal.writes, Writes::Unknown);
-    assert_eq!(refusal.retry.tool, "server_drain");
-    assert!(
-        refusal.retry.input["request_key"].is_string(),
-        "{refusal:?}"
-    );
+        let refusal = drive(&store, in_org(), tool, input, "act-1", &mut cloud).refused();
+        assert_eq!(refusal.writes, Writes::Unknown, "{tool}");
+        assert_eq!(refusal.retry.tool, tool);
+        assert!(
+            refusal.retry.input["request_key"].is_string(),
+            "{tool}: {refusal:?}"
+        );
 
-    let drained = drive(
-        &store,
-        in_org(),
-        "server_drain",
-        refusal.retry.input,
-        "drain-2",
-        &mut cloud,
-    )
-    .ok();
-    assert_eq!(drained["state"], "done");
-    assert_eq!(drained["at"], "web-2");
-    assert_eq!(attempts.len(), 2);
-    assert_eq!(attempts[0], attempts[1], "the retry is the same attempt");
+        let done = drive(
+            &store,
+            in_org(),
+            tool,
+            refusal.retry.input,
+            "act-2",
+            &mut cloud,
+        )
+        .ok();
+        assert_eq!(done["state"], "done", "{tool}");
+        assert_eq!(done["at"], "web-2", "{tool}");
+        assert_eq!(attempts.len(), 2, "{tool}");
+        assert_eq!(
+            attempts[0], attempts[1],
+            "{tool}: the retry is the same attempt"
+        );
+    }
 }
 
 #[test]
@@ -1047,6 +1056,109 @@ fn a_server_that_does_not_answer_is_forgotten_without_a_reset() {
         panic!("forget acts once, as a forget: {acted:?}");
     };
     assert_eq!(server.name.as_str(), "web-2");
+}
+
+#[test]
+fn server_set_refuses_a_server_that_does_not_answer() {
+    let store = shop();
+    let mut offline = servers(&[("db-1", 'a'), ("db-2", 'b')]);
+    offline["servers"][0]["state"] = json!("offline");
+    let mut cloud = |cloud: Cloud| match cloud {
+        Cloud::Ask(CloudQuery::Servers { .. }) => Ok(offline.clone()),
+        Cloud::Ask(query) => panic!("unexpected read: {query:?}"),
+        Cloud::Act(act) => panic!("nothing is asked of a silent server: {act:?}"),
+    };
+
+    let refusal = drive(
+        &store,
+        in_org(),
+        "server_set",
+        json!({ "server": "db-1", "accepts_services": false }),
+        "set-1",
+        &mut cloud,
+    )
+    .refused();
+
+    assert_eq!(refusal.code.as_str(), "unavailable");
+    assert_eq!(refusal.field.as_deref(), Some("server"));
+}
+
+#[test]
+fn server_set_sends_only_the_values_it_was_given() {
+    let store = shop();
+    let mut acted = Vec::new();
+    let mut cloud = |cloud: Cloud| match cloud {
+        Cloud::Ask(CloudQuery::Servers { .. }) => Ok(servers(&[("db-1", 'a')])),
+        Cloud::Ask(query) => panic!("unexpected read: {query:?}"),
+        Cloud::Act(act) => {
+            acted.push(act.action.clone());
+            Ok(operation(&act, "accepted"))
+        }
+    };
+
+    let set = drive(
+        &store,
+        in_org(),
+        "server_set",
+        json!({ "server": "db-1", "accepts_ingress": false, "build_concurrency": "auto" }),
+        "set-1",
+        &mut cloud,
+    )
+    .ok();
+
+    assert_eq!(set["state"], "accepted");
+    let [
+        Action::SetServer {
+            server,
+            accepts_builds: None,
+            accepts_services: None,
+            accepts_ingress: Some(false),
+            build_concurrency: BuildConcurrencyUpdate::Automatic,
+        },
+    ] = acted.as_slice()
+    else {
+        panic!("set acts once, with the given values: {acted:?}");
+    };
+    assert_eq!(server.name.as_str(), "db-1");
+}
+
+#[test]
+fn server_set_leaves_turning_web_traffic_on_to_the_terminal() {
+    let store = shop();
+    let mut cloud = |_: Cloud| -> Result<Value, RpcError> { panic!("refused before Cloud") };
+    for (input, field) in [
+        (
+            json!({ "server": "db-1", "accepts_ingress": true }),
+            Some("accepts_ingress"),
+        ),
+        (json!({ "server": "db-1" }), Some("")),
+        (
+            json!({ "server": "db-1", "build_concurrency": "300" }),
+            Some("build_concurrency"),
+        ),
+    ] {
+        let refusal = drive(&store, in_org(), "server_set", input, "set-1", &mut cloud).refused();
+        assert_eq!(refusal.code.as_str(), "invalid_argument");
+        assert_eq!(refusal.field.as_deref(), field);
+    }
+    let empty = drive(
+        &store,
+        in_org(),
+        "server_set",
+        json!({ "server": "db-1" }),
+        "set-2",
+        &mut cloud,
+    )
+    .refused();
+    assert_eq!(
+        empty.valid,
+        [
+            "accepts_builds",
+            "accepts_services",
+            "accepts_ingress",
+            "build_concurrency"
+        ]
+    );
 }
 
 #[test]

@@ -50,6 +50,10 @@ const storedRequest = (organizationId: string, key: string) =>
       .where(and(eq(operationRequest.organizationId, organizationId), eq(operationRequest.requestKey, key)))
       .pipe(Effect.map(([row]) => row)));
 
+/** When request `key` was first admitted, so a replay answers the time the first one did. Null for an unseen key. */
+export const admittedAt = (organizationId: string, key: string) =>
+  Effect.map(storedRequest(organizationId, key), (row) => row?.createdAt ?? null);
+
 /**
  * One requested operation, admitted at most once per request key. A key seen before answers its attempt without
  * planning again; a new one plans outside the transaction (it may ask Servers), then writes the key, the attempt and
