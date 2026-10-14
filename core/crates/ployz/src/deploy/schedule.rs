@@ -38,8 +38,15 @@ impl TaskKind {
                 purpose: RemoveContainerPurpose::Rollout,
                 ..
             } => Self::Unroute,
-            operation if starts_container(operation) => Self::Start,
-            _ => Self::Other,
+            DeployOperation::RunContainer { .. } | DeployOperation::ReplaceContainer(_) => {
+                Self::Start
+            }
+            DeployOperation::PrepareVolumes { .. }
+            | DeployOperation::WaitHealthy { .. }
+            | DeployOperation::StopContainer { .. }
+            | DeployOperation::RemoveContainer { .. }
+            | DeployOperation::StopHook { .. }
+            | DeployOperation::RemoveVolume { .. } => Self::Other,
         }
     }
 }
@@ -451,16 +458,7 @@ impl Schedule {
 /// A new Container of the Service starts here, so the task takes a window
 /// slot and the Deploy removes the Container if the Service never switches.
 pub(crate) fn starts_container(operation: &DeployOperation) -> bool {
-    match operation {
-        DeployOperation::RunContainer { .. } | DeployOperation::ReplaceContainer(_) => true,
-        DeployOperation::PrepareVolumes { .. }
-        | DeployOperation::WaitHealthy { .. }
-        | DeployOperation::StopContainer { .. }
-        | DeployOperation::RemoveContainer { .. }
-        | DeployOperation::StopHook { .. }
-        | DeployOperation::RunHook { .. }
-        | DeployOperation::RemoveVolume { .. } => false,
-    }
+    TaskKind::of(operation) == TaskKind::Start
 }
 
 fn step_tasks(step: &Step) -> Vec<usize> {
