@@ -3271,7 +3271,7 @@ describe("volume runs", () => {
 
         expect(placed).toMatchObject([{ kind: "follow", to: "fsn-2" }]);
         expect(await fence(placed[0])).toEqual({ on: "fsn-2" });
-        expect(verbs).toEqual(["writer@fsn-2(none)"]);
+        expect(verbs).toEqual([]);
         expect(containers).toEqual([{ machine: "fsn-2", id: `created-${volumeId}-${cut.guid}`, running: false }]);
       });
 

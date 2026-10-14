@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import type { MachineId, MachineName } from "@ployz/sdk";
+import type { MachineId, MachineName, VolumeCopy } from "@ployz/sdk";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { NonRetriableError } from "inngest";
@@ -236,17 +236,23 @@ export const fenceTaken = Effect.fn("VolumeRun.fenceTaken")(function* (run: RunC
 
 const retriable = (reason: string) => reason === "busy" || reason === "mismatch";
 
-const fenceFollowed = Effect.fn("VolumeRun.fenceFollowed")(function* (lane: Extract<DeployLane, { kind: "follow" }>) {
+type FollowLane = Extract<DeployLane, { kind: "follow" }>;
+
+/** Whether a newer move or release took the followed commitment over; any other run deciding the Volume fails. */
+const tookOver = Effect.fn("VolumeRun.tookOver")(function* ({ run, epoch }: FollowLane) {
+  if (run.kind === "restore") return false;
+  const { newest } = yield* commitment(run.volumeId);
+  if (newest?.id === run.id) return false;
+  if (newest !== undefined && newest.kind !== "restore" && newest.current === run.current && newest.epoch === epoch) return true;
+  return yield* Effect.fail(new NonRetriableError(`${run.volumeName} changed since this Deploy placed it; Deploy again`));
+});
+
+const fenceFollowed = Effect.fn("VolumeRun.fenceFollowed")(function* (lane: FollowLane) {
   const { run, to } = lane;
-  if (run.kind !== "restore") {
-    const { newest } = yield* commitment(run.volumeId);
-    const successor = newest !== undefined && newest.kind !== "restore" && newest.current === run.current && newest.epoch === lane.epoch;
-    if (newest?.id !== run.id && !successor) {
-      return yield* Effect.fail(new NonRetriableError(`${run.volumeName} changed since this Deploy placed it; Deploy again`));
-    }
-  }
+  const successor = yield* tookOver(lane);
   const members = yield* observeVolumeMembers(run.organizationId, run.dockerVolume);
   const isB = (member: Member) => (lane.machine === null ? member.machine.name === to : member.machine.id === lane.machine);
+  const writes = (copy: VolumeCopy | null) => copy?.kind === "root" && !copy.readonly && copy.epoch === lane.epoch;
   const restore = () => restoreLine(run.volumeName, restoreSource(members.filter((member) => !isB(member))));
   const b = answered(members).find(isB);
   if (b === undefined) {
@@ -258,13 +264,20 @@ const fenceFollowed = Effect.fn("VolumeRun.fenceFollowed")(function* (lane: Extr
   if (copy === null || copy.newest === null) {
     return yield* Effect.fail(new NonRetriableError(`${run.volumeName} finishes on ${machine.name}, which holds no copy to start. Remove it with ployz server rm ${machine.name}` + restore()));
   }
+  if (writes(copy)) return { on: machine.name };
   const epoch = copy.kind === "root" ? copy.epoch : lane.epoch;
   if (epoch === null) return yield* Effect.fail(new Error(`${run.volumeName}'s run on ${machine.name} has not chosen an epoch yet`));
   const started = run.kind === "restore"
     ? yield* askCopy(run, machine, expectOf(copy), { kind: "writer", at: copy.newest.guid, epoch, start: null })
     : yield* startWriter(run, null, { to: machine, from: null, expect: expectOf(copy), at: copy.newest.guid, epoch });
-  if (!started.ok) return yield* Effect.fail(retriable(started.reason) ? new Error(started.message) : new NonRetriableError(started.message));
-  return { on: machine.name };
+  if (started.ok) return { on: machine.name };
+  if (started.reason === "stale" && successor) {
+    // The successor floored B above this Deploy's gen, so only B's copy says whether it started the writer.
+    const again = answered(yield* observeVolumeMembers(run.organizationId, run.dockerVolume)).find(isB);
+    if (writes(again?.view.copy ?? null)) return { on: machine.name };
+    return yield* Effect.fail(new NonRetriableError(`${run.volumeName} is finishing its move on ${machine.name}; Deploy again`));
+  }
+  return yield* Effect.fail(retriable(started.reason) ? new Error(started.message) : new NonRetriableError(started.message));
 });
 
 export const fenceDeployVolume = (lane: DeployLane, inngestRunId: string) =>

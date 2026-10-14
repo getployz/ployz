@@ -133,7 +133,9 @@ server, and the move is requested again once the deploy ends. From the moment `w
 start your service, a deploy follows the move and starts your service on `web-2`. It does so even
 after the move's run failed. Then the deploy requests the release that finishes the move. A deploy with a
 volume change staged on that volume fails instead, with "data is starting on web-2; it finishes
-there", and the change waits for your next deploy.
+there", and the change waits for your next deploy. If a release is still starting `web-2` when
+the deploy reaches it, the deploy fails with "data is finishing its move on web-2; Deploy again".
+Deploy again once the release ends.
 
 A move asked for while a deploy runs is refused:
 
