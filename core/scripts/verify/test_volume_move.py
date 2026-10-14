@@ -2719,6 +2719,63 @@ finally:
                 self.assertTrue(any(failure.startswith("the first run's row could not be read after the kill-ployz")
                                     for failure in result["failures"]), result["failures"])
 
+    def test_a_deploy_case_restarts_only_at_its_barrier_and_arms_through_the_fault_file(self):
+        # A restart after the barrier would move the journal cursor every credit rests on, so arming and disarming
+        # write main's fault file and nothing else; deploy-plain has no trigger and so no barrier.
+        cases = {case["name"]: case for case in volume_move.CASES}
+        for name, restarted in (("deploy-plain", 0), ("deploy-warm", 2), ("deploy-after-cut", 2),
+                                ("deploy-committed", 2)):
+            with self.subTest(name):
+                self.setUp()
+                checks, model = self.checks()
+                cli, admitted, writes = model.cli, [], []
+                arm = model.arm
+
+                def recording(args, cli=cli):
+                    if args[:2] == ["volume", "move"] and not admitted:
+                        admitted.append(model.clock())
+                    return cli(args)
+
+                def writing(machine, script, arm=arm):
+                    writes.append(model.clock())
+                    return arm(machine, script)
+                model.cli, model.arm = recording, writing
+                with redirect_stdout(io.StringIO()):
+                    checks.run_all([cases[name]])
+                self.assertEqual(sorted(machine for machine, _ in model.restarts),
+                                 ["machine-1", "machine-2"][:restarted], model.restarts)
+                self.assertTrue(all(at <= admitted[0] for _, at in model.restarts) if admitted else not restarted,
+                                (model.restarts, admitted))
+                self.assertTrue(writes, name)
+
+    def test_a_deploy_held_inside_its_move_still_needs_the_row_read_after_it(self):
+        # The hold, its disarm release and the baseline bound can only fail a Deploy case: with the row unread after
+        # the Deploy returns, nothing places the Deploy inside the move.
+        cases = {case["name"]: case for case in volume_move.CASES}
+        for name in ("deploy-warm", "deploy-after-cut"):
+            for shape, reply in self.UNREAD_LISTS.items():
+                with self.subTest(name=name, shape=shape):
+                    self.setUp()
+                    checks, model = self.checks()
+                    cli, inside, spent = model.cli, [], []
+
+                    def unread(args, cli=cli, inside=inside, spent=spent, reply=reply):
+                        if args[0] == "deploy" and model.lane:
+                            inside.append(args)
+                        elif args[:2] == ["volume", "runs"] and inside and not spent:
+                            spent.append(args)
+                            return reply
+                        return cli(args)
+                    model.cli = unread
+                    with redirect_stdout(io.StringIO()):
+                        summary = checks.run_all([cases["deploy-plain"], cases[name]])
+                    result = {case["name"]: case for case in summary["cases"]}[name]
+                    recorded = self.recorded(name)
+                    self.assertEqual(recorded.get("released"), "disarm", recorded)
+                    self.assertFalse(result["passed"], result)
+                    self.assertTrue(any(failure.startswith("the first run's row could not be read after the deploy")
+                                        for failure in result["failures"]), result["failures"])
+
     CLOCKS = ("machine-1", "machine-2", "cloud", "host")
 
     def perturb(self, model, label, number, seen):
