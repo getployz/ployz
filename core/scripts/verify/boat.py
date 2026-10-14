@@ -436,8 +436,8 @@ def retire(dead, states, boat):
             stopped = boat("stop", entry["id"])
             if stopped.returncode:
                 return f"this Boat key may not delete it, and boat stop failed: {failed(stopped)}"
-        print(f"Stopped {entry['id']} instead of deleting it: this Boat key may not delete it; it needs the "
-              f"sandbox.delete-own scope.", file=sys.stderr)
+            print(f"Stopped {entry['id']} instead of deleting it: this Boat key may not delete it; it needs the "
+                  f"sandbox.delete-own scope.", file=sys.stderr)
         return "stopped"
     actions = each(delete, dead)
     gone = {entry["id"] for entry, action in zip(dead, actions) if action in ("removed", "stopped")}
@@ -539,7 +539,10 @@ def reap_pool(force, yes):
     actions = retire([entry for entry, reason in found], states, lambda *args: subprocess.run(
         [*cli(), *args, "--json"], stdin=subprocess.DEVNULL, capture_output=True, timeout=60))
     for row, action in zip(rows, actions):
-        row.update(action=action) if action in ("removed", "stopped") else row.update(action="failed", reason=action)
+        if action in ("removed", "stopped"):
+            row.update(action=action)
+        else:
+            row.update(action="failed", reason=action)
     return rows
 
 

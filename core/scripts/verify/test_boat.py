@@ -544,7 +544,7 @@ class Pool(unittest.TestCase):
         self.assertEqual([entry["id"] for entry in boat.read(boat.POOL) + boat.read(boat.RETIRING)], ["bx_b2", "bx_b1"])
         self.assertEqual(provider.record()["sandboxes"]["machine-1"]["state"], "running")
 
-    def test_a_concurrent_park_of_an_older_bake_never_takes_the_slot_a_newer_bake_freed(self):
+    def test_a_concurrent_park_of_an_older_bake_ends_with_the_newer_bake_parked_and_older_bakes_displaced(self):
         boat.write(boat.BAKES, ["bake-old", "bake-mid", "bake-a"])
         boat.write(boat.POOL, [parked("bx_o1", 1, image="bake-old", at=1), parked("bx_x", 2, image="bake-mid", at=2)])
         states = dict(bx_o1="ready", bx_x="ready", bx_new="ready", bx_mid="ready")
