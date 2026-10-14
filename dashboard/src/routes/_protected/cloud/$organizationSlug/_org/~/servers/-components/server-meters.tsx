@@ -1,13 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
 import { MetricMeter } from "#/components/metric-meter";
-import { useMediaQuery } from "#/hooks/use-media-query";
 import { serverMetrics } from "#/modules/metrics/metrics-model";
 import { serverMetricsQueryOptions } from "#/modules/metrics/metrics.queries";
 import type { ServerListItem } from "#/modules/machines/use-servers";
 import { NOW_RANGE, serverNow, usageFraction, type ServerNow } from "./server-now";
-
-// The list's container query decides when meters show; this only keeps phones from reading what they never show.
-const WIDE = "(min-width: 64rem)";
 
 type Meters = Extract<ServerNow, { type: "meters" }>;
 
@@ -16,16 +13,32 @@ const METERS: readonly { readonly label: string; readonly fraction: (now: Meters
   { label: "Memory", fraction: (now) => now.memory && usageFraction(now.memory) },
 ];
 
-/** A Server's CPU and memory now, or nothing until there is a reading to show. */
+/**
+ * A Server's CPU and memory now, in a cell the list's container query shows only on a wide row. It reads metrics only
+ * while that cell is shown, and stays empty until there is a reading.
+ */
 export function ServerMeters({ organizationSlug, server }: { organizationSlug: string; server: ServerListItem }) {
-  const wide = useMediaQuery(WIDE);
+  const [shown, setShown] = useState(false);
   const offline = server.status === "offline";
   const read = useQuery({
     ...serverMetricsQueryOptions({ organizationSlug, machineId: server.machine.id, ...NOW_RANGE }),
-    enabled: wide && !offline,
+    enabled: shown && !offline,
   });
-  if (offline || !read.isSuccess) return null;
-  const now = serverNow(serverMetrics(read.data, new Map([[server.machine.id, server.name]])), Date.now() - read.dataUpdatedAt);
+  const observe = (cell: HTMLElement) => {
+    const observer = new ResizeObserver(([entry]) => setShown((entry?.contentRect.width ?? 0) > 0));
+    observer.observe(cell);
+    return () => observer.disconnect();
+  };
+  return (
+    <span ref={observe} className="hidden @4xl:flex">
+      {offline || !read.isSuccess ? null : (
+        <Readings now={serverNow(serverMetrics(read.data, new Map([[server.machine.id, server.name]])), Date.now() - read.dataUpdatedAt)} />
+      )}
+    </span>
+  );
+}
+
+function Readings({ now }: { now: ServerNow }) {
   if (now.type !== "meters") return null;
   return (
     <div className="flex gap-4 text-xs text-muted-foreground">

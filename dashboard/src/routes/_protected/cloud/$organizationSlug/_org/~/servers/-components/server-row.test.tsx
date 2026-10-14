@@ -10,8 +10,12 @@ import type { ServerUpgradeLine } from "#/modules/server-upgrade/server-upgrade"
 import { ServerRow, serverRowState } from "./server-row";
 
 beforeEach(() => {
-  // Narrow viewport: the meters never read, so these rows show only what the Runtime says.
-  vi.stubGlobal("matchMedia", (query: string) => ({ matches: false, media: query, addEventListener: () => {}, removeEventListener: () => {} }));
+  // Narrow list: the meter cell is hidden and never reads, so these rows show only what the Runtime says.
+  vi.stubGlobal("ResizeObserver", class {
+    constructor(private readonly report: ResizeObserverCallback) {}
+    observe() { this.report([{ contentRect: { width: 0 } } as ResizeObserverEntry], this as never); }
+    disconnect() {}
+  });
 });
 
 afterEach(() => {

@@ -15,8 +15,13 @@ afterEach(() => {
 
 const readServerMetrics = () => vi.spyOn(functions, "readServerMetricsServerFn").mockReturnValue(new Promise(() => {}) as never);
 
+/** The list's container query shows the meter cell (some width) or hides it (none). */
 function viewport({ wide }: { wide: boolean }) {
-  vi.stubGlobal("matchMedia", (query: string) => ({ matches: wide, media: query, addEventListener: () => {}, removeEventListener: () => {} }));
+  vi.stubGlobal("ResizeObserver", class {
+    constructor(private readonly report: ResizeObserverCallback) {}
+    observe() { this.report([{ contentRect: { width: wide ? 304 : 0 } } as ResizeObserverEntry], this as never); }
+    disconnect() {}
+  });
 }
 
 function showRow(membership: RuntimeMachineRecord["membership"]) {

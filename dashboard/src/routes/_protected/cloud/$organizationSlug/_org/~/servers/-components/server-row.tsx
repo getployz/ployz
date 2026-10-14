@@ -72,9 +72,7 @@ export function ServerRow({ organizationSlug, server, upgrade, stale }: {
         )}
         {server.machine.storage === "stateless" ? <Badge variant="outline">Docker only</Badge> : null}
       </span>
-      <span className="hidden @4xl:flex">
-        <ServerMeters organizationSlug={organizationSlug} server={server} />
-      </span>
+      <ServerMeters organizationSlug={organizationSlug} server={server} />
       <span className={cn("col-3 row-[1/span_2] text-right whitespace-nowrap @xl:col-auto @xl:row-auto", stale ? "text-muted-foreground" : tone)}>
         {word ?? <span className="sr-only">Online</span>}
       </span>
