@@ -801,6 +801,8 @@ def main():
         raise RuntimeError("This cluster has been removed")
     commands = Commands(run)
     backend = provider(run, commands)
+    if run["provider"] == "boat" and args.action != "down":
+        backend.refresh()
     machine = next((node for node in run["machines"] if node["name"] == getattr(args, "machine", None)), None)
     if hasattr(args, "machine") and machine is None:
         raise RuntimeError(f"Unknown Machine: {args.machine}")

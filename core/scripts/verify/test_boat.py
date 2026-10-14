@@ -311,6 +311,17 @@ class Registry(unittest.TestCase):
         self.assertEqual(self.calls, [])
         self.assertTrue(boat.registry("other").exists())
 
+    def test_refresh_extends_live_sandboxes_and_names_failures_once(self):
+        self.registered(**{"machine-1": dict(id="bx_a", state="running"), "machine-2": dict(id="bx_b", state="running"),
+                           "machine-3": dict(id="bx_c", state="deleted")})
+        self.answers[("extend", "bx_b")] = result(1, {"event": "error", "code": "internal", "status": 500})
+        with contextlib.redirect_stderr(io.StringIO()) as said:
+            self.provider.refresh()
+        self.assertEqual(sorted(self.calls), [["extend", "bx_a", "--ttl", boat.TTL], ["extend", "bx_b", "--ttl", boat.TTL]])
+        self.assertEqual(said.getvalue().count("\n"), 1)
+        self.assertIn("bx_b", said.getvalue())
+        self.assertNotIn("bx_a", said.getvalue())
+
     def test_a_sandbox_on_a_peers_node_is_refused(self):
         self.registered(**{"machine-1": dict(id="bx_a", state="running", ip="2001:41d0:1004:4161:100::33"),
                            "machine-2": dict(id="bx_b", state="running")})

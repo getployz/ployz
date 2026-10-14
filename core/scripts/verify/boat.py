@@ -1,5 +1,6 @@
 """Boat sandbox backend for verify-cluster's disposable-Machine contract."""
 
+from concurrent.futures import ThreadPoolExecutor
 import fcntl
 import hashlib
 import host
@@ -24,7 +25,7 @@ SIZE = "small"
 # Launches per Machine before start() gives up on landing it on a node no peer uses.
 PLACEMENTS = 3
 MEMORY = 4 * host.GiB
-TTL = int(os.environ.get("PLOYZ_VERIFY_BOAT_TTL", 6 * 3600))
+TTL = int(os.environ.get("PLOYZ_VERIFY_BOAT_TTL", 3600))
 # prepare-guest.sh pulls these into the Incus image; SNAPSHOT keeps no Docker images, so each Machine pulls them at boot.
 IMAGES = ["caddy:2", "nginx:1.29-alpine", "nginx:1.27-alpine", "postgres:16-alpine", "alpine:3.20", "traefik/whoami:v1.10.3"]
 UP_STATES = {"ready", "idle", "running", "cloning"}
@@ -69,6 +70,13 @@ DOCKER_UNITS = "docker.service docker.socket containerd.service"
 
 def cli():
     return [os.environ.get("BOAT_CLI", "boat"), "--no-update"]
+
+
+def each(function, items):
+    if not items:
+        return []
+    with ThreadPoolExecutor(max_workers=len(items)) as workers:
+        return list(workers.map(function, items))
 
 
 def error(result):
@@ -395,6 +403,15 @@ systemctl enable --now {PLOYZ_UNITS} $observe
 
     def stop_cause(self, node):
         return None
+
+    def refresh(self):
+        """Push each live sandbox's auto-stop TTL seconds out, so a suite longer than the TTL keeps its Machines."""
+        ids = [entry["id"] for entry in (self.record() or {}).get("sandboxes", {}).values()
+               if entry.get("id") and entry.get("state") == "running"]
+        results = each(lambda sandbox: self.boat("extend", sandbox, "--ttl", TTL, check=False), ids)
+        failed = [sandbox for sandbox, result in zip(ids, results) if result.returncode]
+        if failed:
+            print(f"Could not extend the auto-stop of {', '.join(failed)}; they stop on their earlier deadline.", file=sys.stderr)
 
     def wait_agent(self, node):
         deadline = time.monotonic() + 180
