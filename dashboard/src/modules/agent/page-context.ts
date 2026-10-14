@@ -15,17 +15,20 @@ export const PageContext = Schema.Struct({
 });
 export type PageContext = typeof PageContext.Type;
 
+/** A page the member is on, with how many Servers Cloud has enrolled in the Organization: Cloud's count, never the client's. */
+export type PageBlock = PageContext & { readonly servers?: number };
+
 const TAG = "<dashboard-page ";
-const ORDER = ["page", "project", "environment", "service", "deployment", "server"] as const satisfies ReadonlyArray<keyof PageContext>;
+const ORDER = ["page", "project", "environment", "service", "deployment", "server", "servers"] as const satisfies ReadonlyArray<keyof PageBlock>;
 
 const escape = (value: string) =>
   value.replaceAll("&", "&amp;").replaceAll("\"", "&quot;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 
 /** One line, the same bytes for the same place, so a block repeats exactly and the prompt prefix stays cacheable. */
-export function renderPageContext(context: PageContext): string {
+export function renderPageContext(context: PageBlock): string {
   const attributes = ORDER.flatMap((key) => {
     const value = context[key];
-    return value === undefined ? [] : [`${key}="${escape(value)}"`];
+    return value === undefined ? [] : [`${key}="${escape(String(value))}"`];
   });
   return `${TAG}${attributes.join(" ")}/>`;
 }

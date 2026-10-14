@@ -37,7 +37,7 @@ import {
   Superseded,
 } from "#/modules/agent/persistence.server";
 import { FAILURES, providerFailure } from "#/modules/agent/provider-error";
-import { latestPageContext, PageContext, readPageContext, renderPageContext, withPageContext } from "#/modules/agent/page-context";
+import { latestPageContext, type PageBlock, PageContext, readPageContext, renderPageContext, withPageContext } from "#/modules/agent/page-context";
 import { notSetUpScript, ScriptedAdapter, stubScript } from "#/modules/agent/scripted-adapter.server";
 import { PostHog } from "#/modules/analytics/posthog.server";
 import { decideApproval, requestApproval, reviewedDiff, trustedApproval } from "#/modules/approvals/approvals.server";
@@ -45,6 +45,7 @@ import type { Ran } from "#/modules/commands/command.server";
 import { findCommand, inputSchema, type Published, runCommand } from "#/modules/commands/commands.server";
 import { COMMANDS } from "#/modules/commands/registry.server";
 import { callStore, type StoreSource } from "#/modules/config-store/config-store.server";
+import { countOrganizationMachines } from "#/modules/machines/connections.server";
 import type { StoreAnswer, StoreCall, StoreRefusal, StoreResult } from "#/modules/config-store/store.contract";
 import type { Caller } from "#/modules/identity/actor";
 import { answerForSupport, refusalForSupport } from "#/modules/support-access/support-view";
@@ -285,16 +286,17 @@ const systemPrompt = (caller: Caller, model: string) => `${CATALOG.instructions}
 
 You are ${model}, the Ployz agent in the sidebar of Ployz Cloud. You act in the Organization "${caller.organization.slug}" as the member who is talking to you. Never act in another Organization.
 
-Your place is the Project and Environment named by the latest <dashboard-page …/> block, which opens a member message whenever they move. When they say "this service" or "here", use that block's. Never mention the block itself. With no block, the Organization's defaults apply.
+Your place is the Project and Environment named by the latest <dashboard-page …/> block, which opens a member message whenever they move. When they say "this service" or "here", use that block's. Never mention the block itself. With no block, the Organization's defaults apply. The block's servers attribute counts the Servers enrolled in the Organization: with servers="0" there are none yet, so nothing runs and nothing deploys, but staging changes still works.
 
 A Publish, a Deploy, a server drain, upgrade, cleanup or removal, and a Volume run may wait for a human to approve the plan. Call any of them alone, never alongside another tool. When a human denies an approval (approval_denied), quote the reason they gave and do not retry that action or work around it. When an approval is cancelled, say nothing changed. A Service restart, start or stop never waits.`;
 
 /**
- * Opens the member's new message with where they are in the dashboard, when that differs from the thread's last block.
+ * Opens the member's new message with where they are in the dashboard and how many Servers the Organization has, when
+ * that differs from the thread's last block.
  * It runs after withPersistence merged the stored thread, so the block is saved with the message: replays send the same
  * bytes and the prompt prefix stays cached.
  */
-const pageMarker = (page: PageContext) => defineChatMiddleware({
+const pageMarker = (page: PageBlock) => defineChatMiddleware({
   name: "ployz-page-context",
   onConfig: (ctx, config) => {
     if (ctx.phase !== "init") return undefined;
@@ -525,7 +527,10 @@ export const agentChat = Effect.fn("Agent.chat")(function* (person: Caller, requ
   const posthog = yield* PostHog;
   const { resume } = request;
   // A page the client sent malformed is no page: the turn still answers.
-  const page = resume === undefined ? Option.getOrUndefined(Schema.decodeUnknownOption(PageContext)(request.forwardedProps?.["page"])) : undefined;
+  const forwarded = resume === undefined ? Option.getOrUndefined(Schema.decodeUnknownOption(PageContext)(request.forwardedProps?.["page"])) : undefined;
+  const page: PageBlock | undefined = forwarded === undefined
+    ? undefined
+    : { ...forwarded, servers: yield* countOrganizationMachines(caller.organization.id) };
   const turn = (stores: Persistence) => {
     const limit = stepLimit(stores);
     const here: Here = { place: placeIn(caller, []) };

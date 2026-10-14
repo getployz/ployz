@@ -103,7 +103,7 @@ it.live("the page the sidebar forwards opens the member's stored message", () =>
     const persistence = yield* agentPersistence({ organizationId: ada.caller.organization.id, userId: ada.caller.userId });
     const [asked] = yield* Effect.promise(() => persistence.stores.messages.loadThread("thread-ada"));
     expect(asked?.content).toEqual([
-      { type: "text", content: '<dashboard-page page="architecture" project="web" environment="production" service="api"/>' },
+      { type: "text", content: '<dashboard-page page="architecture" project="web" environment="production" service="api" servers="0"/>' },
       { type: "text", content: "hello" },
     ]);
   })));

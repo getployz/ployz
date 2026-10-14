@@ -9,6 +9,10 @@ describe("renderPageContext", () => {
       .toBe('<dashboard-page page="architecture" project="web" environment="production" service="api" deployment="dep-1" server="srv-1"/>');
   });
 
+  it("ends with the Organization's Server count, zero included", () => {
+    expect(renderPageContext({ page: "architecture", server: "srv-1", servers: 0 })).toBe('<dashboard-page page="architecture" server="srv-1" servers="0"/>');
+  });
+
   it("leaves out what the page does not name", () => {
     expect(renderPageContext({ page: "servers" })).toBe('<dashboard-page page="servers"/>');
   });

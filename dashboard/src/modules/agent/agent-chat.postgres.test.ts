@@ -203,8 +203,8 @@ it.live("a Service restart runs through Cloud without asking anyone", () =>
   }));
 
 const architecture = { page: "architecture", project: "shop", environment: "production", service: "web" };
-const ARCHITECTURE = '<dashboard-page page="architecture" project="shop" environment="production" service="web"/>';
-const SERVERS = '<dashboard-page page="servers"/>';
+const ARCHITECTURE = '<dashboard-page page="architecture" project="shop" environment="production" service="web" servers="1"/>';
+const SERVERS = '<dashboard-page page="servers" servers="1"/>';
 
 /** Each member message's text parts, in order, as the thread stores them. */
 const memberTexts = (thread: ReadonlyArray<ModelMessage>) => thread.flatMap((message) => message.role !== "user" ? [] : [
@@ -223,6 +223,25 @@ it.live("a member message opens with where they are only when that changed since
     const stored = yield* thread;
     expect(memberTexts(stored)).toEqual([[ARCHITECTURE, "list services"], ["list services"], [SERVERS, "list services"]]);
     expect(JSON.stringify(stored[0])).toBe(first);
+  }));
+
+it.live("a member message says how many Servers the Organization has, again only once that count changed", () =>
+  Effect.gen(function* () {
+    const { persistence, provided, say } = yield* sidebar({ removeWeb: false });
+    yield* say("list services", { page: architecture });
+    yield* say("list services", { page: architecture });
+    yield* provided(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      yield* drizzle.execute(sql`delete from organization_machine where organization_id = ${ORGANIZATION}`);
+    }));
+    yield* say("list services", { page: architecture });
+    yield* say("list services", { page: { ...architecture, servers: "7" } });
+    expect(memberTexts(yield* Effect.promise(() => persistence.stores.messages.loadThread(THREAD)))).toEqual([
+      [ARCHITECTURE, "list services"],
+      ["list services"],
+      [ARCHITECTURE.replace('servers="1"', 'servers="0"'), "list services"],
+      ["list services"],
+    ]);
   }));
 
 it.live("a page the client sends malformed is left out, and the turn still answers", () =>
