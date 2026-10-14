@@ -1,5 +1,7 @@
-import { createFileRoute, redirect } from "@tanstack/react-router";
+import { createFileRoute, Link, redirect } from "@tanstack/react-router";
 import { DashboardPage } from "#/components/dashboard-page";
+import { PloyzMark } from "#/components/icons/ployz-logo";
+import { buttonVariants } from "#/components/ui/button-variants";
 import { organizationStateQueryOptions } from "#/modules/organization/organization-state.queries";
 import { AccountSections, prefetchAccount } from "../$organizationSlug/_org/-components/account-sections";
 
@@ -22,9 +24,16 @@ export const Route = createFileRoute("/_protected/cloud/account/")({
 
 function AccountWithoutOrganization() {
   return (
-    <DashboardPage width="content">
-      <h1 className="text-lg font-semibold">Account</h1>
-      <AccountSections />
-    </DashboardPage>
+    <div className="flex min-h-dvh flex-col">
+      <header className="flex h-12 shrink-0 items-center gap-2 border-b px-3 md:px-4">
+        <Link to="/cloud" aria-label="Projects" title="Projects" className={buttonVariants({ variant: "ghost", size: "icon-lg" })}>
+          <PloyzMark decorative className="size-7" />
+        </Link>
+        <h1 className="text-sm font-semibold">Account</h1>
+      </header>
+      <DashboardPage width="content">
+        <AccountSections />
+      </DashboardPage>
+    </div>
   );
 }
