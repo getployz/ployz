@@ -62,6 +62,6 @@ function WebTrafficLine({ view }: { view: WebTrafficView }) {
     case "off":
       return <>Your domains don’t point here.</>;
     case "failed":
-      return view.want === "on" ? <>Your domains don’t point here.</> : <>Your domains point at {view.address ?? "this server"}.</>;
+      return view.on ? <>Your domains point at {view.address ?? "this server"}.</> : <>Your domains don’t point here.</>;
   }
 }

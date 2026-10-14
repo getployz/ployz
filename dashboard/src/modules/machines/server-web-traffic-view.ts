@@ -9,15 +9,15 @@ export type WebTrafficView =
   /** Turning off: the switch sits on, dimmed, while the web server stops. */
   | { readonly kind: "stopping" }
   | { readonly kind: "off" }
-  /** The latest change didn't take: the switch sits where the Server is, with why above it and Retry. */
-  | { readonly kind: "failed"; readonly want: WebTrafficWant; readonly reason: string; readonly address: string | null };
+  /** The latest change didn't take: the switch sits where the Server is (`on`), with why above it and Retry. */
+  | { readonly kind: "failed"; readonly want: WebTrafficWant; readonly on: boolean; readonly reason: string; readonly address: string | null };
 
 /** Whether a change is under way: the switch waits. */
 export const webTrafficBusy = (view: WebTrafficView) => view.kind === "starting" || view.kind === "stopping";
 
 /** Where the switch sits: on while it's on or on its way off, so it only moves when the Server does. */
 export const webTrafficChecked = (view: WebTrafficView) =>
-  view.kind === "on" || view.kind === "stopping" || (view.kind === "failed" && view.want === "off");
+  view.kind === "on" || view.kind === "stopping" || (view.kind === "failed" && view.on);
 
 /** How long a finished change may take to show on the Server before the row trusts what the Server says instead. */
 export const WEB_TRAFFIC_SETTLE_MS = 30_000;
@@ -25,8 +25,9 @@ export const WEB_TRAFFIC_SETTLE_MS = 30_000;
 /**
  * The row for `server`, from what the Server reports (`acceptsIngress`), its latest change, and the change this tab
  * asked for (`requested`, until its row arrives). A change under way shows as such; a finished one whose outcome the
- * Server hasn't shown yet keeps showing until `settled`; a failed one shows its reason only while the Server still
- * disagrees with what it wanted, so a failure the Server made good on its own leaves no alert.
+ * Server hasn't shown yet keeps showing until `settled`. A failed stop shows its reason only while the Server still
+ * takes web traffic. A failed start always shows it: the role is on after one only when putting it back failed too,
+ * and then your domains point at a Server whose web server may not run.
  */
 export function webTrafficView(input: {
   readonly server: { readonly id: string; readonly acceptsIngress: boolean; readonly publicIp: string | null };
@@ -49,7 +50,7 @@ export function webTrafficView(input: {
       if (own.want === observed || settled) return steady;
       return own.want === "on" ? { kind: "starting" } : { kind: "stopping" };
     case "failed":
-      if (own.want === observed) return steady;
-      return { kind: "failed", want: own.want, reason: own.failure, address: server.publicIp };
+      if (own.want === "off" && observed === "off") return steady;
+      return { kind: "failed", want: own.want, on: observed === "on", reason: own.failure, address: server.publicIp };
   }
 }

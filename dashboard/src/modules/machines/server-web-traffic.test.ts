@@ -43,17 +43,24 @@ describe("webTrafficView", () => {
     expect(view(done, { acceptsIngress: true })).toEqual({ kind: "on", address: "203.0.113.10" });
   });
 
-  it("shows a failure only while the Server still disagrees with what it wanted", () => {
-    const failed = change("failed", "on", { failure: "Port 80 is in use on web-1. Free it, then try again." });
-    expect(view(failed)).toEqual({ kind: "failed", want: "on", reason: "Port 80 is in use on web-1. Free it, then try again.", address: "203.0.113.10" });
-    expect(view(failed, { acceptsIngress: true })).toEqual({ kind: "on", address: "203.0.113.10" });
+  it("shows a failed start whichever way the Server ended up, so a role left on never reads as healthy", () => {
+    const reason = "Port 80 is in use on web-1. Free it, then try again.";
+    const failed = change("failed", "on", { failure: reason });
+    expect(view(failed)).toEqual({ kind: "failed", want: "on", on: false, reason, address: "203.0.113.10" });
+    expect(view(failed, { acceptsIngress: true })).toEqual({ kind: "failed", want: "on", on: true, reason, address: "203.0.113.10" });
+  });
+
+  it("shows a failed stop only while the Server still takes web traffic", () => {
+    const failed = change("failed", "off");
+    expect(view(failed, { acceptsIngress: true })).toEqual({ kind: "failed", want: "off", on: true, reason: "why", address: "203.0.113.10" });
+    expect(view(failed)).toEqual({ kind: "off" });
   });
 
   it("moves the switch only when the Server does", () => {
     expect(webTrafficChecked({ kind: "stopping" })).toBe(true);
     expect(webTrafficChecked({ kind: "starting" })).toBe(false);
-    expect(webTrafficChecked({ kind: "failed", want: "on", reason: "x", address: null })).toBe(false);
-    expect(webTrafficChecked({ kind: "failed", want: "off", reason: "x", address: null })).toBe(true);
+    expect(webTrafficChecked({ kind: "failed", want: "on", on: false, reason: "x", address: null })).toBe(false);
+    expect(webTrafficChecked({ kind: "failed", want: "on", on: true, reason: "x", address: null })).toBe(true);
   });
 });
 

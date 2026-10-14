@@ -11,6 +11,7 @@ import {
   WEB_TRAFFIC_PENDING_LIMIT_MS,
   WEB_TRAFFIC_RUNNING_LIMIT_MS,
   type WebTrafficState,
+  type WebTrafficWant,
 } from "#/modules/machines/server-web-traffic";
 import { serverWebTrafficAttempt } from "#/modules/machines/tables";
 import { enqueueEvent } from "#/modules/operations/outbox.server";
@@ -164,25 +165,39 @@ function refusalWords(error: PloyzSdkError) {
   return message.trim().length > 0 ? message.trim() : "Your servers didn't answer.";
 }
 
-/**
- * Turn web traffic on: the role first, so the Cluster advertises the Server, then the web server on it. When the web
- * server doesn't start, the role goes back off, so the Server is never advertised with nothing listening.
- */
-const turnOn = (session: PloyzSession, request: WebTrafficRequest) => Effect.gen(function* () {
-  yield* session.updateMachine(request.machineId, { accepts_ingress: true });
-  const check = yield* session.startIngress(request.machineId);
-  const failure = startFailure(check, request.machineId);
-  if (failure === null) return finished();
-  yield* session.updateMachine(request.machineId, { accepts_ingress: false }).pipe(Effect.ignore);
-  return failed(failure);
-});
+/** How long putting the role back may take once a change failed. */
+const REVERT_LIMIT_MS = 30_000;
 
-/** Turn web traffic off: the role first, so nothing new is sent here, then the web server stops. */
-const turnOff = (session: PloyzSession, request: WebTrafficRequest) => Effect.gen(function* () {
-  yield* session.updateMachine(request.machineId, { accepts_ingress: false });
-  yield* session.stopIngress(request.machineId).pipe(Effect.tapError(() =>
-    session.updateMachine(request.machineId, { accepts_ingress: true }).pipe(Effect.ignore)));
-  return finished();
+/**
+ * Apply `want`: the role first, then the web server. On, the Cluster advertises the Server before its web server
+ * starts; off, nothing new is sent here before it stops. Any change that doesn't finish, refused, thrown, or out of
+ * time, puts the role back, so the Server is never advertised with nothing listening.
+ */
+const applyWant = Effect.fn("ServerWebTraffic.apply")(function* (session: PloyzSession, request: WebTrafficRequest, want: WebTrafficWant) {
+  const machine = request.machineId;
+  const role = want === "on";
+  const end = yield* Effect.gen(function* () {
+    yield* session.updateMachine(machine, { accepts_ingress: role });
+    if (!role) {
+      yield* session.stopIngress(machine);
+      return finished();
+    }
+    const failure = startFailure(yield* session.startIngress(machine), machine);
+    return failure === null ? finished() : failed(failure);
+  }).pipe(
+    Effect.catch((error) => Effect.succeed(failed(refusalWords(error)))),
+    Effect.catchDefect((defect) =>
+      Effect.as(Effect.logError("Web traffic change died", defect), failed("Cloud lost track of the change. Try again."))),
+    Effect.timeoutOrElse({
+      duration: WEB_TRAFFIC_RUNNING_LIMIT_MS,
+      orElse: () => Effect.succeed(failed("Your servers didn't answer in time. Try again.")),
+    }),
+  );
+  if (end.state === "failed") {
+    yield* session.updateMachine(machine, { accepts_ingress: !role }).pipe(Effect.timeout(REVERT_LIMIT_MS),
+      Effect.ignoreCause({ log: true, message: "Web traffic role not put back" }));
+  }
+  return end;
 });
 
 const stateOf = Effect.fn("ServerWebTraffic.stateOf")(function* (attemptId: string) {
@@ -197,7 +212,7 @@ const stateOf = Effect.fn("ServerWebTraffic.stateOf")(function* (attemptId: stri
  * Ask the Engine once. The row is claimed (`running`) right before the call and ended with the Engine's answer right
  * after, in one step: a retry that finds the row running knows the Engine may have been asked, closes it failed and
  * never asks again; one that finds it ended returns what's there. The page reads the Server's observed state beside
- * the row, so a failed row whose change took anyway shows the switch where it is, with no alert.
+ * the row (see `webTrafficView`).
  */
 export const executeWebTrafficOnce = Effect.fn("ServerWebTraffic.execute")(function* (request: WebTrafficRequest, runId: string) {
   const { drizzle } = yield* Database;
@@ -217,13 +232,7 @@ export const executeWebTrafficOnce = Effect.fn("ServerWebTraffic.execute")(funct
   const [claimed] = yield* drizzle.update(serverWebTrafficAttempt).set({ state: "running", startedAt: new Date() })
     .where(and(owned, eq(serverWebTrafficAttempt.state, "pending"))).returning({ id: serverWebTrafficAttempt.id });
   if (claimed === undefined) return yield* stateOf(request.attemptId);
-  const end = yield* (row.want === "on" ? turnOn : turnOff)(session, request).pipe(
-    Effect.catch((error) => Effect.succeed(failed(refusalWords(error)))),
-    Effect.timeoutOrElse({
-      duration: WEB_TRAFFIC_RUNNING_LIMIT_MS,
-      orElse: () => Effect.succeed(failed("Your servers didn't answer in time. Try again.")),
-    }),
-  );
+  const end = yield* applyWant(session, request, row.want);
   // The answer is in hand: the write is retried here rather than by asking the Engine again.
   const [written] = yield* drizzle.update(serverWebTrafficAttempt).set(end)
     .where(and(owned, eq(serverWebTrafficAttempt.state, "running"))).returning({ state: serverWebTrafficAttempt.state })
