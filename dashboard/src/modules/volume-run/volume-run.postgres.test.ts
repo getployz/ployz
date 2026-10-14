@@ -1005,6 +1005,15 @@ describe("volume runs", () => {
       expect(await request({ kind: "restore", args: { from: "fsn-1" } })).toMatchObject({ ok: true, run: { kind: "restore" } });
     });
 
+    it("removing B ends a committed Move with no copy known elsewhere, and names none", async () => {
+      const move = await warmMove();
+      await harness.pool.query("update volume_run set phase = 'committed', current = $2 where id = $1", [move.id, idOf("fsn-2")]);
+
+      await runEffect(releaseLanesOff(organizationId, fsn("fsn-2"), []));
+
+      expect(await lanes()).toMatchObject([{ id: move.id, state: "failed", message: "data's writer was on fsn-2 (removed). No copy on another server is known." }]);
+    });
+
     it("removing a Server leaves a committed lane bound elsewhere alone", async () => {
       const move = await warmMove();
       await harness.pool.query("update volume_run set phase = 'committed', current = $2 where id = $1", [move.id, idOf("fsn-2")]);

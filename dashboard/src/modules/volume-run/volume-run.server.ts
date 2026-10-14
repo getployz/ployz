@@ -545,7 +545,7 @@ const endLanesTo = Effect.fn("VolumeRun.endLanesTo")(function* (
     const holder = held[lane.dockerVolume];
     const lost = `${lane.volumeName}'s writer was on ${machine.name ?? machine.id} (removed)`;
     const message = holder === undefined
-      ? `${lost}. Restore from a copy that is left: ployz volume restore ${lane.volumeName} --from <server>`
+      ? `${lost}. No copy on another server is known.`
       : `${lost}. Restore from ${holder}'s copy: ployz volume restore ${lane.volumeName} --from ${holder}`;
     yield* database.transaction(Effect.gen(function* () {
       const { drizzle } = yield* Database;
