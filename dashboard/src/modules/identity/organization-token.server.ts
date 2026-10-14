@@ -45,7 +45,13 @@ export const createOrganizationToken = Effect.fn("OrganizationToken.create")(fun
   };
 });
 
-/** The Caller's Organization's tokens, expired ones included, and the Caller's own signed-in devices. */
+/** Owners and admins reach every token in the Organization; anyone else only their own. */
+const tokensReachableBy = (caller: Caller) => {
+  const inOrganization = eq(organizationToken.organizationId, caller.organization.id);
+  return caller.role === "owner" || caller.role === "admin" ? inOrganization : and(inOrganization, eq(organizationToken.userId, caller.userId));
+};
+
+/** The tokens the Caller can revoke, expired ones included, and the Caller's own signed-in devices. */
 export const listCredentials = Effect.fn("OrganizationToken.list")(function* (caller: Caller) {
   const database = yield* Database;
   const now = new Date();
@@ -57,7 +63,7 @@ export const listCredentials = Effect.fn("OrganizationToken.list")(function* (ca
       expiresAt: organizationToken.expiresAt,
     })
     .from(organizationToken)
-    .where(eq(organizationToken.organizationId, caller.organization.id))
+    .where(tokensReachableBy(caller))
     .orderBy(asc(organizationToken.createdAt), asc(organizationToken.id));
   const devices = yield* database.drizzle
     .select({ id: session.id, createdAt: session.createdAt, expiresAt: session.expiresAt })
@@ -86,12 +92,12 @@ export const listCredentials = Effect.fn("OrganizationToken.list")(function* (ca
   };
 });
 
-/** Revokes one of the Organization's tokens or one of the Caller's signed-in devices, at once. */
+/** Revokes a token the Caller can reach or one of the Caller's signed-in devices, at once. */
 export const revokeCredential = Effect.fn("OrganizationToken.revoke")(function* (caller: Caller, id: string) {
   const database = yield* Database;
   const token = yield* database.drizzle
     .delete(organizationToken)
-    .where(and(eq(organizationToken.id, id), eq(organizationToken.organizationId, caller.organization.id)))
+    .where(and(eq(organizationToken.id, id), tokensReachableBy(caller)))
     .returning({ id: organizationToken.id });
   if (token.length > 0) return { id, kind: "token" as const };
   const device = yield* database.drizzle

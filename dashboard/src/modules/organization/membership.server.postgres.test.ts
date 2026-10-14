@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { Effect } from "effect";
 import { Inngest } from "inngest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -8,7 +8,7 @@ import { createOrganizationToken } from "#/modules/identity/organization-token.s
 import { member, session, user } from "#/modules/identity/tables";
 import { InngestClient } from "#/modules/inngest/client";
 import { serverAccessRetireRequestedEvent } from "#/modules/inngest/events";
-import { removeMembership } from "#/modules/organization/membership.server";
+import { removeMembership, setMemberRole } from "#/modules/organization/membership.server";
 import { organization } from "#/modules/organization/tables";
 import { Auth, type AuthService } from "#/server/auth.server";
 import type { Database } from "#/server/database.server";
@@ -16,6 +16,7 @@ import { startPostgresTestHarness, type PostgresTestHarness } from "#/test/postg
 
 const ACME = "00000000-0000-4000-8000-00000000b001";
 const OTHER = "00000000-0000-4000-8000-00000000b002";
+const PAIR = "00000000-0000-4000-8000-00000000b003";
 
 const inngest = new Inngest({ id: "membership-test" });
 const send = vi.spyOn(inngest, "send");
@@ -25,12 +26,18 @@ let harness: PostgresTestHarness;
 let ada: string;
 let bob: string;
 let carol: string;
+let dora: string;
 
 const run = <A, E>(effect: Effect.Effect<A, E, Database | InngestClient | Auth>) =>
   harness.runEffect(effect.pipe(Effect.provideService(InngestClient, inngest), Effect.provideService(Auth, noSession)));
 
 const remove = (organizationId: string, userId: string) => run(removeMembership(organizationId, userId).pipe(
   Effect.as("removed"),
+  Effect.catchTags({ Conflict: () => Effect.succeed("conflict"), NotFound: () => Effect.succeed("not_found") }),
+));
+
+const demote = (organizationId: string, userId: string) => run(setMemberRole(organizationId, userId, "member", true).pipe(
+  Effect.as("demoted"),
   Effect.catchTags({ Conflict: () => Effect.succeed("conflict"), NotFound: () => Effect.succeed("not_found") }),
 ));
 
@@ -56,17 +63,21 @@ beforeAll(async () => {
     { email: "ada@example.test", name: "Ada" },
     { email: "bob@example.test", name: "Bob" },
     { email: "carol@example.test", name: "Carol" },
+    { email: "dora@example.test", name: "Dora" },
   ]).returning({ id: user.id });
-  [ada, bob, carol] = users.map((row) => row.id) as [string, string, string];
+  [ada, bob, carol, dora] = users.map((row) => row.id) as [string, string, string, string];
   await harness.db.insert(organization).values([
     { id: ACME, name: "Acme", slug: "acme" },
     { id: OTHER, name: "Other", slug: "other" },
+    { id: PAIR, name: "Pair", slug: "pair" },
   ]);
   await harness.db.insert(member).values([
     { userId: ada, organizationId: ACME, role: "owner" },
     { userId: bob, organizationId: ACME, role: "member" },
     { userId: carol, organizationId: ACME, role: "admin" },
     { userId: bob, organizationId: OTHER, role: "owner" },
+    { userId: ada, organizationId: PAIR, role: "owner" },
+    { userId: dora, organizationId: PAIR, role: "owner" },
   ]);
   const expiresAt = new Date(Date.now() + 86_400_000);
   await harness.db.insert(session).values([
@@ -113,5 +124,27 @@ describe("removeMembership", () => {
   it("refuses someone who is not a member", async () => {
     expect(await remove(ACME, carol)).toBe("not_found");
     expect(send).not.toHaveBeenCalled();
+  });
+});
+
+describe("setMemberRole", () => {
+  it("refuses a Caller who is not an owner once the locked row shows an owner", async () => {
+    const changed = await run(setMemberRole(PAIR, ada, "admin", false).pipe(
+      Effect.as("demoted"),
+      Effect.catchTag("Conflict", () => Effect.succeed("conflict")),
+    ));
+    expect(changed).toBe("conflict");
+  });
+
+  it("keeps an owner when one owner is demoted while the other is removed", async () => {
+    const { outcomes } = await harness.db.transaction(async (tx) => {
+      await tx.select({ userId: member.userId }).from(member).where(eq(member.organizationId, PAIR)).orderBy(asc(member.userId)).for("update");
+      const outcomes = Promise.all([demote(PAIR, ada), remove(PAIR, dora)]);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      return { outcomes };
+    });
+    expect((await outcomes).filter((outcome) => outcome === "conflict")).toHaveLength(1);
+    const owners = await harness.db.select().from(member).where(and(eq(member.organizationId, PAIR), eq(member.role, "owner")));
+    expect(owners).toHaveLength(1);
   });
 });

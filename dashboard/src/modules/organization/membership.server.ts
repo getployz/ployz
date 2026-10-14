@@ -19,7 +19,7 @@ export const removeMembership = Effect.fn("Organization.removeMembership")(funct
   yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
     const members = yield* drizzle.select({ userId: member.userId, role: member.role }).from(member)
-      .where(eq(member.organizationId, organizationId)).for("update");
+      .where(eq(member.organizationId, organizationId)).orderBy(asc(member.userId)).for("update");
     const leaving = members.find((row) => row.userId === userId);
     if (leaving === undefined) return yield* new NotFound({ message: "That user is not a member of this Organization." });
     if (leaving.role === "owner" && !members.some((row) => row.role === "owner" && row.userId !== userId)) {
@@ -47,15 +47,26 @@ export const listMembers = Effect.fn("Organization.listMembers")(function* (orga
     .where(eq(member.organizationId, organizationId)).orderBy(asc(member.createdAt));
 });
 
-/** Gives a member a new role. It refuses to demote the last owner. Locks the member rows like `removeMembership`. */
-export const setMemberRole = Effect.fn("Organization.setMemberRole")(function* (organizationId: string, userId: string, role: Role) {
+/**
+ * Gives a member a new role. It refuses to demote the last owner, and refuses a Caller who is not an owner when the
+ * member is or would become one, checked against the locked rows. Locks the member rows in the order `removeMembership` does.
+ */
+export const setMemberRole = Effect.fn("Organization.setMemberRole")(function* (
+  organizationId: string,
+  userId: string,
+  role: Role,
+  byOwner: boolean,
+) {
   const database = yield* Database;
   yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
     const members = yield* drizzle.select({ userId: member.userId, role: member.role }).from(member)
-      .where(eq(member.organizationId, organizationId)).for("update");
+      .where(eq(member.organizationId, organizationId)).orderBy(asc(member.userId)).for("update");
     const target = members.find((row) => row.userId === userId);
     if (target === undefined) return yield* new NotFound({ message: "That user is not a member of this Organization." });
+    if ((target.role === "owner" || role === "owner") && !byOwner) {
+      return yield* new Conflict({ message: "Only an owner makes or removes an owner.", userFacing: true });
+    }
     if (target.role === "owner" && role !== "owner" && !members.some((row) => row.role === "owner" && row.userId !== userId)) {
       return yield* new Conflict({ message: "An Organization needs an owner. Make someone else an owner first.", userFacing: true });
     }

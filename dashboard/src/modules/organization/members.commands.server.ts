@@ -139,7 +139,7 @@ export const orgMemberRole = defineCommand({
     if (!picked.ok) return picked;
     const target = picked.member;
     if ((input.role === "owner" || target.role === "owner") && caller.role !== "owner") return refused("forbidden", OWN);
-    yield* setMemberRole(caller.organization.id, target.userId, input.role);
+    yield* setMemberRole(caller.organization.id, target.userId, input.role, caller.role === "owner");
     return { ok: true, output: { email: target.email, role: input.role }, message: `${target.email} is now ${input.role}.` } as const;
   }).pipe(Effect.catchTag("Conflict", conflictRefused)),
 });
