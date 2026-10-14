@@ -1031,6 +1031,74 @@ mod settled {
     }
 
     #[tokio::test]
+    async fn removal_by_id_succeeds_when_the_retirer_removes_it_during_the_drain() {
+        let Settling {
+            local,
+            fake,
+            data_dir,
+        } = settling().await;
+        let EnsuredContainer::Ensured {
+            now: ContainerNow::Present(old),
+            ..
+        } = local
+            .ensure_container(run(new_container("started")))
+            .await
+            .unwrap()
+        else {
+            panic!("the old Container did not start");
+        };
+        let id = old.container_id;
+        let gone = tokio::spawn({
+            let local = local.clone();
+            async move {
+                local
+                    .ensure_container(ContainerWant::Gone {
+                        container: ployz_core::ContainerLocator::Id(id),
+                        drain: ployz_core::Drain::try_from(500).unwrap(),
+                        anonymous_volumes: ployz_core::AnonymousVolumes::Remove,
+                    })
+                    .await
+            }
+        });
+        let containers = local.containers.as_ref().unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !containers.stopping_ids_for_test().contains(&id) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            local
+                .remove_drained_if(id, async { Ok(true) })
+                .await
+                .unwrap()
+        );
+
+        let reply = gone.await.unwrap().unwrap();
+
+        assert!(
+            matches!(
+                reply,
+                EnsuredContainer::Ensured {
+                    now: ContainerNow::Absent { .. },
+                    ..
+                }
+            ),
+            "expected the Container gone, got {reply:?}"
+        );
+        assert!(
+            fake.named_containers
+                .as_ref()
+                .unwrap()
+                .lock()
+                .unwrap()
+                .is_empty()
+        );
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
     async fn ensure_settled_answers_failed_when_health_fails() {
         let (reply, _) = ensure_reporting(
             settled_run(60_000),

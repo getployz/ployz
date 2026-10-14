@@ -738,7 +738,7 @@ impl LocalMachine {
             } => {
                 let local = self.clone();
                 self.finish_installed(move |installation| async move {
-                    local
+                    match local
                         .stop_behind_ingress(
                             &installation,
                             &id,
@@ -746,8 +746,11 @@ impl LocalMachine {
                             drain,
                             &StopOptions::default(),
                         )
-                        .await?
-                        .ok();
+                        .await
+                    {
+                        Ok(_) | Err(Error::Docker(crate::docker::Error::ContainerNotFound(_))) => {}
+                        Err(error) => return Err(error),
+                    }
                     let turn = local.owner.admission_lock().write_owned().await;
                     let removed = local
                         .containers
@@ -756,8 +759,10 @@ impl LocalMachine {
                         .remove(&id, anonymous_volumes == AnonymousVolumes::Remove, false)
                         .await;
                     drop(turn);
-                    removed?;
-                    Ok(())
+                    match removed {
+                        Ok(()) | Err(crate::docker::Error::ContainerNotFound(_)) => Ok(()),
+                        Err(error) => Err(error.into()),
+                    }
                 })
                 .await?;
                 None
