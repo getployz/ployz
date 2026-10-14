@@ -16,6 +16,7 @@ The exit is nonzero on any FAIL.
 """
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import os
@@ -216,7 +217,7 @@ class Cluster:
             if found and not self.sh(machine, f"/usr/bin/docker exec {found[0]} pg_isready -U postgres",
                                      required=False).returncode:
                 return True
-            time.sleep(3)
+            time.sleep(1)
         return False
 
     def seed(self, machine, phys, value):
@@ -283,7 +284,7 @@ class Cluster:
         times = [at for at in times if at >= since]
         return min(times) if times else None
 
-    def wait_held(self, volume, row, phys, source, target, cell, since, limit=900):
+    def wait_held(self, volume, row, phys, source, target, cell, since, limit=300):
         """Wait until `target` logs that its fault delays `cell`, after the db on `source` stopped for the cut."""
         deadline = time.monotonic() + limit
         while time.monotonic() < deadline:
@@ -320,7 +321,7 @@ class Cluster:
     def start_log(self, machine, tag):
         return self.sh(machine, f"cat /tmp/{tag}-start.log 2>/dev/null || true", required=False).stdout.strip()
 
-    def wait_start_log(self, machine, tag, limit=600):
+    def wait_start_log(self, machine, tag, limit=150):
         deadline = time.monotonic() + limit
         while time.monotonic() < deadline:
             began = self.sh(machine, f"grep -m1 '^begin' /tmp/{tag}-start.log 2>/dev/null || true",
@@ -380,7 +381,7 @@ class Cluster:
             last = self.row(volume, run_id, env) or last
             if last.get("state") in TERMINAL:
                 return last
-            time.sleep(4)
+            time.sleep(1)
         return {**last, "id": run_id, "state": f"still {last.get('state', 'unseen')} after {limit}s"}
 
     def run_volume(self, *args, volume, env=None, limit=1500):
@@ -473,7 +474,7 @@ class Cluster:
                      and row.get("created_at", "") > earlier.get("created_at", "")]
             if later:
                 return min(later, key=lambda row: row["created_at"])
-            time.sleep(4)
+            time.sleep(1)
         return None
 
     def stop_move(self, volume, phys, source, target):
@@ -492,7 +493,7 @@ class Cluster:
         finally:
             self.fault(target, None)
             self.runner("start")
-        stopped = self.wait_run(volume, row["id"], limit=600)
+        stopped = self.wait_run(volume, row["id"], limit=300)
         return dict(held=held, cancel=cancelled, run=stopped)
 
     # Removal and rejoin
@@ -507,10 +508,11 @@ class Cluster:
             attempts.append(f"exit {code} {say(data)[:300]}")
             if code == 0:
                 return attempts
-            retry = "does not match" in say(data) or find_key(data, "code") == "unavailable"
+            retry = ("does not match" in say(data) or "aren't answering" in say(data)
+                     or find_key(data, "code") == "unavailable")
             if not retry or time.monotonic() > deadline:
                 raise CheckError(f"server forget {machine} --confirm dead refused: {attempts[-3:]}")
-            time.sleep(10)
+            time.sleep(2)
 
     def daemon_up(self, machine):
         self.sh(machine, "for i in $(seq 180); do systemctl is-active --quiet ployz.service && exit 0; sleep 1; done; "
@@ -538,7 +540,7 @@ class Cluster:
                 return f"joined with catch-up incomplete; the redeploy it asks for finished {round(time.time() - started)}s later"
             if time.time() > deadline:
                 raise CheckError(f"{machine} joined but redeploy still fails after 600s: {say(deployed)[:800]}")
-            time.sleep(30)
+            time.sleep(5)
 
     def accept_services(self, machine):
         """The entry Server may not route to a fresh add over the mesh for some seconds; retry as a user would."""
@@ -549,14 +551,14 @@ class Cluster:
                 return
             if find_key(data, "code") != "unavailable" or time.time() > deadline:
                 raise CheckError(f"server set {machine} --accepts-services=true after its add failed: {say(data)[:800]}")
-            time.sleep(5)
+            time.sleep(2)
 
     def wait_gone(self, phys, limit=480):
         started = time.monotonic()
         while time.monotonic() - started < limit:
             if not any(self.exists(machine, slot(phys)) for machine in self.machines):
                 return round(time.monotonic() - started)
-            time.sleep(10)
+            time.sleep(1)
         return None
 
     # Verdicts and evidence
@@ -599,12 +601,12 @@ class Recorder:
         for machine in self.cluster.machines:
             self.cluster.sh(machine, f"rm -f /tmp/rec-{self.tag}.log; nohup setsid bash -c {shlex.quote(loop)} "
                                      f"> /tmp/rec-{self.tag}.log 2>&1 < /dev/null & echo $! > /tmp/rec-{self.tag}.pid")
-        time.sleep(2)
         for machine in self.cluster.machines:
-            alive = self.cluster.sh(machine, f"kill -0 $(cat /tmp/rec-{self.tag}.pid) && wc -l < /tmp/rec-{self.tag}.log",
+            alive = self.cluster.sh(machine, f"for i in $(seq 100); do kill -0 $(cat /tmp/rec-{self.tag}.pid) || exit 1; "
+                                             f"[ -s /tmp/rec-{self.tag}.log ] && exit 0; sleep 0.1; done; exit 1",
                                     required=False)
             if alive.returncode:
-                raise CheckError(f"recorder on {machine} did not survive: {alive.stdout} {alive.stderr}")
+                raise CheckError(f"recorder on {machine} wrote no sample within 10s: {alive.stdout} {alive.stderr}")
         return self
 
     def __exit__(self, *_):
@@ -925,7 +927,7 @@ def requeued_move(vc, volume, original, limit=120):
                  and row.get("created_at", "") > original.get("created_at", "")]
         if later:
             return min(later, key=lambda row: row["created_at"])
-        time.sleep(4)
+        time.sleep(1)
     return None
 
 
@@ -1209,6 +1211,10 @@ def setup(vc, volumes):
     two = B in vc.machines
     if two:
         vc.cli("server", "set", B, "--accepts-services=false", required=True)
+        pull = ThreadPoolExecutor(1).submit(
+            vc.sh, B, f"/usr/bin/docker pull -q {IMAGE}; /usr/bin/docker volume create -d ployz -o size=1g warm-move-seed && "
+                      "for i in $(seq 10); do /usr/bin/docker volume rm warm-move-seed && exit 0; sleep 1; done; exit 1",
+            timeout=900)
     vc.cli("project", "new", "verify", required=True)
     vc.cli("link", "--project", "verify", required=True)
     by_env = {}
@@ -1229,9 +1235,7 @@ def setup(vc, volumes):
             vc.cli("deploy", *env_flag(env), timeout=1500, required=True)
     if two:
         vc.cli("server", "set", B, "--accepts-services=true", required=True)
-        vc.sh(B, f"/usr/bin/docker pull -q {IMAGE}; /usr/bin/docker volume create -d ployz -o size=1g warm-move-seed && "
-                 "for i in $(seq 10); do /usr/bin/docker volume rm warm-move-seed && exit 0; sleep 1; done; exit 1",
-              timeout=900)
+        pull.result()
     for volume, env in volumes:
         phys = vc.physical(volume, env)
         if not vc.ready(A, phys, limit=300):
