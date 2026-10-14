@@ -696,21 +696,34 @@ class VolumeMove:
         return dict(volume=found[0], target=found[1], gen=found[2])
 
     def receiving(self, machine, epoch):
-        """The receiving trigger: a receive into this Volume's mirror while its slot parent names a round pull of the
-        first run's epoch. One shell; a reply that did not run to its end withholds credit."""
+        """The receiving trigger: one receive into this Volume's mirror that lived across a read of its slot parent's
+        `ployz:pull`, with the same round pull of the first run's epoch read before and during it. The plugin admits
+        a new target only when no receive runs, so a target read while that receive provably ran is its target. A PID
+        names one process only with the same start time on both sides. A reply that did not run to its end withholds
+        credit."""
         if epoch is None:
             return None
         pattern = shlex.quote(f"zfs (recv|receive) .*ployz-mirror/{self.physical}/fs")
         parent = shlex.quote(f"{self.pool}/ployz-mirror/{self.physical}")
-        result = self.sh(machine, f"set +e; pgrep -f {pattern} >/dev/null; echo \"pgrep $?\"; "
-                                  f"zfs get -H -o value ployz:pull {parent}; echo \"zfs $?\"; echo end", check=False)
+        starts = "for pid in $pids; do echo \"proc $pid $(awk '{print $22}' /proc/$pid/stat 2>/dev/null)\"; done"
+        pull = f"v=$(zfs get -H -o value ployz:pull {parent}); echo \"pull $? $v\""
+        result = self.sh(machine, f"set +e; {pull}; pids=$(pgrep -f {pattern}); echo \"pgrep $?\"; {starts}; "
+                                  f"{pull}; {starts}; echo end", check=False)
         lines = result.stdout.splitlines()
-        if result.returncode or len(lines) != 4 or lines[0] != "pgrep 0" or lines[2:] != ["zfs 0", "end"]:
+        if result.returncode or len(lines) < 4 or lines[1] != "pgrep 0" or lines[-1] != "end":
             return None
-        if not re.fullmatch(rf"w-{epoch}-\d+", lines[1]):
+        second = next((at for at, line in enumerate(lines) if at > 1 and line.startswith("pull ")), None)
+        if second is None:
             return None
-        return dict(machine=machine, kind="receiving", line=f"ployz:pull={lines[1]}", cursor=None, boot_id=None,
-                    identity=dict(volume=self.physical, target=lines[1]), poll_end_mono=time.monotonic())
+        before, after = lines[2:second], lines[second + 1:-1]
+        target = lines[0].removeprefix("pull 0 ")
+        if lines[0] == target or lines[second] != lines[0] or not re.fullmatch(rf"w-{epoch}-\d+", target):
+            return None
+        lived = [line for line in before if line in after and re.fullmatch(r"proc \d+ \d+", line)]
+        if not lived or len(before) != len(after):
+            return None
+        return dict(machine=machine, kind="receiving", line=f"ployz:pull={target} {lived[0]}", cursor=None,
+                    boot_id=None, identity=dict(volume=self.physical, target=target), poll_end_mono=time.monotonic())
 
     def committed(self, run):
         """The committed trigger: the first run's own row, read now, records the committed phase while it still

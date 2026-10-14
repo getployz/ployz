@@ -317,19 +317,26 @@ class ClusterModel:
         return 0, ""
 
     def pull_probe(self, machine):
-        """The receiving read: the receive process, then the slot parent's `ployz:pull` with zfs's exit code."""
+        """The receiving read: the slot parent's `ployz:pull`, the receive's PID with its start time, the property
+        again, then the start time again. probe_hooks run while the probe sits between the two property reads."""
         unreadable = self.unreadable.get(machine)
         if unreadable == "exec":
             return 255, ""
+
+        def pull():
+            if unreadable == "pull":
+                return "pull 1 "
+            own = f"w-{self.epoch(self.runs[-1]['id'])}-0" if self.runs and self.receiving_on(machine) else "-"
+            return f"pull 0 {self.pull_targets.get(machine, own)}"
+        lines = [pull()]
         pgrep = 2 if unreadable == "pgrep" else 0 if self.receiving_on(machine) else 1
-        lines = [f"pgrep {pgrep}"]
+        lines.append(f"pgrep {pgrep}")
+        pids = ["4242"] if pgrep == 0 else []
+        lines += [f"proc {pid} 777" for pid in pids]
         if self.probe_hooks:
             self.probe_hooks.pop(0)()
-        if unreadable == "pull":
-            lines.append("zfs 1")
-        else:
-            own = f"w-{self.epoch(self.runs[-1]['id'])}-0" if self.runs and pgrep == 0 else "-"
-            lines += [self.pull_targets.get(machine, own), "zfs 0"]
+        lines.append(pull())
+        lines += [f"proc {pid} {'777' if self.receiving_on(machine) else ''}" for pid in pids]
         return (1 if self.poll_fails else 0), "\n".join(lines + ["end"]) + "\n"
 
     def epoch(self, run_id):
@@ -2013,16 +2020,30 @@ class VolumeMoveTests(unittest.TestCase):
     def test_a_receive_that_ends_between_the_probe_reads_is_not_credited_to_the_new_pull(self):
         # Codex r10 finding 3: an older receive is running when the probe looks for one, then ends, and the first
         # run's admission writes its own target before the probe reads `ployz:pull`.
-        def late_pull(begun):
-            model = self.model
+        # The same shape with the first run's own target already admitted: its receive ends between the reads and
+        # the plugin keeps `ployz:pull`, so both reads name the first run while no receive is running.
+        for before in ("w-1-0", "w-2-0"):
+            with self.subTest(before):
+                def late_pull(begun, before=before):
+                    model = self.model
 
-            def ends_and_admits():
-                model.receiving = False
-                model.pull_targets["machine-2"] = "w-2-0"
-            model.at(begun + 1, lambda: (model.pull_targets.update({"machine-2": "w-1-0"}),
+                    def ends_and_admits():
+                        model.receiving = False
+                        model.pull_targets["machine-2"] = "w-2-0"
+                    model.at(begun + 1, lambda: (model.pull_targets.update({"machine-2": before}),
+                                                 setattr(model, "receiving", {"machine-2"}),
+                                                 model.probe_hooks.append(ends_and_admits)))
+                result, _ = self.run_with("soak-1-rounds-kill-ployz-other", self.close_an_earlier_run, 5, late_pull)
+                self.assert_not_credited(result)
+
+    def test_a_pull_that_changes_while_one_receive_runs_is_not_credited(self):
+        # Only the same target on both sides of the receive's proven life binds that target to it.
+        def changed(begun):
+            model = self.model
+            model.at(begun + 1, lambda: (model.pull_targets.update({"machine-2": "w-2-0"}),
                                          setattr(model, "receiving", {"machine-2"}),
-                                         model.probe_hooks.append(ends_and_admits)))
-        result, _ = self.run_with("soak-1-rounds-kill-ployz-other", self.close_an_earlier_run, 5, late_pull)
+                                         model.probe_hooks.append(lambda: model.pull_targets.update({"machine-2": "-"}))))
+        result, _ = self.run_with("soak-1-rounds-kill-ployz-other", self.close_an_earlier_run, 5, changed)
         self.assert_not_credited(result)
 
     def test_a_pull_the_first_run_admitted_with_no_receive_running_is_not_credited(self):
