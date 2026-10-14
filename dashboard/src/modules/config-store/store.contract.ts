@@ -57,7 +57,7 @@ export type StoreAnswer<C extends StoreCall> = C extends { operation: "read"; qu
  * A query or command from outside Cloud, checked once where it enters: an object naming its kind. The Store decodes
  * and validates the rest itself, refusing anything else as `invalid_argument`.
  */
-const envelope = <T>(kind: string) => {
+const envelope = <T>(kind: keyof T & string) => {
   const named = Schema.is(Schema.Struct({ [kind]: Schema.String }));
   return Schema.declare<T>((value): value is T => named(value));
 };
