@@ -37,7 +37,7 @@ const MAX_CHIPS = 3;
 export const SERVER_ROW_GRID = cn(
   "grid grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-x-4 gap-y-1 px-3 py-2.5 text-sm",
   "@xl:grid-cols-[auto_minmax(0,1fr)_minmax(0,1.4fr)_7rem_auto]",
-  "@4xl:grid-cols-[auto_minmax(0,1fr)_minmax(0,1.4fr)_15rem_7rem_auto]",
+  "@4xl:grid-cols-[auto_minmax(0,1fr)_minmax(0,1.4fr)_19rem_7rem_auto]",
 );
 
 /** The bordered list that holds Server rows; its width, not the viewport's, decides each row's layout. */

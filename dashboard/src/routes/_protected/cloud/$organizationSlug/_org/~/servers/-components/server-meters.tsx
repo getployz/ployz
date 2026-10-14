@@ -32,7 +32,7 @@ export function ServerMeters({ organizationSlug, server }: { organizationSlug: s
       {METERS.map(({ label, fraction }) => {
         const value = fraction(now);
         return (
-          <div key={label} className="flex w-28 flex-col gap-1">
+          <div key={label} className="flex items-center gap-2">
             <span>{label}</span>
             {value === null ? <span title="Not measured">–</span> : <MetricMeter label={label} fraction={value} className="text-foreground" />}
           </div>
