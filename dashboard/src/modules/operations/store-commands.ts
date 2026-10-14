@@ -21,7 +21,7 @@ export const STORE_COMMANDS = {
   },
   rename_project: {
     cli: { paths: ["project rename"] },
-    agent: { gap: "No tool renames a Project." },
+    agent: { tools: ["project_rename"] },
     ui: { sender: `${ENV}/-components/store-settings.tsx` },
   },
   create_environment: {
@@ -106,7 +106,7 @@ export const STORE_COMMANDS = {
   },
   rename_config: {
     cli: { paths: ["config rename"] },
-    agent: { gap: "No tool renames a Config." },
+    agent: { tools: ["config_rename"] },
     ui: { sender: `${ENV}/resources/$resourceId/-components/StoreConfigDrawer.tsx` },
   },
   delete_config: {
@@ -136,7 +136,7 @@ export const STORE_COMMANDS = {
   },
   stage_history: {
     cli: { paths: ["history restore", "history undo"] },
-    agent: { gap: "No tool restores or undoes from history." },
+    agent: { tools: ["history"] },
     ui: { sender: `${ENV}/-components/EnvironmentHistory.tsx` },
   },
   discard: {
@@ -146,12 +146,12 @@ export const STORE_COMMANDS = {
   },
   admit: {
     cli: { paths: ["deploy", "up", "deployment retry", "env shutdown", "project rm", "env rm"] },
-    agent: { tools: ["deploy"] },
+    agent: { tools: ["deploy", "deployment_retry"] },
     ui: { sender: `${ENV}/-components/StoreDeploymentPage.tsx` },
   },
   start: {
     cli: { paths: ["deployment start"] },
-    agent: { gap: "No tool starts a waiting Deployment." },
+    agent: { tools: ["deployment_start"] },
     ui: { sender: `${ENV}/-components/StoreDeploymentPage.tsx` },
   },
   cancel: {
