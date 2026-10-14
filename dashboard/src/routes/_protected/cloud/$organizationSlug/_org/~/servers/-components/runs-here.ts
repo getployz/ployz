@@ -7,5 +7,5 @@ export const serviceNames = (server: Server) => [...new Set(server.services.map(
 export function runsHere(server: Server) {
   const names = serviceNames(server);
   if (names.length > 0) return names.join(" · ");
-  return server.machine.acceptsBuilds ? "Only runs builds" : "Nothing running";
+  return server.machine.acceptsBuilds && !server.machine.acceptsServices ? "Only runs builds" : "No services";
 }
