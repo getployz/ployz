@@ -151,9 +151,11 @@ const writerOf = Effect.fn("VolumeRun.writerOf")(function* (run: RunContext, mem
 
 /**
  * Floors every answered Machine at this run's gen, the empty ones too, so the run it took can switch nothing more
- * anywhere, not even with a late Mirror onto its destination. A Server without the floor holds no copy and is no
- * destination, so it stays as observed. A Machine that refuses or fails its floor stops none of the others: they are
- * floored first, then the first failure is the answer, since the run may end before it fences again.
+ * anywhere, not even with a late Mirror onto its destination. A Server without the floor answers only when it holds no
+ * copy, so it stays as observed. It may be the destination of the run this one took, but a Machine with no copy
+ * refuses a writer, so a late request leaves at most a slot there. A Machine that refuses or fails its floor stops
+ * none of the others: they are floored first, then the first failure is the answer, since the run may end before it
+ * fences again.
  */
 const floorMembers = Effect.fn("VolumeRun.floorMembers")(function* (run: RunContext, inngestRunId: string, members: readonly AnsweredMember[]) {
   const floored: AnsweredMember[] = [];
