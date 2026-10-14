@@ -690,7 +690,7 @@ impl VolumeStorage {
     ) -> Result<(), String> {
         let fault = "SetVolumeCopy.MirrorToMirror";
         match self.receive(from, &stream, fs, bound, fault, stop).await {
-            Ok(()) => return Ok(()),
+            Ok(()) => return self.drop_writer_marks(fs).await,
             Err(ReceiveFailure::Failed(error)) => return Err(error),
             Err(ReceiveFailure::NoStream(_)) => {}
         }
@@ -725,7 +725,20 @@ impl VolumeStorage {
         }
         self.receive_opened(opened, fs, bound, fault, stop)
             .await
-            .map_err(|failure| failure.to_string())
+            .map_err(|failure| failure.to_string())?;
+        self.drop_writer_marks(fs).await
+    }
+
+    /// A pull lands only a snapshot newer than the slot's newest, which only a writer
+    /// elsewhere made after this copy's cut, restore or promote. The copy then mirrors
+    /// that writer, and a mark left from before would keep it through a departure.
+    async fn drop_writer_marks(&self, fs: &str) -> Result<(), String> {
+        for mark in [CUT_PROPERTY, EPOCH_PROPERTY, PROMOTE_PROPERTY] {
+            self.zfs(&["inherit", mark, fs])
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(())
     }
 
     /// The slot's bound raised to the writer's, when the writer's Volume grew since the
