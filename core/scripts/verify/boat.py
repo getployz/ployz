@@ -222,9 +222,13 @@ class Provider:
             raise RuntimeError(f"{node['name']}: Boat kept placing the sandbox on a node another Machine uses")
         key = (self.private / "id_ed25519.pub").read_text().strip()
         # A clone can carry an sshd listener that systemd no longer tracks, so restarting ssh later fails with
-        # port 22 in use. Kill only listeners: Boat's own sessions run through sshd and must survive.
+        # port 22 in use. Kill only listeners, so open SSH sessions survive.
         listener = shlex.quote(r"^sshd: [^ ]*sshd -D \[listener\]")
-        install = (f"install -d -m 700 /root/.ssh && printf '%s\\n' {shlex.quote(key)} > /root/.ssh/authorized_keys"
+        # A clone resumes while Boat's agent still queues systemd jobs, and restarting ssh under them can drop
+        # systemctl's bus connection and then hang boat exec. Two idle readings in a row mark the restore done.
+        settle = ("idle=0; for i in $(seq 120); do if [ -z \"$(systemctl list-jobs --no-legend)\" ]; then idle=$((idle+1));"
+                  " [ $idle = 2 ] && break; else idle=0; fi; sleep 0.5; done; ")
+        install = (settle + f"install -d -m 700 /root/.ssh && printf '%s\\n' {shlex.quote(key)} > /root/.ssh/authorized_keys"
                    " && chmod 600 /root/.ssh/authorized_keys && systemctl stop ssh.service ssh.socket"
                    f" && {{ pkill -f {listener}; for i in $(seq 50); do pgrep -f {listener} >/dev/null || break; sleep 0.1; done; }}"
                    " && systemctl start ssh.socket")
@@ -233,11 +237,10 @@ class Provider:
             result = self.boat("exec", sandbox, "--timeout", "60", "--", "sudo", "sh", "-c", install, check=False)
             if not result.returncode:
                 break
-            # A fresh clone's systemd can drop systemctl's bus connection; the install is safe to repeat.
-            failure = error(result) or exited(result)
-            retry = isinstance(failure, str) or (failure or {}).get("code") == "boat_starting"
-            if not retry or time.monotonic() >= deadline:
-                raise RuntimeError(f"{node['name']}: could not install the root key: {failure or result.stderr.decode(errors='replace')}")
+            failure = error(result)
+            if (failure or {}).get("code") != "boat_starting" or time.monotonic() >= deadline:
+                why = failure or exited(result) or result.stderr.decode(errors="replace")
+                raise RuntimeError(f"{node['name']}: could not install the root key: {why}")
             time.sleep(1)
         self.wait_agent(node)
         # Incus guests have no firewall, and UFW drops WireGuard between sandboxes.
