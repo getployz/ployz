@@ -1,10 +1,10 @@
-import { queryOptions, useQuery } from "@tanstack/react-query";
+import { queryOptions, useQuery, useSuspenseQuery } from "@tanstack/react-query";
 import { githubBuildRepositoryKey } from "#/modules/github/github-build-workflow";
 import {
   listGithubBuildRepositoriesServerFn,
   getGithubRepoAccessStateServerFn,
   listGithubBranchesServerFn,
-  getGithubInstallUrlServerFn,
+  getGithubWebServerFn,
   searchGithubFilesServerFn,
 } from "#/modules/github/github.functions";
 
@@ -35,7 +35,7 @@ export const githubKeys = {
       input.installationId,
       input.repositoryId,
     ] as const,
-  installUrl: () => [...githubKeys.all, "install-url"] as const,
+  web: () => [...githubKeys.all, "web"] as const,
 };
 
 export function githubRepoAccessQueryOptions() {
@@ -47,12 +47,17 @@ export function githubRepoAccessQueryOptions() {
   });
 }
 
-export function githubInstallUrlQueryOptions() {
+export function githubWebQueryOptions() {
   return queryOptions({
-    queryKey: githubKeys.installUrl(),
-    queryFn: () => getGithubInstallUrlServerFn(),
+    queryKey: githubKeys.web(),
+    queryFn: () => getGithubWebServerFn(),
     staleTime: Infinity,
   });
+}
+
+/** GitHub's web origin for browser links; every Organization page's loader reads it first. */
+export function useGithubWebOrigin() {
+  return useSuspenseQuery(githubWebQueryOptions()).data.origin;
 }
 
 export function githubBranchesQueryOptions(input: {
