@@ -1005,6 +1005,35 @@ describe("volume runs", () => {
       expect(await request({ kind: "restore", args: { from: "fsn-1" } })).toMatchObject({ ok: true, run: { kind: "restore" } });
     });
 
+    it("a committed Move that fails into a release while B's removal ends it still frees the lane, so a restore starts", async () => {
+      const move = await warmMove();
+      await harness.pool.query("update volume_run set phase = 'committed', current = $2 where id = $1", [move.id, idOf("fsn-2")]);
+      const failing = await harness.pool.connect();
+      try {
+        await failing.query("begin");
+        await failing.query("select id from volume_run where id = $1 for update", [move.id]);
+        const releasing = runEffect(releaseLanesOff(organizationId, fsn("fsn-2"), [], { [dockerVolume]: "fsn-1" }));
+        while ((await harness.pool.query("select 1 from pg_stat_activity where wait_event_type = 'Lock'")).rowCount === 0) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        await failing.query("update volume_run set state = 'failed', finished_at = now() where id = $1", [move.id]);
+        await failing.query(`
+          insert into volume_run (organization_id, environment_id, volume_id, volume_name, docker_volume, refquota_bytes, kind, args, phase, current)
+          select organization_id, environment_id, volume_id, volume_name, docker_volume, refquota_bytes, 'release', '{}', phase, current
+          from volume_run where id = $1`, [move.id]);
+        await failing.query("commit");
+
+        await releasing;
+      } finally {
+        failing.release();
+      }
+      expect(await lanes()).toMatchObject([
+        { id: move.id, state: "failed" },
+        { kind: "release", state: "failed", message: "data's writer was on fsn-2 (removed). Restore from fsn-1's copy: ployz volume restore data --from fsn-1" },
+      ]);
+      expect(await request({ kind: "restore", args: { from: "fsn-1" } })).toMatchObject({ ok: true, run: { kind: "restore" } });
+    });
+
     it("removing B ends a committed Move with no copy known elsewhere, and names none", async () => {
       const move = await warmMove();
       await harness.pool.query("update volume_run set phase = 'committed', current = $2 where id = $1", [move.id, idOf("fsn-2")]);

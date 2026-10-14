@@ -528,32 +528,38 @@ export const releaseLanesOff = Effect.fn("VolumeRun.releaseLanesOff")(function* 
   return released;
 });
 
-/** Ends every committed lane whose writer-to-be is `machine`; each one's Inngest run is cancelled with it. */
+/**
+ * Ends every committed lane whose writer-to-be is `machine`; each one's Inngest run is cancelled with it. A committed Move
+ * that fails meanwhile hands its lane to a release bound for the same Server, so it looks again until none is left.
+ */
 const endLanesTo = Effect.fn("VolumeRun.endLanesTo")(function* (
   organizationId: string,
   machine: { readonly id: MachineId; readonly name: MachineName | null },
   held: Readonly<Record<string, MachineName>>,
 ) {
   const database = yield* Database;
-  const lanes = yield* database.drizzle.select().from(volumeRun).where(and(
-    eq(volumeRun.organizationId, organizationId),
-    inArray(volumeRun.state, ACTIVE_VOLUME_RUN_STATES),
-    eq(volumeRun.phase, "committed"),
-    eq(volumeRun.current, machine.id),
-  ));
-  for (const lane of lanes) {
-    const holder = held[lane.dockerVolume];
-    const lost = `${lane.volumeName}'s writer was on ${machine.name ?? machine.id} (removed)`;
-    const message = holder === undefined
-      ? `${lost}. No copy on another server is known.`
-      : `${lost}. Restore from ${holder}'s copy: ployz volume restore ${lane.volumeName} --from ${holder}`;
-    yield* database.transaction(Effect.gen(function* () {
-      const { drizzle } = yield* Database;
-      const [closed] = yield* drizzle.update(volumeRun).set(ended("failed", message))
-        .where(and(eq(volumeRun.id, lane.id), inArray(volumeRun.state, ACTIVE_VOLUME_RUN_STATES), eq(volumeRun.current, machine.id)))
-        .returning({ id: volumeRun.id });
-      if (closed !== undefined) yield* enqueueEvent(createVolumeRunTakenEvent({ runId: closed.id }));
-    }));
+  for (;;) {
+    const lanes = yield* database.drizzle.select().from(volumeRun).where(and(
+      eq(volumeRun.organizationId, organizationId),
+      inArray(volumeRun.state, ACTIVE_VOLUME_RUN_STATES),
+      eq(volumeRun.phase, "committed"),
+      eq(volumeRun.current, machine.id),
+    ));
+    if (lanes.length === 0) return;
+    for (const lane of lanes) {
+      const holder = held[lane.dockerVolume];
+      const lost = `${lane.volumeName}'s writer was on ${machine.name ?? machine.id} (removed)`;
+      const message = holder === undefined
+        ? `${lost}. No copy on another server is known.`
+        : `${lost}. Restore from ${holder}'s copy: ployz volume restore ${lane.volumeName} --from ${holder}`;
+      yield* database.transaction(Effect.gen(function* () {
+        const { drizzle } = yield* Database;
+        const [closed] = yield* drizzle.update(volumeRun).set(ended("failed", message))
+          .where(and(eq(volumeRun.id, lane.id), inArray(volumeRun.state, ACTIVE_VOLUME_RUN_STATES), eq(volumeRun.current, machine.id)))
+          .returning({ id: volumeRun.id });
+        if (closed !== undefined) yield* enqueueEvent(createVolumeRunTakenEvent({ runId: closed.id }));
+      }));
+    }
   }
 });
 
