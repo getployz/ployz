@@ -23,8 +23,8 @@ skipped, not sent late.
 
 ## Turn an email off from the email
 
-Every email ends with an unsubscribe link for its kind. Click it and that row is set to
-**None**, with no sign-in. Your mail app's own Unsubscribe button does the same. To get the
+Every email ends with a **Turn off** link for its kind, such as **Turn off uptime emails**.
+Click it and that row is set to **None**, with no sign-in. Your mail app's own Unsubscribe button does the same. To get the
 emails again, set the row back to **Email** on the Account page.
 
 ## On a self-hosted Ployz Cloud

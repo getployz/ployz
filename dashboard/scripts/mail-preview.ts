@@ -40,7 +40,7 @@ const required = (name: string) => {
 
 export async function run() {
   const origin = new URL(process.env["APP_URL"] ?? "http://localhost:3000").origin;
-  const unsubscribe = { label: "Unsubscribe from uptime emails", url: `${origin}/api/mail/unsubscribe?token=sample` };
+  const unsubscribe = { label: NOTIFICATION_TYPES.uptime.unsubscribe, url: `${origin}/api/mail/unsubscribe?token=sample` };
   const samples: Record<string, MailContent> = {
     sample: sampleMail(origin),
     ...Object.fromEntries(Object.entries(uptimeAlertSamples(origin)).map(([name, content]) => [name, { ...content, unsubscribe }])),

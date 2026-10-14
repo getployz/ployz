@@ -51,7 +51,7 @@ describe("unsubscribe link", () => {
     const response = await request("GET", signUnsubscribeToken(SECRET, { userId: ada, type: "uptime" }));
 
     expect(response.status).toBe(200);
-    expect(await response.text()).toContain("Uptime incidents is set to None.");
+    expect(await response.text()).toContain("You won't get uptime emails anymore.");
     expect(await rowsOf(ada, "uptime")).toEqual([{ channel: "none" }]);
     expect(await rowsOf(ada, "deploy-failed")).toEqual([]);
   });
@@ -71,7 +71,7 @@ describe("unsubscribe link", () => {
     const response = await request("GET", `${token.slice(0, -2)}xx`);
 
     expect(response.status).toBe(400);
-    expect(await response.text()).toContain("This unsubscribe link isn't valid.");
+    expect(await response.text()).toContain("This link doesn't work");
     expect(await rowsOf(bob, "uptime")).toEqual([]);
   });
 
