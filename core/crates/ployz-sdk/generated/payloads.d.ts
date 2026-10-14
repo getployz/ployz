@@ -1332,7 +1332,7 @@ node: string,
  */
 path: string, };
 
-export type DestructiveKind = "removes_service" | "deletes_volume" | "detaches_volume" | "removes_domain" | "removes_server";
+export type DestructiveKind = "removes_service" | "deletes_volume" | "detaches_volume" | "removes_domain" | "removes_server" | "removes_member" | "changes_role" | "revokes_invite";
 
 export type DetachConfig = {
 /**

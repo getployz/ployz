@@ -107,6 +107,7 @@ mod tests {
             let own: Vec<&Arg> = leaf
                 .get_arguments()
                 .filter(|arg| !arg.is_global_set() && arg.get_long() != Some("help"))
+                .filter(|arg| !(command.asks() && arg.get_id() == "approval"))
                 .collect();
             let properties = command
                 .input

@@ -27,6 +27,8 @@ struct Cloud {
     routes: Vec<String>,
     /// Request keys seen on run routes.
     keys: Vec<String>,
+    /// Bodies posted to run routes.
+    bodies: Vec<Value>,
 }
 
 fn fake_cloud(cloud: Arc<Mutex<Cloud>>) -> String {
@@ -54,7 +56,8 @@ fn fake_cloud(cloud: Arc<Mutex<Cloud>>) -> String {
                     key = Some(value.trim().to_owned());
                 }
             }
-            reader.read_exact(&mut vec![0; length]).unwrap();
+            let mut body = vec![0; length];
+            reader.read_exact(&mut body).unwrap();
             let route = request_line.rsplit_once(' ').unwrap().0.to_owned();
             let mut cloud = cloud.lock().unwrap();
             cloud.routes.push(route.clone());
@@ -66,6 +69,9 @@ fn fake_cloud(cloud: Arc<Mutex<Cloud>>) -> String {
                 }
                 run if run.starts_with("POST /api/cli/run/") => {
                     cloud.keys.extend(key);
+                    cloud
+                        .bodies
+                        .extend(serde_json::from_slice::<Value>(&body).ok());
                     cloud.run.clone().unwrap_or((200, json!({ "output": {} })))
                 }
                 _ => (404, json!({})),
@@ -155,6 +161,14 @@ fn fixture_entries() -> Vec<Value> {
         .as_array()
         .cloned()
         .unwrap()
+}
+
+/// The untyped fixture entry whose first positional argument is `name`.
+fn entry_taking(name: &str) -> Value {
+    fixture_entries()
+        .into_iter()
+        .find(|entry| entry["positional"][0] == name && entry["typed"].is_null())
+        .unwrap_or_else(|| panic!("the fixture has an untyped entry taking {name} first"))
 }
 
 /// The fixture entry with `render`, so no test names a published command.
@@ -458,4 +472,61 @@ fn a_flag_a_compiled_command_lacks_costs_no_refresh_and_one_a_published_command_
     let newer = cloud.ployz(&[args.as_slice(), &["--no-such-flag"]].concat());
     assert!(!newer.status.success());
     assert_eq!(manifests(), 2, "Cloud may have added the flag since");
+}
+
+#[test]
+fn a_member_named_by_email_reaches_cloud_as_typed() {
+    let cloud = Fixture::new("one");
+    let entry = entry_taking("member");
+    let mut args = argv(&entry);
+    args.push("bob@example.com".to_owned());
+    args.extend(
+        entry["positional"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .skip(1)
+            .map(|_| "admin".to_owned()),
+    );
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+
+    let output = cloud.ployz(&args);
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    let bodies = cloud.cloud.lock().unwrap().bodies.clone();
+    assert_eq!(bodies.len(), 1, "one run");
+    assert_eq!(bodies[0]["input"]["member"], "bob@example.com");
+}
+
+#[test]
+fn a_name_two_members_share_exits_2_and_lists_both_emails() {
+    let cloud = Fixture::new("one");
+    let entry = entry_taking("member");
+    cloud.answer_runs_with(
+        409,
+        json!({ "error": {
+            "code": "ambiguous",
+            "message": "2 members are named Sam: sam@one.example, sam@two.example. Pick one by email.",
+            "details": { "candidates": ["sam@one.example", "sam@two.example"] },
+        } }),
+    );
+    let mut args = argv(&entry);
+    args.push("Sam".to_owned());
+    args.extend(
+        entry["positional"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .skip(1)
+            .map(|_| "admin".to_owned()),
+    );
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+
+    let output = cloud.ployz(&args);
+
+    assert_eq!(output.status.code(), Some(2), "{}", text(&output.stderr));
+    let stderr = text(&output.stderr);
+    for email in ["sam@one.example", "sam@two.example"] {
+        assert!(stderr.contains(email), "{stderr}");
+    }
 }

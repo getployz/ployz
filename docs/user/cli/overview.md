@@ -96,8 +96,8 @@ agent can resend it without running it twice.
 ## Commands from Ployz Cloud
 
 Some commands come from Ployz Cloud instead of the CLI itself, so a new one reaches you without
-an upgrade. Today they are `ployz server upgrade-policy show` and `set`, and `ployz org approval
-ls`, `show`, `approve` and `deny`.
+an upgrade. Today they include `ployz server upgrade-policy show` and `set`, `ployz org approval
+ls`, `show`, `approve` and `deny`, and the team commands below.
 
 When you're signed in, `ployz --help` lists them with the others, and they take `--json` like any
 command. `ployz schema --json` marks each one `"origin": "cloud"`. The first one you run fetches
@@ -109,6 +109,35 @@ Your coding agent gets the ones meant for agents as tools from `ployz mcp`, and 
 follows Ployz Cloud without a restart. Commands that ask you to type a name, such as
 `ployz org approval approve`, run only in a terminal. Without Ployz Cloud, none of these commands
 exist.
+
+## Manage your team
+
+Owners and admins manage who belongs to the Organization this device acts in:
+
+```sh
+ployz org member ls
+ployz org member invite bob@example.com --role admin
+ployz org member role bob@example.com member
+ployz org member rm bob@example.com
+ployz org invite ls
+ployz org invite revoke bob@example.com
+```
+
+`invite` prints `Invite link (expires in 7 days)` and the link. Send it to the person yourself.
+Roles are `owner`, `admin` and `member`. Only an owner can make, change or remove an owner.
+
+Pick a member by email or by name. When two members share a name, the command refuses with
+`ambiguous`, lists both emails and exits 2, so name the one you mean by email.
+
+`role`, `rm` and `revoke` show what they will change and ask before they run. In a terminal you
+type the email it names, or the invite id for a link with no email, to go ahead. Without a
+terminal they wait until someone approves them in Ployz Cloud. Through `ployz mcp`, your agent
+gets back an approval to show you and changes nothing until you approve it. The dashboard's
+Members page never asks. `ployz org member ls` and `ployz org invite ls` never ask.
+
+`ployz org leave` takes you out of the Organization this device acts in, after you confirm.
+Pass `--yes` to skip the question. It then moves this device to another Organization of yours,
+the way `ployz org rm` does, and prints which one.
 
 ## Deploy a directory
 

@@ -45,6 +45,12 @@ pub enum DestructiveKind {
     RemovesDomain,
     /// A Server leaves the cluster.
     RemovesServer,
+    /// A member leaves the Organization, with their tokens and their devices' access.
+    RemovesMember,
+    /// A member's role in the Organization changes.
+    ChangesRole,
+    /// A pending invite's link stops working.
+    RevokesInvite,
 }
 
 impl DestructiveEffect {
@@ -59,6 +65,9 @@ impl DestructiveEffect {
             },
             DestructiveKind::RemovesDomain => format!("remove domain {name}"),
             DestructiveKind::RemovesServer => format!("remove Server {name}"),
+            DestructiveKind::RemovesMember => format!("remove member {name}"),
+            DestructiveKind::ChangesRole => format!("change the role of {name}"),
+            DestructiveKind::RevokesInvite => format!("revoke the invite for {name}"),
         }
     }
 }

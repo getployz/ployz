@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "revision": "e53d37d25b04",
+  "revision": "921a0b52f2f6",
   "commands": [
     {
       "name": "server_upgrade_policy_show",
@@ -503,14 +503,16 @@
       ],
       "about": "Make an invite link that adds whoever opens it as a member. It lasts 7 days and works once",
       "examples": [
-        "ployz org member invite",
-        "ployz org member invite --email bob@example.com --role admin"
+        "ployz org member invite bob@example.com",
+        "ployz org member invite bob@example.com --role admin"
       ],
       "kind": "write",
       "gate": "never",
       "agents": false,
       "typed": null,
-      "positional": [],
+      "positional": [
+        "email"
+      ],
       "input": {
         "type": "object",
         "properties": {
@@ -525,7 +527,7 @@
               "admin",
               "member"
             ],
-            "description": "The role it grants. member when left out"
+            "description": "The role it grants: admin or member. member when left out"
           }
         },
         "additionalProperties": false,
@@ -566,7 +568,7 @@
         ],
         "additionalProperties": false
       },
-      "render": "record"
+      "render": "message"
     },
     {
       "name": "org_member_role",
@@ -575,13 +577,14 @@
         "member",
         "role"
       ],
-      "about": "Change a member's role. Only an owner can make or remove an owner",
+      "about": "Change a member's role to owner, admin or member. Only an owner can make or remove an owner",
       "examples": [
-        "ployz org member role bob@example.com admin"
+        "ployz org member role bob@example.com admin",
+        "ployz org member role Bob member"
       ],
       "kind": "write",
-      "gate": "never",
-      "agents": false,
+      "gate": "ask",
+      "agents": true,
       "typed": null,
       "positional": [
         "member",
@@ -602,7 +605,7 @@
               "admin",
               "member"
             ],
-            "description": "owner, admin or member"
+            "description": "The new role: owner, admin or member"
           }
         },
         "required": [
@@ -643,11 +646,12 @@
       ],
       "about": "Remove a member. Their Organization Tokens stop working and their devices lose access to its Servers",
       "examples": [
-        "ployz org member rm bob@example.com"
+        "ployz org member rm bob@example.com",
+        "ployz org member rm Bob"
       ],
       "kind": "write",
-      "gate": "never",
-      "agents": false,
+      "gate": "ask",
+      "agents": true,
       "typed": null,
       "positional": [
         "member"
@@ -754,8 +758,8 @@
         "ployz org invite revoke bob@example.com"
       ],
       "kind": "write",
-      "gate": "never",
-      "agents": false,
+      "gate": "ask",
+      "agents": true,
       "typed": null,
       "positional": [
         "invite"
@@ -790,41 +794,6 @@
         "required": [
           "id",
           "email"
-        ],
-        "additionalProperties": false
-      },
-      "render": "message"
-    },
-    {
-      "name": "org_leave",
-      "path": [
-        "org",
-        "leave"
-      ],
-      "about": "Leave the Organization. Its last owner cannot leave",
-      "examples": [
-        "ployz org leave"
-      ],
-      "kind": "write",
-      "gate": "never",
-      "agents": false,
-      "typed": null,
-      "positional": [],
-      "input": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "additionalProperties": false
-      },
-      "output": {
-        "type": "object",
-        "properties": {
-          "organization": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "organization"
         ],
         "additionalProperties": false
       },

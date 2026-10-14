@@ -108,6 +108,14 @@ impl Asked {
         serde_json::from_value(error.details.clone()).ok()
     }
 
+    /// The verb Cloud named, or `Deploy` for a Store write, whose diff names none.
+    pub(crate) fn verb(&self) -> Verb {
+        match &self.subject {
+            Subject::Diff(_) => Verb::Deploy,
+            Subject::Operation(operation) => operation.verb,
+        }
+    }
+
     /// The name a person types to approve: the Environment's, or the operation's.
     pub(crate) fn name(&self) -> &str {
         match &self.subject {
@@ -170,6 +178,9 @@ fn line(effect: &DestructiveEffect) -> String {
         },
         DestructiveKind::RemovesDomain => format!("removes domain {name}"),
         DestructiveKind::RemovesServer => format!("removes Server {name}"),
+        DestructiveKind::RemovesMember => format!("removes member {name}"),
+        DestructiveKind::ChangesRole => format!("changes the role of {name}"),
+        DestructiveKind::RevokesInvite => format!("revokes the invite for {name}"),
     }
 }
 

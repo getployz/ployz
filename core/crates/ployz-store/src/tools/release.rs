@@ -74,6 +74,9 @@ impl Tool for Review {
                     DestructiveKind::DetachesVolume => "detaches volume",
                     DestructiveKind::RemovesDomain => "removes domain",
                     DestructiveKind::RemovesServer => "removes server",
+                    DestructiveKind::RemovesMember => "removes member",
+                    DestructiveKind::ChangesRole => "changes role",
+                    DestructiveKind::RevokesInvite => "revokes invite",
                 };
                 format!("{kind} {}", effect.name)
             })

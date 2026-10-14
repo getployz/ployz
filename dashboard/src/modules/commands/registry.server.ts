@@ -26,7 +26,9 @@ export const COMMANDS = [
   orgMemberRm,
   orgInviteLs,
   orgInviteRevoke,
-  orgLeave,
   uptimeShow,
   uptimeCheck,
 ] as const;
+
+/** What Cloud runs: every published command, plus `org_leave`, which `ployz` compiles in because leaving switches the device. */
+export const RUNNABLE = [...COMMANDS, orgLeave] as const;

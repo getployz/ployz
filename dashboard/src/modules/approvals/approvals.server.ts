@@ -220,7 +220,7 @@ export const requestApproval = Effect.fn("Approvals.request")(function* (
 
 /** An operation that may wait for a human: its sweep key, verb, name, preview, and what it destroys. */
 export type OperationAsked = {
-  /** `server:<machine id>`, `namespace:<name>` or `volume:<volume id>`. */
+  /** `server:<machine id>`, `namespace:<name>`, `volume:<volume id>`, `member:<user id>` or `invite:<invite id>`. */
   subject: string;
   verb: OperationVerb;
   name: string;
