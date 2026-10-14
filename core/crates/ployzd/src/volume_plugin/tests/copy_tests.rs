@@ -8,8 +8,10 @@ use std::{
 };
 
 use axum::{Router, body::Body, extract::Request, http::StatusCode, response::IntoResponse};
-use tokio::{net::TcpListener, sync::Semaphore};
+use tokio::{net::TcpListener, process::Command, sync::Semaphore};
 use tokio_util::sync::CancellationToken;
+
+use super::super::transfer::{Receives, ZfsChild};
 
 use super::first_pool_tests::fake_first_pool;
 use super::inspect_tests::{set_property, start};
@@ -1364,32 +1366,86 @@ async fn a_receive_that_stalls_answers_only_once_its_child_is_gone() {
     }
 }
 
-/// The seed's receive can fail to spawn after its send started, and a panic unwinds past
-/// every await: neither leaves a `zfs` process behind holding a dataset.
-#[tokio::test]
-async fn a_zfs_child_dropped_without_a_reap_has_exited() {
-    let child =
-        super::super::transfer::ZfsChild::spawn(tokio::process::Command::new("sleep").arg("30"))
-            .unwrap();
+/// A child the kill leaves running past its owner, as a `zfs` blocked in the kernel is.
+fn slow_child() -> (ZfsChild, u32) {
+    let mut child = ZfsChild::spawn(Command::new("sleep").arg("1.5")).unwrap();
+    child.spare_from_kill();
     let pid = child.id().unwrap();
-    drop(child);
-    assert!(
-        !Path::new(&format!("/proc/{pid}")).exists(),
-        "the dropped child is still in /proc"
-    );
+    (child, pid)
+}
+
+fn alive(pid: u32) -> bool {
+    Path::new(&format!("/proc/{pid}")).exists()
+}
+
+/// Stops every task in `receives` and answers whether `pid` had exited by then.
+async fn stopped_after(receives: &Receives, pid: u32) -> bool {
+    let stuck = receives.stop_all(Duration::from_secs(5)).await;
+    assert!(stuck.is_empty(), "{stuck:?}");
+    !alive(pid)
 }
 
 #[tokio::test]
-async fn a_receive_task_that_panics_records_a_failure() {
-    let receives = super::super::transfer::Receives::default();
+async fn a_zfs_child_dropped_without_a_reap_is_killed() {
+    let receives = Receives::default();
     let name: DockerVolumeName = "data".parse().unwrap();
-    receives.spawn(&name, |_stop| async { panic!("the receive task broke") });
-    for _ in 0..300 {
-        if !receives.running(&name) {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    let child = ZfsChild::spawn(Command::new("sleep").arg("30")).unwrap();
+    let pid = child.id().unwrap();
+    receives.spawn(&name, |_stop| async move {
+        drop(child);
+        Ok(())
+    });
+    assert!(stopped_after(&receives, pid).await);
+}
+
+#[tokio::test]
+async fn a_receive_task_finishes_only_once_a_dropped_child_exits() {
+    let receives = Receives::default();
+    let name: DockerVolumeName = "data".parse().unwrap();
+    let (child, pid) = slow_child();
+    receives.spawn(&name, |_stop| async move {
+        drop(child);
+        Ok(())
+    });
+    assert!(
+        stopped_after(&receives, pid).await,
+        "the task finished before its child exited"
+    );
+}
+
+/// The shape of the seed's copy (seed.rs `copy_snapshot`): its send is running when the
+/// receive fails to spawn.
+#[tokio::test]
+async fn a_receive_task_whose_second_spawn_fails_finishes_once_the_first_child_exits() {
+    let receives = Receives::default();
+    let name: DockerVolumeName = "data".parse().unwrap();
+    let (send, pid) = slow_child();
+    receives.spawn(&name, |_stop| async move {
+        let _send = send;
+        let _receive = ZfsChild::spawn(&mut Command::new("/nonexistent/zfs"))
+            .map_err(|error| format!("could not run zfs receive: {error}"))?;
+        Ok(())
+    });
+    assert!(
+        stopped_after(&receives, pid).await,
+        "the task finished before its send exited"
+    );
+    assert!(receives.failure(&name).is_some());
+}
+
+#[tokio::test]
+async fn a_receive_task_that_panics_with_a_live_child_finishes_once_it_exits() {
+    let receives = Receives::default();
+    let name: DockerVolumeName = "data".parse().unwrap();
+    let (child, pid) = slow_child();
+    receives.spawn(&name, |_stop| async move {
+        let _child = child;
+        panic!("the receive task broke");
+    });
+    assert!(
+        stopped_after(&receives, pid).await,
+        "the task finished before its child exited"
+    );
     assert!(!receives.running(&name), "a panicked task reads as running");
     assert!(receives.failure(&name).is_some());
 }

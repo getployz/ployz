@@ -356,25 +356,42 @@ impl VolumeStorage {
 
 /// A `zfs` process that has exited by the time its owner is gone, on every path out:
 /// one still exiting holds its dataset busy for the next destroy.
-pub(super) struct ZfsChild(Option<Child>);
+pub(super) struct ZfsChild {
+    child: Option<Child>,
+    #[cfg(test)]
+    spared: bool,
+}
 
 impl ZfsChild {
     pub(super) fn spawn(command: &mut Command) -> std::io::Result<Self> {
-        command.spawn().map(|child| Self(Some(child)))
+        command.spawn().map(|child| Self {
+            child: Some(child),
+            #[cfg(test)]
+            spared: false,
+        })
     }
 
     pub(super) fn child(&mut self) -> &mut Child {
-        self.0.as_mut().expect("a zfs child is held until reaped")
+        self.child
+            .as_mut()
+            .expect("a zfs child is held until reaped")
     }
 
     #[cfg(test)]
     pub(super) fn id(&self) -> Option<u32> {
-        self.0.as_ref().and_then(Child::id)
+        self.child.as_ref().and_then(Child::id)
+    }
+
+    /// Leaves the child to exit on its own clock when dropped. No process a test can
+    /// start outlives SIGKILL; a `zfs` blocked in the kernel does, and this stands in.
+    #[cfg(test)]
+    pub(super) fn spare_from_kill(&mut self) {
+        self.spared = true;
     }
 
     /// Kills the process unless it already exited, and waits for it.
     pub(super) async fn reap(mut self) {
-        let Some(mut child) = self.0.take() else {
+        let Some(mut child) = self.child.take() else {
             return;
         };
         match child.kill().await {
@@ -390,10 +407,14 @@ impl ZfsChild {
 /// await, so it blocks on the kill, which takes milliseconds.
 impl Drop for ZfsChild {
     fn drop(&mut self) {
-        let Some(mut child) = self.0.take() else {
+        let Some(mut child) = self.child.take() else {
             return;
         };
-        if child.start_kill().is_err() {
+        #[cfg(test)]
+        let spared = self.spared;
+        #[cfg(not(test))]
+        let spared = false;
+        if !spared && child.start_kill().is_err() {
             return;
         }
         for _ in 0..100 {
