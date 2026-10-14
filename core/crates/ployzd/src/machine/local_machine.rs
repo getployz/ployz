@@ -697,22 +697,25 @@ impl LocalMachine {
             .await
             .map_err(|error| Error::Cleanup(format!("storage departure failed: {error}")))?;
         // A retry answers only what it changes, so the demoted are forgotten now even
-        // when a stuck Volume fails this departure.
+        // when a stuck Volume or another kept name fails this departure.
+        let mut left = Vec::new();
         for name in &departure.demoted {
-            containers
-                .forget_volume(name)
-                .await
-                .map_err(|error| Error::Cleanup(format!("Docker kept Volume {name}: {error}")))?;
+            if let Err(error) = containers.forget_volume(name).await {
+                left.push(format!("Docker kept Volume {name}: {error}"));
+            }
         }
-        let left: Vec<String> =
+        left.extend(
             departure
                 .stuck
                 .iter()
-                .map(|name| format!("Volume {name} did not stop copying"))
-                .chain(departure.failed.iter().map(|failed| {
-                    format!("Volume {} did not depart: {}", failed.name, failed.reason)
-                }))
-                .collect();
+                .map(|name| format!("Volume {name} did not stop copying")),
+        );
+        left.extend(
+            departure
+                .failed
+                .iter()
+                .map(|failed| format!("Volume {} did not depart: {}", failed.name, failed.reason)),
+        );
         if !left.is_empty() {
             return Err(Error::Cleanup(format!(
                 "{}; retry the departure",
