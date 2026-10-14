@@ -15,7 +15,7 @@ use super::{
     inspect::internal,
     mirror,
     storage::{PROMOTE_PROPERTY, PULL_PROPERTY, root_dataset, slot_fs, slot_parent},
-    transfer::{exited, reap},
+    transfer::{ZfsChild, exited},
 };
 
 /// On a seeded root: the guid of the restore point it holds.
@@ -181,48 +181,50 @@ impl VolumeStorage {
         bound: u64,
         stop: &CancellationToken,
     ) -> Result<(), String> {
-        let mut send = Command::new(&self.zfs)
-            .args(["send", snapshot])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|error| format!("could not run zfs send: {error}"))?;
+        let mut send = ZfsChild::spawn(
+            Command::new(&self.zfs)
+                .args(["send", snapshot])
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped()),
+        )
+        .map_err(|error| format!("could not run zfs send: {error}"))?;
         let stream = send
+            .child()
             .stdout
             .take()
             .expect("zfs send stdout is piped")
             .into_owned_fd()
             .map_err(|error| format!("could not hand the send stream over: {error}"))?;
         let refquota = format!("refquota={bound}");
-        let mut receive = Command::new(&self.zfs)
-            .args([
-                "receive",
-                "-u",
-                "-s",
-                "-o",
-                "readonly=on",
-                "-o",
-                &refquota,
-                fs,
-            ])
-            .stdin(Stdio::from(stream))
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|error| format!("could not run zfs receive: {error}"))?;
+        let mut receive = ZfsChild::spawn(
+            Command::new(&self.zfs)
+                .args([
+                    "receive",
+                    "-u",
+                    "-s",
+                    "-o",
+                    "readonly=on",
+                    "-o",
+                    &refquota,
+                    fs,
+                ])
+                .stdin(Stdio::from(stream))
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped()),
+        )
+        .map_err(|error| format!("could not run zfs receive: {error}"))?;
         let exits = {
-            let both = async { tokio::join!(exited(&mut send), exited(&mut receive)) };
+            let both = async { tokio::join!(exited(send.child()), exited(receive.child())) };
             tokio::select! {
                 biased;
                 () = stop.cancelled() => None,
                 exits = both => Some(exits),
             }
         };
+        send.reap().await;
+        receive.reap().await;
         let Some((sent, received)) = exits else {
-            reap(&mut [&mut send, &mut receive]).await;
             return Err(format!("the seed of {fs} was stopped"));
         };
         let (received, stderr) =

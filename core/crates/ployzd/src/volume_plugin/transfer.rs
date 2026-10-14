@@ -9,7 +9,7 @@ use std::{
     time::Duration,
 };
 
-use futures_util::StreamExt as _;
+use futures_util::{FutureExt as _, StreamExt as _};
 use ployz_core::{ManagementAddress, SendStream};
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
@@ -25,6 +25,7 @@ const KILL_AFTER_BYTES: u64 = 1 << 20;
 
 pub(super) const RECEIVE_STALL: Duration = Duration::from_secs(60);
 
+/// One deadline for all of a departure's stops, well inside Demote's 120 s timeout.
 pub(super) const STOP_DEADLINE: Duration = Duration::from_secs(30);
 
 /// The receive tasks this process started, by Volume name; a finished task keeps its
@@ -63,8 +64,9 @@ impl Receives {
             .remove(&name.0);
     }
 
-    /// Runs `work` as the receive task of `name`. `work` gets the token [`Self::stop`]
-    /// cancels; once it fires, `work` kills and reaps its `zfs` children before returning.
+    /// Runs `work` as the receive task of `name`. `work` gets the token
+    /// [`Self::stop_all`] cancels; once it fires, `work` kills and reaps its `zfs`
+    /// children before returning. A panic is recorded as the task's failure.
     pub(super) fn spawn<F>(
         &self,
         name: &DockerVolumeName,
@@ -86,27 +88,39 @@ impl Receives {
             .insert(name.0.clone(), task);
         tokio::spawn(async move {
             let _finished = finished;
-            let result = work.await;
+            let result = std::panic::AssertUnwindSafe(work)
+                .catch_unwind()
+                .await
+                .unwrap_or_else(|_| Err("the receive task panicked".to_owned()));
             *outcome.lock().expect("outcome lock") = Some(result);
         });
     }
 
-    /// Stops every receive task and returns once each ended, so ZFS holds no slot busy
-    /// and no receive changes a slot afterwards.
-    pub(super) async fn stop_all(&self) {
-        let finished: Vec<CancellationToken> = self
+    /// Stops every receive task and waits until each ended, so ZFS holds no slot busy
+    /// and no receive changes a slot afterwards. Answers the names still running once
+    /// `deadline` passes.
+    pub(super) async fn stop_all(&self, deadline: Duration) -> Vec<String> {
+        let finished: Vec<(String, CancellationToken)> = self
             .0
             .lock()
             .expect("receive registry is not poisoned")
-            .values()
-            .map(|task| {
+            .iter()
+            .map(|(name, task)| {
                 task.stop.cancel();
-                task.finished.clone()
+                (name.clone(), task.finished.clone())
             })
             .collect();
-        for finished in finished {
-            finished.cancelled().await;
+        let deadline = tokio::time::Instant::now() + deadline;
+        let mut stuck = Vec::new();
+        for (name, finished) in finished {
+            if tokio::time::timeout_at(deadline, finished.cancelled())
+                .await
+                .is_err()
+            {
+                stuck.push(name);
+            }
         }
+        stuck
     }
 }
 
@@ -145,12 +159,29 @@ impl VolumeStorage {
         fault: &'static str,
         stop: &CancellationToken,
     ) -> Result<(), ReceiveFailure> {
-        let opened = self.open_stream(from, stream).await?;
+        let opened = self.open_stream(from, stream, stop).await?;
         self.receive_opened(opened, fs, bound, fault, stop).await
     }
 
-    /// The writer's answer to `stream`, before anything touches the slot.
+    /// The writer's answer to `stream`, before anything touches the slot. A writer that
+    /// never answers holds the departure only until `stop` fires.
     pub(super) async fn open_stream(
+        &self,
+        from: ManagementAddress,
+        stream: &SendStream,
+        stop: &CancellationToken,
+    ) -> Result<OpenedStream, ReceiveFailure> {
+        tokio::select! {
+            biased;
+            () = stop.cancelled() => Err(ReceiveFailure::Failed(format!(
+                "the request for {} was stopped",
+                stream.path_and_query()
+            ))),
+            opened = self.request_stream(from, stream) => opened,
+        }
+    }
+
+    async fn request_stream(
         &self,
         from: ManagementAddress,
         stream: &SendStream,
@@ -194,40 +225,35 @@ impl VolumeStorage {
         stop: &CancellationToken,
     ) -> Result<(), ReceiveFailure> {
         let refquota = format!("refquota={bound}");
-        let mut child = Command::new(&self.zfs)
-            .args([
-                "receive",
-                "-u",
-                "-s",
-                "-o",
-                "readonly=on",
-                "-o",
-                &refquota,
-                fs,
-            ])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|error| {
-                ReceiveFailure::Failed(format!("could not run zfs receive: {error}"))
-            })?;
+        let mut child = ZfsChild::spawn(
+            Command::new(&self.zfs)
+                .args([
+                    "receive",
+                    "-u",
+                    "-s",
+                    "-o",
+                    "readonly=on",
+                    "-o",
+                    &refquota,
+                    fs,
+                ])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped()),
+        )
+        .map_err(|error| ReceiveFailure::Failed(format!("could not run zfs receive: {error}")))?;
         let pumped = {
-            let pump = self.pump(&mut child, &url, response, fs, fault);
+            let pump = self.pump(child.child(), &url, response, fs, fault);
             tokio::select! {
                 biased;
                 () = stop.cancelled() => None,
                 pumped = pump => Some(pumped),
             }
         };
-        let Some(pumped) = pumped else {
-            reap(&mut [&mut child]).await;
-            return Err(ReceiveFailure::Failed(format!(
-                "the receive into {fs} was stopped"
-            )));
-        };
-        pumped?;
+        child.reap().await;
+        pumped.ok_or_else(|| {
+            ReceiveFailure::Failed(format!("the receive into {fs} was stopped"))
+        })??;
         self.finish_copy(fs, bound)
             .await
             .map_err(ReceiveFailure::Failed)
@@ -328,16 +354,55 @@ impl VolumeStorage {
     }
 }
 
-/// A running `zfs` process.
-pub(super) struct ZfsChild(Child);
+/// A `zfs` process that has exited by the time its owner is gone, on every path out:
+/// one still exiting holds its dataset busy for the next destroy.
+pub(super) struct ZfsChild(Option<Child>);
 
 impl ZfsChild {
     pub(super) fn spawn(command: &mut Command) -> std::io::Result<Self> {
-        command.kill_on_drop(true).spawn().map(Self)
+        command.spawn().map(|child| Self(Some(child)))
     }
 
+    pub(super) fn child(&mut self) -> &mut Child {
+        self.0.as_mut().expect("a zfs child is held until reaped")
+    }
+
+    #[cfg(test)]
     pub(super) fn id(&self) -> Option<u32> {
-        self.0.id()
+        self.0.as_ref().and_then(Child::id)
+    }
+
+    /// Kills the process unless it already exited, and waits for it.
+    pub(super) async fn reap(mut self) {
+        let Some(mut child) = self.0.take() else {
+            return;
+        };
+        match child.kill().await {
+            Ok(()) => {}
+            // Already waited for.
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidInput => {}
+            Err(error) => tracing::warn!(%error, "could not kill a zfs process"),
+        }
+    }
+}
+
+/// Only an early return or a panic gets here; every other path reaps. Dropping cannot
+/// await, so it blocks on the kill, which takes milliseconds.
+impl Drop for ZfsChild {
+    fn drop(&mut self) {
+        let Some(mut child) = self.0.take() else {
+            return;
+        };
+        if child.start_kill().is_err() {
+            return;
+        }
+        for _ in 0..100 {
+            match child.try_wait() {
+                Ok(None) => std::thread::sleep(Duration::from_millis(10)),
+                Ok(Some(_)) | Err(_) => return,
+            }
+        }
+        tracing::warn!(pid = ?child.id(), "a killed zfs process did not exit within a second");
     }
 }
 
@@ -357,16 +422,4 @@ pub(super) async fn exited(
     let (status, read) = tokio::join!(child.wait(), read);
     read?;
     Ok((status?, String::from_utf8_lossy(&stderr).into_owned()))
-}
-
-/// Kills each child and waits for it, so no `zfs` process holds a dataset afterwards.
-pub(super) async fn reap(children: &mut [&mut Child]) {
-    for child in children {
-        match child.kill().await {
-            Ok(()) => {}
-            // Already reaped.
-            Err(error) if error.kind() == std::io::ErrorKind::InvalidInput => {}
-            Err(error) => tracing::warn!(%error, "could not kill a stopped zfs process"),
-        }
-    }
 }

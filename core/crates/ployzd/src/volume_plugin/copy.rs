@@ -714,7 +714,7 @@ impl VolumeStorage {
             source: SendSource::Full { target },
         };
         let opened = self
-            .open_stream(from, &full)
+            .open_stream(from, &full, stop)
             .await
             .map_err(|failure| failure.to_string())?;
         // Aborting an interrupted first receive destroys the copy it began.

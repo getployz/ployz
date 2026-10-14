@@ -38,7 +38,15 @@ impl VolumeStorage {
         let _pool_guard = self.pool.lock_mutation().await?;
         // Every receive starts under admission, so once these stop no slot changes
         // between the scan and the decisions taken from it.
-        self.receives.stop_all().await;
+        let stuck = self.receives.stop_all(self.stop_deadline).await;
+        if !stuck.is_empty() {
+            return Err(format!(
+                "the copies of Volumes {} did not stop within {:?}; retry the departure",
+                stuck.join(", "),
+                self.stop_deadline
+            )
+            .into());
+        }
         let datasets = self.datasets(&pool).await?;
         let names: BTreeSet<&str> = datasets
             .iter()
