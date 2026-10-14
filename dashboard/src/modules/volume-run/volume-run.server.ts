@@ -1030,7 +1030,8 @@ export const commitAndStart = Effect.fn("VolumeRun.commitAndStart")(function* (
 
 /**
  * B becomes the writer at G and creates the Service from the source's stopped Container; a B already running it is left
- * alone. `ownedBy` is the Inngest run that must still own the row when B is told, or null for a Deploy following
+ * alone. With no source named, a B whose stopped Service is the only one left becomes the writer and stays stopped: an
+ * earlier start moved the Service there, and a Deploy's placement may have removed the source since. `ownedBy` is the Inngest run that must still own the row when B is told, or null for a Deploy following
  * another run's committed lane, which owns no row.
  */
 export const startWriter = Effect.fn("VolumeRun.startWriter")(function* (ctx: RunContext, ownedBy: string | null, start: WriterStart) {
@@ -1043,6 +1044,10 @@ export const startWriter = Effect.fn("VolumeRun.startWriter")(function* (ctx: Ru
   const stopped = containers.filter((container) =>
     container.runtime.state !== "running" && (from === null ? container.machine_id !== to.id : container.machine_id === from.id));
   const [holder] = stopped;
+  if (holder === undefined && from === null && containers.some((container) => container.machine_id === to.id)) {
+    if (ownedBy !== null) yield* requireOwner(ctx.id, ownedBy);
+    return yield* askCopy(ctx, to, start.expect, { kind: "writer", at: start.at, epoch: start.epoch, start: null });
+  }
   if (holder === undefined) {
     return yield* Effect.fail(new NonRetriableError(`${ctx.volumeName} has no stopped Service container${from === null ? "" : ` on ${from.name}`} to start on ${to.name}`));
   }
