@@ -161,6 +161,27 @@ class Registry(unittest.TestCase):
         for name, entry in sandboxes.items():
             self.provider.mark(name, **entry)
 
+    def test_registry_changes_and_its_removal_hold_the_host_wide_registry_lock(self):
+        self.registered(**{"machine-1": dict(id="bx_a", state="running")})
+        held, unlink = [], Path.unlink
+        self.provider.record(lambda record: held.append(locked("registry.lock")))
+
+        def unlinked(path, *args, **kwargs):
+            held.append(locked("registry.lock"))
+            unlink(path, *args, **kwargs)
+        with unittest.mock.patch.object(Path, "unlink", unlinked):
+            self.provider.destroy()
+        self.assertEqual(held, [True, True])
+
+    def test_refresh_after_down_removed_the_registry_neither_fails_nor_recreates_it(self):
+        self.registered(**{"machine-1": dict(id="bx_a", state="running")})
+        self.provider.record(lambda record: record.update(extended=0))
+        boat.registry("run1").unlink()
+        self.provider.refresh()
+        self.provider.mark("machine-1", state="parked")
+        self.assertFalse(boat.registry("run1").exists())
+        self.assertEqual(self.calls, [])
+
     def test_down_deletes_every_registered_sandbox_and_forgets_the_run(self):
         self.registered(**{"machine-1": dict(id="bx_a", state="running"), "machine-2": dict(id="bx_b", state="running")})
         self.provider.destroy()
@@ -356,6 +377,17 @@ class Registry(unittest.TestCase):
         self.assertEqual(self.provider.record()["sandboxes"]["machine-2"]["ssh"], "213.32.24.158:19040")
 
 
+def locked(name):
+    """Whether some open file holds REGISTRY/name's lock now."""
+    with (boat.REGISTRY / name).open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        fcntl.flock(lock, fcntl.LOCK_UN)
+        return False
+
+
 def parked(sandbox, node, image="bake-a", at=0):
     return dict(id=sandbox, image=image, ip=f"2001:db8:0:{node}::1", ssh=f"203.0.113.{node}:22", parked_at=at)
 
@@ -380,14 +412,7 @@ class Pool(unittest.TestCase):
         return boat.Provider(run, fake, Path("."))
 
     def locked(self):
-        """Whether some open file holds pool.lock now."""
-        with (boat.REGISTRY / "pool.lock").open("a") as lock:
-            try:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                return True
-            fcntl.flock(lock, fcntl.LOCK_UN)
-            return False
+        return locked("pool.lock")
 
     def test_a_claim_reads_who_owns_a_sandbox_under_the_pool_lock(self):
         held = []

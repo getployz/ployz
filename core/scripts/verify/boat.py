@@ -331,11 +331,18 @@ def registered():
 
 
 @contextmanager
+def locked(name):
+    """REGISTRY/name, locked against every other run and thread on this host."""
+    REGISTRY.mkdir(parents=True, exist_ok=True)
+    with (REGISTRY / name).open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
+@contextmanager
 def pool():
     """The parked sandboxes, locked against every other run on this host; changes to the list are saved on exit."""
-    REGISTRY.mkdir(parents=True, exist_ok=True)
-    with (REGISTRY / "pool.lock").open("a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+    with locked("pool.lock"):
         entries = read(POOL) or []
         yield entries
         write(POOL, entries)
@@ -532,7 +539,6 @@ class Provider:
     def __init__(self, run, commands, core):
         self.run, self.commands, self.core = run, commands, core
         self.registry = registry(run["id"])
-        self.lock = threading.Lock()
         self.private = Path(run["manifest"]).parent / "private"
         # A socket path must fit in 108 bytes with ssh's 17-character bind suffix; neither the run nor the registry directory does.
         # The per-user runtime directory is private when it is ours; /tmp is the fallback options() checks.
@@ -549,9 +555,10 @@ class Provider:
         return self.commands([*cli(), *args, "--json"], **kwargs)
 
     def record(self, update=None):
-        with self.lock:
+        """The run's registry; `update` changes it under a host-wide lock, since another process can park or remove it."""
+        with locked("registry.lock"):
             record = read(self.registry)
-            if update:
+            if update and record is not None:
                 update(record)
                 write(self.registry, record)
             return record
@@ -753,11 +760,13 @@ systemctl enable --now {PLOYZ_UNITS} $observe
 
     def refresh(self):
         """Push each live sandbox's auto-stop TTL seconds out once half the TTL is spent, so a long suite keeps its Machines."""
-        record, now = self.record() or {}, time.time()
-        if now - record.get("extended", 0) < TTL / 2:
+        record, now = self.record(), time.time()
+        if not record or now - record.get("extended", 0) < TTL / 2:
             return
         ids = [entry["id"] for entry in record.get("sandboxes", {}).values()
                if entry.get("id") and entry.get("state") == "running"]
+        if not ids:
+            return
         results = each(lambda sandbox: self.boat("extend", sandbox, "--ttl", TTL, check=False), ids)
         failed = [sandbox for sandbox, result in zip(ids, results) if result.returncode]
         if failed:
@@ -849,8 +858,11 @@ systemctl enable --now {PLOYZ_UNITS} $observe
                   f"and to have created the sandbox.", file=sys.stderr)
         if failures:
             raise RuntimeError("\n".join(failures))
-        if all(entry.get("state") in GONE for entry in read(self.registry)["sandboxes"].values()):
-            self.registry.unlink()
+        # Under the registry lock, so no update lands between the check and the unlink.
+        with locked("registry.lock"):
+            record = read(self.registry)
+            if record and all(entry.get("state") in GONE for entry in record["sandboxes"].values()):
+                self.registry.unlink()
 
     def park(self, name):
         """Reset a sandbox to its bake, prove it, and put it in the pool; anything unproven is left for delete."""
