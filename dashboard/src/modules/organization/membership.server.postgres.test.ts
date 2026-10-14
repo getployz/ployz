@@ -176,7 +176,6 @@ describe("removeMembership", () => {
 
 type Tx = Parameters<Parameters<typeof harness.db.transaction>[0]>[0];
 
-/** Runs `during` while another transaction holds the Organization's member rows, after `change` has written under that lock. */
 const whileLocked = async <A>(organizationId: string, change: (tx: Tx) => Promise<void>, during: () => Promise<A>) => {
   const { outcome } = await harness.db.transaction(async (tx) => {
     await tx.select({ userId: member.userId }).from(member).where(eq(member.organizationId, organizationId)).orderBy(asc(member.userId)).for("update");

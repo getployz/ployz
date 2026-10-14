@@ -44,7 +44,6 @@ const manages = (caller: Caller) => caller.role === "owner" || caller.role === "
 
 const conflictRefused = (conflict: Conflict) => Effect.succeed(refused("conflict", conflict.message));
 
-/** One member by email when the selector has an @, else by name; a name two members share is ambiguous. */
 const pick = Effect.fn("Members.pick")(function* (caller: Caller, selector: string) {
   const members = yield* listMembers(caller.organization.id);
   const wanted = selector.trim().toLowerCase();

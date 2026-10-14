@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { createHash, randomBytes } from "node:crypto";
-import { and, asc, eq, gt, ne, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, ne, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { invitation, member, user } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
@@ -16,9 +16,10 @@ const hashInviteToken = (token: string) => createHash("sha256").update(token).di
 
 type InviteState = "pending" | "accepted" | "revoked" | "expired";
 
-/** Whether the invite's sender is still an owner or admin of its Organization; an invite from anyone else is revoked. */
+const MANAGING = ["owner", "admin"] as const;
+
 const fromManager = sql<boolean>`exists (select 1 from ${member} where ${member.organizationId} = ${invitation.organizationId}
-  and ${member.userId} = ${invitation.inviterId} and ${member.role} in ('owner', 'admin'))`;
+  and ${member.userId} = ${invitation.inviterId} and ${inArray(member.role, [...MANAGING])})`;
 
 const stateOf = (row: { status: typeof invitation.$inferSelect.status; expiresAt: Date; fromManager: boolean }, now: Date): InviteState => {
   if (row.status !== "pending") return row.status;
@@ -121,8 +122,7 @@ const UNUSABLE = {
 
 /**
  * Makes `userId` a member through the invite and spends it. Someone already a member keeps their role and the invite
- * stays unspent. Locks the invite row, so two people opening one link cannot both join, and share-locks the inviter's
- * membership: an invite from someone no longer an owner or admin there reads as revoked.
+ * stays unspent. Locks the invite row, so two people opening one link cannot both join.
  */
 export const acceptInvite = Effect.fn("Invitation.accept")(function* (token: string, userId: string) {
   const database = yield* Database;
@@ -143,9 +143,9 @@ export const acceptInvite = Effect.fn("Invitation.accept")(function* (token: str
     const [already] = yield* drizzle.select({ id: member.id }).from(member)
       .where(and(eq(member.organizationId, row.organizationId), eq(member.userId, userId))).limit(1);
     if (already !== undefined) return { slug: row.slug };
-    const [inviter] = yield* drizzle.select({ role: member.role }).from(member)
-      .where(and(eq(member.organizationId, row.organizationId), eq(member.userId, row.inviterId))).for("share");
-    const state = stateOf({ ...row, fromManager: inviter?.role === "owner" || inviter?.role === "admin" }, new Date());
+    const [manager] = yield* drizzle.select({ id: member.id }).from(member)
+      .where(and(eq(member.organizationId, row.organizationId), eq(member.userId, row.inviterId), inArray(member.role, [...MANAGING]))).for("share");
+    const state = stateOf({ ...row, fromManager: manager !== undefined }, new Date());
     if (state !== "pending") return yield* new Conflict({ message: UNUSABLE[state], userFacing: true });
     yield* drizzle.insert(member).values({ organizationId: row.organizationId, userId, role: row.role });
     yield* drizzle.update(invitation).set({ status: "accepted", acceptedByUserId: userId }).where(eq(invitation.id, row.id));

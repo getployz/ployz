@@ -11,10 +11,7 @@ import { actorMiddleware, publicErrorMiddleware, runActor, strictValidator } fro
 const Slug = Schema.NonEmptyString;
 const MemberRole = Schema.Literals(["owner", "admin", "member"]);
 
-/**
- * Runs a member command as the signed-in user in `organizationSlug`; a refusal reaches the form as its message.
- * Takes the headers because getRequest() is only the caller's request before the Effect first yields.
- */
+/** Takes the headers because getRequest() is only the caller's request before the Effect first yields. */
 const ran = <N extends CommandName>(headers: Headers, organizationSlug: string, name: N, input: JsonValue) => Effect.gen(function* () {
   const caller = yield* dashboardCaller(headers, organizationSlug);
   const result = yield* runCommand(caller, name, input, { approvalId: null, key: null });
