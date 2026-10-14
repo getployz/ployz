@@ -1422,6 +1422,45 @@ mod tests {
         );
     }
 
+    async fn host_after_own_route(deploy: &str, containers: &str) -> FakeHost {
+        let db = corrosion_db();
+        let local = machine("local", 1);
+        insert_pointer(&db, pointers().get(&service()).unwrap());
+        db.execute(
+            "INSERT INTO ingress_routes (machine_id, service_id, deploy, containers) VALUES (?, ?, ?, ?)",
+            rusqlite::params![local.id.as_str(), service().to_string(), deploy, containers],
+        )
+        .unwrap();
+        let (store, server) = identity_store(db).await;
+        let host = FakeHost::new(&[id("a"), id("b")], ackers(&[&local]));
+        let mut stopping = JoinSet::new();
+        round(&host, &store, &mut Retirer::default(), &mut stopping).await;
+        while stopping.join_next().await.is_some() {}
+        server.abort();
+        host
+    }
+
+    fn assert_holds_a(host: &FakeHost) {
+        assert!(host.retired.lock().unwrap().is_empty());
+        assert!(host.marked.lock().unwrap().is_empty());
+        assert_eq!(*host.removals.lock().unwrap(), 0);
+        assert!(host.local.lock().unwrap().contains(&id("a")));
+    }
+
+    #[tokio::test]
+    async fn a_listed_route_row_without_a_deploy_never_acks_away() {
+        let routes_b = serde_json::to_string(&[id("b")]).unwrap();
+        let acked = host_after_own_route("d2", &routes_b).await;
+        assert_eq!(*acked.retired.lock().unwrap(), vec![id("a")]);
+
+        assert_holds_a(&host_after_own_route("", &routes_b).await);
+    }
+
+    #[tokio::test]
+    async fn a_listed_route_row_without_readable_containers_never_acks_away() {
+        assert_holds_a(&host_after_own_route("d2", "{}").await);
+    }
+
     fn insert_pointer(db: &rusqlite::Connection, pointer: &ServingPointer) {
         db.execute(
             "INSERT OR REPLACE INTO cluster (key, value) VALUES (?, ?)",
