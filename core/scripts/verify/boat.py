@@ -76,6 +76,8 @@ POOL_SIZE = int(os.environ.get("PLOYZ_VERIFY_BOAT_POOL", 6))
 # The bake's own ployz install, relative to /; a run's install overwrites it, so reset restores it from STASH.
 INSTALLED = ("usr/local/bin/ployz* etc/systemd/system/ployz* etc/systemd/system/*.wants/ployz* etc/docker/daemon.json "
              "etc/modprobe.d/ployz* etc/modules-load.d/ployz*")
+# Files a run replaces outside INSTALLED: test-verify-warm-move.py swaps runc for a wrapper and keeps runc.<tag>-original.
+REPLACED = "usr/bin/runc"
 STASH = "/var/lib/ployz-verify-bake.tar"
 # Linux's default ip_local_port_range: avahi, Boat's wg0 and the kernel pick a new port here on every boot.
 EPHEMERAL = (32768, 60999)
@@ -89,7 +91,7 @@ RECORD_IMAGES = HOLDS + (f"[ -e {BAKE_IMAGES} ] || {{ docker image ls -q --no-tr
 KEEP_INSTALL = f"""
 if [ ! -e {STASH} ]; then
     cd / && shopt -s nullglob && found=()
-    for path in {INSTALLED} var/lib/ployz; do if [ -e "$path" ] || [ -L "$path" ]; then found+=("$path"); fi; done
+    for path in {INSTALLED} {REPLACED} var/lib/ployz; do if [ -e "$path" ] || [ -L "$path" ]; then found+=("$path"); fi; done
     tar -cpf {STASH}.next "${{found[@]}}" && sync {STASH}.next && mv {STASH}.next {STASH}
 fi
 """
@@ -112,11 +114,22 @@ section unit-files; systemctl list-unit-files --no-legend 'ployz*'
 section enabled; systemctl list-unit-files --no-legend --state=enabled | awk '{print $1}'
 section listening; ss -Hlntup | awk '{print $1, $5, $7}'
 section authorized; sha256sum /root/.ssh/authorized_keys
+section replaced; sha256sum /usr/bin/runc 2>&1; find /usr/bin -maxdepth 1 -name 'runc.*' 2>/dev/null
 true
+"""
+# Puts back the bake's files from "$stash", relative to the working directory, which reset makes /.
+RESTORE = r"""
+shopt -s nullglob
+rm -rf """ + INSTALLED + " " + REPLACED + " " + REPLACED + r""".* run/systemd/system/ployz*
+# /var/lib/ployz can be a mount point, so it stays and only its contents go.
+find var/lib/ployz -mindepth 1 -delete
+find var/lib run opt -mindepth 1 -maxdepth 1 -name '*ployz*' ! -path var/lib/ployz ! -path "${stash#/}*" -exec rm -rf {} +
+tar -xpf "$stash" -C .
 """
 # Returns the guest to the bake: what uninstall.sh removes, everything else a run makes, then the bake's install.
 RESET = r"""
 stash=$1 key=$2
+tar -tf "$stash" """ + REPLACED + r""" >/dev/null || { echo "the bake's install keeps no runc" >&2; exit 1; }
 systemctl unmask docker.service docker.socket containerd.service >/dev/null
 units=$(systemctl list-units --all --plain --no-legend 'ployz*' | awk '{print $1}')
 if [ -n "$units" ]; then systemctl stop $units; fi
@@ -134,12 +147,9 @@ observe="$(docker info -f '{{.DockerRootDir}}')/ployz-observe"
 if command -v zpool >/dev/null; then for pool in $(zpool list -H -o name); do zpool destroy -f "$pool"; done; fi
 # Boat's own WireGuard link is wg0; only ployz's links go.
 for link in $(ip -o link show | awk -F': ' '{print $2}' | cut -d@ -f1 | grep '^ployz' || true); do ip link del "$link"; done
-cd / && shopt -s nullglob
-rm -rf """ + INSTALLED + r""" run/systemd/system/ployz* "$observe"
-# /var/lib/ployz can be a mount point, so it stays and only its contents go.
-find var/lib/ployz -mindepth 1 -delete
-find var/lib run opt -mindepth 1 -maxdepth 1 -name '*ployz*' ! -path var/lib/ployz ! -path "${stash#/}*" -exec rm -rf {} +
-tar -xpf "$stash" -C /
+rm -rf "$observe"
+cd /
+""" + RESTORE + r"""
 install -d -m 700 /root/.ssh
 printf '%s\n' "$key" > /root/.ssh/authorized_keys
 chmod 600 /root/.ssh/authorized_keys

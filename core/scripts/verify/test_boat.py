@@ -534,5 +534,44 @@ class Pool(unittest.TestCase):
         self.assertEqual(held, [True])
         self.assertEqual([(row["id"], row["reason"]) for row in rows], [("bx_c", "retired bake")])
 
+class Reset(unittest.TestCase):
+    """The stash and restore shell, run against a scratch tree that stands in for the guest's /."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root, self.stash = Path(directory.name, "guest"), Path(directory.name, "bake.tar")
+        files = {"usr/local/bin/ployz": "bake ployz", "usr/bin/runc": "bake runc", "usr/bin/runcon": "runcon",
+                 "etc/systemd/system/ployz.service": "unit", "var/lib/ployz/state": "bake state", "run/keep": "",
+                 "opt/keep": "", "root/.ssh/authorized_keys": "key", "root/notes": "bake", "srv/keep": "",
+                 "var/tmp/cloud-init/keep": ""}
+        for name, content in files.items():
+            Path(self.root, name).parent.mkdir(parents=True, exist_ok=True)
+            Path(self.root, name).write_text(content)
+
+    def sh(self, script, *args):
+        script = script.replace("cd /", f"cd {self.root}").replace(boat.STASH, str(self.stash))
+        subprocess.run(["bash", "-ec", script, "sh", *args], cwd=self.root, check=True, capture_output=True)
+
+    def tree(self):
+        return {str(path.relative_to(self.root)): path.read_text() if path.is_file() else "/" for path in self.root.rglob("*")}
+
+    def write(self, name, content=""):
+        Path(self.root, name).parent.mkdir(parents=True, exist_ok=True)
+        Path(self.root, name).write_text(content)
+
+    def test_restore_puts_back_the_bakes_runc_and_install_and_drops_a_wrapper_and_its_original(self):
+        self.sh(boat.KEEP_INSTALL)
+        bake = self.tree()
+        self.write("usr/local/bin/ployz", "run ployz")
+        Path(self.root, "usr/bin/runc").rename(Path(self.root, "usr/bin/runc.slow-original"))
+        self.write("usr/bin/runc", "wrapper")
+        self.write("usr/bin/runc.fast-wrapper", "wrapper")
+        self.write("var/lib/ployz/run-state", "run")
+        self.write("opt/ployz-verify/bin", "run")
+        self.sh("stash=$1\n" + boat.RESTORE, self.stash)
+        self.assertEqual(self.tree(), bake)
+
+
 if __name__ == "__main__":
     unittest.main()
