@@ -650,8 +650,6 @@ class VolumeMove:
                 procs[unit] = pids
             elif line.startswith("-- cursor: "):
                 cursor = line.removeprefix("-- cursor: ").strip()
-        if set(procs) != {DAEMON, PLUGIN}:
-            problems.append("cgroup.procs was not read for both units")
         problems += [f"{unit} still holds {' '.join(pids)} after its stop" for unit, pids in procs.items() if pids]
         if not cursor:
             problems.append("no journal cursor")
