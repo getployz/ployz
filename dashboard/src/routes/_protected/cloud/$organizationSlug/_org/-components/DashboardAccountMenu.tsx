@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
-import { Link, useNavigate } from "@tanstack/react-router";
+import { Link, useNavigate, useSearch } from "@tanstack/react-router";
 import { Building2Icon, ChevronsUpDownIcon, HouseIcon, LogOutIcon, PlusIcon, UserIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
 import {
@@ -68,6 +68,10 @@ export default function DashboardAccountMenu({
   const navigate = useNavigate();
   const { userTheme, setTheme } = useTheme();
   const section = useDashboardSection();
+  // Prototype: on the Account page in the shell, Account keeps its layout variant; E makes this row the current place.
+  const accountVariant = useSearch({ strict: false }).variant;
+  const shellVariant = section === "account" && accountVariant !== undefined && accountVariant !== "b" ? accountVariant : undefined;
+  const current = shellVariant === "e";
   const [creating, setCreating] = useState(false);
   const organizations = useQuery(organizationStateQueryOptions(scope.organizationSlug)).data?.organizations ?? [];
 
@@ -102,10 +106,11 @@ export default function DashboardAccountMenu({
       <DropdownMenuTrigger
         aria-label="Open account menu"
         title={variant === "row" ? undefined : userName}
+        aria-current={current ? "page" : undefined}
         render={variant === "row"
           // The narrow rail's 40px avatar slot, widened: the avatar and the links above it hold still as the rail changes width.
-          ? <button type="button" className="flex h-10 w-full min-w-0 items-center gap-2.5 rounded-md px-1 text-left outline-none hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 aria-expanded:bg-muted" />
-          : <Button variant="ghost" size="icon-lg" />}
+          ? <button type="button" className="flex h-10 w-full min-w-0 items-center gap-2.5 rounded-md px-1 text-left outline-none hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 aria-expanded:bg-muted aria-[current=page]:bg-muted" />
+          : <Button variant="ghost" size="icon-lg" className="aria-[current=page]:bg-muted" />}
       >
         <Avatar>
           <AvatarImage src={userImage} alt={userName} />
@@ -135,7 +140,9 @@ export default function DashboardAccountMenu({
 
         <DropdownMenuSeparator />
         <DropdownMenuGroup>
-          <DropdownMenuItem render={<Link to="/cloud/account" />}>
+          <DropdownMenuItem render={shellVariant
+            ? <Link to="/cloud/$organizationSlug/~/account" params={{ organizationSlug: scope.organizationSlug }} search={{ variant: shellVariant }} />
+            : <Link to="/cloud/account" />}>
             <UserIcon />
             Account
           </DropdownMenuItem>
