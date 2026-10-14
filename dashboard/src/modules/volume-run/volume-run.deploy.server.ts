@@ -13,6 +13,7 @@ import {
   contextOf,
   type CopyAnswer,
   ended,
+  followSettledMessage,
   holdDeployLane,
   insertRun,
   keptOn,
@@ -286,8 +287,9 @@ export const fenceDeployVolume = (lane: DeployLane, inngestRunId: string) =>
 
 /**
  * After the Deploy ran, each ended commitment it followed gets a Cloud release, which inherits it and settles it on B.
- * The ID is the Deploy's and the Volume's, so a retried step finds its own release and requests none. A refusal is
- * logged: the lane that refused owns the Volume now.
+ * The ID is the Deploy's and the Volume's, so a retried step finds its own release and requests none. The release is
+ * admitted only while the Volume still finishes on the followed Machine. A refusal is logged: either the commitment
+ * settled first, or the lane that refused owns the Volume now.
  */
 export const releaseFollowed = Effect.fn("VolumeRun.releaseFollowed")(function* (
   environmentId: string,
@@ -298,16 +300,16 @@ export const releaseFollowed = Effect.fn("VolumeRun.releaseFollowed")(function* 
   for (const lane of lanes) {
     if (lane.kind !== "follow" || !lane.ended) continue;
     const { run } = lane;
+    const follows = run.current;
+    if (follows === null) continue;
     const id = uuidFrom(`ployz.deploy-release:${inngestRunId}:${run.volumeId}`);
     if ((yield* readRow(id)) !== undefined) {
       requested.push(id);
       continue;
     }
-    const { owed } = yield* commitment(run.volumeId);
-    if (owed === null) continue;
     const release = yield* insertRun(
       CLOUD(run.organizationId),
-      { volumeId: run.volumeId, kind: "release", args: {} },
+      { volumeId: run.volumeId, kind: "release", args: { follows } },
       { environmentId, volumeName: run.volumeName, dockerVolume: run.dockerVolume, refquotaBytes: run.refquotaBytes },
       id,
     );
@@ -315,7 +317,8 @@ export const releaseFollowed = Effect.fn("VolumeRun.releaseFollowed")(function* 
       requested.push(release.run.id);
       continue;
     }
-    yield* Effect.logWarning(`${run.volumeName}'s release on ${lane.to} was not requested after its Deploy: ${release.refusal.message}`);
+    const note = `${run.volumeName}'s release on ${lane.to} was not requested after its Deploy: ${release.refusal.message}`;
+    yield* release.refusal.message === followSettledMessage(run.volumeName) ? Effect.logInfo(note) : Effect.logWarning(note);
   }
   return requested;
 });

@@ -253,6 +253,8 @@ export const releaseChangedMessage = (volumeName: string) => `${volumeName} chan
 
 const releaseChanged = (volumeName: string): StoreRefusal => ({ code: "conflict", message: releaseChangedMessage(volumeName), details: null });
 
+export const followSettledMessage = (volumeName: string) => `${volumeName} no longer finishes on the Server this Deploy followed`;
+
 const enqueueRun = (row: VolumeRunRow, took?: VolumeRunKind) =>
   enqueueEvent(createVolumeRunRequestedEvent({
     organizationId: row.organizationId,
@@ -574,6 +576,11 @@ const takeLane = Effect.fn("VolumeRun.takeLane")(function* (caller: Caller, { in
 const admitOwed = Effect.fn("VolumeRun.admitOwed")(function* (inserted: VolumeRunRow, input: VolumeLaneInput) {
   const { newest, owed: pending } = yield* commitment(inserted.volumeId);
   const plan = input.kind === "release" ? input.args.plan : undefined;
+  const follows = input.kind === "release" ? input.args.follows : undefined;
+  if (follows !== undefined && pending?.current !== follows) {
+    const refusal: StoreRefusal = { code: "conflict", message: followSettledMessage(inserted.volumeName), details: null };
+    return yield* new LaneRefused({ refusal, busy: volumeRunView(newest ?? inserted) });
+  }
   if (pending === null) {
     if (plan?.forward === undefined) return inserted;
     return yield* new LaneRefused({ refusal: releaseChanged(inserted.volumeName), busy: volumeRunView(newest ?? inserted) });

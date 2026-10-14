@@ -33,7 +33,8 @@ export type VolumeRunArgs = {
   sync: { readonly full: boolean };
   delete_mirror: { readonly slot: MachineName | null; readonly confirmed_name: string | null };
   move: Destination;
-  release: { readonly plan?: ReleasePlan };
+  /** `follows` marks a Deploy's release: it is admitted only while the Volume still finishes on that Machine. */
+  release: { readonly plan?: ReleasePlan; readonly follows?: MachineId };
   restore: { readonly from: MachineName; readonly machine?: MachineId };
   seed: {
     readonly into: { readonly volumeId: string; readonly dockerVolume: string; readonly name: string };
