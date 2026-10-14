@@ -436,6 +436,15 @@ class Pool(unittest.TestCase):
                 self.provider("machine-1", "machine-2", "machine-3").create()
         self.assertIn("no fingerprint of this bake", said.getvalue())
 
+    def test_a_new_fingerprint_script_or_reading_never_meets_an_old_fingerprint(self):
+        saved = boat.fingerprints("bake-a")
+        self.assertNotEqual(boat.fingerprints("bake-b"), saved)
+        with unittest.mock.patch.object(boat, "FINGERPRINT", boat.FINGERPRINT + "section extra; true\n"):
+            self.assertNotEqual(boat.fingerprints("bake-a"), saved)
+        with unittest.mock.patch.object(boat, "NORMALIZE", boat.NORMALIZE + 1):
+            self.assertNotEqual(boat.fingerprints("bake-a"), saved)
+        self.assertEqual(boat.fingerprints("bake-a"), saved)
+
     def test_park_counts_only_its_own_bake_toward_the_pool_size(self):
         boat.write(boat.BAKES, ["bake-a", "bake-b"])
         limits = dict(maxActiveSandboxes=100, activeSandboxes=0, starts=dict(unlimited=True))

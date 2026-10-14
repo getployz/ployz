@@ -377,8 +377,14 @@ def differences(expected, actual):
     return found
 
 
+# Bump when fingerprint() or listener() read FINGERPRINT's output differently, so no saved fingerprint outlives its reading.
+NORMALIZE = 1
+
+
 def fingerprints(image):
-    return REGISTRY / f"{image}.fingerprint"
+    """Where the first fresh clone's fingerprint of `image` lives; a new FINGERPRINT script or reading starts a new one."""
+    script = hashlib.sha256(f"{NORMALIZE}\n{FINGERPRINT}".encode()).hexdigest()[:10]
+    return REGISTRY / f"{image}.{script}.fingerprint"
 
 
 def corrosion_image(core):
