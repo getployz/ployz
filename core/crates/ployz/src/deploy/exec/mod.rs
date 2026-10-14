@@ -604,7 +604,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
         let service = QualifiedService::new(plan.namespace.clone(), service.clone());
         let first = schedule.first_task(group);
         let machine_id = operation_at(operations, first).machine_id();
-        match pin_reality(&client, run, &service, machine_id, cancellation).await {
+        match await_routed_pin(&client, run, &service, machine_id, cancellation).await {
             Ok(Pin::Admitted(row)) => {
                 admitted.insert(group, row);
             }
@@ -785,7 +785,6 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
             }
             None => {
                 let expired = blocked_since.is_some_and(|since| since.elapsed() >= ACK_WAIT);
-                // A task waits on every dependency it lacks; it fails once.
                 let mut failed = BTreeSet::new();
                 if cancellation.is_cancelled() || expired {
                     for (task, dependency) in blocked {
@@ -941,11 +940,7 @@ enum Pin {
     Superseded,
 }
 
-/// Waits until every Machine routes the Service's pointer row before any
-/// start, so no new copy serves before its flip. With no row, first pins what
-/// the Service serves now, even nothing; unlabelled Containers get a Deploy id
-/// of this run's making. A row that changes while waiting is Superseded.
-async fn pin_reality<C: MachineOperations>(
+async fn await_routed_pin<C: MachineOperations>(
     client: &C,
     run: &DeploymentLogId,
     service: &QualifiedService,
@@ -989,8 +984,6 @@ async fn pin_reality<C: MachineOperations>(
     }
 }
 
-/// Publishes a pin of the containers serving now, or returns `None` when
-/// another writer created the row first.
 async fn publish_pin<C: MachineOperations>(
     client: &C,
     run: &DeploymentLogId,

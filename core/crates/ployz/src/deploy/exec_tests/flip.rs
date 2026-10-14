@@ -929,7 +929,6 @@ fn not_routed(outcome: &DeployOutcome<ExecutionError>) -> bool {
     )
 }
 
-/// A retry over the pointer store an earlier attempt left behind.
 fn retry(
     earlier: &Scripted,
     observations: Vec<ContainerObservation>,
@@ -944,8 +943,6 @@ fn retry(
     }
 }
 
-/// A pin that timed out unrouted stays in the store. Each retry waits on that
-/// row and starts nothing until every Machine routes it.
 async fn retry_after_an_unrouted_pin(
     plan: &[DeployOperation],
     observations: Vec<ContainerObservation>,

@@ -405,9 +405,6 @@ impl Schedule {
             })
     }
 
-    /// Every published dependency `task` still waits on. A new Container needs
-    /// its dependencies routable where it runs; removing an old copy needs
-    /// every Machine routing past it.
     fn missing_acks<'a>(
         &'a self,
         group: &'a ServiceGroup,
