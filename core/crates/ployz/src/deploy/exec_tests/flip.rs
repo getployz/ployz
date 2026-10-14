@@ -667,3 +667,71 @@ async fn a_service_flips_as_soon_as_its_own_replicas_are_up() {
     );
     client.assert_done();
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_failed_group_removes_a_container_a_sibling_starts_afterwards() {
+    let machine = machine('1');
+    let stopped = container('0');
+    let late = container('b');
+    let plan = vec![
+        stop(&machine, &stopped),
+        run(&machine, spec(None, None, None), true),
+    ];
+    let client = Scripted::new(vec![
+        failed(Call::Stop(machine, stopped), "stop failed"),
+        Step(
+            Call::Run(machine, ContainerKind::ServiceContainer),
+            Reply::CreatedAfter(late, std::time::Duration::from_millis(5)),
+        ),
+        ok(Call::Discard(machine, late)),
+    ]);
+    let groups = vec![crate::deploy::schedule::ServiceGroup {
+        service: Some(ServiceName::parse("api").unwrap()),
+        dependencies: Vec::new(),
+        steps: vec![crate::deploy::schedule::Step::Parallel(vec![0, 1])],
+        publish: true,
+        kept: Vec::new(),
+    }];
+
+    let outcome = execute_groups(&plan, groups, &client).await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Failed { .. }),
+        "{outcome:?}"
+    );
+    assert!(client.publications().is_empty());
+    client.assert_done();
+}
+
+#[tokio::test]
+async fn a_hook_that_ran_stays_completed_when_its_service_fails_to_flip() {
+    let machine = machine('1');
+    let ran = container('f');
+    let migration = hook(&machine, spec(None, None, Some(5_000)));
+    let plan = vec![
+        migration.clone(),
+        run(&machine, spec(None, None, None), true),
+    ];
+    let client = Scripted::new(vec![
+        created(Call::Run(machine, ContainerKind::PreDeployHook), &ran),
+        observed(Call::Inspect(machine, ran), exited(0)),
+        failed(
+            Call::Run(machine, ContainerKind::ServiceContainer),
+            "run failed",
+        ),
+        ok(Call::DiscardSlot(machine, ContainerKind::ServiceContainer)),
+    ]);
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert!(
+        matches!(
+            &outcome,
+            DeployOutcome::Failed { completed, unexecuted, .. }
+                if *completed == [migration.clone()] && unexecuted.is_empty()
+        ),
+        "{outcome:?}"
+    );
+    assert!(client.publications().is_empty());
+    client.assert_done();
+}

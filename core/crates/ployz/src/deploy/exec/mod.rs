@@ -605,9 +605,10 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
     let mut started: BTreeMap<usize, Vec<(MachineId, ContainerId)>> = BTreeMap::new();
     let mut replaced: BTreeMap<usize, Vec<ContainerId>> = BTreeMap::new();
     let mut awaiting_flip: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
-    let mut cleaned = BTreeSet::new();
+    let mut unread = BTreeSet::new();
     let mut stop = None;
     let mut blocked_since: Option<Instant> = None;
+    let mut blocked_before = Vec::new();
     let (progress, client, slots) = (&progress, &client, &slots);
     let mut inflight = FuturesUnordered::new();
 
@@ -646,11 +647,12 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
             });
         }
         let blocked = schedule.blocked_on_acks();
-        if blocked.is_empty() {
+        if blocked != blocked_before {
             blocked_since = None;
-            if inflight.is_empty() {
-                break;
-            }
+            blocked_before.clone_from(&blocked);
+        }
+        if blocked.is_empty() && inflight.is_empty() {
+            break;
         }
         let done = tokio::select! {
             biased;
@@ -685,7 +687,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                                 .or_default()
                                 .push(replacement.old_container_id);
                         }
-                        if schedule.group(group).publish {
+                        if schedule.group(group).publish && starts_container(operation) {
                             awaiting_flip.entry(group).or_default().push(index);
                         } else {
                             completed.insert(index);
@@ -730,7 +732,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                             Err(error)
                         }
                         LostReply::Unread => {
-                            cleaned.insert(group);
+                            unread.insert(group);
                             Err(error)
                         }
                     },
@@ -825,14 +827,14 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
             }
         }
         for group in schedule.failed_groups() {
-            if !cleaned.insert(group) {
+            if unread.contains(&group) {
                 continue;
             }
-            for (machine, id) in started.get(&group).into_iter().flatten() {
+            for (machine, id) in started.remove(&group).into_iter().flatten() {
                 let _ = gone(
                     client,
-                    machine,
-                    ContainerLocator::Id(*id),
+                    &machine,
+                    ContainerLocator::Id(id),
                     Drain::NONE,
                     AnonymousVolumes::Remove,
                 )
