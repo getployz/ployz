@@ -76,6 +76,7 @@ export async function run() {
       teamId: required("POSTSHIBA_TEAM_ID"),
       clusterId: required("POSTSHIBA_CLUSTER_ID"),
       from: required("MAIL_FROM"),
+      verifyOrigin: null,
     },
     globalThis.fetch,
   );
