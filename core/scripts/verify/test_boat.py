@@ -175,7 +175,7 @@ class Registry(unittest.TestCase):
         self.assertEqual(json.loads(boat.registry("run1").read_text())["sandboxes"]["machine-1"]["state"], "stopped")
 
     def test_the_ssh_control_socket_fits_a_unix_socket_path(self):
-        runtime = tempfile.mkdtemp()
+        runtime = tempfile.mkdtemp(dir="/tmp")
         self.addCleanup(shutil.rmtree, runtime)
         # The accented directory's socket directory is 40 characters, too long only in bytes; the other is too long either way.
         accented, long = Path(runtime, "é" * (39 - len(runtime) - 11)), Path(runtime, "r" * 40)
@@ -192,7 +192,8 @@ class Registry(unittest.TestCase):
         self.assertTrue(path("a", str(accented)).startswith("/tmp/ployz-boat-"))
         # su without "-" keeps another user's runtime directory, and a logout removes one.
         self.assertTrue(path("a", "/run/user/4294967295").startswith(f"/tmp/ployz-boat-{os.getuid()}/"))
-        self.assertTrue(path("a", "/").startswith(f"/tmp/ployz-boat-{os.getuid()}/"))
+        if os.getuid():
+            self.assertTrue(path("a", "/").startswith(f"/tmp/ployz-boat-{os.getuid()}/"))
         long = path("a", str(long))
         self.assertTrue(long.startswith(f"/tmp/ployz-boat-{os.getuid()}/"))
         self.assertLessEqual(len(long.replace("%C", "0" * 40)) + 17, 107)
