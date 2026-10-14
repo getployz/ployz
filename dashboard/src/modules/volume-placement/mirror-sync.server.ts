@@ -139,6 +139,16 @@ const newestGen = Effect.fn("MirrorSync.newestGen")(function* (volumeId: string)
 });
 
 /**
+ * The writer reuses a snapshot name it already holds, so each sync names its own. Postgres never hands out a transaction
+ * id twice, and the time in front keeps the round above a lane run's.
+ */
+const snapshotRound = Effect.fn("MirrorSync.snapshotRound")(function* () {
+  const { drizzle } = yield* Database;
+  const [row] = yield* drizzle.execute<{ xid: string }>(sql`select pg_current_xact_id()::text as xid`, "objects");
+  return `${Date.now()}${row?.xid ?? ""}`;
+});
+
+/**
  * The one mirror sync: the 15-minute cron, a user's sync and Refresh now, and the refresh after a Deploy all run it.
  * It reports each failed pull once, before anything else, so an open lane never hides one. With a lane open it says
  * why it does nothing. Otherwise it snapshots the writer and hands each idle mirror the pull, without waiting for it.
@@ -231,7 +241,7 @@ export const syncMirrors = Effect.fn("MirrorSync.sync")(function* (
   // A writer keeps its newest two snapshots, so a new one while a pull runs could prune that pull's source.
   if (busy.length > 0) return yield* answer(reported, { kind: "synced", mirrors: busy });
 
-  const snapshot = yield* ask(asker, writer.machine, { kind: "writer", epoch }, { kind: "snapshot", name: `w-${epoch}-${Date.now()}` });
+  const snapshot = yield* ask(asker, writer.machine, { kind: "writer", epoch }, { kind: "snapshot", name: `w-${epoch}-${yield* snapshotRound()}` });
   if (!snapshot.ok) return yield* answer(reported, { kind: "refused", message: snapshot.message });
   const target: Snapshot | null = snapshot.copy?.newest ?? null;
   if (target === null) return yield* answer(reported, { kind: "refused", message: `${named(writer)} made no snapshot` });
