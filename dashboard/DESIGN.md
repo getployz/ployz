@@ -264,7 +264,7 @@ A node answers two questions in two places, and neither ever stands in for the o
 - An optional value is an input with a placeholder, blank while unset. Only a setting most resources never need (pre-deploy command, root directory) hides behind a small link.
 - Danger comes last as plain rows: what it does, what follows in muted text, and a soft destructive button. Never red text on a red surface.
 - Panel headers are the same shape: the name, renameable, without a kind label, and no second line.
-- Settings pages (Environment, Project, Organization's General and Builds, a Server) use the same sections, rows and danger rows as the panels. There is one Danger section per page, last.
+- Settings pages (Environment, Project, Organization's General, Members and Builds, a Server) use the same sections, rows and danger rows as the panels. There is one Danger section per page, last.
 - Settings autosave, except a name: renaming changes addresses and URLs, so it waits for an explicit Rename (a project's Rename button, a service's or volume's pencil and its dialog). Everything else saves as it's set, staged where it deploys.
 - Buttons and titles use sentence case: "Forget servers", "Generate domain".
 
@@ -281,7 +281,7 @@ A node answers two questions in two places, and neither ever stands in for the o
 
 - An Environment has four places: **Architecture** (its canvas), **Deployments**, **Logs** and **Settings**. The organization has three: **Projects**, **Servers** and **Organization**, its own settings. No two places share a name, so Settings always means an Environment's.
 - On desktop a rail holds the logo, the scope's places, each an icon beside its label, and the account at the bottom: your avatar, name and organization. On an Environment, Projects and Servers follow its places below a divider. Wherever the canvas shows, the rail narrows to its icons and the avatar, each naming itself on hover, and the canvas gets the room. The current place uses a muted neutral surface, never the staged-intent color.
-- A page with sections lists them under its place in the rail while it's current: Settings has **Environment** and **Project**; Organization has **General**, **Builds**, and **Billing** where billing exists. A page never repeats its sections as tabs.
+- A page with sections lists them under its place in the rail while it's current: Settings has **Environment** and **Project**; Organization has **General**, **Members**, **Builds**, and **Billing** where billing exists. A page never repeats its sections as tabs.
 - On phones the scope's places fill a bottom tab bar, and the current place's sections sit in a strip under the top bar.
 - The logo tops the rail and opens Projects. The account menu holds organization switching, Theme, Home (the marketing site's `/home`, a full page load) and Log out.
 - One top bar per page. On an Environment it says where you are with breadcrumbs, `project / environment`, plus the place's name when it isn't Architecture. On a Branch the path reads `project / parent ⑂ branch`: ⑂ marks what the Branch was made from, and the Parent's crumb opens the Parent. Each switcher crumb opens its switcher, and switching keeps the current place. On phones the bar also carries the logo and the avatar, the path keeps its last two crumbs and moves the rest into a "…" menu, and the bar never wraps. Never stack a second title row that repeats the place.

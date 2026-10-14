@@ -1,8 +1,8 @@
 import "@tanstack/react-start/server-only";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { Data, Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
-import { member, session, user } from "#/modules/identity/tables";
+import { invitation, member, session, user } from "#/modules/identity/tables";
 import { Polar } from "#/modules/billing/polar-provider.server";
 import { listAccessibleOrganizations, requireAccess, SupportStaff } from "#/modules/organization/access.server";
 import { AppConfig } from "#/server/config.server";
@@ -123,6 +123,16 @@ export const updateActorSessionsOrganization = Effect.fn(
     .where(eq(session.userId, actor.userId));
 });
 
+/** Someone who once joined by invite already knows the Organization exists, so its name tells them nothing new. */
+const formerOrganizationName = Effect.fn("Organization.formerOrganizationName")(function* (userId: string, organizationSlug: string) {
+  const { drizzle } = yield* Database;
+  const [row] = yield* drizzle.select({ name: organization.name }).from(invitation)
+    .innerJoin(organization, eq(organization.id, invitation.organizationId))
+    .where(and(eq(invitation.acceptedByUserId, userId), eq(organization.slug, organizationSlug)))
+    .limit(1);
+  return row?.name ?? null;
+});
+
 export const getOrganizationState = Effect.fn(
   "Organization.getOrganizationState",
 )(function* (actor: Actor, organizationSlug?: string) {
@@ -130,7 +140,9 @@ export const getOrganizationState = Effect.fn(
   const polar = yield* Polar;
   const staff = yield* SupportStaff;
   const config = yield* AppConfig;
+  const accessible = organizationSlug !== undefined && organizations.some((organization) => organization.slug === organizationSlug);
   return {
+    formerOrganization: organizationSlug === undefined || accessible ? null : yield* formerOrganizationName(actor.userId, organizationSlug),
     billingEnabled: polar.mode === "hosted",
     uptimeEnabled: config.uptimeEnabled,
     /** Whether this Cloud has Ployz support at all, so the support switch means something. */

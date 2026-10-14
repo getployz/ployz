@@ -20,6 +20,7 @@ import { Route as ProtectedDashboardRouteImport } from './routes/_protected/dash
 import { Route as PublicAuthRouteImport } from './routes/_public/auth'
 import { Route as ApiHealthRouteImport } from './routes/api/health'
 import { Route as AuthGithubRouteImport } from './routes/auth/github'
+import { Route as InviteTokenRouteImport } from './routes/invite/$token'
 import { Route as ProtectedCloudIndexRouteImport } from './routes/_protected/cloud/index'
 import { Route as ProtectedCloudOrganizationSlugRouteRouteImport } from './routes/_protected/cloud/$organizationSlug/route'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
@@ -119,6 +120,11 @@ const ApiHealthRoute = ApiHealthRouteImport.update({
 const AuthGithubRoute = AuthGithubRouteImport.update({
   id: '/auth/github',
   path: '/auth/github',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const InviteTokenRoute = InviteTokenRouteImport.update({
+  id: '/invite/$token',
+  path: '/invite/$token',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ProtectedCloudIndexRoute = ProtectedCloudIndexRouteImport.update({
@@ -430,6 +436,7 @@ export interface FileRoutesByFullPath {
   '/auth': typeof PublicAuthRoute
   '/api/health': typeof ApiHealthRoute
   '/auth/github': typeof AuthGithubRoute
+  '/invite/$token': typeof InviteTokenRoute
   '/cloud/$organizationSlug': typeof ProtectedCloudOrganizationSlugRouteRouteWithChildren
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/cli/$': typeof ApiCliSplatRoute
@@ -484,6 +491,7 @@ export interface FileRoutesByTo {
   '/auth': typeof PublicAuthRoute
   '/api/health': typeof ApiHealthRoute
   '/auth/github': typeof AuthGithubRoute
+  '/invite/$token': typeof InviteTokenRoute
   '/cloud/$organizationSlug': typeof ProtectedCloudOrganizationSlugRouteRouteWithChildren
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/cli/$': typeof ApiCliSplatRoute
@@ -540,6 +548,7 @@ export interface FileRoutesById {
   '/_public/auth': typeof PublicAuthRoute
   '/api/health': typeof ApiHealthRoute
   '/auth/github': typeof AuthGithubRoute
+  '/invite/$token': typeof InviteTokenRoute
   '/_protected/cloud/$organizationSlug': typeof ProtectedCloudOrganizationSlugRouteRouteWithChildren
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/cli/$': typeof ApiCliSplatRoute
@@ -600,6 +609,7 @@ export interface FileRouteTypes {
     | '/auth'
     | '/api/health'
     | '/auth/github'
+    | '/invite/$token'
     | '/cloud/$organizationSlug'
     | '/api/auth/$'
     | '/api/cli/$'
@@ -654,6 +664,7 @@ export interface FileRouteTypes {
     | '/auth'
     | '/api/health'
     | '/auth/github'
+    | '/invite/$token'
     | '/cloud/$organizationSlug'
     | '/api/auth/$'
     | '/api/cli/$'
@@ -709,6 +720,7 @@ export interface FileRouteTypes {
     | '/_public/auth'
     | '/api/health'
     | '/auth/github'
+    | '/invite/$token'
     | '/_protected/cloud/$organizationSlug'
     | '/api/auth/$'
     | '/api/cli/$'
@@ -767,6 +779,7 @@ export interface RootRouteChildren {
   HomeRoute: typeof HomeRoute
   ApiHealthRoute: typeof ApiHealthRoute
   AuthGithubRoute: typeof AuthGithubRoute
+  InviteTokenRoute: typeof InviteTokenRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
   ApiCliSplatRoute: typeof ApiCliSplatRoute
   ApiCliManifestRoute: typeof ApiCliManifestRoute
@@ -865,6 +878,13 @@ declare module '@tanstack/react-router' {
       path: '/auth/github'
       fullPath: '/auth/github'
       preLoaderRoute: typeof AuthGithubRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/invite/$token': {
+      id: '/invite/$token'
+      path: '/invite/$token'
+      fullPath: '/invite/$token'
+      preLoaderRoute: typeof InviteTokenRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_protected/cloud/': {
@@ -1405,6 +1425,7 @@ const rootRouteChildren: RootRouteChildren = {
   HomeRoute: HomeRoute,
   ApiHealthRoute: ApiHealthRoute,
   AuthGithubRoute: AuthGithubRoute,
+  InviteTokenRoute: InviteTokenRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
   ApiCliSplatRoute: ApiCliSplatRoute,
   ApiCliManifestRoute: ApiCliManifestRoute,

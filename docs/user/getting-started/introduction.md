@@ -33,7 +33,7 @@ across your servers.
 You have an app and want a platform's push to deploy, previews and dashboard, without paying a
 platform for the servers. Or you already run a server by hand and miss having a platform.
 
-Ployz is built for one person today, with no team roles or permissions yet. It backs up a volume
+You can invite your team to an organization as owners, admins or members. Ployz backs up a volume
 to another of your servers, not offsite yet. If a server goes down, what ran only there stops until
 it's back. Read the
 [Production checklist](../production-checklist.md) before you move real users.
