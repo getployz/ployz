@@ -1102,6 +1102,17 @@ async fn departure_during_a_receive_stops_it_and_destroys_the_mirror() {
     server.abort();
 }
 
+/// Waits up to five seconds for `done`, and fails the test naming `what` if it never is.
+async fn eventually(what: &str, mut done: impl FnMut() -> bool) {
+    for _ in 0..500 {
+        if done() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("{what} never happened");
+}
+
 /// Waits for the fake receive to start, and answers its pid.
 async fn receive_pid(test: &TestDir) -> String {
     let pid = test.0.join("props/receive-pid");
@@ -1134,21 +1145,19 @@ async fn departure_stops_a_pull_into_a_slot_it_keeps() {
             async move { post(&socket, "/Storage.Demote", json!(null)).await }
         });
         let scanning = format!("zfs {scan}");
-        for _ in 0..500 {
-            let commands = fs::read_to_string(test.0.join("commands")).unwrap_or_default();
-            if commands.lines().any(|line| line == scanning) {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        eventually(&format!("{mark}: the departure's scan"), || {
+            fs::read_to_string(test.0.join("commands"))
+                .unwrap_or_default()
+                .lines()
+                .any(|line| line == scanning)
+        })
+        .await;
         // A receive still running at the scan lands now, before the departure judges.
         fs::remove_file(test.0.join("props/stall-read")).unwrap();
-        for _ in 0..500 {
-            if !Path::new(&format!("/proc/{pid}")).exists() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        eventually(&format!("{mark}: the receive's exit"), || {
+            !Path::new(&format!("/proc/{pid}")).exists()
+        })
+        .await;
         fs::remove_file(test.0.join("props/stall-command")).unwrap();
         let reply = departure.await.unwrap();
         assert_eq!(
