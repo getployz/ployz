@@ -579,8 +579,8 @@ impl DeployPreview {
             .any(|warning| warning.observation_gap().is_some())
     }
 
-    /// Whether the Deploy would execute nothing; warnings, removals and Volumes to create
-    /// do not count.
+    /// Whether `operations` is empty. Planned stops and removals are operations;
+    /// `warnings`, `would_remove` and `volumes_to_create` do not count on their own.
     #[must_use]
     pub fn noop(&self) -> bool {
         self.operations.is_empty()

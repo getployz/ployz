@@ -3912,7 +3912,11 @@ name: ServiceName,
  */
 private_dns: ServiceName, };
 
-export type ServiceTemplate = { id: ServiceTemplateId, version: number, };
+export type ServiceTemplate = { id: ServiceTemplateId,
+/**
+ * Starts at 1; zero is rejected.
+ */
+version: number, };
 
 export type ServiceTemplateId = string;
 

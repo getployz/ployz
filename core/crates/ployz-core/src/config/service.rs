@@ -45,6 +45,7 @@ pub struct AuthoredServiceConfig {
 #[serde(deny_unknown_fields)]
 pub struct ServiceTemplate {
     pub id: crate::ServiceTemplateId,
+    /// Starts at 1; zero is rejected.
     #[ts(type = "number")]
     pub version: std::num::NonZeroU32,
 }
