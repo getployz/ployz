@@ -201,6 +201,30 @@ async fn a_departure_with_a_stuck_copy_forgets_the_demoted_and_fails_naming_it()
 }
 
 #[tokio::test]
+async fn a_name_docker_keeps_still_forgets_the_rest_and_reports_beside_the_stuck() {
+    let test = harness(true).await;
+    test.plugin.reply(
+        "Storage.Demote",
+        json!({"Ok": {"demoted": ["held", "data"], "stuck": ["seed"], "failed": []}}),
+    );
+    test.docker.volume_users.lock().unwrap().insert(
+        "held".into(),
+        vec![json!({"Id": "a".repeat(64), "Labels": {}})],
+    );
+    let error = test.local.leave(LeaveRequest::default()).await.unwrap_err();
+    let Error::Cleanup(message) = &error else {
+        panic!("{error}");
+    };
+    assert!(message.contains("Docker kept Volume held"), "{message}");
+    assert!(message.contains("seed did not stop"), "{message}");
+    assert!(forgot_data(&test.docker));
+    assert_eq!(
+        test.local.record().phase(),
+        LocalMachinePhase::Participating
+    );
+}
+
+#[tokio::test]
 async fn a_departure_with_a_failed_volume_forgets_the_demoted_and_fails_with_its_reason() {
     let test = harness(true).await;
     test.plugin.reply(
