@@ -6,6 +6,7 @@ pub mod cloud;
 mod config;
 mod copies;
 mod deployment;
+mod docs;
 mod domain;
 mod environment;
 mod github;
@@ -41,6 +42,7 @@ use machine::{Entry, entry};
 
 /// Every tool, in catalog order.
 pub(crate) const TOOLS: &[Entry] = &[
+    entry::<docs::Docs>(),
     entry::<environment::EnvironmentShow>(),
     entry::<project::ProjectCreate>(),
     entry::<project::ProjectRename>(),
@@ -114,4 +116,5 @@ pub fn example(tool: &str) -> Option<serde_json::Value> {
 }
 
 /// What a model reads once, before any tool.
-pub const INSTRUCTIONS: &str = "Ployz runs Projects with Environments of Services on your servers. Names, not ids. Every result says where it ran as at. A refusal has code, message, field, expected, example, retry (a complete call), writes (none, committed or unknown) and next (the calls to make now). When writes is unknown, make the next call before anything else. Most writes are Staged: review shows them, discard undoes them, deploy ships them. Not here: branches, tokens, servers added, exec, live logs, up; the member does those in the terminal. project and environment default to the place you are in. request_key: any 8 to 64 letters, digits, - or _; send the same key again after a lost reply and you get the same run, never a second one. wait_seconds: wait up to that long (max 300) for the outcome; 0 returns once accepted. accept_volume_loss, every_copy and version come only from a refusal, for exactly the loss the member accepted. Reads say when they were seen; a server that did not answer is listed, never guessed. Logs never show a secret; do not ask a tool for one. Servers, their logs and metrics need Ployz Cloud.";
+pub const INSTRUCTIONS: &str = "Ployz runs Projects with Environments of Services on your servers. Names, not ids. Every result says where it ran as at. A refusal has code, message, field, expected, example, retry (a complete call), writes (none, committed or unknown) and next (the calls to make now). When writes is unknown, make the next call before anything else. Most writes are Staged: review shows them, discard undoes them, deploy ships them. Not here: branches, tokens, servers added, exec, live logs, up; the member does those in the terminal. project and environment default to the place you are in. request_key: any 8 to 64 letters, digits, - or _; send the same key again after a lost reply and you get the same run, never a second one. wait_seconds: wait up to that long (max 300) for the outcome; 0 returns once accepted. accept_volume_loss, every_copy and version come only from a refusal, for exactly the loss the member accepted. Reads say when they were seen; a server that did not answer is listed, never guessed. Logs never show a secret; do not ask a tool for one. Servers, their logs and metrics need Ployz Cloud. \
+For how Ployz works or how to do something, read docs before answering from memory.";
