@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 use ployz_core::{
     AdvertisedEndpoint, DockerVolume, EnrollAs, EnrollRequest, Enrolled, LeaveRequest,
-    LocalMachinePhase, Machine, MachineId, MachineName, Registered, RpcErrorCode,
+    LocalMachinePhase, Machine, MachineId, MachineName, Registered, RpcErrorCode, VolumeGen,
 };
 use serde_json::json;
 
@@ -53,7 +53,10 @@ async fn harness(initialized: bool) -> Harness {
         store.enroll(initialize_request()).unwrap();
     }
     let plugin = FakePlugin::default();
-    plugin.reply("Storage.Demote", json!({"Ok": ["data"]}));
+    plugin.reply(
+        "Storage.Demote",
+        json!({"Ok": {"demoted": ["data"], "stuck": [], "failed": []}}),
+    );
     let (client, _server) = plugin.serve(&data_dir);
     let (runtime, docker) = fake_runtime_with(FakeDocker::default()).await;
     let (replicated, _cluster) = fake_cluster::store().await;
@@ -120,6 +123,29 @@ async fn leave_departs_storage_before_the_phase_commits() {
 }
 
 #[tokio::test]
+async fn leave_forgets_every_volume_floor() {
+    let test = harness(true).await;
+    let containers = test.local.containers.as_ref().unwrap();
+    let data = "data".parse().unwrap();
+    let raised = containers
+        .floor_turn()
+        .await
+        .admit(&data, VolumeGen::new(7))
+        .await
+        .unwrap();
+    assert_eq!(raised, Ok(()));
+
+    test.local.leave(LeaveRequest::default()).await.unwrap();
+    let after = containers
+        .floor_turn()
+        .await
+        .admit(&data, VolumeGen::new(0))
+        .await
+        .unwrap();
+    assert_eq!(after, Ok(()));
+}
+
+#[tokio::test]
 async fn initialize_departs_storage_a_prior_identity_left_behind() {
     let test = harness(false).await;
     test.local.enroll(initialize_request()).await.unwrap();
@@ -153,6 +179,77 @@ async fn a_failed_departure_keeps_the_machine_in_place() {
         LocalMachinePhase::Participating
     );
     assert!(!forgot_data(&test.docker));
+}
+
+#[tokio::test]
+async fn a_departure_with_a_stuck_copy_forgets_the_demoted_and_fails_naming_it() {
+    let test = harness(true).await;
+    test.plugin.reply(
+        "Storage.Demote",
+        json!({"Ok": {"demoted": ["data"], "stuck": ["seed"], "failed": []}}),
+    );
+    let error = test.local.leave(LeaveRequest::default()).await.unwrap_err();
+    assert!(
+        matches!(&error, Error::Cleanup(message) if message.contains("seed")),
+        "{error}"
+    );
+    assert!(forgot_data(&test.docker));
+    assert_eq!(
+        test.local.record().phase(),
+        LocalMachinePhase::Participating
+    );
+}
+
+#[tokio::test]
+async fn a_name_docker_keeps_still_forgets_the_rest_and_reports_beside_the_stuck() {
+    let test = harness(true).await;
+    test.plugin.reply(
+        "Storage.Demote",
+        json!({"Ok": {"demoted": ["held", "data"], "stuck": ["seed"], "failed": []}}),
+    );
+    test.docker.volume_users.lock().unwrap().insert(
+        "held".into(),
+        vec![json!({"Id": "a".repeat(64), "Labels": {}})],
+    );
+    let error = test.local.leave(LeaveRequest::default()).await.unwrap_err();
+    let Error::Cleanup(message) = &error else {
+        panic!("{error}");
+    };
+    assert!(message.contains("Docker kept Volume held"), "{message}");
+    assert!(message.contains("seed did not stop"), "{message}");
+    assert!(forgot_data(&test.docker));
+    assert_eq!(
+        test.local.record().phase(),
+        LocalMachinePhase::Participating
+    );
+}
+
+#[tokio::test]
+async fn a_departure_with_a_failed_volume_forgets_the_demoted_and_fails_with_its_reason() {
+    let test = harness(true).await;
+    test.plugin.reply(
+        "Storage.Demote",
+        json!({"Ok": {
+            "demoted": ["data"],
+            "stuck": ["web"],
+            "failed": [{"name": "seed", "reason": "zfs rename failed: dataset is busy"}],
+        }}),
+    );
+    let error = test.local.leave(LeaveRequest::default()).await.unwrap_err();
+    let Error::Cleanup(message) = &error else {
+        panic!("{error}");
+    };
+    assert!(message.contains("web did not stop"), "{message}");
+    assert!(
+        message.contains("seed did not depart: zfs rename failed: dataset is busy"),
+        "{message}"
+    );
+    assert!(!message.contains("seed did not stop"), "{message}");
+    assert!(forgot_data(&test.docker));
+    assert_eq!(
+        test.local.record().phase(),
+        LocalMachinePhase::Participating
+    );
 }
 
 fn held(machine_id: MachineId, role: &str) -> DockerVolume {
@@ -309,7 +406,10 @@ async fn a_join_whose_departure_fails_stays_uninitialized_and_retries() {
         LocalMachinePhase::Uninitialized
     );
 
-    test.plugin.reply("Storage.Demote", json!({"Ok": ["data"]}));
+    test.plugin.reply(
+        "Storage.Demote",
+        json!({"Ok": {"demoted": ["data"], "stuck": [], "failed": []}}),
+    );
     test.local.enroll(request).await.unwrap();
     assert_eq!(
         test.plugin.routes_called(),

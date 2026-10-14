@@ -11,6 +11,7 @@ import * as scopes from "#/collections/use-collection-scope";
 import * as functions from "#/modules/config-store/store.functions";
 import { onMergeQuery, prPlansQuery, pullRequestQuery } from "#/modules/config-store/store-pull-requests";
 import { branchQuery, storeViewPrefix } from "#/modules/config-store/store-view.queries";
+import { githubKeys } from "#/modules/github/github.queries";
 import { OnMergeButton } from "./OnMerge";
 
 beforeEach(() => {
@@ -72,6 +73,7 @@ function open({ at = "/cloud/acme/blog/pr-146", list = onMerge(), isOpen = true 
       default: return null;
     }
   };
+  queryClient.setQueryData(githubKeys.web(), { origin: "http://127.0.0.1:4555", installUrl: "http://127.0.0.1:4555/apps/ployz/installations/new" });
   for (const query of [branchQuery(pr146), onMergeQuery(pr146), pullRequestQuery(pullRequest), prPlansQuery("blog")] as ConfigQuery[]) {
     queryClient.setQueryData([...storeViewPrefix("acme"), "session", "user", query], { ok: true, value: views(query) });
   }
@@ -129,7 +131,7 @@ it("lists what the merge lands into production, with the check's word", async ()
     "webOLDx→Removed",
   ]);
   expect(list.getByText("5 config changes · TOKEN not set")).toBeTruthy();
-  expect(list.getByRole("link", { name: /GitHub/u }).getAttribute("href")).toBe("https://github.com/acme/blog/pull/146/checks");
+  expect(list.getByRole("link", { name: /GitHub/u }).getAttribute("href")).toBe("http://127.0.0.1:4555/acme/blog/pull/146/checks");
 });
 
 it("opens from the check's link", async () => {

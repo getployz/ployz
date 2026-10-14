@@ -1,4 +1,5 @@
 import "@tanstack/react-start/server-only";
+import { isDeepStrictEqual } from "node:util";
 import type { CopyObservation, EnvironmentRef, MachineId, NodeOutcome } from "@ployz/sdk";
 import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { Effect } from "effect";
@@ -13,14 +14,15 @@ import {
   appliedMirrors, changeKey, drainPlacement, dropChange, nextPlacementStep, observePlacement, type Placement, placementChanges, type PlacementStep, type PlacementVolume,
   sameChange,
 } from "#/modules/volume-placement/volume-placement";
+import { type CopyAsk, type MemberObserver, type MirrorSyncAnswer, syncMirrors } from "#/modules/volume-placement/mirror-sync.server";
 import { ACTIVE_VOLUME_RUN_STATES, dockerVolumeName, type VolumeRunState } from "#/modules/volume-run/volume-run";
 import {
-  type CopyObserver, getVolumeRun, inspectVolumeCopies, listActiveVolumeRuns, observeOrganizationCopies, requestVolumeRun,
+  askCopy, type CopyObserver, getVolumeRun, inspectVolumeCopies, observeOrganizationCopies, observeVolumeMembers, requestVolumeRun,
 } from "#/modules/volume-run/volume-run.server";
 import { Database } from "#/server/database.server";
 
-/** A run the Deploy waits on. `step` is the one it started it for; null for a run the Deploy didn't start. */
-export type PlacementWait = { readonly runId: string; readonly volumeId: string; readonly step: PlacementStep | null };
+/** A run of the Deploy's own, the one it started for `step`. `fenced`: it took over a lane, so it fences before it plans. */
+export type PlacementWait = { readonly runId: string; readonly volumeId: string; readonly step: PlacementStep; readonly fenced?: boolean };
 
 export type PlacementAdvance =
   | { readonly kind: "wait"; readonly wait: PlacementWait }
@@ -88,6 +90,14 @@ const remainingAfterFailure = Effect.fn("VolumePlacement.remainingAfterFailure")
   // A change the Servers no longer show landed despite the failure, so the step's mirrors are what they hold, as on success.
   const landed = !placementChanges(volume, members, placement).some((change) => sameChange(changeKey(change), step.change));
   return { remaining: dropChange(volume, members, placement, step.change), mirrors: landed ? step.mirrors : null };
+});
+
+const failStep = Effect.fn("VolumePlacement.failStep")(function* (
+  organizationId: string, deploymentId: string, environment: EnvironmentRef, volumes: readonly PlacementVolume[], waited: PlacementWait,
+  message: string, inspect: MemberInspector,
+) {
+  const { remaining, mirrors } = yield* remainingAfterFailure(organizationId, deploymentId, environment, volumes, waited.volumeId, waited.step, inspect);
+  return yield* fail(organizationId, deploymentId, waited.volumeId, remaining, message, mirrors);
 });
 
 /**
@@ -164,7 +174,11 @@ const unseededVolume = Effect.fn("VolumePlacement.unseededVolume")(function* (
  * One step of Deploy `deploymentId`'s storage, before its Services: settle the run it waited on, then start the next run
  * the first stamped Volume needs. A Deploy that is no longer queued (cancelled, superseded) stops between runs, and its
  * Volumes stay staged. A run that fails fails the Deploy: its change is dropped, and the changes it never reached, on that
- * Volume and the others, stay staged. A failed restore is dropped once the Store records the failure.
+ * Volume and the others, stay staged. A failed restore is dropped once the Store records the failure. A warm run already
+ * on the Volume yields to the Deploy's; a run that keeps the Volume, one past its return or another Deploy's, fails the
+ * Deploy, with that change and every one it never reached staged for the next Deploy. A fenced run that fails is planned
+ * again before any other run starts, and the new run fences too, since the failed fence may have left Machines unfloored.
+ * The Deploy fails if that plans the same run or never reaches the Volume; a replanned run never replans.
  */
 export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
   organizationId: string, deploymentId: string, waited: PlacementWait | null, inspect: MemberInspector = inspectVolumeCopies,
@@ -182,21 +196,29 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
     yield* release(organizationId, deploymentId, true);
     return unseeded;
   }
+  let replanning: { readonly waited: PlacementWait; readonly message: string } | null = null;
   if (waited !== null) {
     const run = yield* getVolumeRun(organizationId, waited.runId);
     if (isActive(run.state)) return { kind: "wait", wait: waited } satisfies PlacementAdvance;
-    if (waited.step !== null && run.state !== "done") {
+    if (run.state !== "done") {
       const message = `${run.volume_name}: ${run.message ?? run.state}`;
-      if (waited.step.change.kind === "seed") return restoreFailed(waited.volumeId, environment, message);
-      const { remaining, mirrors } = yield* remainingAfterFailure(organizationId, deploymentId, environment, volumes, waited.volumeId, waited.step, inspect);
-      return yield* fail(organizationId, deploymentId, waited.volumeId, remaining, message, mirrors);
+      if (waited.step.change.kind === "seed") {
+        // Only a seed whose own copy failed loses the restore; one another run ended stays staged for the next Deploy.
+        if (run.state === "failed") return restoreFailed(waited.volumeId, environment, message);
+        yield* release(organizationId, deploymentId, true);
+        return { kind: "failed", message } satisfies PlacementAdvance;
+      }
+      if (run.state === "failed" && waited.fenced === true) replanning = { waited, message };
+      else return yield* failStep(organizationId, deploymentId, environment, volumes, waited, message, inspect);
+    } else {
+      // The run this Deploy started has ended, so its mirrors are what the Servers hold, whoever claims the row now.
+      yield* settle(waited.volumeId, { mirrors: [...waited.step.mirrors] });
     }
-    // The run this Deploy started has ended, so its mirrors are what the Servers hold, whoever claims the row now.
-    if (waited.step !== null) yield* settle(waited.volumeId, { mirrors: [...waited.step.mirrors] });
   }
   const { drizzle } = yield* Database;
   const stamped = yield* drizzle.select().from(volumePlacement)
-    .where(and(eq(volumePlacement.organizationId, organizationId), eq(volumePlacement.deploymentId, deploymentId), isNotNull(volumePlacement.staged)));
+    .where(and(eq(volumePlacement.organizationId, organizationId), eq(volumePlacement.deploymentId, deploymentId), isNotNull(volumePlacement.staged)))
+    .orderBy(volumePlacement.volumeId);
   const settled = new Set<string>();
   for (const row of stamped) if (row.staged?.seed !== undefined && (yield* restoreSettled(row.environmentId))) settled.add(row.volumeId);
   const listed = (row: { readonly volumeId: string }) => volumes.some((volume) => volume.id === row.volumeId);
@@ -214,7 +236,9 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
     return { kind: "failed", message: refusal.message } satisfies PlacementAdvance;
   }
   // A restore copies from its source first: a move staged on the source in the same Deploy may drop the restore point.
-  const ordered = [...rows].sort((a, b) => Number(b.staged?.seed !== undefined) - Number(a.staged?.seed !== undefined));
+  // The Volume being planned again comes next, so it resolves before any other Volume's run starts.
+  const rank = (row: typeof stamped[number]) => row.staged?.seed !== undefined ? 0 : row.volumeId === replanning?.waited.volumeId ? 1 : 2;
+  const ordered = [...rows].sort((a, b) => rank(a) - rank(b));
   // Sources of restores whose Volume isn't in the Store yet: a move on one waits, so the restore point stays.
   const waiting = new Set<string>();
   for (const row of ordered) {
@@ -232,24 +256,38 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
     }
     // A restore's run belongs to its source, the Volume it copies from.
     const runsOn = row.staged?.seed?.sourceVolumeId ?? row.volumeId;
-    const busy = (yield* listActiveVolumeRuns(organizationId)).find((run) => run.volume_id === runsOn);
-    if (busy !== undefined) return { kind: "wait", wait: { runId: busy.id, volumeId: row.volumeId, step: null } } satisfies PlacementAdvance;
     const placement = view(row);
     const members = yield* inspect(organizationId, environment, row.volumeId);
     const step = nextPlacementStep(placementChanges(volume, members, placement), appliedMirrors(observePlacement(members), placement));
     if (step === null) {
+      if (row.volumeId === replanning?.waited.volumeId) replanning = null;
       // Nothing left to run, so the Servers hold what was staged.
       yield* settleClaimed(row.volumeId, deploymentId, { mirrors: [...(row.staged?.mirrors ?? [])], staged: null, deploymentId: null });
       continue;
     }
+    if (replanning !== null && (replanning.waited.volumeId !== row.volumeId || isDeepStrictEqual(step.run, replanning.waited.step.run))) {
+      return yield* failStep(organizationId, deploymentId, environment, volumes, replanning.waited, replanning.message, inspect);
+    }
     // Touching the row without changing it confirms the claim right before the run starts.
     if (!(yield* settleClaimed(row.volumeId, deploymentId, {}))) return { kind: "stopped" } satisfies PlacementAdvance;
-    const requested = yield* requestVolumeRun(CLOUD(organizationId), { volumeId: runsOn, environment, ...step.run });
-    if (requested.ok) return { kind: "wait", wait: { runId: requested.run.id, volumeId: row.volumeId, step } } satisfies PlacementAdvance;
+    const requested = yield* requestVolumeRun(CLOUD(organizationId), { volumeId: runsOn, environment, ...step.run }, {
+      end: "yielded", fences: replanning?.waited.step.run.kind,
+    });
+    if (requested.ok) {
+      return { kind: "wait", wait: { runId: requested.run.id, volumeId: row.volumeId, step, fenced: requested.took && replanning === null } } satisfies PlacementAdvance;
+    }
+    if (requested.busy !== null) {
+      // A run that keeps the Volume, one past its return or another Deploy's, fails the Deploy here; the changes it never
+      // reached stay staged.
+      yield* Effect.logInfo("Deploy stopped at a run that keeps the Volume.", { deploymentId, volumeId: row.volumeId, runId: requested.busy.id, kind: requested.busy.kind });
+      yield* release(organizationId, deploymentId, true);
+      return { kind: "failed", message: requested.refusal.message } satisfies PlacementAdvance;
+    }
     if (step.change.kind === "seed") return restoreFailed(row.volumeId, environment, `${volume.name}: ${requested.refusal.message}`);
     const remaining = dropChange(volume, members, placement, step.change);
     return yield* fail(organizationId, deploymentId, row.volumeId, remaining, `${volume.name}: ${requested.refusal.message}`);
   }
+  if (replanning !== null) return yield* failStep(organizationId, deploymentId, environment, volumes, replanning.waited, replanning.message, inspect);
   return { kind: "done" } satisfies PlacementAdvance;
 });
 
@@ -299,24 +337,17 @@ const environmentVolumes = Effect.fn("VolumePlacement.environmentVolumes")(funct
   return found;
 });
 
-/**
- * A Volume the mirror rounds refresh, from the copies `held` of it: one on a mirror's Server (the row's mirrors, else every
- * slot, as the CLI makes them), or two primaries, which the sync settles by demoting the one that came back.
- */
-export function refreshesMirror(row: { readonly mirrors: readonly MachineId[] | null } | undefined, held: CopyObservation["copies"]) {
-  const slots = held.filter((copy) => copy.role === "slot").map((copy) => copy.machine_id);
-  const mirrors = row?.mirrors ?? slots;
-  return held.filter((copy) => copy.role === "writer").length > 1 || slots.some((id) => mirrors.includes(id));
-}
+/** A Volume a sync has something to say about: one with a slot anywhere, or with two primaries to settle. */
+const syncs = (held: CopyObservation["copies"]) =>
+  held.some((copy) => copy.role === "slot") || held.filter((copy) => copy.role === "writer").length > 1;
 
 /**
- * Refresh every mirror in the organization (or one Environment): a sync for each Volume with a copy on a mirror's
- * Server, or with two primaries, which the sync settles by demoting the one that came back. A detached copy is never
- * refreshed. A Volume a Deploy is moving, or with a run already going, waits for the next refresh.
+ * Refresh every mirror in the organization (or one Environment): one mirror sync for each Volume with a slot or with
+ * two primaries. Every sync logs what it did; a Volume whose sync could not run logs why.
  */
 export const refreshMirrors = Effect.fn("VolumePlacement.refreshMirrors")(function* (
   organizationId: string, onlyEnvironmentId: string | null, observe: CopyObserver = observeOrganizationCopies,
-  read: BlockerReader = readPlacementBlockers,
+  read: BlockerReader = readPlacementBlockers, members: MemberObserver = observeVolumeMembers, ask: CopyAsk = askCopy,
 ) {
   const copies = yield* observe(organizationId).pipe(
     Effect.catch((error) => Effect.logWarning("Mirror refresh could not observe the copies.", { organizationId, error }).pipe(Effect.as(NO_COPIES))),
@@ -327,17 +358,15 @@ export const refreshMirrors = Effect.fn("VolumePlacement.refreshMirrors")(functi
     yield* Effect.logInfo("Mirror refresh skipped.", { organizationId, reason: refusal.message });
     return [];
   }
-  const { drizzle } = yield* Database;
-  const rows = yield* drizzle.select().from(volumePlacement).where(eq(volumePlacement.organizationId, organizationId));
-  const requested: string[] = [];
+  const synced: MirrorSyncAnswer[] = [];
   for (const volume of yield* environmentVolumes(organizationId, onlyEnvironmentId)) {
-    const row = rows.find((entry) => entry.volumeId === volume.volumeId);
-    if (row?.deploymentId != null) continue;
-    if (!refreshesMirror(row, copies.filter((copy) => copy.name === volume.dockerVolume))) continue;
-    const run = yield* requestVolumeRun(CLOUD(organizationId), { volumeId: volume.volumeId, environment: volume.environment, kind: "sync", args: { full: false } });
-    if (run.ok) requested.push(run.run.id);
+    if (!syncs(copies.filter((copy) => copy.name === volume.dockerVolume))) continue;
+    const answer = yield* syncMirrors(organizationId, volume, members, ask).pipe(
+      Effect.catch((error) => Effect.logWarning(`could not sync ${volume.name}`, { organizationId, volumeId: volume.volumeId, error }).pipe(Effect.as(null))),
+    );
+    if (answer !== null) synced.push(answer);
   }
-  return requested;
+  return synced;
 });
 
 /**

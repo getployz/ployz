@@ -16,18 +16,21 @@ const place: Place = { project: "shop", environment: "production", store: { at: 
 
 type Step = { readonly tool: string; readonly input: JsonValue; readonly callKey?: string; readonly hears: object };
 
-/** GitHub as the Store and github_ls read it: `acme/docs` is public, with a `dev` branch and two files on `main`. */
+/** GitHub as the Store and github_ls read it: `acme/docs` is public, with a `dev` branch and `README.md` and `src/index.md` on `main`. */
 const github = fakeGithubApi({
-  "https://api.github.com/repos/acme/docs": { id: 12, full_name: "acme/docs", private: false, default_branch: "main" },
-  "https://api.github.com/repos/acme/docs/git/ref/heads%2Fdev": { ref: "refs/heads/dev", object: { type: "commit", sha: "a".repeat(40) } },
-  "https://api.github.com/repos/acme/docs/commits/main": { commit: { tree: { sha: "b".repeat(40) } } },
-  [`https://api.github.com/repos/acme/docs/git/trees/${"b".repeat(40)}?recursive=1`]: {
+  "/repos/acme/docs": { id: 12, full_name: "acme/docs", private: false, default_branch: "main" },
+  "/repos/acme/docs/git/ref/heads%2Fdev": { ref: "refs/heads/dev", object: { type: "commit", sha: "a".repeat(40) } },
+  "/repos/acme/docs/commits/main": { commit: { tree: { sha: "b".repeat(40) } } },
+  [`/repos/acme/docs/git/trees/${"b".repeat(40)}?recursive=1`]: {
     truncated: false,
     tree: [
       { path: "README.md", type: "blob", mode: "100644" },
       { path: "src", type: "tree", mode: "040000" },
       { path: "src/index.md", type: "blob", mode: "100644" },
     ],
+  },
+  "/repos/acme/docs/contents/README.md?ref=main": {
+    type: "file", size: 7, encoding: "base64", content: Buffer.from("# Docs\n").toString("base64"),
   },
 });
 
@@ -127,6 +130,22 @@ const cases: ReadonlyArray<{ readonly name: string; readonly seed?: boolean; rea
     }],
   },
   {
+    name: "github_ls reads a top-level file",
+    steps: [{
+      tool: "github_ls",
+      input: { repository: "acme/docs", path: "README.md" },
+      hears: { ok: true, value: { repository: "acme/docs", ref: "main", path: "README.md", content: "# Docs\n" } },
+    }],
+  },
+  {
+    name: "github_ls refuses a path the repository doesn't have",
+    steps: [{
+      tool: "github_ls",
+      input: { repository: "acme/docs", path: "Dockerfile" },
+      hears: { ok: false, refusal: { code: "not_found", message: "No file or directory at that path", next: [{ tool: "github_ls", input: { repository: "acme/docs", ref: "main" } }] } },
+    }],
+  },
+  {
     name: "project_create makes a Project the next read shows",
     seed: false,
     steps: [
@@ -155,7 +174,7 @@ const tools = Effect.fn(function* (seed: boolean) {
     const store = yield* cloudStore.pipe(Effect.provide(services));
     yield* Effect.promise(() => store.write(ORGANIZATION, SHOP));
   }
-  const caller: Caller = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "session", id: "session-1" }, support: null };
+  const caller: Caller = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "session", id: "session-1" }, role: "owner", support: null, via: "agent" };
   let calls = 0;
   return ({ tool, input, callKey = `call-${++calls}` }: Step) => runTool(caller, tool, input, place, `run-1:${callKey}`).pipe(Effect.provide(services));
 });

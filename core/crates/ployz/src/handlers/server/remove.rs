@@ -25,11 +25,28 @@ use serde_json::json;
 
 use crate::ui::Hint;
 
+/// How a Server leaves the Cluster.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Removal {
+    /// `server rm`: reset it, accepting the Cluster's loss of its Volumes.
+    Reset,
+    /// `server forget <server>`: take it out without a reset. Refused while it answers
+    /// and holds a Volume copy; one that does not answer needs `dead` typed.
+    Forget,
+}
+
 pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
+    leave(root, Removal::Reset)
+}
+
+pub(super) fn forget(root: &ArgMatches) -> Result<(), Error> {
+    leave(root, Removal::Forget)
+}
+
+fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
     let options = ConnectionOptions::from_matches(root)?;
     let matches = leaf_matches(root);
     let selector = target(matches, "server")?.to_owned();
-    let no_reset = matches.get_flag("no-reset");
     let runtime = runtime()?;
     // Before anything is listed or confirmed: a removal that can't happen asks nothing.
     let (mut client, machines, selected, current, hold, held) = runtime.block_on(async {
@@ -48,10 +65,9 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
             ));
         }
         let hold = refuse_last_managed(&client, &machines, selected.id).await?;
-        let held = if no_reset {
-            Some(client.held_copies(observation).await?)
-        } else {
-            None
+        let held = match removal {
+            Removal::Forget => Some(client.held_copies(observation).await?),
+            Removal::Reset => None,
         };
         Ok::<_, Error>((client, machines, selected, current, hold, held))
     })?;
@@ -81,24 +97,23 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
                 |observed| observed.machine.name.to_string(),
             );
         let cloud = if hold == CloudHold::Last || cloud_manages(&client, current, &entry).await? {
-            Some(cloud_removal(matches, &selected, hold, no_reset).await?)
+            Some(cloud_removal(matches, &selected, hold, removal).await?)
         } else {
             None
         };
-        let observed = if no_reset {
-            ployz_core::ObservedDataLoss {
+        let observed = match removal {
+            Removal::Forget => ployz_core::ObservedDataLoss {
                 data_loss: Vec::new(),
-            }
-        } else {
-            client
+            },
+            Removal::Reset => client
                 .data_loss_if_machine_removed(&selected_target)
                 .await
-                .map_err(machine_removal_refusal)?
+                .map_err(|error| machine_removal_refusal(error, selected.name.as_str()))?,
         };
         let live = client
             .live_services_from(&machines, EnvironmentValues::Redacted)
             .await?;
-        if !no_reset {
+        if removal == Removal::Reset {
             if let Some(failure) = live
                 .containers
                 .failures
@@ -150,7 +165,7 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
     );
     let dead = matches!(held, Some(HeldCopies::Dead));
     let unanswered = format!(
-        "Server {} did not answer in {}s. Removing it without a reset leaves any Volume copies on it behind",
+        "Server {} did not answer in {}s. Forgetting it leaves any Volume copies on it behind",
         selected.name,
         TARGET_RPC_TIMEOUT.as_secs()
     );
@@ -170,10 +185,9 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
         } else {
             Typed::name(selected.name.as_str())
         },
-        if no_reset {
-            VolumeEffect::Preserve
-        } else {
-            VolumeEffect::LoseAccess
+        match removal {
+            Removal::Forget => VolumeEffect::Preserve,
+            Removal::Reset => VolumeEffect::LoseAccess,
         },
         &labels,
         |retry| {
@@ -183,7 +197,11 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
                     format!("{unanswered} and needs dead typed. No changes made.")
                 } else {
                     format!(
-                        "Removing Server {} needs its name typed. No changes made.",
+                        "{} Server {} needs its name typed. No changes made.",
+                        match removal {
+                            Removal::Reset => "Removing",
+                            Removal::Forget => "Forgetting",
+                        },
                         selected.name
                     )
                 },
@@ -198,24 +216,30 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
         },
     )?;
     let selected_target = MachineTarget::from(&selected.id);
-    let removal = match &cloud {
-        Some(credential) => {
-            let reset = (!no_reset).then_some(&confirmation);
-            Some(approval::approved(
-                &runtime,
-                credential,
-                Verb::Remove,
-                matches.get_one::<String>("approval").cloned(),
-                |id| {
-                    let mut command = accepting.clone();
-                    command.extend(["--approval".into(), id.to_owned()]);
-                    shell_words::join(command)
-                },
-                async |approval| {
-                    cloud_account::start_removal(credential, &selected.id, reset, approval).await
-                },
-            )?)
-        }
+    let run = match &cloud {
+        Some(credential) => Some(approval::approved(
+            &runtime,
+            credential,
+            match removal {
+                Removal::Reset => Verb::Remove,
+                Removal::Forget => Verb::Forget,
+            },
+            matches.get_one::<String>("approval").cloned(),
+            |id| {
+                let mut command = accepting.clone();
+                command.extend(["--approval".into(), id.to_owned()]);
+                shell_words::join(command)
+            },
+            async |approval| match removal {
+                Removal::Reset => {
+                    cloud_account::start_removal(credential, &selected.id, &confirmation, approval)
+                        .await
+                }
+                Removal::Forget => {
+                    cloud_account::start_forget(credential, &selected.id, approval).await
+                }
+            },
+        )?),
         None => None,
     };
     runtime.block_on(async {
@@ -223,14 +247,14 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
         let mut cloud_released = None;
 
         // TODO: do not reroute away from the current entry before removal.
-        if let (Some(credential), Some(id)) = (&cloud, &removal) {
+        if let (Some(credential), Some(id)) = (&cloud, &run) {
             let removed = cloud_account::follow_removal(credential, &selected.name, id).await?;
             reset_failure = removed.reset_warning;
             if let Release::Kept { reason } = &removed.release {
                 crate::ui::warn(format!("Cloud keeps its hold on the Cluster: {reason}"));
             }
             cloud_released = Some(removed.release == Release::Released);
-        } else if no_reset {
+        } else if removal == Removal::Forget {
             client
                 .remove_membership(
                     &selected_target,
@@ -257,7 +281,14 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
                     .map_err(|error| reset_removal_refusal(error, selected.name.as_str()))?;
             reset_failure = removed.reset_warning;
         }
-        crate::ui::stream(format_args!("Removed Server {}.", selected.name));
+        crate::ui::stream(format_args!(
+            "{} Server {}.",
+            match removal {
+                Removal::Reset => "Removed",
+                Removal::Forget => "Forgot",
+            },
+            selected.name
+        ));
         if cloud_released == Some(true) {
             crate::ui::stream("Cloud let go of the Cluster: this Organization has no Server now. Its Environments keep their config; nothing runs until you add a Server.");
             crate::ui::hint(&Hint::Next("ployz server add".into()));
@@ -310,13 +341,14 @@ async fn cloud_removal(
     matches: &ArgMatches,
     selected: &Machine,
     hold: CloudHold,
-    no_reset: bool,
+    removal: Removal,
 ) -> Result<Credential, Error> {
-    if hold == CloudHold::Last && no_reset {
+    if hold == CloudHold::Last && removal == Removal::Forget {
         return Err(Error::conflict(format!(
-            "Server {} is the last Server and Cloud manages it; Cloud lets go of it only by resetting it. Drop --no-reset. No changes made.",
+            "Server {} is the last Server and Cloud manages it. Remove it to reset it, or, when it is gone, forget every Server. No changes made.",
             selected.name
-        )));
+        ))
+        .hint(Hint::Next("ployz server forget".into())));
     }
     let store = CredentialStore::beside(&crate::handlers::config_path(matches)?);
     match cloud_account::from_env(&store).await {
@@ -451,23 +483,25 @@ pub(super) fn select_machine(
         .clone())
 }
 
-fn machine_removal_refusal(error: RpcError) -> Error {
+fn machine_removal_refusal(error: RpcError, name: &str) -> Error {
     if error.code == RpcErrorCode::Unavailable {
-        Error::from(error).context(
-            "The Server could not be reset; use --no-reset to remove it from the Cluster without resetting.",
-        )
+        Error::from(error)
+            .context(format!(
+                "Server {name} could not be reset; forget it to take it out of the Cluster without a reset."
+            ))
+            .hint(Hint::Next(format!("ployz server forget {name}")))
     } else {
         error.into()
     }
 }
 
 /// A reset removal's refusal. A Server that reset before the Cluster could forget it needs
-/// only the no-reset removal to finish.
+/// only `server forget` to finish.
 fn reset_removal_refusal(error: RpcError, name: &str) -> Error {
     if LeftNotForgotten::from_rpc_error(&error).is_some() {
         Error::from(error)
             .context(format!("Server {name} reset but is still listed."))
-            .hint(Hint::Next(format!("ployz server rm {name} --no-reset")))
+            .hint(Hint::Next(format!("ployz server forget {name}")))
     } else {
         crate::failure::refusal_from_rpc(error)
     }
@@ -518,24 +552,28 @@ mod tests {
     }
 
     #[test]
-    fn unreachable_removal_names_no_reset() {
+    fn unreachable_removal_names_forget() {
         let error = RpcError {
             code: RpcErrorCode::Unavailable,
             message: "Server fra-1 did not respond".into(),
             details: Value::Null,
             cause: Vec::new(),
         };
-        let refusal = machine_removal_refusal(error);
+        let refusal = machine_removal_refusal(error, "fra-1");
         assert_eq!(
             refusal.to_string(),
-            "The Server could not be reset; use --no-reset to remove it from the Cluster without resetting."
+            "Server fra-1 could not be reset; forget it to take it out of the Cluster without a reset."
+        );
+        assert_eq!(
+            refusal.hints(),
+            [Hint::Next("ployz server forget fra-1".into())]
         );
         assert_eq!(refusal.causes(), ["Server fra-1 did not respond"]);
         assert_eq!(refusal.report().code, RpcErrorCode::Unavailable);
     }
 
     #[test]
-    fn a_reset_server_still_listed_names_the_no_reset_removal() {
+    fn a_reset_server_still_listed_names_forget() {
         let error = RpcError {
             code: RpcErrorCode::Unavailable,
             message: "the entry could not reach the Cluster store".into(),
@@ -549,7 +587,7 @@ mod tests {
         );
         assert_eq!(
             refusal.hints(),
-            [Hint::Next("ployz server rm fra-1 --no-reset".into())]
+            [Hint::Next("ployz server forget fra-1".into())]
         );
         assert_eq!(refusal.report().code, RpcErrorCode::Unavailable);
     }
@@ -563,7 +601,7 @@ mod tests {
             cause: Vec::new(),
         };
         assert_eq!(
-            machine_removal_refusal(error).to_string(),
+            machine_removal_refusal(error, "gone").to_string(),
             "Server \"gone\" was not found"
         );
     }

@@ -208,13 +208,21 @@ describe("Drain hints", () => {
 
   it("lists what runs here for the dialog, warning on what the latest Drain left for its volume and what no Project owns", () => {
     const api = { identity: "shop/api", name: "api", namespace: "shop" };
-    const rows = drainDialogRows(view({ [web2.id]: finished([moved, volume]) }), [postgres, stray, api], strays);
+    const rows = drainDialogRows(view({ [web2.id]: finished([moved, volume]) }), web2.id, [postgres, stray, api], strays);
     expect(rows).toEqual([
       { key: "shop/api", name: "api", namespace: "shop", stays: null },
       { key: "shop/postgres", name: "postgres", namespace: "shop", stays: "data" },
       { key: "left-behind/old", name: "old", namespace: "left-behind", stays: "unowned" },
     ]);
-    expect(drainDialogRows(view({}), [postgres], none).map((row) => row.stays)).toEqual([null]);
+    expect(drainDialogRows(view({}), web2.id, [postgres], none).map((row) => row.stays)).toEqual([null]);
+  });
+
+  it("marks a Global Service as stopping when no other Server runs a copy, even when none runs here", () => {
+    const global = (name: string, runningOn: string[]) =>
+      ({ identity: `shop/${name}`, name, namespace: "shop", global: true, runningOn: new Set(runningOn) });
+    const rows = drainDialogRows(view({}), web2.id,
+      [global("agent", [web2.id]), global("crashed", []), global("spread", [web2.id, "elsewhere"])], none);
+    expect(rows.map((row) => [row.name, row.stays])).toEqual([["spread", null], ["agent", "stops"], ["crashed", "stops"]]);
   });
 
   it("lists what a Drain under way still has to move, without what no Project owns", () => {

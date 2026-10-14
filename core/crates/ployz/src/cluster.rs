@@ -373,7 +373,7 @@ impl Client {
         &self,
         request: &ployz_core::RpcRequest,
         path: &'static str,
-        target: &MachineTarget,
+        target: Option<&MachineTarget>,
         timeout: Option<Duration>,
     ) -> Result<ployz_core::RpcResponse, RpcError> {
         let payload = request
@@ -384,12 +384,12 @@ impl Client {
             grpc.ready().await?;
             Ok(grpc
                 .unary(
-                    target_request(payload, Some(target)),
+                    target_request(payload, target),
                     PathAndQuery::from_static(path),
                     ProstCodec::<OpaquePayload, OpaquePayload>::default(),
                 )
                 .await
-                .map_err(|status| refused(status, path, Some(target)))?
+                .map_err(|status| refused(status, path, target))?
                 .into_inner()
                 .decode_response()?)
         })
@@ -1229,7 +1229,7 @@ fn stopped_answering(machine: &Machine) -> RpcError {
     RpcError {
         code: RpcErrorCode::ConfirmationRequired,
         message: format!(
-            "Server {} stopped answering after its name was typed. Removing it without a reset leaves any Volume copies on it behind, so it needs dead typed. No changes made.",
+            "Server {} stopped answering after its name was typed. Forgetting it leaves any Volume copies on it behind, so it needs dead typed. No changes made.",
             machine.name
         ),
         details: json!({
@@ -1264,7 +1264,7 @@ pub enum Remover {
     Operator,
 }
 
-/// Removing `machine` without a reset leaves its copies of `volumes` behind: only its
+/// Forgetting `machine` leaves its copies of `volumes` behind: only its
 /// reset demotes them.
 pub(crate) fn copies_left_behind<'a>(
     machine: &MachineName,
@@ -1273,8 +1273,8 @@ pub(crate) fn copies_left_behind<'a>(
     RpcError {
         code: RpcErrorCode::Conflict,
         message: format!(
-            "Server {machine} answers and holds copies of Volumes {}; removing it without a reset \
-             leaves them behind. No changes made. Drop --no-reset so the reset demotes them.",
+            "Server {machine} answers and holds copies of Volumes {}; forgetting it leaves them \
+             behind. No changes made. Remove it with ployz server rm so its reset demotes them.",
             volumes.into_iter().collect::<Vec<_>>().join(", ")
         ),
         details: Value::Null,
@@ -1427,13 +1427,14 @@ fn listed_unless_forgotten<'list>(
 pub(crate) enum RoleSetting {
     ServicesOff,
     IngressOn,
+    IngressOff,
 }
 
 impl RoleSetting {
     fn role(self) -> &'static str {
         match self {
             Self::ServicesOff => "services",
-            Self::IngressOn => "ingress",
+            Self::IngressOn | Self::IngressOff => "ingress",
         }
     }
 
@@ -1441,6 +1442,7 @@ impl RoleSetting {
         match self {
             Self::ServicesOff => !machine.accepts_services,
             Self::IngressOn => machine.accepts_ingress,
+            Self::IngressOff => !machine.accepts_ingress,
         }
     }
 }

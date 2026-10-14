@@ -44,8 +44,10 @@ A domain sends traffic to one port inside your service. Left blank, it uses `POR
 
 If your app listens on a fixed port, like 3000, do one of these and deploy:
 
-- add a `PORT` [variable](variables.md) set to `3000`, which the health check follows too, or
+- add a `PORT` [variable](variables.md) set to `3000`, or
 - click the pencil on the domain, set **Target port** to `3000`, and click **Save domain**.
+
+Either way the health check follows, since it checks the port your domains send traffic to.
 
 The domain's row shows where traffic goes: **→ Uses PORT** or **→ Port 3000**. The dashboard
 ignores `EXPOSE` in your Dockerfile.
@@ -99,8 +101,9 @@ A live domain shows no status.
 | **Live after your next deploy** | Click **Deploy**. |
 | **Deploying**, **Setting up**, **Issuing certificate** | Nothing. It goes live on its own. |
 | **Waiting for DNS**, **DNS doesn't point here yet**, **DNS points to another server** | [Fix your DNS records](../troubleshooting/app-not-reachable.md#my-custom-domain-is-waiting-for-dns). |
-| **Port 80 is closed on …** | [Open port 80](../troubleshooting/app-not-reachable.md#port-80-is-closed) on that server. |
-| **Something else answers on port 80 of …** | [Free port 80](../troubleshooting/app-not-reachable.md#something-else-answers-on-port-80) on that server. |
+| **Port 80 is closed on …** (shown only when no server takes the traffic) | [Open port 80](../troubleshooting/app-not-reachable.md#port-80-is-closed) on that server. |
+| **Something else answers on port 80 of …** (shown only when no server takes the traffic) | [Free port 80](../troubleshooting/app-not-reachable.md#something-else-answers-on-port-80) on that server. |
+| **Ingress isn't running on …** (shown only when no server takes the traffic) | [Deploy](../troubleshooting/app-not-reachable.md#ingress-isnt-running) to bring it back. |
 | **No Server receives traffic** | [Add a server](../servers/add-a-server.md). |
 | **via proxy** | Nothing. It works behind a proxy like Cloudflare. |
 

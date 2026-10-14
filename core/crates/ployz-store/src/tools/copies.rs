@@ -1,5 +1,5 @@
 //! Tools on where a Volume's data is: show it, mirror and sync it, remove the
-//! mirror, move it, and release a move that stopped.
+//! mirror, move it, release a move that stopped, and restore it from a copy.
 
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -200,7 +200,7 @@ pub(crate) struct VolumeMirror {
 
 impl Tool for VolumeMirror {
     const NAME: &'static str = "volume_mirror";
-    const DESCRIPTION: &'static str = "Make a Volume's one mirror current. With server, copy it there as <volume>-<server>; without, send what changed since the last sync. full recopies a mirror that diverged.";
+    const DESCRIPTION: &'static str = "Make a Volume's one mirror current. With server, copy it there as <volume>-<server>; without, hand the mirror what changed since its last pull and answer without waiting for the download. full recopies a mirror that diverged, as a run.";
     const GATE: Gate = Gate::Cloud;
     const READ_ONLY: bool = false;
     const LOCAL_NEXT: Option<&'static str> = Some("environment_show");
@@ -272,10 +272,7 @@ impl Tool for VolumeMirror {
                 .with_next(Call::new("volume_mirror_remove", Value::Object(input)))
                 .into());
             }
-            (Some(to), None) => VolumeRun::Mirror {
-                to,
-                full: self.full,
-            },
+            (Some(to), None) => VolumeRun::Mirror { to },
         };
         on_volume(cx, &view, run, self.request_key, self.wait_seconds)
     }
@@ -411,7 +408,7 @@ pub(crate) struct VolumeRelease {
 
 impl Tool for VolumeRelease {
     const NAME: &'static str = "volume_release";
-    const DESCRIPTION: &'static str = "Undo a move that stopped before the handover: start the Service again on the old server with its data.";
+    const DESCRIPTION: &'static str = "Stop what runs on a volume and start its Service again on the old server with its data. A move past its handover finishes on its new server instead.";
     const GATE: Gate = Gate::Cloud;
     const READ_ONLY: bool = false;
     const LOCAL_NEXT: Option<&'static str> = Some("environment_show");
@@ -440,6 +437,59 @@ impl Tool for VolumeRelease {
             self.wait_seconds,
         )
         .map_err(|stop| handed_over(stop, moving))
+    }
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct VolumeRestore {
+    #[schemars(with = "String", pattern(NODE_NAME))]
+    volume: VolumeName,
+    #[schemars(with = "String", pattern(NODE_NAME))]
+    from: ServerName,
+    #[serde(default)]
+    #[schemars(range(min = 0, max = 300))]
+    wait_seconds: u32,
+    #[serde(default)]
+    #[schemars(with = "Option<String>", pattern(REQUEST_KEY))]
+    request_key: Option<RequestKey>,
+    #[serde(default)]
+    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
+    project: Option<ProjectName>,
+    #[serde(default)]
+    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
+    environment: Option<EnvironmentName>,
+}
+
+impl Tool for VolumeRestore {
+    const NAME: &'static str = "volume_restore";
+    const DESCRIPTION: &'static str = "Make server from's copy a Volume's writer when no server has one. from must hold the only copy; a mirror's copy lacks writes after its last sync. The Service stays down; deploy next.";
+    const GATE: Gate = Gate::Cloud;
+    const READ_ONLY: bool = false;
+    const LOCAL_NEXT: Option<&'static str> = Some("environment_show");
+
+    fn example() -> Value {
+        json!({ "volume": "pgdata", "from": "db-2", "wait_seconds": 120 })
+    }
+
+    fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
+        cx.cloud_only()?;
+        let (view, answer) = volume(
+            cx,
+            self.volume,
+            self.project.as_ref(),
+            self.environment.as_ref(),
+            Some(servers()),
+        )?;
+        let answer = cx.cloud::<ServersAnswer>(answer)?;
+        let from = resolve(&answer, &self.from, "from", true)?.reference();
+        on_volume(
+            cx,
+            &view,
+            VolumeRun::Restore { from },
+            self.request_key,
+            self.wait_seconds,
+        )
     }
 }
 

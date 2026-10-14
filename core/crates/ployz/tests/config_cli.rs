@@ -252,7 +252,7 @@ fn serve(
         ),
         (Some(_), "/api/cli/github/branches?repository=acme%2Fweb") => (
             200,
-            json!({ "repository": "acme/web", "access": "installation", "default_branch": "main", "branches": ["dev", "main"] }),
+            json!({ "repository": "acme/web", "access": "connected", "default_branch": "main", "branches": ["dev", "main"] }),
         ),
         (
             Some(_),
@@ -1030,6 +1030,15 @@ fn an_agent_adds_checks_and_removes_domains() {
                 assert!(changes.contains(&line), "{read}");
             }
         }
+        let planned = ok(store, &["deploy", "--plan"]);
+        let unchecked = planned["ingress_unchecked"]
+            .as_array()
+            .is_some_and(|causes| !causes.is_empty());
+        assert_eq!(
+            (planned["ingress"].is_array(), unchecked),
+            (cloud, !cloud),
+            "{planned}"
+        );
 
         let listed = ok(store, &["domain", "ls"]);
         let first = &listed["domains"][0];
@@ -1112,31 +1121,103 @@ fn an_agent_lists_moves_the_default_and_removes_environments_without_servers() {
 }
 
 #[test]
-fn a_project_removal_on_cloud_takes_off_what_it_can_and_leaves_the_rest_to_cloud() {
-    fn succeed(store: &std::sync::Arc<ConfigStore>, id: &ployz_store::DeploymentId) {
-        let runner = RunnerId::parse("successful-worker").unwrap();
-        let claimed = store.claim(id, &runner).unwrap();
-        let preview = serde_json::from_value(json!({
-            "namespace": claimed.intent.namespace, "operations": [],
-            "warnings": [], "would_remove": [], "preserved_volumes": []
-        }))
-        .unwrap();
-        store
-            .record(id, &runner, ployz_store::RunEvidence::Prepared(preview))
-            .unwrap();
-        let outcome = serde_json::from_value(json!({"type": "success", "completed": []})).unwrap();
-        store
-            .record(
-                id,
-                &runner,
-                ployz_store::RunEvidence::Executed {
-                    progress: Vec::new(),
-                    outcome: Box::new(outcome),
-                    removed: Vec::new(),
-                },
-            )
-            .unwrap();
+fn an_environment_cloud_forgets_and_sweeps_first_still_says_it_was_left_on_old_servers() {
+    fn worker(store: &std::sync::Arc<ConfigStore>, written: &Written) {
+        if let Written::Deployment(admitted) = written
+            && !admitted.remove
+        {
+            succeed(store, &admitted.id);
+        }
+        // Before the CLI reads its removal Deployment, Cloud loses the last Server,
+        // admits the removal again as Forgotten and sweeps the Environment away.
+        if let Written::Removal(Removal::Removing { .. }) = written {
+            let organization = OrganizationId::parse("alice").unwrap();
+            let who = Actor::system(organization.clone());
+            let none_left = Trusted {
+                servers: Some(0),
+                ..Trusted::default()
+            };
+            store
+                .system(
+                    &organization,
+                    &ployz_store::SystemEvent::ClusterForgotten,
+                    &none_left,
+                )
+                .unwrap();
+            let forgotten = store
+                .write_trusted(
+                    &who,
+                    &ployz_store::Admit::Remove(ployz_store::AdmitRemoval {
+                        id: ployz_store::DeploymentId::parse(uuid::Uuid::new_v4().to_string())
+                            .unwrap(),
+                        environment: ployz_store::EnvironmentRef {
+                            project: Some(ployz_store::ProjectName::parse("shop").unwrap()),
+                            environment: Some(
+                                ployz_store::EnvironmentName::parse("staging").unwrap(),
+                            ),
+                        },
+                    }),
+                    &none_left,
+                )
+                .unwrap();
+            assert_eq!(forgotten.outcome, Some(ployz_store::Outcome::Forgotten));
+            store
+                .system(
+                    &organization,
+                    &ployz_store::SystemEvent::Sweep(ployz_store::Sweep { now: 0 }),
+                    &none_left,
+                )
+                .unwrap();
+        }
     }
+    let cloud = Target::Cloud {
+        url: fake_cloud_with_dispatch(worker),
+        token: "ployz_alice",
+    };
+    ok(&cloud, &["project", "new", "shop"]);
+    ok(&cloud, &["env", "new", "staging"]);
+    ok(
+        &cloud,
+        &[
+            "service",
+            "add",
+            "web",
+            "--image",
+            "nginx:alpine",
+            "--env",
+            "staging",
+        ],
+    );
+    ok(&cloud, &["deploy", "--env", "staging"]);
+
+    let asked = error(
+        &cloud,
+        &["env", "rm", "staging", "--confirm", "shop/staging"],
+    );
+    assert_eq!(asked["code"], "confirmation_required", "{asked}");
+    let version = asked["details"]["version"].as_str().unwrap();
+    let removed = ok(
+        &cloud,
+        &[
+            "env",
+            "rm",
+            "staging",
+            "--confirm",
+            "shop/staging",
+            "--expect-version",
+            version,
+        ],
+    );
+    assert_eq!(removed["removal"], "removed", "{removed}");
+    assert_eq!(
+        removed["residuals"],
+        json!([{ "environment": "staging", "services": ["web"] }]),
+        "{removed}"
+    );
+}
+
+#[test]
+fn a_project_removal_on_cloud_takes_off_what_it_can_and_leaves_the_rest_to_cloud() {
     fn worker(store: &std::sync::Arc<ConfigStore>, written: &Written) {
         if let Written::Deployment(admitted) = written {
             // Keep the second authored Deployment queued, so production can't come off yet.

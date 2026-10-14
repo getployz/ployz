@@ -13,8 +13,8 @@ describe("GitHub build workflow", () => {
   });
 
   it("opens GitHub's new-file page on the default branch with the workflow filled in", () => {
-    const url = new URL(githubBuildWorkflowUrl({ fullName: "acme/api", defaultBranch: "release/v2" }));
-    expect(url.origin + url.pathname).toBe("https://github.com/acme/api/new/release/v2");
+    const url = new URL(githubBuildWorkflowUrl({ web: "http://127.0.0.1:4555", fullName: "acme/api", defaultBranch: "release/v2" }));
+    expect(url.origin + url.pathname).toBe("http://127.0.0.1:4555/acme/api/new/release/v2");
     expect(url.searchParams.get("filename")).toBe(".github/workflows/ployz-build.yml");
     expect(url.searchParams.get("value")).toBe(GITHUB_BUILD_WORKFLOW);
   });
@@ -28,9 +28,9 @@ function check(replies: { repository: Reply; workflow?: Reply }) {
     Effect.provideService(GithubApi, {
       archive: () => Effect.die("unused"),
       json: (request) => {
-        urls.push(request.url);
-        const reply = request.url.endsWith("/repositories/42") ? replies.repository : replies.workflow;
-        if (!reply) return Effect.die(`unexpected ${request.url}`);
+        urls.push(request.path);
+        const reply = request.path.endsWith("/repositories/42") ? replies.repository : replies.workflow;
+        if (!reply) return Effect.die(`unexpected ${request.path}`);
         if ("error" in reply) {
           return Effect.fail(new GithubObservationError({
             code: reply.error, operation: request.operation, status: reply.status, retriable: reply.retriable ?? false, message: "failed",
@@ -49,7 +49,7 @@ describe("checkGithubBuildWorkflow", () => {
   it("is ready only when the workflow is active on the default branch", async () => {
     const ready = await check({ repository, workflow: workflow("active") });
     expect(ready).toMatchObject({ fullName: "acme/api", defaultBranch: "main", readiness: "ready" });
-    expect(ready.urls[1]).toBe("https://api.github.com/repos/acme/api/actions/workflows/ployz-build.yml");
+    expect(ready.urls[1]).toBe("/repos/acme/api/actions/workflows/ployz-build.yml");
     expect((await check({ repository, workflow: workflow("disabled_manually") })).readiness).toBe("setup_needed");
     expect((await check({ repository, workflow: workflow("deleted") })).readiness).toBe("setup_needed");
     expect((await check({ repository, workflow: { error: "not_found", status: 404 } })).readiness).toBe("setup_needed");

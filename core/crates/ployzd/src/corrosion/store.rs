@@ -15,8 +15,8 @@ use futures_util::Stream;
 use ipnet::Ipv4Net;
 use ployz_core::{
     CERTIFICATE_POLICY_CLUSTER_KEY, CertificateHost, ClusterRoute, ContainerId,
-    ContainerObservation, DockerVolume, DockerVolumeId, DockerVolumeName, IngressHost,
-    IssuanceClock, Machine, MachineId, QualifiedService, ServingPointer,
+    ContainerObservation, DeploymentLogId, DockerVolume, DockerVolumeId, DockerVolumeName,
+    IngressHost, IssuanceClock, Machine, MachineId, QualifiedService, ServingPointer,
 };
 use serde_json::json;
 
@@ -703,6 +703,68 @@ impl ReplicatedStore {
             .await
     }
 
+    pub(crate) async fn ingress_routes(
+        &self,
+    ) -> Result<BTreeMap<(MachineId, QualifiedService), IngressRouteRow>, Error> {
+        let query = self.api.query(Statement::new(INGRESS_ROUTES, [])).await?;
+        Ok(query
+            .rows(["machine_id", "service_id", "deploy", "containers"])?
+            .into_iter()
+            .filter_map(|[machine_id, service_id, deploy, containers]| {
+                let machine_id = MachineId::parse(machine_id.as_str()?).ok()?;
+                let service = QualifiedService::parse(service_id.as_str()?).ok()?;
+                let deploy = deploy
+                    .as_str()
+                    .and_then(|deploy| DeploymentLogId::parse(deploy).ok());
+                let containers = containers
+                    .as_str()
+                    .and_then(|containers| serde_json::from_str(containers).ok());
+                let row = match (deploy, containers) {
+                    (Some(deploy), Some(containers)) => {
+                        IngressRouteRow::Acked(IngressRouteAck { deploy, containers })
+                    }
+                    (None, Some(containers)) => IngressRouteRow::UnknownDeploy(containers),
+                    (_, None) => IngressRouteRow::UnknownContainers,
+                };
+                Some(((machine_id, service), row))
+            })
+            .collect())
+    }
+
+    pub(crate) async fn subscribe_ingress_route_changes(&self) -> Result<Subscription, Error> {
+        self.api.subscribe(Statement::new(INGRESS_ROUTES, [])).await
+    }
+
+    pub(crate) async fn publish_ingress_routes(
+        &self,
+        machine_id: &MachineId,
+        changes: &BTreeMap<QualifiedService, IngressRouteChange>,
+    ) -> Result<(), Error> {
+        if changes.is_empty() {
+            return Ok(());
+        }
+        let mut statements = Vec::with_capacity(changes.len());
+        for (service, ack) in changes {
+            statements.push(match ack {
+                IngressRouteChange::Upsert(ack) => Statement::new(
+                    INGRESS_ROUTE_UPSERT,
+                    [
+                        json!(machine_id),
+                        json!(service.to_string()),
+                        json!(ack.deploy),
+                        json!(serde_json::to_string(&ack.containers)?),
+                    ],
+                ),
+                IngressRouteChange::Delete => Statement::new(
+                    INGRESS_ROUTE_DELETE,
+                    [json!(machine_id), json!(service.to_string())],
+                ),
+            });
+        }
+        self.api.execute(statements).await?;
+        Ok(())
+    }
+
     pub async fn certificates(
         &self,
     ) -> Result<BTreeMap<CertificateHost, CertificateMaterial>, Error> {
@@ -975,6 +1037,31 @@ fn volume_incomplete(machine_id: &MachineId, name: &DockerVolumeName) -> Stateme
 
 const SERVING_POINTERS: &str =
     "SELECT key AS serving_key, value FROM cluster WHERE key LIKE 'serving/%'";
+const INGRESS_ROUTES: &str =
+    "SELECT machine_id, service_id, deploy, containers FROM ingress_routes";
+const INGRESS_ROUTE_UPSERT: &str = "INSERT INTO ingress_routes (machine_id, service_id, deploy, containers) VALUES (?, ?, ?, ?) ON CONFLICT (machine_id, service_id) DO UPDATE SET deploy = excluded.deploy, containers = excluded.containers";
+const INGRESS_ROUTE_DELETE: &str =
+    "DELETE FROM ingress_routes WHERE machine_id = ? AND service_id = ?";
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct IngressRouteAck {
+    pub(crate) deploy: DeploymentLogId,
+    pub(crate) containers: BTreeSet<ContainerId>,
+}
+
+/// CRDT merge can surface a row before every column has arrived.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum IngressRouteRow {
+    Acked(IngressRouteAck),
+    UnknownDeploy(BTreeSet<ContainerId>),
+    UnknownContainers,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum IngressRouteChange {
+    Upsert(IngressRouteAck),
+    Delete,
+}
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ServingPointers {
@@ -986,6 +1073,10 @@ impl ServingPointers {
     #[must_use]
     pub(crate) fn get(&self, service: &QualifiedService) -> Option<&ServingPointer> {
         self.by_service.get(service)
+    }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&QualifiedService, &ServingPointer)> {
+        self.by_service.iter()
     }
 
     pub(crate) fn warn_newly_malformed(&self, already_warned: &mut BTreeSet<String>) {

@@ -48,12 +48,12 @@ const origin = "http://localhost:3000";
  * is public, `acme/secret` is someone else's private repository, and `acme/down` finds GitHub unreachable.
  */
 const github = fakeGithubApi({
-  "https://api.github.com/repos/acme/web/git/ref/heads%2Fdev": {
+  "/repos/acme/web/git/ref/heads%2Fdev": {
     ref: "refs/heads/dev", object: { type: "commit", sha: "a".repeat(40) },
   },
-  "https://api.github.com/repos/acme/docs": { id: 12, full_name: "acme/docs", private: false, default_branch: "main" },
-  "https://api.github.com/repos/acme/secret": { id: 13, full_name: "acme/secret", private: true, default_branch: "main" },
-  "https://api.github.com/repos/acme/down": "down",
+  "/repos/acme/docs": { id: 12, full_name: "acme/docs", private: false, default_branch: "main" },
+  "/repos/acme/secret": { id: 13, full_name: "acme/secret", private: true, default_branch: "main" },
+  "/repos/acme/down": "down",
 });
 
 /** Cloud with the Config Store in its database. */
@@ -278,7 +278,7 @@ it.live(
         const event = {
           id: "config-deployment-admitted-00000000-0000-4000-8000-000000000101",
           name: "config/deployment.admitted",
-          data: { organizationId: expect.any(String), environmentId: ENVIRONMENT, deploymentId: admit.id },
+          data: { organizationId: expect.any(String), environmentId: ENVIRONMENT, deploymentId: admit.id, trigger: "user" },
         };
         expect(sent).toEqual([event, event]);
 
@@ -294,7 +294,7 @@ it.live(
         assert.strictEqual((yield* request("write", alice, start)).status, 200);
         expect(sent.at(-1)).toEqual({
           name: "config/deployment.admitted",
-          data: { organizationId: expect.any(String), environmentId: ENVIRONMENT, deploymentId: start.deployment },
+          data: { organizationId: expect.any(String), environmentId: ENVIRONMENT, deploymentId: start.deployment, trigger: "user" },
         });
         const superseded = yield* request("write", alice, { ...start, deployment: admit.id });
         assert.strictEqual(superseded.status, 409);
@@ -573,7 +573,7 @@ it.live(
         const created = yield* request("write", alice, git("web", "Acme/Web", "dev"));
         assert.strictEqual(created.status, 200);
         assert.include(created.json.staged ?? [], "web.branch");
-        assert.deepInclude(github.calls, { url: "https://api.github.com/repos/acme/web/git/ref/heads%2Fdev", installationId: 7 });
+        assert.deepInclude(github.calls, { path: "/repos/acme/web/git/ref/heads%2Fdev", installationId: 7 });
         const web = yield* request("read", alice, get("web"));
         assert.deepInclude(web.json.values, { repository: "acme/web", branch: "dev" });
 
@@ -725,7 +725,7 @@ it.live(
         assert.strictEqual(yield* held(first), 1);
         // Its Server left: its upload was read, and nothing ran.
         yield* drizzle.delete(organizationMachine);
-        const ran = yield* runStoreDeployment({ organizationId, environmentId: ENVIRONMENT, deploymentId: first }, "cloud-test");
+        const ran = yield* runStoreDeployment({ organizationId, environmentId: ENVIRONMENT, deploymentId: first, trigger: "user" }, "cloud-test");
         expect(ran).toMatchObject({ ran: { id: first, status: "failed" } });
         assert.strictEqual(yield* held(first), 0);
         assert.strictEqual(yield* held(second), 1);

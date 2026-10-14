@@ -37,14 +37,14 @@ import {
   Superseded,
 } from "#/modules/agent/persistence.server";
 import { FAILURES, providerFailure } from "#/modules/agent/provider-error";
-import { latestPageContext, PageContext, readPageContext, renderPageContext, withPageContext } from "#/modules/agent/page-context";
+import { latestPageContext, PageContext, type PagePlace, placeForCall, placeOfPage, renderPageContext, withPageContext } from "#/modules/agent/page-context";
 import { notSetUpScript, ScriptedAdapter, stubScript } from "#/modules/agent/scripted-adapter.server";
 import { PostHog } from "#/modules/analytics/posthog.server";
 import { decideApproval, requestApproval, reviewedDiff, trustedApproval } from "#/modules/approvals/approvals.server";
 import type { Ran } from "#/modules/commands/command.server";
 import { findCommand, inputSchema, type Published, runCommand } from "#/modules/commands/commands.server";
 import { COMMANDS } from "#/modules/commands/registry.server";
-import { callStore, type StoreSource } from "#/modules/config-store/config-store.server";
+import { callStore, readStore, type StoreSource } from "#/modules/config-store/config-store.server";
 import type { StoreAnswer, StoreCall, StoreRefusal, StoreResult } from "#/modules/config-store/store.contract";
 import type { Caller } from "#/modules/identity/actor";
 import { answerForSupport, refusalForSupport } from "#/modules/support-access/support-view";
@@ -74,8 +74,10 @@ const ACTS = {
   service: "Service act",
   drain: "drain",
   upgrade: "upgrade",
+  set_server: "server policy change",
   clean: "cleanup",
   remove_server: "server removal",
+  forget_server: "server forget",
   volume: "Volume run",
 } as const satisfies Record<Act["action"]["action"], string>;
 
@@ -160,14 +162,30 @@ type AgentServices =
 const decodeArguments = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 const toolInput = (args: string) => projectJsonValue(Option.getOrElse(decodeArguments(args.trim() === "" ? "{}" : args), () => null)) ?? null;
 
-const placeIn = (caller: Caller, messages: ReadonlyArray<ModelMessage>): Place => {
-  const block = latestPageContext(messages);
-  const at = block === undefined ? new Map<string, string>() : readPageContext(block);
-  const store = { at: "cloud", organization: caller.organization.id } as const;
-  return { project: at.get("project") ?? null, environment: at.get("environment") ?? null, store };
+const placeIn = (caller: Caller, messages: ReadonlyArray<ModelMessage>) => {
+  const organizationId = caller.organization.id;
+  return placeOfPage(
+    latestPageContext(messages),
+    readStore(organizationId, { query: "projects" }).pipe(Effect.map(({ projects }) => projects.map(({ name }) => name))),
+    (project) => readStore(organizationId, { query: "environments", project }).pipe(
+      Effect.map((view) => ({ project: view.project.name, environments: view.environments })),
+    ),
+  );
 };
 
-type Here = { place: Place };
+/** A catalog tool whose input takes a Project: it acts in an Environment, defaulting to the place when a call names none. */
+const ScopedTool = Schema.Struct({ name: Schema.String, input_schema: Schema.Struct({ properties: Schema.Struct({ project: Schema.Struct({}) }) }) });
+const SCOPED = new Set(CATALOG.tools.filter(Schema.is(ScopedTool)).map((tool) => tool.name));
+const namesProject = Schema.is(Schema.Struct({ project: Schema.String }));
+
+type Here = { page: PagePlace };
+
+/** The place `tool` runs `input` at from the page in `here`, or the refusal the model hears instead. */
+const placeOf = (caller: Caller, here: Here, tool: string, input: JsonValue): { place: Place } | { refusal: ToolOutcome } => {
+  const call = placeForCall(here.page, { scoped: SCOPED.has(tool), namesProject: namesProject(input) });
+  if (!call.ok) return { refusal: refused(call.code, call.message) };
+  return { place: { project: call.project, environment: call.environment, store: { at: "cloud", organization: caller.organization.id } } };
+};
 
 const answered = (result: StoreResult<unknown>): Answer =>
   result.ok ? { value: projectJsonValue(result.value) ?? null } : { error: result.refusal };
@@ -213,7 +231,10 @@ const approvalGate = (caller: Caller, run: Run, here: Here) => {
         return (!ran.ok && ran.refusal.code === "approval_required" ? asking(ran.refusal) : null) ?? { outcome: heard(ran) };
       }
       const read = agentRead(caller);
-      const started = agentStart(call.function.name, toolInput(call.function.arguments), here.place, `${turn}:${call.id}`);
+      const input = toolInput(call.function.arguments);
+      const at = placeOf(caller, here, call.function.name, input);
+      if ("refusal" in at) return { outcome: at.refusal };
+      const started = agentStart(call.function.name, input, at.place, `${turn}:${call.id}`);
       const paused = yield* untilWrite(started, read);
       const { step, state } = paused;
       if (step.step !== "write") return { outcome: yield* finish(paused, read, agentWrite(caller)) };
@@ -234,7 +255,7 @@ const approvalGate = (caller: Caller, run: Run, here: Here) => {
     },
     onInterruptBoundary: async (ctx) => {
       if (ctx.phase !== "beforeTools") return undefined;
-      here.place = placeIn(caller, ctx.messages);
+      here.page = await run(placeIn(caller, ctx.messages));
       const calls = pendingCalls(ctx.messages);
       const gated = calls.filter((call) => GATED.has(call.function.name));
       if (calls.length > 1) {
@@ -275,7 +296,10 @@ const agentTools = (caller: Caller, run: Run, turn: string, here: Here) => [
     toolDefinition({ name: tool.name, description: tool.description, inputSchema: tool.input_schema as JSONSchema })
       .server((args, context) => {
         if (GATED.has(tool.name)) throw new Error(`${tool.name} ran outside the approval gate.`);
-        return run(runTool(caller, tool.name, projectJsonValue(args) ?? null, here.place, `${turn}:${context?.toolCallId ?? randomUUID()}`));
+        const input = projectJsonValue(args) ?? null;
+        const at = placeOf(caller, here, tool.name, input);
+        if ("refusal" in at) return at.refusal;
+        return run(runTool(caller, tool.name, input, at.place, `${turn}:${context?.toolCallId ?? randomUUID()}`));
       })),
   ...COMMANDS.filter((command) => command.agents).map(publishedTool(caller, run, turn)),
 ];
@@ -286,7 +310,7 @@ You are ${model}, the Ployz agent in the sidebar of Ployz Cloud. You act in the 
 
 Your place is the Project and Environment named by the latest <dashboard-page …/> block, which opens a member message whenever they move. When they say "this service" or "here", use that block's. Never mention the block itself. With no block, the Organization's defaults apply.
 
-A Publish, a Deploy, a server drain, upgrade, cleanup or removal, and a Volume run may wait for a human to approve the plan. Call any of them alone, never alongside another tool. When a human denies an approval (approval_denied), quote the reason they gave and do not retry that action or work around it. When an approval is cancelled, say nothing changed. A Service restart, start or stop never waits.`;
+A Publish, a Deploy, removing an Environment or a Project, a server drain, cleanup, removal or forget, turning web traffic off on a server, and a Volume mirror, mirror removal, move or release may wait for a human to approve the plan. Call any of them alone, never alongside another tool. When a human denies an approval (approval_denied), quote the reason they gave and do not retry that action or work around it. When an approval is cancelled, say nothing changed. A Service restart, start or stop never waits, and neither does a server upgrade.`;
 
 /**
  * Opens the member's new message with where they are in the dashboard, when that differs from the thread's last block.
@@ -515,7 +539,8 @@ async function* startOnce(
  * One sidebar turn, or the resumption of one, as `caller` in their thread: the event stream the client renders. `model`
  * replaces the configured one, for the agent eval.
  */
-export const agentChat = Effect.fn("Agent.chat")(function* (caller: Caller, request: ChatRequest, model?: AnyTextAdapter) {
+export const agentChat = Effect.fn("Agent.chat")(function* (person: Caller, request: ChatRequest, model?: AnyTextAdapter) {
+  const caller: Caller = { ...person, via: "agent" };
   const run: Run = Effect.runPromiseWith(yield* Effect.context<AgentServices>());
   const scope: AgentScope = { organizationId: caller.organization.id, userId: caller.userId };
   const persistence = yield* agentPersistence(scope);
@@ -526,7 +551,7 @@ export const agentChat = Effect.fn("Agent.chat")(function* (caller: Caller, requ
   const page = resume === undefined ? Option.getOrUndefined(Schema.decodeUnknownOption(PageContext)(request.forwardedProps?.["page"])) : undefined;
   const turn = (stores: Persistence) => {
     const limit = stepLimit(stores);
-    const here: Here = { place: placeIn(caller, []) };
+    const here: Here = { page: { at: "organization" } };
     const base = {
       adapter,
       modelOptions,

@@ -4,13 +4,14 @@
 use ployz_core::{
     ContainerKind, ContainerRuntimeObservation, CopyPlan, CopyRefusal, CopyTransition,
     DockerVolumeName, OpaquePayload, SetVolumeCopyRefused, SetVolumeCopyReply,
-    SetVolumeCopyRequest, Start, VolumeCopy, WantedCopy, op,
+    SetVolumeCopyRequest, Start, VolumeCopy, VolumeGen, WantedCopy, op,
 };
 use tonic::{Request, Response, Status};
 
 use super::{MachineService, expect, local_error, respond};
 use crate::{
-    machine::LocalMachineError,
+    docker::FloorTurn,
+    machine::{CutRefusal, LocalMachineError},
     volume_copy::{
         CUT_ROUTE, CopyRequest, CutRequest, DESTROY_ROUTE, FORGET_ROUTE, INSPECT_ROUTE, PULL_ROUTE,
         PullRequest, SNAPSHOT_ROUTE, SnapshotRequest, WRITER_ROUTE, WriterRequest,
@@ -33,12 +34,18 @@ impl MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::SetVolumeCopy>(request)?;
+        if request.want == WantedCopy::Floor {
+            return match self.floor_copy(&request.name, request.r#gen).await {
+                Ok(copy) => respond(SetVolumeCopyReply { copy }),
+                Err(error) => local_error(error),
+            };
+        }
+        if let Err(error) = self.admit_gen(&request.name, request.r#gen).await {
+            return local_error(error);
+        }
         let guard = std::sync::Arc::clone(&self.switch_mutation)
             .lock_owned()
             .await;
-        if let Err(error) = self.require_joined() {
-            return respond(error);
-        }
         crate::faults::apply("SetVolumeCopy").await;
         // Detached with the switch guard, so a caller that hangs up mid-drain does not
         // free the next request to plan against a cut still running.
@@ -60,7 +67,15 @@ impl MachineService {
         &self,
         request: SetVolumeCopyRequest,
     ) -> Result<Copy, LocalMachineError> {
-        let SetVolumeCopyRequest { name, expect, want } = request;
+        let SetVolumeCopyRequest {
+            name,
+            expect,
+            want,
+            r#gen,
+        } = request;
+        // Checked again under the switch lock: a newer lane may have fenced this Volume
+        // while the request queued behind a cut.
+        self.admit_gen(&name, r#gen).await?;
         let copy = self.inspect_copy(&name).await?;
         let start = match &want {
             WantedCopy::Writer {
@@ -69,7 +84,8 @@ impl MachineService {
             WantedCopy::Writer { start: None, .. }
             | WantedCopy::Mirror { .. }
             | WantedCopy::Snapshot { .. }
-            | WantedCopy::Forget => None,
+            | WantedCopy::Forget
+            | WantedCopy::Floor => None,
         };
         let start_running = start == Some(StartState::Running);
         let transition = match ployz_core::plan(copy.as_ref(), start_running, &expect, &want) {
@@ -106,18 +122,21 @@ impl MachineService {
                         StartState::Gone => {
                             return Err(refused(CopyRefusal::NoTransition, copy, &name));
                         }
-                        StartState::Stopped => self.run_start(&start).await?,
+                        StartState::Stopped => self.run_start(start, &name, r#gen).await?,
                     }
                 }
                 Ok(copy)
             }
             (CopyTransition::MirrorToWriter, WantedCopy::Writer { at, epoch, start }) => {
-                let copy = self
-                    .plugin_copy(WRITER_ROUTE, &WriterRequest { name, at, epoch })
-                    .await?;
+                let request = WriterRequest {
+                    name: name.clone(),
+                    at,
+                    epoch,
+                };
+                let copy = self.plugin_copy(WRITER_ROUTE, &request).await?;
                 crate::faults::kill_inside("SetVolumeCopy.MirrorToWriter");
                 if let Some(start) = start {
-                    self.run_start(&start).await?;
+                    self.run_start(start, &name, r#gen).await?;
                 }
                 Ok(copy)
             }
@@ -129,7 +148,7 @@ impl MachineService {
                 };
                 let cut = self
                     .local
-                    .cut_volume_copy(name.clone(), drain, move || async move {
+                    .cut_volume_copy(name.clone(), r#gen, drain, move || async move {
                         plugin
                             .call::<Copy>(CUT_ROUTE, &request)
                             .await
@@ -139,7 +158,14 @@ impl MachineService {
                     .await?;
                 match cut {
                     Ok(()) => self.inspect_copy(&name).await,
-                    Err(reason) => Err(refused(reason, self.inspect_copy(&name).await?, &name)),
+                    Err(CutRefusal::Busy) => Err(refused(
+                        CopyRefusal::Busy,
+                        self.inspect_copy(&name).await?,
+                        &name,
+                    )),
+                    Err(CutRefusal::Stale(floor)) => {
+                        Err(stale(floor, self.inspect_copy(&name).await?, &name))
+                    }
                 }
             }
             (CopyTransition::WriterToSnapshot, WantedCopy::Snapshot { name: snapshot }) => {
@@ -167,6 +193,43 @@ impl MachineService {
                 unreachable!("the planner paired {transition:?} with {want:?}")
             }
         }
+    }
+
+    async fn admit_gen(
+        &self,
+        name: &DockerVolumeName,
+        r#gen: VolumeGen,
+    ) -> Result<(), LocalMachineError> {
+        let admitted = self.joined_floor_turn().await?.admit(name, r#gen).await?;
+        match admitted {
+            Ok(()) => Ok(()),
+            Err(floor) => Err(stale(floor, self.inspect_copy(name).await?, name)),
+        }
+    }
+
+    /// The Floor want: raise the floor and read the copy under the floor lock, which a
+    /// cut holds through its flip, so the copy is the root or the slot, never between.
+    /// Never refuses on `gen`; a lower one leaves the floor where it is.
+    async fn floor_copy(
+        &self,
+        name: &DockerVolumeName,
+        r#gen: VolumeGen,
+    ) -> Result<Copy, LocalMachineError> {
+        let mut floor = self.joined_floor_turn().await?;
+        floor.admit(name, r#gen).await?.ok();
+        self.inspect_copy(name).await
+    }
+
+    async fn joined_floor_turn(&self) -> Result<FloorTurn<'_>, LocalMachineError> {
+        let joined = || {
+            self.require_joined()
+                .map_err(|_| LocalMachineError::NotParticipating)
+        };
+        joined()?;
+        let turn = self.containers()?.floor_turn().await;
+        // Checked again under the floor lock: a reset may have begun while this queued.
+        joined()?;
+        Ok(turn)
     }
 
     async fn inspect_copy(&self, name: &DockerVolumeName) -> Result<Copy, LocalMachineError> {
@@ -246,30 +309,22 @@ impl MachineService {
     }
 
     /// Create the Container when `start` asks for one and it is absent, then start it.
-    /// Both halves are idempotent, so a resend after either converges.
-    async fn run_start(&self, start: &Start) -> Result<(), LocalMachineError> {
-        let container_id = match start {
-            Start::Kept { container_id } => *container_id,
-            Start::Create {
-                namespace,
-                resolved_spec,
-                creation_key,
-            } => {
-                self.local
-                    .create_container(
-                        ContainerKind::ServiceContainer,
-                        namespace,
-                        resolved_spec,
-                        Some(creation_key.as_str().to_owned()),
-                        None,
-                        None,
-                    )
-                    .await?
-                    .container_id
-            }
-        };
-        self.local.start_container(container_id).await?;
-        Ok(())
+    /// Both halves are idempotent, so a resend after either converges. `Stale` when a
+    /// newer lane raised the floor after this request was admitted.
+    async fn run_start(
+        &self,
+        start: Start,
+        name: &DockerVolumeName,
+        r#gen: VolumeGen,
+    ) -> Result<(), LocalMachineError> {
+        match self
+            .local
+            .start_volume_holder(start, name.clone(), r#gen)
+            .await?
+        {
+            Ok(()) => Ok(()),
+            Err(floor) => Err(stale(floor, self.inspect_copy(name).await?, name)),
+        }
     }
 }
 
@@ -289,7 +344,29 @@ fn fault_point(transition: CopyTransition) -> &'static str {
 }
 
 fn refused(reason: CopyRefusal, copy: Copy, name: &DockerVolumeName) -> LocalMachineError {
-    let message = match reason {
+    refusal(
+        SetVolumeCopyRefused {
+            reason,
+            copy,
+            floor: None,
+        },
+        name,
+    )
+}
+
+fn stale(floor: VolumeGen, copy: Copy, name: &DockerVolumeName) -> LocalMachineError {
+    refusal(
+        SetVolumeCopyRefused {
+            reason: CopyRefusal::Stale,
+            copy,
+            floor: Some(floor),
+        },
+        name,
+    )
+}
+
+fn refusal(refused: SetVolumeCopyRefused, name: &DockerVolumeName) -> LocalMachineError {
+    let message = match refused.reason {
         CopyRefusal::Mismatch => format!("Volume {name} is not the copy the request expected"),
         CopyRefusal::NoTransition => format!("Volume {name} has no transition to the want"),
         CopyRefusal::Busy => format!("Volume {name} is still held by a running Container"),
@@ -297,6 +374,10 @@ fn refused(reason: CopyRefusal, copy: Copy, name: &DockerVolumeName) -> LocalMac
         CopyRefusal::Behind => format!("Volume {name} is not at the wanted snapshot"),
         CopyRefusal::Written => format!("Volume {name} was written after the wanted snapshot"),
         CopyRefusal::NoSource => format!("Volume {name} has no copy to pull from"),
+        CopyRefusal::Stale => format!(
+            "a newer move or release owns Volume {name}; this Machine is at lane {}",
+            refused.floor.unwrap_or_default()
+        ),
     };
-    LocalMachineError::StoragePreparation(SetVolumeCopyRefused { reason, copy }.rpc_error(message))
+    LocalMachineError::StoragePreparation(refused.rpc_error(message))
 }

@@ -656,6 +656,10 @@ impl Scrub {
         })
     }
 
+    pub(crate) fn ever(&self) -> &sealed::EverSealed {
+        &self.ever
+    }
+
     /// Remove from `saved`, the version saved at `revision`, what sealing took
     /// out of History; whether anything changed.
     pub(crate) fn apply(&self, revision: Revision, saved: &mut SavedEnvironmentIntent) -> bool {

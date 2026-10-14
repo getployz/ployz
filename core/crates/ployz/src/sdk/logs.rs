@@ -3,8 +3,8 @@ use futures_util::future::join_all;
 use ployz_core::{
     ContainerId, HistoryContainer, HistoryGapReason, HistoryRow, HistoryStream, LiveLogTarget,
     LogBody, LogDirection, LogEntry, LogHistoryRequest, LogLevel, LogMetadata, LogsOptions,
-    MachineId, MachineTarget, OpaquePayload, RpcError, RpcErrorCode, TailLogsRequest, log_level,
-    op,
+    MachineId, MachineLogService, MachineTarget, OpaquePayload, RpcError, RpcErrorCode,
+    TailLogsRequest, log_level, op,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -433,17 +433,78 @@ pub(crate) async fn service_tail(
         );
         Ok(Some(LogExcerpt::scrub(frames, &secrets, cap)))
     };
+    in_time("its Log Store", read).await
+}
+
+/// The newest `cap` lines `process` wrote on `machine`, from `since_nanos` on, with
+/// secret-shaped values redacted. None when it wrote none in range.
+pub(crate) async fn process_tail(
+    client: &Client,
+    machine: MachineId,
+    process: MachineLogService,
+    since_nanos: Option<i64>,
+    cap: LineCap,
+) -> Result<Option<LogText>, RpcError> {
+    let target = MachineTarget::from(&machine);
+    let request = op::TailLogs::into_request(TailLogsRequest {
+        target: LiveLogTarget::Machine(process),
+        options: LogsOptions {
+            tail: i32::from(cap.get()),
+            follow: false,
+            since_nanos,
+            until_unix_seconds: None,
+        },
+    })
+    .encode()
+    .map_err(|error| crate::ui::rpc_error(RpcErrorCode::InvalidArgument, &error))?;
+    let read = async {
+        let mut stream = client
+            .tail_logs_stream(&target, request)
+            .await
+            .map_err(|error| RpcError::from(ConnectError::Rpc(error)))?;
+        let mut frames = Vec::new();
+        while let Some(payload) = stream
+            .message()
+            .await
+            .map_err(|error| RpcError::from(ConnectError::from(error)))?
+        {
+            let entry = LogEntry::decode(&payload)
+                .map_err(|error| crate::ui::rpc_error(RpcErrorCode::InvalidArgument, &error))?;
+            match entry.body {
+                LogBody::Stdout(bytes) | LogBody::Stderr(bytes) => {
+                    frames.push(String::from_utf8_lossy(&bytes).into_owned());
+                }
+                LogBody::Error(message) => return Err(unavailable(message)),
+                LogBody::Heartbeat => {}
+            }
+        }
+        Ok((!frames.is_empty()).then(|| LogExcerpt::scrub(frames, &SecretSet::no_env(), cap)))
+    };
+    in_time(&format!("its {process} log"), read).await
+}
+
+/// `read`, or `unavailable` naming `what` when it takes longer than [`SERVICE_TAIL_READ`].
+async fn in_time<T>(
+    what: &str,
+    read: impl Future<Output = Result<T, RpcError>>,
+) -> Result<T, RpcError> {
     tokio::time::timeout(SERVICE_TAIL_READ, read)
         .await
-        .map_err(|_| RpcError {
-            code: RpcErrorCode::Unavailable,
-            message: format!(
-                "its Log Store did not answer within {}s",
+        .map_err(|_| {
+            unavailable(format!(
+                "{what} did not answer within {}s",
                 SERVICE_TAIL_READ.as_secs()
-            ),
-            details: serde_json::Value::Null,
-            cause: Vec::new(),
+            ))
         })?
+}
+
+fn unavailable(message: String) -> RpcError {
+    RpcError {
+        code: RpcErrorCode::Unavailable,
+        message,
+        details: serde_json::Value::Null,
+        cause: Vec::new(),
+    }
 }
 
 async fn container_env(

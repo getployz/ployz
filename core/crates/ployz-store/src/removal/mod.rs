@@ -28,7 +28,7 @@ use crate::deployment::{self, DeploymentStatus, DeploymentSummary};
 use crate::error;
 use crate::id::{
     ApprovalDigest, DeploymentId, EnvironmentId, EnvironmentName, ProjectId, ProjectName,
-    VolumeName,
+    RemovalId, VolumeName,
 };
 use crate::review::{DestructiveEffect, approval};
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
@@ -86,11 +86,27 @@ pub struct RemovalCancelled {
 pub enum Removal {
     /// Gone from the Servers and the Store.
     Removed { residuals: Vec<Residual> },
-    /// Still on the Servers: what is left, and the Servers it waits on.
+    /// Still on the Servers: what is left, and the Servers it waits on. `id` reads
+    /// what it left on old servers once it is gone.
     Removing {
+        id: RemovalId,
         left: Vec<Left>,
         waiting_on: Vec<Waiting>,
     },
+}
+
+/// Read what a finished removal left on old servers, by the `id` it was removing
+/// under.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct RemovedQuery {
+    pub id: RemovalId,
+}
+
+/// What a finished removal left on old servers.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct RemovedView {
+    pub residuals: Vec<Residual>,
 }
 
 /// An Environment a removal hasn't taken off the Servers yet.

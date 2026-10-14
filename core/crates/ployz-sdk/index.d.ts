@@ -42,6 +42,7 @@ import type {
   LocalMachineRemoved,
   DataLossConfirmation,
   DrainReport,
+  IngressCheck,
   DrainScope,
   ClusterTeardown,
   PlanOptions,
@@ -309,6 +310,14 @@ export declare class Client {
    * when it is partial or the session closes mid-drain; rejects only before anything moved.
    */
   drainMachine(machine: MachineTarget, scope: DrainScope): Promise<DrainReport>;
+  /**
+   * Start the Ingress Proxy on `machine` once its ingress role is on: waits until the entry
+   * observes the role, then creates or starts the proxy on every Server holding it, never
+   * replacing one that runs. The repair for `machine` says why it didn't start.
+   */
+  startIngress(machine: MachineTarget): Promise<IngressCheck>;
+  /** Stop and remove the Ingress Proxy on `machine` once its ingress role is off. */
+  stopIngress(machine: MachineTarget): Promise<void>;
   /** Take a Machine out of the Cluster without resetting it: it keeps its state and keys. */
   removeMachineMembership(machine: MachineTarget): Promise<void>;
   /** One Machine policy edit (Machine Roles and build concurrency); omitted fields keep their values. */

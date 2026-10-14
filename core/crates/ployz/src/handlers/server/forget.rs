@@ -1,38 +1,57 @@
-//! `server forget`: Forget Servers, for every Server of the Organization when they
-//! were deleted. Cloud tries each first and refuses while any answers.
+//! `server forget`: Forget one Server without a reset, or with no Server named, every
+//! Server of the Organization when they were deleted.
 
 use clap::{ArgMatches, Command};
 use ployz_core::RpcErrorCode;
 
 use super::super::{Error, config_path, leaf_matches, runtime, store::Next};
-use crate::cli::value;
+use crate::cli::{base, positional, value};
 use crate::cloud_account::{self, ForgetCheck};
 use crate::cloud_login::CredentialStore;
 use crate::ui::Hint;
 
 pub(super) fn command() -> Command {
-    Command::new("forget")
-        .about("Forget every Server of the Organization, when they were deleted")
-        .long_about(
-            "Forget every Server of the Organization when they were deleted. Cloud tries \
-             each Server first, waiting up to ten seconds for it, and refuses while any \
-             answers: remove those with ployz server rm instead. Projects, settings and \
-             Deployment history stay; Volume data on these Servers can't be recovered. \
-             The next ployz server add starts over, and published Environments deploy to \
-             it. Type the Organization's slug with --confirm; without it the command \
-             fails with confirmation_required, naming what goes and the exact command \
-             to retry.",
-        )
-        .arg(
-            value("confirm", None)
-                .value_name("ORGANIZATION")
-                .help("The Organization's slug, typed to confirm forgetting its Servers"),
-        )
+    base(
+        "forget",
+        "Forget a Server without resetting it, or every Server when they were deleted",
+    )
+    .long_about(
+        "Forget a Server: take it out of the Cluster without resetting it, for a Server \
+         that is gone or can't be reset. Refused while the Server answers and holds a \
+         Volume copy: remove it with ployz server rm instead, so its reset demotes the \
+         copy. Type the Server's name with --confirm, or dead for a Server that does not \
+         answer within ten seconds. When Cloud manages the Server, Cloud forgets it even \
+         with --context or --connect, asking a human first when the Organization wants \
+         that.\n\n\
+         Without a Server, forget every Server of the Organization when they were \
+         deleted. Cloud tries each Server first, waiting up to ten seconds for it, and \
+         refuses while any answers. Projects, settings and Deployment history stay; \
+         Volume data on these Servers can't be recovered. The next ployz server add \
+         starts over, and published Environments deploy to it. Type the Organization's \
+         slug with --confirm.\n\n\
+         Without --confirm outside a terminal, either form fails with \
+         confirmation_required, naming what goes and the exact command to retry.",
+    )
+    .arg(positional("server", false))
+    .arg(value("confirm", None).value_name("NAME").help(
+        "With a Server: its name, or dead for one that does not answer. Without: the \
+         Organization's slug",
+    ))
+    .arg(crate::cli::approval().requires("server"))
+}
+
+/// Forget the named Server, or without one, every Server of the Organization.
+pub(super) fn forget(root: &ArgMatches) -> Result<(), Error> {
+    if leaf_matches(root).contains_id("server") {
+        super::remove::forget(root)
+    } else {
+        forget_all(root)
+    }
 }
 
 /// Forget the Organization's Servers. Without `--confirm`, Cloud's check names what
 /// goes and nothing changes; Cloud checks again before it forgets.
-pub(super) fn forget(root: &ArgMatches) -> Result<(), Error> {
+fn forget_all(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let store = CredentialStore::beside(&config_path(matches)?);
     let forgotten = runtime()?.block_on(async {
@@ -112,6 +131,22 @@ fn listed(names: impl Iterator<Item = String>) -> String {
 mod tests {
     use super::*;
     use crate::cloud_account::{ObservedServer, Reach};
+
+    #[test]
+    fn a_named_server_is_forgotten_alone_and_only_it_takes_an_approval() {
+        let parse = |args: &[&str]| {
+            crate::cli::command()
+                .try_get_matches_from(["ployz", "server", "forget"].iter().chain(args))
+        };
+        let all = parse(&["--confirm", "acme"]).unwrap();
+        assert!(!leaf_matches(&all).contains_id("server"));
+        let one = parse(&["web-1", "--confirm", "dead", "--approval", "apr_1"]).unwrap();
+        assert_eq!(
+            leaf_matches(&one).get_one::<String>("server").unwrap(),
+            "web-1"
+        );
+        assert!(parse(&["--confirm", "acme", "--approval", "apr_1"]).is_err());
+    }
 
     #[test]
     fn without_confirm_it_names_what_goes_and_the_confirming_command() {

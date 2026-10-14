@@ -259,6 +259,7 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
         groups={groups}
         totalChanges={groups.reduce((count, group) => count + group.changeCount, 0)}
         runtimeChanges={diff.total_count + placements.count}
+        notSet={store.services.reduce((count, service) => count + service.notSet.length, 0)}
         canPublish={hasSomethingToSave}
         onDeploy={actions.deploy}
         admitting={actions.admitting}

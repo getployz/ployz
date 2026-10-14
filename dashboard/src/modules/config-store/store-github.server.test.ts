@@ -11,9 +11,9 @@ const LATER = "4".repeat(40);
 
 /** GitHub with `acme/web` (42): `main` at LATER, which compares to MERGE as `status` says. */
 function github(status: string) {
-  return fakeGithubApiBy(({ url }): JsonValue => url.includes("/git/ref/")
+  return fakeGithubApiBy(({ path }): JsonValue => path.includes("/git/ref/")
     ? { ref: "refs/heads/main", object: { type: "commit", sha: LATER } }
-    : url.includes(`/compare/${MERGE}...${LATER}`)
+    : path.includes(`/compare/${MERGE}...${LATER}`)
       ? { status, files: [] }
       : { id: 42, full_name: "acme/web", private: true });
 }

@@ -2,6 +2,7 @@ import { useContext, useRef, useState, useTransition } from "react";
 import type { ChangeKind, HistoryAction, HistoryPreview, SavedRevision } from "@ployz/sdk";
 import { useLoaderData, useParams } from "@tanstack/react-router";
 import { HistoryIcon, MoreVerticalIcon, Undo2Icon } from "lucide-react";
+import { toast } from "sonner";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { RelativeTime } from "#/components/relative-time";
 import { Badge } from "#/components/ui/badge";
@@ -19,6 +20,7 @@ import { CanvasInspectorHeader } from "./CanvasInspectorHeader";
 import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
 import { HistoryStages } from "./canvas/BottomBar";
 import { kindText, Value } from "./canvas/EnvironmentChangesReview";
+import { notSetToast, sealedOnlyPaths } from "./history-not-set";
 
 /** How many more revisions each Show older reads. */
 const HISTORY_PAGE = 50;
@@ -103,7 +105,11 @@ export function EnvironmentHistory() {
       const written = await writer.commit({ command: "stage_history", environment: store, revision: preview.revision,
         action: preview.action, change: preview.change, version: preview.version, accept_overwrite: acceptOverwrite },
       ["conflict", "confirmation_required"]).isPersisted.promise;
-      if (written.written === "history_staged" && written.changed) staged();
+      if (written.written === "history_staged") {
+        if (written.changed) staged();
+        const notSet = notSetToast(preview.action, written.not_set);
+        if (notSet) toast(notSet.title, { description: notSet.description });
+      }
       setReview({ kind: "closed" });
     } catch (error) {
       setReview({ kind: "preview", preview, saving: false,
@@ -147,6 +153,8 @@ export function EnvironmentHistory() {
             const open = unfolded.has(revision.revision);
             const shown = open ? changes : changes.slice(0, SHOWN_CHANGES);
             const undoable = revision.predecessor !== null;
+            const sealed = sealedOnlyPaths(revision.changes, revision.linked);
+            const nothingToUndo = changes.length > 0 && changes.every((line) => sealed.has(line.path));
             return (
               <li key={revision.revision} className="rounded-lg border p-3">
                 <div className="flex items-start justify-between gap-2">
@@ -167,11 +175,12 @@ export function EnvironmentHistory() {
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end" className="w-auto">
                         {changes.length ? (
-                          <DropdownMenuItem disabled={!undoable} onClick={() => void choose(revision.revision, "undo")}>
+                          <DropdownMenuItem disabled={!undoable || nothingToUndo} onClick={() => void choose(revision.revision, "undo")}>
                             <Undo2Icon />
                             <span>
                               {changes.length === 1 ? "Undo this change" : `Undo these ${plural(changes.length, "change")}`}
-                              {after ? <span className="block text-xs text-muted-foreground">Keeps {after}</span> : null}
+                              {nothingToUndo ? <span className="block text-xs text-muted-foreground">Sealed. Nothing to undo.</span>
+                                : after ? <span className="block text-xs text-muted-foreground">Keeps {after}</span> : null}
                             </span>
                           </DropdownMenuItem>
                         ) : null}
@@ -209,8 +218,12 @@ export function EnvironmentHistory() {
                                 <MoreVerticalIcon />
                               </DropdownMenuTrigger>
                               <DropdownMenuContent align="end" className="w-auto">
-                                <DropdownMenuItem onClick={() => void choose(revision.revision, "undo", line.path)}>
-                                  <Undo2Icon />{linked > 1 ? `Undo ${plural(linked, "change")}` : "Undo change"}
+                                <DropdownMenuItem disabled={sealed.has(line.path)} onClick={() => void choose(revision.revision, "undo", line.path)}>
+                                  <Undo2Icon />
+                                  <span>
+                                    {linked > 1 ? `Undo ${plural(linked, "change")}` : "Undo change"}
+                                    {sealed.has(line.path) ? <span className="block text-xs text-muted-foreground">Sealed. Nothing to undo.</span> : null}
+                                  </span>
                                 </DropdownMenuItem>
                               </DropdownMenuContent>
                             </DropdownMenu>

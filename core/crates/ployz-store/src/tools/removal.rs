@@ -14,7 +14,8 @@ use super::refusal::{Call, Refusal, Writes, from_store};
 use super::step::{AcceptedLoss, DashboardPage, Fix, Gate, ServerName};
 use crate::catalog::NODE_NAME;
 use crate::{
-    EnvironmentName, EnvironmentsQuery, Left, ProjectName, Removal, Remove, VolumeName, Waiting,
+    EnvironmentName, EnvironmentsQuery, Left, ProjectName, Removal, Remove, RemovedQuery,
+    VolumeName, Waiting,
 };
 
 /// Volumes by Environment, as `remove` takes them.
@@ -199,9 +200,13 @@ fn remove(
         Err(Stop::Refuse(refusal)) => return Err(named(cx, *refusal)?.into()),
         Err(step) => return Err(step),
     };
-    let (mut left, waiting_on, residuals) = match removal {
-        Removal::Removed { residuals } => (Vec::new(), Vec::new(), residuals),
-        Removal::Removing { left, waiting_on } => (left, waiting_on, Vec::new()),
+    let (id, mut left, waiting_on, mut residuals) = match removal {
+        Removal::Removed { residuals } => (None, Vec::new(), Vec::new(), residuals),
+        Removal::Removing {
+            id,
+            left,
+            waiting_on,
+        } => (Some(id), left, waiting_on, Vec::new()),
     };
     let query = EnvironmentsQuery {
         project: Some(command.project.clone()),
@@ -223,6 +228,9 @@ fn remove(
                 .any(|listed| listed.id == left.environment.id)
         });
         attempt += 1;
+    }
+    if let (Some(id), true) = (id, left.is_empty()) {
+        residuals = cx.one(&RemovedQuery { id })?.residuals;
     }
     let names = names(cx, &waiting_on)?;
     let mut shown = Map::new();

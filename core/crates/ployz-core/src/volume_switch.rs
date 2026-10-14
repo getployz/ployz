@@ -11,6 +11,23 @@ use crate::{CopyRole, DockerVolumeName, MachineName, RpcError, RpcErrorCode, Wri
 /// mounts a handed-over Volume and starts its Container.
 pub const VOLUME_PLUGIN_CALL_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// What a storage departure changed. The daemon forgets each `demoted` name in Docker.
+/// A `stuck` Volume's copy would not stop, and a `failed` Volume's demote went wrong;
+/// either way the departure fails naming it, and a retry judges it again.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct StorageDeparture {
+    pub demoted: Vec<DockerVolumeName>,
+    pub stuck: Vec<DockerVolumeName>,
+    pub failed: Vec<DepartureFailure>,
+}
+
+/// A Volume a storage departure could not demote, and why.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DepartureFailure {
+    pub name: DockerVolumeName,
+    pub reason: String,
+}
+
 /// ZFS `guid` of a snapshot; stable across send and receive.
 ///
 /// A decimal string on the wire: guids span all of u64, and a JSON number above 2^53 loses
@@ -391,7 +408,7 @@ pub fn no_writer_message(name: &str, copies: &[KnownCopy]) -> String {
         .join(", ");
     if copies.iter().any(|copy| copy.role == CopyRole::Switching) {
         return format!(
-            "Volume {name} is mid-Move; it is held as {listed}. Wait for the Move to finish, or run ployz volume release {name}"
+            "Volume {name} is mid-Move; it is held as {listed}; ployz volume release {name} stops it"
         );
     }
     match copies {
@@ -537,7 +554,7 @@ mod tests {
             );
             assert!(message.contains("hel-1 (switching)"), "{message}");
             assert!(
-                message.ends_with("Wait for the Move to finish, or run ployz volume release data"),
+                message.ends_with("; ployz volume release data stops it"),
                 "{message}"
             );
             assert!(!message.contains("restore"), "{message}");

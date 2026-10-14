@@ -12,8 +12,8 @@ use ployz_core::{
 };
 use serde_json::json;
 
-use super::ReplicatedStore;
-use crate::corrosion::ApiClient;
+use super::{IngressRouteAck, IngressRouteChange, IngressRouteRow, ReplicatedStore};
+use crate::corrosion::{ApiClient, Statement};
 use crate::machine::{
     LocalMachine, LocalMachineBody, LocalMachinePrior, LocalMachineRecord, LocalMachineStore,
     ParticipationOrigin, RecordOwner,
@@ -412,7 +412,7 @@ async fn catch_up_waits_for_pending_target_transactions() {
 }
 
 // Exercise the store API against real SQL rows, including corrupt imported documents.
-async fn identity_store(
+pub(crate) async fn identity_store(
     db: rusqlite::Connection,
 ) -> (ReplicatedStore, tokio::task::JoinHandle<()>) {
     use axum::{Router, body::Bytes, extract::State, routing::post};
@@ -502,7 +502,7 @@ async fn identity_store(
 /// Corrosion re-renders schema.sql before creating its tables, which declares
 /// the SQLite keyword column `key` as `KEY`; an unaliased `SELECT key` then
 /// reports `KEY`.
-fn corrosion_db() -> rusqlite::Connection {
+pub(crate) fn corrosion_db() -> rusqlite::Connection {
     let schema = include_str!("schema.sql").replacen("    key  ", "    KEY  ", 1);
     assert_ne!(schema, include_str!("schema.sql"));
     let db = rusqlite::Connection::open_in_memory().unwrap();
@@ -581,6 +581,80 @@ async fn serving_pointers_round_trip_and_set_aside_malformed_rows() {
         next_pass.newly_malformed(&mut warned),
         broken_row,
         "a repaired then re-broken row warns again"
+    );
+    task.abort();
+}
+
+#[tokio::test]
+async fn ingress_route_acks_upsert_and_delete_against_the_schema() {
+    let db = rusqlite::Connection::open_in_memory().unwrap();
+    db.execute_batch(include_str!("schema.sql")).unwrap();
+    let (store, task) = identity_store(db).await;
+    let machine = MachineId::parse("a".repeat(32)).unwrap();
+    let api = QualifiedService::parse("app/api").unwrap();
+    let web = QualifiedService::parse("app/web").unwrap();
+    let ack = |deploy: &str, containers: &[&str]| IngressRouteAck {
+        deploy: DeploymentLogId::parse(deploy).unwrap(),
+        containers: containers
+            .iter()
+            .map(|id| ContainerId::parse(id.repeat(64)).unwrap())
+            .collect(),
+    };
+    let rows = || async {
+        store
+            .api()
+            .query(Statement::new(
+                "SELECT machine_id, service_id, deploy, containers FROM ingress_routes ORDER BY service_id",
+                [],
+            ))
+            .await
+            .unwrap()
+            .rows(["machine_id", "service_id", "deploy", "containers"])
+            .unwrap()
+            .into_iter()
+            .map(|row| row.map(|value| value.as_str().unwrap().to_owned()))
+            .collect::<Vec<_>>()
+    };
+
+    store
+        .publish_ingress_routes(
+            &machine,
+            &BTreeMap::from([
+                (
+                    api.clone(),
+                    IngressRouteChange::Upsert(ack("d1", &["b", "a"])),
+                ),
+                (web.clone(), IngressRouteChange::Upsert(ack("d1", &[]))),
+            ]),
+        )
+        .await
+        .unwrap();
+    store
+        .publish_ingress_routes(
+            &machine,
+            &BTreeMap::from([
+                (api, IngressRouteChange::Upsert(ack("d2", &["c"]))),
+                (web, IngressRouteChange::Delete),
+            ]),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        rows().await,
+        vec![[
+            machine.to_string(),
+            "app/api".to_owned(),
+            "d2".to_owned(),
+            format!("[\"{}\"]", "c".repeat(64)),
+        ]]
+    );
+    assert_eq!(
+        store.ingress_routes().await.unwrap(),
+        BTreeMap::from([(
+            (machine, QualifiedService::parse("app/api").unwrap()),
+            IngressRouteRow::Acked(ack("d2", &["c"]))
+        )])
     );
     task.abort();
 }

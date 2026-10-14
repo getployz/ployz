@@ -14,6 +14,8 @@ const runtimeWatchContainerSchema = Schema.Struct({
   namespace: Schema.String,
   kind: Schema.String,
   runtime: Schema.optionalKey(runtimeContainerStateSchema),
+  /** Present only on a Global Service's containers. */
+  global: Schema.optionalKey(Schema.Literal(true)),
 });
 
 const runtimeWatchMachineSchema = Schema.Struct({
@@ -80,6 +82,8 @@ export const runtimeWatchFrameSchema = Schema.Struct({
   containers: Schema.Array(runtimeWatchContainerSchema),
   volumes: Schema.Array(runtimeWatchVolumeCopySchema),
   certificates: Schema.Array(runtimeWatchCertificateSchema),
+  /** The hostnames Service containers publish through ingress now. */
+  published: Schema.Array(Schema.String),
   incomplete_ids: Schema.Struct({
     machines: Schema.Array(Schema.String),
     containers: Schema.Array(Schema.String),
@@ -158,6 +162,10 @@ export function runtimeWatchFrameForTransport(
         : null,
       via_proxy: certificate.via_proxy,
     })),
+    // As in the runtime's `hostname_owners`, a pre-deploy hook keeps its spec's ports but serves nothing.
+    published: [...new Set(frame.containers.flatMap((container) => container.kind === "service_container"
+      ? container.resolved_spec.ports.flatMap((port) => port.mode === "ingress" ? [port.hostname] : [])
+      : []))],
     incomplete_ids: {
       machines: [...frame.incomplete_ids.machines],
       containers: [...frame.incomplete_ids.containers],
@@ -235,6 +243,7 @@ export function runtimeSnapshotFromWatchFrame(
         : null,
       viaProxy: certificate.via_proxy,
     })),
+    published: [...frame.published],
     incompleteIds: {
       machines: [...frame.incomplete_ids.machines],
       containers: [...frame.incomplete_ids.containers],
@@ -258,11 +267,12 @@ function runtimeContainerRecordFromWatch(
     namespace: container.namespace,
     kind: container.kind,
   };
-  return container.runtime ? { ...record, runtime: container.runtime } : record;
+  const observed = container.runtime ? { ...record, runtime: container.runtime } : record;
+  return container.global ? { ...observed, global: container.global } : observed;
 }
 
 function runtimeWatchContainerForTransport(container: RuntimeWatchView["containers"][number]) {
-  return {
+  const transport = {
     container_id: container.container_id,
     display_name: container.display_name,
     machine_id: container.machine_id,
@@ -274,4 +284,5 @@ function runtimeWatchContainerForTransport(container: RuntimeWatchView["containe
       ? { state: container.runtime.state, code: container.runtime.code }
       : { state: container.runtime.state },
   };
+  return container.resolved_spec.mode.mode === "global" ? { ...transport, global: true as const } : transport;
 }

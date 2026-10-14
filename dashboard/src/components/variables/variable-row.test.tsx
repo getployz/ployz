@@ -166,8 +166,7 @@ describe("VariableRow", () => {
       onSealVariable={onSealVariable} />);
     expect(screen.getByText("Not set")).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "Variable actions" }));
-    fireEvent.click(await screen.findByText("Set value"));
+    fireEvent.click(screen.getByRole("button", { name: "Set value" }));
     const input = screen.getByLabelText("Secret value");
     expect(input.getAttribute("type")).toBe("password");
     fireEvent.change(input, { target: { value: "prod-key" } });

@@ -5,6 +5,8 @@
 //! Every call carries one credential: `PLOYZ_TOKEN` when set, else this device's
 //! approved sign-in. Either acts in exactly one Organization.
 
+use std::time::Duration;
+
 use ployz_core::{MachineId, MachineName, RpcError};
 use reqwest::{Method, StatusCode};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -13,6 +15,11 @@ use crate::cloud_enroll::cloud_origin;
 use crate::cloud_login::{
     self, CredentialStore, DEFAULT_CLOUD, LoginError, Organization, Secret, SignedIn,
 };
+
+/// How long a call that can start an operation waits for Cloud's answer. Cloud plans
+/// before it answers, asking the Servers for their copies (up to about 20s when one is
+/// slow), so the client's 15s default would give up on a run Cloud goes on to start.
+const OPERATION_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// What a Cloud call acts with.
 pub(crate) enum Credential {
@@ -357,7 +364,7 @@ async fn send_approved(
     approval: Option<&str>,
     request_key: Option<&str>,
 ) -> Result<reqwest::Response, LoginError> {
-    let mut request = request(credential, method, url, Some(body))?;
+    let mut request = request(credential, method, url, Some(body))?.timeout(OPERATION_TIMEOUT);
     if let Some(approval) = approval {
         request = request.header("x-ployz-approval", approval);
     }
@@ -718,14 +725,13 @@ enum RemovalRun {
     Succeeded(CloudRemoval),
 }
 
-/// How long `server rm` waits on Cloud's removal before it stops watching.
+/// How long `server rm` and `server forget` wait on Cloud's removal before it stops watching.
 const REMOVAL_WAIT: std::time::Duration = std::time::Duration::from_secs(600);
 
-/// Have Cloud remove Server `machine` of the credential's Organization: resetting it
-/// and accepting exactly `reset`'s Data Loss, or with none, only taking it out of the
-/// Cluster. It is the same durable removal the dashboard starts, which Cloud runs under
-/// its own connection; [`follow_removal`] waits for it. `approval` is the id of the
-/// human's approval, when Cloud asked for one.
+/// Have Cloud remove Server `machine` of the credential's Organization, resetting it
+/// and accepting exactly `confirmation`'s Data Loss. It is the same durable removal the
+/// dashboard starts, which Cloud runs under its own connection; [`follow_removal`]
+/// waits for it. `approval` is the id of the human's approval, when Cloud asked for one.
 ///
 /// # Errors
 ///
@@ -734,18 +740,38 @@ const REMOVAL_WAIT: std::time::Duration = std::time::Duration::from_secs(600);
 pub(crate) async fn start_removal(
     credential: &Credential,
     machine: &MachineId,
-    reset: Option<&ployz_core::DataLossConfirmation>,
+    confirmation: &ployz_core::DataLossConfirmation,
     approval: Option<&str>,
 ) -> Result<String, StoreCallError> {
-    let body = match reset {
-        Some(confirmation) => serde_json::json!({ "confirm_data_loss": confirmation }),
-        None => serde_json::json!({ "no_reset": true }),
-    };
     start_run(
         credential,
         Method::DELETE,
         &format!("servers/{machine}"),
-        &body,
+        &serde_json::json!({ "confirm_data_loss": confirmation }),
+        approval,
+    )
+    .await
+}
+
+/// Have Cloud forget Server `machine` of the credential's Organization: take it out of
+/// the Cluster without a reset. Cloud runs it as the same durable removal
+/// [`follow_removal`] waits for. `approval` is the id of the human's approval, when
+/// Cloud asked for one.
+///
+/// # Errors
+///
+/// Returns Cloud's refusal (`not_found` for a Server it doesn't reach,
+/// `approval_required`), or a Cloud failure.
+pub(crate) async fn start_forget(
+    credential: &Credential,
+    machine: &MachineId,
+    approval: Option<&str>,
+) -> Result<String, StoreCallError> {
+    start_run(
+        credential,
+        Method::POST,
+        &format!("servers/{machine}/forget"),
+        &serde_json::json!({}),
         approval,
     )
     .await

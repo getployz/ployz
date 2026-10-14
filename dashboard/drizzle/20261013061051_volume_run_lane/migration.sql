@@ -1,0 +1,4 @@
+ALTER TABLE "volume_run" ADD COLUMN "gen" bigint GENERATED ALWAYS AS IDENTITY (sequence name "volume_run_gen_seq" INCREMENT BY 1 MINVALUE 1 MAXVALUE 9223372036854775807 START WITH 1 CACHE 1);--> statement-breakpoint
+ALTER TABLE "volume_run" ADD COLUMN "phase" text DEFAULT 'warm' NOT NULL;--> statement-breakpoint
+ALTER TABLE "volume_run" ADD CONSTRAINT "volume_run_phase_check" CHECK ("phase" in ('warm','committed'));--> statement-breakpoint
+ALTER TABLE "volume_run" DROP CONSTRAINT "volume_run_state_check", ADD CONSTRAINT "volume_run_state_check" CHECK ("state" in ('requested','running','done','failed','cancelled','lost','not_started','yielded'));

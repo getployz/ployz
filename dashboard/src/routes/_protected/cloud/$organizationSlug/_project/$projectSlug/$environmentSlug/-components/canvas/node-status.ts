@@ -84,23 +84,44 @@ export function runtimeLine(
   }
 }
 
-/** What a Service's containers went through in the last hour, as its ⚠ says it. An OOM kill outranks a restart. */
+/** What a Service's containers went through lately, as its ⚠ says it. An OOM kill outranks a crash loop. */
 export type ContainerTrouble = "OOM" | "Restarting";
 
 /** How long a marker counts toward the ⚠ after it happened. */
 export const TROUBLE_WINDOW_MS = 60 * 60_000;
 
-/** What `markers` say at `now` (Unix milliseconds): only those in the hour before it count, however old the read is. */
-export function containerTrouble(markers: readonly Pick<Marker, "kind" | "at" | "server" | "replica">[], now: number): ContainerTrouble | null {
-  const recent = markers.filter((marker) => marker.at > now - TROUBLE_WINDOW_MS);
+/** How long a crash loop stays Restarting after its latest restart. Docker waits at most a minute between restarts. */
+export const LOOP_QUIET_MS = 10 * 60_000;
+
+/**
+ * Exit codes (128 + signal) of the signals a stop sends rather than a fault raises: SIGHUP, SIGINT, SIGQUIT, SIGKILL,
+ * SIGUSR1, SIGUSR2 and SIGTERM. Docker never restarts a stopped container and an OOM kill has its own marker, so a
+ * restart after one of these was asked for. Faults such as SIGSEGV or SIGABRT stay crashes.
+ */
+const STOP_SIGNAL_EXITS: ReadonlySet<number> = new Set([129, 130, 131, 137, 138, 140, 143]);
+
+/**
+ * What `markers` say at `now` (Unix milliseconds): only those in the hour before it count, however old the read is.
+ * A replica's crash loop is its run of restarts that each followed a crash: a non-zero exit not from a signal a stop sends. Any
+ * other exit, as a Deploy or a requested restart leaves, ends the run, and so does staying up for `LOOP_QUIET_MS`. The
+ * replica is Restarting while its run is two or more.
+ */
+export function containerTrouble(markers: readonly Pick<Marker, "kind" | "at" | "server" | "replica" | "exitCode">[], now: number): ContainerTrouble | null {
+  const recent = markers.filter((marker) => marker.at > now - TROUBLE_WINDOW_MS).sort((a, b) => a.at - b.at);
   if (recent.some((marker) => marker.kind === "oom")) return "OOM";
-  const restarted = new Set<string>();
-  for (const marker of recent.filter((marker) => marker.kind === "restart")) {
+  const loops = new Map<string, { crashed: boolean; restarts: number; last: number }>();
+  for (const marker of recent) {
     const replica = `${marker.server.id}/${marker.replica}`;
-    if (restarted.has(replica)) return "Restarting";
-    restarted.add(replica);
+    const loop = loops.get(replica) ?? { crashed: false, restarts: 0, last: 0 };
+    if (marker.kind === "exit") {
+      if (marker.exitCode !== undefined && marker.exitCode !== 0 && !STOP_SIGNAL_EXITS.has(marker.exitCode)) loops.set(replica, { ...loop, crashed: true });
+      else loops.delete(replica);
+    } else if (marker.kind === "restart" && loop.crashed) {
+      const restarts = marker.at - loop.last > LOOP_QUIET_MS ? 1 : loop.restarts + 1;
+      loops.set(replica, { crashed: false, restarts, last: marker.at });
+    }
   }
-  return null;
+  return [...loops.values()].some((loop) => loop.restarts >= 2 && loop.last > now - LOOP_QUIET_MS) ? "Restarting" : null;
 }
 
 /**
@@ -112,7 +133,7 @@ export type NodeIssues = { count: number; tone: "bad" | "warn"; monitoring: bool
 
 /**
  * What on a node the user can fix: a Service that's down or struggling, a failing healthcheck, domains that need them,
- * the hostname of an open uptime incident (`unreachable`), which is red, and an OOM kill or crash loop in the last hour
+ * the hostname of an open uptime incident (`unreachable`), which is red, and an OOM kill in the last hour or a crash loop
  * (`trouble`), which is amber. Uptime adds nothing when the Service is already down, and shares one issue with a domain
  * needing attention on the same hostname.
  */
@@ -183,4 +204,9 @@ export function restartedServices(deployment: Pick<DeploymentView, "nodes">): Re
  */
 export function stagedSurface(light: Lit | null | undefined, change: ReviewLifecycleKind | null): StagedColour | undefined {
   return light !== undefined || change === null ? undefined : stagedColour(change);
+}
+
+/** How many of a Service's secrets have no value, which its Deploys leave out. None when every secret has one. */
+export function notSetLabel(notSet: readonly string[]): string | undefined {
+  return notSet.length ? `${notSet.length} not set` : undefined;
 }

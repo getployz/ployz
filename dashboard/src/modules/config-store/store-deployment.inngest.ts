@@ -2,11 +2,12 @@ import {
   cancelStoreDeploymentRun, deployToFirstServer, failStoreDeploymentUnrun, forgetStoreDeploymentRun, publishedEnvironments, recordStoreDeploymentRun, runStoreDeployment, type StoreEffectRunner,
   stopStoreDeploymentRun, storeDeploymentRunner, unclaimedStoreDeployments,
 } from "#/modules/config-store/store-deployment.server";
+import { mailFailedGithubDeploy } from "#/modules/config-store/deploy-failed-mail.server";
 import { serversLackingEnsure } from "#/modules/runtime/daemon-compat.server";
 import type { PloyzInngest } from "#/modules/inngest/client";
 import { decodeInngestEnvelope } from "#/modules/inngest/envelope";
 import {
-  configDeploymentAdmittedEventType, configFirstServerJoinedEventType, createConfigDeploymentStartedEvent, githubBuildRunCompletedEvent, inngestFunctionCancelledEnvelopeSchema,
+  configDeploymentAdmittedEventType, configFirstServerJoinedEventType, createClusterDomainSyncRequestedEvent, createConfigDeploymentStartedEvent, githubBuildRunCompletedEvent, inngestFunctionCancelledEnvelopeSchema,
   inngestFunctionCancelledEventType, inngestFunctionFinishedEventType, type ConfigDeploymentAdmittedEventData,
 } from "#/modules/inngest/events";
 import {
@@ -17,7 +18,9 @@ import { followUp } from "#/modules/config-store/store-github.inngest";
 import { sweepStore } from "#/modules/config-store/store-pull-request.server";
 import { advancePlacement, type PlacementAdvance, type PlacementWait, refreshMirrors } from "#/modules/volume-placement/volume-placement.deploy.server";
 import { syncUptimeChecks } from "#/modules/uptime/uptime-sync.server";
-import { cleanOrphans } from "#/modules/volume-run/volume-run.server";
+import { fenceDeployVolume, finishDeployVolumes, placeDeployVolumes } from "#/modules/volume-run/volume-run.deploy.server";
+import { finishedVolumeRun } from "#/modules/volume-run/volume-run.inngest";
+import { cleanOrphans, closeVolumeRun } from "#/modules/volume-run/volume-run.server";
 import { runInngestEffect } from "#/server/run.server";
 
 export const RUN_STORE_DEPLOYMENT_FUNCTION_ID = "run-store-deployment";
@@ -39,7 +42,10 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Store
       concurrency: [{ key: "event.data.environmentId", limit: 1 }],
       onFailure: async ({ event }) => {
         const { organizationId, deploymentId } = event.data.event.data;
-        return runEffect(stopStoreDeploymentRun(organizationId, deploymentId, event.data.run_id));
+        await runEffect(finishDeployVolumes(event.data.run_id, "failed"));
+        const stopped = await runEffect(stopStoreDeploymentRun(organizationId, deploymentId, event.data.run_id));
+        await runEffect(mailFailedGithubDeploy(event.data.event.data));
+        return stopped;
       },
     },
     async ({ event, step, runId }) => {
@@ -47,24 +53,35 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Store
       const lacking = await step.run("servers-lacking", () => runEffect(serversLackingEnsure(event.data.organizationId)));
       if (lacking.length > 0) {
         const failure = `Deploys need a newer Ployz on ${lacking.join(", ")}`;
-        return step.run("servers-failed", () => runEffect(failStoreDeploymentUnrun(event.data.organizationId, event.data.environmentId, event.data.deploymentId, runId, failure)));
+        const failed = await step.run("servers-failed", () => runEffect(failStoreDeploymentUnrun(event.data.organizationId, event.data.environmentId, event.data.deploymentId, runId, failure)));
+        await step.run("mail-failure", () => runEffect(mailFailedGithubDeploy(event.data)));
+        return failed;
       }
       const github = await step.run("plan-builds", () => runEffect(planStoreGithubBuilds(event.data)));
       await Promise.all(github.map((target) => walkGithub(event.data.organizationId, target, step, runEffect)));
       const storage = await walkPlacement(event.data, step, runEffect);
       if (storage.kind === "failed") {
-        return step.run("storage-failed", () => runEffect(failStoreDeploymentUnrun(event.data.organizationId, event.data.environmentId, event.data.deploymentId, runId, storage.message, storage.restore)));
+        const failed = await step.run("storage-failed", () => runEffect(failStoreDeploymentUnrun(event.data.organizationId, event.data.environmentId, event.data.deploymentId, runId, storage.message, storage.restore)));
+        await step.run("mail-failure", () => runEffect(mailFailedGithubDeploy(event.data)));
+        return failed;
       }
       if (storage.kind === "done") {
         await step.run("refresh-mirrors", () => runEffect(refreshMirrors(event.data.organizationId, event.data.environmentId)));
       }
+      const { organizationId, environmentId, deploymentId } = event.data;
+      const lanes = await step.run("place-volumes", () => runEffect(placeDeployVolumes(organizationId, environmentId, deploymentId, runId)));
+      for (const lane of lanes) await step.run(`fence-${lane.run.volumeId}`, () => runEffect(fenceDeployVolume(lane, runId)));
       const ran = await step.run("run-deployment", () => runEffect(runStoreDeployment(event.data, storeDeploymentRunner(runId))));
+      await step.run("finish-volumes", () => runEffect(finishDeployVolumes(runId, "done")));
       const applied = "ran" in ran && ran.ran.status === "applied";
       // A failed Deployment can still have advanced Applied State, so the checks follow it either way. Only an applied
       // one is probed: a failed one may have stopped partway, and the schedule still checks what it reached.
       await step.run("sync-uptime", () =>
         runEffect(syncUptimeChecks(event.data.organizationId, event.data.environmentId, applied ? event.data.deploymentId : undefined)));
       await step.run("forget-run", () => runEffect(forgetStoreDeploymentRun(runId)));
+      if ("ran" in ran && ran.ran.ingress?.length) {
+        await step.sendEvent("sync-cluster-domain", createClusterDomainSyncRequestedEvent({ organizationId: event.data.organizationId }));
+      }
       // A closed Branch whose removal applied goes now, without its closer coming back for it.
       if (applied && ran.ran.remove) {
         await followUp(step, await step.run("sweep", () => runEffect(sweepStore(event.data.organizationId, new Date()))), runEffect);
@@ -73,6 +90,9 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Store
       // holds its Volumes' names until the sweep deletes it, so the scan comes after.
       if (applied) {
         await step.run("delete-orphan-mirrors", () => runEffect(cleanOrphans(event.data.organizationId)));
+      }
+      if ("ran" in ran && (ran.ran.status === "failed" || ran.ran.status === "unknown")) {
+        await step.run("mail-failure", () => runEffect(mailFailedGithubDeploy(event.data)));
       }
       return ran;
     },
@@ -104,6 +124,7 @@ export const createCancelStoreDeployment = (inngest: PloyzInngest, runEffect: St
     async ({ event, step }) => {
       // Only the worker's runs are recorded, so any other function's cancellation finds nothing to stop.
       const cancelled = decodeInngestEnvelope(inngestFunctionCancelledEnvelopeSchema)(event);
+      await step.run("finish-volumes", () => runEffect(finishDeployVolumes(cancelled.data.run_id, "cancelled")));
       return step.run("stop-run", () => runEffect(cancelStoreDeploymentRun(cancelled.data.run_id)));
     },
   );
@@ -133,25 +154,29 @@ async function walkGithub(organizationId: string, target: StoreGithubTarget, ste
   }
 }
 
-const PLACEMENT_CHECKS = 180;
+const PLACEMENT_PULLS = 144;
+const PLACEMENT_PULL_WAIT = "10m";
 
 /**
- * The Deploy's storage, before its Services: one Volume run at a time, each awaited until its row ends. A wait ends on
- * the run's finish or after a minute, then looks again, since the row closes just after the run finishes.
+ * The finished event names how the run ended, so the Deploy closes the row itself rather than wait for the closer; a wait
+ * that times out looks at the row again, since the event can be lost.
  */
 async function walkPlacement(data: ConfigDeploymentAdmittedEventData, step: Step, runEffect: StoreEffectRunner): Promise<PlacementAdvance> {
   let waited: PlacementWait | null = null;
-  for (let check = 0; check < PLACEMENT_CHECKS; check += 1) {
+  for (let pull = 0; pull < PLACEMENT_PULLS; pull += 1) {
     const last = waited;
-    const advanced = await step.run(`placement-${check}`, () => runEffect(advancePlacement(data.organizationId, data.deploymentId, last)));
+    const advanced = await step.run(`placement-${pull}`, () => runEffect(advancePlacement(data.organizationId, data.deploymentId, last)));
     if (advanced.kind !== "wait") return advanced;
     waited = advanced.wait;
-    const ended = await step.waitForEvent(`placement-wait-${check}`, {
-      event: inngestFunctionFinishedEventType, if: `async.data.event.data.runId == '${advanced.wait.runId}'`, timeout: "1m",
+    const finished = await step.waitForEvent(`placement-pull-${pull}`, {
+      event: inngestFunctionFinishedEventType, if: `async.data.event.data.runId == '${advanced.wait.runId}'`, timeout: PLACEMENT_PULL_WAIT,
     });
-    if (ended !== null) await step.sleep(`placement-close-${check}`, "3s");
+    if (finished !== null) {
+      const { runId, end } = finishedVolumeRun(finished);
+      await step.run(`placement-close-${pull}`, () => runEffect(closeVolumeRun(runId, end)));
+    }
   }
-  return { kind: "failed", message: "Its Volumes were still moving after three hours. Deploy again once they finish." };
+  return { kind: "failed", message: "Its Volumes were still copying after a day. Deploy again once they finish." };
 }
 
 /**

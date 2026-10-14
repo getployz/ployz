@@ -18,7 +18,7 @@ import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTi
 import { Command, CommandDialog, CommandGroup, CommandItem, CommandList, CommandSeparator, CommandShortcut } from "#/components/ui/command";
 import { Skeleton } from "#/components/ui/skeleton";
 import { Spinner } from "#/components/ui/spinner";
-import { githubBranchesQueryOptions, githubInstallUrlQueryOptions, githubRepoAccessQueryOptions, githubKeys } from "#/modules/github/github.queries";
+import { githubBranchesQueryOptions, githubRepoAccessQueryOptions, githubKeys, githubWebQueryOptions } from "#/modules/github/github.queries";
 import { getGithubReposCollection, preloadGithubRepos, useGithubReposReadState } from "#/modules/github/github.collection";
 import { requestGithubRepoSyncServerFn } from "#/modules/github/github.functions";
 import { useCollectionScope } from "#/collections/use-collection-scope";
@@ -184,8 +184,8 @@ function SelectorCommandDialog({
 function GitRepoSelectorActions() {
   const queryClient = useQueryClient();
   // Read together: sequential suspense would fetch these in series.
-  const [{ data: installUrlData }, { data: accessState }] = useSuspenseQueries({
-    queries: [githubInstallUrlQueryOptions(), githubRepoAccessQueryOptions()],
+  const [{ data: github }, { data: accessState }] = useSuspenseQueries({
+    queries: [githubWebQueryOptions(), githubRepoAccessQueryOptions()],
   });
   const { mutate: requestRepoSync, isPending: isRefreshing } = useMutation(
     {
@@ -215,7 +215,7 @@ function GitRepoSelectorActions() {
         <EmptyContent>
           <Button
             onClick={() => {
-              window.open(installUrlData.url, "_blank", "width=1020,height=680");
+              window.open(github.installUrl, "_blank", "width=1020,height=680");
             }}
           >
             Connect GitHub
@@ -231,7 +231,7 @@ function GitRepoSelectorActions() {
         value="Configure GitHub App"
         keywords={["github", "configure", "app"]}
         onSelect={() => {
-          window.open(installUrlData.url, "_blank", "width=1020,height=680");
+          window.open(github.installUrl, "_blank", "width=1020,height=680");
         }}
       >
         <Settings2Icon />

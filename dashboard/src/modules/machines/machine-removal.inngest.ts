@@ -17,7 +17,9 @@ import {
   cancelMachineRemoveAttemptActivity,
   completeMachineRemoveAttemptActivity,
   failOwnedMachineRemoveAttemptActivity,
+  observeLeavingServerActivity,
   prepareMachineRemoveAttemptActivity,
+  releaseLeavingLanesActivity,
   releaseServerActivity,
   removeMachineActivity,
 } from "#/modules/machines/machine-removal.server";
@@ -86,6 +88,10 @@ export async function executeProcessMachineRemove({
   }
 
   const attempt = prepared.attempt;
+  // Read before the removal: once the Server is gone the Cluster no longer names it or lists its copies.
+  const leaving = await step.run("observe-leaving-server", () =>
+    runInngestEffect(observeLeavingServerActivity({ organizationId: attempt.organizationId, machineId: attempt.machineId })),
+  );
   const sent = await step.run("remove-machine", () =>
     runInngestEffect(Effect.scoped(removeMachineActivity({ ...attempt, inngestRunId: runId }))),
   );
@@ -133,6 +139,15 @@ export async function executeProcessMachineRemove({
     );
     return { attemptId, status: "missing_identities" as const };
   }
+  await step.run("release-volume-lanes", () =>
+    runInngestEffect(releaseLeavingLanesActivity({
+      organizationId: attempt.organizationId,
+      machineId: attempt.machineId,
+      name: leaving.machine.name,
+      writes: leaving.writes,
+      held: leaving.held,
+    })),
+  );
   // Its own step: a retry after the reset releases again, never resets a Server that's gone.
   const release = await step.run("release-server", () =>
     runInngestEffect(

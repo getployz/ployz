@@ -592,6 +592,36 @@ impl Server {
         };
         Ok(StoreAt::Cloud { organization })
     }
+
+    async fn move_links_after_project_rename(&self, call: &Call<'_>, write: &Write) {
+        let Write::Store(ployz_store::Command::RenameProject(rename)) = write else {
+            return;
+        };
+        let store = match &call.store {
+            Some(store) => Ok(store.clone()),
+            None => self.store_at(call.backend).await,
+        };
+        let moved = match store {
+            Ok(StoreAt::Local) => Ok(store::LOCAL_ORGANIZATION.to_owned()),
+            Ok(StoreAt::Cloud { organization }) => Ok(organization.as_str().to_owned()),
+            Err(error) => Err(error),
+        }
+        .and_then(|acting| {
+            super::link::rename_project(
+                &self.account.config,
+                Some(&acting),
+                &rename.project,
+                &rename.name,
+            )
+            .map_err(|error| error.to_string())
+        });
+        if let Err(error) = moved {
+            crate::ui::note(format_args!(
+                "Renamed Project {} to {}, but this device's links still name {0}: {error}",
+                rename.project, rename.name
+            ));
+        }
+    }
 }
 
 /// MCP forbids reusing a request ID within a session, so the session and the ID name
@@ -724,7 +754,7 @@ impl Server {
             Ok(backend) => backend,
             Err(text) => return Ok(refused(text).into()),
         };
-        let (step, state, answered, until) = match request.request_state {
+        let (step, state, answered, until, store) = match request.request_state {
             Some(state) => {
                 let answer = answer(request.input_responses)?;
                 let held = self.waiting.take(&state, tool, &input)?;
@@ -733,26 +763,39 @@ impl Server {
                     return Ok(refused(late(verb, &held.asked, self.deadline)).into());
                 }
                 let step = Step::Write { write: held.write };
-                (step, held.state, Some((held.asked, answer)), held.until)
+                (
+                    step,
+                    held.state,
+                    Some((held.asked, answer)),
+                    held.until,
+                    None,
+                )
             }
             None => {
                 let store = match self.store_at(&backend).await {
                     Ok(store) => store,
                     Err(text) => return Ok(refused(text).into()),
                 };
-                let place = match (self.place)(store) {
+                let place = match (self.place)(store.clone()) {
                     Ok(place) => place,
                     Err(error) => return Ok(refused(error.to_string()).into()),
                 };
                 let key = (self.keys)(&self.session, &context.id, tool);
                 let (step, state) = tools::start(tool, input.clone(), &place, &key);
-                (step, state, None, Instant::now() + self.deadline)
+                (
+                    step,
+                    state,
+                    None,
+                    Instant::now() + self.deadline,
+                    Some(store),
+                )
             }
         };
         let call = Call {
             tool,
             input: &input,
             backend: &backend,
+            store,
             until,
         };
         tokio::select! {
@@ -876,6 +919,7 @@ struct Call<'a> {
     tool: &'a str,
     input: &'a Value,
     backend: &'a Backend<'a>,
+    store: Option<StoreAt>,
     until: Instant,
 }
 
@@ -897,7 +941,7 @@ fn typed(write: &Write) -> Option<String> {
             None => remove.project.to_string(),
         }),
         Write::Act(Act {
-            action: Action::RemoveServer { server, .. },
+            action: Action::RemoveServer { server, .. } | Action::ForgetServer { server },
             ..
         }) => Some(server.name.to_string()),
         Write::Store(_) | Write::Act(_) => None,
@@ -952,6 +996,9 @@ impl Server {
                             _ => None,
                         };
                         let Some(asked) = asked else {
+                            if written.is_ok() {
+                                self.move_links_after_project_rename(call, &write).await;
+                            }
                             (step, state) = tools::resume(state, vec![written]);
                             continue;
                         };

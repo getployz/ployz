@@ -40,9 +40,9 @@ function oidcToken(claims: Partial<RunnerClaims> = {}, key: crypto.KeyObject = s
 
 /** GitHub with `acme/web` through installation 7; its build workflow appears once `workflowReady` is set. */
 let workflowReady = false;
-const github = fakeGithubApiBy(({ url }): JsonValue | undefined => {
-  if (url === "https://api.github.com/repositories/42") return { id: 42, full_name: "acme/web", default_branch: "main" };
-  if (workflowReady && url === "https://api.github.com/repos/acme/web/actions/workflows/ployz-build.yml") {
+const github = fakeGithubApiBy(({ path }): JsonValue | undefined => {
+  if (path === "/repositories/42") return { id: 42, full_name: "acme/web", default_branch: "main" };
+  if (workflowReady && path === "/repos/acme/web/actions/workflows/ployz-build.yml") {
     return { path: ".github/workflows/ployz-build.yml", state: "active" };
   }
   return undefined;
@@ -64,7 +64,7 @@ it.live(
 
       // Auto tries GitHub first: GitHub gets the pinned build.
       yield* Effect.promise(() => store.pinSources(DEPLOYMENT, { web: HEAD }));
-      const data = { organizationId: ORGANIZATION, environmentId: ENVIRONMENT, deploymentId: DEPLOYMENT };
+      const data = { organizationId: ORGANIZATION, environmentId: ENVIRONMENT, deploymentId: DEPLOYMENT, trigger: "user" as const };
       const [target] = yield* provided(planStoreGithubBuilds(data));
       if (target === undefined) return expect.unreachable("GitHub gets the build");
       expect(target).toEqual({

@@ -727,7 +727,7 @@ fn a_provisioned_volume_without_a_writer_refuses_and_names_the_way_back() {
             "a switching root",
             vec![('1', CopyRole::Switching)],
             vec![provisioned_row('1')],
-            "Volume data is mid-Move; it is held as first (switching). Wait for the Move to finish, or run ployz volume release data",
+            "Volume data is mid-Move; it is held as first (switching); ployz volume release data stops it",
         ),
         (
             "slots on both",
@@ -777,7 +777,7 @@ fn a_cloud_volume_without_a_writer_is_named_as_authored() {
     assert!(matches!(error, PlanError::NoWriter { .. }), "{error}");
     assert_eq!(
         error.to_string(),
-        "Volume echo is mid-Move; it is held as first (switching). Wait for the Move to finish, or run ployz volume release echo"
+        "Volume echo is mid-Move; it is held as first (switching); ployz volume release echo stops it"
     );
 }
 

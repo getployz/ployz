@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
+
 use crate::{
     ContainerDetails, ContainerObservation, ContainerRuntimeObservation, HealthFailure,
     HealthObservation, HealthcheckSpec, LastHealthCheck, ResolvedServiceSpec, healthcheck_deadline,
@@ -42,38 +44,73 @@ pub fn settle_deadline(spec: &ResolvedServiceSpec) -> Duration {
     deadline.max(health_monitor(spec))
 }
 
-/// One look at a Container waited on to be ready: the verdict so far, and the
-/// offset the wait gives up at.
-///
-/// `healthcheck` is the Container's spec healthcheck when the caller has it.
-/// Without one the deadline comes from the healthcheck the Machine observed.
-#[must_use]
-pub fn ready_poll(
-    healthcheck: Option<&HealthcheckSpec>,
+/// Which run of a Container one inspect saw. Docker gives each start a new one,
+/// including the restarts its restart policy makes between two looks.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ContainerRun {
+    pub restart_count: i64,
+    pub started_at_unix_nanos: i64,
+}
+
+/// A wait on a Container started just now to be ready. It holds the run it first
+/// saw: a Container restarted during the wait isn't ready, however it looks when
+/// sampled.
+#[derive(Clone, Debug)]
+pub struct ReadyWait<'spec> {
+    healthcheck: Option<&'spec HealthcheckSpec>,
     monitor: Duration,
-    details: &ContainerDetails,
-    elapsed: Duration,
-) -> (HealthPoll, Duration) {
-    let observed = &details.container;
-    let health_deadline = health_deadline_for(healthcheck, observed);
-    let deadline = health_deadline.unwrap_or(monitor);
-    let monitor_deadline = if matches!(
-        healthcheck.or(observed.effective_healthcheck.as_ref()),
-        Some(HealthcheckSpec::Http(_))
-    ) {
-        deadline
-    } else {
-        monitor
-    };
-    let poll = classify_health(
-        &observed.runtime,
-        details.last_check.as_ref(),
-        elapsed,
-        monitor_deadline,
-        health_deadline,
-        HealthExpectation::ContainerReady,
-    );
-    (poll, deadline)
+    first_run: Option<ContainerRun>,
+}
+
+impl<'spec> ReadyWait<'spec> {
+    /// `healthcheck` is the Container's spec healthcheck when the caller has it.
+    /// Without one the deadline comes from the healthcheck the Machine observed.
+    #[must_use]
+    pub fn new(healthcheck: Option<&'spec HealthcheckSpec>, monitor: Duration) -> Self {
+        Self {
+            healthcheck,
+            monitor,
+            first_run: None,
+        }
+    }
+
+    /// One look at the Container: the verdict so far, and the offset the wait
+    /// gives up at.
+    pub fn poll(
+        &mut self,
+        details: &ContainerDetails,
+        elapsed: Duration,
+    ) -> (HealthPoll, Duration) {
+        let observed = &details.container;
+        let restarted = match &details.run {
+            Some(run) => self.first_run.get_or_insert_with(|| run.clone()) != run,
+            None => false,
+        };
+        let runtime = if restarted {
+            &ContainerRuntimeObservation::Restarting
+        } else {
+            &observed.runtime
+        };
+        let health_deadline = health_deadline_for(self.healthcheck, observed);
+        let deadline = health_deadline.unwrap_or(self.monitor);
+        let monitor_deadline = if matches!(
+            self.healthcheck.or(observed.effective_healthcheck.as_ref()),
+            Some(HealthcheckSpec::Http(_))
+        ) {
+            deadline
+        } else {
+            self.monitor
+        };
+        let poll = classify_health(
+            runtime,
+            details.last_check.as_ref(),
+            elapsed,
+            monitor_deadline,
+            health_deadline,
+            HealthExpectation::ContainerReady,
+        );
+        (poll, deadline)
+    }
 }
 
 #[must_use]
@@ -385,7 +422,69 @@ mod tests {
             environment: None,
             image_id: None,
             last_check,
+            run: None,
         }
+    }
+
+    fn run(restart_count: i64, started_at_unix_nanos: i64) -> Option<ContainerRun> {
+        Some(ContainerRun {
+            restart_count,
+            started_at_unix_nanos,
+        })
+    }
+
+    #[test]
+    fn a_container_restarted_between_two_running_looks_is_not_ready() {
+        let mut wait = ReadyWait::new(None, MONITOR);
+        let mut looked = details(running(HealthObservation::NotConfigured), None, None);
+        looked.run = run(0, 1);
+        assert_eq!(
+            wait.poll(&looked, Duration::from_secs(1)).0,
+            HealthPoll::PendingUntil(MONITOR)
+        );
+        looked.run = run(1, 1);
+        assert_eq!(
+            wait.poll(&looked, MONITOR).0,
+            HealthPoll::Failed(HealthFailure::Runtime {
+                observation: ContainerRuntimeObservation::Restarting,
+                last_check: None,
+            })
+        );
+    }
+
+    #[test]
+    fn a_container_started_again_between_two_looks_is_not_ready() {
+        let check = configured_check(60_000);
+        let mut wait = ReadyWait::new(Some(&check), MONITOR);
+        let mut starting = details(
+            running(HealthObservation::Starting),
+            Some(check.clone()),
+            None,
+        );
+        starting.run = run(0, 1);
+        assert!(matches!(
+            wait.poll(&starting, Duration::from_secs(1)).0,
+            HealthPoll::PendingUntil(_)
+        ));
+        let mut healthy = details(
+            running(HealthObservation::Healthy),
+            Some(check.clone()),
+            None,
+        );
+        healthy.run = run(0, 2);
+        assert!(matches!(
+            wait.poll(&healthy, Duration::from_secs(2)).0,
+            HealthPoll::Failed(HealthFailure::Runtime { .. })
+        ));
+    }
+
+    #[test]
+    fn a_container_on_one_run_through_the_monitor_window_is_ready() {
+        let mut wait = ReadyWait::new(None, MONITOR);
+        let mut looked = details(running(HealthObservation::NotConfigured), None, None);
+        looked.run = run(3, 1);
+        wait.poll(&looked, Duration::from_secs(1));
+        assert_eq!(wait.poll(&looked, MONITOR).0, HealthPoll::Complete);
     }
 
     #[test]
@@ -398,13 +497,14 @@ mod tests {
             Some(last_check.clone()),
         );
         assert_eq!(
-            ready_poll(Some(&check), MONITOR, &overdue, Duration::from_secs(10)),
+            ReadyWait::new(Some(&check), MONITOR).poll(&overdue, Duration::from_secs(10)),
             (
                 HealthPoll::PendingUntil(Duration::from_secs(30)),
                 Duration::from_secs(30)
             )
         );
-        let (poll, _) = ready_poll(Some(&check), MONITOR, &overdue, Duration::from_secs(30));
+        let (poll, _) =
+            ReadyWait::new(Some(&check), MONITOR).poll(&overdue, Duration::from_secs(30));
         assert_eq!(
             poll,
             HealthPoll::Failed(HealthFailure::TimedOut {
@@ -423,11 +523,13 @@ mod tests {
             None,
         );
         assert_eq!(
-            ready_poll(Some(&check), MONITOR, &unhealthy, Duration::from_secs(1)),
+            ReadyWait::new(Some(&check), MONITOR).poll(&unhealthy, Duration::from_secs(1)),
             (HealthPoll::PendingUntil(MONITOR), DEADLINE)
         );
         assert!(matches!(
-            ready_poll(Some(&check), MONITOR, &unhealthy, MONITOR).0,
+            ReadyWait::new(Some(&check), MONITOR)
+                .poll(&unhealthy, MONITOR)
+                .0,
             HealthPoll::Failed(HealthFailure::Runtime { .. })
         ));
     }
@@ -436,11 +538,11 @@ mod tests {
     fn without_a_healthcheck_the_wait_is_the_monitor_window() {
         let unchecked = details(running(HealthObservation::NotConfigured), None, None);
         assert_eq!(
-            ready_poll(None, MONITOR, &unchecked, Duration::from_secs(1)),
+            ReadyWait::new(None, MONITOR).poll(&unchecked, Duration::from_secs(1)),
             (HealthPoll::PendingUntil(MONITOR), MONITOR)
         );
         assert_eq!(
-            ready_poll(None, MONITOR, &unchecked, MONITOR),
+            ReadyWait::new(None, MONITOR).poll(&unchecked, MONITOR),
             (HealthPoll::Complete, MONITOR)
         );
     }
@@ -449,7 +551,9 @@ mod tests {
     fn an_image_check_without_timings_gets_the_default_deadline() {
         let starting = details(running(HealthObservation::Starting), None, None);
         assert_eq!(
-            ready_poll(None, MONITOR, &starting, Duration::ZERO).1,
+            ReadyWait::new(None, MONITOR)
+                .poll(&starting, Duration::ZERO)
+                .1,
             healthcheck_deadline(None)
         );
     }

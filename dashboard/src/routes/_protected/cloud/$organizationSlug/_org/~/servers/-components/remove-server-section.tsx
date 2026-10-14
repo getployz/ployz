@@ -1,12 +1,14 @@
 import { useRef, useState, type ReactNode } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useStillHere } from "#/hooks/use-still-here";
-import { Trash2Icon } from "lucide-react";
+import { Trash2Icon, UnplugIcon } from "lucide-react";
 import { toast } from "sonner";
 import { DeletionDialog, type DeletionItem } from "#/components/deletion-dialog";
 import { Button } from "#/components/ui/button";
+import { ForgetServersDialog } from "../../../-components/forget-servers-dialog";
 import {
   enqueueMachineRemoveServerFn,
+  forgetServerServerFn,
   getMachineRemoveAttemptServerFn,
   loadMachineDataLossServerFn,
 } from "#/modules/machines/machine-removal.functions";
@@ -58,10 +60,11 @@ const volumes = (rust: DataLossList["rust"]) =>
 /**
  * Removing a Server resets it and takes it out of the cluster; its volumes stay on its disk, unused. The `last` one takes
  * everything running with it, and Cloud lets go of the cluster: Deploy asks for a server until one is added. It waits on
- * the runtime, and once the Server is gone the page returns to Servers.
+ * the runtime, and once the Server is gone the page returns to Servers. An `offline` Server can't be reset, so it is
+ * forgotten instead: by another Server, or with Forget Servers when it is the last.
  */
-export function RemoveServerSection({ machine, organizationSlug, last, hint }: {
-  machine: RuntimeMachineRecord; organizationSlug: string; last: boolean;
+export function RemoveServerSection({ machine, organizationSlug, last, offline, hint }: {
+  machine: RuntimeMachineRecord; organizationSlug: string; last: boolean; offline: boolean;
   /** What still runs here, and the Drain button that would move it. */
   hint: ReactNode;
 }) {
@@ -78,7 +81,9 @@ export function RemoveServerSection({ machine, organizationSlug, last, hint }: {
   return (
     <>
     <SettingsSection id="remove-server" title="Danger">
-      <DangerRow
+      {offline ? last
+        ? <ForgetLastServerRow machine={machine} organizationSlug={organizationSlug} />
+        : <ForgetServerRow machine={machine} organizationSlug={organizationSlug} /> : <DangerRow
         title={`Remove ${machine.name}`}
         description={last
           ? "Resets it. It's your only server, so everything running here stops until you add another."
@@ -91,7 +96,7 @@ export function RemoveServerSection({ machine, organizationSlug, last, hint }: {
         }
       >
         {hint}
-      </DangerRow>
+      </DangerRow>}
     </SettingsSection>
       <DeletionDialog
         open={open}
@@ -137,6 +142,77 @@ export function RemoveServerSection({ machine, organizationSlug, last, hint }: {
         }}
       />
   </>
+  );
+}
+
+/** No other Server is left to forget the last one, so Forget Servers forgets the Cluster with it. */
+function ForgetLastServerRow({ machine, organizationSlug }: { machine: RuntimeMachineRecord; organizationSlug: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <DangerRow
+        title={`Forget ${machine.name}`}
+        description="It's gone, and it's your only server. Your projects and settings stay; its volumes can't be recovered."
+        action={
+          <Button variant="destructive" onClick={() => setOpen(true)}>
+            <UnplugIcon data-icon="inline-start" />
+            Forget server
+          </Button>
+        }
+      />
+      <ForgetServersDialog organizationSlug={organizationSlug} open={open} onOpenChange={setOpen} />
+    </>
+  );
+}
+
+/**
+ * Forgetting takes a Server that is gone for good out of the cluster without resetting it, then waits on the removal.
+ * A Server that doesn't answer can't list its volumes, so the list is often empty; the sentence still says they're lost.
+ */
+function ForgetServerRow({ machine, organizationSlug }: { machine: RuntimeMachineRecord; organizationSlug: string }) {
+  const navigate = useNavigate();
+  const markHere = useStillHere();
+  const [open, setOpen] = useState(false);
+
+  const load = async () => {
+    const lost = await loadMachineDataLossServerFn({ data: { organizationSlug, machineId: machine.id } })
+      .then(({ rust }) => volumes(rust), () => []);
+    return { items: lost, evidence: null };
+  };
+
+  const forget = async () => {
+    const stillHere = markHere();
+    const answer = await forgetServerServerFn({ data: { organizationSlug, machineId: machine.id, requestId: crypto.randomUUID() } });
+    const result = await waitForMachineRemoveAttempt(organizationSlug, answer.id, () => !stillHere());
+    if (result === "aborted") return;
+    if ("missing" in result) throw new Error(`${machine.name} changed while it was being forgotten. Try again.`);
+    toast(`${machine.name} forgotten`);
+    void navigate({ to: "/cloud/$organizationSlug/~/servers", params: { organizationSlug } });
+  };
+
+  return (
+    <>
+      <DangerRow
+        title={`Forget ${machine.name}`}
+        description="It's gone. Ployz stops waiting for it; its volumes can't be recovered."
+        action={
+          <Button variant="destructive" onClick={() => setOpen(true)}>
+            <UnplugIcon data-icon="inline-start" />
+            Forget server
+          </Button>
+        }
+      />
+      <DeletionDialog
+        open={open}
+        onOpenChange={setOpen}
+        title={`Forget ${machine.name}?`}
+        place={machine.name}
+        confirmLabel="Forget"
+        sentence={<>Ployz takes it out of the cluster without reaching it. Its volumes{" "}
+          <span className="text-destructive">can't be recovered</span>.</>}
+        callbacks={{ load, confirm: forget }}
+      />
+    </>
   );
 }
 

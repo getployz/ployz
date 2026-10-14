@@ -19,7 +19,8 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     corrosion::{
         CertificateChallenge, CertificateMaterial, CertificateRow, Error as CorrosionError,
-        ReplicatedStore, ServingPointers, Subscription, published_cover,
+        IngressRouteAck, IngressRouteChange, ReplicatedStore, ServingPointers, Subscription,
+        published_cover,
     },
     docker::LABEL_DEPLOYMENT,
     filesystem::{atomic_write, set_ployz_group},
@@ -379,6 +380,7 @@ where
     ConnectFuture: Future<Output = Result<Option<A>, caddy::Error>>,
 {
     let mut last_input = None;
+    let mut acked = BTreeMap::new();
     let mut warned_pointers = BTreeSet::new();
     'watch: loop {
         let subscriptions = async {
@@ -409,15 +411,19 @@ where
             ) {
                 (Ok(containers), Ok(certificates), Ok(pointers)) => {
                     pointers.warn_newly_malformed(&mut warned_pointers);
+                    let acks = route_acks(&containers.observations, &pointers);
                     Ok((
-                        IngressProjection::derive(
-                            &machine,
-                            &containers.observations,
-                            &certificates,
-                            &pointers,
+                        (
+                            IngressProjection::derive(
+                                &machine,
+                                &containers.observations,
+                                &certificates,
+                                &pointers,
+                            ),
+                            newest_local_ingress(&machine, &containers.observations),
+                            pointers,
                         ),
-                        newest_local_ingress(&machine, &containers.observations),
-                        pointers,
+                        acks,
                     ))
                 }
                 (Err(error), _, _) | (_, Err(error), _) | (_, _, Err(error)) => {
@@ -425,17 +431,16 @@ where
                 }
             };
             match input {
-                Ok(input) if last_input.as_ref() != Some(&input) => {
-                    let result = async {
-                        let admin = connect().await.map_err(io::Error::other)?;
-                        apply_caddy(&input.0, &config_file, admin.as_ref())
-                            .await
-                            .map_err(io::Error::other)
-                    }
-                    .await;
-                    match result {
-                        Ok(()) => last_input = Some(input),
-                        Err(error) => {
+                Ok((input, acks)) => {
+                    if last_input.as_ref() != Some(&input) {
+                        let result = async {
+                            let admin = connect().await.map_err(io::Error::other)?;
+                            apply_caddy(&input.0, &config_file, admin.as_ref())
+                                .await
+                                .map_err(io::Error::other)
+                        }
+                        .await;
+                        if let Err(error) = result {
                             eprintln!(
                                 "failed to update Ingress Proxy configuration: {error}",
                                 error = ployz_core::error_chain::inline(&error),
@@ -445,9 +450,10 @@ where
                             }
                             return Ok(());
                         }
+                        last_input = Some(input);
                     }
+                    publish_route_acks(&replicated, &machine.id, &mut acked, acks).await;
                 }
-                Ok(_) => {}
                 Err(error) => {
                     last_input = None;
                     eprintln!(
@@ -470,6 +476,69 @@ where
                 Err(error) if wait_to_retry(&error, &shutdown).await => continue 'watch,
                 Err(_) => return Ok(()),
             }
+        }
+    }
+}
+
+fn route_acks(
+    observations: &[ContainerObservation],
+    pointers: &ServingPointers,
+) -> BTreeMap<QualifiedService, IngressRouteAck> {
+    let mut acks: BTreeMap<_, _> = pointers
+        .iter()
+        .map(|(service, pointer)| {
+            let ack = IngressRouteAck {
+                deploy: pointer.deploy.clone(),
+                containers: BTreeSet::new(),
+            };
+            (service.clone(), ack)
+        })
+        .collect();
+    let containers = service_containers(observations.iter().cloned());
+    for serving in serving_containers(&containers, |service| pointers.get(service)) {
+        let observation = serving.as_observation();
+        if let Some(ack) = acks.get_mut(&observation.identity()) {
+            ack.containers.insert(observation.container_id);
+        }
+    }
+    acks
+}
+
+async fn publish_route_acks(
+    replicated: &ReplicatedStore,
+    machine_id: &MachineId,
+    acked: &mut BTreeMap<QualifiedService, Option<IngressRouteAck>>,
+    acks: BTreeMap<QualifiedService, IngressRouteAck>,
+) {
+    let mut changes: BTreeMap<_, _> = acked
+        .keys()
+        .filter(|service| !acks.contains_key(*service))
+        .map(|service| (service.clone(), IngressRouteChange::Delete))
+        .collect();
+    for (service, ack) in &acks {
+        if acked.get(service).and_then(Option::as_ref) != Some(ack) {
+            changes.insert(service.clone(), IngressRouteChange::Upsert(ack.clone()));
+        }
+    }
+    match replicated
+        .publish_ingress_routes(machine_id, &changes)
+        .await
+    {
+        Ok(()) => {
+            *acked = acks
+                .into_iter()
+                .map(|(service, ack)| (service, Some(ack)))
+                .collect()
+        }
+        Err(error) => {
+            // The write may have committed anyway, so the next pass rewrites or deletes these rows.
+            for service in changes.into_keys() {
+                acked.insert(service, None);
+            }
+            tracing::warn!(
+                error = %ployz_core::error_chain::inline(&error),
+                "failed to publish ingress route acks, retrying next pass"
+            );
         }
     }
 }

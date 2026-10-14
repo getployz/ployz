@@ -1,5 +1,144 @@
 [
   {
+    "tool": "docs",
+    "input": {
+      "query": "add a custom domain"
+    },
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
+    },
+    "call_key": "call-docs",
+    "turns": [
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": true,
+            "value": {
+              "query": "add a custom domain",
+              "results": [
+                {
+                  "anchor": "add-a-custom-domain",
+                  "excerpt": "Custom domains are free. 1. In Settings → Networking, click Custom Domain. 2. Enter the Domain, like app.example.com, leave Target port blank to use PORT, and click Save route. 3. Create the DNS…",
+                  "heading": "Add a custom domain",
+                  "path": "services/domains.md",
+                  "score": 49.22,
+                  "title": "Domains"
+                },
+                {
+                  "anchor": "custom-domain",
+                  "excerpt": "Adds a domain you own, like app.example.com, next to the generated one, and a service can have as many as you need. It needs a DNS record at your DNS provider. See Add a custom domain.",
+                  "heading": "Networking > Custom Domain",
+                  "path": "services/settings.md",
+                  "score": 32.87,
+                  "title": "Service settings"
+                },
+                {
+                  "anchor": "add-another-generated-domain",
+                  "excerpt": "A service can have several generated domains, like web and shop, each with its own port. Click Generate Domain again, edit Subdomain, which suggests a free one, like web-2, and click Generate Domain.…",
+                  "heading": "Generate a domain > Add another generated domain",
+                  "path": "services/domains.md",
+                  "score": 30.15,
+                  "title": "Domains"
+                },
+                {
+                  "anchor": "generate-a-domain",
+                  "excerpt": "…Settings → Networking. 2. Under Public Networking, click Generate Domain. 3. Leave Port blank to use PORT, or enter the port your app listens on. Click Generate Domain. 4. Click Deploy. The address…",
+                  "heading": "Generate a domain",
+                  "path": "services/domains.md",
+                  "score": 25.03,
+                  "title": "Domains"
+                },
+                {
+                  "anchor": "remove-a-domain",
+                  "excerpt": "Click the trash icon on the domain. It shows Removed on your next deploy and keeps serving until you deploy. Undo keeps it.",
+                  "heading": "Remove a domain",
+                  "path": "services/domains.md",
+                  "score": 23.04,
+                  "title": "Domains"
+                }
+              ]
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "tool": "docs",
+    "input": {
+      "query": "add a custom domain"
+    },
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": {
+        "at": "local"
+      }
+    },
+    "call_key": "call-docs",
+    "turns": [
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": true,
+            "value": {
+              "query": "add a custom domain",
+              "results": [
+                {
+                  "anchor": "add-a-custom-domain",
+                  "excerpt": "Custom domains are free. 1. In Settings → Networking, click Custom Domain. 2. Enter the Domain, like app.example.com, leave Target port blank to use PORT, and click Save route. 3. Create the DNS…",
+                  "heading": "Add a custom domain",
+                  "path": "services/domains.md",
+                  "score": 49.22,
+                  "title": "Domains"
+                },
+                {
+                  "anchor": "custom-domain",
+                  "excerpt": "Adds a domain you own, like app.example.com, next to the generated one, and a service can have as many as you need. It needs a DNS record at your DNS provider. See Add a custom domain.",
+                  "heading": "Networking > Custom Domain",
+                  "path": "services/settings.md",
+                  "score": 32.87,
+                  "title": "Service settings"
+                },
+                {
+                  "anchor": "add-another-generated-domain",
+                  "excerpt": "A service can have several generated domains, like web and shop, each with its own port. Click Generate Domain again, edit Subdomain, which suggests a free one, like web-2, and click Generate Domain.…",
+                  "heading": "Generate a domain > Add another generated domain",
+                  "path": "services/domains.md",
+                  "score": 30.15,
+                  "title": "Domains"
+                },
+                {
+                  "anchor": "generate-a-domain",
+                  "excerpt": "…Settings → Networking. 2. Under Public Networking, click Generate Domain. 3. Leave Port blank to use PORT, or enter the port your app listens on. Click Generate Domain. 4. Click Deploy. The address…",
+                  "heading": "Generate a domain",
+                  "path": "services/domains.md",
+                  "score": 25.03,
+                  "title": "Domains"
+                },
+                {
+                  "anchor": "remove-a-domain",
+                  "excerpt": "Click the trash icon on the domain. It shows Removed on your next deploy and keeps serving until you deploy. Undo keeps it.",
+                  "heading": "Remove a domain",
+                  "path": "services/domains.md",
+                  "score": 23.04,
+                  "title": "Domains"
+                }
+              ]
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
     "tool": "environment_show",
     "input": {
       "environment": "staging"
@@ -507,6 +646,127 @@
                 "tool": "environment_show"
               },
               "project": "docs"
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "tool": "project_rename",
+    "input": {
+      "project": "docs",
+      "to": "handbook"
+    },
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
+    },
+    "call_key": "call-project_rename",
+    "turns": [
+      {
+        "step": {
+          "step": "write",
+          "write": {
+            "at": "store",
+            "write": {
+              "command": "rename_project",
+              "project": "docs",
+              "name": "handbook"
+            }
+          }
+        },
+        "answers": [
+          {
+            "error": {
+              "code": "not_found",
+              "message": "No Project named docs",
+              "details": {}
+            }
+          }
+        ]
+      },
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": false,
+            "refusal": {
+              "code": "not_found",
+              "message": "No Project named docs",
+              "retry": {
+                "tool": "project_rename",
+                "input": {
+                  "project": "docs",
+                  "to": "handbook"
+                }
+              },
+              "writes": "none",
+              "next": []
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "tool": "project_rename",
+    "input": {
+      "project": "docs",
+      "to": "handbook"
+    },
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": {
+        "at": "local"
+      }
+    },
+    "call_key": "call-project_rename",
+    "turns": [
+      {
+        "step": {
+          "step": "write",
+          "write": {
+            "at": "store",
+            "write": {
+              "command": "rename_project",
+              "project": "docs",
+              "name": "handbook"
+            }
+          }
+        },
+        "answers": [
+          {
+            "error": {
+              "code": "not_found",
+              "message": "No Project named docs",
+              "details": {}
+            }
+          }
+        ]
+      },
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": false,
+            "refusal": {
+              "code": "not_found",
+              "message": "No Project named docs",
+              "retry": {
+                "tool": "project_rename",
+                "input": {
+                  "project": "docs",
+                  "to": "handbook"
+                }
+              },
+              "writes": "none",
+              "next": []
             }
           }
         }
@@ -1380,6 +1640,137 @@
                 "tool": "service_remove",
                 "input": {
                   "service": "web"
+                }
+              },
+              "writes": "none",
+              "next": []
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "tool": "domain_check",
+    "input": {
+      "domain": "app.example.com"
+    },
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
+    },
+    "call_key": "call-domain_check",
+    "turns": [
+      {
+        "step": {
+          "step": "read",
+          "asks": [
+            {
+              "at": "store",
+              "ask": {
+                "query": "domain",
+                "environment": {
+                  "project": "shop",
+                  "environment": null
+                },
+                "domain": "app.example.com"
+              }
+            }
+          ]
+        },
+        "answers": [
+          {
+            "error": {
+              "code": "not_found",
+              "message": "No such domain in Environment production",
+              "details": {
+                "valid_children": []
+              }
+            }
+          }
+        ]
+      },
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": false,
+            "refusal": {
+              "code": "not_found",
+              "message": "No such domain in Environment production",
+              "retry": {
+                "tool": "domain_check",
+                "input": {
+                  "domain": "app.example.com"
+                }
+              },
+              "writes": "none",
+              "next": []
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "tool": "domain_check",
+    "input": {
+      "domain": "app.example.com"
+    },
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": {
+        "at": "local"
+      }
+    },
+    "call_key": "call-domain_check",
+    "turns": [
+      {
+        "step": {
+          "step": "read",
+          "asks": [
+            {
+              "at": "store",
+              "ask": {
+                "query": "domain",
+                "environment": {
+                  "project": "shop",
+                  "environment": null
+                },
+                "domain": "app.example.com"
+              }
+            }
+          ]
+        },
+        "answers": [
+          {
+            "error": {
+              "code": "not_found",
+              "message": "No such domain in Environment production",
+              "details": {
+                "valid_children": []
+              }
+            }
+          }
+        ]
+      },
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": false,
+            "refusal": {
+              "code": "not_found",
+              "message": "No such domain in Environment production",
+              "retry": {
+                "tool": "domain_check",
+                "input": {
+                  "domain": "app.example.com"
                 }
               },
               "writes": "none",
@@ -2592,6 +2983,159 @@
     ]
   },
   {
+    "tool": "config_rename",
+    "input": {
+      "config": "nginx",
+      "to": "proxy"
+    },
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
+    },
+    "call_key": "call-config_rename",
+    "turns": [
+      {
+        "step": {
+          "step": "write",
+          "write": {
+            "at": "store",
+            "write": {
+              "command": "batch",
+              "environment": {
+                "project": "shop",
+                "environment": null
+              },
+              "commands": [
+                {
+                  "command": "rename_config",
+                  "environment": {
+                    "project": "shop",
+                    "environment": null
+                  },
+                  "config": "nginx",
+                  "name": "proxy"
+                }
+              ],
+              "expect": null
+            }
+          }
+        },
+        "answers": [
+          {
+            "error": {
+              "code": "not_found",
+              "message": "No Config named nginx in Environment production",
+              "details": {
+                "valid_children": []
+              }
+            }
+          }
+        ]
+      },
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": false,
+            "refusal": {
+              "code": "not_found",
+              "message": "No Config named nginx in Environment production",
+              "retry": {
+                "tool": "config_rename",
+                "input": {
+                  "config": "nginx",
+                  "to": "proxy"
+                }
+              },
+              "writes": "none",
+              "next": []
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "tool": "config_rename",
+    "input": {
+      "config": "nginx",
+      "to": "proxy"
+    },
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": {
+        "at": "local"
+      }
+    },
+    "call_key": "call-config_rename",
+    "turns": [
+      {
+        "step": {
+          "step": "write",
+          "write": {
+            "at": "store",
+            "write": {
+              "command": "batch",
+              "environment": {
+                "project": "shop",
+                "environment": null
+              },
+              "commands": [
+                {
+                  "command": "rename_config",
+                  "environment": {
+                    "project": "shop",
+                    "environment": null
+                  },
+                  "config": "nginx",
+                  "name": "proxy"
+                }
+              ],
+              "expect": null
+            }
+          }
+        },
+        "answers": [
+          {
+            "error": {
+              "code": "not_found",
+              "message": "No Config named nginx in Environment production",
+              "details": {
+                "valid_children": []
+              }
+            }
+          }
+        ]
+      },
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": false,
+            "refusal": {
+              "code": "not_found",
+              "message": "No Config named nginx in Environment production",
+              "retry": {
+                "tool": "config_rename",
+                "input": {
+                  "config": "nginx",
+                  "to": "proxy"
+                }
+              },
+              "writes": "none",
+              "next": []
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
     "tool": "config_remove",
     "input": {
       "config": "nginx",
@@ -3026,6 +3570,145 @@
                 "tool": "discard",
                 "input": {
                   "service": "web"
+                }
+              },
+              "writes": "none",
+              "next": []
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "tool": "history",
+    "input": {
+      "revision": 1,
+      "undo": true
+    },
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
+    },
+    "call_key": "call-history",
+    "turns": [
+      {
+        "step": {
+          "step": "read",
+          "asks": [
+            {
+              "at": "store",
+              "ask": {
+                "query": "history_preview",
+                "environment": {
+                  "project": "shop",
+                  "environment": null
+                },
+                "revision": 1,
+                "action": "undo",
+                "change": null
+              }
+            }
+          ]
+        },
+        "answers": [
+          {
+            "error": {
+              "code": "not_found",
+              "message": "No saved version has this revision",
+              "details": {
+                "revision": 1
+              }
+            }
+          }
+        ]
+      },
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": false,
+            "refusal": {
+              "code": "not_found",
+              "message": "No saved version has this revision",
+              "retry": {
+                "tool": "history",
+                "input": {
+                  "revision": 1,
+                  "undo": true
+                }
+              },
+              "writes": "none",
+              "next": []
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "tool": "history",
+    "input": {
+      "revision": 1,
+      "undo": true
+    },
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": {
+        "at": "local"
+      }
+    },
+    "call_key": "call-history",
+    "turns": [
+      {
+        "step": {
+          "step": "read",
+          "asks": [
+            {
+              "at": "store",
+              "ask": {
+                "query": "history_preview",
+                "environment": {
+                  "project": "shop",
+                  "environment": null
+                },
+                "revision": 1,
+                "action": "undo",
+                "change": null
+              }
+            }
+          ]
+        },
+        "answers": [
+          {
+            "error": {
+              "code": "not_found",
+              "message": "No saved version has this revision",
+              "details": {
+                "revision": 1
+              }
+            }
+          }
+        ]
+      },
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": false,
+            "refusal": {
+              "code": "not_found",
+              "message": "No saved version has this revision",
+              "retry": {
+                "tool": "history",
+                "input": {
+                  "revision": 1,
+                  "undo": true
                 }
               },
               "writes": "none",
@@ -3401,6 +4084,155 @@
     ]
   },
   {
+    "tool": "deployment_list",
+    "input": {
+      "environment": "staging",
+      "limit": 10
+    },
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
+    },
+    "call_key": "call-deployment_list",
+    "turns": [
+      {
+        "step": {
+          "step": "read",
+          "asks": [
+            {
+              "at": "store",
+              "ask": {
+                "query": "deployments",
+                "environment": {
+                  "project": "shop",
+                  "environment": "staging"
+                },
+                "limit": 10,
+                "cursor": null
+              }
+            }
+          ]
+        },
+        "answers": [
+          {
+            "error": {
+              "code": "not_found",
+              "message": "No Environment named staging in Project shop",
+              "details": {
+                "next": "ployz env new staging --project shop"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": false,
+            "refusal": {
+              "code": "not_found",
+              "message": "No Environment named staging in Project shop",
+              "retry": {
+                "tool": "deployment_list",
+                "input": {
+                  "environment": "staging",
+                  "limit": 10
+                }
+              },
+              "writes": "none",
+              "next": [],
+              "details": {
+                "fix": {
+                  "fix": "open_dashboard",
+                  "page": "environments"
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "tool": "deployment_list",
+    "input": {
+      "environment": "staging",
+      "limit": 10
+    },
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": {
+        "at": "local"
+      }
+    },
+    "call_key": "call-deployment_list",
+    "turns": [
+      {
+        "step": {
+          "step": "read",
+          "asks": [
+            {
+              "at": "store",
+              "ask": {
+                "query": "deployments",
+                "environment": {
+                  "project": "shop",
+                  "environment": "staging"
+                },
+                "limit": 10,
+                "cursor": null
+              }
+            }
+          ]
+        },
+        "answers": [
+          {
+            "error": {
+              "code": "not_found",
+              "message": "No Environment named staging in Project shop",
+              "details": {
+                "next": "ployz env new staging --project shop"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": false,
+            "refusal": {
+              "code": "not_found",
+              "message": "No Environment named staging in Project shop",
+              "retry": {
+                "tool": "deployment_list",
+                "input": {
+                  "environment": "staging",
+                  "limit": 10
+                }
+              },
+              "writes": "none",
+              "next": [],
+              "details": {
+                "fix": {
+                  "fix": "open_dashboard",
+                  "page": "environments"
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
     "tool": "deployment_show",
     "input": {
       "deployment": 12,
@@ -3463,7 +4295,7 @@
               "writes": "none",
               "next": [
                 {
-                  "tool": "deployment_show",
+                  "tool": "deployment_list",
                   "input": {}
                 }
               ]
@@ -3535,7 +4367,293 @@
               "writes": "none",
               "next": [
                 {
-                  "tool": "deployment_show",
+                  "tool": "deployment_list",
+                  "input": {}
+                }
+              ]
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "tool": "deployment_retry",
+    "input": {
+      "deployment": 12,
+      "request_key": "r8Tq2wLm5XcV"
+    },
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
+    },
+    "call_key": "call-deployment_retry",
+    "turns": [
+      {
+        "step": {
+          "step": "read",
+          "asks": [
+            {
+              "at": "store",
+              "ask": {
+                "query": "numbered_deployment",
+                "environment": {
+                  "project": "shop",
+                  "environment": null
+                },
+                "number": 12
+              }
+            }
+          ]
+        },
+        "answers": [
+          {
+            "error": {
+              "code": "not_found",
+              "message": "shop/production has no Deployment #12",
+              "details": {
+                "next": "ployz deployment ls"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": false,
+            "refusal": {
+              "code": "not_found",
+              "message": "shop/production has no Deployment #12",
+              "retry": {
+                "tool": "deployment_retry",
+                "input": {
+                  "deployment": 12,
+                  "request_key": "r8Tq2wLm5XcV"
+                }
+              },
+              "writes": "none",
+              "next": [
+                {
+                  "tool": "deployment_list",
+                  "input": {}
+                }
+              ]
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "tool": "deployment_retry",
+    "input": {
+      "deployment": 12,
+      "request_key": "r8Tq2wLm5XcV"
+    },
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": {
+        "at": "local"
+      }
+    },
+    "call_key": "call-deployment_retry",
+    "turns": [
+      {
+        "step": {
+          "step": "read",
+          "asks": [
+            {
+              "at": "store",
+              "ask": {
+                "query": "numbered_deployment",
+                "environment": {
+                  "project": "shop",
+                  "environment": null
+                },
+                "number": 12
+              }
+            }
+          ]
+        },
+        "answers": [
+          {
+            "error": {
+              "code": "not_found",
+              "message": "shop/production has no Deployment #12",
+              "details": {
+                "next": "ployz deployment ls"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": false,
+            "refusal": {
+              "code": "not_found",
+              "message": "shop/production has no Deployment #12",
+              "retry": {
+                "tool": "deployment_retry",
+                "input": {
+                  "deployment": 12,
+                  "request_key": "r8Tq2wLm5XcV"
+                }
+              },
+              "writes": "none",
+              "next": [
+                {
+                  "tool": "deployment_list",
+                  "input": {}
+                }
+              ]
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "tool": "deployment_start",
+    "input": {
+      "deployment": 12
+    },
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
+    },
+    "call_key": "call-deployment_start",
+    "turns": [
+      {
+        "step": {
+          "step": "read",
+          "asks": [
+            {
+              "at": "store",
+              "ask": {
+                "query": "numbered_deployment",
+                "environment": {
+                  "project": "shop",
+                  "environment": null
+                },
+                "number": 12
+              }
+            }
+          ]
+        },
+        "answers": [
+          {
+            "error": {
+              "code": "not_found",
+              "message": "shop/production has no Deployment #12",
+              "details": {
+                "next": "ployz deployment ls"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": false,
+            "refusal": {
+              "code": "not_found",
+              "message": "shop/production has no Deployment #12",
+              "retry": {
+                "tool": "deployment_start",
+                "input": {
+                  "deployment": 12
+                }
+              },
+              "writes": "none",
+              "next": [
+                {
+                  "tool": "deployment_list",
+                  "input": {}
+                }
+              ]
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "tool": "deployment_start",
+    "input": {
+      "deployment": 12
+    },
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": {
+        "at": "local"
+      }
+    },
+    "call_key": "call-deployment_start",
+    "turns": [
+      {
+        "step": {
+          "step": "read",
+          "asks": [
+            {
+              "at": "store",
+              "ask": {
+                "query": "numbered_deployment",
+                "environment": {
+                  "project": "shop",
+                  "environment": null
+                },
+                "number": 12
+              }
+            }
+          ]
+        },
+        "answers": [
+          {
+            "error": {
+              "code": "not_found",
+              "message": "shop/production has no Deployment #12",
+              "details": {
+                "next": "ployz deployment ls"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": false,
+            "refusal": {
+              "code": "not_found",
+              "message": "shop/production has no Deployment #12",
+              "retry": {
+                "tool": "deployment_start",
+                "input": {
+                  "deployment": 12
+                }
+              },
+              "writes": "none",
+              "next": [
+                {
+                  "tool": "deployment_list",
                   "input": {}
                 }
               ]
@@ -3606,7 +4724,7 @@
               "writes": "none",
               "next": [
                 {
-                  "tool": "deployment_show",
+                  "tool": "deployment_list",
                   "input": {}
                 }
               ]
@@ -3676,7 +4794,7 @@
               "writes": "none",
               "next": [
                 {
-                  "tool": "deployment_show",
+                  "tool": "deployment_list",
                   "input": {}
                 }
               ]
@@ -4371,6 +5489,115 @@
     ]
   },
   {
+    "tool": "server_logs",
+    "input": {
+      "lines": 50,
+      "process": "docker",
+      "server": "web-1"
+    },
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
+    },
+    "call_key": "call-server_logs",
+    "turns": [
+      {
+        "step": {
+          "step": "read",
+          "asks": [
+            {
+              "at": "cloud",
+              "ask": {
+                "query": "servers",
+                "only": null
+              }
+            }
+          ]
+        },
+        "answers": [
+          {
+            "error": {
+              "code": "unavailable",
+              "message": "no Ployz Cloud in this transcript",
+              "details": null
+            }
+          }
+        ]
+      },
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": false,
+            "refusal": {
+              "code": "unavailable",
+              "message": "no Ployz Cloud in this transcript",
+              "retry": {
+                "tool": "server_logs",
+                "input": {
+                  "lines": 50,
+                  "process": "docker",
+                  "server": "web-1"
+                }
+              },
+              "writes": "none",
+              "next": []
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "tool": "server_logs",
+    "input": {
+      "lines": 50,
+      "process": "docker",
+      "server": "web-1"
+    },
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": {
+        "at": "local"
+      }
+    },
+    "call_key": "call-server_logs",
+    "turns": [
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": false,
+            "refusal": {
+              "code": "not_here",
+              "message": "This needs Ployz Cloud; a local Config Store cannot answer it",
+              "retry": {
+                "tool": "server_logs",
+                "input": {
+                  "lines": 50,
+                  "process": "docker",
+                  "server": "web-1"
+                }
+              },
+              "writes": "none",
+              "next": [],
+              "details": {
+                "fix": {
+                  "fix": "use_cloud"
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
     "tool": "server_metrics",
     "input": {
       "server": "web-1",
@@ -4765,7 +5992,7 @@
               "writes": "none",
               "next": [
                 {
-                  "tool": "deployment_show",
+                  "tool": "deployment_list",
                   "input": {}
                 }
               ]
@@ -4936,7 +6163,7 @@
               "writes": "none",
               "next": [
                 {
-                  "tool": "deployment_show",
+                  "tool": "deployment_list",
                   "input": {}
                 }
               ]
@@ -5499,6 +6726,111 @@
                   "input": {}
                 }
               ],
+              "details": {
+                "fix": {
+                  "fix": "use_cloud"
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "tool": "server_set",
+    "input": {
+      "accepts_ingress": false,
+      "server": "db-1"
+    },
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
+    },
+    "call_key": "call-server_set",
+    "turns": [
+      {
+        "step": {
+          "step": "read",
+          "asks": [
+            {
+              "at": "cloud",
+              "ask": {
+                "query": "servers",
+                "only": null
+              }
+            }
+          ]
+        },
+        "answers": [
+          {
+            "error": {
+              "code": "unavailable",
+              "message": "no Ployz Cloud in this transcript",
+              "details": null
+            }
+          }
+        ]
+      },
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": false,
+            "refusal": {
+              "code": "unavailable",
+              "message": "no Ployz Cloud in this transcript",
+              "retry": {
+                "tool": "server_set",
+                "input": {
+                  "accepts_ingress": false,
+                  "server": "db-1"
+                }
+              },
+              "writes": "none",
+              "next": []
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "tool": "server_set",
+    "input": {
+      "accepts_ingress": false,
+      "server": "db-1"
+    },
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": {
+        "at": "local"
+      }
+    },
+    "call_key": "call-server_set",
+    "turns": [
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": false,
+            "refusal": {
+              "code": "not_here",
+              "message": "This needs Ployz Cloud; a local Config Store cannot answer it",
+              "retry": {
+                "tool": "server_set",
+                "input": {
+                  "accepts_ingress": false,
+                  "server": "db-1"
+                }
+              },
+              "writes": "none",
+              "next": [],
               "details": {
                 "fix": {
                   "fix": "use_cloud"
@@ -6349,6 +7681,140 @@
     ]
   },
   {
+    "tool": "volume_restore",
+    "input": {
+      "from": "db-2",
+      "volume": "pgdata",
+      "wait_seconds": 120
+    },
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
+    },
+    "call_key": "call-volume_restore",
+    "turns": [
+      {
+        "step": {
+          "step": "read",
+          "asks": [
+            {
+              "at": "store",
+              "ask": {
+                "query": "volume",
+                "environment": {
+                  "project": "shop",
+                  "environment": null
+                },
+                "volume": "pgdata"
+              }
+            },
+            {
+              "at": "cloud",
+              "ask": {
+                "query": "servers",
+                "only": null
+              }
+            }
+          ]
+        },
+        "answers": [
+          {
+            "error": {
+              "code": "not_found",
+              "message": "No Volume named pgdata in Environment production",
+              "details": {
+                "valid_children": []
+              }
+            }
+          },
+          {
+            "error": {
+              "code": "unavailable",
+              "message": "no Ployz Cloud in this transcript",
+              "details": null
+            }
+          }
+        ]
+      },
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": false,
+            "refusal": {
+              "code": "not_found",
+              "message": "No Volume named pgdata in Environment production",
+              "retry": {
+                "tool": "volume_restore",
+                "input": {
+                  "from": "db-2",
+                  "volume": "pgdata",
+                  "wait_seconds": 120
+                }
+              },
+              "writes": "none",
+              "next": []
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "tool": "volume_restore",
+    "input": {
+      "from": "db-2",
+      "volume": "pgdata",
+      "wait_seconds": 120
+    },
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": {
+        "at": "local"
+      }
+    },
+    "call_key": "call-volume_restore",
+    "turns": [
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": false,
+            "refusal": {
+              "code": "not_here",
+              "message": "This needs Ployz Cloud; a local Config Store cannot answer it",
+              "retry": {
+                "tool": "volume_restore",
+                "input": {
+                  "from": "db-2",
+                  "volume": "pgdata",
+                  "wait_seconds": 120
+                }
+              },
+              "writes": "none",
+              "next": [
+                {
+                  "tool": "environment_show",
+                  "input": {}
+                }
+              ],
+              "details": {
+                "fix": {
+                  "fix": "use_cloud"
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
     "tool": "environment_remove",
     "input": {
       "environment": "preview",
@@ -6702,6 +8168,107 @@
               "message": "This needs Ployz Cloud; a local Config Store cannot answer it",
               "retry": {
                 "tool": "server_remove",
+                "input": {
+                  "server": "web-3"
+                }
+              },
+              "writes": "none",
+              "next": [],
+              "details": {
+                "fix": {
+                  "fix": "use_cloud"
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "tool": "server_forget",
+    "input": {
+      "server": "web-3"
+    },
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
+    },
+    "call_key": "call-server_forget",
+    "turns": [
+      {
+        "step": {
+          "step": "read",
+          "asks": [
+            {
+              "at": "cloud",
+              "ask": {
+                "query": "servers",
+                "only": null
+              }
+            }
+          ]
+        },
+        "answers": [
+          {
+            "error": {
+              "code": "unavailable",
+              "message": "no Ployz Cloud in this transcript",
+              "details": null
+            }
+          }
+        ]
+      },
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": false,
+            "refusal": {
+              "code": "unavailable",
+              "message": "no Ployz Cloud in this transcript",
+              "retry": {
+                "tool": "server_forget",
+                "input": {
+                  "server": "web-3"
+                }
+              },
+              "writes": "none",
+              "next": []
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "tool": "server_forget",
+    "input": {
+      "server": "web-3"
+    },
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": {
+        "at": "local"
+      }
+    },
+    "call_key": "call-server_forget",
+    "turns": [
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": false,
+            "refusal": {
+              "code": "not_here",
+              "message": "This needs Ployz Cloud; a local Config Store cannot answer it",
+              "retry": {
+                "tool": "server_forget",
                 "input": {
                   "server": "web-3"
                 }
