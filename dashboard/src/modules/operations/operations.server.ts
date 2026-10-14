@@ -146,6 +146,6 @@ export const actService = (
 ) =>
   admitOperation(
     caller.organization.id,
-    { tool: `service_${input.verb}`, key: call.key, body: { environmentId: input.environmentId, service: input.service, only: input.only } },
+    { tool: OPERATIONS[`service.${input.verb}`].idempotency, key: call.key, body: { environmentId: input.environmentId, service: input.service, only: input.only } },
     Effect.succeed((attemptId: string) => requestServiceAct(actor(caller), { attemptId, ...input })),
   );

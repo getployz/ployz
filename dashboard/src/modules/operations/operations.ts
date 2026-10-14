@@ -67,6 +67,22 @@ const AGENT_LOSS = { via: ["accept_volume_loss", "version"] } as const;
 const STAGED = { absent: "The dashboard stages it in the Volume's placement, and the deploy runs it." } as const;
 const VOLUME_RUNS = "POST volumes/:id/runs";
 
+/** Restart, start or stop a Service's containers, on one Server or all. */
+const serviceAct = <const T extends Extract<OperationTool, `service_${string}`>>(tool: T) =>
+  operation({
+    options: Schema.Struct({ service: Name, environment: Name, only: Name, wait: Seconds }),
+    gate: "none",
+    idempotency: tool,
+    surfaces: {
+      cli: { absent: "`ployz service` reaches the Servers through Server Access, not a Cloud run." },
+      agent: {
+        tool,
+        options: { service: { via: "service" }, environment: AGENT_ENVIRONMENT, only: { via: "server" }, wait: { via: "wait_seconds" } },
+      },
+      ui: { absent: "The dashboard has no control to restart, start or stop a Service." },
+    },
+  });
+
 /** Every Cloud operation, and how each surface (CLI, agent, dashboard) carries each of its options. */
 export const OPERATIONS = {
   "server.remove": operation({
@@ -308,6 +324,9 @@ export const OPERATIONS = {
       },
     },
   }),
+  "service.restart": serviceAct("service_restart"),
+  "service.start": serviceAct("service_start"),
+  "service.stop": serviceAct("service_stop"),
   "servers.forget_all": operation({
     options: Schema.Struct({ organization: Name }),
     gate: "none",
