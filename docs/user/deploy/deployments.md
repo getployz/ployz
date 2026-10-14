@@ -155,9 +155,10 @@ their recorded outcomes.
 
 Ployz starts the new replicas of a service alongside the old ones and waits until they're all
 ready. Then every server switches the service's traffic to the new replicas at once, and the old
-replicas stop only after every server has switched, so your app keeps serving. Before any replica
-stops, its server marks it as stopping so every server taking web traffic stops sending it
-requests, and the replica stops a few seconds later.
+replicas stop once every server has switched, so your app keeps serving. A server that stops
+answering holds the old replicas for at most five minutes; after that they stop anyway. Before
+any replica stops, its server marks it as stopping so every server taking web traffic stops
+sending it requests, and the replica stops a few seconds later.
 
 - **Set a health check.** Under **Settings → Deploy**, set **Healthcheck** to an HTTP path like
   `/up` or a command like `pg_isready -h 127.0.0.1`. A new replica is ready when the path answers
