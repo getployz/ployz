@@ -332,14 +332,14 @@ pub(crate) enum Protection {
     /// The row names it in `containers`; it leaves only through `Rotation::leaving`.
     Pointed(ServingPointer),
     /// The row names it in `retiring`; ployzd stops it after every Machine acknowledges.
-    Retiring,
+    Retiring(ServingPointer),
 }
 
 impl Protection {
     pub(crate) fn of(read: Option<ServingPointer>, copy: &ContainerId) -> Self {
         match read {
             Some(pointer) if pointer.containers.contains(copy) => Self::Pointed(pointer),
-            Some(pointer) if pointer.retiring.contains(copy) => Self::Retiring,
+            Some(pointer) if pointer.retiring.contains(copy) => Self::Retiring(pointer),
             _ => Self::Unnamed,
         }
     }

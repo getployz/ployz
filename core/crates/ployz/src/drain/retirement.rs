@@ -3,10 +3,10 @@
 use std::time::Duration;
 
 use ployz_core::{
-    AnonymousVolumes, ContainerId, ContainerKind, ContainerLocator, ContainerWant, Drain,
-    EnvironmentValues, ListContainersRequest, LiveServices, Machine, MachineId, MachineName,
+    AnonymousVolumes, ContainerId, ContainerKind, ContainerLocator, ContainerWant, DeploymentLogId,
+    Drain, EnvironmentValues, ListContainersRequest, LiveServices, Machine, MachineId, MachineName,
     MachineTarget, ObservedGlobalSlotSpec, QualifiedService, RpcError, RpcErrorCode,
-    ServicePlacementEligibility, op,
+    ServicePlacementEligibility, ServingPointer, op,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -146,8 +146,11 @@ impl CopyLister for Client {
 }
 
 /// Retire every copy of `service` on `machine_id` under the pointer-membership contract:
-/// a read immediately before each step decides it. Fails once `wait` passes with a copy
-/// still listed.
+/// a read immediately before each step decides it. The call is bound to the Deploy its
+/// first pointer read names, whether that read finds the copy pointed or retiring, since
+/// the caller judged eligibility against that Deploy's spec; a pointer of another Deploy
+/// ends it so the caller observes again. Fails once `wait` passes with a copy still
+/// listed.
 pub(crate) async fn retire_copies<C: CopyLister>(
     client: &mut C,
     machine_id: &MachineId,
@@ -156,6 +159,7 @@ pub(crate) async fn retire_copies<C: CopyLister>(
     cancellation: &CancellationToken,
 ) -> Result<(), RpcError> {
     let deadline = tokio::time::Instant::now() + wait;
+    let mut bound: Option<DeploymentLogId> = None;
     loop {
         let copies = cancellable(cancellation, client.copies_on(machine_id, service)).await?;
         let mut waiting = false;
@@ -165,6 +169,7 @@ pub(crate) async fn retire_copies<C: CopyLister>(
                     cancellable(cancellation, client.remove_copy(machine_id, &copy)).await?;
                 }
                 Protection::Pointed(pointer) => {
+                    bind(&mut bound, &pointer, service)?;
                     amend_pointer(
                         client,
                         service,
@@ -175,7 +180,10 @@ pub(crate) async fn retire_copies<C: CopyLister>(
                     .await?;
                     waiting = true;
                 }
-                Protection::Retiring => waiting = true,
+                Protection::Retiring(pointer) => {
+                    bind(&mut bound, &pointer, service)?;
+                    waiting = true;
+                }
             }
         }
         if !waiting {
@@ -198,6 +206,25 @@ pub(crate) async fn retire_copies<C: CopyLister>(
         })
         .await?;
     }
+}
+
+fn bind(
+    bound: &mut Option<DeploymentLogId>,
+    pointer: &ServingPointer,
+    service: &QualifiedService,
+) -> Result<(), RpcError> {
+    if *bound.get_or_insert_with(|| pointer.deploy.clone()) == pointer.deploy {
+        return Ok(());
+    }
+    Err(RpcError {
+        code: RpcErrorCode::Conflict,
+        message: format!(
+            "a newer deploy {} of {service} published its pointer; observe the Server again",
+            pointer.deploy
+        ),
+        details: serde_json::Value::Null,
+        cause: Vec::new(),
+    })
 }
 
 async fn cancellable<T>(

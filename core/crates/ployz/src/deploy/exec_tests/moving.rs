@@ -505,3 +505,86 @@ async fn a_pointer_published_after_the_stop_keeps_the_old_container_unremoved() 
         "the stopped copy is left for its pointer's retire path"
     );
 }
+
+#[tokio::test]
+async fn an_unreadable_pointer_after_the_stop_reports_the_old_container_stopped() {
+    use crate::deploy::convergence::{AtRemoval, OldCopy, OldCopyGate};
+    use crate::serving_publish::PointerClient;
+    use crate::serving_publish::tests::FakeRow;
+
+    struct UnreadableOnSecondRead {
+        row: FakeRow,
+        reads: u32,
+    }
+
+    impl PointerClient for UnreadableOnSecondRead {
+        async fn pointer_publisher(&mut self) -> Result<ployz_core::MachineTarget, RpcError> {
+            self.row.pointer_publisher().await
+        }
+
+        async fn read_pointer_at(
+            &mut self,
+            at: &mut ployz_core::MachineTarget,
+            service: &QualifiedService,
+        ) -> Result<Option<ployz_core::ServingPointer>, RpcError> {
+            self.reads += 1;
+            if self.reads == 2 {
+                return Err(unavailable("the publisher is away"));
+            }
+            self.row.read_pointer_at(at, service).await
+        }
+
+        async fn publish_pointer_at(
+            &mut self,
+            at: &mut ployz_core::MachineTarget,
+            request: ployz_core::PublishServingPointerRequest,
+        ) -> Result<ployz_core::ServingPointerPublication, RpcError> {
+            self.row.publish_pointer_at(at, request).await
+        }
+    }
+
+    let client = Scripted::new(vec![
+        created(
+            Call::Run(machine(TO), ContainerKind::ServiceContainer),
+            &container('b'),
+        ),
+        ok(Call::Stop(machine(FROM), container('a'))),
+    ]);
+    let service = QualifiedService::parse("app/web").unwrap();
+    let (namespace, spec, to, from, old) = (
+        test_namespace(),
+        spec(Some(0), None, None),
+        machine(TO),
+        machine(FROM),
+        container('a'),
+    );
+    let mut gate = OldCopyGate {
+        at_removal: AtRemoval::of(OldCopy::Remove, &old),
+        reader: UnreadableOnSecondRead {
+            row: FakeRow::default(),
+            reads: 0,
+        },
+        service: &service,
+        old: &old,
+    };
+    let moved = move_container(
+        &client,
+        &namespace,
+        (&spec, None),
+        &to,
+        (&from, &old),
+        &mut gate,
+        &CancellationToken::new(),
+    )
+    .await;
+    assert_eq!(moved.unwrap(), container('b'), "the replacement stays");
+    client.assert_done();
+    assert_eq!(
+        gate.at_removal,
+        AtRemoval::Unread {
+            detail: crate::ui::row(&unavailable("the publisher is away")),
+            old_stopped: true,
+        },
+        "the stop that already happened is reported"
+    );
+}

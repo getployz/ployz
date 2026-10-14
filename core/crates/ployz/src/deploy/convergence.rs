@@ -535,11 +535,14 @@ async fn move_one(
                     deploy,
                 }),
             )),
-            AtRemoval::Unread(detail) => Err(MoveFailure::OldNotRemoved {
+            AtRemoval::Unread {
+                detail,
+                old_stopped,
+            } => Err(MoveFailure::OldNotRemoved {
                 from,
                 to,
                 detail: format!("reading its Serving Pointer before removing it: {detail}"),
-                old_stopped: false,
+                old_stopped,
             }),
         },
         Err(MoveContainerError::NotServing {
@@ -581,8 +584,9 @@ pub(in crate::deploy) enum AtRemoval {
     Pointed(DeploymentLogId),
     /// Its pointer already retires it; ployzd stops it after every Machine acknowledged.
     Retiring,
-    /// The pointer could not be read; the old copy stays until it can be.
-    Unread(String),
+    /// The pointer could not be read; the old copy stays until it can be, stopped already
+    /// when the read came after the stop.
+    Unread { detail: String, old_stopped: bool },
 }
 
 impl AtRemoval {
@@ -601,7 +605,7 @@ impl AtRemoval {
     pub(in crate::deploy) fn replacement_deploy(&self) -> Option<DeploymentLogId> {
         match self {
             Self::Pointed(deploy) => Some(deploy.clone()),
-            Self::Remove | Self::Retiring | Self::Unread(_) => None,
+            Self::Remove | Self::Retiring | Self::Unread { .. } => None,
         }
     }
 }
@@ -616,12 +620,15 @@ pub(in crate::deploy) struct OldCopyGate<'a, C> {
 }
 
 impl<C: PointerClient> RemovesOld for OldCopyGate<'_, C> {
-    async fn removes_old(&mut self) -> bool {
+    async fn removes_old(&mut self, old_stopped: bool) -> bool {
         self.at_removal = match protection(&mut self.reader, self.service, self.old).await {
             Ok(Protection::Unnamed) => AtRemoval::Remove,
             Ok(Protection::Pointed(pointer)) => AtRemoval::Pointed(pointer.deploy),
-            Ok(Protection::Retiring) => AtRemoval::Retiring,
-            Err(error) => AtRemoval::Unread(crate::ui::row(&error)),
+            Ok(Protection::Retiring(_)) => AtRemoval::Retiring,
+            Err(error) => AtRemoval::Unread {
+                detail: crate::ui::row(&error),
+                old_stopped,
+            },
         };
         self.at_removal == AtRemoval::Remove
     }
@@ -849,12 +856,18 @@ mod tests {
         old_copy_wants: Vec<&'static str>,
     }
 
-    async fn moved_through_client(pointer: Option<ployz_core::ServingPointer>) -> ClientMove {
+    /// Moves the first copy of `two_on_a` through a real Client. Each pointer read answers
+    /// `pointer`, except read number `unreadable_read`, which fails.
+    async fn moved_through_client(
+        pointer: Option<ployz_core::ServingPointer>,
+        unreadable_read: Option<u32>,
+    ) -> ClientMove {
         use ployz_core::{
             ContainerDetails, ContainerLocator, ContainerNow, ContainerWant, EnsuredContainer,
             ImageSummary, MachineImages, MachineList, OpaquePayload, RpcRequestBody, RpcResponse,
             RunTarget, ServingPointerRead,
         };
+        use std::sync::atomic::{AtomicU32, Ordering};
         use std::sync::{Arc, Mutex};
         use tonic::{Request, Response};
 
@@ -865,12 +878,14 @@ mod tests {
         let destructive = Arc::new(Mutex::new(Vec::new()));
         let recorded = destructive.clone();
         let answered = pointer.clone();
+        let reads = Arc::new(AtomicU32::new(0));
         let (mut client, server) =
             crate::connect::test_support::rpc_client(move |rpc: Request<OpaquePayload>| {
                 let recorded = recorded.clone();
                 let old = old.clone();
                 let spec = spec.clone();
                 let pointer = answered.clone();
+                let reads = reads.clone();
                 async move {
                     #[expect(
                         clippy::wildcard_enum_match_arm,
@@ -904,10 +919,19 @@ mod tests {
                             machines: vec![machine('a', false), machine('b', true)],
                         }),
                         RpcRequestBody::ReadServingPointer(_) => {
-                            RpcResponse::from(ServingPointerRead {
-                                pointer,
-                                ..Default::default()
-                            })
+                            if Some(reads.fetch_add(1, Ordering::SeqCst) + 1) == unreadable_read {
+                                RpcResponse::from(ployz_core::RpcError {
+                                    code: ployz_core::RpcErrorCode::Unavailable,
+                                    message: "the publisher is away".into(),
+                                    details: serde_json::Value::Null,
+                                    cause: Vec::new(),
+                                })
+                            } else {
+                                RpcResponse::from(ServingPointerRead {
+                                    pointer,
+                                    ..Default::default()
+                                })
+                            }
                         }
                         RpcRequestBody::EnsureContainer(ensure) => match ensure.want {
                             ContainerWant::Running {
@@ -971,7 +995,7 @@ mod tests {
     #[tokio::test]
     async fn a_client_move_keeps_a_copy_its_pointer_names_and_reports_the_replacement() {
         let pointer = crate::serving_publish::tests::pointer('a', &['1'], &[]);
-        let moved = moved_through_client(Some(pointer.clone())).await;
+        let moved = moved_through_client(Some(pointer.clone()), None).await;
         let (step, replacement) = moved.result.unwrap();
         assert_eq!(step, a_to_b());
         assert_eq!(
@@ -991,9 +1015,27 @@ mod tests {
 
     #[tokio::test]
     async fn a_client_move_of_an_unpointed_copy_stops_then_removes_it() {
-        let moved = moved_through_client(None).await;
+        let moved = moved_through_client(None, None).await;
         assert_eq!(moved.result.unwrap(), (a_to_b(), None));
         assert_eq!(moved.old_copy_wants, ["stop", "gone"]);
+    }
+
+    #[tokio::test]
+    async fn a_client_move_whose_pointer_is_unreadable_after_the_stop_reports_the_old_copy_stopped()
+    {
+        let moved = moved_through_client(None, Some(2)).await;
+        assert_eq!(moved.old_copy_wants, ["stop"]);
+        assert!(
+            matches!(
+                moved.result,
+                Err(MoveFailure::OldNotRemoved {
+                    old_stopped: true,
+                    ..
+                })
+            ),
+            "{:?}",
+            moved.result
+        );
     }
 
     #[tokio::test]

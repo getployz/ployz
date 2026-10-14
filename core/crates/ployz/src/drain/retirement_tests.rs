@@ -212,6 +212,9 @@ struct PointedServer {
     row: FakeRow,
     copies: Vec<ployz_core::ContainerId>,
     polls_left: Option<u32>,
+    /// A newer deploy's pointer and the copy it names, both arriving at the second listing.
+    later: Option<(ployz_core::ServingPointer, ployz_core::ContainerId)>,
+    listings: u32,
 }
 
 impl PointerClient for PointedServer {
@@ -242,6 +245,13 @@ impl CopyLister for PointedServer {
         _machine_id: &MachineId,
         _service: &QualifiedService,
     ) -> Result<Vec<ployz_core::ContainerId>, RpcError> {
+        self.listings += 1;
+        if self.listings == 2
+            && let Some((row, copy)) = self.later.take()
+        {
+            *self.row.row.lock().unwrap() = Some(row);
+            self.copies.push(copy);
+        }
         let copies = self.copies.clone();
         match &mut self.polls_left {
             Some(0) => self.copies.clear(),
@@ -266,7 +276,69 @@ fn pointed_server(row: &FakeRow, polls_left: Option<u32>) -> PointedServer {
         row: row.clone(),
         copies: vec![container('2')],
         polls_left,
+        later: None,
+        listings: 0,
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_newer_deploys_pointer_during_the_wait_ends_the_retirement_unretired() {
+    let row = FakeRow::default();
+    *row.row.lock().unwrap() = Some(pointer('a', &['1', '2'], &[]));
+    let mut server = pointed_server(&row, None);
+    let newer = pointer('b', &['5'], &['2']);
+    server.later = Some((newer.clone(), container('5')));
+    let error = retire_copies(
+        &mut server,
+        &MachineId::parse("b".repeat(32)).unwrap(),
+        &QualifiedService::parse("app/api").unwrap(),
+        Duration::from_secs(30),
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::Conflict, "{error:?}");
+    assert!(error.message.contains("newer deploy"), "{error:?}");
+    assert_eq!(
+        *row.row.lock().unwrap(),
+        Some(newer),
+        "the newer deploy's copy is not amended into retiring"
+    );
+    assert_eq!(
+        server.copies,
+        [container('2'), container('5')],
+        "the newer deploy's copy is not removed"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_newer_deploys_pointer_ends_a_retirement_that_began_on_a_retiring_copy() {
+    let row = FakeRow::default();
+    *row.row.lock().unwrap() = Some(pointer('a', &['1'], &['2']));
+    let mut server = pointed_server(&row, None);
+    let newer = pointer('b', &['5'], &['2']);
+    server.later = Some((newer.clone(), container('5')));
+    let error = retire_copies(
+        &mut server,
+        &MachineId::parse("b".repeat(32)).unwrap(),
+        &QualifiedService::parse("app/api").unwrap(),
+        Duration::from_secs(30),
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::Conflict, "{error:?}");
+    assert!(error.message.contains("newer deploy"), "{error:?}");
+    assert_eq!(
+        *row.row.lock().unwrap(),
+        Some(newer),
+        "the newer deploy's copy is not amended into retiring"
+    );
+    assert_eq!(
+        server.copies,
+        [container('2'), container('5')],
+        "the newer deploy's copy is not removed"
+    );
 }
 
 #[tokio::test(start_paused = true)]

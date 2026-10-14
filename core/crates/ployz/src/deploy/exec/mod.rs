@@ -1166,7 +1166,7 @@ impl Rows<'_> {
             .await
             .map_err(|error| machine_error(MachineAction::ReadServingPointer, error))?;
         match Protection::of(read.pointer, copy) {
-            Protection::Unnamed | Protection::Retiring => Ok(()),
+            Protection::Unnamed | Protection::Retiring(_) => Ok(()),
             Protection::Pointed(row) => Err(pointed(copy, &row)),
         }
     }
@@ -1189,7 +1189,7 @@ impl Rows<'_> {
             .pointer;
         for _ in 0..=AMEND_RETRIES {
             let row = match Protection::of(current, copy) {
-                Protection::Unnamed | Protection::Retiring => return Ok(()),
+                Protection::Unnamed | Protection::Retiring(_) => return Ok(()),
                 Protection::Pointed(row) => row,
             };
             if admitted
@@ -1505,13 +1505,14 @@ pub(in crate::deploy) enum MoveContainerError {
 
 /// Whether a move may stop or remove its old Container. `move_container` asks
 /// immediately before each destructive request, so a Serving Pointer published
-/// meanwhile keeps the old Container for that pointer's retire path.
+/// meanwhile keeps the old Container for that pointer's retire path. `old_stopped` says
+/// whether the old Container already stopped when it asks.
 pub(in crate::deploy) trait RemovesOld {
-    async fn removes_old(&mut self) -> bool;
+    async fn removes_old(&mut self, old_stopped: bool) -> bool;
 }
 
 impl RemovesOld for bool {
-    async fn removes_old(&mut self) -> bool {
+    async fn removes_old(&mut self, _old_stopped: bool) -> bool {
         *self
     }
 }
@@ -1560,7 +1561,7 @@ pub(in crate::deploy) async fn move_container<C: MachineOperations>(
             });
         }
     };
-    if !gate.removes_old().await {
+    if !gate.removes_old(false).await {
         return Ok(new);
     }
     // Stopped first, so a failed removal can say whether the old Container still serves.
@@ -1570,7 +1571,7 @@ pub(in crate::deploy) async fn move_container<C: MachineOperations>(
             error,
             old_stopped: false,
         })?;
-    if !gate.removes_old().await {
+    if !gate.removes_old(true).await {
         return Ok(new);
     }
     remove(&client, from, old, Drain::NONE)
