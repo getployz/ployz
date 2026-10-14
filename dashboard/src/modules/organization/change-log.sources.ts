@@ -52,6 +52,7 @@ export const changeSources = {
   organization_machine: { key: ["machine_id"] },
   server_upgrade_attempt: { key: ["id"] },
   server_drain_attempt: { key: ["id"] },
+  server_web_traffic_attempt: { key: ["id"] },
   volume_run: { key: ["id"] },
   service_act: { key: ["id"] },
   volume_placement: { key: ["volume_id"] },

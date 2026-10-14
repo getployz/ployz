@@ -779,6 +779,81 @@ impl Session {
             .map_err(RpcError::from)
     }
 
+    /// Start the Ingress Proxy on `machine` once its ingress role is on: wait until this
+    /// entry observes the role, then create or start the proxy on every Server that holds
+    /// it, never replacing one that runs. The repair for `machine` says why it didn't
+    /// start; `unchecked` names Servers whose containers went unobserved.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] when the session is closed, `machine` is not a
+    /// Machine Target or not visible, this entry hasn't observed the role within 30 s, or
+    /// observation, image discovery or planning fails.
+    pub async fn start_ingress(
+        &self,
+        machine: &str,
+    ) -> Result<crate::ingress::IngressCheck, RpcError> {
+        let target =
+            MachineTarget::parse(machine).map_err(|error| invalid_argument(error.to_string()))?;
+        let mut client = self.client()?;
+        let cancel = &self.inner.cancel;
+        self.until_closed(async {
+            let id = visible_machine_id(&mut client, &target).await?;
+            crate::cluster::wait_for_role(
+                &mut client,
+                &id,
+                crate::cluster::RoleSetting::IngressOn,
+                cancel,
+            )
+            .await
+            .map_err(|error| match error {
+                crate::cluster::RoleWaitError::Connect(error) => RpcError::from(error),
+                error @ (crate::cluster::RoleWaitError::NotObserved(_)
+                | crate::cluster::RoleWaitError::Cancelled) => unavailable(error.to_string()),
+            })?;
+            crate::ingress::fill_slots(&mut client, cancel)
+                .await
+                .map_err(|failure| failure.report())
+        })
+        .await
+    }
+
+    /// Stop serving web traffic on `machine` once its ingress role is off: wait until this
+    /// entry observes the role, so nothing it plans next recreates the proxy, then stop and
+    /// remove its Ingress Proxy. Nothing else stops it; the daemon never stops serving
+    /// infrastructure on its own.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] when the session is closed, `machine` is not a
+    /// Machine Target or not visible, this entry hasn't observed the role within 30 s, or
+    /// the Machine does not acknowledge a listing, stop or removal.
+    pub async fn stop_ingress(&self, machine: &str) -> Result<(), RpcError> {
+        let target =
+            MachineTarget::parse(machine).map_err(|error| invalid_argument(error.to_string()))?;
+        let mut client = self.client()?;
+        let cancel = &self.inner.cancel;
+        self.until_closed(async {
+            let id = visible_machine_id(&mut client, &target).await?;
+            crate::cluster::wait_for_role(
+                &mut client,
+                &id,
+                crate::cluster::RoleSetting::IngressOff,
+                cancel,
+            )
+            .await
+            .map_err(|error| match error {
+                crate::cluster::RoleWaitError::Connect(error) => RpcError::from(error),
+                error @ (crate::cluster::RoleWaitError::NotObserved(_)
+                | crate::cluster::RoleWaitError::Cancelled) => unavailable(error.to_string()),
+            })?;
+            let ingress = ployz_core::QualifiedService::system_ingress();
+            crate::global_slot::remove_slot(&mut client, &id, &ingress.namespace, &ingress.name)
+                .await
+        })
+        .await
+    }
+
     /// Take `machine` out of the Cluster without resetting it: it keeps its state and
     /// its keys, Cloud's included. The last Machine isn't taken out this way.
     ///
@@ -1160,6 +1235,26 @@ fn invalid_argument(message: String) -> RpcError {
         details: Value::Null,
         cause: Vec::new(),
     }
+}
+
+fn unavailable(message: String) -> RpcError {
+    RpcError {
+        code: RpcErrorCode::Unavailable,
+        message,
+        details: Value::Null,
+        cause: Vec::new(),
+    }
+}
+
+/// The ID of the one visible Machine `target` names.
+async fn visible_machine_id(
+    client: &mut Client,
+    target: &MachineTarget,
+) -> Result<ployz_core::MachineId, RpcError> {
+    let machines = client.machines().await?;
+    Ok(crate::cluster::visible_machine(target, &machines)?
+        .machine
+        .id)
 }
 
 /// Capture checkouts off the async runtime.

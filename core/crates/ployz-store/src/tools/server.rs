@@ -284,8 +284,8 @@ impl Tool for ServerSet {
         if self.accepts_ingress == Some(true) {
             return Err(Refusal::invalid(
                 format!(
-                    "Turning web traffic on also starts the Ingress Proxy, which only the \
-                     terminal does: `ployz server set {} --accepts-ingress=true`",
+                    "Turn web traffic on from the Server page or the terminal: \
+                     `ployz server set {} --accepts-ingress=true`",
                     self.server
                 ),
                 "accepts_ingress",

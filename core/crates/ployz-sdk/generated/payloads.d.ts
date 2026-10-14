@@ -2097,6 +2097,12 @@ name: string | null, };
 
 export type IngressAction = "create" | "start";
 
+export type IngressCheck = { repairs: Array<IngressRepair>,
+/**
+ * One cause per ingress Server whose containers went unobserved, naming it.
+ */
+unchecked: Array<string>, };
+
 export type IngressFailure = { "type": "port_taken", cause: string, } | { "type": "failed", cause: string, };
 
 export type IngressHost = string;
