@@ -35,7 +35,7 @@ const remove = (organizationId: string, userId: string) => run(removeMembership(
 ));
 
 const tokenFor = async (userId: string, organizationId: string, slug: string) => (await run(createOrganizationToken(
-  { userId, organization: { id: organizationId, slug }, credential: { kind: "session", id: "session-1" }, role: null, support: null },
+  { userId, organization: { id: organizationId, slug }, credential: { kind: "session", id: "session-1" }, role: null, support: null, via: "dashboard" },
   { name: "laptop", expiresInDays: 1 },
 ))).secret;
 

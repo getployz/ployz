@@ -2,8 +2,8 @@ use std::{collections::BTreeMap, io, sync::Arc, time::Duration};
 
 use tokio_util::sync::CancellationToken;
 
-use super::{Error, ReplicatedStore};
-use crate::machine::{LocalMachineBody, RecordOwner};
+use super::{Error, MachineView, MachinesSnapshot, ReplicatedStore};
+use crate::machine::{LocalMachineBody, LocalMachineRecord, RecordOwner};
 
 /// Waits for replication through the target, retrying store failures.
 ///
@@ -34,14 +34,22 @@ pub async fn wait_for_catch_up(
 
 /// Publish this Machine now and every minute, and whenever its record (a
 /// policy edit) or the number of Builds it runs changes: the one path that
-/// publishes this Machine.
+/// publishes this Machine. Another writer (an Entry's Register, a Forget) can
+/// replace this Machine's row, so a Machines view change that leaves the row
+/// unlike what this Machine would publish restores the row at once.
 pub async fn run_machine_publisher(
-    replicated: Option<ReplicatedStore>,
+    cluster: Option<(ReplicatedStore, MachineView)>,
     local: RecordOwner,
     mut running_builds: tokio::sync::watch::Receiver<u32>,
     shutdown: CancellationToken,
 ) -> io::Result<()> {
     let mut records = local.watch();
+    // A closed channel (no Cluster store) never changes again.
+    let mut machines = cluster.as_ref().map_or_else(
+        || tokio::sync::watch::channel(None).1,
+        |(_, view)| view.watch(),
+    );
+    let replicated = cluster.map(|(replicated, _)| replicated);
     if let Some(replicated) = &replicated {
         let target = match local.record().body() {
             LocalMachineBody::Joining {
@@ -97,14 +105,48 @@ pub async fn run_machine_publisher(
                 );
             }
         }
-        tokio::select! {
-            () = tokio::time::sleep(Duration::from_secs(60)) => {}
-            // A closed channel (no Build runner) never changes again.
-            Ok(()) = running_builds.changed() => {}
-            Ok(()) = records.changed() => {}
-            () = shutdown.cancelled() => {
-                return Ok(());
+        let tick = tokio::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            tokio::select! {
+                () = tokio::time::sleep_until(tick) => break,
+                // A closed channel (no Build runner) never changes again.
+                Ok(()) = running_builds.changed() => break,
+                Ok(()) = records.changed() => break,
+                Ok(()) = machines.changed() => {
+                    let snapshot = machines.borrow_and_update().clone();
+                    if let Some(replicated) = &replicated
+                        && row_is_stale(replicated, &snapshot, &records, &running_builds).await
+                    {
+                        break;
+                    }
+                }
+                () = shutdown.cancelled() => {
+                    return Ok(());
+                }
             }
         }
     }
+}
+
+/// Whether the snapshot holds this Machine's row unlike what it would publish.
+/// Other Machines' rows changing leaves the publisher waiting.
+async fn row_is_stale(
+    replicated: &ReplicatedStore,
+    snapshot: &MachinesSnapshot,
+    records: &tokio::sync::watch::Receiver<Arc<LocalMachineRecord>>,
+    running_builds: &tokio::sync::watch::Receiver<u32>,
+) -> bool {
+    let Some(snapshot) = snapshot else {
+        return false;
+    };
+    let record = Arc::clone(&records.borrow());
+    let running = *running_builds.borrow();
+    let Some(machine) = replicated
+        .machine_publication()
+        .await
+        .publishable_machine(&record, running)
+    else {
+        return false;
+    };
+    !snapshot.observations.contains(&machine)
 }

@@ -70,7 +70,7 @@ const shopRemovingWeb = Effect.fn(function* () {
   const withApproval = (approval: Approval) => ({ ...acmeWeb(), approval });
   const refusal = Effect.flip(storeTry(() => store.write(ORGANIZATION, publish, withApproval("required"))))
     .pipe(Effect.map((refused) => refused.refusal));
-  const caller: Caller = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "token", id: "token-1" }, role: "owner", support: null };
+  const caller: Caller = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "token", id: "token-1" }, role: "owner", support: null, via: "cli" };
   const pending = provided(Effect.gen(function* () {
     const { drizzle } = yield* Database;
     const rows = yield* drizzle.select({ id: operationApprovals.id }).from(operationApprovals)
@@ -389,7 +389,7 @@ const operationCloud = Effect.fn(function* () {
   const services = yield* Layer.build(Layer.merge(AuthLive.pipe(Layer.provide(cloud)), cloud));
   const provided = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.provide(services));
   const userId = yield* provided(seedStoreOrganization(ORGANIZATION));
-  const caller: Caller = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "token", id: "token-1" }, role: "owner", support: null };
+  const caller: Caller = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "token", id: "token-1" }, role: "owner", support: null, via: "cli" };
   const rows = provided(Effect.gen(function* () {
     const { drizzle } = yield* Database;
     return yield* drizzle.select({ id: operationApprovals.id, status: operationApprovals.status, subject: operationApprovals.subject })
@@ -420,6 +420,14 @@ it.live("an operation that destroys nothing runs without asking", () =>
   Effect.gen(function* () {
     const { gate, rows } = yield* operationCloud();
     expect(yield* gate({ ...drainOf(["shop.web"]), effects: [] })).toEqual({ ok: true, approvalId: null });
+    expect(yield* rows).toEqual([]);
+  }));
+
+it.live("a person's destructive operation from the dashboard runs without asking and records no approval", () =>
+  Effect.gen(function* () {
+    const { provided, caller, rows } = yield* operationCloud();
+    const person: Caller = { ...caller, via: "dashboard" };
+    expect(yield* provided(gateOperation(person, null, drainOf(["shop.web"])))).toEqual({ ok: true, approvalId: null });
     expect(yield* rows).toEqual([]);
   }));
 

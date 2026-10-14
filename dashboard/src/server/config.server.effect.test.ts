@@ -23,6 +23,13 @@ const hostedPolar = {
   POLAR_PRODUCT_ID: "22222222-2222-4222-8222-222222222222",
 };
 
+const postShibaMail = {
+  POSTSHIBA_API_KEY: "postshiba-api-key",
+  POSTSHIBA_TEAM_ID: "team-1",
+  POSTSHIBA_CLUSTER_ID: "cluster-1",
+  MAIL_FROM: "Ployz <noreply@example.com>",
+};
+
 const without = (environment: Record<string, string>, name: string) =>
   Object.fromEntries(Object.entries(environment).filter(([key]) => key !== name));
 
@@ -45,6 +52,7 @@ describe("AppConfig", () => {
       assert.strictEqual(config.github.appSlug, "ployz-test");
       assert.deepStrictEqual(config.polar, { mode: "self_hosted" });
       assert.strictEqual(config.posthog, null);
+      assert.strictEqual(config.mail, null);
     }),
   );
 
@@ -84,6 +92,32 @@ describe("AppConfig", () => {
       for (const name of Object.keys(hostedPolar)) {
         const polar = without(hostedPolar, name);
         const failure = yield* Effect.flip(load({ ...requiredEnvironment, ...polar }));
+        assert.instanceOf(failure, InvalidConfiguration);
+      }
+    }),
+  );
+
+  it.effect("loads PostShiba mail with its key redacted", () =>
+    Effect.gen(function* () {
+      const { mail } = yield* load({ ...requiredEnvironment, ...postShibaMail });
+
+      assert.isNotNull(mail);
+      if (mail === null) return;
+      assert.strictEqual(String(mail.apiKey), "<redacted>");
+      assert.strictEqual(Redacted.value(mail.apiKey), "postshiba-api-key");
+      assert.deepStrictEqual(
+        { teamId: mail.teamId, clusterId: mail.clusterId, from: mail.from },
+        { teamId: "team-1", clusterId: "cluster-1", from: "Ployz <noreply@example.com>" },
+      );
+    }),
+  );
+
+  it.effect("requires the complete mail configuration", () =>
+    Effect.gen(function* () {
+      for (const name of Object.keys(postShibaMail)) {
+        const failure = yield* Effect.flip(
+          load({ ...requiredEnvironment, ...without(postShibaMail, name) }),
+        );
         assert.instanceOf(failure, InvalidConfiguration);
       }
     }),

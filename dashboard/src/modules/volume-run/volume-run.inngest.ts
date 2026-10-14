@@ -384,6 +384,14 @@ async function releaseVolume(steps: RunSteps, phase: PhaseOf<"release">, epoch: 
     }
     const A = owner.machine;
     const at = cut.newest;
+    // SAFETY: the run's kind is release, so its args are release's.
+    const { plan } = run.args as VolumeRunArgs["release"];
+    const changed = () => new NonRetriableError(
+      `${run.volumeName}'s copies changed since this release was planned; nothing was forgotten and ${run.volumeName}'s Service stays stopped on ${A.name}. `
+        + `Run ployz volume release ${run.volumeName} again`,
+    );
+    if (plan !== undefined && !plan.sources.includes(A.id)) throw changed();
+    const doomed: Array<{ machine: MachineRef; expect: ExpectedCopy }> = [];
     for (const { machine } of from.slots.filter((slot) => slot !== owner)) {
       const now = await steps.step.run(`04-inspect-${machine.name}`, () => steps.runEffect(inspectCopy(run, steps.runId, machine)));
       if (now?.kind === "root") {
@@ -392,8 +400,11 @@ async function releaseVolume(steps: RunSteps, phase: PhaseOf<"release">, epoch: 
             + `${run.volumeName}'s Service stays stopped on ${A.name}`,
         );
       }
-      if (now?.kind !== "slot" || now.newest?.guid !== at.guid) continue;
-      await mustSet(steps, `04-forget-${machine.name}`, machine, expectOf(now), { kind: "forget" }, `${machine.name} is still busy with ${run.volumeName}`);
+      if (now?.kind === "slot" && now.newest?.guid === at.guid) doomed.push({ machine, expect: expectOf(now) });
+    }
+    if (plan !== undefined && doomed.some(({ machine }) => !plan.forgets.includes(machine.id))) throw changed();
+    for (const { machine, expect } of doomed) {
+      await mustSet(steps, `04-forget-${machine.name}`, machine, expect, { kind: "forget" }, `${machine.name} is still busy with ${run.volumeName}`);
     }
     await mustSet(steps, "05-resume", A, expectOf(cut), {
       kind: "writer",

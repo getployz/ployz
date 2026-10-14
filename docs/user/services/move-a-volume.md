@@ -92,6 +92,12 @@ finish. One run at a time per volume. A second one is refused and says how to st
 VolumeBusy: data is busy with a mirror; ployz volume release data stops it
 ```
 
+A run that can't be stopped, such as a mirror removal, says it finishes on its own instead:
+
+```
+VolumeBusy: data is busy with a mirror removal; it finishes on its own
+```
+
 `volume sync` starts no run. It hands the mirror its pull and prints what it did, like Refresh
 now; `ployz volume show data` shows the download. `volume sync data --full` copies everything
 again as a run, and takes `--wait`.
@@ -144,7 +150,9 @@ ployz volume release data
 ```
 
 Release stops the run on the volume and starts your service again on the old server, with all
-its data. Before `web-2` starts your service, Release deletes the copy on `web-2` first. With no
+its data. Before `web-2` starts your service, Release deletes the copy on `web-2` first. Release
+deletes only the copies it named when you started it. If the copies changed since, it deletes
+nothing, your service stays stopped, and the run says to release again. With no
 run in progress, Release repairs a move that stopped. Once `web-2` is told to start your
 service, the move can only finish there, so Release is refused:
 
@@ -165,8 +173,8 @@ the release fails and names the copy to restore from:
 data has no writer and no stopped Service on its copies; ployz volume restore data --from web-2
 ```
 
-If you remove `web-2` after it was told to start your service, the move fails and names the copy
-left:
+If you remove `web-2` after it was told to start your service, the move fails as the removal
+finishes, so you can restore right away. Its error names the copy left:
 
 ```
 data's writer was on web-2 (removed). Restore from web-1's copy: ployz volume restore data --from web-1

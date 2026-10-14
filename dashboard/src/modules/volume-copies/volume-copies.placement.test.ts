@@ -57,6 +57,8 @@ describe("copiesFromPlacement", () => {
       .toEqual(["mirror web-2 - Removing"]);
     const moving = copies(row(["web-2"]), undefined, run("move", { to: "web-3" }, "running"));
     expect(traySpeech(moving)).toEqual({ tone: "busy", words: "Moving to web-3" });
+    const deploying = copies(row(["web-2"]), undefined, run("deploy", { deployment: "d-1", resume: null }, "running"));
+    expect(traySpeech(deploying)).toEqual({ tone: "busy", words: "Deploying" });
   });
 
   it("marks the mirror skipped by a failed pull when its Server answers", () => {

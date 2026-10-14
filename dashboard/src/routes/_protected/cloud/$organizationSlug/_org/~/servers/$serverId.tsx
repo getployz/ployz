@@ -148,7 +148,7 @@ function ServerSettings({ organizationSlug, server, servers, stale }: {
           />
         )}
       />
-      <DrainDialog serverName={server.name} rows={drainDialogRows(drain.view, server.services, strays)} {...drain.dialog} />
+      <DrainDialog serverName={server.name} rows={drainDialogRows(drain.view, server.machine.id, server.services, strays)} {...drain.dialog} />
     </>
   );
 }

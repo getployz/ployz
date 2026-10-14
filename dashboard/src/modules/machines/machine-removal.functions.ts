@@ -1,6 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
-import { Effect, Option, Schema } from "effect";
+import { Effect } from "effect";
 import { dashboardCaller } from "#/modules/identity/caller.server";
 import {
   EnqueueMachineRemoveInput,
@@ -49,9 +49,7 @@ export const getMachineRemoveAttemptServerFn = createServerFn({
     runActor(context, getMachineRemoveAttempt(context.actor, data)),
   );
 
-const ApprovalAsked = Schema.Struct({ approval_id: Schema.String });
-
-/** Forgets an offline Server: the removal it started, or the approval it waits on. */
+/** Forgets an offline Server: the removal it started. */
 export const forgetServerServerFn = createServerFn({
   method: "POST",
 })
@@ -60,13 +58,9 @@ export const forgetServerServerFn = createServerFn({
   .handler(({ context, data }) =>
     runActor(context, Effect.gen(function* () {
       const caller = yield* dashboardCaller(getRequest().headers, data.organizationSlug);
-      const admission = yield* forgetServer(caller, data.machineId, { key: data.requestId, approvalId: data.approvalId ?? null });
+      const admission = yield* forgetServer(caller, data.machineId, { key: data.requestId, approvalId: null });
       if (admission === null) return yield* new NotFound({ message: "The server was not found." });
       if (admission.ok) return { id: admission.id };
-      const asked = Schema.decodeUnknownOption(ApprovalAsked)(admission.refusal.details);
-      if (admission.refusal.code === "approval_required" && Option.isSome(asked)) {
-        return { asking: { approvalId: asked.value.approval_id } };
-      }
       return yield* new Conflict({ userFacing: true, message: admission.refusal.message });
     })),
   );

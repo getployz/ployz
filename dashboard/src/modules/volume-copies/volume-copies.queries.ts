@@ -7,6 +7,7 @@ export const mirrorStatusesQueryOptions = (organizationSlug: string, volumeId: s
   queryKey: [...volumeRunKeys.all, organizationSlug, volumeId, "mirror-status"] as const,
   queryFn: () => mirrorStatusesServerFn({ data: { organizationSlug, volumeId } }),
   staleTime: 60_000,
+  refetchInterval: 60_000,
 });
 
 export function useMirrorStatuses(organizationSlug: string, volumeId: string) {

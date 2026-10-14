@@ -266,6 +266,8 @@ export const gateOperation = Effect.fn("Approvals.gateOperation")(function* (
   approvalId: string | null,
   asked: OperationAsked,
 ): Effect.fn.Return<Gated, never, Database> {
+  // A person who confirmed it in the dashboard already approved it; only `ployz` and agents wait on one.
+  if (caller.via === "dashboard") return { ok: true, approvalId: null };
   const trusted = yield* trustedApproval(caller.organization.id, approvalId);
   if (!trusted.ok) return trusted;
   if (asked.effects.length === 0) return { ok: true, approvalId: null };
