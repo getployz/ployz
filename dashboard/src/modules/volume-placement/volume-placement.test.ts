@@ -386,6 +386,11 @@ describe("placementTargets", () => {
     expect(targets.mirror.map((server) => server.name)).toEqual(["web-1", "web-3"]);
   });
 
+  it("offers no move and no mirror while a committed Move is still owed its finish", () => {
+    const members = [member("web-1", "writer"), pooled("web-2"), pooled("web-3")];
+    expect(placementTargets(volume, members, row([]), servers, true)).toEqual({ move: [], mirror: [] });
+  });
+
   it("offers nothing on a Server that does not accept Services", () => {
     const members = [member("web-1", "writer"), pooled("web-2"), pooled("web-3")];
     expect(placementTargets(volume, members, row([]), [id("web-2")]).move.map((server) => server.name)).toEqual(["web-2"]);

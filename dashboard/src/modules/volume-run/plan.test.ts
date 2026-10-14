@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { MachineId, VolumeCopy } from "@ployz/sdk";
-import { expectOf, observedEpoch, type PlanInput, planFromCopies, restoreSource, type Role, roleOf } from "#/modules/volume-run/plan";
+import { expectOf, observedEpoch, type PlanInput, planForwardRelease, planFromCopies, restoreSource, type Role, roleOf } from "#/modules/volume-run/plan";
 import type { AnsweredMember, Member } from "#/modules/volume-run/volume-run";
 import { COPIES, type Copy, member } from "#/modules/volume-run/volume-run.test-fixture";
 
@@ -546,5 +546,38 @@ describe("restoreSource", () => {
 
   it("names either copy when the newest snapshot is the same one on both", () => {
     expect(["fsn-2", "fsn-3"]).toContain(restoreSource([member("fsn-2", "mirror"), member("fsn-3", "cut")]));
+  });
+});
+
+describe("planForwardRelease", () => {
+  const B = member("fsn-2", "final").machine;
+  const lacking: Member = { machine: member("fsn-1", "unanswered").machine, answered: false, lack: "Volume move needs a newer Ployz on fsn-1." };
+  const servers = (machines: ReadonlyArray<{ readonly name: string }>) => machines.map((machine) => machine.name).join(",") || "none";
+  const forward = (members: Member[]) => {
+    const planned = planForwardRelease("data", B, members);
+    switch (planned.kind) {
+      case "ready":
+        return `ready on ${planned.target.machine.name}, removing on ${servers(planned.removeOn)}`;
+      case "waiting":
+        return `waiting on ${servers(planned.servers)}, removing on ${servers(planned.removeOn)}`;
+      case "blocked":
+        return `blocked: ${planned.message}`;
+    }
+  };
+
+  it.each<[string, Member[], string]>([
+    ["B removed", [member("fsn-1", "mirror")], "blocked: data's writer was on fsn-2 (removed). Restore from fsn-1's copy: ployz volume restore data --from fsn-1"],
+    ["B removed, no copy left", [member("fsn-1", "empty")], "blocked: data's writer was on fsn-2 (removed). No other server's copy is known to hold its newest data."],
+    ["a Server lacking the switch", [lacking, member("fsn-2", "final"), member("fsn-3", "unanswered")], "blocked: Volume move needs a newer Ployz on fsn-1."],
+    ["a silent A while B is a slot", [member("fsn-1", "unanswered"), member("fsn-2", "final"), member("fsn-3", "mirror")], "waiting on fsn-1, removing on fsn-1,fsn-3"],
+    ["a silent B", [member("fsn-1", "mirror"), member("fsn-2", "unanswered")], "waiting on fsn-2, removing on fsn-1"],
+    ["B with no copy", [member("fsn-1", "mirror"), member("fsn-2", "empty")], "blocked: data's Move committed, but fsn-2 holds no copy to start. Restore from fsn-1's copy: ployz volume restore data --from fsn-1"],
+    ["B with no snapshot", [member("fsn-1", "empty"), member("fsn-2", "seed")], "blocked: data's Move committed, but fsn-2 holds no copy to start. No other server's copy is known to hold its newest data."],
+    ["a writer outside B", [member("fsn-1", "writer"), member("fsn-2", "final")], "blocked: data-fsn-1 is still a writer copy, so data can't finish on fsn-2; ployz volume restore data --from fsn-1 keeps fsn-1's data"],
+    ["a cut root outside B", [member("fsn-1", "cut"), member("fsn-2", "final")], "blocked: data-fsn-1 is still a writer copy, so data can't finish on fsn-2; ployz volume restore data --from fsn-1 keeps fsn-1's data"],
+    ["B a slot, the rest stopped", [member("fsn-1", "mirror"), member("fsn-2", "final"), member("fsn-3", "empty")], "ready on fsn-2, removing on fsn-1,fsn-3"],
+    ["B already the writer", [member("fsn-1", "mirror"), member("fsn-2", "writer", { epoch: 4 })], "ready on fsn-2, removing on fsn-1"],
+  ])("%s", (_, members, expected) => {
+    expect(forward(members)).toBe(expected);
   });
 });
