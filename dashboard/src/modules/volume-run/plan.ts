@@ -1,4 +1,4 @@
-import type { ExpectedCopy, Snapshot, SnapshotGuid, VolumeCopy } from "@ployz/sdk";
+import type { ExpectedCopy, MachineName, Snapshot, SnapshotGuid, VolumeCopy } from "@ployz/sdk";
 import { type AnsweredMember, copyName, type Member, type ReleasePlan, type VolumeRunArgs, type VolumeRunInput } from "#/modules/volume-run/volume-run";
 
 /** `cutting` is a read-only root: a cut began on it and has not renamed it to a slot yet. */
@@ -233,6 +233,25 @@ function planRestore(name: string, { from, machine }: VolumeRunArgs["restore"], 
   // A slot holds the data as of its newest snapshot; a root holds every write, so restoring it loses none.
   return { ok: true, phase: { kind: "restore", from: source, lostAfter: copy.kind === "slot" ? copy.newest : null } };
 }
+
+/**
+ * The copy to restore from once the writer's Server is gone: a stopped copy holding a snapshot, the newest of them.
+ * Restore itself refuses while other copies remain, naming them to remove.
+ */
+export function restoreSource(members: readonly Member[]): MachineName | undefined {
+  let source: { readonly name: MachineName; readonly newest: Snapshot } | undefined;
+  for (const member of members) {
+    const newest = member.answered ? member.view.copy?.newest ?? null : null;
+    if (newest === null || roleOf(member) === "writer") continue;
+    if (source === undefined || newest.created_unix_seconds > source.newest.created_unix_seconds) source = { name: member.machine.name, newest };
+  }
+  return source?.name;
+}
+
+export const writerRemovedMessage = (volumeName: string, removed: string, holder: MachineName | undefined) =>
+  `${volumeName}'s writer was on ${removed} (removed)` + (holder === undefined
+    ? ". No other server's copy is known to hold its newest data."
+    : `. Restore from ${holder}'s copy: ployz volume restore ${volumeName} --from ${holder}`);
 
 /**
  * A Server removed without a reset keeps its root; once Restore made a newer one elsewhere, the root with the lower

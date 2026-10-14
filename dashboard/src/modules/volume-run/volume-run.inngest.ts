@@ -12,7 +12,7 @@ import {
 } from "#/modules/inngest/events";
 import { PATIENCE, PATIENCE_WAITS } from "#/modules/volume-run/patience";
 import { fenceTaken } from "#/modules/volume-run/volume-run.deploy.server";
-import { alreadyOn, epochOf, expectOf, observedEpoch, type Planned, planFromCopies } from "#/modules/volume-run/plan";
+import { alreadyOn, epochOf, expectOf, observedEpoch, type Planned, planFromCopies, restoreSource, writerRemovedMessage } from "#/modules/volume-run/plan";
 import { type AnsweredMember, copyName, type Member } from "#/modules/volume-run/volume-run";
 import {
   claimVolumeRun,
@@ -423,11 +423,7 @@ async function finishRelease(steps: RunSteps, members: readonly Member[], curren
   const at = copy?.newest ?? null;
   if (!members.some((member) => member.machine.id === current)) {
     const target = await step.run("02-target", () => runEffect(laneTarget(run)));
-    const held = members.find((member): member is AnsweredMember => member.answered && (member.view.copy?.newest ?? null) !== null)?.machine.name;
-    const lost = `${run.volumeName}'s writer was on ${target ?? current} (removed)`;
-    return fail(steps, "02-failed", held === undefined
-      ? `${lost}, and no copy left holds its data`
-      : `${lost}. Restore from ${held}'s copy: ployz volume restore ${run.volumeName} --from ${held}`);
+    return fail(steps, "02-failed", writerRemovedMessage(run.volumeName, target ?? current, restoreSource(members)));
   }
   if (B === undefined || at === null) return fail(steps, "02-failed", `${run.volumeName}'s Move committed, but its new copy is gone`);
   const { epoch } = await step.run("02-epoch", () => runEffect(takeEpoch(run, runId, observedEpoch(members))));
