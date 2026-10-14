@@ -50,6 +50,9 @@ yourself. Run step 2 again to update the skill.
 
 ### Give the agent Ployz tools
 
+An agent app can also use the Ployz tools without the CLI; see
+[Connect an agent to Ployz Cloud](../account/connect-an-agent.md).
+
 `ployz mcp` gives your agent Ployz tools over MCP. The setup prompt above registers it. To add it
 by hand for every project:
 
