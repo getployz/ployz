@@ -16,7 +16,7 @@ const Uuid = Schema.String.check(Schema.isUUID());
 const DEFAULT_HOSTED_DNS_URL = new URL("https://dns.ployz.app/");
 const DEFAULT_POSTHOG_HOST = new URL("https://us.i.posthog.com");
 export type GithubOrigins = { readonly api: string; readonly web: string; readonly codeload: string };
-export const GITHUB_ORIGINS: GithubOrigins = {
+const GITHUB_ORIGINS: GithubOrigins = {
   api: "https://api.github.com",
   web: "https://github.com",
   codeload: "https://codeload.github.com",
@@ -73,7 +73,7 @@ const rawFields = {
     NonEmptySecret,
     "GITHUB_APP_WEBHOOK_SECRET",
   ),
-  githubOriginForEveryHost: optional(Config.url("PLOYZ_GITHUB_ORIGIN")),
+  verifyGithubOrigin: optional(Config.url("PLOYZ_VERIFY_GITHUB_ORIGIN")),
   polarAccessToken: optional(
     Config.schema(NonEmptySecret, "POLAR_ACCESS_TOKEN"),
   ),
@@ -184,6 +184,27 @@ const resolveMailConfiguration = Effect.fn("Config.resolveMail")(function* (
   return { apiKey, teamId, clusterId, from } satisfies MailConfiguration;
 });
 
+/** A verify lab's fake GitHub stands in for every GitHub host; it would receive every GitHub credential Cloud holds. */
+const resolveGithubOrigins = Effect.fn("Config.resolveGithubOrigins")(function* (
+  input: Effect.Success<typeof loadRawConfig>,
+) {
+  const origin = input.verifyGithubOrigin;
+  if (origin === undefined) return GITHUB_ORIGINS;
+  if (input.nodeEnv === "production") {
+    return yield* new InvalidConfiguration({
+      message: "PLOYZ_VERIFY_GITHUB_ORIGIN is for verify labs and is refused when NODE_ENV is production",
+    });
+  }
+  const bare = `${origin.origin}/`;
+  if ((origin.protocol !== "http:" && origin.protocol !== "https:") || origin.href !== bare) {
+    return yield* new InvalidConfiguration({
+      message: `PLOYZ_VERIFY_GITHUB_ORIGIN must be an http(s) origin with no path, query or credentials, like http://127.0.0.1:4555, not ${origin.href}`,
+    });
+  }
+  yield* Effect.logInfo(`GitHub origin ${origin.origin} (PLOYZ_VERIFY_GITHUB_ORIGIN)`);
+  return { api: origin.origin, web: origin.origin, codeload: origin.origin } satisfies GithubOrigins;
+});
+
 /** Comma-separated user ids, taken exactly: no email or domain matching. */
 const parseUserIds = (value: string | undefined): ReadonlyArray<string> =>
   value === undefined ? [] : value.split(",").map((id) => id.trim()).filter((id) => id !== "");
@@ -192,6 +213,7 @@ const makeAppConfig = Effect.gen(function* () {
   const raw = yield* loadRawConfig;
   const polar = yield* resolvePolarConfiguration(raw);
   const mail = yield* resolveMailConfiguration(raw);
+  const githubOrigins = yield* resolveGithubOrigins(raw);
 
   return {
     nodeEnv: raw.nodeEnv,
@@ -211,9 +233,7 @@ const makeAppConfig = Effect.gen(function* () {
       appPrivateKey: raw.githubAppPrivateKey,
       appSlug: raw.githubAppSlug,
       appWebhookSecret: raw.githubAppWebhookSecret,
-      origins: raw.githubOriginForEveryHost === undefined
-        ? GITHUB_ORIGINS
-        : { api: raw.githubOriginForEveryHost.origin, web: raw.githubOriginForEveryHost.origin, codeload: raw.githubOriginForEveryHost.origin },
+      origins: githubOrigins,
     },
     polar,
     // Unset (Self-hosted Cloud): no product analytics. The project key is public; browsers send it too.

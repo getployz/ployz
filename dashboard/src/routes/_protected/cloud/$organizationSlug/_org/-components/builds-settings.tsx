@@ -10,7 +10,7 @@ import type { BuildOrder } from "@ployz/sdk";
 import { requireView, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { githubBuildRepositoryKey, githubBuildWorkflowUrl, type GithubBuildRepository } from "#/modules/github/github-build-workflow";
-import { useGithubBuildRepositories } from "#/modules/github/github.queries";
+import { useGithubBuildRepositories, useGithubWebOrigin } from "#/modules/github/github.queries";
 import { useServerList, type ServerListItem } from "#/modules/machines/use-servers";
 import { ServerLinkItem } from "./server-link-item";
 
@@ -78,6 +78,7 @@ function GithubActions({ organizationSlug }: { organizationSlug: string }) {
   // ponytail: "waiting for the commit" lives in this tab only; persist it if teammates need to see it.
   const [opened, setOpened] = useState<ReadonlySet<string>>(new Set());
   const { data: repositories, error } = useGithubBuildRepositories(organizationSlug, opened);
+  const githubWeb = useGithubWebOrigin();
   const waiting = (repository: GithubBuildRepository) =>
     repository.readiness === "setup_needed" && opened.has(githubBuildRepositoryKey(repository));
 
@@ -109,7 +110,7 @@ function GithubActions({ organizationSlug }: { organizationSlug: string }) {
                   nativeButton={false}
                   render={
                     <a
-                      href={githubBuildWorkflowUrl({ fullName: repository.fullName, defaultBranch: repository.defaultBranch })}
+                      href={githubBuildWorkflowUrl({ web: githubWeb, fullName: repository.fullName, defaultBranch: repository.defaultBranch })}
                       target="_blank"
                       rel="noreferrer"
                     />

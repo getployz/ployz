@@ -163,12 +163,11 @@ export const getGithubRepoAccessState = Effect.fn(
   return { hasInstallations: installations.length > 0 };
 });
 
-export const getGithubInstallUrl = Effect.fn("Github.getInstallUrl")(
-  function* () {
-    const config = yield* AppConfig;
-    return { url: getGithubAppInstallUrl(config.github) };
-  },
-);
+/** Where browser links to GitHub go: github.com, or a verify lab's fake. */
+export const getGithubWeb = Effect.fn("Github.getWeb")(function* () {
+  const config = yield* AppConfig;
+  return { origin: config.github.origins.web, installUrl: getGithubAppInstallUrl(config.github) };
+});
 
 export const requestGithubRepoSync = Effect.fn("Github.requestRepoSync")(
   function* (actor: Actor) {

@@ -518,7 +518,10 @@ it.live(
         const [row] = yield* database.drizzle.select({ userId: member.userId }).from(member)
           .where(eq(member.organizationId, alice.organization.id));
         const userId = row?.userId ?? assert.fail("no member");
-        yield* database.drizzle.insert(githubInstallation).values({ userId, installationId: 7, accountLogin: "acme", accountType: "Organization" });
+        yield* database.drizzle.insert(githubInstallation).values([
+          { userId, installationId: 7, accountLogin: "acme", accountType: "Organization" },
+          { userId, installationId: 8, accountLogin: "alice", accountType: "User" },
+        ]);
         yield* database.drizzle.insert(githubRepositoryCache).values({
           userId, installationId: 7, repositoryId: 11, name: "web", fullName: "acme/web", defaultBranch: "main",
           private: true, htmlUrl: "https://github.com/acme/web", repoUpdatedAt: new Date(),
@@ -526,10 +529,10 @@ it.live(
         const connected = yield* cli("GET", "github", alice);
         assert.deepInclude(connected.json, { ready: true });
         assert.deepStrictEqual(connected.json.installations?.map(({ id, account, repositories }) => ({ id, account, repositories })),
-          [{ id: 7, account: "acme", repositories: 1 }]);
+          [{ id: 7, account: "acme", repositories: 1 }, { id: 8, account: "alice", repositories: 0 }]);
 
         const branches = yield* cli("GET", "github/branches?repository=ACME/web", alice);
-        assert.deepInclude(branches.json, { access: "installation", branches: ["dev", "main"] });
+        assert.deepInclude(branches.json, { access: "connected", branches: ["dev", "main"] });
         assert.strictEqual((yield* cli("GET", "github/branches?repository=acme/secret", alice)).status, 404);
 
         const tree = yield* cli("GET", "github/tree?repository=acme%2Fweb&path=src", alice);
@@ -556,6 +559,8 @@ it.live(
         assert.deepStrictEqual(removed.json.disconnected, { id: 7, account: "acme" });
         assert.strictEqual(removed.json.uninstall_url, "https://github.com/organizations/acme/settings/installations/7");
         assert.strictEqual((yield* cli("DELETE", "github/7", alice)).status, 404);
+        const personal = yield* cli("DELETE", "github/8", alice);
+        assert.strictEqual(personal.json.uninstall_url, "https://github.com/settings/installations/8");
         assert.deepInclude((yield* cli("GET", "github", alice)).json, { ready: false, installations: [] });
       }).pipe(Effect.provide(layer));
     }),

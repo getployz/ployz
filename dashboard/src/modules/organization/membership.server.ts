@@ -18,7 +18,7 @@ export const removeMembership = Effect.fn("Organization.removeMembership")(funct
   yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
     const members = yield* drizzle.select({ userId: member.userId, role: member.role }).from(member)
-      .where(eq(member.organizationId, organizationId)).for("update");
+      .where(eq(member.organizationId, organizationId)).orderBy(asc(member.userId)).for("update");
     const leaving = members.find((row) => row.userId === userId);
     if (leaving === undefined) return yield* new NotFound({ message: "That user is not a member of this Organization." });
     if (leaving.role === "owner" && !members.some((row) => row.role === "owner" && row.userId !== userId)) {

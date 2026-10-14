@@ -13,8 +13,8 @@ describe("GitHub build workflow", () => {
   });
 
   it("opens GitHub's new-file page on the default branch with the workflow filled in", () => {
-    const url = new URL(githubBuildWorkflowUrl({ fullName: "acme/api", defaultBranch: "release/v2" }));
-    expect(url.origin + url.pathname).toBe("https://github.com/acme/api/new/release/v2");
+    const url = new URL(githubBuildWorkflowUrl({ web: "http://127.0.0.1:4555", fullName: "acme/api", defaultBranch: "release/v2" }));
+    expect(url.origin + url.pathname).toBe("http://127.0.0.1:4555/acme/api/new/release/v2");
     expect(url.searchParams.get("filename")).toBe(".github/workflows/ployz-build.yml");
     expect(url.searchParams.get("value")).toBe(GITHUB_BUILD_WORKFLOW);
   });

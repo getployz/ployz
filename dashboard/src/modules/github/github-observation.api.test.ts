@@ -7,8 +7,8 @@ import { testConfigEnvironment } from "#/test/config-environment";
 
 const sha = "a".repeat(40);
 
-function configured(origin: { readonly PLOYZ_GITHUB_ORIGIN?: string }) {
-  const env = { ...testConfigEnvironment(), DATABASE_URL: "postgres://unused", GITHUB_APP_SLUG: "ployz-test", ...origin };
+function configured(origin: { readonly PLOYZ_VERIFY_GITHUB_ORIGIN?: string }) {
+  const env = { ...testConfigEnvironment(), DATABASE_URL: "postgres://unused", GITHUB_APP_SLUG: "ployz-test", NODE_ENV: "test", ...origin };
   const config = Layer.effect(AppConfig, AppConfig.make).pipe(
     Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env }))),
   );
@@ -19,9 +19,9 @@ afterEach(() => vi.unstubAllGlobals());
 
 describe("GitHub origins", () => {
   it.each([
-    { name: "the real hosts when PLOYZ_GITHUB_ORIGIN is unset", origin: {},
+    { name: "the real hosts when PLOYZ_VERIFY_GITHUB_ORIGIN is unset", origin: {},
       api: "https://api.github.com", web: "https://github.com", codeload: "https://codeload.github.com" },
-    { name: "PLOYZ_GITHUB_ORIGIN for every host when it is set", origin: { PLOYZ_GITHUB_ORIGIN: "http://127.0.0.1:4555" },
+    { name: "PLOYZ_VERIFY_GITHUB_ORIGIN for every host when it is set", origin: { PLOYZ_VERIFY_GITHUB_ORIGIN: "http://127.0.0.1:4555" },
       api: "http://127.0.0.1:4555", web: "http://127.0.0.1:4555", codeload: "http://127.0.0.1:4555" },
   ])("builds every URL from $name", async ({ origin, api, web, codeload }) => {
     const archive = `${codeload}/acme/web/legacy.tar.gz/${sha}`;

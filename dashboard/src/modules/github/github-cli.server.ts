@@ -78,7 +78,7 @@ export const githubBranches = Effect.fn("GithubCli.branches")(function* (caller:
   const branches = yield* listGithubRepositoryBranches(readable.installationId, readable.fullName);
   return {
     repository: readable.fullName,
-    access: readable.installationId === null ? "public" : "installation",
+    access: readable.installationId === null ? "public" : "connected",
     default_branch: readable.defaultBranch,
     branches: branches.map((branch) => branch.name),
   };

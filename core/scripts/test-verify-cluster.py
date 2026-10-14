@@ -34,7 +34,7 @@ try:
     else:
         build_start, build_end = interval(build)
         overlap = max((max(0, min(build_end, end) - max(build_start, start))
-                       for event in events if "incus" in event["command"]
+                       for event in events if Path(event["command"][0]).name in ["incus", "boat"]
                        for start, end in [interval(event)]), default=0)
         assert overlap > 0, "Compilation and VM preparation ran serially"
     run = json.loads(manifest.read_text())

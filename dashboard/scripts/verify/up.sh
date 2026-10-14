@@ -105,7 +105,7 @@ else
       fake_github=$(sed -n 's/^VERIFY_FAKE_GITHUB //p' "$run/fake-github.log") && [ -n "$fake_github" ] && break; sleep 0.25
     done
     [ -n "$fake_github" ] || { echo "up.sh: the fake GitHub did not start (see $run/fake-github.log)" >&2; cat "$run/fake-github.log" >&2; exit 1; }
-    github_origin="PLOYZ_GITHUB_ORIGIN=$fake_github"
+    github_origin="PLOYZ_VERIFY_GITHUB_ORIGIN=$fake_github"
   fi
 
   # Secrets are stable per checkout, so the browser's cookie survives a restart. A dead URL (port 9) keeps Inngest
@@ -236,7 +236,9 @@ if [ "$with_inngest" = 1 ]; then
 fi
 if [ "${FAKE_GITHUB:-0}" = 1 ]; then
   cat <<EOF | tee -a "$run/info"
+github origin: $fake_github (PLOYZ_VERIFY_GITHUB_ORIGIN), every GitHub URL Cloud builds points at this fake
 fake github on $fake_github (requests $run/fake-github.log, fixtures $dash/.verify/github.json)
+  bob: sign in at $base/auth as $(node -e 'const { bob } = JSON.parse(process.argv[1]); process.stdout.write(`${bob.email} / ${bob.password}`)' "$seed")
   webhook: curl -X POST $fake_github/_fake/webhook -d '{"event":"installation_repositories","action":"added","installation":7,"repositories":["acme/docs"]}'
 EOF
 fi
