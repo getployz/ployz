@@ -112,6 +112,14 @@ _Avoid_: Standalone Cluster, on-prem control plane, self-hosted relay
 The plan an Organization is on in Ployz Cloud: Free, or the legacy paid Polar subscription once sold as "Pro" for custom domains. Holding that subscription is the plan; there is no plan column. It grants nothing now, since custom domains are free; its holders keep the billing portal to cancel it. Hobby ($5 a month) and Pro ($49 a month per Organization) are shown as coming soon and are not sold. Display names are product copy, not stored values. A Self-hosted Cloud has no Billing Plan.
 _Avoid_: Free plan, Teams plan, plan slug, subscription tier
 
+**Member**:
+A user who belongs to an Organization, with one role: owner, admin or member. Owners and admins invite, change roles and remove; only an owner grants or removes owner. An Organization always keeps at least one owner. A member's commands act as them; when they leave or are removed, their Organization Tokens and Server Access end with the membership.
+_Avoid_: Seat, collaborator, team member, user
+
+**Invite**:
+A single-use link an owner or admin makes to bring someone into an Organization with the role it names, admin or member. Whoever opens it signed in and clicks Join becomes a Member; the optional email is a label, not a check. It lasts 7 days and can be revoked; only its hash is stored. Not a Cloud Bootstrap Invite.
+_Avoid_: Invitation email, join code, share link
+
 **Organization Token**:
 A Cloud-owned bearer (`PLOYZ_TOKEN`) made by a member with `ployz token new`. It acts as that member in the one Organization it was made in, until it expires, is revoked, or the member leaves. Only its hash is stored; the secret is shown once.
 _Avoid_: API key, personal access token, CLI token

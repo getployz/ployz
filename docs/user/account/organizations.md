@@ -8,8 +8,8 @@ Ployz creates one for you, named after you (like Ada's Projects).
 
 ## Your organization
 
-Ployz is built for one person today. You can't invite anyone to your organization yet, so there
-are no teams or roles. To let a CI job act for you, make an
+You can invite people to work in your organization with you. See
+[Invite people](#invite-people). To let a CI job act for you, make an
 [organization token](../cli/overview.md#make-an-organization-token).
 
 To make another organization, open the account menu and click **Switch organization → New
@@ -21,10 +21,37 @@ In the sidebar, click **Organization** for its settings:
 - **General**: your organization's **Domain**, which your services' free addresses live under.
   It appears with your first deploy. Below it, **Allow support access**, and **Forget all
   servers** for when your servers were deleted.
+- **Members**: who's in the organization, their roles, and pending invites. See
+  [Invite people](#invite-people).
 - **Builds**: where builds run. See [Where builds run](../builds/where-builds-run.md).
 - **Billing**: your plan.
 
 ![Organization → General: the domain and the Danger section](../images/organization-general.png)
+
+## Invite people
+
+Everyone in an organization has one role:
+
+- **Owner**: everything, including deleting the organization and making other owners.
+- **Admin**: everything an owner can do, except deleting the organization or making or
+  removing an owner.
+- **Member**: deploys and changes projects and servers, but can't invite, change roles, remove
+  anyone, turn support access on or off, or forget servers.
+
+To invite someone, go to **Organization → Members** and click **Invite**. Pick **Member** or
+**Admin**, add their email if you want to remember who it's for, and click **Make link**. Copy
+the link and send it to them yourself. Ployz doesn't email it. Whoever opens it, signs in and
+clicks **Join** joins with that role, so send it only to the person you mean. A link works once
+and expires after 7 days. Pending invites list who sent them and when they expire. Click
+**Revoke** to cancel one.
+
+Owners and admins change a role with the select beside each person, and click **Remove** to take
+someone out. To leave an organization yourself, click **Leave** on your own row. An organization
+always keeps an owner, so its last owner can't leave or step down until they make someone else
+an owner.
+
+When someone leaves or is removed, they lose the organization at once. Their organization tokens
+stop working, and their signed-in CLIs lose access to its servers.
 
 ## Let Ployz support in
 

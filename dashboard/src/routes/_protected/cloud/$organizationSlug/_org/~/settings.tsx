@@ -16,10 +16,11 @@ import { ClusterDomainSection } from "#/routes/_protected/cloud/$organizationSlu
 import { checkClusterDomainNowServerFn } from "#/modules/cluster-domain/cluster-domain.functions";
 import { projectsQuery } from "#/modules/config-store/store-view.queries";
 import { organizationStateQueryOptions } from "#/modules/organization/organization-state.queries";
+import { MembersSettings } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/members-settings";
 import { SupportAccessSection } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/support-access-section";
 import { StoreOrganizationDanger } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/store-organization-danger";
 
-const settingsSectionSchema = Schema.Literals(["general", "builds"]);
+const settingsSectionSchema = Schema.Literals(["general", "members", "builds"]);
 
 // Not `tab`: search keys share one type across routes, and the service panel's `tab` means something else.
 const settingsSearchSchema = Schema.Struct({
@@ -45,7 +46,7 @@ function RouteComponent() {
   return (
     <DashboardPage width="content">
       {/* The top bar names the page; the rail, or on phones the strip under the top bar, picks the section. */}
-      {section === "builds" ? <BuildsSettings organizationSlug={organizationSlug} /> : (
+      {section === "builds" ? <BuildsSettings organizationSlug={organizationSlug} /> : section === "members" ? <MembersSettings organizationSlug={organizationSlug} /> : (
         <div className="flex flex-col gap-6">
           <EnrollmentSection organizationSlug={organizationSlug} />
           <ClusterDomainSettings organizationSlug={organizationSlug} />

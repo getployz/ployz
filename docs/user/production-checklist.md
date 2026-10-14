@@ -47,6 +47,7 @@ list. Each item links to the page that does it.
   deploy.
 - **No Docker Compose files.** Add each container as its own service.
 - **No autoscaling.** You choose the number of replicas.
-- **No teams.** Ployz is built for one person today.
+- **Three roles.** An organization has owners, admins and members, with no finer permissions. See
+  [Invite people](account/organizations.md#invite-people).
 
 Rollbacks are planned.
