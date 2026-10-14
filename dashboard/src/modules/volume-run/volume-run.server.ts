@@ -209,13 +209,19 @@ const owed = (row: VolumeRunRow | undefined): Owed | null =>
     ? { ...row, current: row.current }
     : null;
 
-export const commitment = Effect.fn("VolumeRun.commitment")(function* (volumeId: string, organizationId?: string) {
+const newestMeaningful = Effect.fn("VolumeRun.newestMeaningful")(function* (volumeId: string, organizationId: string | undefined, lock: boolean) {
   const { drizzle } = yield* Database;
   const inOrganization = organizationId === undefined ? undefined : eq(volumeRun.organizationId, organizationId);
-  const [newest] = yield* drizzle.select().from(volumeRun)
+  const newestFirst = drizzle.select().from(volumeRun)
     .where(and(eq(volumeRun.volumeId, volumeId), inOrganization, MEANINGFUL)).orderBy(desc(volumeRun.gen)).limit(1);
+  const [newest] = yield* (lock ? newestFirst.for("update") : newestFirst);
   return { newest, owed: owed(newest) };
 });
+
+export const commitment = (volumeId: string, organizationId?: string) => newestMeaningful(volumeId, organizationId, false);
+
+/** The commitment, its row held until the transaction ends. */
+const commitmentHeldAgainstRemoval = (volumeId: string) => newestMeaningful(volumeId, undefined, true);
 
 /** Each of the Environment's Volumes whose committed Move is still owed its finish. */
 export const owedCommitments = Effect.fn("VolumeRun.owedCommitments")(function* (organizationId: string, environmentId: string) {
@@ -450,7 +456,6 @@ export const planVolumeRun = Effect.fn("VolumeRun.plan")(function* (
   return { ok: true, volume, asked, input: pinned } satisfies VolumeRunPlan;
 });
 
-/** A release that finishes a committed Move on its new Server, pinned to the commitment and the Servers it previewed. */
 const planForward = Effect.fn("VolumeRun.planForward")(function* (volume: ResolvedVolume, input: PlanRequest, pending: Owed, members: readonly Member[]) {
   const to = members.find((member) => member.machine.id === pending.current)?.machine
     ?? { id: pending.current, name: (yield* laneTarget(pending)) ?? pending.current };
@@ -574,7 +579,7 @@ const takeLane = Effect.fn("VolumeRun.takeLane")(function* (caller: Caller, { in
  * that would undo it is refused. A user's release must have previewed that same commitment; Cloud's carries no plan.
  */
 const admitOwed = Effect.fn("VolumeRun.admitOwed")(function* (inserted: VolumeRunRow, input: VolumeLaneInput) {
-  const { newest, owed: pending } = yield* commitment(inserted.volumeId);
+  const { newest, owed: pending } = yield* commitmentHeldAgainstRemoval(inserted.volumeId);
   const plan = input.kind === "release" ? input.args.plan : undefined;
   const follows = input.kind === "release" ? input.args.follows : undefined;
   if (follows !== undefined && pending?.current !== follows) {
@@ -649,8 +654,8 @@ export const machineNamed = Effect.fn("VolumeRun.machineNamed")(function* (organ
 /**
  * A Server leaving: each warm lane bound for `machine`, or on a Volume whose writer copy it holds (`writes`, by Docker
  * Volume), is taken over by a release, so the Volume's Service stays where it runs. Only requests the releases. A lane
- * past its point of no return toward `machine` can finish nowhere, so it ends failed at once, naming the copy on another
- * Server to restore from.
+ * past its point of no return toward `machine` can finish nowhere, so it ends failed at once, naming the copy on
+ * another Server to restore from.
  */
 export const releaseLanesOff = Effect.fn("VolumeRun.releaseLanesOff")(function* (
   organizationId: string,
@@ -690,33 +695,33 @@ export const releaseLanesOff = Effect.fn("VolumeRun.releaseLanesOff")(function* 
   return released;
 });
 
-/**
- * Ends every committed lane whose writer-to-be is `machine`; each one's Inngest run is cancelled with it. A committed Move
- * that fails meanwhile hands its lane to a release bound for the same Server, so it looks again until none is left. Then
- * every commitment to `machine` that ended unfinished stops naming it, so nothing is owed a finish there.
- */
+/** Every commitment to `machine` that ended unfinished stops naming it, so nothing is owed a finish there. */
+const forgetUnfinishedCommitments = Effect.fn("VolumeRun.forgetUnfinishedCommitments")(function* (organizationId: string, machine: MachineId) {
+  const { drizzle } = yield* Database;
+  yield* drizzle.update(volumeRun).set({ current: null }).where(and(
+    eq(volumeRun.organizationId, organizationId),
+    inArray(volumeRun.kind, ["move", "release"]),
+    eq(volumeRun.phase, "committed"),
+    eq(volumeRun.current, machine),
+    notInArray(volumeRun.state, [...ACTIVE_VOLUME_RUN_STATES, "done"]),
+  ));
+});
+
+/** Ends every committed lane whose writer-to-be is `machine`, cancelling its Inngest run, until a pass finds none. */
 const endLanesTo = Effect.fn("VolumeRun.endLanesTo")(function* (
   organizationId: string,
   machine: { readonly id: MachineId; readonly name: MachineName | null },
 ) {
   const database = yield* Database;
   for (;;) {
+    yield* forgetUnfinishedCommitments(organizationId, machine.id);
     const lanes = yield* database.drizzle.select().from(volumeRun).where(and(
       eq(volumeRun.organizationId, organizationId),
       inArray(volumeRun.state, ACTIVE_VOLUME_RUN_STATES),
       eq(volumeRun.phase, "committed"),
       eq(volumeRun.current, machine.id),
     ));
-    if (lanes.length === 0) {
-      yield* database.drizzle.update(volumeRun).set({ current: null }).where(and(
-        eq(volumeRun.organizationId, organizationId),
-        inArray(volumeRun.kind, ["move", "release"]),
-        eq(volumeRun.phase, "committed"),
-        eq(volumeRun.current, machine.id),
-        notInArray(volumeRun.state, [...ACTIVE_VOLUME_RUN_STATES, "done"]),
-      ));
-      return;
-    }
+    if (lanes.length === 0) return;
     for (const lane of lanes) {
       // The message only advises; a lane left active would block the restore it names.
       const holder = yield* observeVolumeMembers(organizationId, lane.dockerVolume).pipe(
@@ -1067,8 +1072,9 @@ export const commitAndStart = Effect.fn("VolumeRun.commitAndStart")(function* (
 /**
  * B becomes the writer at G and creates the Service from the source's stopped Container; a B already running it is left
  * alone. With no source named, a B whose stopped Service is the only one left becomes the writer and stays stopped: an
- * earlier start moved the Service there, and a Deploy's placement may have removed the source since. `ownedBy` is the Inngest run that must still own the row when B is told, or null for a Deploy following
- * another run's committed lane, which owns no row.
+ * earlier start moved the Service there, and a Deploy's placement may have removed the source since. `ownedBy` is the
+ * Inngest run that must still own the row when B is told, or null for a Deploy following another run's committed lane,
+ * which owns no row.
  */
 export const startWriter = Effect.fn("VolumeRun.startWriter")(function* (ctx: RunContext, ownedBy: string | null, start: WriterStart) {
   const { to, from } = start;
