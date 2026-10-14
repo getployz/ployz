@@ -65,27 +65,33 @@ impl VolumeStorage {
                 demoted.push(name.to_string());
             }
         }
-        self.drop_empty_mirror_root(&pool).await?;
+        self.drop_empty_mirror_root(&pool).await;
         Ok(demoted)
     }
 
     /// Destroys `<pool>/ployz-mirror` once no slot is left in it, so a departed Machine
     /// holds no mirror dataset at all. [`Self::ensure_mirror_root`] makes it again for the
-    /// next slot, and a slot made meanwhile keeps it.
-    async fn drop_empty_mirror_root(&self, pool: &MachinePool) -> super::Result<()> {
+    /// next slot, and a slot made meanwhile keeps it. The root holds no data, so a
+    /// failure here only leaves it behind; the departure's answer stands.
+    async fn drop_empty_mirror_root(&self, pool: &MachinePool) {
         let mirror_root = format!("{}/{MIRROR_ROOT}", pool.name());
         let children = format!("{mirror_root}/");
-        let datasets = self.datasets(pool).await?;
+        let datasets = match self.datasets(pool).await {
+            Ok(datasets) => datasets,
+            Err(error) => {
+                tracing::warn!(%error, "could not list the mirror root to drop it");
+                return;
+            }
+        };
         if !datasets.iter().any(|dataset| dataset.name == mirror_root)
             || datasets
                 .iter()
                 .any(|dataset| dataset.name.starts_with(&children))
         {
-            return Ok(());
+            return;
         }
-        match self.zfs(&["destroy", &mirror_root]).await {
-            Err(error) if error.to_string().contains("has children") => Ok(()),
-            result => result.map(drop),
+        if let Err(error) = self.zfs(&["destroy", &mirror_root]).await {
+            tracing::warn!(%error, %mirror_root, "left the empty mirror root in place");
         }
     }
 
