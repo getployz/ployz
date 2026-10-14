@@ -14,9 +14,14 @@ export function deployFailedMail({ origin, organization, deployment, sources }: 
   const place = `${project} / ${environment}`;
   const byRuntime = new Map(Object.entries(deployment.runtime_names).map(([name, runtime]) => [runtime, name]));
   const serviceOf = (source: GitSource) => byRuntime.get(source.service) ?? source.service;
-  const services = [...new Set(sources.map(serviceOf))];
-  const named = services.length === 1 ? services[0] : services.length > 1 ? `${services.length} services` : undefined;
   const failedBuild = deployment.builds.find((build) => build.status === "failed");
+  const serviceNodes = deployment.nodes.filter((node) => node.type === "service");
+  const failedServices = [...new Set([
+    ...serviceNodes.filter((node) => node.outcome === "failed").map((node) => node.name),
+    ...deployment.builds.filter((build) => build.status === "failed").map((build) => build.service),
+  ])];
+  const services = failedServices.length === 0 && serviceNodes.length === 1 ? serviceNodes.map((node) => node.name) : failedServices;
+  const named = services.length === 1 ? services[0] : services.length > 1 ? `${services.length} services` : undefined;
   const failure = outcomeReason(deployment.outcome) ?? failedBuild?.message ?? (deployment.status === "unknown"
     ? "Ployz lost track of it partway through, so some of it may be live."
     : "It stopped before it said why.");
