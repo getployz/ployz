@@ -8,24 +8,23 @@ describe("renderMail", () => {
   it("writes the plain text from the same fields as the HTML", async () => {
     const mail = await renderMail(sampleMail(ORIGIN), `${ORIGIN}/`);
 
-    expect(mail.subject).toBe("Down: api in shop / production");
+    expect(mail.subject).toBe("api is down in shop / production");
     expect(mail.text).toBe(
       [
         "api is down",
         "",
-        "The health check on api fails since 14:02 AEDT. We'll email again when it recovers.",
+        "Visitors can't reach api. Checks have failed since 14:02 UTC. We'll email you when it's back up.",
         "",
         `View incident: ${ORIGIN}/cloud/acme/shop/production/uptime`,
         "",
-        "Service: api",
         "Environment: shop / production",
         "Check: GET https://api.acme.com/health",
-        "Failed with: 502 Bad Gateway",
+        "Error: 502 Bad Gateway",
         "",
         "--",
-        "You're getting this because you're a member of Acme on Ployz.",
-        `Unsubscribe from uptime emails: ${ORIGIN}/api/mail/unsubscribe?token=sample`,
-        `Notification settings: ${ORIGIN}/cloud/account`,
+        "You're getting this as a member of Acme on Ployz.",
+        `Turn off uptime emails: ${ORIGIN}/api/mail/unsubscribe?token=sample`,
+        `Manage emails: ${ORIGIN}/cloud/account`,
       ].join("\n"),
     );
   });
@@ -37,17 +36,17 @@ describe("renderMail", () => {
     expect(html).toContain(`href="${ORIGIN}/api/mail/unsubscribe?token=sample"`);
     expect(html).toContain(`href="${ORIGIN}/cloud/account"`);
     expect(html).toContain(`src="${ORIGIN}/assets/logo-mark.png"`);
-    expect(html).toContain("The health check fails since 14:02 AEDT.");
+    expect(html).toContain("Checks have failed since 14:02 UTC.");
   });
 
   it("leaves out the unsubscribe link and the facts when the email has none", async () => {
     const { unsubscribe: _, facts: __, ...rest } = sampleMail(ORIGIN);
     const mail = await renderMail(rest, ORIGIN);
 
-    expect(mail.html).not.toContain("Unsubscribe");
-    expect(mail.html).not.toContain("Failed with");
-    expect(mail.text).not.toContain("Unsubscribe");
-    expect(mail.text).not.toContain("Service: api");
+    expect(mail.html).not.toContain("Turn off");
+    expect(mail.html).not.toContain("502 Bad Gateway");
+    expect(mail.text).not.toContain("Turn off");
+    expect(mail.text).not.toContain("Environment: shop / production");
   });
 
   it("escapes names that come from users", async () => {

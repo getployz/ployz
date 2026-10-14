@@ -290,7 +290,7 @@ it.live(
       expect(told).toHaveLength(2);
       expect(told.map((mail) => mail.id)).not.toContain(`mail-deployment:${DEPLOYED}:failed:${cy}`);
       const [mail] = told;
-      expect(mail?.subject).toBe("Deploy failed: web in shop / production");
+      expect(mail?.subject).toBe("web failed to deploy to shop / production");
       expect(mail?.html).toContain(`http://localhost:3000/cloud/shop/shop/production/deployments/${DEPLOYED}?logs=deploy`);
       for (const line of ["acme/web", HEAD.slice(0, 7), "No Server is enrolled in this Organization"]) {
         expect(mail?.text).toContain(line);

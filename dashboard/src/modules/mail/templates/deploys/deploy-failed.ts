@@ -18,8 +18,8 @@ export function deployFailedMail({ origin, organization, deployment, sources }: 
   const named = services.length === 1 ? services[0] : services.length > 1 ? `${services.length} services` : undefined;
   const failedBuild = deployment.builds.find((build) => build.status === "failed");
   const failure = outcomeReason(deployment.outcome) ?? failedBuild?.message ?? (deployment.status === "unknown"
-    ? "Cloud lost track of it partway, so some of it may have applied."
-    : "It failed before it reported why.");
+    ? "Ployz lost track of it partway through, so some of it may be live."
+    : "It stopped before it said why.");
   const source = sources.find((found) => serviceOf(found) === failedBuild?.service) ?? (sources.length === 1 ? sources[0] : undefined);
   const commit = source?.commit?.slice(0, 7);
   const segment = (value: string) => encodeURIComponent(value);
@@ -30,15 +30,15 @@ export function deployFailedMail({ origin, organization, deployment, sources }: 
   if (source) facts.push({ label: "Repository", value: source.repository, mono: true });
   if (source?.branch) facts.push({ label: "Branch", value: source.branch, mono: true });
   if (commit) facts.push({ label: "Commit", value: commit, mono: true });
-  if (services.length > 0) facts.push({ label: services.length === 1 ? "Service" : "Services", value: services.join(", ") });
-  facts.push({ label: "Environment", value: place }, { label: "Failed with", value: failure });
+  if (services.length > 1) facts.push({ label: "Services", value: services.join(", ") });
+  facts.push({ label: "Environment", value: place }, { label: "Error", value: failure });
   return {
-    subject: named ? `Deploy failed: ${named} in ${place}` : `Deploy failed in ${place}`,
-    preview: commit && source?.branch ? `${commit} on ${source.branch} failed. The logs show why.` : "The logs show why.",
+    subject: named ? `${named} failed to deploy to ${place}` : `A deploy to ${place} failed`,
+    preview: commit && source?.branch ? `${commit} on ${source.branch} didn't deploy. The logs show why.` : "The logs show why.",
     title: named ? `${named} failed to deploy to ${environment}` : `A deploy to ${environment} failed`,
-    paragraphs: [source?.branch ? `GitHub started this deploy from ${source.branch}, and it failed. The logs show why.` : "GitHub started this deploy, and it failed. The logs show why."],
+    paragraphs: [source?.branch ? `GitHub started this deploy from ${source.branch}. The logs show what went wrong.` : "GitHub started this deploy. The logs show what went wrong."],
     action: { label: "View logs", url },
     facts,
-    reason: `You're getting this because you're a member of ${organization.name} on Ployz.`,
+    reason: `You're getting this as a member of ${organization.name} on Ployz.`,
   };
 }

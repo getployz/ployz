@@ -94,7 +94,7 @@ it.live("an opened incident mails every member who wants uptime email, once, and
   expect(sent.map((mail) => mail.data.to)).toEqual(["ada@example.test"]);
   const [down] = sent;
   expect(down?.id).toMatch(new RegExp(`^mail-uptime:${incident}:opened:`));
-  expect(down?.data.subject).toBe("Down: web in shop / production");
+  expect(down?.data.subject).toBe("web is down in shop / production");
   expect(down?.data.text).toContain("502 Bad Gateway");
   expect(down?.data.text).toContain("GET https://web.acme.test/health");
   expect(down?.data.text).toContain(`https://cloud.example.com/cloud/acme/shop/production/services/${SERVICE}?tab=monitoring&from=2026-10-14T02%3A02%3A00.000Z`);
@@ -109,9 +109,9 @@ it.live("a recovered incident mails after its down mail, naming how long it was 
   yield* run("2026-10-14T03:15:00Z");
 
   expect(yield* alerts(incident)).toEqual([{ kind: "opened", state: "sent" }, { kind: "resolved", state: "sent" }]);
-  expect(mails().map((mail) => mail.data.subject)).toEqual(["Down: web in shop / production", "Recovered: web in shop / production"]);
+  expect(mails().map((mail) => mail.data.subject)).toEqual(["web is down in shop / production", "web is back up in shop / production"]);
   const recovered = mails()[1]?.data;
-  expect(recovered?.text).toContain("web was down for 12 minutes.");
+  expect(recovered?.text).toContain("Visitors can reach web again. It was down for 12 minutes.");
   expect(recovered?.text).toContain("03:02 to 03:14 UTC");
 }));
 

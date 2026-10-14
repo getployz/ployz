@@ -20,7 +20,7 @@ const FAILURE_PHRASES = {
   timeout: "Timed out",
   refused: "Connection refused",
   dns: "DNS lookup failed",
-  connect: "Could not connect",
+  connect: "Couldn't connect",
   tls: "TLS handshake failed",
   other: "Request failed",
 } as const satisfies Record<Exclude<FailureClass, "status">, string>;
@@ -72,33 +72,32 @@ export function uptimeAlertMail(alert: UptimeAlert, origin: string, now: Date): 
   const name = alert.service.name;
   const where = `${alert.project} / ${alert.environment}`;
   const facts = [
-    { label: "Service", value: name },
     { label: "Environment", value: where },
     { label: "Check", value: `GET ${alert.checkUrl}`, mono: true },
   ];
   const shared = {
     action: { label: "View incident", url: incidentLink(origin, alert, now) },
-    reason: `You're getting this because you're a member of ${alert.organization.name} on Ployz.`,
+    reason: `You're getting this as a member of ${alert.organization.name} on Ployz.`,
   };
   if (alert.kind === "opened") {
     const since = `${clock(alert.openedAt)} UTC`;
     return {
       ...shared,
-      subject: `Down: ${name} in ${where}`,
-      preview: `The health check has failed since ${since}.`,
+      subject: `${name} is down in ${where}`,
+      preview: `Checks have failed since ${since}.`,
       title: `${name} is down`,
-      paragraphs: [`The health check on ${name} has failed since ${since}. We'll email again when it recovers.`],
-      facts: [...facts, { label: "Failed with", value: failedWith(alert.observations) }],
+      paragraphs: [`Visitors can't reach ${name}. Checks have failed since ${since}. We'll email you when it's back up.`],
+      facts: [...facts, { label: "Error", value: failedWith(alert.observations) }],
     };
   }
   const down = duration(alert.closedAt.getTime() - alert.openedAt.getTime());
   return {
     ...shared,
-    subject: `Recovered: ${name} in ${where}`,
-    preview: `Back up after ${down}.`,
+    subject: `${name} is back up in ${where}`,
+    preview: `It was down for ${down}.`,
     title: `${name} is back up`,
-    paragraphs: [`The health check passes again. ${name} was down for ${down}.`],
-    facts: [...facts, { label: "Down", value: downSpan(alert.openedAt, alert.closedAt) }],
+    paragraphs: [`Visitors can reach ${name} again. It was down for ${down}.`],
+    facts: [...facts, { label: "Downtime", value: downSpan(alert.openedAt, alert.closedAt) }],
   };
 }
 
