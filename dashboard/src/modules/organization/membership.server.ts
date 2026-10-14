@@ -1,9 +1,10 @@
 import "@tanstack/react-start/server-only";
 import { and, asc, eq } from "drizzle-orm";
 import { Effect } from "effect";
-import { member, organizationToken, session } from "#/modules/identity/tables";
+import { member, organizationToken, session, user } from "#/modules/identity/tables";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import { createServerAccessRetireRequestedEvent } from "#/modules/inngest/events";
+import type { Role } from "#/modules/organization/access.server";
 import { organization } from "#/modules/organization/tables";
 import { afterDatabaseCommit, Database } from "#/server/database.server";
 import { Conflict, NotFound } from "#/server/public-error";
@@ -36,5 +37,29 @@ export const removeMembership = Effect.fn("Organization.removeMembership")(funct
     yield* afterDatabaseCommit(sendInngestEvent(createServerAccessRetireRequestedEvent()).pipe(
       Effect.catch((error) => Effect.logWarning("Server access retirement was not requested; the sweep does it.", error)),
     ));
+  }));
+});
+
+/** The Organization's members with their role, oldest first. */
+export const listMembers = Effect.fn("Organization.listMembers")(function* (organizationId: string) {
+  const { drizzle } = yield* Database;
+  return yield* drizzle.select({ userId: member.userId, name: user.name, email: user.email, role: member.role, joinedAt: member.createdAt })
+    .from(member).innerJoin(user, eq(user.id, member.userId))
+    .where(eq(member.organizationId, organizationId)).orderBy(asc(member.createdAt));
+});
+
+/** Gives a member a new role. It refuses to demote the last owner. Locks the member rows like `removeMembership`. */
+export const setMemberRole = Effect.fn("Organization.setMemberRole")(function* (organizationId: string, userId: string, role: Role) {
+  const database = yield* Database;
+  yield* database.transaction(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    const members = yield* drizzle.select({ userId: member.userId, role: member.role }).from(member)
+      .where(eq(member.organizationId, organizationId)).for("update");
+    const target = members.find((row) => row.userId === userId);
+    if (target === undefined) return yield* new NotFound({ message: "That user is not a member of this Organization." });
+    if (target.role === "owner" && role !== "owner" && !members.some((row) => row.role === "owner" && row.userId !== userId)) {
+      return yield* new Conflict({ message: "An Organization needs an owner. Make someone else an owner first.", userFacing: true });
+    }
+    yield* drizzle.update(member).set({ role }).where(and(eq(member.organizationId, organizationId), eq(member.userId, userId)));
   }));
 });
