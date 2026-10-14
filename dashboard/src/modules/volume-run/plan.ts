@@ -104,6 +104,16 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
     ? refuse("unanswered", `${member.machine.name} did not answer; ${name}'s copies are unknown`)
     : refuse("server_lacks", member.lack);
   const midRun = () => refuse("volume_switching", `${name} is mid-run; ployz volume release ${name} stops it`);
+  const unfinishedCuts = () => {
+    // As `oldCopy` reads roots, the cut at the highest epoch began last. Restore needs it to hold a snapshot.
+    const [newest, next] = [...cutting].sort((a, b) => epochOf(b) - epochOf(a));
+    const keep = newest !== undefined && next !== undefined && epochOf(newest) > epochOf(next) && newestGuid(newest.view.copy) !== null ? newest : undefined;
+    const servers = (each: readonly AnsweredMember[]) => each.map((member) => member.machine.name).join(" and ");
+    const remedy = keep === undefined
+      ? `server rm all but one, then ployz volume restore ${name} --from the one left`
+      : `server rm ${servers(cutting.filter((member) => member !== keep))}, then ployz volume restore ${name} --from ${keep.machine.name}`;
+    return refuse("volume_switching", `${name} has unfinished cuts on ${servers(cutting)}, so release cannot pick a writer; ${remedy}`);
+  };
 
   if (input.kind === "delete_mirror") {
     if (input.orphan) {
@@ -116,7 +126,7 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
     if (unanswered !== undefined) return unknown(unanswered);
     const writers = withRole("writer");
     if (writers.length > 1) return refuse("two_writers", `${name} has two writers, ${writers.map(named).join(" and ")}`);
-    if (cutting.length > 0) return midRun();
+    if (cutting.length > 0) return writers.length === 0 && cutting.length > 1 ? unfinishedCuts() : midRun();
     const { slot, confirmed_name } = input.args;
     const destroy = slot === null ? mirrors : mirrors.filter((member) => member.machine.name === slot);
     if (destroy.length === 0) return refuse("no_mirror", slot === null ? `${name} has no mirror` : `${name} has no mirror on ${slot}`);
@@ -132,13 +142,7 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
   if (input.kind === "restore") return planRestore(name, input.args, answered);
   if (roots.length > 1) {
     const old = oldCopy(roots);
-    if (old === null && withRole("writer").length < 2) {
-      const servers = roots.map((member) => member.machine.name).join(" and ");
-      return refuse(
-        "volume_switching",
-        `${name} has unfinished cuts on ${servers}, so release cannot pick a writer; server rm all but one, then ployz volume restore ${name} --from the one left`,
-      );
-    }
+    if (old === null && withRole("writer").length < 2) return unfinishedCuts();
     if (old === null) return refuse("two_writers", `${name} has two writers, ${roots.map(named).join(" and ")}`);
     return { ok: true, phase: { kind: "demote", ...old } };
   }
