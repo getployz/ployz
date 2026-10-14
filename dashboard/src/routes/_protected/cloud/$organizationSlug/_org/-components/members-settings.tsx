@@ -40,7 +40,7 @@ const ROLE_LABELS = { owner: "Owner", admin: "Admin", member: "Member" } satisfi
 const organizationRoute = getRouteApi("/_protected/cloud/$organizationSlug");
 
 /** Both tables share these widths so their columns line up. */
-const WIDTHS = { role: "w-32", date: "hidden w-32 sm:table-cell", actions: "w-24" };
+const WIDTHS = { role: "w-28 sm:w-32", date: "hidden w-32 sm:table-cell", actions: "w-20 sm:w-24" };
 
 const formatDate = (iso: string) => new Date(iso).toLocaleDateString(undefined, { dateStyle: "medium" });
 
@@ -137,7 +137,7 @@ export function MembersSettings({ organizationSlug }: { organizationSlug: string
                     {editable ? (
                       <NativeSelect
                         size="sm"
-                        className="w-28"
+                        className="w-24 sm:w-28"
                         aria-label={`Role of ${row.name}`}
                         value={row.role}
                         onChange={(event) => {
@@ -180,7 +180,7 @@ export function MembersSettings({ organizationSlug }: { organizationSlug: string
                   <TableCell>
                     <div className="flex min-w-0 flex-col">
                       <span className="truncate" title={invite.email ?? undefined}>{invite.email ?? <span className="text-muted-foreground">Anyone with the link</span>}</span>
-                      <span className="truncate text-xs text-muted-foreground" title={`From ${invite.invited_by}`}>
+                      <span className="text-xs whitespace-normal text-muted-foreground">
                         From {invite.invited_by}<span className="sm:hidden"> · expires {formatDate(invite.expires_at)}</span>
                       </span>
                     </div>
