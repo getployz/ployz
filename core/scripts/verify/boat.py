@@ -185,8 +185,13 @@ class Provider:
         info = json.loads(self.boat("info", sandbox).stdout)["sandbox"]
         self.mark(node["name"], ssh=info["sshEndpoint"], ip=info["ip"])
         key = (self.private / "id_ed25519.pub").read_text().strip()
+        # A clone can carry an sshd listener that systemd no longer tracks, so restarting ssh later fails with
+        # port 22 in use. Kill only listeners: Boat's own sessions run through sshd and must survive.
+        listener = shlex.quote(r"^sshd: [^ ]*sshd -D \[listener\]")
         install = (f"install -d -m 700 /root/.ssh && printf '%s\\n' {shlex.quote(key)} > /root/.ssh/authorized_keys"
-                   " && chmod 600 /root/.ssh/authorized_keys")
+                   " && chmod 600 /root/.ssh/authorized_keys && systemctl stop ssh.service ssh.socket"
+                   f" && {{ pkill -f {listener}; for i in $(seq 50); do pgrep -f {listener} >/dev/null || break; sleep 0.1; done; }}"
+                   " && systemctl start ssh.socket")
         deadline = time.monotonic() + 120
         while True:
             result = self.boat("exec", sandbox, "--timeout", "60", "--", "sudo", "sh", "-c", install, check=False)
