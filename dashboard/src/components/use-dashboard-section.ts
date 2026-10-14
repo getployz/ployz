@@ -26,7 +26,7 @@ export function useDashboardNavigation(scope: DashboardScope) {
   // Self-hosted Cloud has no billing, so no Billing destination.
   const billingEnabled =
     useQuery(organizationStateQueryOptions(scope.organizationSlug)).data?.billingEnabled ?? false;
-  return createDashboardNavigation(scope, { section, search: { scope: search.scope, section: search.section }, billingEnabled });
+  return createDashboardNavigation(scope, { section, search: { scope: search.scope, section: search.section, variant: search.variant }, billingEnabled });
 }
 
 /** Whether the canvas shows: on Architecture or under a panel over it. */

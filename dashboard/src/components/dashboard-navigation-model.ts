@@ -2,6 +2,7 @@ import type { LucideIcon } from "lucide-react";
 import { linkOptions, type RegisteredRouter } from "@tanstack/react-router";
 import {
   Building2Icon,
+  CircleUserRoundIcon,
   CreditCardIcon,
   HistoryIcon,
   LayoutGridIcon,
@@ -50,7 +51,7 @@ const environmentPlaces = {
 
 /** The organization's three places, in rail order. */
 const organizationPlaceOrder = ["projects", "servers", "organization-settings"] as const;
-type OrganizationDestination = (typeof organizationPlaceOrder)[number] | "billing";
+type OrganizationDestination = (typeof organizationPlaceOrder)[number] | "billing" | "account";
 const organizationDestinations = {
   projects: { label: "Projects", icon: LayoutGridIcon, path: "/cloud/$organizationSlug/~" },
   servers: { label: "Servers", icon: ServerIcon, path: "/cloud/$organizationSlug/~/servers" },
@@ -58,6 +59,8 @@ const organizationDestinations = {
   "organization-settings": { label: "Organization", icon: Building2Icon, path: "/cloud/$organizationSlug/~/settings" },
   // A section of Organization, with its own page. Only Ployz-hosted Cloud has billing.
   billing: { label: "Billing", icon: CreditCardIcon, path: "/cloud/$organizationSlug/~/billing" },
+  // Prototype (variants A and C): the user's own settings inside the shell, a place only while open.
+  account: { label: "Account", icon: CircleUserRoundIcon, path: "/cloud/$organizationSlug/~/account" },
 } satisfies Record<OrganizationDestination, Destination>;
 
 export type DashboardSection = EnvironmentPlace | OrganizationDestination;
@@ -94,8 +97,14 @@ export type DashboardNavSection = ReturnType<typeof placeSections>[number];
 /** The search keys that pick a Settings page's section. */
 export interface DashboardSectionSearch {
   scope?: "environment" | "project";
-  section?: "general" | "builds";
+  section?: "general" | "builds" | AccountSection;
+  /** Prototype: which Account layout is open. */
+  variant?: "a" | "b" | "c";
 }
+
+export const accountSectionOrder = ["profile", "sessions", "notifications"] as const;
+export type AccountSection = (typeof accountSectionOrder)[number];
+export const accountSectionLabels = { profile: "Profile", sessions: "Sessions", notifications: "Notifications" } satisfies Record<AccountSection, string>;
 
 /** Where `section` lives in `scope`; a section the scope lacks falls back to its home (Architecture or Projects). */
 export function getDashboardDestination(
@@ -140,6 +149,8 @@ function openSection(section: DashboardSection, search: DashboardSectionSearch) 
       return search.section ?? "general";
     case "billing":
       return "billing";
+    case "account":
+      return search.section ?? "profile";
     default:
       return undefined;
   }
@@ -151,7 +162,16 @@ function placeSections(
   place: DashboardSection,
   open: ReturnType<typeof openSection>,
   billingEnabled: boolean,
+  variant?: DashboardSectionSearch["variant"],
 ) {
+  if (place === "account") {
+    const params = { organizationSlug: scope.organizationSlug };
+    const to = organizationDestinations.account.path;
+    // C is one page, so its sections are anchors on it; A opens one section at a time.
+    return accountSectionOrder.map((key) => variant === "c"
+      ? { label: accountSectionLabels[key], current: false, ...linkOptions({ to, params, search: { variant: "c" as const }, hash: key }) }
+      : { label: accountSectionLabels[key], current: open === key, ...linkOptions({ to, params, search: { variant: "a" as const, section: key } }) });
+  }
   if (scope.kind === "environment" && place === "settings") {
     const params = { organizationSlug: scope.organizationSlug, projectSlug: scope.projectSlug, environmentSlug: scope.environmentSlug };
     const to = environmentPlaces.settings.path;
@@ -194,12 +214,14 @@ export function createDashboardNavigation(
     label,
     icon,
     current: key === currentPlace,
-    sections: placeSections(target, key, open, billingEnabled),
+    sections: placeSections(target, key, open, billingEnabled, search.variant),
     ...getDashboardDestination(target, key),
   });
   const organizationScope = { kind: "all" as const, organizationSlug: scope.organizationSlug };
   const organization = organizationPlaceOrder.map((key) => item(organizationScope, key, organizationDestinations[key]));
-  if (scope.kind === "all") return { places: organization, organization: [] };
+  // Account is a place only while open: below the divider, over the avatar it belongs to.
+  const account = currentPlace === "account" ? [item(organizationScope, "account", organizationDestinations.account)] : [];
+  if (scope.kind === "all") return { places: organization, organization: account };
   return {
     places: environmentPlaceOrder.map((key) => item(scope, key, environmentPlaces[key])),
     organization: organization.filter((place) => place.section !== "organization-settings"),
@@ -211,6 +233,7 @@ const sectionByRouteId = new Map<RegisteredRouteId, DashboardSection>([
   ["/_protected/cloud/$organizationSlug/_project/new", "projects"],
   ["/_protected/cloud/$organizationSlug/_org/~/billing", "billing"],
   ["/_protected/cloud/$organizationSlug/_org/~/settings", "organization-settings"],
+  ["/_protected/cloud/$organizationSlug/_org/~/account", "account"],
   ["/_protected/cloud/$organizationSlug/_org/~/servers/", "servers"],
   ["/_protected/cloud/$organizationSlug/_org/~/servers/$serverId", "servers"],
   ["/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/deployments/", "deployments"],
