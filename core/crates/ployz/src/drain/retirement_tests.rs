@@ -215,6 +215,7 @@ struct PointedServer {
     /// A newer deploy's pointer and the copy it names, both arriving at the second listing.
     later: Option<(ployz_core::ServingPointer, ployz_core::ContainerId)>,
     listings: u32,
+    listed: Vec<QualifiedService>,
 }
 
 impl PointerClient for PointedServer {
@@ -243,9 +244,10 @@ impl CopyLister for PointedServer {
     async fn copies_on(
         &mut self,
         _machine_id: &MachineId,
-        _service: &QualifiedService,
+        service: &QualifiedService,
     ) -> Result<Vec<ployz_core::ContainerId>, RpcError> {
         self.listings += 1;
+        self.listed.push(service.clone());
         if self.listings == 2
             && let Some((row, copy)) = self.later.take()
         {
@@ -278,6 +280,7 @@ fn pointed_server(row: &FakeRow, polls_left: Option<u32>) -> PointedServer {
         polls_left,
         later: None,
         listings: 0,
+        listed: Vec::new(),
     }
 }
 
@@ -392,6 +395,29 @@ async fn an_unnamed_global_copy_is_removed_at_once() {
     .unwrap();
     assert_eq!(*row.row.lock().unwrap(), None);
     assert!(server.copies.is_empty());
+}
+
+#[tokio::test]
+async fn stopping_ingress_removes_an_unpointed_ingress_proxy_at_once() {
+    let row = FakeRow::default();
+    let mut server = pointed_server(&row, None);
+    retire_ingress_proxy(
+        &mut server,
+        &MachineId::parse("b".repeat(32)).unwrap(),
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    assert!(server.copies.is_empty(), "the proxy copy is removed");
+    assert!(
+        server
+            .listed
+            .iter()
+            .all(|service| *service == QualifiedService::system_ingress()),
+        "only the system Ingress Proxy is listed: {:?}",
+        server.listed
+    );
+    assert_eq!(*row.row.lock().unwrap(), None, "no pointer is written");
 }
 
 #[tokio::test(start_paused = true)]
