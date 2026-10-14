@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { Settings2Icon } from "lucide-react";
-import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
 import { buttonVariants } from "#/components/ui/button-variants";
 import type { ServerListItem } from "#/modules/machines/use-servers";
@@ -12,7 +11,6 @@ import {
   serversUpgradeLine,
   serverUpgradeLines,
   type ServersUpgradeLine,
-  type ServerUpgradeLine,
 } from "#/modules/server-upgrade/server-upgrade";
 import { useNow, useRequestUpgrade, useServerUpgradeSettings } from "#/modules/server-upgrade/server-upgrade.hooks";
 import { useChannelRelease, useServerUpgrades } from "#/modules/server-upgrade/server-upgrade.queries";
@@ -91,15 +89,4 @@ export function ServersUpgradeActions({ line, major, automatic, upgrade, onSetti
       </Button>
     </>
   );
-}
-
-/** A Server row's upgrade state, beside its status. */
-export function ServerUpgradeTag({ line }: { line: ServerUpgradeLine }) {
-  if (line === null) return null;
-  switch (line.kind) {
-    case "upgrading": return <Badge variant="info">Upgrading</Badge>;
-    case "failed": return <Badge variant="warning">Upgrade failed</Badge>;
-    case "behind": return <Badge variant="outline">→ {mono(line.release)}</Badge>;
-    case "when-back": return <Badge variant="outline">→ {mono(line.release)} when back</Badge>;
-  }
 }
