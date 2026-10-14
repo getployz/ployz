@@ -263,7 +263,9 @@ on.
 
 > [!WARNING]
 > Volumes stay on the removed server's disk as copies, and your services lose them until you
-> make a copy the writer again with `ployz volume restore`. Copy off any data you need first.
+> make a copy the writer again with `ployz volume restore`. The server's mirrors of volumes
+> written on other servers are deleted, and so is a restore still copying there. A restore that
+> finished copying stays as a copy. Copy off any data you need first.
 
 1. Open the server and click **Remove server**.
 2. Ployz lists the volumes on the server. Type the server's name and click **Remove**.
@@ -284,6 +286,9 @@ servers, except for services whose volume was on it (see
 [When a server goes down](../services/scaling.md#when-a-server-goes-down)). Removing your last
 server stops everything; your projects and settings stay, and the bottom bar shows **Add a server**
 until you [add one](add-a-server.md).
+
+The reset first stops every copy in progress on the server. If one doesn't stop within 30 seconds,
+the removal fails and names its volume; remove the server again.
 
 If the server resets but your other servers can't forget it, `ployz server rm` says "Server web-2
 reset but is still listed." and prints `ployz server forget web-2` to finish. Ployz Cloud
@@ -326,7 +331,16 @@ ployz server forget web-2 --confirm dead
 ```
 
 Ployz refuses to forget a server that answers and holds a copy of any volume. Remove it with
-`ployz server rm` instead, and the reset makes its copies read-only.
+`ployz server rm` instead, and the reset makes its copies read-only and deletes its mirrors.
+
+A mirror that Ployz v0.3.0-beta.2 or earlier refreshed last stays on the server after the reset.
+To have the reset delete it, the mirror must finish a pull from the writer before you run
+`ployz server rm`. `ployz volume sync <volume> --full --wait` copies the whole volume to the
+mirror again and returns only once the mirror holds the writer's newest data. Plain `ployz volume
+sync <volume>` hands the mirror its pull and returns before the download ends, and removing the
+server during the download stops the pull and keeps the mirror. It also pulls only what the
+volume wrote since the mirror's last refresh, so the mirror of a volume that wrote nothing since
+pulls nothing and stays.
 
 A forgotten server doesn't know it was removed. If it comes back, its services may still be
 running on its copy of a volume. When you've restored that volume on another server, the next

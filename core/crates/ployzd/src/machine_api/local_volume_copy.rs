@@ -10,6 +10,7 @@ use tonic::{Request, Response, Status};
 
 use super::{MachineService, expect, local_error, respond};
 use crate::{
+    docker::FloorTurn,
     faults::{Identity, Want},
     machine::{CutRefusal, LocalMachineError},
     volume_copy::{
@@ -36,9 +37,6 @@ impl MachineService {
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::SetVolumeCopy>(request)?;
         if request.want == WantedCopy::Floor {
-            if let Err(error) = self.require_joined() {
-                return respond(error);
-            }
             return match self.floor_copy(&request.name, request.r#gen).await {
                 Ok(copy) => respond(SetVolumeCopyReply { copy }),
                 Err(error) => local_error(error),
@@ -50,9 +48,6 @@ impl MachineService {
         let guard = std::sync::Arc::clone(&self.switch_mutation)
             .lock_owned()
             .await;
-        if let Err(error) = self.require_joined() {
-            return respond(error);
-        }
         crate::faults::apply(
             "SetVolumeCopy",
             Some(Identity::new(&request.name, &request.want, request.r#gen)),
@@ -251,12 +246,7 @@ impl MachineService {
         name: &DockerVolumeName,
         r#gen: VolumeGen,
     ) -> Result<(), LocalMachineError> {
-        let admitted = self
-            .containers()?
-            .floor_turn()
-            .await
-            .admit(name, r#gen)
-            .await?;
+        let admitted = self.joined_floor_turn().await?.admit(name, r#gen).await?;
         match admitted {
             Ok(()) => Ok(()),
             Err(floor) => Err(stale(floor, self.inspect_copy(name).await?, name)),
@@ -271,9 +261,21 @@ impl MachineService {
         name: &DockerVolumeName,
         r#gen: VolumeGen,
     ) -> Result<Copy, LocalMachineError> {
-        let mut floor = self.containers()?.floor_turn().await;
+        let mut floor = self.joined_floor_turn().await?;
         floor.admit(name, r#gen).await?.ok();
         self.inspect_copy(name).await
+    }
+
+    async fn joined_floor_turn(&self) -> Result<FloorTurn<'_>, LocalMachineError> {
+        let joined = || {
+            self.require_joined()
+                .map_err(|_| LocalMachineError::NotParticipating)
+        };
+        joined()?;
+        let turn = self.containers()?.floor_turn().await;
+        // Checked again under the floor lock: a reset may have begun while this queued.
+        joined()?;
+        Ok(turn)
     }
 
     async fn inspect_copy(&self, name: &DockerVolumeName) -> Result<Copy, LocalMachineError> {

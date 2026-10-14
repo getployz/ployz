@@ -75,6 +75,21 @@ credentials you already have **takes effect at once**, and Discard can't bring t
 An **Empty service** has nothing to run, and deploying it fails until you choose **Git
 repository** or **Container image** here. See [Add a service](services.md#add-a-service).
 
+### Switch between an image and a repository
+
+Setting the other kind of source replaces the current one, with no need to disconnect it first.
+Switching is CLI-only for now:
+
+```sh
+ployz set web.repository=acme/web     # an image service builds acme/web's default branch
+ployz set web.image=nginx:1.27        # a repository service runs nginx:1.27
+```
+
+A service that switches to a repository builds from the repository root. A service that
+switches to an image loses its root directory and build settings, so they are back at their
+defaults if it later builds a repository again. Like every change, the switch waits for your
+next deploy, and Discard undoes it.
+
 ## Networking
 
 ![Settings → Networking: a generated domain that uses PORT, Custom Domain, and the private name](../images/service-settings-networking.png)
