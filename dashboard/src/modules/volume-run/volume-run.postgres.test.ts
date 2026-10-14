@@ -3209,6 +3209,20 @@ describe("volume runs", () => {
         expect((await lanes()).filter((lane) => lane.kind === "release")).toMatchObject([{ id: first, state: "failed" }, { id: newer.id, state: "failed" }]);
       });
 
+      it.each([
+        ["finished on B", "done", "fsn-2"],
+        ["handed to another Server", "failed", "fsn-3"],
+      ] as const)("a commitment %s before the Deploy's release step gets no release from it", async (_, state, current) => {
+        await failedCommit();
+        const placed = await place();
+        await finish();
+        const settled = await requested({ kind: "release", args: {} });
+        await harness.pool.query("update volume_run set state = $2, finished_at = now(), phase = 'committed', current = $3 where id = $1", [settled.id, state, idOf(current)]);
+
+        expect(await runEffect(releaseFollowed("env-1", DEPLOY, placed))).toEqual([]);
+        expect((await lanes()).filter((lane) => lane.kind === "release")).toMatchObject([{ id: settled.id, state }]);
+      });
+
       describe("once a release took the commitment over and floored B at its newer gen", () => {
         const successor = async (state: "running" | "done") => {
           await failedCommit();
