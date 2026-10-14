@@ -87,6 +87,8 @@ pub(crate) struct Schedule {
     publish_requested: BTreeSet<usize>,
     acked: BTreeSet<(ServiceName, MachineId)>,
     routed: BTreeSet<ServiceName>,
+    /// Starts dispatched and not yet returned, whatever their group's phase.
+    starting: BTreeSet<usize>,
     failed: bool,
 }
 
@@ -117,6 +119,7 @@ impl Schedule {
             publish_requested: BTreeSet::new(),
             acked: BTreeSet::new(),
             routed: BTreeSet::new(),
+            starting: BTreeSet::new(),
             failed: false,
         }
     }
@@ -232,6 +235,7 @@ impl Schedule {
     pub(crate) fn apply(&mut self, event: Event) {
         match event {
             Event::Completed(task) => {
+                self.starting.remove(&task);
                 let group = self.group_of(task);
                 if let Phase::Active { running, .. } = &mut self.slot_mut(group).phase {
                     running.remove(&task);
@@ -239,6 +243,7 @@ impl Schedule {
                 self.advance(group);
             }
             Event::Failed(task) => {
+                self.starting.remove(&task);
                 let group = self.group_of(task);
                 self.slot_mut(group).phase = Phase::Failed;
                 self.failed = true;
@@ -305,6 +310,7 @@ impl Schedule {
                 if room && self.missing_ack(&self.slot(group).group, task).is_none() {
                     if *starts {
                         *window += 1;
+                        self.starting.insert(task);
                     }
                     running.insert(task);
                     actions.push(Action::Start(task));
@@ -325,6 +331,10 @@ impl Schedule {
                 actions.push(Action::Publish(group));
             }
         }
+        // An ack admits one round. A same-Deploy amendment can change what a
+        // row names, so a later round reads the acks again.
+        self.acked.clear();
+        self.routed.clear();
         actions
     }
 
@@ -338,14 +348,8 @@ impl Schedule {
 
     fn windows(&self) -> BTreeMap<MachineId, usize> {
         let mut windows = BTreeMap::new();
-        for slot in &self.slots {
-            if let Phase::Active { running, .. } = &slot.phase {
-                for task in running.iter().map(|task| self.task(*task)) {
-                    if task.starts {
-                        *windows.entry(task.machine).or_insert(0) += 1;
-                    }
-                }
-            }
+        for task in &self.starting {
+            *windows.entry(self.task(*task).machine).or_insert(0) += 1;
         }
         windows
     }
@@ -564,6 +568,7 @@ mod tests {
             starts(&mut schedule).is_empty(),
             "Machine 2 has not acked queue"
         );
+        schedule.apply(ack("cache", '2'));
         schedule.apply(ack("queue", '2'));
         assert_eq!(starts(&mut schedule), vec![3]);
     }
@@ -665,6 +670,53 @@ mod tests {
         }
         assert!(starts(&mut schedule).is_empty());
         assert!(schedule.finished());
+    }
+
+    #[test]
+    fn a_failed_services_running_starts_keep_their_slots() {
+        let mut schedule = Schedule::new(
+            vec![
+                group("a", &[], vec![Step::Parallel(vec![0, 1, 2])]),
+                group("b", &[], vec![Step::Parallel((3..8).collect())]),
+            ],
+            (0..8).map(|_| start('1')).collect(),
+        );
+        assert_eq!(starts(&mut schedule), vec![0, 1, 2, 3, 4]);
+        schedule.apply(Event::Failed(0));
+        assert_eq!(
+            starts(&mut schedule),
+            vec![5],
+            "a's two running starts still hold their slots"
+        );
+        schedule.apply(Event::Completed(1));
+        assert_eq!(starts(&mut schedule), vec![6]);
+        schedule.apply(Event::Completed(2));
+        assert_eq!(starts(&mut schedule), vec![7]);
+    }
+
+    #[test]
+    fn an_ack_admits_one_round_and_a_later_start_reads_it_again() {
+        let mut schedule = Schedule::new(
+            vec![
+                group("db", &[], vec![Step::Parallel(vec![0])]),
+                group("app", &["db"], vec![Step::Serial(1), Step::Serial(2)]),
+            ],
+            vec![start('1'), start('1'), start('1')],
+        );
+        assert_eq!(starts(&mut schedule), vec![0]);
+        schedule.apply(Event::Completed(0));
+        assert_eq!(publishes(&mut schedule), vec![0]);
+        schedule.apply(Event::Published(0));
+        schedule.apply(ack("db", '1'));
+        assert_eq!(starts(&mut schedule), vec![1]);
+        schedule.apply(Event::Completed(1));
+        assert!(
+            starts(&mut schedule).is_empty(),
+            "an amended db row may not be routed yet"
+        );
+        assert_eq!(schedule.blocked_on_acks(), vec![(2, name("db"))]);
+        schedule.apply(ack("db", '1'));
+        assert_eq!(starts(&mut schedule), vec![2]);
     }
 
     #[test]
