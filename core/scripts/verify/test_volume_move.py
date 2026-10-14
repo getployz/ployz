@@ -66,7 +66,7 @@ def catalog(names):
     kept = [entry("MetricHistory", "ployz.metrics.history.v1"), entry("InspectStorage", "ployz.storage.inspect.v1"),
             entry("PrepareVolumes", "ployz.storage.prepare.v1")]
     docker = [entry(name, f"ployz.volume.{name.lower()}.v1")
-              for name in ("CreateVolume", "ListVolumes", "InspectVolume", "RemoveVolume")]
+              for name in ("ListVolumes", "RemoveVolume")]
     moves = [entry(name, f"ployz.volume.{name.lower()}.v1") for name in names]
     return "\n".join(kept + docker + moves) + "\n"
 
@@ -963,15 +963,9 @@ class VolumeMoveTests(unittest.TestCase):
         dropped = catalog(["InspectVolumeCopy", "SetVolumeCopy", "SeedVolume"]).replace("MetricHistory:", "Gone:")
         self.assertEqual(volume_move.catalog_diff(dropped)["kept_missing"], ["MetricHistory"])
 
-    def test_catalog_passes_without_the_docker_verbs_rpc_simplify_removes(self):
-        def without(text, *names):
-            return "".join(line for line in text.splitlines(keepends=True)
-                           if not any(f"{name}:" in line for name in names))
-
-        text = without(catalog(["InspectVolumeCopy", "SetVolumeCopy", "SeedVolume"]), "CreateVolume", "InspectVolume")
-        diff = volume_move.catalog_diff(text)
-        self.assertEqual((diff["extra"], diff["missing"], diff["kept_missing"]), ([], [], []))
-        self.assertEqual(volume_move.catalog_diff(without(text, "ListVolumes"))["kept_missing"], ["ListVolumes"])
+    def test_catalog_names_a_missing_docker_verb(self):
+        text = catalog(["InspectVolumeCopy", "SetVolumeCopy", "SeedVolume"]).replace("ListVolumes:", "Gone:")
+        self.assertEqual(volume_move.catalog_diff(text)["kept_missing"], ["ListVolumes"])
 
     def test_catalog_parses_the_real_file(self):
         diff = volume_move.catalog_diff(volume_move.CATALOG.read_text())
