@@ -38,6 +38,7 @@ import {
   commitMove,
   type CopyAnswer,
   insertRun,
+  isVolumeOwed,
   listVolumeRuns,
   observeOrganization,
   observeOrganizationCopies,
@@ -3047,6 +3048,43 @@ describe("volume runs", () => {
       expect(await fence(placed[0])).toEqual({ on: "fsn-2" });
       expect(verbs).toEqual(["writer@fsn-2(create)"]);
       expect(containers.filter((container) => container.running)).toEqual([{ machine: "fsn-2", id: `created-${volumeId}-${cut.guid}`, running: true }]);
+    });
+
+    describe("on a committed Move whose run failed", () => {
+      const failedCommit = async () => {
+        afterCut();
+        const taken = await moving("committed");
+        await harness.pool.query("update volume_run set state = 'failed', finished_at = now() where id = $1", [taken.id]);
+      };
+
+      it("removing B ends the commitment: the Volume is no longer owed and a Deploy follows nothing", async () => {
+        await failedCommit();
+
+        await runEffect(releaseLanesOff(organizationId, { id: idOf("fsn-2"), name: "fsn-2" }, []));
+        machines = machines.filter((fake) => fake.name !== "fsn-2");
+
+        expect(await runEffect(isVolumeOwed(organizationId, volumeId))).toBe(false);
+        expect(await place()).toEqual([]);
+        expect(await requested({ kind: "move", args: { to: "fsn-3" } })).toMatchObject({ kind: "move", state: "requested" });
+      });
+
+      it("a silent B fails the follow with what to do", async () => {
+        await failedCommit();
+        const placed = await place();
+        machines = machines.filter((fake) => fake.name !== "fsn-2");
+
+        await expect(fence(placed[0])).rejects.toThrow(
+          "data finishes on fsn-2, which did not answer. Bring fsn-2 back or remove it with ployz server rm fsn-2. Restore from fsn-1's copy: ployz volume restore data --from fsn-1");
+      });
+
+      it("a copyless B fails the follow with what to do", async () => {
+        await failedCommit();
+        const placed = await place();
+        named("fsn-2").copy = null;
+
+        await expect(fence(placed[0])).rejects.toThrow(
+          "data finishes on fsn-2, which holds no copy to start. Remove it with ployz server rm fsn-2. Restore from fsn-1's copy: ployz volume restore data --from fsn-1");
+      });
     });
 
     describe("after a Deploy followed the commitment, its placement removed A's Container, and the Service on B was stopped", () => {
