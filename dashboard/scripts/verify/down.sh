@@ -9,7 +9,7 @@ wt=$(dirname "$dash")
 name=ployz-verify-$(printf %s "$wt" | sha1sum | cut -c1-10)
 run=$dash/.verify/run
 [ -f "$run/cluster" ] && "$wt/core/scripts/verify-cluster" down "$(cat "$run/cluster")"
-for process in idle worker vite inngest hosted-dns; do
+for process in idle seed-uptime worker vite inngest hosted-dns; do
   [ -f "$run/$process.pid" ] || continue
   pid=$(cat "$run/$process.pid")
   kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null
