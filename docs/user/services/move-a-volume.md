@@ -181,8 +181,8 @@ newest cut and names a `ployz server rm` line for each server whose copy it can'
 release or move to run.
 
 A move that stopped after `web-2` was told to start your service is finished on `web-2`, and the
-old server's container goes. Until that finish, a move, a mirror, a full sync or a seed of the
-volume is refused:
+old server's container goes. Until that finish, a move, a mirror, a sync, a seed, and removing the
+mirror on `web-2` or every mirror of the volume are refused:
 
 ```
 data finishes on web-2; ployz volume release data finishes it now

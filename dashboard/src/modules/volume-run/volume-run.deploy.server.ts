@@ -130,7 +130,7 @@ export const placeDeployVolumes = Effect.fn("VolumeRun.placeDeploy")(function* (
       }, inngestRunId);
     }
     for (const row of yield* owedCommitments(organizationId, environmentId)) {
-      if (lanes.some((lane) => lane.volumeId === row.volumeId)) continue;
+      if (lanes.some((lane) => lane.volumeId === row.volumeId && !BESIDE_WRITER.has(lane.kind))) continue;
       const to = yield* laneTarget(row);
       if (to === null) return yield* Effect.fail(new NonRetriableError(`${row.volumeName} is moving to a Server its run never named`));
       placed.push({ kind: "follow", run: contextOf(row), to, machine: row.current, epoch: row.epoch, ended: true });

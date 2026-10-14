@@ -224,10 +224,15 @@ export const owedCommitments = Effect.fn("VolumeRun.owedCommitments")(function* 
   return newest.flatMap((row) => owed(row) ?? []);
 });
 
-const OWED_KINDS: ReadonlySet<VolumeRunKind> = new Set<VolumeRunKind>(["move", "mirror", "seed"]);
+// A sync's cut assumes a writer, and an owed Volume has none until the finish starts one on B.
+const OWED_KINDS: ReadonlySet<VolumeRunKind> = new Set<VolumeRunKind>(["move", "mirror", "seed", "sync"]);
 
-/** A run that would undo or copy around a Move still owed its finish. */
-const refusedWhileOwed = (input: VolumeLaneInput) => OWED_KINDS.has(input.kind) || (input.kind === "sync" && input.args.full);
+/** A run that would undo or copy around a Move still owed its finish, or destroy the copy it finishes on. */
+const refusedWhileOwed = Effect.fn("VolumeRun.refusedWhileOwed")(function* (input: VolumeLaneInput, pending: Owed) {
+  if (OWED_KINDS.has(input.kind)) return true;
+  if (input.kind !== "delete_mirror") return false;
+  return input.args.slot === null || input.args.slot === (yield* laneTarget(pending));
+});
 
 const owedRefusal = Effect.fn("VolumeRun.owedRefusal")(function* (pending: Owed) {
   const target = (yield* laneTarget(pending)) ?? "its new Server";
@@ -392,7 +397,7 @@ export const planVolumeRun = Effect.fn("VolumeRun.plan")(function* (
     return { ok: false, refusal: yield* laneRefusal(lane, input.kind) } satisfies VolumeRunPlan;
   }
   const { owed: pending } = yield* commitment(input.volumeId);
-  if (pending !== null && refusedWhileOwed(input)) return { ok: false, refusal: yield* owedRefusal(pending) } satisfies VolumeRunPlan;
+  if (pending !== null && (yield* refusedWhileOwed(input, pending))) return { ok: false, refusal: yield* owedRefusal(pending) } satisfies VolumeRunPlan;
   const members = yield* observeVolumeMembers(organizationId, volume.dockerVolume, input).pipe(Effect.option);
   if (Option.isNone(members)) return { ok: false, refusal: unanswered } satisfies VolumeRunPlan;
   if (pending !== null && input.kind === "release") return yield* planForward(volume, input, pending, members.value);
@@ -560,7 +565,7 @@ const admitOwed = Effect.fn("VolumeRun.admitOwed")(function* (inserted: VolumeRu
     return yield* new LaneRefused({ refusal: releaseChanged(inserted.volumeName), busy: volumeRunView(newest ?? inserted) });
   }
   if (input.kind !== "release") {
-    if (!refusedWhileOwed(input)) return inserted;
+    if (!(yield* refusedWhileOwed(input, pending))) return inserted;
     return yield* new LaneRefused({ refusal: yield* owedRefusal(pending), busy: volumeRunView(pending) });
   }
   if (plan !== undefined && (plan.forward?.after !== pending.id || plan.forward.to !== pending.current)) {
