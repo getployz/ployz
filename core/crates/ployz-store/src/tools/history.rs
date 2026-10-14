@@ -1,13 +1,13 @@
 //! The tool that stages a Saved revision back: restore all of it, or undo what it
 //! changed.
 
-use ployz_core::RpcErrorCode;
+use ployz_core::{RpcError, RpcErrorCode};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::machine::{Cx, Stop, Tool, at};
-use super::refusal::{Call, Refusal};
+use super::refusal::{Call, Refusal, Writes, from_store};
 use crate::catalog::NODE_NAME;
 use crate::{
     EnvironmentName, HistoryAction, HistoryPreviewQuery, ProjectName, Revision, StageHistory,
@@ -76,14 +76,17 @@ fn stage(history: History, cx: &mut Cx<'_>) -> Result<Value, Stop> {
     if !history.accept_overwrite && !preview.overwritten.is_empty() {
         return Err(overwrites(cx.call(), preview.overwritten, &preview.version).into());
     }
-    let staged = cx.write(&StageHistory {
-        environment,
-        revision,
-        action,
-        change: None,
-        version: history.version.unwrap_or(preview.version),
-        accept_overwrite: history.accept_overwrite,
-    })?;
+    let staged = cx.write_with(
+        &StageHistory {
+            environment,
+            revision,
+            action,
+            change: None,
+            version: history.version.unwrap_or(preview.version),
+            accept_overwrite: history.accept_overwrite,
+        },
+        stale,
+    )?;
     let not_set = staged
         .not_set
         .iter()
@@ -111,4 +114,19 @@ fn overwrites(call: &Call, overwritten: Vec<String>, version: &str) -> Refusal {
     )
     .with_detail("overwrites", json!(overwritten))
     .with_retry(Call::new(&call.tool, input))
+}
+
+/// A Store refusal, plus for a version that went stale the unpinned call that
+/// asks again with the overwrites named fresh.
+fn stale(error: RpcError, call: &Call, writes: Writes) -> Refusal {
+    let refusal = from_store(error, call, writes);
+    let mut input = call.input.clone();
+    let Value::Object(fields) = &mut input else {
+        return refusal;
+    };
+    if refusal.code != RpcErrorCode::Conflict || fields.remove("version").is_none() {
+        return refusal;
+    }
+    fields.remove("accept_overwrite");
+    refusal.with_next(Call::new(&call.tool, input))
 }

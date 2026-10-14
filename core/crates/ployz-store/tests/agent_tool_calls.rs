@@ -496,6 +496,85 @@ fn discard_drops_a_staged_service() {
 }
 
 #[test]
+fn history_names_the_draft_it_overwrites_and_holds_the_member_to_it() {
+    let store = shop();
+    let image = |tag: &str, key: &str| {
+        call(
+            &store,
+            "service_update",
+            json!({ "service": "web", "set": { "image": format!("traefik/whoami:{tag}") } }),
+            key,
+        )
+        .ok();
+    };
+    call(
+        &store,
+        "service_add",
+        json!({ "name": "web", "image": "traefik/whoami:v1" }),
+        "add-1",
+    )
+    .ok();
+    store
+        .write_trusted(
+            &who(),
+            &ployz_store::Publish {
+                environment: EnvironmentRef::default(),
+                version: None,
+                message: None,
+                accept_volume_loss: Vec::new(),
+            },
+            &ployz_store::Trusted {
+                approval: ployz_store::Approval::NotRequired,
+                ..ployz_store::Trusted::default()
+            },
+        )
+        .unwrap();
+    image("v2", "update-1");
+    image("v3", "update-2");
+
+    let unpinned = call(
+        &store,
+        "history",
+        json!({ "revision": 1, "accept_overwrite": true }),
+        "history-1",
+    )
+    .refused();
+    assert_eq!(unpinned.code, RpcErrorCode::InvalidArgument);
+    assert_eq!(unpinned.field.as_deref(), Some("version"));
+
+    let asked = call(&store, "history", json!({ "revision": 1 }), "history-2").refused();
+    assert_eq!(asked.code, RpcErrorCode::ConfirmationRequired);
+    assert_eq!(asked.writes, Writes::None);
+    assert!(
+        asked.details["overwrites"]
+            .as_array()
+            .is_some_and(|fields| fields.iter().any(|field| field == "web.source")),
+        "{asked:?}"
+    );
+    assert_eq!(asked.retry.input["accept_overwrite"], true);
+    let version = asked.retry.input["version"].as_str().unwrap().to_owned();
+
+    image("v4", "update-3");
+    let stale = call(&store, "history", asked.retry.input.clone(), "history-3").refused();
+    assert_eq!(stale.code, RpcErrorCode::Conflict, "{stale:?}");
+    assert_eq!(stale.writes, Writes::None);
+    assert_eq!(stale.next, [Call::new("history", json!({ "revision": 1 }))]);
+
+    let again = call(&store, "history", json!({ "revision": 1 }), "history-4").refused();
+    assert_ne!(again.retry.input["version"], version.as_str());
+    let staged = call(&store, "history", again.retry.input, "history-5").ok();
+    assert_eq!(staged["changed"], true, "{staged}");
+    let shown = call(
+        &store,
+        "service_inspect",
+        json!({ "service": "web" }),
+        "inspect-1",
+    )
+    .ok();
+    assert!(shown.to_string().contains("traefik/whoami:v1"), "{shown}");
+}
+
+#[test]
 fn project_create_makes_a_project_once_per_key() {
     let store = shop();
     let input = json!({ "name": "docs", "request_key": "project-docs-0001" });

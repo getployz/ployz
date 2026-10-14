@@ -61,8 +61,8 @@ For Codex, run `codex mcp add ployz -- ployz mcp`. The tools act signed in as yo
 Projects, read and stage changes in them, review, publish and deploy them, restore or undo a
 saved version, list, follow, redeploy, start and cancel their deployments, show Services, Servers
 and Volumes, and read a Service's recent logs. The agent can resend a call after a lost reply
-without running it twice. Each call acts where the agent's directory is linked when the call starts, so after
-`ployz link` or `ployz org use` the next call follows it.
+without running it twice. Each call acts where the agent's directory is linked when the call
+starts, so after `ployz link` or `ployz org use` the next call follows it.
 
 Some things are not tools. Run these yourself in a terminal:
 
