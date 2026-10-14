@@ -497,7 +497,10 @@ def pooled():
 def reap_pool(force, yes):
     """Pool rows for reap: sandboxes stale() names; with yes, delete them and drop them from the pool."""
     with pool() as entries:
-        # States read under the lock cannot miss a sandbox a run parks or claims meanwhile.
+        # States read under the lock cannot miss a sandbox a run parks or claims meanwhile. A run can hold a retiring
+        # entry too: a crash between pool()'s two writes leaves it in pool.ledger, where main's claim takes it.
+        owned = registered()
+        entries[:] = [entry for entry in entries if entry["id"] not in owned]
         found = stale(entries, sandbox_states(), kept_bakes(), force)
         if yes:
             for entry, reason in found:

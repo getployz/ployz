@@ -565,6 +565,31 @@ class Pool(unittest.TestCase):
         self.assertEqual(boat.read(boat.POOL), [])
         self.assertEqual([entry["id"] for entry in boat.read(boat.RETIRING)], ["bx_a"])
 
+    def test_reap_spares_a_retiring_sandbox_a_run_claimed_after_an_interrupted_save(self):
+        boat.write(boat.BAKES, ["bake-a"])
+        boat.write(boat.POOL, [parked("bx_a", 1)])
+        save = boat.write
+
+        def interrupted(path, record):
+            if path == boat.POOL:
+                raise KeyboardInterrupt
+            save(path, record)
+        with unittest.mock.patch.object(boat, "write", interrupted), self.assertRaises(KeyboardInterrupt):
+            with boat.pool() as entries:
+                entries[0]["retiring"] = True
+        self.assertEqual([entry["id"] for entry in boat.read(boat.POOL) + boat.read(boat.RETIRING)], ["bx_a", "bx_a"])
+        # Main's claim reads only pool.ledger, takes the entry, and registers it as running.
+        claimed = boat.read(boat.POOL)[0]["id"]
+        boat.write(boat.POOL, [])
+        boat.write(boat.registry("run9"), dict(run="run9", image="bake-a", sandboxes={"m": dict(id=claimed, state="running")}))
+        deletes = []
+        with unittest.mock.patch.object(boat, "boat_json", self.listing(bx_a="ready")), \
+                unittest.mock.patch.object(boat.subprocess, "run", lambda args, **kwargs: deletes.append(args) or result(0, {})):
+            for force in [False, True]:
+                self.assertEqual(boat.reap_pool(force, True), [])
+        self.assertEqual(deletes, [])
+        self.assertEqual((boat.read(boat.POOL), boat.read(boat.RETIRING)), ([], []))
+
     def test_a_retiring_sandbox_never_shows_in_the_ledger_a_checkout_without_retiring_claims_from(self):
         boat.write(boat.BAKES, ["bake-a"])
         # A ledger an earlier version of this branch wrote, with the flag inline.
