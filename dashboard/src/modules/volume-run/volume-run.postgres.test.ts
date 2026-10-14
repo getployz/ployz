@@ -3337,8 +3337,13 @@ describe("volume runs", () => {
         const settled = await requested({ kind: "release", args: {} });
         await harness.pool.query("update volume_run set state = $2, finished_at = now(), phase = 'committed', current = $3 where id = $1", [settled.id, state, idOf(current)]);
 
+        const volume = { environmentId: "env-1", volumeName: "data", dockerVolume, refquotaBytes: 5_000_000 };
+        const follow = { volumeId, kind: "release" as const, args: { follows: idOf("fsn-2") } };
+
         expect(await runEffect(releaseFollowed("env-1", DEPLOY, placed))).toEqual([]);
         expect((await lanes()).filter((lane) => lane.kind === "release")).toMatchObject([{ id: settled.id, state }]);
+        expect(await runEffect(insertRun({ userId: null, organizationId }, follow, volume, crypto.randomUUID())))
+          .toMatchObject({ ok: false, refusal: { code: "conflict", details: { reason: "follow_settled" } } });
       });
 
       describe("once a release took the commitment over and floored B at its newer gen", () => {
