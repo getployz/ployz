@@ -148,22 +148,40 @@ const writerOf = Effect.fn("VolumeRun.writerOf")(function* (run: RunContext, mem
 });
 
 /**
- * D2 and D3 of a takeover: the run's first call to A raises its floor, so the lane it took can switch nothing more, and a
- * cut that flipped A before the floor rose is promoted back to the writer at its snapshot, starting the Service the cut
- * stopped. The Deploy's own lanes and a staged placement's run both fence this way before they plan.
+ * Floors every answered Machine at this run's gen, the empty ones too, so the run it took can switch nothing more
+ * anywhere, not even with a late Mirror onto its destination. A Server without the floor holds no copy and is no
+ * destination, so it stays as observed.
+ */
+const floorMembers = Effect.fn("VolumeRun.floorMembers")(function* (run: RunContext, inngestRunId: string, members: readonly AnsweredMember[]) {
+  const floored: AnsweredMember[] = [];
+  for (const member of members) {
+    if (member.floorless) {
+      floored.push(member);
+      continue;
+    }
+    const answer = yield* setVolumeCopy(run, inngestRunId, member.machine, expectOf(member.view.copy), { kind: "floor" });
+    if (!answer.ok) return answer;
+    floored.push({ ...member, view: { ...member.view, copy: answer.copy } });
+  }
+  return { ok: true, members: floored } as const;
+});
+
+/**
+ * D2 and D3 of a takeover: the run floors every copy, so the lane it took can switch nothing more, and a cut that
+ * flipped A before the floor rose is promoted back to the writer at its snapshot, starting the Service the cut stopped.
+ * The Deploy's own lanes and a staged placement's run both fence this way before they plan.
  */
 export const fenceTaken = Effect.fn("VolumeRun.fenceTaken")(function* (run: RunContext, inngestRunId: string) {
   for (let round = 1; ; round++) {
     const members = yield* observeMembers(run, inngestRunId);
     for (const member of members) if (!member.answered && member.lack !== undefined) return yield* Effect.fail(new NonRetriableError(member.lack));
-    const replied = answered(members);
-    const writer = yield* writerOf(run, replied);
-    const floored = yield* setVolumeCopy(run, inngestRunId, writer.machine, expectOf(writer.view.copy), { kind: "floor" });
+    const floored = yield* floorMembers(run, inngestRunId, answered(members));
     if (!floored.ok) {
       if (floored.reason === "mismatch" && round < FENCE_ROUNDS) continue;
       return yield* Effect.fail(retriable(floored.reason) ? new Error(floored.message) : new NonRetriableError(floored.message));
     }
-    const copy = floored.copy;
+    const writer = yield* writerOf(run, floored.members);
+    const copy = writer.view.copy;
     if (copy?.kind === "root") return { on: writer.machine.name };
     // Read after the floor: a cut can flip a root it observed before the floor rose, and stops nothing on A after it.
     const kept = copy?.kind === "slot" ? yield* keptOn(run.organizationId, run.dockerVolume, [writer.machine]) : null;
@@ -173,7 +191,7 @@ export const fenceTaken = Effect.fn("VolumeRun.fenceTaken")(function* (run: RunC
     // Core refuses a plain mount of a slot, so the promote lands before any Service mounts the Volume. It starts the
     // cut's stopped Container too: the taken lane is not requested again, so if this run stops before its own start,
     // nothing else would.
-    const { epoch } = yield* takeEpoch(run, inngestRunId, observedEpoch(replied));
+    const { epoch } = yield* takeEpoch(run, inngestRunId, observedEpoch(floored.members));
     const start = { kind: "kept", container_id: kept.containerId } as const;
     const promoted = yield* setVolumeCopy(run, inngestRunId, writer.machine, expectOf(copy), { kind: "writer", at: copy.newest.guid, epoch, start });
     if (!promoted.ok) return yield* Effect.fail(retriable(promoted.reason) ? new Error(promoted.message) : new NonRetriableError(promoted.message));
