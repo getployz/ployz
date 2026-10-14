@@ -35,6 +35,14 @@ it("lists only the files under the named directory, on the default branch", asyn
     { repository: "acme/web", ref: "main", paths: ["web/package.json", "web/src/a.ts"], truncated: false });
 });
 
+it("lists a named file as itself, and nothing for a path the tree doesn't have", async () => {
+  const files = tree(["Dockerfile", "Dockerfile.cloud", "web/Dockerfile"]);
+  const listed = await run(repositoryTree(web, { path: "Dockerfile" }), files);
+  expect(listed._tag === "Success" && listed.success.paths).toEqual(["Dockerfile"]);
+  const missing = await run(repositoryTree(web, { path: "README.md" }), files);
+  expect(missing._tag === "Success" && missing.success.paths).toEqual([]);
+});
+
 it("caps the listing and says it was cut short", async () => {
   const paths = Array.from({ length: TREE_PATHS + 1 }, (_, index) => `f${index}`);
   const listed = await run(repositoryTree(web, {}), tree(paths));
