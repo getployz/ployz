@@ -625,6 +625,41 @@ async fn a_failed_repoint_reads_as_the_replacement_not_serving() {
 }
 
 #[tokio::test]
+async fn a_failed_repoint_after_a_stop_reports_the_failure_and_the_stop() {
+    let stop = DrainStop::EntryUnreachable {
+        detail: "timed out".into(),
+    };
+    let mut client = Scripted {
+        observations: [nothing_left()].into(),
+        convergences: [Converged::Stopped {
+            moves: one_move(),
+            replaced: one_replaced(),
+            stop: stop.clone(),
+        }]
+        .into(),
+        pointer: Some(pointer('a', &['1'], &[])),
+        repoint_error: Some(RpcError {
+            code: RpcErrorCode::Conflict,
+            message: "lost".into(),
+            details: serde_json::Value::Null,
+            cause: Vec::new(),
+        }),
+        ..Scripted::default()
+    };
+    let report = run(&mut client, &[], &["web"], &CancellationToken::new()).await;
+    let outcomes = outcomes(&report);
+    let [(_, DrainOutcome::Failed { moves, failure })] = outcomes.as_slice() else {
+        panic!("{report:?}");
+    };
+    assert_eq!(*moves, one_move());
+    assert!(
+        matches!(failure, MoveFailure::NotServing { detail, .. } if detail.contains("Serving Pointer")),
+        "{failure:?}"
+    );
+    assert_eq!(report.stopped, Some(stop));
+}
+
+#[tokio::test]
 async fn a_pointed_service_keeps_its_old_copies_and_an_unpointed_one_removes_them() {
     let mut client = Scripted {
         observations: [nothing_left()].into(),

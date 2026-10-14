@@ -577,8 +577,11 @@ async fn execute<C: DrainClient>(
                     replaced,
                     stop,
                 } => {
-                    let _ = repoint(client, service, &moves, &replaced).await;
-                    record.push(service.clone(), DrainOutcome::Interrupted { moves });
+                    let outcome = match repoint(client, service, &moves, &replaced).await {
+                        Ok(()) => DrainOutcome::Interrupted { moves },
+                        Err(failure) => DrainOutcome::Failed { moves, failure },
+                    };
+                    record.push(service.clone(), outcome);
                     record.stop(stop, after);
                     break 'work;
                 }
