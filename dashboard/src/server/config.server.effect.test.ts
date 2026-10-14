@@ -137,6 +137,33 @@ describe("AppConfig", () => {
     }),
   );
 
+  it.effect("points every GitHub host at a verify lab's origin, outside production only", () =>
+    Effect.gen(function* () {
+      const real = yield* load(requiredEnvironment);
+      assert.deepStrictEqual(real.github.origins, {
+        api: "https://api.github.com", web: "https://github.com", codeload: "https://codeload.github.com",
+      });
+
+      const lab = { ...requiredEnvironment, NODE_ENV: "development" };
+      const fake = yield* load({ ...lab, PLOYZ_VERIFY_GITHUB_ORIGIN: "http://127.0.0.1:4555" });
+      assert.deepStrictEqual(fake.github.origins, {
+        api: "http://127.0.0.1:4555", web: "http://127.0.0.1:4555", codeload: "http://127.0.0.1:4555",
+      });
+
+      const refused = [
+        { ...requiredEnvironment, PLOYZ_VERIFY_GITHUB_ORIGIN: "http://127.0.0.1:4555" },
+        { ...lab, PLOYZ_VERIFY_GITHUB_ORIGIN: "https://ghe.example.com/api/v3" },
+        { ...lab, PLOYZ_VERIFY_GITHUB_ORIGIN: "http://127.0.0.1:4555/?x=1" },
+        { ...lab, PLOYZ_VERIFY_GITHUB_ORIGIN: "http://user:secret@127.0.0.1:4555" },
+        { ...lab, PLOYZ_VERIFY_GITHUB_ORIGIN: "ftp://127.0.0.1:4555" },
+      ];
+      for (const environment of refused) {
+        const failure = yield* Effect.flip(load(environment));
+        assert.instanceOf(failure, InvalidConfiguration, environment.PLOYZ_VERIFY_GITHUB_ORIGIN);
+      }
+    }),
+  );
+
   it.effect("rejects malformed startup values", () =>
     Effect.gen(function* () {
       const invalid: ReadonlyArray<Record<string, string>> = [

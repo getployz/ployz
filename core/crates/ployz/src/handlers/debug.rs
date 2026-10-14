@@ -17,6 +17,7 @@ pub(super) fn handler(path: &str) -> Option<super::catalog::Runnable> {
     use super::catalog::{Approval, internal};
     match path {
         "volume-rpc" => Some(internal(Approval::Never, enabled::volume_rpc)),
+        "local-rpc" => Some(internal(Approval::Never, enabled::local_rpc)),
         _ => None,
     }
 }
@@ -48,17 +49,29 @@ mod enabled {
                     .arg(positional("server", true))
                     .arg(positional("request", true).value_name("REQUEST")),
             )
+            .subcommand(
+                base("local-rpc", "Send one unary Machine RPC to the dialed daemon, unrouted")
+                    .long_about("Send one unary Machine RPC to the daemon this CLI dials, with no routing, and print the response body. It reaches a Machine outside any cluster, which volume-rpc cannot route to. REQUEST is the JSON request body, as for volume-rpc.")
+                    .arg(positional("request", true).value_name("REQUEST")),
+            )
     }
 
     pub(super) fn volume_rpc(root: &ArgMatches) -> Result<(), Error> {
-        let matches = leaf_matches(root);
         let selector = MachineTarget::parse(
-            matches
+            leaf_matches(root)
                 .get_one::<String>("server")
                 .ok_or_else(|| Error::usage("server is required"))?,
         )?;
+        send(root, Some(selector))
+    }
+
+    pub(super) fn local_rpc(root: &ArgMatches) -> Result<(), Error> {
+        send(root, None)
+    }
+
+    fn send(root: &ArgMatches, target: Option<MachineTarget>) -> Result<(), Error> {
         let body: RpcRequestBody = serde_json::from_str(
-            matches
+            leaf_matches(root)
                 .get_one::<String>("request")
                 .ok_or_else(|| Error::usage("request is required"))?,
         )
@@ -69,14 +82,14 @@ mod enabled {
                 error,
             )
         })?;
-        let path = body.unary_path().ok_or_else(|| {
-            Error::usage("request names a streaming RPC; volume-rpc sends unary RPCs")
-        })?;
+        let path = body
+            .unary_path()
+            .ok_or_else(|| Error::usage("request names a streaming RPC; debug sends unary RPCs"))?;
         let request = RpcRequest::from(body);
         with_client(root, |client| {
             Box::pin(async move {
                 let response = client
-                    .invoke_raw(&request, path, &selector, Some(TARGET_RPC_TIMEOUT))
+                    .invoke_raw(&request, path, target.as_ref(), Some(TARGET_RPC_TIMEOUT))
                     .await?;
                 if let RpcResponseBody::Error(error) = response.body {
                     return Err(Error::from(error));

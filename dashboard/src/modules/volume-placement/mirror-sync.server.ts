@@ -131,10 +131,13 @@ const recordSuccess = Effect.fn("MirrorSync.recordSuccess")(function* (
 /**
  * The gen a rowless SetVolumeCopy carries: the Volume's newest lane's. With no lane open, every floor Cloud raised on
  * this Volume is at most that, and a lane opened since raises the floor past it, so the Machine refuses the sync Stale.
+ * A Deploy's hold floors no Machine and its row goes when the Deploy ends, so a sync carrying its gen would raise a
+ * floor no later sync reaches.
  */
 const newestGen = Effect.fn("MirrorSync.newestGen")(function* (volumeId: string) {
   const { drizzle } = yield* Database;
-  const [row] = yield* drizzle.select({ gen: max(volumeRun.gen) }).from(volumeRun).where(eq(volumeRun.volumeId, volumeId));
+  const [row] = yield* drizzle.select({ gen: max(volumeRun.gen) }).from(volumeRun)
+    .where(and(eq(volumeRun.volumeId, volumeId), sql`${volumeRun.args}->>'hold' is distinct from 'true'`));
   return row?.gen ?? 0;
 });
 

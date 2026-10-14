@@ -4,7 +4,7 @@ import { Schema } from "effect";
 import { githubIdSchema } from "#/modules/github/github-ingestion.contracts";
 import {
   resolvePublicGithubRepository,
-  getGithubInstallUrl,
+  getGithubWeb,
   getGithubRepoAccessState,
   listGithubBranches,
   requestGithubRepoSync,
@@ -34,9 +34,9 @@ export const searchGithubFilesServerFn = createServerFn({ method: "GET" })
   })))
   .handler(({ context, data }) => runActor(context, searchGithubFiles(context.actor, data)));
 
-export const getGithubInstallUrlServerFn = createServerFn({ method: "GET" })
+export const getGithubWebServerFn = createServerFn({ method: "GET" })
   .middleware(authenticated)
-  .handler(({ context }) => runActor(context, getGithubInstallUrl()));
+  .handler(({ context }) => runActor(context, getGithubWeb()));
 
 export const getGithubRepoAccessStateServerFn = createServerFn({ method: "GET" })
   .middleware(authenticated)

@@ -34,7 +34,7 @@ export const resolveReadableRepository = Effect.fn("Github.resolveReadableReposi
   if (cached !== null) return cached satisfies ReadableRepository;
   const api = yield* GithubApi;
   const observed = yield* api.json({
-    installationId: null, url: `https://api.github.com/repos/${name}`, operation: "resolve_repository", schema: PublicRepository,
+    installationId: null, path: `/repos/${name}`, operation: "resolve_repository", schema: PublicRepository,
   }).pipe(Effect.catchIf(isGithubObservationNotFound, () => Effect.succeed(null)));
   if (observed === null || observed.private) return null;
   return {

@@ -8,7 +8,7 @@ import { InngestClient } from "#/modules/inngest/client";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { type CopyAsk, syncMirrors } from "#/modules/volume-placement/mirror-sync.server";
 import type { Member } from "#/modules/volume-run/volume-run";
-import { type CopyAnswer, requestVolumeRun, SwitchAttemptError } from "#/modules/volume-run/volume-run.server";
+import { type CopyAnswer, holdDeployLane, requestVolumeRun, SwitchAttemptError } from "#/modules/volume-run/volume-run.server";
 import { COPIES, member } from "#/modules/volume-run/volume-run.test-fixture";
 import type { Database } from "#/server/database.server";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
@@ -202,6 +202,24 @@ describe("the mirror sync", () => {
     await sync();
     expect(gens.length).toBeGreaterThan(0);
     expect(gens.every((gen) => gen < Number(moveGen))).toBe(true);
+  });
+
+  it("carries the newest run's gen, never a Deploy hold's, since a hold floored no Machine", async () => {
+    const move = await run(requestVolumeRun({ userId: null, organizationId }, { volumeId, environment, kind: "move", args: { to: "web-2" } }));
+    if (!move.ok) throw new Error(move.refusal.message);
+    await harness.pool.query(`update volume_run set state = 'done', finished_at = now() where id = $1`, [move.run.id]);
+    await run(holdDeployLane({ userId: null, organizationId }, {
+      input: { volumeId, kind: "deploy", args: { deployment: "dep-1", resume: null, hold: true } },
+      volume: { environmentId: "env-1", volumeName: "db", dockerVolume: volume.dockerVolume, refquotaBytes: 1 },
+      id: crypto.randomUUID(),
+    }, "deploy-1"));
+    await harness.pool.query(`update volume_run set state = 'lost', finished_at = now() where kind = 'deploy'`);
+    const [moved = 0, held = 0] = (await harness.pool.query(`select gen from volume_run order by gen`)).rows.map((row) => Number(row.gen));
+    expect(held).toBeGreaterThan(moved);
+
+    await sync();
+    expect(asked).toEqual(["snapshot web-1", "mirror web-2"]);
+    expect([...new Set(gens)]).toEqual([moved]);
   });
 
   it("keeps an older failure when a newer pull lands", async () => {

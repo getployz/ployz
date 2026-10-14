@@ -35,8 +35,11 @@ export type VolumeRunArgs = {
     readonly guid: string;
     readonly name: string;
   };
-  /** A Deploy's own lane while its Services run; `resume` is the move it took over, requested again once it ends. */
-  deploy: { readonly deployment: string; readonly resume: Destination | null };
+  /**
+   * A Deploy's own lane while its Services run; `resume` is the move it took over, requested again once it ends. `hold`
+   * marks a lane on a Volume no run held: it took nothing, so it is never fenced and leaves no row when the Deploy ends.
+   */
+  deploy: { readonly deployment: string; readonly resume: Destination | null; readonly hold?: true };
 };
 export type AnyVolumeRunArgs = VolumeRunArgs[VolumeRunKind];
 
@@ -70,6 +73,8 @@ export type Member =
       readonly address: string;
       readonly answered: true;
       readonly view: VolumeCopyView;
+      /** A Server without the generation floor; it holds no copy and is not the run's destination. */
+      readonly floorless?: boolean;
     }
   | {
       readonly machine: { readonly id: MachineId; readonly name: MachineName };
