@@ -178,7 +178,6 @@ describe("plan_from_copies_table", () => {
     ["a read-only root above the writer's epoch is the old one", sync(), [member("a", "cut", { epoch: 9 }), member("b", "writer", { epoch: 8 }), member("c", "mirror")], "demote a below b"],
     ["a read-only root tied with the writer is the old one", release, [member("b", "writer", { epoch: 8 }), member("a", "cut", { epoch: 8 })], "demote a below b"],
     ["a read-only root beside a lower writer is the old one", mirror("c"), [member("a", "writer", { epoch: 3 }), member("b", "cut", { epoch: 8 }), member("c", "empty")], "demote b below a"],
-    ["two read-only roots are mid-run, not two writers", release, [member("a", "cut", { epoch: 9 }), member("b", "cut", { epoch: 8 })], "refuse volume_switching"],
     ["two writers at the same epoch stay two writers", release, [member("a", "writer", { epoch: 8 }), member("b", "writer", { epoch: 8 })], "refuse two_writers"],
     ["a tie at the top stays two writers beside a lower root", release, [member("a", "writer", { epoch: 8 }), member("b", "writer", { epoch: 8 }), member("c", "writer", { epoch: 3 })], "refuse two_writers"],
   ])("%s", (_, input, members, expected) => {
@@ -189,6 +188,16 @@ describe("plan_from_copies_table", () => {
     expect(planFromCopies(remove("fsn-2"), [member("fsn-2", "mirror")])).toEqual({
       ok: false,
       refusal: { code: "confirm_required", message: "data-fsn-2 is data's only copy; volume mirror rm data-fsn-2 --confirm data" },
+    });
+  });
+
+  it.each([["release", release], ["sync", sync()]])("tells a %s facing two unfinished cuts to keep one Server and restore from it", (_, input) => {
+    expect(planFromCopies(input, [member("fsn-1", "cut", { epoch: 9 }), member("fsn-2", "cut", { epoch: 8 })])).toEqual({
+      ok: false,
+      refusal: {
+        code: "volume_switching",
+        message: "data has unfinished cuts on fsn-1 and fsn-2, so release cannot pick a writer; server rm all but one, then ployz volume restore data --from the one left",
+      },
     });
   });
 
