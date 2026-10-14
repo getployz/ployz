@@ -44,14 +44,13 @@ fn lowering_owns_port_defaults_and_domain_overrides() {
         intent["target"][0]["container"]["environment"]["PORT"],
         "3000"
     );
-    assert_eq!(
-        intent["target"][0]["container"]["healthcheck"]["port"],
-        3000
-    );
+    assert_eq!(intent["target"][0]["container"]["healthcheck"]["port"], 80);
 
+    let mut unrouted = config.clone();
+    unrouted["routes"] = json!([]);
     for invalid in ["", "0", "65536", "not-a-port"] {
         assert_eq!(
-            lower(config.clone(), json!({"PORT":invalid}))
+            lower(unrouted.clone(), json!({"PORT":invalid}))
                 .unwrap_err()
                 .path,
             "healthcheck"
@@ -64,8 +63,42 @@ fn lowering_owns_port_defaults_and_domain_overrides() {
         );
     }
 
-    explicit["healthcheck"] = json!({"type":"none"});
     assert!(lower(explicit, json!({"PORT":"not-a-port"})).is_ok());
+}
+
+#[test]
+fn http_healthcheck_probes_the_port_domains_send_traffic_to() {
+    let healthcheck_port = |targets: &[Value], env: Value| {
+        let routes: Vec<Value> = targets
+            .iter()
+            .enumerate()
+            .map(|(index, target)| {
+                json!({"id":format!("00000000-0000-4000-8000-00000000000{index}"),
+                    "hostname":format!("app{index}.example.com"),"targetPort":target})
+            })
+            .collect();
+        let config = json!({"version":2,"privateDns":"web",
+            "source":{"version":1,"type":"image","image":"nginx","credentials":{"type":"none"}},
+            "healthcheck":{"type":"http","path":"/","timeoutSeconds":10},"restartPolicy":"on-failure",
+            "routes":routes
+        });
+        lowered(json!({
+            "namespace":"production","snapshots":[{"config":config,"resolvedEnv":env}]
+        }))
+        .unwrap()["target"][0]["container"]["healthcheck"]["port"]
+            .clone()
+    };
+
+    assert_eq!(healthcheck_port(&[json!(80)], json!({})), 80);
+    assert_eq!(healthcheck_port(&[json!(80)], json!({"PORT":"8080"})), 80);
+    assert_eq!(
+        healthcheck_port(&[Value::Null], json!({"PORT":"3000"})),
+        3000
+    );
+    assert_eq!(
+        healthcheck_port(&[json!(80), json!(81)], json!({"PORT":"3000"})),
+        3000
+    );
 }
 
 #[test]

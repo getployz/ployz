@@ -114,7 +114,7 @@ reference to any variable either way.
 
 | Variable | Value |
 | --- | --- |
-| `PORT` | `8080`, unless you set it. Your domains and health check reach your app on this port. |
+| `PORT` | `8080`, unless you set it. Domains without a target port, and the health check of a service without domains, reach your app on this port. |
 | `PLOYZ_PRIVATE_DOMAIN` | The service's [private address](private-networking.md), like `web.internal` |
 | `PLOYZ_SERVICE_NAME` | The service's private name, like `web` |
 | `PLOYZ_ENVIRONMENT_NAME` | The environment's name, like `production` |

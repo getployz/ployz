@@ -128,7 +128,8 @@ impl std::fmt::Debug for LowerDeploymentConfigFile {
 /// Lower captured authored settings and adapter-supplied image/environment inputs.
 /// No source lookup, build, provider execution, or Cluster observation occurs here.
 /// Missing PORT defaults to 8080; authored values take precedence, including invalid ones.
-/// Domains without an explicit target and HTTP healthchecks use that same container PORT.
+/// Domains without an explicit target use that same container PORT. An HTTP healthcheck probes
+/// the port every domain sends traffic to; with no domains, or domains on different ports, PORT.
 /// Each mounted Config file mounts read-only at `<dir>/<file>`, named `<config>/<file>`.
 ///
 /// # Errors
@@ -174,13 +175,22 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
         environment
             .entry("PORT".into())
             .or_insert_with(|| DEFAULT_SERVICE_PORT.to_string());
+        let route_ports = config
+            .routes
+            .iter()
+            .map(|route| target_port(route.target_port, &environment, "routes"))
+            .collect::<Result<Vec<_>, _>>()?;
         let healthcheck = match &config.healthcheck {
             ServiceHealthcheck::None => Some(HealthcheckSpec::Disabled),
             ServiceHealthcheck::Http {
                 path,
                 timeout_seconds,
             } => {
-                let port = target_port(None, &environment, "healthcheck")?;
+                // Cloud always sets PORT, so a shared domain target better says where the app listens.
+                let port = match route_ports.split_first() {
+                    Some((first, rest)) if rest.iter().all(|port| port == first) => *first,
+                    _ => target_port(None, &environment, "healthcheck")?,
+                };
                 Some(HealthcheckSpec::Http(HttpHealthcheck {
                     path: path.clone(),
                     port,
@@ -299,11 +309,11 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
             }
         }
         let mut ports = Vec::new();
-        for route in &config.routes {
+        for (route, container_port) in config.routes.iter().zip(route_ports) {
             ports.push(PortPublication::Ingress {
                 hostname: IngressHost::parse(route.hostname.clone()).map_err(lowering_error)?,
                 load_balancer_port: std::num::NonZeroU16::new(443).expect("HTTPS port is nonzero"),
-                container_port: target_port(route.target_port, &environment, "routes")?,
+                container_port,
                 http_protocol: HttpProtocol::Https,
             });
         }
