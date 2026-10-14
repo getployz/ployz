@@ -19,6 +19,7 @@ import argparse
 from concurrent.futures import Future
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -50,6 +51,14 @@ MOVE_PLAN = 30
 
 class CheckError(Exception):
     pass
+
+
+def mirror_cron_wait(into, span):
+    """Whole seconds to sleep, `into` seconds past a quarter hour, until the mirror cron has run and the next `span`
+    seconds miss its next run."""
+    if MIRROR_CRON_RUNS < into < MIRROR_CRON - span:
+        return 0
+    return math.ceil((MIRROR_CRON_RUNS - into) % MIRROR_CRON)
 
 
 def parse_json(text):
@@ -406,12 +415,10 @@ class Cluster:
     def clear_of_mirror_cron(self, span):
         """Cloud's mirror cron syncs every Volume in turn at each quarter hour. Its snapshot can land between a check's
         writes, and a Move planned while it ran found a Machine not answering. Sleep until the next `span` seconds miss it."""
-        into = time.time() % MIRROR_CRON
-        if MIRROR_CRON_RUNS < into < MIRROR_CRON - span:
-            return 0
-        wait = round((MIRROR_CRON_RUNS - into) % MIRROR_CRON)
-        print(f"waiting {wait}s for the mirror cron", flush=True)
-        time.sleep(wait)
+        wait = mirror_cron_wait(time.time() % MIRROR_CRON, span)
+        if wait:
+            print(f"waiting {wait}s for the mirror cron", flush=True)
+            time.sleep(wait)
         return wait
 
     def move(self, volume, to, limit=1500):
