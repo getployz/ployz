@@ -128,6 +128,8 @@ pub enum StayReason {
     Volume { server: MachineRef },
     /// No Server can take a Container; `detail` is the planner's.
     NoDestination { detail: String },
+    /// Its Serving Pointer could not be read, so a move could not be published.
+    PointerUnread { detail: String },
 }
 
 impl fmt::Display for StayReason {
@@ -139,6 +141,9 @@ impl fmt::Display for StayReason {
             Self::BindMount { server } => write!(f, "Bind Mount on {server}"),
             Self::Volume { server } => write!(f, "its Volume is on {server}"),
             Self::NoDestination { detail } => write!(f, "no eligible Server: {detail}"),
+            Self::PointerUnread { detail } => {
+                write!(f, "cannot read its Serving Pointer: {detail}")
+            }
         }
     }
 }

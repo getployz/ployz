@@ -124,6 +124,7 @@ struct Scripted {
     cancel_after_converge: Option<CancellationToken>,
     retired: bool,
     pointer: Option<ServingPointer>,
+    pointer_error: Option<RpcError>,
     kept: Vec<Option<Vec<ContainerId>>>,
     repointed: Vec<(QualifiedService, Option<DeploymentLogId>, Vec<Replacement>)>,
     repoint_error: Option<RpcError>,
@@ -150,7 +151,9 @@ impl DrainClient for Scripted {
         &mut self,
         _service: &QualifiedService,
     ) -> Result<Option<ServingPointer>, RpcError> {
-        Ok(self.pointer.clone())
+        self.pointer_error
+            .clone()
+            .map_or_else(|| Ok(self.pointer.clone()), Err)
     }
 
     async fn converge(
@@ -696,4 +699,31 @@ async fn a_drain_publishes_nothing_once_a_newer_deploy_owns_the_pointer() {
         *fake.row.lock().unwrap(),
         Some(pointer('b', &['7'], &['1', '2']))
     );
+}
+
+#[tokio::test]
+async fn a_service_whose_pointer_cannot_be_read_stays_and_nothing_moves() {
+    let mut client = Scripted {
+        observations: [nothing_left()].into(),
+        pointer_error: Some(RpcError {
+            code: ployz_core::RpcErrorCode::Unavailable,
+            message: "timed out".into(),
+            details: serde_json::Value::Null,
+            cause: Vec::new(),
+        }),
+        ..Scripted::default()
+    };
+    let report = run(&mut client, &[], &["web"], &CancellationToken::new()).await;
+    assert_eq!(
+        outcomes(&report),
+        [entry(
+            "web",
+            DrainOutcome::Stays {
+                reason: StayReason::PointerUnread {
+                    detail: "timed out".into()
+                }
+            }
+        )]
+    );
+    assert!(client.kept.is_empty() && client.repointed.is_empty());
 }

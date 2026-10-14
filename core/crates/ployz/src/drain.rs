@@ -527,16 +527,29 @@ async fn execute<C: DrainClient>(
                 record.stop(DrainStop::Cancelled, rest);
                 break 'work;
             }
-            let pointer = client.pointer(service).await;
+            let pointer = match client.pointer(service).await {
+                Ok(pointer) => pointer,
+                Err(error) => {
+                    record.push(
+                        service.clone(),
+                        DrainOutcome::Stays {
+                            reason: StayReason::PointerUnread {
+                                detail: error.message,
+                            },
+                        },
+                    );
+                    rest = after;
+                    continue;
+                }
+            };
             let (old, deploy) = match &pointer {
-                Ok(None) => (OldCopy::Remove, None),
-                Ok(Some(pointer)) => (
+                None => (OldCopy::Remove, None),
+                Some(pointer) => (
                     OldCopy::Keep {
                         retiring: &pointer.retiring,
                     },
                     Some(&pointer.deploy),
                 ),
-                Err(_) => (OldCopy::Keep { retiring: &[] }, None),
             };
             let outcome = match client.converge(service, old, cancellation).await {
                 Converged::Moved { moves, replaced } => {

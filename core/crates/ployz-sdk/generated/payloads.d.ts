@@ -4145,7 +4145,7 @@ export type StageHistory = { environment: EnvironmentRef, revision: Revision, ac
 
 export type Start = { deployment: DeploymentId, };
 
-export type StayReason = { "kind": "unobserved", server: MachineRef, } | { "kind": "mid_rollout" } | { "kind": "global" } | { "kind": "bind_mount", server: MachineRef, } | { "kind": "volume", server: MachineRef, } | { "kind": "no_destination", detail: string, };
+export type StayReason = { "kind": "unobserved", server: MachineRef, } | { "kind": "mid_rollout" } | { "kind": "global" } | { "kind": "bind_mount", server: MachineRef, } | { "kind": "volume", server: MachineRef, } | { "kind": "no_destination", detail: string, } | { "kind": "pointer_unread", detail: string, };
 
 export type Step = { "step": "read", asks: Array<Ask>, } | { "step": "write", write: Write, } | { "step": "wait", ms: number, then: Array<Ask>, } | { "step": "done", result: ToolResult, };
 
