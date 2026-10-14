@@ -30,7 +30,9 @@ import { organizationMachine } from "#/modules/machines/tables";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { type Requirement, requirementFor, requirements, serverSupports } from "#/modules/runtime/daemon-compat";
 import { observeVolumeCopies, type PloyzSdkError, sdkFailureMessage, setVolumeCopyRefusal } from "#/modules/runtime/ployz.server";
-import { alreadyOn, newestGuid, type PlanInput, type Planned, planFromCopies, type Refusal, type RefusalCode, type ReleaseFrom } from "#/modules/volume-run/plan";
+import {
+  alreadyOn, newestGuid, type PlanInput, type Planned, planFromCopies, type Refusal, type RefusalCode, type ReleaseFrom, restoreSource, writerRemovedMessage,
+} from "#/modules/volume-run/plan";
 import { isBehind, isCurrent, releaseLine } from "#/modules/server-upgrade/server-upgrade";
 import { channelRelease, organizationReleaseChannel } from "#/modules/server-upgrade/server-upgrade.server";
 import { volumeRun } from "#/modules/volume-run/tables";
@@ -528,14 +530,13 @@ export const machineNamed = Effect.fn("VolumeRun.machineNamed")(function* (organ
 /**
  * A Server leaving: each warm lane bound for `machine`, or on a Volume whose writer copy it holds (`writes`, by Docker
  * Volume), is taken over by a release, so the Volume's Service stays where it runs. Only requests the releases. A lane
- * past its point of no return toward `machine` can finish nowhere, so it ends failed at once, naming the copy `held`
- * on another Server to restore from.
+ * past its point of no return toward `machine` can finish nowhere, so it ends failed at once, naming the copy on another
+ * Server to restore from.
  */
 export const releaseLanesOff = Effect.fn("VolumeRun.releaseLanesOff")(function* (
   organizationId: string,
   machine: { readonly id: MachineId; readonly name: MachineName | null },
   writes: readonly string[],
-  held: Readonly<Record<string, MachineName>> = {},
 ) {
   const database = yield* Database;
   const lanes = yield* database.drizzle.select().from(volumeRun).where(and(
@@ -566,7 +567,7 @@ export const releaseLanesOff = Effect.fn("VolumeRun.releaseLanesOff")(function* 
     if (taken !== null) released.push(taken.run.id);
   }
   // After the takeovers: a lane that committed before its takeover could lock it was refused, and ends here.
-  yield* endLanesTo(organizationId, machine, held);
+  yield* endLanesTo(organizationId, machine);
   return released;
 });
 
@@ -577,7 +578,6 @@ export const releaseLanesOff = Effect.fn("VolumeRun.releaseLanesOff")(function* 
 const endLanesTo = Effect.fn("VolumeRun.endLanesTo")(function* (
   organizationId: string,
   machine: { readonly id: MachineId; readonly name: MachineName | null },
-  held: Readonly<Record<string, MachineName>>,
 ) {
   const database = yield* Database;
   for (;;) {
@@ -589,11 +589,13 @@ const endLanesTo = Effect.fn("VolumeRun.endLanesTo")(function* (
     ));
     if (lanes.length === 0) return;
     for (const lane of lanes) {
-      const holder = held[lane.dockerVolume];
-      const lost = `${lane.volumeName}'s writer was on ${machine.name ?? machine.id} (removed)`;
-      const message = holder === undefined
-        ? `${lost}. No other server's copy is known to hold its newest data.`
-        : `${lost}. Restore from ${holder}'s copy: ployz volume restore ${lane.volumeName} --from ${holder}`;
+      // The message only advises; a lane left active would block the restore it names.
+      const holder = yield* observeVolumeMembers(organizationId, lane.dockerVolume).pipe(
+        Effect.map((members) => restoreSource(members.filter((member) => member.machine.id !== machine.id))),
+        Effect.catch((error) =>
+          Effect.logWarning("A removed Server's committed lane ends without naming a copy to restore from.", { volume: lane.volumeName, error }).pipe(Effect.as(undefined))),
+      );
+      const message = writerRemovedMessage(lane.volumeName, machine.name ?? machine.id, holder);
       yield* database.transaction(Effect.gen(function* () {
         const { drizzle } = yield* Database;
         const [closed] = yield* drizzle.update(volumeRun).set(ended("failed", message))

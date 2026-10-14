@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 
-import type { CopyObservation, LocalMachineRemoved, MachineId, MachineIdentity, MachineName } from "@ployz/sdk";
+import type { LocalMachineRemoved, MachineId } from "@ployz/sdk";
 import { Data, Effect, Option } from "effect";
 import { createMachineRemoveRequestedEvent } from "#/modules/inngest/events";
 import type { Actor } from "#/modules/identity/actor";
@@ -162,34 +162,12 @@ export const observeLeavingServerActivity = Effect.fn("MachineRemoval.observeLea
   const machine = { id, name: servers.find((server) => server.id === id)?.name ?? null };
   const observed = yield* observeOrganization(input.organizationId).pipe(Effect.orElseSucceed(() => ({ copies: [], unanswered: [] })));
   const writes = observed.copies.flatMap((copy) => copy.machine_id === id && copy.role === "writer" ? [copy.name] : []);
-  return { machine, writes, held: heldOff(observed, servers, id) };
+  return { machine, writes };
 });
 
-/**
- * The copy on another Server, by Docker Volume, that a lane committed to the leaving Server names to restore from. The
- * writer is the Move's source, whose cut makes it a slot holding the newest snapshot by the time the lane ends, so it is
- * named whoever else answered. Slots' snapshots are not observed here, so with no writer a slot is named only when it is
- * the only copy and every other Server answered: a second slot, or a Server that did not answer and may hold one, could
- * be the newest instead.
- */
-export function heldOff(observed: CopyObservation, servers: readonly MachineIdentity[], leaving: MachineId) {
-  const complete = observed.unanswered.every((machine) => machine === leaving);
-  const off = observed.copies.flatMap((copy) => {
-    const holder = copy.machine_id === leaving ? undefined : servers.find((server) => server.id === copy.machine_id);
-    return holder === undefined ? [] : [{ ...copy, holder: holder.name }];
-  });
-  const held: Record<string, MachineName> = {};
-  for (const name of new Set(off.map((copy) => copy.name))) {
-    const copiesOf = off.filter((copy) => copy.name === name);
-    const source = copiesOf.find((copy) => copy.role === "writer") ?? (complete && copiesOf.length === 1 ? copiesOf[0] : undefined);
-    if (source !== undefined) held[name] = source.holder;
-  }
-  return held;
-}
-
 export const releaseLeavingLanesActivity = (input: {
-  organizationId: string; machineId: MachineId; name: string | null; writes: readonly string[]; held?: Readonly<Record<string, MachineName>>;
-}) => releaseLanesOff(input.organizationId, { id: input.machineId, name: input.name }, input.writes, input.held);
+  organizationId: string; machineId: MachineId; name: string | null; writes: readonly string[];
+}) => releaseLanesOff(input.organizationId, { id: input.machineId, name: input.name }, input.writes);
 
 /**
  * What a removed Server leaves of Cloud's hold. A reset that didn't finish is a partial outcome: the Server may keep

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { MachineId } from "@ployz/sdk";
-import { expectOf, observedEpoch, type PlanInput, planFromCopies, type Role, roleOf } from "#/modules/volume-run/plan";
+import { expectOf, observedEpoch, type PlanInput, planFromCopies, restoreSource, type Role, roleOf } from "#/modules/volume-run/plan";
 import type { Member } from "#/modules/volume-run/volume-run";
 import { COPIES, type Copy, member } from "#/modules/volume-run/volume-run.test-fixture";
 
@@ -251,5 +251,34 @@ describe("plan_from_copies_table", () => {
     });
     expect(planFromCopies(remove("fsn-2"), members)).toMatchObject({ ok: false, refusal: { code: "server_lacks" } });
     expect(planFromCopies(move("fsn-2"), members)).toMatchObject({ ok: false, refusal: { code: "server_lacks" } });
+  });
+});
+
+describe("restoreSource", () => {
+  const newer = (server: string): Member => {
+    const slot = member(server, "mirror");
+    if (!slot.answered || slot.view.copy?.newest == null) throw new Error("a mirror holds a snapshot");
+    return { ...slot, view: { copy: { ...slot.view.copy, newest: { ...slot.view.copy.newest, created_unix_seconds: slot.view.copy.newest.created_unix_seconds + 60 } } } };
+  };
+
+  it("names the stopped copy with the newest snapshot, never a writer", () => {
+    expect(restoreSource([member("fsn-1", "writer"), member("fsn-2", "mirror"), newer("fsn-3")])).toBe("fsn-3");
+    expect(restoreSource([member("fsn-1", "cut")])).toBe("fsn-1");
+  });
+
+  it("names none when no stopped copy holds a snapshot", () => {
+    expect(restoreSource([member("fsn-1", "writer"), member("fsn-2", "empty"), member("fsn-3", "seed")])).toBeUndefined();
+  });
+
+  it("names no slot when a third Server that may hold another did not answer", () => {
+    expect(restoreSource([newer("fsn-2"), member("fsn-3", "unanswered")])).toBeUndefined();
+  });
+
+  it("names none when two different snapshots are newest within the same second", () => {
+    expect(restoreSource([member("fsn-2", "mirror"), member("fsn-3", "behind")])).toBeUndefined();
+  });
+
+  it("names either copy when the newest snapshot is the same one on both", () => {
+    expect(["fsn-2", "fsn-3"]).toContain(restoreSource([member("fsn-2", "mirror"), member("fsn-3", "cut")]));
   });
 });

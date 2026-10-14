@@ -948,6 +948,16 @@ describe("volume runs", () => {
       await harness.pool.query("update volume_run set state = 'running', inngest_run_id = 'run-1' where id = $1", [run.id]);
       return run;
     };
+    /** The Cluster once fsn-2 is gone, after the committed Move cut fsn-1 into a slot holding its final snapshot. */
+    const cutLeftOnA = () => { machines = [{ name: "fsn-1", pool: true, copy: slotCopy(newSnap("f-1")) }]; };
+    /** A release that took over a Move committed to fsn-2. */
+    const committedRelease = async () => {
+      const move = await warmMove();
+      await harness.pool.query("update volume_run set state = 'cancelled', phase = 'committed', current = $2 where id = $1", [move.id, idOf("fsn-2")]);
+      const release = await requested({ kind: "release", args: {} });
+      await harness.pool.query("update volume_run set phase = 'committed', current = $2 where id = $1", [release.id, idOf("fsn-2")]);
+      return release;
+    };
     const releaseRow = async () => {
       const [lane] = (await lanes()).filter((row) => row.kind === "release");
       if (lane === undefined) throw new Error("no release requested");
@@ -1018,10 +1028,7 @@ describe("volume runs", () => {
 
     it("removing B after the Move committed fails the release forward and names A's copy to restore from", async () => {
       const at = newSnap("f-1");
-      const move = await warmMove();
-      await harness.pool.query("update volume_run set state = 'cancelled', phase = 'committed', current = $2 where id = $1", [move.id, idOf("fsn-2")]);
-      const release = await requested({ kind: "release", args: {} });
-      await harness.pool.query("update volume_run set phase = 'committed', current = $2 where id = $1", [release.id, idOf("fsn-2")]);
+      const release = await committedRelease();
       machines = [{ name: "fsn-1", pool: true, copy: slotCopy(at) }];
 
       await execute(release.id, "run-2");
@@ -1031,7 +1038,31 @@ describe("volume runs", () => {
       });
     });
 
+    it("removing B after the Move committed names a stopped copy with a snapshot, not a writer elsewhere", async () => {
+      const at = newSnap("f-1");
+      const release = await committedRelease();
+      machines = [{ name: "fsn-1", pool: true, copy: writerCopy() }, { name: "fsn-3", pool: true, copy: slotCopy(at) }];
+
+      await execute(release.id, "run-2");
+
+      expect(await releaseRow()).toMatchObject({
+        state: "failed", message: "data's writer was on fsn-2 (removed). Restore from fsn-3's copy: ployz volume restore data --from fsn-3",
+      });
+    });
+
+    it("removing B after the Move committed with no copy holding a snapshot names none", async () => {
+      const release = await committedRelease();
+      machines = [{ name: "fsn-1", pool: true, copy: slotCopy(null) }];
+
+      await execute(release.id, "run-2");
+
+      expect(await releaseRow()).toMatchObject({
+        state: "failed", message: "data's writer was on fsn-2 (removed). No other server's copy is known to hold its newest data.",
+      });
+    });
+
     it.each(["release", "move"] as const)("removing B ends a running committed %s at once, so a restore from A's copy starts", async (kind) => {
+      cutLeftOnA();
       const move = await warmMove();
       await harness.pool.query("update volume_run set phase = 'committed', current = $2 where id = $1", [move.id, idOf("fsn-2")]);
       let lane = move.id;
@@ -1042,7 +1073,7 @@ describe("volume runs", () => {
       }
       send.mockClear();
 
-      await runEffect(releaseLanesOff(organizationId, fsn("fsn-2"), [], { [dockerVolume]: "fsn-1" }));
+      await runEffect(releaseLanesOff(organizationId, fsn("fsn-2"), []));
 
       expect((await lanes()).find((row) => row.id === lane)).toMatchObject({
         state: "failed", message: "data's writer was on fsn-2 (removed). Restore from fsn-1's copy: ployz volume restore data --from fsn-1",
@@ -1052,12 +1083,13 @@ describe("volume runs", () => {
     });
 
     it("a warm Move that commits to B while B's removal takes it still ends, so a restore from A's copy starts", async () => {
+      cutLeftOnA();
       const move = await warmMove();
       const committing = await harness.pool.connect();
       try {
         await committing.query("begin");
         await committing.query("select id from volume_run where id = $1 for update", [move.id]);
-        const releasing = runEffect(releaseLanesOff(organizationId, fsn("fsn-2"), [], { [dockerVolume]: "fsn-1" }));
+        const releasing = runEffect(releaseLanesOff(organizationId, fsn("fsn-2"), []));
         await waitingOnLock();
         await committing.query("update volume_run set phase = 'committed', current = $2 where id = $1", [move.id, idOf("fsn-2")]);
         await committing.query("commit");
@@ -1074,13 +1106,14 @@ describe("volume runs", () => {
     });
 
     it("a committed Move that fails into a release while B's removal ends it still frees the lane, so a restore starts", async () => {
+      cutLeftOnA();
       const move = await warmMove();
       await harness.pool.query("update volume_run set phase = 'committed', current = $2 where id = $1", [move.id, idOf("fsn-2")]);
       const failing = await harness.pool.connect();
       try {
         await failing.query("begin");
         await failing.query("select id from volume_run where id = $1 for update", [move.id]);
-        const releasing = runEffect(releaseLanesOff(organizationId, fsn("fsn-2"), [], { [dockerVolume]: "fsn-1" }));
+        const releasing = runEffect(releaseLanesOff(organizationId, fsn("fsn-2"), []));
         await waitingOnLock();
         await failing.query("update volume_run set state = 'failed', finished_at = now() where id = $1", [move.id]);
         await failing.query(`
@@ -1109,11 +1142,32 @@ describe("volume runs", () => {
       expect(await lanes()).toMatchObject([{ id: move.id, state: "failed", message: "data's writer was on fsn-2 (removed). No other server's copy is known to hold its newest data." }]);
     });
 
+    it("removing B ends a committed Move without naming a copy that holds no snapshot", async () => {
+      const move = await warmMove();
+      await harness.pool.query("update volume_run set phase = 'committed', current = $2 where id = $1", [move.id, idOf("fsn-2")]);
+      machines = [{ name: "fsn-1", pool: true, copy: slotCopy(null) }];
+
+      await runEffect(releaseLanesOff(organizationId, fsn("fsn-2"), []));
+
+      expect(await lanes()).toMatchObject([{ id: move.id, state: "failed", message: "data's writer was on fsn-2 (removed). No other server's copy is known to hold its newest data." }]);
+    });
+
+    it("removing B ends a committed Move naming no copy when the Cluster does not answer", async () => {
+      const move = await warmMove();
+      await harness.pool.query("update volume_run set phase = 'committed', current = $2 where id = $1", [move.id, idOf("fsn-2")]);
+      cutLeftOnA();
+      frameFault = () => true;
+
+      await runEffect(releaseLanesOff(organizationId, fsn("fsn-2"), []));
+
+      expect(await lanes()).toMatchObject([{ id: move.id, state: "failed", message: "data's writer was on fsn-2 (removed). No other server's copy is known to hold its newest data." }]);
+    });
+
     it("removing a Server leaves a committed lane bound elsewhere alone", async () => {
       const move = await warmMove();
       await harness.pool.query("update volume_run set phase = 'committed', current = $2 where id = $1", [move.id, idOf("fsn-2")]);
 
-      await runEffect(releaseLanesOff(organizationId, fsn("fsn-1"), [dockerVolume], { [dockerVolume]: "fsn-2" }));
+      await runEffect(releaseLanesOff(organizationId, fsn("fsn-1"), [dockerVolume]));
 
       expect(await lanes()).toMatchObject([{ id: move.id, state: "running", phase: "committed" }]);
     });
