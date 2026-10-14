@@ -2,7 +2,7 @@ import { Option, Schema } from "effect";
 import { attemptLifecycle } from "#/modules/inngest/attempt-lifecycle";
 import type { PloyzStepTools } from "#/modules/inngest/client";
 import { serviceActRequestedEventType } from "#/modules/inngest/events";
-import { cameBack, machinesOf, stepsOf, takes } from "#/modules/service-act/service-act";
+import { cameBack, rollOrder, stepsOf, takes } from "#/modules/service-act/service-act";
 import {
   actOnContainer,
   claimServiceAct,
@@ -32,19 +32,12 @@ export async function executeServiceAct(
   const claimed = await step.run("claim", () => runEffect(claimServiceAct(request, runId)));
   if (claimed.kind === "settled") return { actId: request.actId, state: claimed.state };
   const { stop, start } = stepsOf(claimed.verb);
-  for (const machine of machinesOf(claimed.legs)) {
-    const here = claimed.legs.filter((leg) => leg.machine === machine);
-    if (stop) {
-      for (const { container } of here) {
-        await step.run(`stop:${machine}:${container}`, () => runEffect(actOnContainer(request, runId, container, "stop")));
-      }
-    }
-    if (!start) continue;
-    let legs = claimed.legs;
-    for (const { container } of here.filter((leg) => takes(leg, "start"))) {
-      legs = await step.run(`start:${machine}:${container}`, () => runEffect(actOnContainer(request, runId, container, "start")));
-    }
-    if (stop && !cameBack(legs, machine)) break;
+  for (const leg of rollOrder(claimed.legs)) {
+    const { machine, container } = leg;
+    if (stop) await step.run(`stop:${machine}:${container}`, () => runEffect(actOnContainer(request, runId, container, "stop")));
+    if (!start || !takes(leg, "start")) continue;
+    const legs = await step.run(`start:${machine}:${container}`, () => runEffect(actOnContainer(request, runId, container, "start")));
+    if (stop && !cameBack(legs, leg)) break;
   }
   return step.run("record", () => runEffect(recordServiceAct(request, runId)));
 }

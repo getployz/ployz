@@ -18,9 +18,9 @@ use ployz_store::{
     CreateBranch, CreateEnvironment, CreateProject, CreateService, CreateVolume, Deploy,
     DeploymentId, DeploymentStatus, DeploymentSummary, DueQuery, EnvironmentId, EnvironmentName,
     EnvironmentRef, EnvironmentsQuery, KeepBranch, LeftStatus, Mount, OrganizationId, ProjectId,
-    ProjectName, Publish, Removal, RemovalsQuery, Remove, RunEvidence, RunnerId, ServiceLineageId,
-    SetDefaultEnvironment, ShutDown, Sweep, SyncChanges, SystemEvent, Trusted, VolumeId,
-    VolumeName, VolumeObservation, Written,
+    ProjectName, Publish, Removal, RemovalsQuery, Remove, RemovedQuery, RunEvidence, RunnerId,
+    ServiceLineageId, SetDefaultEnvironment, ShutDown, Sweep, SyncChanges, SystemEvent, Trusted,
+    VolumeId, VolumeName, VolumeObservation, Written,
 };
 use serde_json::json;
 
@@ -609,11 +609,27 @@ fn a_deployed_root_leaves_the_servers_before_the_store() {
     )
     .unwrap();
     let again = taking_off(&removing, "production");
+    let Removal::Removing { id: removal, .. } = removing else {
+        panic!("removed at once");
+    };
+    let finished = |who: &Actor| {
+        store.read(
+            who,
+            &RemovedQuery {
+                id: removal.clone(),
+            },
+        )
+    };
+    assert_eq!(refusal(finished(&who)).code, RpcErrorCode::NotFound);
     let claimed = prepare(&store, &again, &["web", "db"]);
     assert!(claimed.intent.target.is_empty(), "a removal ships nothing");
     assert_eq!(claimed.deletes, [held()]);
     succeed(&store, &again, &["web", "db"], deleted(&[held()]));
     assert_eq!(names(&sweep(&store, &who).removed), ["production"]);
+    // Once it is gone, its removal still says where it ended, to its own Organization only.
+    assert!(finished(&who).unwrap().residuals.is_empty());
+    let other = Actor::system(OrganizationId::parse("other").unwrap());
+    assert_eq!(refusal(finished(&other)).code, RpcErrorCode::NotFound);
     assert_eq!(listed(&store, &who), ["staging*"]);
     // Its name is free again.
     store

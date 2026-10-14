@@ -82,15 +82,25 @@ it("lets a deployed Volume's row discard alone when the Store can restore it", (
   expect(volume?.rows.map((row) => [row.path, row.canDiscard])).toEqual([["volumes.store.name", true], ["volumes.store.storage", false]]);
 });
 
-it("words a source change that moves only its root directory or its credentials", () => {
+it("words a branch change as the branch, not its stored object", () => {
+  const [web] = changeGroups({ ...diff, changes: [{ type: "service", id: "s1", row: "s1:node" as RowId, name: "web", lifecycle: "update", comparison: "head", data: null, restarts: [], settings: [
+    { path: "web.source.branch", kind: "update", before: { type: "connected", name: "main" }, after: { type: "connected", name: "release" }, canRestore: true, row: null },
+  ] }] }, services);
+  expect(web?.rows.map((row) => [row.label, row.currentValue, row.newValue])).toEqual([["Branch", "main", "release"]]);
+});
+
+it("words a source change readably, repeating only the tag when that is all that moved", () => {
+  // A row's cell, as core's `source_cell` writes it: credentials by presence, the branch on its own row.
   const source = (before: JsonValue, after: JsonValue) => ({ path: "web.source", kind: "update" as const, before, after, canRestore: true, row: null });
   const [web] = changeGroups({ ...diff, changes: [{ type: "service", id: "s1", row: "s1:node" as RowId, name: "web", lifecycle: "update", comparison: "head", data: null, restarts: [], settings: [
     source({ type: "git", repository: "acme/web", rootDir: "/" }, { type: "git", repository: "acme/web", rootDir: "apps/web" }),
     source({ type: "image", image: "web:2", credentials: false }, { type: "image", image: "web:2", credentials: true }),
+    source({ type: "image", image: "ghcr.io/acme/api:1.4", credentials: false }, { type: "image", image: "ghcr.io/acme/api:1.5", credentials: false }),
   ] }] }, services);
   expect(web?.rows.map((row) => [row.label, row.currentValue, row.newValue])).toEqual([
     ["Source", "acme/web", "acme/web in apps/web"],
     ["Source", "web:2", "web:2 with credentials"],
+    ["Source", "ghcr.io/acme/api:1.4", "1.5"],
   ]);
 });
 
@@ -272,6 +282,23 @@ it("keeps separate value, export and route identities when their Sync row is sha
   expect(group?.changeCount).toBe(5);
 });
 
+it("marks a node the Working State has back since the Saved version as coming back, and a new one as not", () => {
+  const head = asTestDouble<DiffView["changes"][number]>()(diff.changes[0] ?? {});
+  const restored = { ...head, lifecycle: "create" as const, comparison: "saved" as const, settings: [] };
+  const [back] = reviewGroups({ ...diff, changes: [], draft_changes: [restored] }, services);
+  expect(back?.lifecycle).toBe("create");
+  expect(back?.comesBack).toBe(true);
+
+  const added = { ...head, lifecycle: "create" as const, settings: [] };
+  const [created] = reviewGroups({ ...diff, changes: [added], draft_changes: [restored] }, services);
+  expect(created?.comesBack).toBeUndefined();
+
+  const changed = { ...head, lifecycle: "update" as const };
+  const [merged] = reviewGroups({ ...diff, changes: [changed], draft_changes: [restored] }, services);
+  expect(merged?.lifecycle).toBe("create");
+  expect(merged?.comesBack).toBe(true);
+});
+
 it("lets a whole runtime lifecycle dominate draft children and counts its node marker", () => {
   const runtime = { ...asTestDouble<DiffView["changes"][number]>()(diff.changes[0] ?? {}), lifecycle: "delete" as const };
   const [group] = reviewGroups({ ...diff, changes: [runtime], draft_changes: [{ ...runtime, lifecycle: "update", comparison: "saved", settings: [
@@ -286,4 +313,10 @@ it("words what a Deployment shipped despite", () => {
   expect(deploymentWarningText({ service: "web", variable: "TOKEN" })).toBe("TOKEN not set in web");
   expect(deploymentWarningText({ config: "sentry", file: "config.yml", secret: "web.TOKEN" })).toBe("web.TOKEN not set in sentry/config.yml");
   expect(deploymentWarningText({ config: "sentry", file: "config.yml", variable: "web.DSN" })).toBe("web.DSN may break sentry/config.yml");
+  expect(deploymentWarningText({ server: "web-1", ingress: { type: "port_taken", cause: "address already in use" } }))
+    .toBe("Ingress isn't running on web-1: something else holds port 80 or 443");
+  expect(deploymentWarningText({ server: "web-1", ingress: { type: "failed", cause: "image pull failed" } }))
+    .toBe("Ingress isn't running on web-1: image pull failed");
+  expect(deploymentWarningText({ cause: "Couldn't list the Cluster's Servers." }))
+    .toBe("Couldn't check ingress: Couldn't list the Cluster's Servers. Deploy again to retry");
 });

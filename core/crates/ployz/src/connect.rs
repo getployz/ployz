@@ -67,8 +67,6 @@ impl<T: AsyncRead + AsyncWrite + Send + Unpin> ProxyStream for T {}
 
 pub type BoxProxyStream = Box<dyn ProxyStream>;
 
-// TODO: a future client-side WireGuard connector must honour
-// cancellation and try each visible Machine; Ployz keeps it excluded.
 // Object-safe for `Arc<dyn Connector>` in Client; native async fn is not dyn-safe.
 #[tonic::async_trait]
 pub trait Connector: Send + Sync {
@@ -234,8 +232,6 @@ async fn connect_ssh(
     let control_path = control_path();
     let mut probe_args = ssh_base_args(destination, key_file, control_path.as_deref(), timeout);
     probe_args.extend([destination.target().into(), "true".into()]);
-    // TODO: cancelling drops this probe promptly, but a ControlMaster
-    // created during OpenSSH establishment may outlive it until ControlPersist expires.
     let output = Command::new(program)
         .args(&probe_args)
         .stdin(Stdio::null())
@@ -815,6 +811,34 @@ impl ConnectError {
                 | Self::AllFailed { .. }
         ) || matches!(self, Self::Rpc(error) if error.is_unavailable())
     }
+
+    /// The read's whole budget ran out without a reply, or the entry's router could not
+    /// get one from the target. A status a daemon sent, or a failure reaching the entry,
+    /// says nothing about whether the target lives.
+    pub(crate) fn target_unanswered(&self) -> bool {
+        matches!(self, Self::Rpc(error) if error.budget_expired || error.routed_unanswered)
+    }
+
+    /// A daemon sent this status itself, so the target was not silent.
+    pub(crate) fn target_replied(&self) -> bool {
+        matches!(self, Self::Rpc(error)
+            if !error.unanswered && !error.budget_expired && !error.routed_unanswered)
+    }
+}
+
+/// A target that replied on an earlier attempt was not silent: its reply stands in for a
+/// later silence. The caller stores only failures where `target_replied` holds.
+pub(crate) fn keep_target_reply(
+    reply: &mut Option<ConnectError>,
+    error: ConnectError,
+) -> ConnectError {
+    match reply.take() {
+        Some(earlier) if error.target_unanswered() => earlier,
+        kept => {
+            *reply = kept;
+            error
+        }
+    }
 }
 
 /// A gRPC transport failure. Display is the status message, not Status Debug.
@@ -826,12 +850,23 @@ pub struct TransportError {
     details: Value,
     /// The client produced this status: the daemon never answered.
     unanswered: bool,
+    /// The client's own deadline for the whole call elapsed.
+    budget_expired: bool,
+    /// The entry's router marked this status: the target did not answer it.
+    routed_unanswered: bool,
     /// Why the client's connection or stream failed, below tonic's own words.
     #[source]
     cause: Option<crate::failure::JoinedChain>,
 }
 
 impl TransportError {
+    pub(crate) fn budget_expired(message: &str) -> Self {
+        Self {
+            budget_expired: true,
+            ..Self::from(tonic::Status::deadline_exceeded(message))
+        }
+    }
+
     pub(crate) fn from_stream_status(status: tonic::Status) -> Self {
         let mut error = Self::from(status);
         if error.unanswered {
@@ -915,6 +950,10 @@ impl From<tonic::Status> for TransportError {
         };
         Self {
             unanswered,
+            budget_expired: false,
+            routed_unanswered: status
+                .metadata()
+                .contains_key(ployz_core::rpc::TARGET_UNANSWERED_KEY),
             cause,
             code: status.code(),
             message: status.message().to_owned(),

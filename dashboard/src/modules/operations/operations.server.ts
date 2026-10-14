@@ -3,14 +3,17 @@ import { createHash } from "node:crypto";
 import type { AcceptedLoss, DestructiveEffect, EnvironmentRef, MachineId, ServerRef, ServiceVerb } from "@ployz/sdk";
 import { Effect, Schema } from "effect";
 import { Uuid } from "#/lib/schema";
-import { gateOperation, type OperationAsked } from "#/modules/approvals/approvals.server";
+import { gateOperation, operationDigest, type OperationAsked } from "#/modules/approvals/approvals.server";
 import type { Caller } from "#/modules/identity/actor";
 import { machineRemoveAttemptConsuming } from "#/modules/machines/machine-removal.repository";
 import { startMachineRemove } from "#/modules/machines/machine-removal.server";
 import { requestNamespaceCleanup } from "#/modules/machines/namespace-cleanup.server";
 import { requestCliServerDrain } from "#/modules/machines/server-drain.server";
-import { planClean, planDrain, planRemove } from "#/modules/machines/server-operations.server";
+import type { ServerPolicyChange } from "#/modules/machines/server-policy";
+import { planKeyedServerPolicyChange } from "#/modules/machines/server-policy.server";
+import { planClean, planDrain, planIngressOff, planRemove } from "#/modules/machines/server-operations.server";
 import { admitOperation, type Admission } from "#/modules/operations/keyed.server";
+import { OPERATIONS, VOLUME_TOOLS } from "#/modules/operations/operations";
 import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
 import { requestServiceAct } from "#/modules/service-act/service-act.server";
 import { planCliServerUpgrade } from "#/modules/server-upgrade/server-upgrade.server";
@@ -54,19 +57,31 @@ export const drainServer = (caller: Caller, machineId: MachineId, call: Operatio
   Effect.gen(function* () {
     const plan = yield* planDrain(caller.organization.id, machineId);
     if (plan === null) return null;
-    return yield* admitOperation(caller.organization.id, { tool: "server_drain", key: call.key, body: { machineId } }, Effect.gen(function* () {
+    return yield* admitOperation(caller.organization.id, { tool: OPERATIONS["server.drain"].idempotency, key: call.key, body: { machineId } }, Effect.gen(function* () {
       const gated = yield* gate(caller, call, plan);
       if (!gated.ok) return refused(gated.refusal);
-      return (attemptId: string) => requestCliServerDrain(actor(caller), { attemptId, machineId, targets: plan.targets, approvalId: gated.approvalId })
+      return (attemptId: string) => requestCliServerDrain(actor(caller), {
+        attemptId, machineId, targets: plan.targets, approvalId: gated.approvalId, planDigest: operationDigest(plan),
+      })
         .pipe(Effect.map((id) => ({ ok: true, id }) as const));
     }));
   });
 
-export const upgradeServer = (caller: Caller, input: { readonly machineId: string; readonly channel: string | undefined }, call: OperationCall) =>
-  admitOperation(caller.organization.id, { tool: "server_upgrade", key: call.key, body: input }, planCliServerUpgrade(actor(caller), input));
+export const upgradeServer = (caller: Caller, input: { readonly machineId: MachineId; readonly channel: string | undefined }, call: OperationCall) =>
+  admitOperation(caller.organization.id, { tool: OPERATIONS["server.upgrade"].idempotency, key: call.key, body: input }, planCliServerUpgrade(actor(caller), input));
+
+export const setServer = (caller: Caller, machineId: MachineId, change: ServerPolicyChange, call: OperationCall) =>
+  admitOperation(caller.organization.id, { tool: OPERATIONS["server.set"].idempotency, key: call.key, body: { machineId, change } }, Effect.gen(function* () {
+    const plan = change.acceptsIngress === false ? yield* planIngressOff(caller.organization.id, machineId, change) : null;
+    if (plan !== null) {
+      const gated = yield* gate(caller, call, plan);
+      if (!gated.ok) return refused(gated.refusal);
+    }
+    return yield* planKeyedServerPolicyChange(caller, machineId, change);
+  }));
 
 export const cleanNamespace = (caller: Caller, namespace: string, call: OperationCall) =>
-  admitOperation(caller.organization.id, { tool: "server_clean", key: call.key, body: { namespace } }, Effect.gen(function* () {
+  admitOperation(caller.organization.id, { tool: OPERATIONS["namespace.clean"].idempotency, key: call.key, body: { namespace } }, Effect.gen(function* () {
     const plan = yield* planClean(caller.organization.id, namespace);
     const gated = yield* gate(caller, call, plan);
     if (!gated.ok) return refused(gated.refusal);
@@ -78,8 +93,15 @@ export const cleanNamespace = (caller: Caller, namespace: string, call: Operatio
     }).pipe(Effect.map((id) => ({ ok: true, id }) as const));
   }));
 
-/** `confirmed` is the Data Loss the caller accepted, or null for a removal without reset. Null when no Server has `machineId`. */
-export const removeServer = (caller: Caller, machineId: string, confirmed: readonly DataLossIdentity[] | null, call: OperationCall) =>
+/** Resets Server `machineId`, deleting exactly the Data Loss the caller `confirmed`. Null when no Server has `machineId`. */
+export const removeServer = (caller: Caller, machineId: MachineId, confirmed: readonly DataLossIdentity[], call: OperationCall) =>
+  removal(caller, machineId, confirmed, call);
+
+/** Takes Server `machineId` out of the Cluster without a reset, for a Server that is gone. Null when no Server has `machineId`. */
+export const forgetServer = (caller: Caller, machineId: MachineId, call: OperationCall) =>
+  removal(caller, machineId, null, call);
+
+const removal = (caller: Caller, machineId: MachineId, confirmed: readonly DataLossIdentity[] | null, call: OperationCall) =>
   Effect.gen(function* () {
     const noReset = confirmed === null;
     const consumed = Schema.is(Uuid)(call.approvalId)
@@ -88,7 +110,9 @@ export const removeServer = (caller: Caller, machineId: string, confirmed: reado
     if (consumed !== null) return { ok: true, id: consumed } as const;
     const plan = yield* planRemove(caller.organization.id, machineId, confirmed);
     if (plan === null) return null;
-    return yield* admitOperation(caller.organization.id, { tool: "server_remove", key: call.key, body: { machineId, confirmed } }, Effect.gen(function* () {
+    const tool = noReset ? OPERATIONS["server.forget"].idempotency : OPERATIONS["server.remove"].idempotency;
+    const body = noReset ? { machineId } : { machineId, confirmed };
+    return yield* admitOperation(caller.organization.id, { tool, key: call.key, body }, Effect.gen(function* () {
       const gated = yield* gate(caller, call, plan);
       if (!gated.ok) return refused(gated.refusal);
       return (id: string) => startMachineRemove({
@@ -101,16 +125,6 @@ export const removeServer = (caller: Caller, machineId: string, confirmed: reado
       }).pipe(Effect.map((started) => ({ ok: true, id: started.id }) as const));
     }));
   });
-
-const VOLUME_TOOLS = {
-  mirror: "volume_mirror",
-  sync: "volume_mirror",
-  move: "volume_move",
-  release: "volume_release",
-  delete_mirror: "volume_mirror_remove",
-  restore: "volume_restore",
-  seed: "volume_seed",
-} as const;
 
 /** A Volume Run whose id is its attempt, so a replayed request reads back the run it started. */
 export const runVolume = (
@@ -125,7 +139,7 @@ export const runVolume = (
       const gated = yield* gate(caller, call, planned.asked);
       if (!gated.ok) return refused(gated.refusal);
     }
-    return (runId: string) => insertRun(actor(caller), input, planned.volume, runId)
+    return (runId: string) => insertRun(actor(caller), planned.input, planned.volume, runId)
       .pipe(Effect.map((inserted) => inserted.ok ? { ok: true, id: inserted.run.id } as const : inserted));
   }));
 
@@ -144,6 +158,6 @@ export const actService = (
 ) =>
   admitOperation(
     caller.organization.id,
-    { tool: `service_${input.verb}`, key: call.key, body: { environmentId: input.environmentId, service: input.service, only: input.only } },
+    { tool: OPERATIONS[`service.${input.verb}`].idempotency, key: call.key, body: { environmentId: input.environmentId, service: input.service, only: input.only } },
     Effect.succeed((attemptId: string) => requestServiceAct(actor(caller), { attemptId, ...input })),
   );

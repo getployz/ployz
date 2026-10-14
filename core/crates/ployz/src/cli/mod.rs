@@ -63,6 +63,7 @@ pub(crate) fn compiled() -> Command {
         .subcommand(handlers::review::diff_command())
         .subcommand(handlers::review::history_command())
         .subcommand(handlers::review::discard_command())
+        .subcommand(handlers::docs::command())
         .subcommand(handlers::domain::command())
         .subcommand(handlers::env::command())
         .subcommand(handlers::operator::exec_command())
@@ -313,9 +314,8 @@ mod tests {
                 .try_get_matches_from([
                     "ployz",
                     "server",
-                    "rm",
+                    "forget",
                     "worker",
-                    "--no-reset",
                     "--accept-volume-loss",
                     "data",
                 ])

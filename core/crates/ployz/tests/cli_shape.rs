@@ -18,9 +18,8 @@ fn command_tree_is_exactly_the_cluster_operations_without_aliases() {
     let mut paths = Vec::new();
     collect(&ployz::cli::command(), "", &mut paths);
     paths.sort_unstable();
-    // `ployz debug` exists only in a verify-cluster build.
     if cfg!(feature = "verify-faults") {
-        paths.retain(|path| path != "debug" && path != "debug volume-rpc");
+        paths.retain(|path| path != "debug" && !path.starts_with("debug "));
     }
     assert_eq!(
         paths,
@@ -53,6 +52,7 @@ fn command_tree_is_exactly_the_cluster_operations_without_aliases() {
             "deployment start",
             "diff",
             "discard",
+            "docs",
             "domain",
             "domain add",
             "domain check",
@@ -93,6 +93,7 @@ fn command_tree_is_exactly_the_cluster_operations_without_aliases() {
             "metrics",
             "org",
             "org build-order",
+            "org leave",
             "org ls",
             "org rm",
             "org use",
@@ -350,6 +351,41 @@ fn json_results_and_errors_are_one_stdout_object_with_distinct_exit_codes() {
         "{json}"
     );
     assert!(message(&json).contains("--no-such-flag"), "{json}");
+}
+
+#[test]
+fn docs_answers_offline_from_the_binary() {
+    let (code, json, stderr) = run_json(&["docs", "add", "a", "custom", "domain", "--json"]);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert_eq!(json.pointer("/query").unwrap(), "add a custom domain");
+    assert_eq!(
+        json.pointer("/results/0/path").unwrap(),
+        "services/domains.md"
+    );
+    assert_eq!(
+        json.pointer("/results/0/anchor").unwrap(),
+        "add-a-custom-domain"
+    );
+
+    let (code, json, stderr) = run_json(&["docs", "domains.md", "--json"]);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert_eq!(json.pointer("/path").unwrap(), "services/domains.md");
+    assert!(
+        json.pointer("/content")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .contains("## Add a custom domain")
+    );
+
+    let (code, json, _) = run_json(&["docs", "services/domain.md", "--json"]);
+    assert_eq!(code, Some(1));
+    assert_eq!(json.pointer("/error/code").unwrap(), "not_found", "{json}");
+    assert_eq!(
+        json.pointer("/error/details/did_you_mean").unwrap(),
+        "services/domains.md",
+        "{json}"
+    );
 }
 
 #[test]
@@ -763,6 +799,46 @@ fn message(json: &serde_json::Value) -> &str {
     json.pointer("/error/message")
         .and_then(serde_json::Value::as_str)
         .unwrap()
+}
+
+#[cfg(unix)]
+#[test]
+fn a_daemon_that_hangs_up_is_one_json_error_on_piped_stdout() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for connection in listener.incoming() {
+            drop(connection);
+        }
+    });
+    let home = tempfile::tempdir().unwrap();
+    let config = home.path().join("config.yaml");
+    let connect = format!("tcp://127.0.0.1:{port}");
+    let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
+        .args(["--json", "server", "ls", "--connect", &connect])
+        .args(["--ployz-config", config.to_str().unwrap()])
+        .env("HOME", home.path())
+        .env_remove("PLOYZ_CONTEXT")
+        .env_remove("PLOYZ_CONNECT")
+        .env_remove("PLOYZ_TOKEN")
+        .env("PLOYZ_CLOUD_URL", "http://127.0.0.1:9")
+        .env_remove("PLOYZ_STORE")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let values = serde_json::Deserializer::from_slice(&output.stdout)
+        .into_iter::<serde_json::Value>()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let [value] = values.as_slice() else {
+        panic!("stdout is not one JSON value: {values:?}");
+    };
+    assert_eq!(
+        value.pointer("/error/code"),
+        Some(&serde_json::json!("internal")),
+        "{value}"
+    );
 }
 
 #[cfg(unix)]

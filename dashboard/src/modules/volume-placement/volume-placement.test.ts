@@ -48,7 +48,7 @@ const row = (mirrors: string[] | null, staged: { primary: string; mirrors?: stri
   unreached: false,
   deploymentId: null,
 });
-const pooled = (server: string) => member(server, "empty", { pool: true });
+const pooled = (server: string) => member(server, "empty");
 const at = new Date(2026, 9, 10, 10, 36);
 const mirrorAsOf = (server: string, when: Date): Member => {
   const base = member(server, "mirror");
@@ -82,6 +82,14 @@ describe("observePlacement", () => {
 describe("placementChanges", () => {
   it("is empty when nothing is staged", () => {
     expect(changes([member("web-1", "writer"), member("web-2", "mirror")], row(["web-2"]))).toEqual([]);
+  });
+
+  it("plans nothing for a mirror on a Server that left the cluster", () => {
+    expect(changes([member("web-1", "writer")], row(["web-2"], { primary: "web-1" }))).toEqual([]);
+  });
+
+  it("plans nothing for a staged mirror on a Server that left the cluster", () => {
+    expect(changes([member("web-1", "writer")], row(["web-2"], { primary: "web-1", mirrors: ["web-2"] }))).toEqual([]);
   });
 
   it("makes a move one change, even when it consumes the mirror it promotes", () => {
@@ -148,13 +156,10 @@ describe("placementChanges", () => {
     expect(review(members, row(["web-2"], { primary: "web-1" }))).toEqual([{ kind: "remove", name: "Mirror", currentValue: "web-2", newValue: "" }]);
   });
 
-  it("counts a mirror its answering Server no longer holds as removed, and still removes one on a silent or missing Server", () => {
+  it("counts a mirror its answering Server no longer holds as removed, and still removes one on a silent Server", () => {
     expect(changes([member("web-1", "writer"), pooled("web-2")], row(["web-2"], { primary: "web-1" }))).toEqual([]);
     expect(steps([member("web-1", "writer"), member("web-2", "unanswered")], row(["web-2"], { primary: "web-1" }))).toEqual([
       { kind: "delete_mirror", args: { slot: "web-2", confirmed_name: null } },
-    ]);
-    expect(steps([member("web-1", "writer")], row(["web-2"], { primary: "web-1" }))).toEqual([
-      { kind: "delete_mirror", args: { slot: id("web-2"), confirmed_name: null } },
     ]);
   });
 
@@ -201,6 +206,12 @@ describe("placementForm", () => {
 
   it("is null when no Server holds the Volume", () => {
     expect(placementForm(volume, [], null)).toBeNull();
+  });
+
+  it("drops a mirror on a Server that left the cluster", () => {
+    expect(form([member("web-1", "writer")], row(["web-2"]))).toEqual({ primary: "web-1:none", mirrors: [], detached: [] });
+    expect(form([member("web-1", "writer")], row(["web-2"], { primary: "web-1", mirrors: ["web-2"] })))
+      .toEqual({ primary: "web-1:none", mirrors: [], detached: [] });
   });
 });
 
@@ -445,10 +456,12 @@ describe("stagedOffServer", () => {
 
 describe("mirrorResourceId", () => {
   it("addresses a mirror by its Volume and Server, and reads back only a mirror's address", () => {
-    expect(parseMirrorResourceId(mirrorResourceId("v1", id("web-2")))).toEqual({ volumeId: "v1", server: id("web-2") });
+    const server = id("ab2");
+    expect(parseMirrorResourceId(mirrorResourceId("v1", server))).toEqual({ volumeId: "v1", server });
     expect(parseMirrorResourceId("79997413-396c-471e-a1ad-e89164cf4e9c")).toBeNull();
     expect(parseMirrorResourceId("v1~")).toBeNull();
-    expect(parseMirrorResourceId("~web-2")).toBeNull();
+    expect(parseMirrorResourceId(`~${server}`)).toBeNull();
+    expect(parseMirrorResourceId("v1~web-2")).toBeNull();
   });
 });
 

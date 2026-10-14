@@ -114,7 +114,9 @@ pub(crate) async fn apply_requested(
         }
         DeployOutcome::Superseded { ref service, .. } => Err(Failure::coded(
             ployz_core::RpcErrorCode::Conflict,
-            format!("Another deploy published {service} first; nothing of this deploy serves."),
+            format!(
+                "Another deploy published {service} first; it and the Services after it keep what served before."
+            ),
         )
         .into()),
         DeployOutcome::Interrupted { .. } => Err(Failure::coded(

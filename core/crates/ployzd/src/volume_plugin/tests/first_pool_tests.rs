@@ -469,6 +469,7 @@ async fn concurrent_and_retried_first_creates_converge_on_one_pool() {
         receives: Default::default(),
         send_port: first.send_port,
         receive_stall: first.receive_stall,
+        stop_deadline: first.stop_deadline,
     };
     let first_socket = test.0.join("first-plugin.sock");
     let second_socket = test.0.join("second-plugin.sock");
@@ -538,6 +539,7 @@ async fn a_second_process_cannot_use_a_pool_before_its_owner_finishes() {
         receives: Default::default(),
         send_port: first.send_port,
         receive_stall: first.receive_stall,
+        stop_deadline: first.stop_deadline,
     };
     let first_socket = test.0.join("first-plugin.sock");
     let second_socket = test.0.join("second-plugin.sock");
@@ -836,6 +838,10 @@ pub(super) fn fake_first_pool(directory: &Path, physical_block_size: u64) -> Vol
     let concurrent = directory.join("concurrent");
     let other = directory.join("other");
     let other_bound = directory.join("other-bound");
+    let mirror_root = directory.join("mirror-root");
+    let slot = directory.join("slot");
+    let slot_pull = directory.join("slot-pull");
+    let fail_slot_once = directory.join("fail-slot-once");
     let script_body = format!(
         r#"#!/bin/sh
 set -eu
@@ -921,6 +927,8 @@ case "$name" in
         [ ! -e '{root}' ] || printf 'ployz/ployz\t0\t0\t0\t/var/lib/ployz-volumes\tno\toff\n'
         [ ! -e '{volume}' ] || printf 'ployz/ployz/data\t%s\t0\t0\t/var/lib/ployz-volumes/data\tno\toff\n' "$(cat '{volume_bound}')"
         [ ! -e '{other}' ] || printf 'ployz/ployz/other\t%s\t0\t0\t/var/lib/ployz-volumes/other\tno\toff\n' "$(cat '{other_bound}')"
+        [ ! -e '{mirror_root}' ] || printf 'ployz/ployz-mirror\t0\t0\t0\t/var/lib/ployz-mirror\tno\ton\n'
+        [ ! -e '{slot}' ] || printf 'ployz/ployz-mirror/data\t%s\t0\t0\t/var/lib/ployz-mirror/data\tno\ton\n' "$(cat '{slot}')"
         ;;
       'create -o canmount=off -o mountpoint=/var/lib/ployz-volumes ployz/ployz') touch '{root}' ;;
       'create -o refquota='*' ployz/ployz/data')
@@ -943,6 +951,15 @@ case "$name" in
       'set org.debian:periodic-trim=disable ployz') touch '{trim_disabled}' ;;
       'get -H -o value ployz:promote '*) echo '-' ;;
       'destroy -r ployz/ployz/other') rm '{other}' '{other_bound}' ;;
+      'create -o canmount=off -o mountpoint=/var/lib/ployz-mirror -o readonly=on ployz/ployz-mirror') touch '{mirror_root}' ;;
+      'create -o canmount=off -o readonly=on -o refquota='*' ployz/ployz-mirror/data')
+        if [ -e '{fail_slot_once}' ]; then rm '{fail_slot_once}'; exit 2; fi
+        printf '%s\n' "${{7#refquota=}}" > '{slot}'
+        ;;
+      'set ployz:pull='*' ployz/ployz-mirror/data') printf '%s\n' "${{2#ployz:pull=}}" > '{slot_pull}' ;;
+      'get -H -o value ployz:pull ployz/ployz-mirror/data') if [ -e '{slot_pull}' ]; then cat '{slot_pull}'; else echo '-'; fi ;;
+      'get -H -o value guid ployz/ployz-mirror/data') echo 42 ;;
+      receive*) cat > /dev/null ;;
       *) echo "unexpected fake zfs command: $*" >&2; exit 2 ;;
     esac
     ;;
@@ -977,6 +994,10 @@ esac
         concurrent = concurrent.display(),
         other = other.display(),
         other_bound = other_bound.display(),
+        mirror_root = mirror_root.display(),
+        slot = slot.display(),
+        slot_pull = slot_pull.display(),
+        fail_slot_once = fail_slot_once.display(),
         backing = directory.join(POOL_BACKING_FILE).display(),
     );
     fs::write(&script, script_body).unwrap();
@@ -1023,5 +1044,6 @@ esac
         receives: Default::default(),
         send_port: ployz_core::VOLUME_SEND_PORT,
         receive_stall: super::super::transfer::RECEIVE_STALL,
+        stop_deadline: super::super::transfer::STOP_DEADLINE,
     }
 }

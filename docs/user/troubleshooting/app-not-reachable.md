@@ -74,8 +74,10 @@ the request to. The page reloads itself every 10 seconds.
 The domain's row says where traffic goes. **→ Uses PORT** means the `PORT` variable, which is
 `8080` unless you set it. Either:
 
-- add a `PORT` variable set to your app's port, then deploy (the health check uses it too), or
+- add a `PORT` variable set to your app's port, then deploy, or
 - click the pencil on the domain and set **Target port** to the port your app listens on.
+
+The health check follows whichever you pick.
 
 ## Nothing is deployed here
 
@@ -119,7 +121,10 @@ certificate**, a DNS status, or **Certificate failed; retrying at …**. Fix any
 ## Port 80 is closed
 
 You'll see **Port 80 is closed on 203.0.113.10**. Your servers use port 80 to get certificates,
-so Ployz leaves that server out of your organization's domain until it's open.
+so Ployz leaves that server out of your organization's domain until it's open. When your other
+servers still take the traffic, your domains stay live and only **Domain** in
+**Organization → General** shows **Port 80 closed on 203.0.113.10.** An offline server is left
+out without a warning here: it shows **Offline** on the Servers page instead.
 
 Open TCP port 80 and TCP and UDP port 443 to the internet on every server that takes web
 traffic, in your hosting provider's firewall (like a Hetzner Cloud Firewall or an AWS security
@@ -131,7 +136,9 @@ group) as well as the server's own. Then click **Check again** under **Domain** 
 You'll see **Something else answers on port 80 of 203.0.113.10**. The server answers on port 80,
 but not as Ployz: another web server holds the port, often Caddy or nginx in front of a
 [self-hosted Ployz Cloud](../self-hosting.md#choose-where-it-runs). Until Ployz gets the port
-back, Ployz leaves that server out of your organization's domain. See what holds it:
+back, Ployz leaves that server out of your organization's domain. When your other servers still
+take the traffic, your domains stay live and only **Domain** in **Organization → General** shows
+**Port 80 taken on 203.0.113.10.** See what holds it:
 
 ```sh
 sudo ss -ltnp '( sport = :80 or sport = :443 )'
@@ -142,6 +149,23 @@ publish it through a Cloudflare Tunnel instead. Once port 80 is free, the server
 ingress on its own within a minute. You don't need to remove and re-add the server. Then click
 **Check again** under **Domain** in **Organization → General**.
 
+## Ingress isn't running
+
+You'll see **Ingress isn't running on web-1**, under **Domain** in **Organization → General**
+or on a deployment. The web server Ployz runs on web-1 is missing or stopped, so web-1 takes
+no web traffic. When your other servers still take the traffic, your domains stay live and only
+**Domain** in **Organization → General** says so. Deploy any project to bring it back:
+
+```sh
+ployz deploy
+```
+
+A deploy creates or starts the missing ingress on every server that takes web traffic.
+`ployz deploy --plan` lists it first, as `ingress on web-1: would create`. If it
+still isn't running, the deploy says why. When the ingress keeps crashing and restarting, the
+deploy leaves it alone and warns with the `docker logs` command that shows why. When something else holds port 80 or 443, see
+[above](#something-else-answers-on-port-80).
+
 ## None of my servers takes web traffic
 
 You'll see **No Server receives traffic** or **No ingress Server has a public IP**. Either every server has web traffic turned off,
@@ -149,12 +173,15 @@ or Ployz doesn't know their public addresses. [Add a server](../servers/add-a-se
 it from the CLI (these settings aren't in the dashboard yet):
 
 ```sh
-# Take web traffic on web-1 again
+# Turn web traffic back on for web-1
 ployz server set web-1 --accepts-ingress=true
 
 # Tell Ployz web-1's public address
 ployz server set web-1 --public-ip 203.0.113.10
 ```
+
+A server that takes web traffic but whose ingress is missing or stopped needs a deploy, not
+these settings. See [Ingress isn't running](#ingress-isnt-running).
 
 ## One service can't reach another
 

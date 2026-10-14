@@ -333,3 +333,12 @@ fn unavailable(message: &str) -> RpcError {
         cause: Vec::new(),
     }
 }
+
+#[test]
+fn an_ingress_off_wait_holds_only_once_the_role_is_off() {
+    let mut observed = machine('a').machine;
+    assert!(!RoleSetting::IngressOff.holds(&observed));
+    observed.accepts_ingress = false;
+    assert!(RoleSetting::IngressOff.holds(&observed));
+    assert!(!RoleSetting::IngressOn.holds(&observed));
+}

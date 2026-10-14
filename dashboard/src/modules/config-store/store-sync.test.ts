@@ -24,13 +24,18 @@ describe("the Sync dialog over the Store", () => {
   it("words each change by name, with at most one badge, Secret first, and hides a secret's value", () => {
     const lines = [image, logLevel, webhook, cache, cacheMode, dataName].map((one) => syncLine(one, "production"));
     expect(lines).toEqual([
-      { name: "Source", variable: false, badge: null, before: "shop/api:1.8", after: "shop/api:1.9" },
+      { name: "Source", variable: false, badge: null, before: "shop/api:1.8", after: "1.9" },
       { name: "LOG_LEVEL", variable: true, badge: "Changed in production", before: "warn", after: "debug" },
       { name: "STRIPE_WEBHOOK_SECRET", variable: true, badge: "Secret", before: "", after: "" },
       { name: "Service", variable: false, badge: "New", before: "", after: "" },
       { name: "MODE", variable: true, badge: "New", before: "", after: "lru" },
       { name: "Name", variable: false, badge: null, before: "data", after: "pg" },
     ]);
+  });
+
+  it("words a branch row as the branch, not its stored object", () => {
+    const branch = row("a:source.branch", "api", "source.branch", { from: { type: "connected", name: "release" }, into: { type: "disconnected" } });
+    expect(syncLine(branch, "production")).toEqual({ name: "Branch", variable: false, badge: null, before: "no branch", after: "release" });
   });
 
   it("groups the rows by node in the Store's order", () => {

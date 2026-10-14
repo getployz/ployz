@@ -29,8 +29,8 @@ pub use service::{
     CorrosionConfig, CorrosionPaths, DEFAULT_CONTAINER_NAME, RunningCorrosion, remove_retained,
 };
 pub(crate) use store::{
-    IngressRouteAck, IngressRouteChange, LocalContainerSnapshot, LocalVolumeSnapshot,
-    ServingPointers,
+    IngressRouteAck, IngressRouteChange, IngressRouteRow, LocalContainerSnapshot,
+    LocalVolumeSnapshot, ServingPointers,
 };
 pub use store::{ReplicatedObservations, ReplicatedStore};
 

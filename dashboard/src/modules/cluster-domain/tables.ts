@@ -10,15 +10,26 @@ export type IngressServerAddress = { machineId: MachineId; address: string };
 
 /**
  * What the last sync found about the Servers that carry the Cluster Domain's traffic:
- * - `no_servers`: no Cluster is paired, or its runtime frame has no Machines.
+ * - `no_servers`: no Cluster is paired, its runtime frame has no Machines, or every ingress Server is down.
  * - `no_public_ip`: no ingress Server has a public IP.
- * - `probed`: ingress Servers were probed; `unreachable` lists those that did not answer on port 80, `taken` those
- *   where something other than Ployz answered. Rows written before `taken` existed count both as `unreachable`.
+ * - `probed`: ingress Servers that are not down were probed; `reachable` lists those where Ployz answered on port 80,
+ *   `unreachable` those that did not answer, `taken` those where something else answered, `down` those with nothing
+ *   on port 80 and no Ingress Proxy running. Rows written before `taken` existed count both as `unreachable`; rows
+ *   written before `reachable` existed don't say whether any Server answered.
  */
 export type ClusterDomainTraffic =
   | { kind: "no_servers" }
   | { kind: "no_public_ip" }
-  | { kind: "probed"; unreachable: IngressServerAddress[]; taken?: IngressServerAddress[] };
+  | {
+    kind: "probed";
+    reachable?: IngressServerAddress[];
+    unreachable: IngressServerAddress[];
+    taken?: IngressServerAddress[];
+    down?: IngressServerName[];
+  };
+
+/** An ingress Server that runs no Ingress Proxy, by name for the user. */
+export type IngressServerName = IngressServerAddress & { name: string };
 
 /**
  * The Organization's Cluster Domain, granted by Hosted DNS. Owned by the Organization, not a pairing:

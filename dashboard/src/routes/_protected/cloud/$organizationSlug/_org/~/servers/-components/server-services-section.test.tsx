@@ -139,7 +139,7 @@ describe("Drain dialog", () => {
     return true;
   };
 
-  const LEAD = "Moves every service to your other servers, one at a time. Nothing moves back on its own.";
+  const LEAD = "Moves its services to your other servers, one at a time. Nothing moves back on its own.";
   const VOLUMES = "Services with a volume on web-2 stay.";
   const row = (name: string, stays: DrainDialogRow["stays"] = null): DrainDialogRow => ({ key: `shop/${name}`, name, namespace: "shop", stays });
   const dialog = (rows: DrainDialogRow[], onConfirm = () => {}) =>
@@ -165,6 +165,13 @@ describe("Drain dialog", () => {
     expect(within(listed("shop/old")).getByText("Skipped")).toBeTruthy();
     expect(within(listed("shop/old")).getByText("No project owns it")).toBeTruthy();
     expect(screen.queryByText("Nothing to move.")).toBeNull();
+  });
+
+  it("badges a Global Service whose only copy runs here as stopping, and makes Drain destructive", () => {
+    dialog([row("api"), row("agent", "stops")]);
+    expect(within(listed("shop/agent")).getByText("Stops")).toBeTruthy();
+    expect(within(listed("shop/agent")).getByText("Its only copy runs here")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Drain" }).getAttribute("data-variant")).toBe("destructive");
   });
 
   it("says so when nothing runs here", () => {

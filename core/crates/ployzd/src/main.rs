@@ -18,10 +18,11 @@ use ployz_core::{
 use ployzd::{
     daemon::{ContainerMode, Daemon, DaemonConfig, Error, wait_until_socket_accepts},
     diag,
-    dns::{self, DnsExit, DnsSupervision},
+    dns::{self, DnsExit},
     installer::{DEFAULT_SOCKET_PATH, InstallMode, InstallRequest, Readiness},
     machine::DEFAULT_DATA_DIR,
     management::ManagementConfig,
+    runtime_unit::UnitSupervision,
 };
 use tokio::io::{AsyncWriteExt, copy, stdin, stdout};
 
@@ -78,6 +79,18 @@ enum Command {
     UpgradeWorker {
         #[arg(long)]
         attempt: MachineUpgradeAttemptId,
+    },
+    /// Write this release's systemd unit files for an installer running another release.
+    ///
+    /// Other releases' installers call these flags; renaming one makes them exit 2 and write their own units.
+    #[command(hide = true)]
+    InstallUnits {
+        #[arg(long)]
+        bin_dir: PathBuf,
+        #[arg(long)]
+        run_dir: PathBuf,
+        #[arg(long)]
+        systemd_dir: PathBuf,
     },
     /// Install or replace this Machine's daemon release.
     Install {
@@ -170,6 +183,15 @@ async fn run(args: Args) -> Result<ExitCode, Error> {
             .map_err(io::Error::other)?;
         return Ok(ExitCode::SUCCESS);
     }
+    if let Some(Command::InstallUnits {
+        bin_dir,
+        run_dir,
+        systemd_dir,
+    }) = &args.command
+    {
+        ployzd::installer::write_units(bin_dir, run_dir, systemd_dir).map_err(io::Error::other)?;
+        return Ok(ExitCode::SUCCESS);
+    }
     if let Some(Command::Install {
         version,
         storage,
@@ -217,7 +239,7 @@ async fn run(args: Args) -> Result<ExitCode, Error> {
         data_dir: args.data_dir,
         socket: args.socket,
         dns_upstreams: args.dns_upstreams,
-        dns: DnsSupervision::detect(),
+        units: UnitSupervision::detect(),
         machine_api_address: args.machine_api_address,
         containerd_socket: args.containerd_socket,
         volume_plugin_socket: args.volume_plugin_socket,

@@ -5,12 +5,13 @@ import type { JsonObject } from "#/db/tables";
 import { Effect, Schema } from "effect";
 import { asRecord, asString, canonicalJson } from "#/lib/json";
 import { type CommandCall, type Ran, refused } from "#/modules/commands/command.server";
-import { COMMANDS } from "#/modules/commands/registry.server";
+import { COMMANDS, RUNNABLE } from "#/modules/commands/registry.server";
 import type { Caller } from "#/modules/identity/actor";
 
 export type Published = (typeof COMMANDS)[number];
-export type CommandName = Published["name"];
-type OutputOf<N extends string> = Extract<Published, { name: N }>["output"]["Type"];
+type Runnable = (typeof RUNNABLE)[number];
+export type CommandName = Runnable["name"];
+type OutputOf<N extends string> = Extract<Runnable, { name: N }>["output"]["Type"];
 
 const EMPTY_INPUT: JsonObject = { type: "object", properties: {}, required: [], additionalProperties: false };
 
@@ -70,8 +71,8 @@ export const MANIFEST_REVISION = manifest().revision;
 /** On every `/api/cli` reply, so `ployz` sees its cached manifest is stale on whatever call it makes next. */
 export const MANIFEST_HEADER = "x-ployz-manifest";
 
-export function findCommand(name: string): Published | undefined {
-  return COMMANDS.find((command) => command.name === name);
+export function findCommand(name: string): Runnable | undefined {
+  return RUNNABLE.find((command) => command.name === name);
 }
 
 /** Runs one published command for `caller`: the CLI route and the sidebar both come through here. */
@@ -81,5 +82,5 @@ export function runCommand<N extends string>(caller: Caller, name: N, raw: JsonV
     return Effect.succeed(refused("unknown_command", `Cloud has no command ${name}. Update ployz to see what it offers.`));
   }
   // SAFETY: `command.name === name`, so its output is the output the name selects.
-  return command.invoke(caller, raw, call) as Effect.Effect<Ran<OutputOf<N>>, Effect.Error<ReturnType<Published["invoke"]>>, Effect.Services<ReturnType<Published["invoke"]>>>;
+  return command.invoke(caller, raw, call) as Effect.Effect<Ran<OutputOf<N>>, Effect.Error<ReturnType<Runnable["invoke"]>>, Effect.Services<ReturnType<Runnable["invoke"]>>>;
 }

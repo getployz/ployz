@@ -32,8 +32,6 @@ pub const DEFAULT_CONTAINER_NAME: &str = "ployz-corrosion";
 const TOKEN_FILE: &str = ".api-token";
 const SCHEMA: &str = include_str!("schema.sql");
 const START_TIMEOUT: Duration = Duration::from_secs(4 * 60 + 30);
-// A daemon restart no longer restarts a running Corrosion, so a kept container that stays
-// silent this long is treated as wedged and replaced once, as every restart used to do.
 const KEPT_READY_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Where Corrosion keeps its files under the Ployz data and run directories.
@@ -68,7 +66,6 @@ pub struct CorrosionConfig {
     api_address: SocketAddr,
     gossip_address: SocketAddr,
     container_name: String,
-    // TODO: every peer remains a bootstrap target; add partial selection only after a product decision.
     bootstrap: Vec<SocketAddr>,
 }
 
@@ -146,8 +143,6 @@ impl CorrosionConfig {
         create_private_dir(&self.paths.run_dir)?;
         let token = load_or_create_token(&self.paths.token_file())?;
         let schema_path = self.paths.data_dir.join("schema.sql");
-        // TODO: Ployz deliberately has no replicated Store Schema/value evolution contract;
-        // mixed-version Machines may omit or fail to read newer data. Do not add migrations or version gates.
         atomic_write(&schema_path, SCHEMA.as_bytes(), 0o644)?;
 
         let config = FileConfig {
@@ -171,7 +166,6 @@ impl CorrosionConfig {
             },
         };
         let encoded = toml::to_string(&config)?;
-        // TODO: retain the loose Corrosion-owned config boundary until ownership is decided.
         atomic_write(
             &self.paths.data_dir.join("config.toml"),
             encoded.as_bytes(),

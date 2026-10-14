@@ -4,7 +4,7 @@ default-members = ["crates/ployz-core", "crates/ployz-build", "crates/ployz", "c
 resolver = "3"
 
 [workspace.package]
-version = "0.2.3"
+version = "0.3.0-beta.2"
 edition = "2024"
 rust-version = "1.97.1"
 repository = "https://github.com/getployz/ployz"
@@ -28,6 +28,10 @@ fallible_impl_from = "warn"
 wildcard_enum_match_arm = "warn"
 fn_params_excessive_bools = "warn"
 must_use_candidate = "warn"
+
+[profile.dev]
+# Line tables keep backtraces readable; full DWARF made each test binary ~85% debug info.
+debug = "line-tables-only"
 
 [profile.release]
 # ponytail: DWARF only; keeps the symbol table so release backtraces stay readable.

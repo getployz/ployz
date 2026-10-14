@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { PostHog as PostHogClient } from "posthog-node";
+import { PostHogMCP } from "@posthog/mcp";
 import { Context, Effect, Layer } from "effect";
 import { AppConfig } from "#/server/config.server";
 
@@ -15,12 +15,22 @@ export type PostHogService = {
   }) => Effect.Effect<void>;
   readonly identify: (userId: string, properties: Properties) => Effect.Effect<void>;
   readonly identifyOrganization: (organizationId: string, properties: Properties) => Effect.Effect<void>;
+  /** A sidebar agent tool call, as MCP Analytics' `$mcp_tool_call`, without its arguments or result. */
+  readonly toolCall: (input: {
+    readonly userId: string;
+    readonly organizationId: string;
+    readonly threadId: string;
+    readonly tool: string;
+    readonly durationMs: number;
+    readonly failed: boolean;
+  }) => Effect.Effect<void>;
 };
 
 const disabled: PostHogService = {
   capture: () => Effect.void,
   identify: () => Effect.void,
   identifyOrganization: () => Effect.void,
+  toolCall: () => Effect.void,
 };
 
 /**
@@ -42,8 +52,8 @@ export const PostHogLive = Layer.effect(
     const { posthog } = yield* AppConfig;
     if (posthog === null) return disabled;
     const client = yield* Effect.acquireRelease(
-      Effect.sync(() => new PostHogClient(posthog.key, { host: posthog.host })),
-      // Shutdown flushes what is still queued.
+      // An agent's failed tool call is no exception: the call's own `$mcp_is_error` says it failed.
+      Effect.sync(() => new PostHogMCP(posthog.key, { host: posthog.host, enableExceptionAutocapture: false })),
       (client) => Effect.tryPromise(() => client.shutdown()).pipe(
         Effect.catch((cause) => Effect.logWarning("PostHog could not flush its queue on shutdown.", cause)),
       ),
@@ -60,6 +70,16 @@ export const PostHogLive = Layer.effect(
         bestEffort("identify", () => client.identify({ distinctId: userId, properties: { $set: properties } })),
       identifyOrganization: (organizationId, properties) =>
         bestEffort("groupIdentify", () => client.groupIdentify({ groupType: "organization", groupKey: organizationId, properties })),
+      toolCall: ({ userId, organizationId, threadId, tool, durationMs, failed }) =>
+        bestEffort("captureToolCall", () => client.captureToolCall({
+          distinctId: userId,
+          groups: { organization: organizationId },
+          sessionId: threadId,
+          toolName: tool,
+          durationMs,
+          isError: failed,
+          properties: { $mcp_server_name: "ployz-sidebar" },
+        })),
     } satisfies PostHogService;
   }),
 );

@@ -80,14 +80,17 @@ def committed(machines):
     return sum(max(machine["memory"] - machine["rss"], 0) for machine in machines if machine["status"] == "Running")
 
 
-def shortfalls(machines, memory, available, total, running, pool_free, pool_total,
+def shortfalls(machines, memory, available, total, running, pool, host_disk=None,
                memory_reserve=None, disk_reserve=None):
     """Why `machines` VMs of `memory` bytes do not fit, or an empty list.
 
     `available` is MemAvailable; `running` are the host's guests, whose untouched memory is
-    already promised. Reserves keep earlyoom (which acts at 5% free) and builds clear."""
+    already promised. `pool` and `host_disk` are (free, total) bytes; the disk reserve comes out
+    of the host disk when the pool grows into one, else out of the pool. Reserves keep earlyoom
+    (which acts at 5% free) and builds clear."""
     memory_reserve = total // 10 if memory_reserve is None else memory_reserve
-    disk_reserve = pool_total // 20 if disk_reserve is None else disk_reserve
+    reserved_free, reserved_total = host_disk or pool
+    disk_reserve = reserved_total // 20 if disk_reserve is None else disk_reserve
     problems = []
     usable = available - committed(running) - memory_reserve
     need = machines * (memory + VM_OVERHEAD)
@@ -95,10 +98,11 @@ def shortfalls(machines, memory, available, total, running, pool_free, pool_tota
         problems.append(f"RAM: need {gib(need)} for {machines} Machine(s), {gib(max(usable, 0))} usable "
                         f"({gib(available)} available, {gib(committed(running))} promised to running VMs, {gib(memory_reserve)} reserve)")
     need = machines * DISK_PER_MACHINE
-    usable = pool_free - disk_reserve
+    usable = min(pool[0], reserved_free - disk_reserve)
     if need > usable:
+        host_free = f", {gib(host_disk[0])} free on the host disk" if host_disk else ""
         problems.append(f"Disk: need {gib(need)} for {machines} Machine(s), {gib(max(usable, 0))} usable "
-                        f"({gib(pool_free)} free in the pool, {gib(disk_reserve)} reserve)")
+                        f"({gib(pool[0])} free for VM roots{host_free}, {gib(disk_reserve)} reserve)")
     return problems
 
 

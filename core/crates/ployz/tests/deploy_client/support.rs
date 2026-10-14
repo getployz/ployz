@@ -73,38 +73,28 @@ pub(super) struct DeployService {
     pub(super) copies: Arc<Mutex<BTreeMap<DockerVolumeName, ployz_core::ProvisionedCopy>>>,
     /// Serving Pointers published so far; every Machine acks a pointer as soon as it lands.
     pointers: Arc<Mutex<BTreeMap<QualifiedService, ServingPointer>>>,
+    image_pulls: Arc<Mutex<Vec<ImagePullCall>>>,
+    /// Creations that arrived without a prepared image, so the Machine pulled inside them.
+    creation_pulls: Arc<AtomicUsize>,
+    /// Machines whose registry rejects every pull.
+    pull_failures: BTreeSet<MachineId>,
+}
+
+/// One `PullImage` a Machine answered.
+#[derive(Clone, Debug)]
+pub(super) struct ImagePullCall {
+    pub(super) machine: MachineId,
+    pub(super) image: String,
+    pub(super) policy: ployz_core::PullPolicy,
+    /// Mutating Machine RPCs answered before this pull.
+    pub(super) mutations_before: usize,
 }
 
 impl DeployService {
     pub(super) fn new(machine: MachineObservation) -> Self {
         Self {
-            builds: None,
             machines: vec![machine],
-            create_volume_error: None,
-            create_volume_verification_error: None,
-            containers: Arc::new(AtomicUsize::new(0)),
-            created_namespaces: Arc::new(Mutex::new(Vec::new())),
-            created_specs: Arc::new(Mutex::new(Vec::new())),
-            listed_containers: Arc::new(Mutex::new(Vec::new())),
-            mutating_rpcs: Arc::new(AtomicUsize::new(0)),
-            slots: Arc::new(Mutex::new(BTreeMap::new())),
-            inspect_error: None,
-            exec_exit: None,
-            runtime: ContainerRuntimeObservation::Running {
-                health: HealthObservation::Healthy,
-            },
-            healthy_at: None,
-            effective_healthcheck: None,
-            removed: Arc::new(Mutex::new(BTreeSet::new())),
-            history_requests: Arc::new(Mutex::new(Vec::new())),
-            history_failures: BTreeMap::new(),
-            uninspectable: BTreeSet::new(),
-            start_error: None,
-            listing_failures: Vec::new(),
-            listing_blocked: None,
-            volumes: Arc::new(Mutex::new(Vec::new())),
-            copies: Arc::new(Mutex::new(BTreeMap::new())),
-            pointers: Arc::new(Mutex::new(BTreeMap::new())),
+            ..Self::empty()
         }
     }
 
@@ -137,6 +127,9 @@ impl DeployService {
             volumes: Arc::new(Mutex::new(Vec::new())),
             copies: Arc::new(Mutex::new(BTreeMap::new())),
             pointers: Arc::new(Mutex::new(BTreeMap::new())),
+            image_pulls: Arc::new(Mutex::new(Vec::new())),
+            creation_pulls: Arc::new(AtomicUsize::new(0)),
+            pull_failures: BTreeSet::new(),
         }
     }
 
@@ -248,6 +241,28 @@ impl DeployService {
     pub(super) fn crash_containers(mut self) -> Self {
         self.runtime = ContainerRuntimeObservation::Exited { code: 1 };
         self
+    }
+
+    pub(super) fn fail_pulls_on(mut self, machine: MachineId) -> Self {
+        self.pull_failures.insert(machine);
+        self
+    }
+
+    pub(super) fn image_pulls(&self) -> Arc<Mutex<Vec<ImagePullCall>>> {
+        self.image_pulls.clone()
+    }
+
+    pub(super) fn creation_pulls(&self) -> Arc<AtomicUsize> {
+        self.creation_pulls.clone()
+    }
+
+    fn registry_refusal() -> RpcError {
+        RpcError {
+            code: RpcErrorCode::Internal,
+            message: "registry refused the pull".into(),
+            details: Value::Null,
+            cause: Vec::new(),
+        }
     }
 
     pub(super) fn with_machines(mut self, machines: Vec<MachineObservation>) -> Self {
@@ -549,6 +564,7 @@ impl MachineRpc for DeployService {
         encoded(RpcResponse::from(ContainerDetails {
             image_id: None,
             last_check: None,
+            run: None,
             environment: Some(BTreeMap::from([
                 ("TOKEN".into(), "live-only-sentinel".into()),
                 ("PLAIN".into(), "from-docker".into()),
@@ -630,6 +646,12 @@ impl MachineRpc for DeployService {
             ployz_core::ContainerWant::Running {
                 container: RunTarget::New(new),
             } => {
+                if !new.image_prepared {
+                    self.creation_pulls.fetch_add(1, Ordering::SeqCst);
+                    if self.pull_failures.contains(&machine_id) {
+                        return encoded(RpcResponse::from(Self::registry_refusal()));
+                    }
+                }
                 if let Some(error) = &self.create_volume_error {
                     return encoded(RpcResponse::from(error.clone()));
                 }
@@ -883,7 +905,11 @@ impl MachineRpc for DeployService {
                     .map(move |observed| (observed.machine.id, pointer.deploy.clone()))
             })
             .collect();
-        encoded(RpcResponse::from(ServingPointerRead { pointer, acks }))
+        encoded(RpcResponse::from(ServingPointerRead {
+            all_routed: pointer.is_some(),
+            pointer,
+            acks,
+        }))
     }
     async fn prune_images(
         &self,
@@ -893,6 +919,26 @@ impl MachineRpc for DeployService {
             return unused();
         }
         encoded(RpcResponse::from(ployz_core::ImagesRemoved::default()))
+    }
+    async fn pull_image(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let machine = machine_from_metadata(&request)?;
+        let RpcRequestBody::PullImage(pull) = request.into_inner().decode_request().unwrap().body
+        else {
+            return Err(Status::invalid_argument("expected pull_image"));
+        };
+        if self.pull_failures.contains(&machine) {
+            return encoded(RpcResponse::from(Self::registry_refusal()));
+        }
+        self.image_pulls.lock().unwrap().push(ImagePullCall {
+            machine,
+            image: pull.image,
+            policy: pull.policy,
+            mutations_before: self.mutating_rpcs.load(Ordering::SeqCst),
+        });
+        encoded(RpcResponse::from(ployz_core::ImagePulled {}))
     }
     async fn pull_image_from_machine(
         &self,

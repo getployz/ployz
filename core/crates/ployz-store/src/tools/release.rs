@@ -42,11 +42,11 @@ pub(crate) fn place(call: &Call) -> serde_json::Map<String, Value> {
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Review {
-    /// Project name. Omit for the one you are in.
+    /// Project name.
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(NODE_NAME))]
     project: Option<ProjectName>,
-    /// Environment name, e.g. staging. Omit for the one you are in.
+    /// Environment name, e.g. staging.
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(NODE_NAME))]
     environment: Option<EnvironmentName>,
@@ -74,6 +74,9 @@ impl Tool for Review {
                     DestructiveKind::DetachesVolume => "detaches volume",
                     DestructiveKind::RemovesDomain => "removes domain",
                     DestructiveKind::RemovesServer => "removes server",
+                    DestructiveKind::RemovesMember => "removes member",
+                    DestructiveKind::ChangesRole => "changes role",
+                    DestructiveKind::RevokesInvite => "revokes invite",
                 };
                 format!("{kind} {}", effect.name)
             })
@@ -173,11 +176,11 @@ pub(crate) struct DiscardInput {
     /// Write only if the place is still at this revision. Omit unless you just read it.
     #[serde(default)]
     expect_revision: Option<u64>,
-    /// Project name. Omit for the one you are in.
+    /// Project name.
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(NODE_NAME))]
     project: Option<ProjectName>,
-    /// Environment name, e.g. staging. Omit for the one you are in.
+    /// Environment name, e.g. staging.
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(NODE_NAME))]
     environment: Option<EnvironmentName>,
@@ -254,11 +257,11 @@ pub(crate) struct PublishInput {
     #[serde(default)]
     #[schemars(with = "Vec<String>", inner(pattern(NODE_NAME)))]
     accept_volume_loss: Vec<VolumeName>,
-    /// Project name. Omit for the one you are in.
+    /// Project name.
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(NODE_NAME))]
     project: Option<ProjectName>,
-    /// Environment name, e.g. staging. Omit for the one you are in.
+    /// Environment name, e.g. staging.
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(NODE_NAME))]
     environment: Option<EnvironmentName>,
@@ -313,11 +316,11 @@ pub(crate) struct DeployInput {
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(REQUEST_KEY))]
     request_key: Option<RequestKey>,
-    /// Project name. Omit for the one you are in.
+    /// Project name.
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(NODE_NAME))]
     project: Option<ProjectName>,
-    /// Environment name, e.g. staging. Omit for the one you are in.
+    /// Environment name, e.g. staging.
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(NODE_NAME))]
     environment: Option<EnvironmentName>,

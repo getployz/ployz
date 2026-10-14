@@ -1,14 +1,15 @@
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync } from "node:fs";
 import { describe, it } from "@effect/vitest";
-import { Effect, Schema } from "effect";
+import { Effect } from "effect";
 import { expect } from "vitest";
+import { readJson } from "./json";
 import { Golden, Replayer, replaying } from "./tape";
 import { TASKS } from "./tasks";
 import { runTrial } from "./trial";
 
 const GOLDEN = new URL("./golden/", import.meta.url);
 const goldens = readdirSync(GOLDEN).filter((file) => file.endsWith(".json"))
-  .map((file) => Schema.decodeUnknownSync(Schema.fromJsonString(Golden))(readFileSync(new URL(file, GOLDEN), "utf8")));
+  .map((file) => readJson(new URL(file, GOLDEN), Golden));
 
 describe.skipIf(goldens.length === 0)("golden trajectories", () => {
   for (const golden of goldens) {

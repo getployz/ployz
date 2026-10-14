@@ -332,9 +332,10 @@ fn set_stages_text_values_and_unset_restores_the_default() {
             ),
         )
         .unwrap();
+    // The new image applies first, so the other changes land on it.
     assert_eq!(
         paths(&edited.staged),
-        ["web.replicas", "web.startCommand", "web.image"]
+        ["web.image", "web.replicas", "web.startCommand"]
     );
     assert!(edited.immediate.is_empty());
     assert_eq!(edited.environment.revision, Revision(3));
@@ -760,6 +761,16 @@ fn a_healthcheck_sets_by_path_command_or_object_and_unsets_to_none() {
     assert_eq!(
         value(&store, &who, "web.healthcheck"),
         json!({ "path": "/live", "timeoutSeconds": 30 })
+    );
+    // `set web.healthcheck={...}` sends the object as text.
+    write(set(
+        "web.healthcheck",
+        json!(r#"{"path":"/health","timeoutSeconds":30}"#),
+    ))
+    .unwrap();
+    assert_eq!(
+        value(&store, &who, "web.healthcheck"),
+        json!({ "path": "/health", "timeoutSeconds": 30 })
     );
     write(set("web.healthcheck", json!({ "command": " pg_isready " }))).unwrap();
     assert_eq!(

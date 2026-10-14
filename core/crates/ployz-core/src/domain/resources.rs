@@ -28,7 +28,7 @@ impl CpuNanos {
         Self::try_from(nanos as i64)
     }
 
-    /// Return the admitted integer quantity.
+    /// The quantity in CPU nanounits (10^9 per CPU), never negative.
     #[must_use]
     pub fn get(self) -> i64 {
         self.0
@@ -62,7 +62,7 @@ impl From<CpuNanos> for i64 {
 pub struct ByteQuantity(i64);
 
 impl ByteQuantity {
-    /// Return the admitted integer quantity.
+    /// The quantity in bytes, never negative.
     #[must_use]
     pub fn get(self) -> i64 {
         self.0

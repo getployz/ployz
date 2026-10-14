@@ -28,7 +28,6 @@ use crate::storage::Tx;
 pub struct CreateService {
     /// The new Service's ID, also its lineage.
     pub id: ServiceLineageId,
-    /// The Environment to create it in.
     #[serde(default)]
     pub environment: EnvironmentRef,
     /// Its name, unique in the Environment.
@@ -46,7 +45,6 @@ pub struct CreateService {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct RenameService {
-    /// The Environment it is in.
     #[serde(default)]
     pub environment: EnvironmentRef,
     /// Its current name.
@@ -59,10 +57,8 @@ pub struct RenameService {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct RemoveService {
-    /// The Environment it is in.
     #[serde(default)]
     pub environment: EnvironmentRef,
-    /// Its name.
     pub service: ServiceName,
 }
 
@@ -81,7 +77,6 @@ pub struct ServiceStaged {
 /// A Service as results name it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct ServiceSummary {
-    /// Its durable identity.
     pub id: ServiceLineageId,
     /// Its name, which Setting paths address it by.
     pub name: ServiceName,
@@ -121,7 +116,12 @@ pub(crate) fn insert_service(
     (source, template): (ServiceSource, Option<&ServiceTemplate>),
 ) -> Result<ServiceStaged, RpcError> {
     let mut environment = scope::lock(tx, who, environment)?;
-    refuse_taken(&environment, name, None)?;
+    crate::names::refuse_taken(
+        tx,
+        &environment,
+        crate::names::Name::Service(name.as_str()),
+        None,
+    )?;
     let config = parse_service_config(json!({
         "version": 2,
         "source": source,
@@ -178,7 +178,12 @@ pub(crate) fn rename_service(
     let id = environment.service(&rename.service)?.id.clone();
     let changed = rename.name != rename.service;
     if changed {
-        refuse_taken(&environment, &rename.name, Some(&id))?;
+        crate::names::refuse_taken(
+            tx,
+            &environment,
+            crate::names::Name::Service(rename.name.as_str()),
+            Some(&id),
+        )?;
         environment.service_mut(&rename.service)?.slug = rename.name.to_string();
         scope::save_working(tx, &mut environment)?;
     }
@@ -207,42 +212,6 @@ pub(crate) fn remove_service(
         service,
         environment: environment.summary,
     })
-}
-
-/// A name is taken by another Service's name or Private DNS name: either would make
-/// `name` address two Services. `volumes` and `configs` are never free.
-pub(crate) fn refuse_taken(
-    environment: &scope::Environment,
-    name: &ServiceName,
-    except: Option<&str>,
-) -> Result<(), RpcError> {
-    if name.as_str() == "volumes" || name.as_str() == "configs" {
-        return Err(error::invalid(
-            format!(
-                "{name} is reserved: paths name {} as {name}.NAME",
-                if name.as_str() == "volumes" {
-                    "Volumes"
-                } else {
-                    "Configs"
-                }
-            ),
-            json!({ "service": name }),
-        ));
-    }
-    let taken = environment.working.services.iter().any(|service| {
-        Some(service.id.as_str()) != except
-            && (service.slug == name.as_str() || service.config.private_dns == *name)
-    });
-    if taken {
-        return Err(error::conflict(
-            format!(
-                "Environment {} already has a Service named {name}",
-                environment.summary.name
-            ),
-            json!({ "service": name }),
-        ));
-    }
-    Ok(())
 }
 
 fn staged(changed: bool, name: &ServiceName) -> Vec<SettingPath> {

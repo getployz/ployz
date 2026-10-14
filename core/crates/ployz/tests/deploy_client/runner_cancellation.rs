@@ -111,3 +111,79 @@ async fn cancel_during_image_only_preview_stops_the_rpc_without_admitting_work()
     assert_eq!(mutations.load(std::sync::atomic::Ordering::SeqCst), 0);
     server.abort();
 }
+
+#[tokio::test]
+async fn a_run_another_runner_takes_over_mid_execution_records_it_interrupted() {
+    let (store, actor, id) = deployment();
+    let service = DeployService::new(machine('a', "entry")).hold_health();
+    let mutations = service.mutating_rpcs();
+    let (address, server) = listening(service).await;
+    let running = tokio::spawn(ployz::sdk::run_deployment(
+        Arc::clone(&store),
+        id.clone(),
+        RunnerId::parse("first").unwrap(),
+        vec![ployz::context::Connection::tcp(address)],
+        Ok(Default::default()),
+    ));
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while mutations.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the run starts executing");
+    let next = DeploymentId::parse("00000000-0000-4000-8000-000000000102").unwrap();
+    store
+        .write_trusted(
+            &actor,
+            &Admit::Deploy(Deploy {
+                id: next.clone(),
+                environment: EnvironmentRef::default(),
+                services: Vec::new(),
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+            }),
+            &ployz_store::Trusted::default(),
+        )
+        .unwrap();
+    store
+        .claim(&next, &RunnerId::parse("second").unwrap())
+        .unwrap();
+    let summary = tokio::time::timeout(Duration::from_secs(30), running)
+        .await
+        .expect("a lost runner stops at its next poll")
+        .unwrap()
+        .expect("the store takes the interrupted outcome");
+    assert_eq!(summary.status, DeploymentStatus::Unknown);
+    let Some(ployz_store::Outcome::Executed { summary, .. }) = summary.outcome else {
+        panic!("expected an executed outcome, got {:?}", summary.outcome);
+    };
+    assert_eq!(
+        summary.get("reason").and_then(serde_json::Value::as_str),
+        Some("interrupted"),
+        "{summary}"
+    );
+    assert_eq!(
+        summary.get("completed"),
+        Some(&serde_json::json!(0)),
+        "{summary}"
+    );
+    assert_eq!(
+        summary.get("unexecuted"),
+        Some(&serde_json::json!(1)),
+        "{summary}"
+    );
+    let view = store
+        .read(&actor, &ployz_store::DeploymentQuery { id: id.clone() })
+        .unwrap();
+    assert!(
+        view.nodes
+            .iter()
+            .all(|node| node.outcome == ployz_store::NodeStatus::NotAttempted),
+        "an interrupted run confirms nothing into Applied State: {:?}",
+        view.nodes
+    );
+    server.abort();
+}

@@ -30,9 +30,11 @@ export const resolveCaller = Effect.fn("Identity.resolveCaller")(function* (head
   }
   return {
     userId: session.user.id,
-    organization: bound,
+    organization: { id: bound.id, slug: bound.slug },
     credential: { kind: "session", id: session.session.id },
+    role: bound.role,
     support: null,
+    via: "cli",
   } satisfies Caller;
 });
 
@@ -46,7 +48,9 @@ export const dashboardCaller = Effect.fn("Identity.dashboardCaller")(function* (
     userId: session.user.id,
     organization: access.organization,
     credential: { kind: "session", id: session.session.id },
+    role: access.kind === "member" ? access.role : null,
     support: access.kind === "support" ? access.shows : null,
+    via: "dashboard",
   } satisfies Caller;
 });
 
@@ -58,6 +62,7 @@ const tokenCaller = Effect.fn("Identity.tokenCaller")(function* (secret: string)
       userId: organizationToken.userId,
       organizationId: organization.id,
       slug: organization.slug,
+      role: member.role,
     })
     .from(organizationToken)
     .innerJoin(organization, eq(organization.id, organizationToken.organizationId))
@@ -77,14 +82,16 @@ const tokenCaller = Effect.fn("Identity.tokenCaller")(function* (secret: string)
     userId: row.userId,
     organization: { id: row.organizationId, slug: row.slug },
     credential: { kind: "token", id: row.id },
+    role: row.role,
     support: null,
+    via: "cli",
   } satisfies Caller;
 });
 
 const membership = Effect.fn("Identity.membership")(function* (userId: string, organizationId: string) {
   const database = yield* Database;
   const rows = yield* database.drizzle
-    .select({ id: organization.id, slug: organization.slug })
+    .select({ id: organization.id, slug: organization.slug, role: member.role })
     .from(member)
     .innerJoin(organization, eq(organization.id, member.organizationId))
     .where(and(eq(member.userId, userId), eq(member.organizationId, organizationId)))

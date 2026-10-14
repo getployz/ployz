@@ -9,12 +9,11 @@ use std::{
 };
 
 use ployz_core::{
-    DockerVolumeName, EnrollRequest, Enrolled, ForgetRequest, Forgotten, InspectRequest,
-    LeaveRequest, Left, LeftPhase, LocalMachinePhase, Machine, MachineDetails, MachineId,
-    MachineIdentity, MachineList, MachineObservation, MachineToken, MachineUpdated,
-    ManagementAddress, MembershipEvidence, PublicIpDiscovery, RegisterRequest, Registered,
-    RpcError, RpcErrorCode, RttObservation, RttStatistics, SelectedEndpoint, UpdateMachineRequest,
-    synthesize_membership,
+    EnrollRequest, Enrolled, ForgetRequest, Forgotten, InspectRequest, LeaveRequest, Left,
+    LeftPhase, LocalMachinePhase, Machine, MachineDetails, MachineId, MachineIdentity, MachineList,
+    MachineObservation, MachineToken, MachineUpdated, ManagementAddress, MembershipEvidence,
+    PublicIpDiscovery, RegisterRequest, Registered, RpcError, RpcErrorCode, RttObservation,
+    RttStatistics, SelectedEndpoint, StorageDeparture, UpdateMachineRequest, synthesize_membership,
 };
 use thiserror::Error;
 
@@ -42,6 +41,7 @@ pub struct LocalMachine {
 }
 
 mod container;
+pub(crate) use container::CutRefusal;
 mod management_client;
 mod upgrade;
 
@@ -102,6 +102,10 @@ pub enum Error {
     ClusterUnavailable,
     #[error("Docker is not available")]
     DockerUnavailable,
+    #[error("the roster row of lower Machine {0} is unreadable")]
+    UnreadableLowerMachine(MachineId),
+    #[error("the Machine at {} is active but has no readable roster row", .0.0)]
+    MissingPeerRow(ManagementAddress),
     #[error("at least one Machine update is required")]
     EmptyUpdate,
     #[error(transparent)]
@@ -263,6 +267,31 @@ impl LocalMachine {
             Ok(())
         })
         .await
+    }
+
+    /// Machines whose ingress must route a Serving Pointer before a Deploy relies on
+    /// it, or `None` while the Machine list is partly replicated.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::ClusterStoreUnavailable`] without a Cluster store, and
+    /// [`Error::Cluster`] when the Machine list cannot be read.
+    pub(crate) async fn ingress_machines(&self) -> Result<Option<BTreeSet<MachineId>>, Error> {
+        let cluster = self
+            .cluster
+            .as_ref()
+            .ok_or(Error::ClusterStoreUnavailable)?;
+        let machines = cluster.replicated.machines().await?;
+        let membership =
+            crate::retire::sample_ackers(machines, &self.record().id(), &cluster.admin).await;
+        Ok(match membership.ackers {
+            crate::retire::Ackers::Known(machines) if !machines.is_empty() => {
+                Some(machines.into_keys().collect())
+            }
+            crate::retire::Ackers::Known(_)
+            | crate::retire::Ackers::Incomplete { .. }
+            | crate::retire::Ackers::Unread => None,
+        })
     }
 
     pub(crate) fn replicated(&self) -> Result<&ReplicatedStore, Error> {
@@ -498,11 +527,7 @@ impl LocalMachine {
         }
         let replicated = self.replicated()?;
         let machines = replicated.machines().await?.observations;
-        let states = match &self.cluster {
-            Some(cluster) => cluster.admin.membership_states().await?,
-            None => Vec::new(),
-        };
-        let states = membership_states_by_address(states);
+        let states = self.membership_states().await?;
         let entry_id = local.id();
         Ok(MachineList {
             enrollment: Some(ployz_core::EnrollmentSnapshot {
@@ -517,6 +542,61 @@ impl LocalMachine {
             }
             .overlay(machines, &entry_id),
         })
+    }
+
+    /// The lowest-id Machine that invites RPC in this Machine's Membership Observation.
+    /// Only that Machine answers Serving Pointer reads and publishes, so every
+    /// compare-and-set it sees runs on one Corrosion node.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::ClusterStoreUnavailable`] when the Cluster store is missing,
+    /// [`Error::Cluster`] when replicated or admin I/O fails, and
+    /// [`Error::UnreadableLowerMachine`] when a Machine below the publisher has a row this
+    /// Machine cannot decode, and [`Error::MissingPeerRow`] when an admin-active peer has no
+    /// readable row at all, since either Machine may be the publisher another Machine sees.
+    pub async fn pointer_publisher(&self) -> Result<MachineId, Error> {
+        let machines = self.replicated()?.machines().await?;
+        let states = self.membership_states().await?;
+        let record = self.record();
+        let local_id = record.id();
+        let known = machines
+            .observations
+            .iter()
+            .map(Machine::management_address)
+            .chain(record.machine().map(Machine::management_address))
+            .collect::<BTreeSet<_>>();
+        let publisher = synthesize_membership(machines.observations, &local_id, &states)
+            .iter()
+            .filter(|observation| observation.invites_rpc())
+            .map(|observation| observation.machine.id)
+            .min()
+            .unwrap_or(local_id);
+        if let Some(unreadable) = machines
+            .incomplete_ids
+            .into_iter()
+            .min()
+            .filter(|unreadable| *unreadable < publisher)
+        {
+            return Err(Error::UnreadableLowerMachine(unreadable));
+        }
+        if let Some((missing, _)) = states
+            .iter()
+            .find(|(address, evidence)| evidence.invites_rpc() && !known.contains(address))
+        {
+            return Err(Error::MissingPeerRow(*missing));
+        }
+        Ok(publisher)
+    }
+
+    async fn membership_states(
+        &self,
+    ) -> Result<BTreeMap<ManagementAddress, MembershipEvidence>, Error> {
+        let states = match &self.cluster {
+            Some(cluster) => cluster.admin.membership_states().await?,
+            None => Vec::new(),
+        };
+        Ok(membership_states_by_address(states))
     }
 
     /// Apply a local Machine update and best-effort publish it.
@@ -679,28 +759,55 @@ impl LocalMachine {
         Ok(())
     }
 
-    /// Demote every root through the plugin, then make Docker forget each demoted name.
+    /// Demote every root through the plugin, make Docker forget each demoted name, then
+    /// forget every Volume floor, so a lane from a new cluster starts at any `gen`.
     /// A Machine without Docker has no volume driver and nothing to depart.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Cleanup`] when the plugin cannot demote or Docker keeps a name.
+    /// Returns [`Error::Cleanup`] when the plugin cannot demote, a Volume's copy would not
+    /// stop or its demote failed, or Docker keeps a name.
     async fn depart_storage(&self) -> Result<(), Error> {
         let Some(containers) = &self.containers else {
             return Ok(());
         };
-        let demoted: Vec<DockerVolumeName> = self
+        let departure: StorageDeparture = self
             .plugin
             .call("Storage.Demote", &())
             .await
             .map_err(|error| Error::Cleanup(format!("storage departure failed: {error}")))?;
-        for name in &demoted {
-            containers
-                .forget_volume(name)
-                .await
-                .map_err(|error| Error::Cleanup(format!("Docker kept Volume {name}: {error}")))?;
+        // A retry answers only what it changes, so the demoted are forgotten now even
+        // when a stuck Volume or another kept name fails this departure.
+        let mut left = Vec::new();
+        for name in &departure.demoted {
+            if let Err(error) = containers.forget_volume(name).await {
+                left.push(format!("Docker kept Volume {name}: {error}"));
+            }
         }
-        Ok(())
+        left.extend(
+            departure
+                .stuck
+                .iter()
+                .map(|name| format!("Volume {name} did not stop copying")),
+        );
+        left.extend(
+            departure
+                .failed
+                .iter()
+                .map(|failed| format!("Volume {} did not depart: {}", failed.name, failed.reason)),
+        );
+        if !left.is_empty() {
+            return Err(Error::Cleanup(format!(
+                "{}; retry the departure",
+                left.join("; ")
+            )));
+        }
+        containers.clear_floors().await.map_err(|error| {
+            Error::Cleanup(format!(
+                "the Volume floors stayed: {}",
+                ployz_core::error_chain::inline(&error)
+            ))
+        })
     }
 }
 

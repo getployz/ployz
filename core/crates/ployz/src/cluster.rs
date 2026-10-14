@@ -21,7 +21,7 @@ use ployz_core::{
     rpc::{BUILD_PATH, EXEC_PATH},
 };
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use tokio::task::JoinSet;
 use tonic::{
     Streaming,
@@ -247,12 +247,19 @@ impl Client {
         request: T::Request,
         target: &MachineTarget,
     ) -> Result<T::Response, RpcError> {
+        self.try_read::<T>(request, target).await.map_err(rpc_error)
+    }
+
+    async fn try_read<T: Rpc>(
+        &mut self,
+        request: T::Request,
+        target: &MachineTarget,
+    ) -> Result<T::Response, ConnectError> {
         let payload = T::into_request(request)
             .encode()
-            .map_err(|error| rpc_error(ConnectError::Codec(error)))?;
+            .map_err(ConnectError::Codec)?;
         self.call_retried::<T>(payload, Some(target), Some(TARGET_RPC_TIMEOUT))
             .await
-            .map_err(rpc_error)
     }
 
     async fn call_retried<T: Rpc>(
@@ -266,33 +273,71 @@ impl Client {
         // One budget across retries: fast failures retry inside it, and a vanished
         // Machine costs the budget once instead of once per attempt.
         let deadline = timeout.map(|timeout| tokio::time::Instant::now() + timeout);
+        // A reply on an earlier attempt means the target was not silent throughout.
+        let mut reply: Option<ConnectError> = None;
         loop {
-            let attempt = self.unary_attempt::<T>(payload.clone(), target, redial);
             let outcome = match deadline {
-                Some(deadline) => match tokio::time::timeout_at(deadline, attempt).await {
-                    Ok(outcome) => outcome,
-                    Err(_) => {
-                        Err(tonic::Status::deadline_exceeded("target Machine RPC timed out").into())
-                    }
-                },
-                None => attempt.await,
-            };
-            match outcome {
-                Ok(response) => return Ok(response),
-                Err(error) if error.is_retryable() => {
-                    let Some(delay) = delays.next() else {
-                        return Err(error);
-                    };
-                    if deadline
-                        .is_some_and(|deadline| tokio::time::Instant::now() + delay >= deadline)
-                    {
-                        return Err(error);
-                    }
-                    tokio::time::sleep(delay).await;
-                    redial = true;
+                Some(deadline) => {
+                    self.bounded_attempt::<T>(&payload, target, redial, deadline)
+                        .await
                 }
-                Err(error) => return Err(error),
+                None => {
+                    self.unary_attempt::<T>(payload.clone(), target, redial)
+                        .await
+                }
+            };
+            let error = match outcome {
+                Ok(response) => return Ok(response),
+                Err(error) => error,
+            };
+            let error = crate::connect::keep_target_reply(&mut reply, error);
+            if !error.is_retryable() {
+                return Err(error);
             }
+            let Some(delay) = delays.next() else {
+                return Err(error);
+            };
+            if deadline.is_some_and(|deadline| tokio::time::Instant::now() + delay >= deadline) {
+                return Err(error);
+            }
+            tokio::time::sleep(delay).await;
+            redial = true;
+            if error.target_replied() {
+                reply = Some(error);
+            }
+        }
+    }
+
+    /// Only a deadline spent waiting on a confirmed entry is evidence the target is silent;
+    /// one spent reconnecting to the entry says nothing about it.
+    async fn bounded_attempt<T: Rpc>(
+        &mut self,
+        payload: &OpaquePayload,
+        target: Option<&MachineTarget>,
+        redial: bool,
+        deadline: tokio::time::Instant,
+    ) -> Result<T::Response, ConnectError> {
+        if redial {
+            let reconnect = async {
+                self.channel = self.connector.connect(&self.connection).await?;
+                self.confirm_entry().await
+            };
+            match tokio::time::timeout_at(deadline, reconnect).await {
+                Ok(confirmed) => confirmed?,
+                Err(_) => {
+                    return Err(tonic::Status::deadline_exceeded(
+                        "entry Machine reconnect timed out",
+                    )
+                    .into());
+                }
+            }
+        }
+        match tokio::time::timeout_at(deadline, self.call_once::<T>(payload.clone(), target)).await
+        {
+            Ok(outcome) => outcome,
+            Err(_) => Err(ConnectError::Rpc(TransportError::budget_expired(
+                "target Machine RPC timed out",
+            ))),
         }
     }
 
@@ -328,7 +373,7 @@ impl Client {
         &self,
         request: &ployz_core::RpcRequest,
         path: &'static str,
-        target: &MachineTarget,
+        target: Option<&MachineTarget>,
         timeout: Option<Duration>,
     ) -> Result<ployz_core::RpcResponse, RpcError> {
         let payload = request
@@ -339,12 +384,12 @@ impl Client {
             grpc.ready().await?;
             Ok(grpc
                 .unary(
-                    target_request(payload, Some(target)),
+                    target_request(payload, target),
                     PathAndQuery::from_static(path),
                     ProstCodec::<OpaquePayload, OpaquePayload>::default(),
                 )
                 .await
-                .map_err(|status| refused(status, path, Some(target)))?
+                .map_err(|status| refused(status, path, target))?
                 .into_inner()
                 .decode_response()?)
         })
@@ -494,7 +539,7 @@ impl Client {
         let mut requests = Vec::new();
         let mut omissions = Vec::new();
         for machine in machines {
-            if !machine.membership.invites_rpc() {
+            if !machine.invites_rpc() {
                 omissions.push(machine.machine.id);
                 continue;
             }
@@ -726,7 +771,7 @@ impl Client {
     /// Refused before membership mutation when this is the last Machine and any
     /// Management Client holds a key: Cloud lets go of its last Machine only by resetting it.
     /// Also refused while the Machine answers with a copy of any Volume, which only its
-    /// reset demotes, or answers without its storage; a Machine that does not answer goes.
+    /// reset demotes, or replies with an error; a Machine that sends no reply goes.
     ///
     /// Sending it again is the retry: every guard runs again while the Machine is listed,
     /// and a Machine ID the list no longer holds was already forgotten.
@@ -735,11 +780,21 @@ impl Client {
     ///
     /// Returns a generated [`RpcError`] when the Machine is not visible, when
     /// it is the last Machine and a Management Client holds a key or its holders
-    /// can't be read, when it answers holding a Volume copy or its storage can't be read,
+    /// can't be read, when it answers holding a Volume copy or replies with an error,
     /// or when shared-row removal fails.
     pub async fn remove_machine_membership(
         &mut self,
         machine: &MachineTarget,
+    ) -> Result<(), RpcError> {
+        self.remove_membership(machine, DeadConfirmed::Yes).await
+    }
+
+    /// As [`Self::remove_machine_membership`], but a Server confirmed while it answered
+    /// that stops answering before it goes is refused: dead was never typed for it.
+    pub(crate) async fn remove_membership(
+        &mut self,
+        machine: &MachineTarget,
+        dead: DeadConfirmed,
     ) -> Result<(), RpcError> {
         let machines = self.machines().await.map_err(RpcError::from)?;
         let Some(observation) = listed_unless_forgotten(machine, &machines)? else {
@@ -749,7 +804,13 @@ impl Client {
         if refuse_last_managed(self, &machines, selected).await? == CloudHold::Last {
             return Err(cloud_holds_last(selected));
         }
-        let held = self.held_copies(observation).await?;
+        let held = match (self.held_copies(observation).await?, dead) {
+            (HeldCopies::Dead, DeadConfirmed::Yes) => BTreeSet::new(),
+            (HeldCopies::Dead, DeadConfirmed::No) => {
+                return Err(stopped_answering(&observation.machine));
+            }
+            (HeldCopies::Answered(held), _) => held,
+        };
         if !held.is_empty() {
             return Err(copies_left_behind(
                 &observation.machine.name,
@@ -760,36 +821,38 @@ impl Client {
         forget(self, selected).await
     }
 
-    /// The Docker Volumes `machine` answers holding a copy of, as writer or any other
-    /// role: a removal without a reset would leave each behind. Empty when it doesn't answer.
-    ///
-    /// # Errors
-    ///
-    /// Returns a generated [`RpcError`] when `machine` is asked and its storage can't be read.
     pub(crate) async fn held_copies(
         &self,
         machine: &MachineObservation,
-    ) -> Result<BTreeSet<DockerVolumeName>, RpcError> {
-        let inspected = self.inspect_storage(std::slice::from_ref(machine)).await;
-        if let Some(failure) = inspected.failures.into_iter().next() {
-            return Err(RpcError {
-                code: RpcErrorCode::Unavailable,
-                message: format!(
-                    "Cannot read the Volume copies Server {} holds. No changes made.",
-                    machine.machine.name
-                ),
-                details: Value::Null,
-                cause: std::iter::once(failure.error.message)
-                    .chain(failure.error.cause)
-                    .collect(),
-            });
+    ) -> Result<HeldCopies, RpcError> {
+        if !machine.invites_rpc() {
+            return Ok(HeldCopies::Dead);
         }
-        Ok(inspected
-            .successes
-            .iter()
-            .flat_map(|success| success.value.roles())
-            .map(|(name, _)| name.clone())
-            .collect())
+        let mut client = self.clone();
+        match client
+            .try_read::<op::InspectStorage>(
+                InspectStorageRequest {},
+                &MachineTarget::from(&machine.machine.id),
+            )
+            .await
+        {
+            Ok(storage) => Ok(HeldCopies::Answered(
+                storage.roles().map(|(name, _)| name.clone()).collect(),
+            )),
+            Err(error) if error.target_unanswered() => Ok(HeldCopies::Dead),
+            Err(error) => {
+                let error = rpc_error(error);
+                Err(RpcError {
+                    code: RpcErrorCode::Unavailable,
+                    message: format!(
+                        "Cannot read the Volume copies Server {} holds. No changes made.",
+                        machine.machine.name
+                    ),
+                    details: Value::Null,
+                    cause: std::iter::once(error.message).chain(error.cause).collect(),
+                })
+            }
+        }
     }
 
     /// List images on each target Machine with independent bounded retries.
@@ -919,8 +982,6 @@ impl Client {
         let mut tasks = JoinSet::new();
         let mut omissions = Vec::new();
         for machine in machines {
-            // TODO: the entry Machine's observer-relative Membership Observation is the
-            // current trust boundary; it can be stale and is not an authority or freshness proof.
             if machine.invites_rpc() {
                 tasks.spawn(list_on_machine(
                     self.clone(),
@@ -1156,6 +1217,33 @@ async fn remove_volumes_on(
     .await
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DeadConfirmed {
+    Yes,
+    No,
+}
+
+fn stopped_answering(machine: &Machine) -> RpcError {
+    RpcError {
+        code: RpcErrorCode::ConfirmationRequired,
+        message: format!(
+            "Server {} stopped answering after its name was typed. Forgetting it leaves any Volume copies on it behind, so it needs dead typed. No changes made.",
+            machine.name
+        ),
+        details: json!({
+            "server": { "id": machine.id, "name": machine.name },
+            "answered": false,
+        }),
+        cause: Vec::new(),
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum HeldCopies {
+    Dead,
+    Answered(BTreeSet<DockerVolumeName>),
+}
+
 /// Whether Cloud holds the last Machine. Cloud lets go of it by removing it itself:
 /// the reset takes its keys, and Cloud forgets the pairing.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1174,7 +1262,7 @@ pub enum Remover {
     Operator,
 }
 
-/// Removing `machine` without a reset leaves its copies of `volumes` behind: only its
+/// Forgetting `machine` leaves its copies of `volumes` behind: only its
 /// reset demotes them.
 pub(crate) fn copies_left_behind<'a>(
     machine: &MachineName,
@@ -1183,8 +1271,8 @@ pub(crate) fn copies_left_behind<'a>(
     RpcError {
         code: RpcErrorCode::Conflict,
         message: format!(
-            "Server {machine} answers and holds copies of Volumes {}; removing it without a reset \
-             leaves them behind. No changes made. Drop --no-reset so the reset demotes them.",
+            "Server {machine} answers and holds copies of Volumes {}; forgetting it leaves them \
+             behind. No changes made. Remove it with ployz server rm so its reset demotes them.",
             volumes.into_iter().collect::<Vec<_>>().join(", ")
         ),
         details: Value::Null,
@@ -1337,13 +1425,14 @@ fn listed_unless_forgotten<'list>(
 pub(crate) enum RoleSetting {
     ServicesOff,
     IngressOn,
+    IngressOff,
 }
 
 impl RoleSetting {
     fn role(self) -> &'static str {
         match self {
             Self::ServicesOff => "services",
-            Self::IngressOn => "ingress",
+            Self::IngressOn | Self::IngressOff => "ingress",
         }
     }
 
@@ -1351,6 +1440,7 @@ impl RoleSetting {
         match self {
             Self::ServicesOff => !machine.accepts_services,
             Self::IngressOn => machine.accepts_ingress,
+            Self::IngressOff => !machine.accepts_ingress,
         }
     }
 }

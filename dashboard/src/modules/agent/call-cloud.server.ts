@@ -1,28 +1,32 @@
 import "@tanstack/react-start/server-only";
 import type { Act, AcceptedLoss, CloudQuery, CopiesAnswer, EnvironmentRef, MachineId, Operation, OperationsAnswer, Subject, VolumeRun } from "@ployz/sdk";
-import { Effect } from "effect";
+import { Data, Effect } from "effect";
 import { type StoreRefusal, StoreRefused, type StoreResult } from "#/modules/config-store/store.contract";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { findService, owners } from "#/modules/config-store/store-lookup.server";
 import { githubBranches, githubConnection, GithubRepositories } from "#/modules/github/github-cli.server";
 import type { Caller } from "#/modules/identity/actor";
-import { loadOrganizationConnections } from "#/modules/machines/connections.server";
+import { countOrganizationMachines, loadOrganizationConnections } from "#/modules/machines/connections.server";
 import { UNREACHABLE_MESSAGE } from "#/modules/machines/server-operations.server";
-import type { Admission } from "#/modules/operations/keyed.server";
+import type { ServerPolicyChange } from "#/modules/machines/server-policy";
+import { admittedAt, type Admission } from "#/modules/operations/keyed.server";
 import { dashedAttempt, operationsOn, serverNames } from "#/modules/operations/operation-history.server";
 import {
   actService,
   cleanNamespace,
   drainServer,
+  forgetServer,
   type OperationCall,
   removeServer,
   runVolume,
+  setServer,
   upgradeServer,
 } from "#/modules/operations/operations.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { observeVolumeCopies, rpcErrorCode, sdkFailureMessage } from "#/modules/runtime/ployz.server";
 import type { VolumeRunInput } from "#/modules/volume-run/volume-run";
 import { dockerVolumeName } from "#/modules/volume-run/volume-run";
+import { refreshMirror } from "#/modules/volume-copies/volume-copies.refresh.server";
 import { Conflict, NotFound, Validation } from "#/server/public-error";
 
 export type CloudCall = { readonly ask: CloudQuery } | { readonly act: Act };
@@ -33,17 +37,29 @@ const answer = <A>(value: A): StoreResult<A> => ({ ok: true, value });
 
 const CONNECT_SERVERS = { fix: { fix: "connect_servers" } };
 const unreachable = () => refusal("unavailable", UNREACHABLE_MESSAGE, CONNECT_SERVERS);
+export const NO_SERVERS_MESSAGE = "This Organization has no servers yet. Add one from a terminal; staging still works without one.";
 const noSuch = (what: string) => refusal("not_found", `No such ${what}.`);
+
+/** A failure before Cloud wrote anything, so the agent may retry without checking its runs. */
+class BeforeWrite<E> extends Data.TaggedError("CallCloud.BeforeWrite")<{ readonly error: E }> {}
+const beforeWrite = <A, E, R>(read: Effect.Effect<A, E, R>) => Effect.mapError(read, (error) => new BeforeWrite({ error }));
 
 const session = (organizationId: string) =>
   Effect.flatMap(OrganizationRuntime, (runtime) => runtime.open(organizationId)).pipe(
     Effect.map((opened) => opened.status === "connected" ? opened.connected : null),
   );
 
+/** Why Cloud reached no Server: the Organization has none yet, or its Servers aren't answering. */
+const notConnected = Effect.fn("CallCloud.notConnected")(function* (organizationId: string) {
+  return (yield* countOrganizationMachines(organizationId)) === 0
+    ? refusal("unavailable", NO_SERVERS_MESSAGE, CONNECT_SERVERS)
+    : unreachable();
+});
+
 const runtimeAsk = (organizationId: string, query: CloudQuery) =>
   Effect.gen(function* () {
     const connected = yield* session(organizationId);
-    if (connected === null) return unreachable();
+    if (connected === null) return yield* notConnected(organizationId);
     return yield* connected.agentAsk(query).pipe(
       Effect.map(answer),
       Effect.catch((error) => Effect.succeed(refusal(rpcErrorCode(error) ?? "unavailable", sdkFailureMessage(error)))),
@@ -66,7 +82,7 @@ const copies = Effect.fn("CallCloud.copies")(function* (organizationId: string, 
   const { volumes } = yield* readStore(organizationId, { query: "volumes", environment: { project: owned.project, environment: owned.environment } });
   const named = volumes.filter(({ name }) => only === null || name === only);
   const loaded = yield* loadOrganizationConnections(organizationId);
-  if (loaded.kind !== "ready" || loaded.connections.length === 0) return unreachable();
+  if (loaded.kind !== "ready" || loaded.connections.length === 0) return yield* notConnected(organizationId);
   const observed = yield* observeVolumeCopies(loaded.connections);
   const names = yield* serverNames(organizationId);
   const server = (machine: MachineId) => ({ machine, name: names.get(machine) ?? machine });
@@ -127,6 +143,12 @@ const ask = Effect.fn("CallCloud.ask")(function* (caller: Caller, query: CloudQu
         return refusal("forbidden", "This Organization doesn't show its container logs to Ployz support.");
       }
       return yield* runtimeAsk(organizationId, query);
+    case "server_logs":
+      // The support logs switch promises only Container output, so it never opens a Server's own logs.
+      if (caller.support !== null) {
+        return refusal("forbidden", "Ployz support can't read an Organization's Server logs.");
+      }
+      return yield* runtimeAsk(organizationId, query);
   }
 });
 
@@ -142,11 +164,21 @@ const volumeRunInput = (run: VolumeRun, name: string): VolumeRunInput => {
       return { kind: "release", args: {} };
     case "remove_mirror":
       return { kind: "delete_mirror", args: { slot: null, confirmed_name: name } };
+    case "restore":
+      return { kind: "restore", args: { from: run.from.name, machine: run.from.machine } };
   }
 };
 
 const lossOf = (action: Act["action"]): AcceptedLoss | null | undefined =>
   "loss" in action ? action.loss : action.action === "volume" && "loss" in action.run ? action.run.loss : undefined;
+
+const policyChangeOf = (set: Extract<Act["action"], { action: "set_server" }>): ServerPolicyChange => ({
+  ...(set.accepts_builds !== null && { acceptsBuilds: set.accepts_builds }),
+  ...(set.accepts_services !== null && { acceptsServices: set.accepts_services }),
+  ...(set.accepts_ingress === false && { acceptsIngress: false }),
+  ...(set.build_concurrency.action === "automatic" && { buildConcurrency: "automatic" }),
+  ...(set.build_concurrency.action === "set" && { buildConcurrency: set.build_concurrency.value }),
+});
 
 const act = Effect.fn("CallCloud.act")(function* (caller: Caller, { attempt, digest, action }: Act, approvalId: string | null) {
   const organizationId = caller.organization.id;
@@ -156,13 +188,14 @@ const act = Effect.fn("CallCloud.act")(function* (caller: Caller, { attempt, dig
     if (!admission.ok) return { ok: false, refusal: admission.refusal } as const;
     const id = dashedAttempt(admission.id);
     const [run] = yield* operationsOn(organizationId, subject, id, 1);
+    const requested = run === undefined ? yield* admittedAt(organizationId, attempt) : null;
     return answer<Operation>(run ?? {
-      attempt: id, run: what, state: "accepted", requested_at: Math.floor(Date.now() / 1000), ended_at: null, reason: null, servers: [], kept: [], unanswered: [],
+      attempt: id, run: what, state: "accepted", requested_at: Math.floor((requested ?? new Date()).getTime() / 1000), ended_at: null, reason: null, servers: [], kept: [], unanswered: [],
     });
   });
   switch (action.action) {
     case "service": {
-      const found = yield* findService(organizationId, action.environment, action.service);
+      const found = yield* beforeWrite(findService(organizationId, action.environment, action.service));
       if (found === null) return noSuch("Service");
       const admission = yield* actService(caller, { environmentId: action.environment, service: action.service, ...found, verb: action.verb, only: action.only, digest }, call);
       return yield* admitted(admission, { kind: "service", environment: action.environment, service: action.service }, "Service");
@@ -175,21 +208,44 @@ const act = Effect.fn("CallCloud.act")(function* (caller: Caller, { attempt, dig
         { kind: "server", machine: action.server.machine },
         "Server",
       );
+    case "set_server": {
+      if (action.accepts_ingress === true) return refusal("invalid_argument", "Turn web traffic on from the Server page or the terminal.");
+      return yield* admitted(
+        yield* setServer(caller, action.server.machine, policyChangeOf(action), call),
+        { kind: "server", machine: action.server.machine },
+        `set ${action.server.name}`,
+      );
+    }
     case "clean":
       return yield* admitted(yield* cleanNamespace(caller, action.leftover, call), { kind: "leftover", namespace: action.leftover }, "leftover");
     case "remove_server": {
-      const connected = yield* session(organizationId);
-      if (connected === null) return unreachable();
-      const { data_loss } = yield* connected.dataLossIfMachineRemoved(action.server.machine);
+      const connected = yield* beforeWrite(session(organizationId));
+      if (connected === null) return yield* beforeWrite(notConnected(organizationId));
+      const { data_loss } = yield* beforeWrite(connected.dataLossIfMachineRemoved(action.server.machine));
       return yield* admitted(
         yield* removeServer(caller, action.server.machine, data_loss, call),
         { kind: "server", machine: action.server.machine },
         "Server",
       );
     }
+    case "forget_server":
+      return yield* admitted(
+        yield* forgetServer(caller, action.server.machine, call),
+        { kind: "server", machine: action.server.machine },
+        "Server",
+      );
     case "volume": {
-      const found = yield* findVolume(organizationId, action.volume);
+      const found = yield* beforeWrite(findVolume(organizationId, action.volume));
       if (found === null) return noSuch("Volume");
+      if (action.run.run === "sync" && !action.run.full) {
+        const synced = yield* refreshMirror({ userId: caller.userId, organizationId }, found.environment, action.volume);
+        if (!synced.ok) return synced;
+        const now = Math.floor(Date.now() / 1000);
+        return answer<Operation>({
+          attempt: dashedAttempt(attempt), run: `sync ${found.name}`, state: "done", requested_at: now, ended_at: now,
+          reason: synced.lines.join("\n"), servers: [], kept: [], unanswered: [],
+        });
+      }
       const input = { volumeId: action.volume, environment: found.environment, ...volumeRunInput(action.run, found.name) };
       return yield* admitted(yield* runVolume(caller, input, call), { kind: "volume", volume: action.volume }, "Volume");
     }
@@ -199,7 +255,9 @@ const act = Effect.fn("CallCloud.act")(function* (caller: Caller, { attempt, dig
 type CloudServices = Effect.Services<ReturnType<typeof act>> | Effect.Services<ReturnType<typeof ask>>;
 type CloudError = Effect.Error<ReturnType<typeof act>> | Effect.Error<ReturnType<typeof ask>>;
 
-const refusalOf = (error: CloudError, acting: boolean) => {
+type Failure = CloudError extends infer E ? E extends BeforeWrite<infer Read> ? Read : E : never;
+
+const refusalOf = (error: Failure, acting: boolean) => {
   if (error instanceof StoreRefused) return refusal(error.code, error.message, error.details);
   if (error instanceof NotFound) return refusal("not_found", error.message);
   if (error instanceof Validation) return refusal("invalid_argument", error.message);
@@ -213,7 +271,7 @@ export const callCloud = (caller: Caller, call: CloudCall, approvalId: string | 
   Effect.gen(function* (): Effect.fn.Return<StoreResult<unknown>, CloudError, CloudServices> {
     return "act" in call ? yield* act(caller, call.act, approvalId) : yield* ask(caller, call.ask);
   }).pipe(
-    Effect.catch((error) => Effect.succeed(refusalOf(error, "act" in call))),
+    Effect.catch((error) => Effect.succeed(error instanceof BeforeWrite ? refusalOf(error.error, false) : refusalOf(error, "act" in call))),
     Effect.withSpan("CallCloud", { attributes: { call: "act" in call ? call.act.action.action : call.ask.query } }),
   );
 

@@ -5,14 +5,15 @@
   "type": "module",
   "packageManager": "pnpm@11.7.0",
   "engines": {
-    "node": ">=22.12.0"
+    "node": ">=22.22.0"
   },
   "imports": {
     "#/*": "./src/*"
   },
   "scripts": {
-    "dev": "bash ../core/scripts/build-cloud-sdk.sh && portless ployz-cloud vite dev",
-    "build": "bash ../core/scripts/build-cloud-sdk.sh && pnpm build:app",
+    "prepare": "git config merge.ours.driver true 2>/dev/null || true",
+    "dev": "pnpm sdk && portless ployz-cloud vite dev",
+    "build": "pnpm sdk && pnpm build:app",
     "start": "node --experimental-loader=@opentelemetry/instrumentation/hook.mjs --import @opentelemetry/auto-instrumentations-node/register .output/server/index.mjs",
     "preview": "vite preview",
     "intents:sync": "node scripts/sync-intent-descriptions.mjs",
@@ -22,7 +23,9 @@
     "posthog:backfill": "node --env-file-if-exists=.env scripts/posthog-backfill.mjs",
     "db:studio": "node --env-file-if-exists=.env node_modules/drizzle-kit/bin.cjs studio",
     "pr:check": "bash scripts/pr-check.sh",
+    "mail:preview": "node --env-file-if-exists=.env scripts/verify/runner.mjs /scripts/mail-preview.ts",
     "test": "vitest run --project unit --project postgres --project static-analysis",
+    "sdk": "bash ../core/scripts/build-cloud-sdk.sh",
     "sdk:eval": "PLOYZ_SDK_FEATURES=eval bash ../core/scripts/build-cloud-sdk.sh",
     "eval": "vitest run --project eval",
     "manifest:fixture": "PLOYZ_WRITE_MANIFEST_FIXTURE=1 vitest run --project unit src/modules/commands/manifest.test.ts",
@@ -60,6 +63,8 @@
     "@polar-sh/better-auth": "^2.0.0",
     "@polar-sh/checkout": "^0.4.1",
     "@polar-sh/sdk": "^1.0.0",
+    "@posthog/mcp": "0.22.3",
+    "@react-email/render": "^2.1.0",
     "@shadcn/react": "^0.3.1",
     "@tailwindcss/vite": "^4.2.4",
     "@tanstack/ai": "0.68.0",
@@ -99,6 +104,7 @@
     "posthog-node": "^5.54.1",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
+    "react-email": "^6.11.1",
     "react-markdown": "10.1.0",
     "remark-gfm": "4.0.1",
     "remend": "1.4.0",

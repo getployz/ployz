@@ -22,7 +22,6 @@ use crate::storage::Tx;
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigsQuery {
-    /// The Environment to list.
     #[serde(default)]
     pub environment: EnvironmentRef,
 }
@@ -39,7 +38,6 @@ pub struct ConfigsView {
 /// One Config, where it is mounted, and what the next Deploy does to it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct ConfigListing {
-    /// The Config.
     #[serde(flatten)]
     pub config: ConfigSummary,
     /// The Services mounting it in Working State.
@@ -54,7 +52,6 @@ pub struct ConfigListing {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigItemQuery {
-    /// The Environment it is in.
     #[serde(default)]
     pub environment: EnvironmentRef,
     /// Its name, or `@UUID` for one exact identity.
@@ -66,7 +63,6 @@ pub struct ConfigItemQuery {
 pub struct ConfigItemView {
     /// The Environment, at the revision read.
     pub environment: EnvironmentSummary,
-    /// The Config.
     #[serde(flatten)]
     pub config: ConfigListing,
     /// The lineage its Environment copies share.

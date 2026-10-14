@@ -11,6 +11,7 @@ import {
 } from "#/modules/github/inngest-sync/sync";
 import { executeProcessGithubInstallationReceived } from "#/modules/github/inngest-sync/webhook";
 import { GithubApiLive } from "#/modules/github/github-observation.api";
+import { GithubTokensLive } from "#/modules/github/github-token.server";
 import { AppConfig } from "#/server/config.server";
 import { Database, DatabaseLive } from "#/server/database.server";
 import type { PloyzStepTools } from "#/modules/inngest/client";
@@ -55,11 +56,8 @@ it.live(
           ),
         ),
       );
-      const layer = DatabaseLive.pipe(
-        Layer.provide(config),
-        Layer.merge(config),
-        Layer.provideMerge(GithubApiLive.pipe(Layer.provideMerge(config))),
-      );
+      const database = DatabaseLive.pipe(Layer.provide(config), Layer.merge(config));
+      const layer = GithubApiLive.pipe(Layer.provideMerge(GithubTokensLive), Layer.provideMerge(database));
       const runEffect: GithubSyncEffectRunner = (program) =>
         Effect.runPromise(program.pipe(Effect.provide(layer)));
 
@@ -114,6 +112,7 @@ it.live(
       assert.deepStrictEqual(installationResult, {
         installationId: 1717,
         shouldSyncRepositories: true,
+        stopBuildsFor: [],
       });
       assert.deepStrictEqual(installationStep.sendEvent.mock.calls, [
         [

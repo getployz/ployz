@@ -244,7 +244,7 @@
               ]
             }
           ],
-          "description": "A check a new replica must pass before it takes traffic: an HTTP path on the container PORT or a shell command, and how many seconds it may take (default 300). Text sets the path. Unset turns it off, along with the image's own check.",
+          "description": "A check a new replica must pass before it takes traffic: an HTTP path on the port the domains send traffic to (PORT with no domains, or when they differ) or a shell command, and how many seconds it may take (default 300). Text sets the path. Unset turns it off, along with the image's own check.",
           "examples": [
             {
               "path": "/health",

@@ -39,7 +39,6 @@ import { DATABASE_PRESETS, type DatabasePreset } from "#/modules/config-store/da
 import { newProjectName, randomName, type NewServiceSource } from "#/modules/config-store/store-services";
 import { environmentsQuery, fetchStoreView, projectsQuery } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
-import type { EnvironmentId, ProjectId } from "@ployz/sdk";
 
 type Panel = { kind: CreatePanel };
 type CreateMode = "project" | "service";
@@ -94,12 +93,14 @@ type ServiceCreateCommandProps = ProjectCommandProps | ServiceCommandProps;
 
 type RootPanelProps = {
   mode: CreateMode;
+  organizationSlug: string;
   onSelectItem: (item: CreateMenuItem) => void;
   isPending: boolean;
 };
 
 type GitPanelReposProps = {
   mode: CreateMode;
+  organizationSlug: string;
   query: string;
   disabled: boolean;
   onSelectRepo: (repo: {
@@ -112,13 +113,13 @@ type GitPanelReposProps = {
 
 type GitPanelProps = GitPanelReposProps;
 
-function RootPanel({ mode, onSelectItem, isPending }: RootPanelProps) {
-  const { queryClient, sessionId, userId } = useCollectionScope();
+function RootPanel({ mode, organizationSlug, onSelectItem, isPending }: RootPanelProps) {
+  const { queryClient, sessionId } = useCollectionScope();
   const [chosen, setChosen] = useState<CreateMenuItem["id"] | null>(null);
   // "GitHub repository" is one tap away: its picker opens with repositories already read.
   useEffect(() => {
-    preloadGithubRepos({ queryClient, sessionId, userId });
-  }, [queryClient, sessionId, userId]);
+    preloadGithubRepos({ queryClient, sessionId, organizationSlug });
+  }, [queryClient, sessionId, organizationSlug]);
   const items = getCreateMenuItems({ includeEmptyProject: mode === "project" }).filter(({ id, panel }) =>
     mode === "service" || panel || id === "empty-project",
   );
@@ -246,10 +247,8 @@ function useServiceCreateActions({
    */
   async function createProjectTarget(source?: NewServiceSource): Promise<CreationTarget> {
     const made = createdProjectRef.current ?? await (async (): Promise<CreationTarget> => {
-      // SAFETY: Project and Environment ids are UUIDs the caller mints; the Store checks them.
-      const id = crypto.randomUUID() as ProjectId;
-      // SAFETY: as above.
-      const environment = crypto.randomUUID() as EnvironmentId;
+      const id = crypto.randomUUID();
+      const environment = crypto.randomUUID();
       const name = source?.type === "git" || source?.type === "image"
         ? newProjectName(source, (await fetchStoreView(props.organizationSlug, collectionScope, projectsQuery())).projects)
         : randomName();
@@ -416,6 +415,7 @@ export function ServiceCreateCommand(props: ServiceCreateCommandProps) {
           {panel.kind === "root" ? (
             <RootPanel
               mode={mode}
+              organizationSlug={props.organizationSlug}
               onSelectItem={selectCreateItem}
               isPending={isPending}
             />
@@ -423,6 +423,7 @@ export function ServiceCreateCommand(props: ServiceCreateCommandProps) {
           {panel.kind === "git" ? (
             <GitPanel
               mode={mode}
+              organizationSlug={props.organizationSlug}
               query={query}
               disabled={isPending}
               onSelectRepo={({ fullName, defaultBranch }) => {

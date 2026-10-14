@@ -48,8 +48,9 @@ mod service;
 mod spec;
 
 pub use process::{ABDICATED, DnsExit, serve};
+pub(crate) use process::{InstalledExe, identity_of};
 use query::{InternalQuery, MachineServiceTarget, Query, parse};
-pub use service::{DnsService, DnsSupervision};
+pub use service::DnsService;
 
 pub const PORT: u16 = 53;
 const FORWARD_TIMEOUT: Duration = Duration::from_secs(3);
@@ -209,8 +210,6 @@ impl Projection {
         source: IpAddr,
     ) -> ResponsePlan {
         if record_type != RecordType::A {
-            // TODO: internal records remain A-only; other types return an authoritative
-            // empty NOERROR response until a product decision adds them.
             return ResponsePlan::Internal {
                 code: ResponseCode::NoError,
                 answers: Vec::new(),
@@ -263,7 +262,6 @@ impl Projection {
                 answers: Vec::new(),
             };
         }
-        // TODO: keep TTL zero rather than adding a DNS cache without a product decision.
         let answers = addresses
             .into_iter()
             .map(|address| Record::from_rdata(name.clone(), 0, RData::A(A(address))))

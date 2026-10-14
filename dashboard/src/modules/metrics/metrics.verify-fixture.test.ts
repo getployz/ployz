@@ -1,7 +1,8 @@
-import type { MachineId, MetricSubject } from "@ployz/sdk";
+import type { MetricSubject } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
 import { serverMetrics, serviceMetrics } from "./metrics-model";
 import { verifyMetricHistory } from "./metrics.verify-fixture";
+import { machineId } from "#/test/ids";
 
 const window = { from: 1_700_000_000_000, to: 1_700_003_600_000 };
 const nanos = (ms: number) => (BigInt(ms) * 1_000_000n).toString();
@@ -14,8 +15,7 @@ const read = (subject: MetricSubject) => ({
   history: verifyMetricHistory({ subject, since_nanos: nanos(window.from), until_nanos: nanos(window.to) }),
 });
 const service = (name: string) => serviceMetrics(read({ kind: "service", service: `shop-production/${name}` }), names);
-// SAFETY: test ids are 32 hex digits.
-const server = (id: string) => serverMetrics(read({ kind: "machine", machine_id: id as MachineId }), names);
+const server = (id: string) => serverMetrics(read({ kind: "machine", machine_id: machineId(id) }), names);
 
 describe("verifyMetricHistory", () => {
   it("is deterministic, with about 120 buckets across the window", () => {

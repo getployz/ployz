@@ -850,6 +850,7 @@ impl MachineRpc for JoinDaemon {
             environment: None,
             image_id: None,
             last_check: None,
+            run: None,
         })
     }
     async fn inspect_storage(
@@ -1016,13 +1017,23 @@ impl MachineRpc for JoinDaemon {
             .iter()
             .map(|pointer| (machine, pointer.deploy.clone()))
             .collect();
-        rpc_ok(ServingPointerRead { pointer, acks })
+        rpc_ok(ServingPointerRead {
+            all_routed: pointer.is_some(),
+            pointer,
+            acks,
+        })
     }
     async fn prune_images(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         unused()
+    }
+    async fn pull_image(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        rpc_ok(ployz_core::ImagePulled {})
     }
     async fn pull_image_from_machine(
         &self,

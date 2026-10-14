@@ -4,8 +4,9 @@ use std::collections::BTreeMap;
 
 use ployz_core::config::SavedServiceIntent;
 use ployz_core::{
-    ContainerId, DependencyHealthFailure, ExecutionError, HookFailure, MachineAction, MachineId,
-    OperationPhase, OperationRow, OperationStatus, RpcError, ServiceName,
+    ContainerId, ContainerRuntimeObservation, DependencyHealthFailure, ExecutionError,
+    HealthFailure, HookFailure, MachineAction, MachineId, OperationPhase, OperationRow,
+    OperationStatus, RpcError, ServiceName,
 };
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -85,6 +86,7 @@ impl FailedAt {
                 MachineAction::RemoveContainer => Some(Self::Remove),
                 MachineAction::PullImage => Some(Self::Create),
                 MachineAction::InspectContainer
+                | MachineAction::ListContainers
                 | MachineAction::ReadServingPointer
                 | MachineAction::PublishServingPointer => from_phase(),
             },
@@ -232,7 +234,24 @@ impl From<&ExecutionError> for Failure {
                 (format!("{action} failed"), cause)
             }
             ExecutionError::Health { failure, .. } => (
-                "The Container failed its health check".to_owned(),
+                match failure {
+                    HealthFailure::Runtime {
+                        observation: ContainerRuntimeObservation::Restarting,
+                        ..
+                    } => "The Container is restarting",
+                    HealthFailure::Runtime {
+                        observation: ContainerRuntimeObservation::Exited { .. },
+                        ..
+                    } => "The Container exited",
+                    HealthFailure::Runtime {
+                        observation: ContainerRuntimeObservation::Dead,
+                        ..
+                    } => "The Container stopped",
+                    HealthFailure::Cancelled
+                    | HealthFailure::TimedOut { .. }
+                    | HealthFailure::Runtime { .. } => "The Container failed its health check",
+                }
+                .to_owned(),
                 vec![failure.to_string()],
             ),
             ExecutionError::DependencyHealth {
@@ -385,6 +404,7 @@ fn container(row: &OperationRow, last: Option<ContainerId>) -> Option<ContainerI
                 | MachineAction::PrepareVolumes
                 | MachineAction::RemoveVolume
                 | MachineAction::PullImage
+                | MachineAction::ListContainers
                 | MachineAction::ReadServingPointer
                 | MachineAction::PublishServingPointer => None,
             },
@@ -601,4 +621,38 @@ fn merge_mounting_row(kept: &mut ServerRow, row: &ServerRow) {
         (a, b) => a.or(b),
     };
     kept.finished_at = kept.finished_at.zip(row.finished_at).map(|(a, b)| a.max(b));
+}
+
+#[cfg(test)]
+mod tests {
+    use ployz_core::{ContainerId, ContainerRuntimeObservation, ExecutionError, HealthFailure};
+
+    use super::Failure;
+
+    fn reason(observation: ContainerRuntimeObservation) -> String {
+        Failure::from(&ExecutionError::Health {
+            container_id: ContainerId::parse("a".repeat(64)).unwrap(),
+            failure: HealthFailure::Runtime {
+                observation,
+                last_check: None,
+            },
+        })
+        .reason
+    }
+
+    #[test]
+    fn a_container_that_stops_running_is_not_called_unhealthy() {
+        assert_eq!(
+            reason(ContainerRuntimeObservation::Restarting),
+            "The Container is restarting"
+        );
+        assert_eq!(
+            reason(ContainerRuntimeObservation::Exited { code: 1 }),
+            "The Container exited"
+        );
+        assert_eq!(
+            reason(ContainerRuntimeObservation::Dead),
+            "The Container stopped"
+        );
+    }
 }

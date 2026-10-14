@@ -7,6 +7,7 @@ mod mode;
 pub(crate) mod progress;
 mod prompt;
 mod result;
+mod stdout;
 mod table;
 mod tone;
 mod tree;
@@ -25,6 +26,7 @@ pub(crate) use result::{
     Gaps, captured, done, emit, emit_committed, emit_line, emitted, fields, finish, finish_fanout,
     hint, interactive, list, note, note_inline, record_warning, rows, show, stream, warn,
 };
+pub(crate) use stdout::{async_stdout, stdout, stdout_bytes, stdout_is_terminal};
 pub(crate) use table::short_id;
 pub use table::{Cell, Fields, Table};
 pub use tone::{Painted, Tone, clap_styles};

@@ -54,7 +54,6 @@ impl<'a> Builder<'a> {
         Ok(builder)
     }
 
-    /// Buildx name of this slot's builder.
     pub(crate) fn name(&self) -> &str {
         &self.name
     }
@@ -135,7 +134,7 @@ impl<'a> Builder<'a> {
                 .platforms
                 .iter()
                 .map(String::as_str)
-                .chain(target.platforms.is_empty().then_some(native.as_str()))
+                .chain(target.is_native().then_some(native.as_str()))
         }) {
             if !nodes.iter().any(|node| {
                 node.get("Status").and_then(serde_json::Value::as_str) == Some("running")
@@ -360,7 +359,6 @@ impl Lock {
             .filter(|&slot| slot == 0 || directory.join(lock_file(slot)).exists())
     }
 
-    /// Buildx name of this slot's builder.
     pub(crate) fn name(&self) -> String {
         slot_name(self.slot)
     }

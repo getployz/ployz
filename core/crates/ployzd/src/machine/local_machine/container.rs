@@ -5,20 +5,29 @@ use std::sync::Arc;
 use ployz_core::{
     AnonymousVolumes, ContainerId, ContainerKind, ContainerLocator, ContainerNow,
     ContainerObservation, ContainerRefusal, ContainerRefusalReason, ContainerRuntimeObservation,
-    ContainerWant, CopyRefusal, DockerVolumeName, Drain, EnsuredContainer, ImageIngestOpened,
-    ImageIngestReason, ImagePulled, ImagesRemoved, LocalMachinePhase, MachineStorageObservation,
-    Namespace, NewContainer, PruneImagesRequest, PullImageFromMachineRequest, ResolvedServiceSpec,
-    RunTarget, StopOptions, VolumeRemoved,
+    ContainerWant, DockerVolumeName, Drain, EnsuredContainer, ImageIngestOpened, ImageIngestReason,
+    ImagePulled, ImagesRemoved, LocalMachinePhase, MachineStorageObservation, Namespace,
+    NewContainer, PruneImagesRequest, PullImageFromMachineRequest, PullImageRequest,
+    ResolvedServiceSpec, RunTarget, Start, StopOptions, VolumeGen, VolumeRemoved,
 };
 use ployz_core::{
     AnswerWhen, HEALTH_POLL_INTERVAL, HealthFailure, HealthPoll, HealthVerdict, HealthcheckSpec,
-    health_monitor, ready_poll,
+    ReadyWait, health_monitor,
 };
 
 use super::super::ingress::admit_ingress_service;
 use super::{Error, LocalMachine};
 use crate::docker::{ContainerCreated, ContainerRequest, ImageIngest, same_creation};
+use crate::docker_image::ImagePull;
 use crate::machine::{STORAGE_OBSERVATION_TIMEOUT, local_storage};
+
+/// Why the cut's Container half left the root a writer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CutRefusal {
+    Busy,
+    /// A newer lane raised the floor above the cut's `gen`.
+    Stale(VolumeGen),
+}
 
 impl LocalMachine {
     /// Return fresh local storage evidence for container admission and Global reconciliation.
@@ -158,6 +167,7 @@ impl LocalMachine {
     ///
     /// Returns when local state, networking, storage, or Docker cannot safely create the
     /// requested container.
+    #[cfg(test)]
     pub(crate) async fn create_container(
         &self,
         kind: ContainerKind,
@@ -167,7 +177,6 @@ impl LocalMachine {
         deployment_id: Option<ployz_core::DeploymentLogId>,
         registry_auth: Option<ployz_core::RegistryAuth>,
     ) -> Result<ContainerCreated, Error> {
-        // Once admitted, caller cancellation must not let reset overtake a Docker request.
         let (local, namespace, spec) = (self.clone(), namespace.clone(), spec.clone());
         self.finish_mutation(async move {
             local
@@ -177,7 +186,7 @@ impl LocalMachine {
                     &spec,
                     creation_key,
                     deployment_id,
-                    registry_auth,
+                    ImagePull::Policy(registry_auth.as_ref()),
                 )
                 .await
         })
@@ -200,6 +209,53 @@ impl LocalMachine {
                 .start(&container_id)
                 .await?;
             Ok(())
+        })
+        .await
+    }
+
+    /// A Writer's start: create its Container when absent, then start it, under one
+    /// exclusive turn. A floor raised above `gen` starts nothing, since the newer lane
+    /// may have started its own holder of the Volume already. A start ordered after
+    /// the check waits for the turn, so it sees this holder running.
+    ///
+    /// # Errors
+    ///
+    /// Returns when the floor cannot be read, or Docker cannot create or start the
+    /// Container.
+    pub(crate) async fn start_volume_holder(
+        &self,
+        start: Start,
+        name: DockerVolumeName,
+        r#gen: VolumeGen,
+    ) -> Result<Result<(), VolumeGen>, Error> {
+        let local = self.clone();
+        self.finish_mutation(async move {
+            let containers = local.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+            if let Err(floor) = containers.floor_turn().await.admit(&name, r#gen).await? {
+                return Ok(Err(floor));
+            }
+            let container_id = match start {
+                Start::Kept { container_id } => container_id,
+                Start::Create {
+                    namespace,
+                    resolved_spec,
+                    creation_key,
+                } => {
+                    local
+                        .create_container_admitted(
+                            ContainerKind::ServiceContainer,
+                            &namespace,
+                            &resolved_spec,
+                            Some(creation_key.as_str().to_owned()),
+                            None,
+                            ImagePull::Policy(None),
+                        )
+                        .await?
+                        .container_id
+                }
+            };
+            containers.start(&container_id).await?;
+            Ok(Ok(()))
         })
         .await
     }
@@ -236,29 +292,46 @@ impl LocalMachine {
     /// already holding a turn deadlocks.
     ///
     /// The stopping mark is set without a turn so replication tells every proxy
-    /// while the drain sleeps. The stop clears the mark whether it succeeds or
-    /// fails, so a Container that failed to stop is routed again. A daemon
-    /// restart forgets the mark; a still-running Container returns to ingress
-    /// and the resend redoes the drain.
+    /// while the drain sleeps. A daemon restart forgets the mark; a still-running
+    /// Container returns to ingress and the resend redoes the drain.
+    ///
+    /// With a `fence`, the Container holds that Volume and the gen is checked against
+    /// its floor under the turn, after the drain: a Deploy that raised the floor
+    /// meanwhile may already have answered Done on this holder, so a raised floor
+    /// drops the Withdrawal and stops nothing. The floor lock is held from that check
+    /// through the stop, so a floor raised mid-stop waits and its Deploy reads the
+    /// holder stopped, not still running. A start ordered after that check waits for
+    /// the turn, so it runs after the stop.
     ///
     /// Polls no proxy and reads no other Machine.
     pub(crate) async fn stop_behind_ingress(
         &self,
         installation: &crate::mutation::MutationGuard,
         container: &ContainerId,
+        fence: Option<(&DockerVolumeName, VolumeGen)>,
         drain: Drain,
         stop: &StopOptions,
-    ) -> Result<ContainerObservation, Error> {
+    ) -> Result<Result<ContainerObservation, VolumeGen>, Error> {
         let _ = installation;
         let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
         let machine_id = self.record().id();
         let observed = containers.inspect_managed(container, &machine_id).await?;
         if !is_running(&observed) {
-            return Ok(observed);
+            return Ok(Ok(observed));
         }
-        containers.mark_stopping(*container);
+        let _withdrawal = containers.withdraw(*container);
         tokio::time::sleep(drain.as_duration()).await;
         let turn = self.owner.admission_lock().write_owned().await;
+        let floor = match fence {
+            Some((name, r#gen)) => {
+                let mut floor = containers.floor_turn().await;
+                if let Err(floor) = floor.admit(name, r#gen).await? {
+                    return Ok(Err(floor));
+                }
+                Some(floor)
+            }
+            None => None,
+        };
         let stopped = containers
             .stop(
                 container,
@@ -266,9 +339,41 @@ impl LocalMachine {
                 stop.grace_period_seconds.map(i32::from),
             )
             .await;
+        drop(floor);
         drop(turn);
         stopped?;
-        Ok(containers.inspect_managed(container, &machine_id).await?)
+        Ok(Ok(containers
+            .inspect_managed(container, &machine_id)
+            .await?))
+    }
+
+    pub(crate) async fn remove_drained_if<W>(
+        &self,
+        container: ContainerId,
+        still_wanted: W,
+    ) -> Result<bool, Error>
+    where
+        W: std::future::Future<Output = Result<bool, crate::corrosion::Error>> + Send + 'static,
+    {
+        let local = self.clone();
+        self.finish_mutation(async move {
+            let containers = local.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+            let still_wanted = async { Ok::<_, Error>(still_wanted.await?) };
+            match containers
+                .stop_if(&container, None, None, still_wanted)
+                .await
+            {
+                Ok(true) | Err(Error::Docker(crate::docker::Error::ContainerNotFound(_))) => {}
+                Ok(false) => return Ok(false),
+                Err(error) => return Err(error),
+            }
+            let remove_volumes = AnonymousVolumes::default() == AnonymousVolumes::Remove;
+            match containers.remove(&container, remove_volumes, false).await {
+                Ok(()) | Err(crate::docker::Error::ContainerNotFound(_)) => Ok(true),
+                Err(error) => Err(error.into()),
+            }
+        })
+        .await
     }
 
     /// The cut's Container half: drain and stop every holder of the Volume, then run
@@ -276,14 +381,21 @@ impl LocalMachine {
     /// under the turn, so one started during the drain is `Busy` too, as is one the
     /// stop left running. A `Busy` cut leaves the root a writer.
     ///
+    /// `gen` is checked against the floor before each holder's drain and again under the
+    /// floor lock, held from that last check through `zfs`, so a floor raised during the
+    /// drain makes the cut `Stale` and a floor read never sees the flip half done. A
+    /// `Stale` cut leaves the root a writer and stops no holder after the raise, since
+    /// the raiser may have kept that holder or started it.
+    ///
     /// Detached from the RPC with the installation held, so a caller that hangs up
     /// does not abandon a half-stopped Container.
     pub(crate) async fn cut_volume_copy<Z, Fut>(
         &self,
         name: DockerVolumeName,
+        r#gen: VolumeGen,
         drain: Drain,
         zfs: Z,
-    ) -> Result<Result<(), CopyRefusal>, Error>
+    ) -> Result<Result<(), CutRefusal>, Error>
     where
         Z: FnOnce() -> Fut + Send + 'static,
         Fut: std::future::Future<Output = Result<(), Error>> + Send + 'static,
@@ -293,16 +405,27 @@ impl LocalMachine {
             let containers = local.containers.as_ref().ok_or(Error::DockerUnavailable)?;
             let stop = StopOptions::default();
             for holder in containers.volume_holder_ids(&name).await? {
-                let observed = local
-                    .stop_behind_ingress(&installation, &holder, drain, &stop)
-                    .await?;
+                if let Err(floor) = containers.floor_turn().await.admit(&name, r#gen).await? {
+                    return Ok(Err(CutRefusal::Stale(floor)));
+                }
+                let observed = match local
+                    .stop_behind_ingress(&installation, &holder, Some((&name, r#gen)), drain, &stop)
+                    .await?
+                {
+                    Ok(observed) => observed,
+                    Err(floor) => return Ok(Err(CutRefusal::Stale(floor))),
+                };
                 if is_running(&observed) {
-                    return Ok(Err(CopyRefusal::Busy));
+                    return Ok(Err(CutRefusal::Busy));
                 }
             }
             let _turn = local.owner.admission_lock().write_owned().await;
             if local.volume_holder_running(&name).await? {
-                return Ok(Err(CopyRefusal::Busy));
+                return Ok(Err(CutRefusal::Busy));
+            }
+            let mut floor = containers.floor_turn().await;
+            if let Err(floor) = floor.admit(&name, r#gen).await? {
+                return Ok(Err(CutRefusal::Stale(floor)));
             }
             zfs().await.map(Ok)
         })
@@ -404,6 +527,30 @@ impl LocalMachine {
             .map_err(Error::StoragePreparation)
     }
 
+    /// Pull one image from its registry under shared admission, like a peer pull.
+    ///
+    /// # Errors
+    ///
+    /// Returns when Docker is unavailable, admission is busy, or the pull fails.
+    pub(crate) async fn pull_image(&self, request: PullImageRequest) -> Result<ImagePulled, Error> {
+        let local = self.clone();
+        let shared = self.owner.admission_lock().read_owned().await;
+        self.finish_admitted(shared, async move {
+            local
+                .containers
+                .as_ref()
+                .ok_or(Error::DockerUnavailable)?
+                .pull_image(
+                    &request.image,
+                    request.policy,
+                    request.registry_auth.as_ref(),
+                )
+                .await?;
+            Ok(ImagePulled {})
+        })
+        .await
+    }
+
     /// Pull one image from peer ingest under shared admission: transfers run side by
     /// side, and exclusive work, such as Reset or image removal, waits for them.
     ///
@@ -475,13 +622,14 @@ impl LocalMachine {
             Some(HealthcheckSpec::Configured(_) | HealthcheckSpec::Http(_))
         );
         let monitor = health_monitor(spec);
+        let mut wait = ReadyWait::new(healthcheck, monitor);
         let started = tokio::time::Instant::now();
         loop {
             let details = containers
                 .inspect_managed_details(container_id, &machine_id)
                 .await?;
             let elapsed = started.elapsed();
-            let wake = match ready_poll(healthcheck, monitor, &details, elapsed).0 {
+            let wake = match wait.poll(&details, elapsed).0 {
                 HealthPoll::Complete if checked || elapsed >= monitor => {
                     return Ok(HealthVerdict::Healthy);
                 }
@@ -561,8 +709,9 @@ impl LocalMachine {
                 let local = self.clone();
                 self.finish_installed(move |installation| async move {
                     local
-                        .stop_behind_ingress(&installation, &id, drain, &stop)
-                        .await?;
+                        .stop_behind_ingress(&installation, &id, None, drain, &stop)
+                        .await?
+                        .ok();
                     Ok(())
                 })
                 .await?;
@@ -589,9 +738,19 @@ impl LocalMachine {
             } => {
                 let local = self.clone();
                 self.finish_installed(move |installation| async move {
-                    local
-                        .stop_behind_ingress(&installation, &id, drain, &StopOptions::default())
-                        .await?;
+                    match local
+                        .stop_behind_ingress(
+                            &installation,
+                            &id,
+                            None,
+                            drain,
+                            &StopOptions::default(),
+                        )
+                        .await
+                    {
+                        Ok(_) | Err(Error::Docker(crate::docker::Error::ContainerNotFound(_))) => {}
+                        Err(error) => return Err(error),
+                    }
                     let turn = local.owner.admission_lock().write_owned().await;
                     let removed = local
                         .containers
@@ -600,8 +759,10 @@ impl LocalMachine {
                         .remove(&id, anonymous_volumes == AnonymousVolumes::Remove, false)
                         .await;
                     drop(turn);
-                    removed?;
-                    Ok(())
+                    match removed {
+                        Ok(()) | Err(crate::docker::Error::ContainerNotFound(_)) => Ok(()),
+                        Err(error) => Err(error.into()),
+                    }
                 })
                 .await?;
                 None
@@ -658,7 +819,11 @@ impl LocalMachine {
                         &new.resolved_spec,
                         Some(new.slot.creation_key.as_str().to_owned()),
                         new.deployment_id,
-                        new.registry_auth,
+                        if new.image_prepared {
+                            ImagePull::Prepared
+                        } else {
+                            ImagePull::Policy(new.registry_auth.as_ref())
+                        },
                     )
                     .await;
                 let created = match created {
@@ -689,7 +854,7 @@ impl LocalMachine {
         spec: &ResolvedServiceSpec,
         creation_key: Option<String>,
         deployment_id: Option<ployz_core::DeploymentLogId>,
-        registry_auth: Option<ployz_core::RegistryAuth>,
+        image: ImagePull<'_>,
     ) -> Result<ContainerCreated, Error> {
         let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
         let record = self.record();
@@ -706,7 +871,7 @@ impl LocalMachine {
                 ContainerRequest {
                     creation_key: creation_key.as_deref(),
                     deployment_id: deployment_id.as_ref(),
-                    registry_auth: registry_auth.as_ref(),
+                    image,
                     kind,
                     namespace,
                     spec,

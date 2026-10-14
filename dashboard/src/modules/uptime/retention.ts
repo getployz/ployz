@@ -1,3 +1,8 @@
+/** The uptime history `uptime-prune` deletes, in the order it runs. */
+export const RETAINED = ["raw", "hourly", "incidents", "finishedAlerts"] as const;
+
+export type Retained = (typeof RETAINED)[number];
+
 /**
  * Every uptime retention number, in one place. `uptime-prune` deletes what is older, and every read clamps its range
  * with `clampSince`, so a read never shows a row the prune is about to take.
@@ -11,9 +16,8 @@ export const UPTIME_RETENTION = {
   incidents: { months: 13 },
   /** sent, failed and expired uptime_alert rows, by updated_at. */
   finishedAlerts: { days: 30 },
-} as const satisfies Record<string, { days: number } | { months: number }>;
+} as const satisfies Record<Retained, { days: number } | { months: number }>;
 
-export type Retained = keyof typeof UPTIME_RETENTION;
 /** The history a dashboard read can ask for. */
 export type UptimeSeries = Exclude<Retained, "finishedAlerts">;
 

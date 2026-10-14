@@ -1,5 +1,4 @@
 import type {
-  ContainerId,
   HostPoint,
   MachineId,
   MetricGap,
@@ -7,29 +6,22 @@ import type {
   MetricHistoryInput,
   MetricHistoryReply,
   MetricMarker,
-  ServiceId,
   ServicePoint,
 } from "@ployz/sdk";
 import { requirements } from "#/modules/runtime/daemon-compat";
+import { containerId, machineId, serviceId } from "#/test/ids";
 
 type RpcError = MetricHistory["unanswered"][number]["error"];
 type Answer = MetricHistory["machines"][number];
 type Failure = MetricHistory["unanswered"][number];
 
-export const NORMAL = "0123456789abcdef0123456789abcdef";
-export const ONES = "1".repeat(32);
-export const TWOS = "2".repeat(32);
-const THREES = "3".repeat(32);
+export const NORMAL = machineId("0123456789abcdef0123456789abcdef");
+export const ONES = machineId("1");
+export const TWOS = machineId("2");
+const THREES = machineId("3");
 /** Up and answering, with nothing sampled yet. */
-export const FOURS = "4".repeat(32);
+export const FOURS = machineId("4");
 const MIB = 1024 * 1024;
-
-// SAFETY: fixture ids are fixed literals already in each brand's shape.
-const brand = {
-  machine: (value: string) => value as MachineId,
-  container: (value: string) => value as ContainerId,
-  service: (value: string) => value as ServiceId,
-};
 
 type Buckets = { readonly since: number; readonly until: number; readonly step: number; readonly ts: readonly number[] };
 
@@ -79,21 +71,21 @@ function sumServicePoints(replies: readonly (readonly ServicePoint[])[]): Servic
   return [...byTs.values()].sort((left, right) => left.ts - right.ts);
 }
 
-const refusal = (machine: string): Failure => ({
-  machine_id: brand.machine(machine),
+const refusal = (machine: MachineId): Failure => ({
+  machine_id: machine,
   error: { code: "unsupported", message: "this Server's daemon does not serve metric history", details: { capability: requirements.metrics.capability, target: machine } } satisfies RpcError,
 });
-const down = (machine: string): Failure => ({
-  machine_id: brand.machine(machine),
+const down = (machine: MachineId): Failure => ({
+  machine_id: machine,
   error: { code: "unavailable", message: "the Server is not up, so it was not asked", details: null } satisfies RpcError,
 });
 
-function serviceReply(machine: string, points: ServicePoint[], step: number, extra: Partial<MetricHistoryReply> = {}): Answer {
-  return { machine_id: brand.machine(machine), value: { points: { service: points }, step_nanos: step, gaps: [], ...extra } };
+function serviceReply(machine: MachineId, points: ServicePoint[], step: number, extra: Partial<MetricHistoryReply> = {}): Answer {
+  return { machine_id: machine, value: { points: { service: points }, step_nanos: step, gaps: [], ...extra } };
 }
 
 /** What an up Server without the Service answers: no points and one gap over the whole range. */
-function absent(machine: string, { since, until, step }: Buckets): Answer {
+function absent(machine: MachineId, { since, until, step }: Buckets): Answer {
   return serviceReply(machine, [], step, { gaps: [{ from: since, to: until, reason: "not_sampled" }] });
 }
 
@@ -107,11 +99,11 @@ function serviceHistory(answers: readonly Answer[], unanswered: readonly Failure
   return history;
 }
 
-function marker(service: string, machine: string, ts: number, kind: "oom" | "restart"): MetricMarker {
+function marker(service: string, machine: MachineId, ts: number, kind: "oom" | "restart"): MetricMarker {
   return {
-    machine_id: brand.machine(machine),
-    container_id: brand.container("c0ffee000000"),
-    service_id: brand.service("svc-postgres"),
+    machine_id: machine,
+    container_id: containerId("c0ffee000000"),
+    service_id: serviceId("svc-postgres"),
     service,
     deployment_id: "dep-verify",
     replica: "postgres-1",
@@ -166,7 +158,7 @@ function hostPoints(ts: readonly number[]): HostPoint[] {
   }));
 }
 
-function machineFixture(machine: string, { step, ts }: Buckets): MetricHistory {
+function machineFixture(machine: MachineId, { step, ts }: Buckets): MetricHistory {
   if (machine === NORMAL) {
     const gapFrom = ts[Math.floor(ts.length / 2)];
     const gapTo = ts[Math.floor(ts.length / 2) + 8];
@@ -175,12 +167,12 @@ function machineFixture(machine: string, { step, ts }: Buckets): MetricHistory {
     return {
       step_nanos: step,
       points: { machine: points },
-      machines: [{ machine_id: brand.machine(machine), value: { points: { machine: points }, step_nanos: step, gaps } }],
+      machines: [{ machine_id: machine, value: { points: { machine: points }, step_nanos: step, gaps } }],
       unanswered: [],
     };
   }
   if (machine === FOURS) {
-    return { step_nanos: step, points: { machine: [] }, machines: [{ machine_id: brand.machine(machine), value: { points: { machine: [] }, step_nanos: step, gaps: [] } }], unanswered: [] };
+    return { step_nanos: step, points: { machine: [] }, machines: [{ machine_id: machine, value: { points: { machine: [] }, step_nanos: step, gaps: [] } }], unanswered: [] };
   }
   return { points: { machine: [] }, machines: [], unanswered: [machine === TWOS ? refusal(machine) : down(machine)] };
 }

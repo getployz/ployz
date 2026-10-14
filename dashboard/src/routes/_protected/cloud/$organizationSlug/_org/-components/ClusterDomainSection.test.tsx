@@ -1,8 +1,10 @@
 // @vitest-environment jsdom
 
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { createMemoryHistory, createRootRoute, createRouter, RouterProvider } from "@tanstack/react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ClusterDomainRow } from "#/modules/cluster-domain/cluster-domain";
+import { machineId } from "#/test/ids";
 import { ClusterDomainSection } from "./ClusterDomainSection";
 
 const ready: Omit<ClusterDomainRow, "id"> = {
@@ -35,7 +37,7 @@ describe("ClusterDomainSection", () => {
   });
 
   it("checks again until the sync records a newer check", async () => {
-    const blocked = { ...ready, traffic: { kind: "probed", unreachable: [{ machineId: "a", address: "203.0.113.1" }] } } as Omit<ClusterDomainRow, "id">;
+    const blocked = { ...ready, traffic: { kind: "probed", unreachable: [{ machineId: machineId("a"), address: "203.0.113.1" }] } } as Omit<ClusterDomainRow, "id">;
     const onCheck = vi.fn(() => Promise.resolve());
     const { rerender } = render(<ClusterDomainSection organizationSlug="acme" domain={blocked} onCheck={onCheck} />);
 
@@ -51,11 +53,44 @@ describe("ClusterDomainSection", () => {
   });
 
   it("says when something else answers on port 80", () => {
-    const taken = { ...ready, traffic: { kind: "probed", unreachable: [], taken: [{ machineId: "a", address: "203.0.113.1" }] } } as Omit<ClusterDomainRow, "id">;
+    const taken = { ...ready, traffic: { kind: "probed", unreachable: [], taken: [{ machineId: machineId("a"), address: "203.0.113.1" }] } } as Omit<ClusterDomainRow, "id">;
     render(<ClusterDomainSection organizationSlug="acme" domain={taken} onCheck={vi.fn()} />);
 
     expect(screen.getByText("Needs attention")).toBeTruthy();
     expect(screen.getByText("Something else answers on port 80 of 203.0.113.1. Free the port for Ployz.")).toBeTruthy();
+    expect(screen.getByText("Check again")).toBeTruthy();
+  });
+
+  it("says no Server receives traffic rather than asking for a new one", async () => {
+    const domain = { ...ready, traffic: { kind: "no_servers" } } as const;
+    const component = () => <ClusterDomainSection organizationSlug="acme" domain={domain} onCheck={vi.fn()} />;
+    render(<RouterProvider router={createRouter({ routeTree: createRootRoute({ component }), history: createMemoryHistory() })} />);
+
+    expect(await screen.findByText("No server receives traffic.")).toBeTruthy();
+    expect(screen.getByText("Needs attention")).toBeTruthy();
+  });
+
+  it("stays ready when one Server answers, and names the ones traffic skips", () => {
+    const degraded = { ...ready, traffic: {
+      kind: "probed",
+      reachable: [{ machineId: machineId("a"), address: "203.0.113.1" }],
+      unreachable: [{ machineId: machineId("b"), address: "203.0.113.2" }],
+      taken: [{ machineId: machineId("c"), address: "203.0.113.3" }],
+      down: [{ machineId: machineId("d"), address: "203.0.113.4", name: "web-4" }],
+    } } as Omit<ClusterDomainRow, "id">;
+    render(<ClusterDomainSection organizationSlug="acme" domain={degraded} onCheck={vi.fn()} />);
+
+    expect(screen.getByText("Ready")).toBeTruthy();
+    expect(screen.getByText("Port 80 closed on 203.0.113.2. Port 80 taken on 203.0.113.3. Ingress isn’t running on web-4.")).toBeTruthy();
+    expect(screen.getByText("Check again")).toBeTruthy();
+  });
+
+  it("names the Server whose ingress isn't running", () => {
+    const down = { ...ready, traffic: { kind: "probed", unreachable: [], down: [{ machineId: machineId("a"), address: "203.0.113.1", name: "web-1" }] } } as Omit<ClusterDomainRow, "id">;
+    render(<ClusterDomainSection organizationSlug="acme" domain={down} onCheck={vi.fn()} />);
+
+    expect(screen.getByText("Needs attention")).toBeTruthy();
+    expect(screen.getByText("Ingress isn’t running on web-1. Deploy to bring it back.")).toBeTruthy();
     expect(screen.getByText("Check again")).toBeTruthy();
   });
 });

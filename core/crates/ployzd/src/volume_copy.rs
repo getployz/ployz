@@ -5,7 +5,9 @@
 //! point converges. Every route answers the copy as it is afterwards, the same shape
 //! InspectVolumeCopy reports.
 
-use ployz_core::{DockerVolumeName, ManagementAddress, SnapshotGuid, SnapshotName, WriterEpoch};
+use ployz_core::{
+    DockerVolumeName, ManagementAddress, SnapshotGuid, SnapshotName, VolumeGen, WriterEpoch,
+};
 use serde::{Deserialize, Serialize};
 
 /// The copy as it is now, with no effect.
@@ -35,12 +37,23 @@ pub struct CopyRequest {
 pub struct CutRequest {
     pub name: DockerVolumeName,
     pub target: SnapshotName,
+    #[serde(default)]
+    pub r#gen: VolumeGen,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ForgetRequest {
+    pub name: DockerVolumeName,
+    #[serde(default)]
+    pub r#gen: VolumeGen,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SnapshotRequest {
     pub name: DockerVolumeName,
     pub snapshot: SnapshotName,
+    #[serde(default)]
+    pub r#gen: VolumeGen,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -48,6 +61,8 @@ pub struct WriterRequest {
     pub name: DockerVolumeName,
     pub at: SnapshotGuid,
     pub epoch: WriterEpoch,
+    #[serde(default)]
+    pub r#gen: VolumeGen,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -55,4 +70,6 @@ pub struct PullRequest {
     pub name: DockerVolumeName,
     pub from: ManagementAddress,
     pub target: SnapshotName,
+    #[serde(default)]
+    pub r#gen: VolumeGen,
 }

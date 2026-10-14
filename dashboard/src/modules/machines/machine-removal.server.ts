@@ -35,11 +35,7 @@ import { dropRemovedServer, forgetEmptiedPairing } from "#/modules/machines/pair
 import { loadOrganizationConnections } from "#/modules/machines/connections.server";
 import { planRemove } from "#/modules/machines/server-operations.server";
 import { storeSystem } from "#/modules/config-store/config-store.server";
-
-function asMachineId(machineId: string): MachineId {
-  // SAFETY: Cloud machine ids are the same strings rust brands as MachineId.
-  return machineId as MachineId;
-}
+import { namedMachines, observeOrganization, releaseLanesOff } from "#/modules/volume-run/volume-run.server";
 
 export class MachineRemovalProviderFailure extends Data.TaggedError(
   "MachineRemovalProviderFailure",
@@ -148,7 +144,7 @@ export const removeMachineActivity = Effect.fn("MachineRemoval.remove")(
     if (lack !== null) {
       return { kind: "refused", failureCode: "server_lacks", message: sdkFailureMessage(lack, servers), generation: access.generation } as const;
     }
-    const machine = asMachineId(attempt.machineId);
+    const machine = attempt.machineId;
     const owned = yield* markOwnedMachineRemoveSent({ attemptId: attempt.id, inngestRunId: attempt.inngestRunId });
     if (!owned) return { kind: "superseded" } as const;
     const outcome = yield* asRemoveMachineOutcome(forgetOnly
@@ -158,6 +154,21 @@ export const removeMachineActivity = Effect.fn("MachineRemoval.remove")(
   },
 );
 
+export const observeLeavingServerActivity = Effect.fn("MachineRemoval.observeLeaving")(function* (input: {
+  organizationId: string; machineId: MachineId;
+}) {
+  const id = input.machineId;
+  const servers = yield* namedMachines(input.organizationId);
+  const machine = { id, name: servers.find((server) => server.id === id)?.name ?? null };
+  const observed = yield* observeOrganization(input.organizationId).pipe(Effect.orElseSucceed(() => ({ copies: [], unanswered: [] })));
+  const writes = observed.copies.flatMap((copy) => copy.machine_id === id && copy.role === "writer" ? [copy.name] : []);
+  return { machine, writes };
+});
+
+export const releaseLeavingLanesActivity = (input: {
+  organizationId: string; machineId: MachineId; name: string | null; writes: readonly string[];
+}) => releaseLanesOff(input.organizationId, { id: input.machineId, name: input.name }, input.writes);
+
 /**
  * What a removed Server leaves of Cloud's hold. A reset that didn't finish is a partial outcome: the Server may keep
  * Cloud's key, so Cloud keeps its row and its pairing. Otherwise `dropRemovedServer` drops the Server's row of the
@@ -165,7 +176,7 @@ export const removeMachineActivity = Effect.fn("MachineRemoval.remove")(
  * Cloud forgets the pairing. A Server taken out without a reset loses its row but never lets go of the Cluster.
  */
 export const releaseServerActivity = Effect.fn("MachineRemoval.release")(function* (input: {
-  organizationId: string; machineId: string; generation: string; resetWarning: string | null; noReset: boolean;
+  organizationId: string; machineId: MachineId; generation: string; resetWarning: string | null; noReset: boolean;
 }) {
   if (input.resetWarning !== null) {
     return {
@@ -271,7 +282,7 @@ export const loadMachineDataLoss = Effect.fn("MachineRemoval.loadDataLoss")(
       });
     }
     const rust = yield* session.connected
-      .dataLossIfMachineRemoved(asMachineId(input.machineId))
+      .dataLossIfMachineRemoved(input.machineId)
       .pipe(
         Effect.map((observed) => observed.data_loss),
         Effect.mapError(
