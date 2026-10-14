@@ -18,6 +18,8 @@ import { useStrayNamespaces } from "#/modules/machines/namespace-cleanup.queries
 import { drainDialogRows, drainLeftRows, removeHint } from "#/modules/machines/server-drain-view";
 import { useServerDrain } from "#/modules/machines/server-drain.hooks";
 import { latestServerDrainsQueryOptions } from "#/modules/machines/server-drain.queries";
+import { useServerWebTraffic } from "#/modules/machines/server-web-traffic.hooks";
+import { latestServerWebTrafficQueryOptions } from "#/modules/machines/server-web-traffic.queries";
 import { volumePlacementsQueryOptions } from "#/modules/volume-placement/volume-placement.queries";
 import { prefetchRemote } from "#/collections/route-data";
 import { DrainDialog } from "./-components/drain-dialog";
@@ -28,8 +30,10 @@ import { ServerResources } from "./-components/server-resources";
 import { DrainButton, ServerServicesSection } from "./-components/server-services-section";
 import { ServerSwitcher } from "./-components/server-switcher";
 import { ServerUpgradeSection } from "./-components/server-upgrade-section";
+import { ServerWebTrafficSection } from "./-components/server-web-traffic-section";
 import { ServiceUsage } from "./-components/service-usage";
 import { StrayNamespaces } from "./-components/stray-namespaces";
+import { WebTrafficDialog } from "./-components/web-traffic-dialog";
 import { ServersStaleAlert, ServersUnreachable } from "./-components/servers-unreachable";
 
 export const Route = createFileRoute(
@@ -46,6 +50,7 @@ export const Route = createFileRoute(
     context,
     latestServerUpgradesQueryOptions(params.organizationSlug),
     latestServerDrainsQueryOptions(params.organizationSlug),
+    latestServerWebTrafficQueryOptions(params.organizationSlug),
     volumePlacementsQueryOptions(params.organizationSlug),
   ),
   component: RouteComponent,
@@ -111,7 +116,10 @@ function RouteComponent() {
   );
 }
 
-/** Services, Builds and Danger: the sections that share one Drain, whose dialog opens from Services and from Danger. */
+/**
+ * Services, Web traffic, Builds and Danger: the sections that share one Drain, whose dialog opens from Services and
+ * from Danger, and the Web traffic switch with its own confirm.
+ */
 function ServerSettings({ organizationSlug, server, servers, stale }: {
   organizationSlug: string;
   server: Server;
@@ -120,11 +128,15 @@ function ServerSettings({ organizationSlug, server, servers, stale }: {
 }) {
   const { machine } = server;
   const drain = useServerDrain(organizationSlug, { id: machine.id, name: server.name }, servers);
+  const webTraffic = useServerWebTraffic(organizationSlug, { id: machine.id, name: server.name }, machine, servers);
   const strays = useStrayNamespaces(organizationSlug, server.services.flatMap((service) => service.namespace ?? []));
   // A Drain cordons this Server and copies images from it: it needs the Server online, and the page to see it.
   const unavailable = stale
     ? "Drain needs Cloud to reach your servers."
     : server.status === "offline" ? `Drain needs ${server.name} online.` : null;
+  const webUnavailable = stale
+    ? "Web traffic needs Cloud to reach your servers."
+    : server.status === "offline" ? `Web traffic needs ${server.name} online.` : null;
   return (
     <>
       <ServerServicesSection
@@ -135,6 +147,7 @@ function ServerSettings({ organizationSlug, server, servers, stale }: {
         onDrain={drain.ask}
         unavailable={unavailable}
       />
+      <ServerWebTrafficSection view={webTraffic.view} onTurnOn={webTraffic.turnOn} onAskOff={webTraffic.ask} unavailable={webUnavailable} />
       <ServerBuildsSection machine={machine} organizationSlug={organizationSlug} />
       <RemoveServerSection
         machine={machine}
@@ -149,6 +162,7 @@ function ServerSettings({ organizationSlug, server, servers, stale }: {
         )}
       />
       <DrainDialog serverName={server.name} rows={drainDialogRows(drain.view, server.machine.id, server.services, strays)} {...drain.dialog} />
+      <WebTrafficDialog serverName={server.name} domains={webTraffic.domains} last={webTraffic.last} {...webTraffic.dialog} />
     </>
   );
 }
