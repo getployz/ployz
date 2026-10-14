@@ -822,8 +822,7 @@ async fn a_stop_first_replacement_publishes_its_new_container() {
 }
 
 #[tokio::test]
-async fn a_stop_first_replacement_that_cannot_inspect_its_old_copy_leaves_the_row_pointing_at_it()
-{
+async fn a_stop_first_replacement_that_cannot_inspect_its_old_copy_leaves_the_row_pointing_at_it() {
     let machine = machine('1');
     let old = container('a');
     let plan = vec![global_replacement(&machine, &old, UpdateOrder::StopFirst)];

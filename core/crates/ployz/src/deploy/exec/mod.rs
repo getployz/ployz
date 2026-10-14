@@ -1348,6 +1348,18 @@ async fn execute_operation<C: MachineOperations>(
                 Some(replacement.old_container_id),
             );
             if replacement.spec.update.order == UpdateOrder::StopFirst {
+                // The inspection runs before the row stops naming the old
+                // Container, so a failed one leaves it pointed and serving.
+                let old = match client
+                    .inspect_container(&replacement.machine_id, &replacement.old_container_id)
+                    .await
+                {
+                    Ok(old) => Some(old.container),
+                    Err(error) if error.code == RpcErrorCode::NotFound => None,
+                    Err(error) => {
+                        return Err(machine_error(MachineAction::InspectContainer, error).into());
+                    }
+                };
                 rows.retire_before_stop(client, group, operation, &replacement.old_container_id)
                     .await?;
                 return replace_stop_first(
@@ -1355,6 +1367,7 @@ async fn execute_operation<C: MachineOperations>(
                     index,
                     progress,
                     replacement,
+                    old,
                     slot,
                     cancellation,
                 )
@@ -1796,22 +1809,13 @@ async fn replace_stop_first<C: MachineOperations>(
     index: usize,
     progress: &Progress,
     operation: &ReplacementOperation,
+    old: Option<ContainerObservation>,
     slot: SlotKey,
     cancellation: &CancellationToken,
 ) -> Result<Option<ContainerId>, OperationFailure> {
     // Stops, not removes, the old Container first, so a failed new one can hand
     // the slot back to it.
     let old_stopped = {
-        let old = match client
-            .inspect_container(&operation.machine_id, &operation.old_container_id)
-            .await
-        {
-            Ok(old) => Some(old.container),
-            Err(error) if error.code == RpcErrorCode::NotFound => None,
-            Err(error) => {
-                return Err(machine_error(MachineAction::InspectContainer, error).into());
-            }
-        };
         match old {
             // A stop holds an old container at rest too: its Server restarts an
             // ingress whose start failed unless a request stopped it.
