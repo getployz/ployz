@@ -1579,8 +1579,8 @@ stopped: DrainStop | null,
  */
 remaining: Remaining,
 /**
- * Every chosen Service left the Server, the Drain ran to its end, and what remains
- * was observed.
+ * Every chosen Service left the Server, retiring old copies included, the Drain ran
+ * to its end, and what remains was observed.
  */
 complete: boolean, };
 
