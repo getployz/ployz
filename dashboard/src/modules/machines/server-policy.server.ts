@@ -15,6 +15,7 @@ import {
   type RequestServerPolicyChangeInput,
   type ServerPolicyChange,
 } from "#/modules/machines/server-policy";
+import { attemptIdOf } from "#/modules/operations/keyed.server";
 import { requireAccess } from "#/modules/organization/access.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { Conflict, Validation } from "#/server/public-error";
@@ -41,12 +42,12 @@ const refuseWhileDraining = Effect.fn("ServerPolicy.refuseWhileDraining")(functi
 
 /**
  * Queue one Server Policy change. Cloud keeps no desired-policy record; the
- * Servers page reads the result back from Runtime observation. An agent's
- * `attempt` keys the event, so a replayed act queues nothing new.
+ * Servers page reads the result back from Runtime observation. A request
+ * `key` keys the event within its Organization, so a replayed act queues nothing new.
  */
 export const requestServerPolicyChange = Effect.fn(
   "ServerPolicy.requestChange",
-)(function* (actor: Actor, input: RequestServerPolicyChangeInput, attempt?: string) {
+)(function* (actor: Actor, input: RequestServerPolicyChangeInput, key?: string) {
   if (isEmptyPolicyChange(input.change)) {
     return yield* new Validation({
       message: "A Server Policy change must set at least one value.",
@@ -56,9 +57,9 @@ export const requestServerPolicyChange = Effect.fn(
   yield* refuseWhileDraining(organization.id, input.machineId, input.change);
   const data = { organizationId: organization.id, machineId: input.machineId, change: input.change };
   yield* sendInngestEvent(
-    attempt === undefined
+    key === undefined
       ? createServerPolicyChangeRequestedEvent(data)
-      : createKeyedServerPolicyChangeRequestedEvent(data, attempt),
+      : createKeyedServerPolicyChangeRequestedEvent(data, attemptIdOf(organization.id, "server_set", key)),
   );
 });
 

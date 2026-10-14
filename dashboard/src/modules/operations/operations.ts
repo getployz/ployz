@@ -13,6 +13,7 @@ import type { VolumeRunRequestKind } from "#/modules/volume-run/volume-run";
 /** The tool name a request key is scoped to: the same key under another tool is another request. */
 export const OPERATION_TOOLS = [
   "server_drain",
+  "server_set",
   "server_upgrade",
   "server_clean",
   "server_remove",
@@ -181,7 +182,7 @@ export const OPERATIONS = {
       buildConcurrency: BuildConcurrencyChangeSchema,
     }),
     gate: "none",
-    idempotency: { none: "Setting the same values again leaves the Server as it was." },
+    idempotency: "server_set",
     surfaces: {
       cli: { absent: "`ployz server set` updates the Server through its own connection, not Cloud." },
       agent: {

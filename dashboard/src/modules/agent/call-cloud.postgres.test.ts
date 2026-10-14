@@ -8,6 +8,7 @@ import { callCloud } from "#/modules/agent/call-cloud.server";
 import type { Caller } from "#/modules/identity/actor";
 import { UNREACHABLE_MESSAGE } from "#/modules/machines/server-operations.server";
 import { serverDrainAttempt } from "#/modules/machines/tables";
+import { attemptIdOf } from "#/modules/operations/keyed.server";
 import { OrganizationRuntime, type ScopedRuntimeClientSession } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
 import { Database } from "#/server/database.server";
@@ -167,9 +168,11 @@ describe("callCloud", () => {
       expect(send.mock.calls).toEqual([[expect.objectContaining({
         data: { organizationId: ORGANIZATION, machineId: MACHINE, change: { acceptsServices: false, acceptsIngress: false, buildConcurrency: 2 } },
       })]]);
-      // Catches a replayed act queuing the change again: Inngest runs one event per id.
+      // Catches a replayed act queuing the change again (Inngest runs one event per id), and an id another
+      // Organization's same attempt could share.
       yield* callCloud(caller, { act }).pipe(Effect.provide(services));
       const ids = send.mock.calls.map(([event]) => (event as { id?: string }).id);
-      expect(ids).toEqual([`server-policy-${act.attempt}`, `server-policy-${act.attempt}`]);
+      const id = `server-policy-${attemptIdOf(ORGANIZATION, "server_set", act.attempt)}`;
+      expect(ids).toEqual([id, id]);
     }));
 });
