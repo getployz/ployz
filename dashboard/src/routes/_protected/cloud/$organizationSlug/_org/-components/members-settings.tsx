@@ -43,7 +43,6 @@ const formatDate = (iso: string) => new Date(iso).toLocaleDateString(undefined, 
 
 type Pending = { kind: "remove"; email: string; name: string } | { kind: "leave" } | null;
 
-/** Who is in the Organization and who is invited. Owners and admins manage both; only an owner touches owners. */
 export function MembersSettings({ organizationSlug }: { organizationSlug: string }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -206,7 +205,6 @@ export function MembersSettings({ organizationSlug }: { organizationSlug: string
   );
 }
 
-/** Makes a link that lets one person in. The link is shown here once; only its hash is kept. */
 function InviteDialog({ organizationSlug, onInvited, onOpenChange }: {
   organizationSlug: string;
   onInvited: () => void;

@@ -40,7 +40,6 @@ export const removeMembership = Effect.fn("Organization.removeMembership")(funct
   }));
 });
 
-/** The Organization's members with their role, oldest first. */
 export const listMembers = Effect.fn("Organization.listMembers")(function* (organizationId: string) {
   const { drizzle } = yield* Database;
   return yield* drizzle.select({ userId: member.userId, name: user.name, email: user.email, role: member.role, joinedAt: member.createdAt })

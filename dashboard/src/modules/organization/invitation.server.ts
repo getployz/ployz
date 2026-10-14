@@ -14,7 +14,6 @@ export type InviteRole = typeof invitation.$inferSelect.role;
 
 const hashInviteToken = (token: string) => createHash("sha256").update(token).digest("hex");
 
-/** Whether a link still lets someone in, and if not, why. */
 export type InviteState = "pending" | "accepted" | "revoked" | "expired";
 
 const stateOf = (row: { status: typeof invitation.$inferSelect.status; expiresAt: Date }, now: Date): InviteState =>
@@ -51,7 +50,6 @@ export const createInvite = Effect.fn("Invitation.create")(function* (
   return { id: created.id, email, role: input.role, expiresAt: created.expiresAt, token };
 });
 
-/** The Organization's invites that still let someone in, oldest first, with who sent each. */
 export const listPendingInvites = Effect.fn("Invitation.listPending")(function* (organizationId: string) {
   const { drizzle } = yield* Database;
   return yield* drizzle.select({
@@ -87,7 +85,6 @@ export const revokeInvite = Effect.fn("Invitation.revoke")(function* (organizati
 
 const byToken = (token: string) => eq(invitation.tokenHash, hashInviteToken(token));
 
-/** What the invite page shows: the Organization, who invited, and whether the link still works. Null for no such link. */
 export const readInvite = Effect.fn("Invitation.read")(function* (token: string) {
   const { drizzle } = yield* Database;
   const [row] = yield* drizzle.select({
