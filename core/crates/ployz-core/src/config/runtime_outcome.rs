@@ -9,6 +9,7 @@ use ts_rs::TS;
 use super::ConfigError;
 use crate::{
     DeployOperation, DeployOutcome, DeployPreview, ExecutionError, FailedOperation, ServiceName,
+    ServiceOutcome,
 };
 
 #[derive(Deserialize, Serialize)]
@@ -71,6 +72,8 @@ pub struct RuntimeOutcomeProjection {
     /// Services with planned operations an earlier failure stopped before any ran.
     /// Ordered by name.
     pub unattempted_services: Vec<ServiceName>,
+    /// Where each Service group ended, as the runner reported it.
+    pub services: Vec<ServiceOutcome>,
 }
 
 fn invalid() -> ConfigError {
@@ -160,6 +163,7 @@ pub fn project_runtime_outcome(
     if evidence.version != 1 {
         return Err(invalid());
     }
+    let ended = evidence.outcome.services().to_vec();
     let (summary, completed, failed, pending) = match evidence.outcome {
         DeployOutcome::Success { completed, .. } => (
             RuntimeOutcomeSummary::Success {
@@ -287,6 +291,7 @@ pub fn project_runtime_outcome(
         confirmed_services: named(Progress::Completed),
         failed_services: named(Progress::Failed),
         unattempted_services: named(Progress::Unattempted),
+        services: ended,
     })
 }
 

@@ -647,6 +647,7 @@ mod tests {
             containers: vec![ContainerId::parse("b".repeat(64)).unwrap()],
             previous: Some(DeploymentLogId::parse("pin-d2").unwrap()),
             retiring: vec![ContainerId::parse("1".repeat(64)).unwrap()],
+            deciding: None,
         };
 
         let routed: Vec<char> = serving_containers(&containers, |_| Some(&pointer))
@@ -707,6 +708,7 @@ mod tests {
             containers: ids(containers),
             previous: previous.map(|previous| DeploymentLogId::parse(previous).unwrap()),
             retiring: ids(retiring),
+            deciding: None,
         }
     }
 

@@ -468,12 +468,12 @@ async fn stop_first_publishes_the_new_copies_and_retires_the_stopped_ones() {
     ];
     let client = Scripted::new(vec![
         observed(Call::Inspect(first, old_first), running()),
+        observed(Call::Inspect(second, old_second), running()),
         ok(Call::Stop(first, old_first)),
         created(
             Call::Run(first, ContainerKind::ServiceContainer),
             &new_first,
         ),
-        observed(Call::Inspect(second, old_second), running()),
         ok(Call::Stop(second, old_second)),
         created(
             Call::Run(second, ContainerKind::ServiceContainer),
@@ -503,14 +503,23 @@ async fn a_stop_first_or_rolling_failure_restores_every_old_copy_and_removes_eve
             swap(&first, &old_first, order),
             swap(&second, &old_second, order),
         ];
-        let client = Scripted::new(vec![
-            observed(Call::Inspect(first, old_first), running()),
+        // One stop-first step inspects every old copy before it amends the row.
+        let inspect_second = || observed(Call::Inspect(second, old_second), running());
+        let mut steps = vec![observed(Call::Inspect(first, old_first), running())];
+        if order == UpdateOrder::StopFirst {
+            steps.push(inspect_second());
+        }
+        steps.extend([
             ok(Call::Stop(first, old_first)),
             created(
                 Call::Run(first, ContainerKind::ServiceContainer),
                 &new_first,
             ),
-            observed(Call::Inspect(second, old_second), running()),
+        ]);
+        if order == UpdateOrder::Rolling {
+            steps.push(inspect_second());
+        }
+        steps.extend([
             ok(Call::Stop(second, old_second)),
             failed(
                 Call::Run(second, ContainerKind::ServiceContainer),
@@ -521,6 +530,15 @@ async fn a_stop_first_or_rolling_failure_restores_every_old_copy_and_removes_eve
             ok(Call::Discard(first, new_first)),
             ok(Call::Restart(first, old_first)),
         ]);
+        let client = Scripted::new(steps);
+        let row = ServingPointer {
+            deploy: DeploymentLogId::parse("older").unwrap(),
+            containers: vec![old_first, old_second],
+            previous: None,
+            retiring: Vec::new(),
+            deciding: None,
+        };
+        client.pointers.lock().unwrap().insert(api(), row.clone());
 
         let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
 
@@ -530,8 +548,113 @@ async fn a_stop_first_or_rolling_failure_restores_every_old_copy_and_removes_eve
         );
         assert_eq!(outcome.services(), ended(&[("api", ServiceResult::Old)]));
         assert!(client.publications().is_empty());
+        assert_eq!(
+            client.pointers.lock().unwrap().get(&api()),
+            Some(&row),
+            "{order:?}: the restarted copies serve again"
+        );
         client.assert_done();
     }
+}
+
+#[tokio::test]
+async fn a_stop_first_step_retires_every_old_copy_in_one_amendment() {
+    let machines = [machine('1'), machine('2'), machine('3')];
+    let olds = [container('a'), container('b'), container('c')];
+    let news = [container('d'), container('e'), container('f')];
+    let plan: Vec<_> = machines
+        .iter()
+        .zip(&olds)
+        .map(|(machine, old)| swap(machine, old, UpdateOrder::StopFirst))
+        .collect();
+    let mut steps: Vec<_> = machines
+        .iter()
+        .zip(&olds)
+        .map(|(machine, old)| observed(Call::Inspect(*machine, *old), running()))
+        .collect();
+    for ((machine, old), new) in machines.iter().zip(&olds).zip(&news) {
+        steps.push(ok(Call::Stop(*machine, *old)));
+        steps.push(created(
+            Call::Run(*machine, ContainerKind::ServiceContainer),
+            new,
+        ));
+    }
+    let client = Scripted::new(steps);
+    let older = DeploymentLogId::parse("older").unwrap();
+    client.pointers.lock().unwrap().insert(
+        api(),
+        ServingPointer {
+            deploy: older.clone(),
+            containers: olds.to_vec(),
+            previous: None,
+            retiring: Vec::new(),
+            deciding: None,
+        },
+    );
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert_eq!(outcome.services(), ended(&[("api", ServiceResult::New)]));
+    let amendments = client.pins();
+    let [amendment] = amendments.as_slice() else {
+        panic!("one amendment for the step: {amendments:?}");
+    };
+    assert_eq!(amendment.pointer.retiring, olds);
+    assert_eq!(
+        client.pointers.lock().unwrap().get(&api()),
+        Some(&ServingPointer {
+            deploy: run_id(),
+            containers: news.to_vec(),
+            previous: Some(older),
+            retiring: olds.to_vec(),
+            deciding: None,
+        })
+    );
+    client.assert_done();
+}
+
+#[tokio::test]
+async fn a_stopped_copy_stays_held_until_its_deploy_publishes() {
+    let machine = machine('1');
+    let (old, new) = (container('a'), container('b'));
+    let plan = vec![swap(&machine, &old, UpdateOrder::StopFirst)];
+    let client = Scripted::new(vec![
+        observed(Call::Inspect(machine, old), running()),
+        ok(Call::Stop(machine, old)),
+        created(Call::Run(machine, ContainerKind::ServiceContainer), &new),
+    ]);
+    let older = DeploymentLogId::parse("older").unwrap();
+    client.pointers.lock().unwrap().insert(
+        api(),
+        ServingPointer {
+            deploy: older,
+            containers: vec![old],
+            previous: None,
+            retiring: Vec::new(),
+            deciding: None,
+        },
+    );
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert_eq!(outcome.services(), ended(&[("api", ServiceResult::New)]));
+    let amendments = client.pins();
+    let [amendment] = amendments.as_slice() else {
+        panic!("one amendment: {amendments:?}");
+    };
+    assert_eq!(
+        serde_json::to_value(&amendment.pointer).unwrap()["deciding"],
+        serde_json::json!("run"),
+        "the stop holds its copy for this deploy"
+    );
+    let published = serde_json::to_value(client.pointers.lock().unwrap().get(&api())).unwrap();
+    assert_eq!(published["deploy"], serde_json::json!("run"));
+    assert_eq!(
+        published.get("deciding"),
+        None,
+        "publishing lets the copy retire"
+    );
+    client.assert_done();
 }
 
 #[tokio::test]

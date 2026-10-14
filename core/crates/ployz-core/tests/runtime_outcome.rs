@@ -42,6 +42,23 @@ fn current_outcome_confirms_only_services_with_all_operations_completed() {
     assert_eq!(result["confirmedServices"], json!(["api"]));
     assert_eq!(result["failedServices"], json!(["worker"]));
     assert_eq!(result["unattemptedServices"], json!([]));
+    assert_eq!(result["services"], json!([]));
+    let mut ended = partial.clone();
+    ended["services"] = json!([
+        {"service":"api","result":"new"},
+        {"service":"worker","result":"old"},
+    ]);
+    assert_eq!(
+        project(
+            preview(vec![("api", api.clone()), ("worker", worker.clone())]),
+            ended
+        )
+        .unwrap()["services"],
+        json!([
+            {"service":"api","result":"new"},
+            {"service":"worker","result":"old"},
+        ])
+    );
     let mut incomplete = partial;
     incomplete["unexecuted"] = json!([replica.clone()]);
     assert_eq!(

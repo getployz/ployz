@@ -254,7 +254,9 @@ impl Candidate {
             .iter()
             .any(|(_, pointer)| pointer.containers.contains(&self.container));
         let retiring = pointers.get(&self.service).is_some_and(|pointer| {
-            pointer.deploy == self.deploy && pointer.retiring.contains(&self.container)
+            pointer.deploy == self.deploy
+                && pointer.deciding.is_none()
+                && pointer.retiring.contains(&self.container)
         });
         retiring && !pointed
     }
@@ -302,6 +304,7 @@ impl Retirer {
             .collect();
         pointers
             .iter()
+            .filter(|(_, pointer)| pointer.deciding.is_none())
             .flat_map(|(service, pointer)| {
                 pointer
                     .retiring
@@ -702,6 +705,7 @@ mod tests {
                 containers: vec![id("b")],
                 previous: Some(deploy("d1")),
                 retiring: vec![id("a")],
+                deciding: None,
             },
         )])
     }
@@ -1032,6 +1036,7 @@ mod tests {
                 containers: vec![id("c")],
                 previous: Some(deploy("d2")),
                 retiring: vec![id("a"), id("b")],
+                deciding: None,
             },
         )]);
         let decided = decide_now(
@@ -1054,6 +1059,7 @@ mod tests {
                 containers: vec![id("b")],
                 previous: None,
                 retiring: vec![id("b")],
+                deciding: None,
             },
         )]);
         let mut retirer = Retirer::default();
@@ -1159,6 +1165,7 @@ mod tests {
                 containers: Vec::new(),
                 previous: Some(deploy("d1")),
                 retiring: vec![id("a")],
+                deciding: None,
             },
         )]);
         let acks = Acks::from([((one.id, service()), acked("d2", &[]))]);
@@ -1291,6 +1298,7 @@ mod tests {
                 containers: vec![id("b")],
                 previous: Some(deploy("d1")),
                 retiring: vec![id("a"), id("c")],
+                deciding: None,
             })
             .unwrap(),
         );
@@ -1325,6 +1333,7 @@ mod tests {
                 containers: vec![id("b")],
                 previous: None,
                 retiring: Vec::new(),
+                deciding: None,
             })
             .unwrap(),
         );
@@ -1366,6 +1375,38 @@ mod tests {
         while stopping.join_next().await.is_some() {}
 
         assert_eq!(*host.retired.lock().unwrap(), vec![id("a")]);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_copy_an_undecided_deploy_stopped_is_never_retired() {
+        let db = corrosion_db();
+        let local = machine("local", 1);
+        let mut row = serde_json::to_value(pointers().get(&service()).unwrap()).unwrap();
+        row["deciding"] = serde_json::json!("d3");
+        db.execute(
+            "INSERT INTO cluster (key, value) VALUES (?, ?)",
+            rusqlite::params![ServingPointer::key(&service()), row.to_string()],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO ingress_routes (machine_id, service_id, deploy, containers) VALUES (?, ?, ?, ?)",
+            rusqlite::params![
+                local.id.as_str(),
+                service().to_string(),
+                "d2",
+                serde_json::to_string(&[id("b")]).unwrap()
+            ],
+        )
+        .unwrap();
+        let (store, server) = identity_store(db).await;
+        let host = FakeHost::new(&[id("a"), id("b")], ackers(&[&local]));
+        let mut retirer = Retirer::default();
+        let mut stopping = JoinSet::new();
+        round(&host, &store, &mut retirer, &mut stopping).await;
+        while stopping.join_next().await.is_some() {}
+
+        assert_holds_a(&host);
         server.abort();
     }
 
@@ -1522,6 +1563,7 @@ mod tests {
                 containers: vec![id("b")],
                 previous: Some(deploy("d2")),
                 retiring: Vec::new(),
+                deciding: None,
             },
         );
         let (store, server) = identity_store(db).await;
@@ -1551,6 +1593,7 @@ mod tests {
                 containers: vec![id("b")],
                 previous: Some(deploy("d2")),
                 retiring: Vec::new(),
+                deciding: None,
             },
         );
         let (store, server) = identity_store(db).await;
@@ -1599,6 +1642,7 @@ mod tests {
                     containers: vec![id("a")],
                     previous: Some(deploy("d2")),
                     retiring,
+                    deciding: None,
                 })
                 .unwrap(),
             );
@@ -1720,6 +1764,7 @@ mod tests {
                     containers: vec![b],
                     previous: Some(deploy("d1")),
                     retiring: vec![a],
+                    deciding: None,
                 })
                 .unwrap(),
             );
@@ -1845,6 +1890,7 @@ mod tests {
                 containers: vec![machine.a],
                 previous: Some(deploy("d2")),
                 retiring: vec![machine.b],
+                deciding: None,
             })
             .unwrap(),
         );
@@ -1944,6 +1990,7 @@ mod tests {
             containers: vec![machine.a],
             previous: Some(deploy("d2")),
             retiring: vec![machine.b],
+            deciding: None,
         };
         cluster.write_serving_pointer(
             &ServingPointer::key(&service()),
@@ -2005,6 +2052,7 @@ mod tests {
                 containers: vec![machine.a],
                 previous: Some(deploy("d2")),
                 retiring,
+                deciding: None,
             })
             .unwrap(),
         );
@@ -2051,6 +2099,7 @@ mod tests {
                 containers: vec![id("c")],
                 previous: Some(deploy("d2")),
                 retiring: vec![machine.a, machine.b],
+                deciding: None,
             })
             .unwrap(),
         );

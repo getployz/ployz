@@ -90,6 +90,7 @@ async fn dispatches_the_complete_algebra() {
             containers: vec![old, removed],
             previous: None,
             retiring: Vec::new(),
+            deciding: None,
         },
     );
 
@@ -113,6 +114,7 @@ async fn dispatches_the_complete_algebra() {
             containers: vec![removed],
             previous: Some(older.clone()),
             retiring: vec![old],
+            deciding: None,
         }
     );
     let publications = client.publications();
@@ -126,6 +128,7 @@ async fn dispatches_the_complete_algebra() {
             containers: vec![new_run, replacement, nested],
             previous: Some(older),
             retiring: vec![old, removed],
+            deciding: None,
         }
     );
     client.assert_done();

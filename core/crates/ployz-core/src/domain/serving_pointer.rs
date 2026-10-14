@@ -15,6 +15,11 @@ pub struct ServingPointer {
     /// Containers this pointer superseded. While a pointed row is missing they
     /// serve with `previous`, which matters for old copies without a deploy label.
     pub retiring: Vec<ContainerId>,
+    /// Deploy that stopped Containers in `retiring` and has not decided yet.
+    /// While set, `retiring` is neither retired nor pruned: a failed Deploy
+    /// restarts those Containers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deciding: Option<DeploymentLogId>,
 }
 
 impl ServingPointer {

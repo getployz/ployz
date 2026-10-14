@@ -59,6 +59,7 @@ pub(crate) fn pointer(deploy: char, containers: &[char], retiring: &[char]) -> S
         containers: containers.iter().map(|id| container(*id)).collect(),
         previous: None,
         retiring: retiring.iter().map(|id| container(*id)).collect(),
+        deciding: None,
     }
 }
 

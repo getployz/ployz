@@ -89,6 +89,8 @@ pub(crate) enum Event {
     Failed(usize),
     Published(usize),
     PublishFailed(usize),
+    /// The flip got no answer and could not be read back.
+    PublishUnconfirmed(usize),
     /// `machine` routes `service` at this Deploy's pointer.
     Acked {
         service: ServiceName,
@@ -125,6 +127,7 @@ pub(crate) struct Schedule {
     routed: BTreeSet<ServiceName>,
     /// Starts dispatched and not yet returned, whatever their group's phase.
     starting: BTreeSet<usize>,
+    unconfirmed: BTreeSet<usize>,
     failed: bool,
 }
 
@@ -156,6 +159,7 @@ impl Schedule {
             acked: BTreeSet::new(),
             routed: BTreeSet::new(),
             starting: BTreeSet::new(),
+            unconfirmed: BTreeSet::new(),
             failed: false,
         }
     }
@@ -209,12 +213,15 @@ impl Schedule {
     }
 
     /// Where each Service group ended: done is new, started but not done is
-    /// old, never started is not started.
+    /// old, never started is not started, and a flip nobody could read back is
+    /// unconfirmed.
     pub(crate) fn services(&self) -> Vec<ServiceOutcome> {
         self.slots
             .iter()
-            .filter_map(|Slot { group, phase }| {
+            .enumerate()
+            .filter_map(|(index, Slot { group, phase })| {
                 let result = match phase {
+                    _ if self.unconfirmed.contains(&index) => ServiceResult::Unconfirmed,
                     Phase::Done => ServiceResult::New,
                     Phase::Waiting => ServiceResult::NotStarted,
                     Phase::Active { .. } | Phase::Publishing | Phase::Failed => ServiceResult::Old,
@@ -314,6 +321,10 @@ impl Schedule {
             Event::PublishFailed(group) => {
                 self.slot_mut(group).phase = Phase::Failed;
                 self.failed = true;
+            }
+            Event::PublishUnconfirmed(group) => {
+                self.unconfirmed.insert(group);
+                self.apply(Event::PublishFailed(group));
             }
             Event::Acked { service, machine } => {
                 self.acked.insert((service, machine));

@@ -54,6 +54,10 @@ fn ended(results: &[(&str, ServiceResult)]) -> Vec<ServiceOutcome> {
         .collect()
 }
 
+fn api() -> QualifiedService {
+    QualifiedService::new(test_namespace(), ServiceName::parse("api").unwrap())
+}
+
 fn run_id() -> DeploymentLogId {
     DeploymentLogId::parse("run").unwrap()
 }
@@ -149,6 +153,8 @@ struct Scripted {
     superseded: Option<ServiceName>,
     /// The row lands but the reply never arrives.
     lost_reply: bool,
+    /// Reads fail once this run's row lands.
+    unreadable_flip: bool,
     /// The write fails in transit and never lands.
     dropped_publish: bool,
     /// No Machine routes a pin.
@@ -180,6 +186,7 @@ impl Scripted {
             unrouted_machine: None,
             superseded: None,
             lost_reply: false,
+            unreadable_flip: false,
             dropped_publish: false,
             unrouted_pin: false,
             dead: Vec::new(),
@@ -429,6 +436,9 @@ impl MachineOperations for Scripted {
         service: &QualifiedService,
     ) -> Result<ServingPointerRead, RpcError> {
         let pointer = self.pointers.lock().unwrap().get(service).cloned();
+        if self.unreadable_flip && pointer.as_ref().is_some_and(|row| row.deploy == run_id()) {
+            return Err(error("read timed out"));
+        }
         // Lagging ingress routes every row up to this run's, never this run's.
         let ours = pointer
             .as_ref()
