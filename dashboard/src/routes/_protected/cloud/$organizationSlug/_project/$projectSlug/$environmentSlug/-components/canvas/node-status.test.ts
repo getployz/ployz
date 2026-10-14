@@ -136,21 +136,33 @@ describe("containerTrouble", () => {
   const now = Date.UTC(2026, 9, 12, 12);
   const marker = (kind: "oom" | "exit" | "restart", replica: string, server = web1, at = now - 60_000) => ({ kind, replica, server, at });
 
-  it("says nothing when each replica restarted once, as a requested restart or rollback does", () => {
-    expect(containerTrouble([marker("restart", "web-1"), marker("restart", "web-2"), marker("restart", "web-3")], now)).toBeNull();
+  const crashed = (replica: string, server = web1, at = now - 60_000) => [
+    { ...marker("exit", replica, server, at - 2_000), exitCode: 1 },
+    marker("restart", replica, server, at),
+  ];
+
+  it("says nothing when each replica crashed and came back once", () => {
+    expect(containerTrouble([...crashed("web-1"), ...crashed("web-2"), ...crashed("web-3")], now)).toBeNull();
   });
 
-  it("says Restarting when one replica restarted twice", () => {
-    expect(containerTrouble([marker("restart", "web-1"), marker("restart", "web-2"), marker("restart", "web-1")], now)).toBe("Restarting");
+  it("says Restarting when one replica crashed and came back twice", () => {
+    expect(containerTrouble([...crashed("web-1", web1, now - 5 * 60_000), ...crashed("web-2"), ...crashed("web-1")], now)).toBe("Restarting");
+  });
+
+  it("counts a restart after an OOM kill or an exit with no code only for what they are", () => {
+    const afterOom = [marker("oom", "web-1", web1, now - 3 * 60_000), marker("restart", "web-1", web1, now - 2 * 60_000)];
+    expect(containerTrouble(afterOom, now)).toBe("OOM");
+    const unknownExit = [10, 5].flatMap((ago) => [marker("exit", "web-1", web1, now - ago * 60_000), marker("restart", "web-1", web1, now - ago * 60_000 + 1_000)]);
+    expect(containerTrouble(unknownExit, now)).toBeNull();
   });
 
   it("tells apart same-named replicas on different Servers", () => {
-    expect(containerTrouble([marker("restart", "web-1", web1), marker("restart", "web-1", web2)], now)).toBeNull();
+    expect(containerTrouble([...crashed("web-1", web1), ...crashed("web-1", web2)], now)).toBeNull();
   });
 
   it("says OOM for one OOM kill, over any restarts, and nothing for exits alone", () => {
     expect(containerTrouble([marker("oom", "web-1")], now)).toBe("OOM");
-    expect(containerTrouble([marker("restart", "web-1"), marker("restart", "web-1"), marker("oom", "web-2")], now)).toBe("OOM");
+    expect(containerTrouble([...crashed("web-1", web1, now - 5 * 60_000), ...crashed("web-1"), marker("oom", "web-2")], now)).toBe("OOM");
     expect(containerTrouble([marker("exit", "web-1"), marker("exit", "web-1")], now)).toBeNull();
     expect(containerTrouble([], now)).toBeNull();
   });
@@ -177,7 +189,7 @@ describe("containerTrouble", () => {
     const hour = 60 * 60_000;
     expect(containerTrouble([marker("oom", "web-1", web1, now - hour + 1)], now)).toBe("OOM");
     expect(containerTrouble([marker("oom", "web-1", web1, now - hour)], now)).toBeNull();
-    expect(containerTrouble([marker("restart", "web-1", web1, now - 2 * hour), marker("restart", "web-1")], now)).toBeNull();
+    expect(containerTrouble([...crashed("web-1", web1, now - 2 * hour), ...crashed("web-1")], now)).toBeNull();
   });
 });
 

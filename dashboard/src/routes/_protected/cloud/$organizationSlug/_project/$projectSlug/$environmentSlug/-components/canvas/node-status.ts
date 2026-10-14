@@ -76,23 +76,35 @@ export function runtimeLine(
   }
 }
 
-/** What a Service's containers went through in the last hour, as its ⚠ says it. An OOM kill outranks a restart. */
+/** What a Service's containers went through lately, as its ⚠ says it. An OOM kill outranks a crash loop. */
 export type ContainerTrouble = "OOM" | "Restarting";
 
 /** How long a marker counts toward the ⚠ after it happened. */
 export const TROUBLE_WINDOW_MS = 60 * 60_000;
 
-/** What `markers` say at `now` (Unix milliseconds): only those in the hour before it count, however old the read is. */
-export function containerTrouble(markers: readonly Pick<Marker, "kind" | "at" | "server" | "replica">[], now: number): ContainerTrouble | null {
-  const recent = markers.filter((marker) => marker.at > now - TROUBLE_WINDOW_MS);
+/** How long a crash loop stays Restarting after its latest restart. Docker waits at most a minute between restarts. */
+export const LOOP_QUIET_MS = 10 * 60_000;
+
+/**
+ * What `markers` say at `now` (Unix milliseconds): only those in the hour before it count, however old the read is.
+ * A replica is Restarting once it came back twice after crashing, until it stays up for `LOOP_QUIET_MS`. A restart
+ * after a clean exit, as a Deploy or a requested restart leaves, is no crash.
+ */
+export function containerTrouble(markers: readonly Pick<Marker, "kind" | "at" | "server" | "replica" | "exitCode">[], now: number): ContainerTrouble | null {
+  const recent = markers.filter((marker) => marker.at > now - TROUBLE_WINDOW_MS).sort((a, b) => a.at - b.at);
   if (recent.some((marker) => marker.kind === "oom")) return "OOM";
-  const restarted = new Set<string>();
-  for (const marker of recent.filter((marker) => marker.kind === "restart")) {
+  const crashed = new Set<string>();
+  const loops = new Map<string, { restarts: number; last: number }>();
+  for (const marker of recent) {
     const replica = `${marker.server.id}/${marker.replica}`;
-    if (restarted.has(replica)) return "Restarting";
-    restarted.add(replica);
+    if (marker.kind === "exit") {
+      if (marker.exitCode !== undefined && marker.exitCode !== 0) crashed.add(replica);
+      else crashed.delete(replica);
+    } else if (marker.kind === "restart" && crashed.has(replica)) {
+      loops.set(replica, { restarts: (loops.get(replica)?.restarts ?? 0) + 1, last: marker.at });
+    }
   }
-  return null;
+  return [...loops.values()].some((loop) => loop.restarts >= 2 && loop.last > now - LOOP_QUIET_MS) ? "Restarting" : null;
 }
 
 /**
@@ -104,7 +116,7 @@ export type NodeIssues = { count: number; tone: "bad" | "warn"; monitoring: bool
 
 /**
  * What on a node the user can fix: a Service that's down or struggling, a failing healthcheck, domains that need them,
- * the hostname of an open uptime incident (`unreachable`), which is red, and an OOM kill or crash loop in the last hour
+ * the hostname of an open uptime incident (`unreachable`), which is red, and an OOM kill in the last hour or a crash loop
  * (`trouble`), which is amber. Uptime adds nothing when the Service is already down, and shares one issue with a domain
  * needing attention on the same hostname.
  */
