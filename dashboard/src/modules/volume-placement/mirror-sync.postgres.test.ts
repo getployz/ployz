@@ -80,6 +80,25 @@ describe("the mirror sync", () => {
     expect(await runs()).toEqual([]);
   });
 
+  it("names each sync's snapshot apart from one taken the same second", async () => {
+    let tick = 0;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => 1_790_000_000_000 + tick++);
+    const names: string[] = [];
+    const naming: CopyAsk = (asker, machine, expected, want) => {
+      if (want.kind === "snapshot") names.push(want.name);
+      return ask(asker, machine, expected, want);
+    };
+    try {
+      await run(syncMirrors(organizationId, volume, () => Effect.succeed(members), naming));
+      await run(syncMirrors(organizationId, volume, () => Effect.succeed(members), naming));
+    } finally {
+      clock.mockRestore();
+    }
+    expect(tick).toBeLessThan(1_000);
+    expect(names).toHaveLength(2);
+    expect(new Set(names).size).toBe(2);
+  });
+
   it("takes no snapshot while a lane is open, and names the lane", async () => {
     const release = await run(requestVolumeRun({ userId: null, organizationId }, { volumeId, environment, kind: "release", args: {} }));
     if (!release.ok) throw new Error(release.refusal.message);
