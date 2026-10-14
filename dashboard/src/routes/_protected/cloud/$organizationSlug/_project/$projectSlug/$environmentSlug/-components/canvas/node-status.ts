@@ -87,21 +87,22 @@ export const LOOP_QUIET_MS = 10 * 60_000;
 
 /**
  * What `markers` say at `now` (Unix milliseconds): only those in the hour before it count, however old the read is.
- * A replica is Restarting once it came back twice after crashing, until it stays up for `LOOP_QUIET_MS`. A restart
- * after a clean exit, as a Deploy or a requested restart leaves, is no crash.
+ * A replica's crash loop is its run of restarts that each followed a non-zero exit; a clean exit, as a Deploy or a
+ * requested restart leaves, ends the run. The replica is Restarting once its run reaches two, until it stays up for
+ * `LOOP_QUIET_MS`.
  */
 export function containerTrouble(markers: readonly Pick<Marker, "kind" | "at" | "server" | "replica" | "exitCode">[], now: number): ContainerTrouble | null {
   const recent = markers.filter((marker) => marker.at > now - TROUBLE_WINDOW_MS).sort((a, b) => a.at - b.at);
   if (recent.some((marker) => marker.kind === "oom")) return "OOM";
-  const crashed = new Set<string>();
-  const loops = new Map<string, { restarts: number; last: number }>();
+  const loops = new Map<string, { crashed: boolean; restarts: number; last: number }>();
   for (const marker of recent) {
     const replica = `${marker.server.id}/${marker.replica}`;
+    const loop = loops.get(replica) ?? { crashed: false, restarts: 0, last: 0 };
     if (marker.kind === "exit") {
-      if (marker.exitCode !== undefined && marker.exitCode !== 0) crashed.add(replica);
-      else crashed.delete(replica);
-    } else if (marker.kind === "restart" && crashed.has(replica)) {
-      loops.set(replica, { restarts: (loops.get(replica)?.restarts ?? 0) + 1, last: marker.at });
+      if (marker.exitCode !== undefined && marker.exitCode !== 0) loops.set(replica, { ...loop, crashed: true });
+      else loops.delete(replica);
+    } else if (marker.kind === "restart" && loop.crashed) {
+      loops.set(replica, { crashed: false, restarts: loop.restarts + 1, last: marker.at });
     }
   }
   return [...loops.values()].some((loop) => loop.restarts >= 2 && loop.last > now - LOOP_QUIET_MS) ? "Restarting" : null;

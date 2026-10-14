@@ -156,6 +156,18 @@ describe("containerTrouble", () => {
     expect(containerTrouble(unknownExit, now)).toBeNull();
   });
 
+  it("needs a crash before each restart it counts", () => {
+    const once = [...crashed("web-1", web1, now - 5 * 60_000), marker("restart", "web-1", web1, now - 2 * 60_000)];
+    expect(containerTrouble(once, now)).toBeNull();
+  });
+
+  it("forgets a crash loop once the replica exits cleanly", () => {
+    const loop = [...crashed("web-1", web1, now - 8 * 60_000), ...crashed("web-1", web1, now - 6 * 60_000)];
+    const deploy = { ...marker("exit", "web-1", web1, now - 4 * 60_000), exitCode: 0 };
+    expect(containerTrouble([...loop, deploy], now)).toBeNull();
+    expect(containerTrouble([...loop, deploy, ...crashed("web-1", web1, now - 2 * 60_000)], now)).toBeNull();
+  });
+
   it("tells apart same-named replicas on different Servers", () => {
     expect(containerTrouble([...crashed("web-1", web1), ...crashed("web-1", web2)], now)).toBeNull();
   });
