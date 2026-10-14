@@ -1090,11 +1090,21 @@ class VolumeMoveTests(unittest.TestCase):
 
     def test_case_selection_keeps_named_cases_in_table_order_and_refuses_unknown_names(self):
         names = [row["name"] for row in volume_move.CASES]
-        self.assertEqual(volume_move.select_cases(volume_move.CASES, []), volume_move.CASES)
+        self.assertEqual(volume_move.select_cases(volume_move.CASES, []),
+                         [row for row in volume_move.CASES if "opt_in" not in row])
         picked = volume_move.select_cases(volume_move.CASES, ["kill-cut", "clean"])
         self.assertEqual([row["name"] for row in picked], [name for name in names if name in {"clean", "kill-cut"}])
         with self.assertRaises(RuntimeError):
             volume_move.select_cases(volume_move.CASES, ["clean", "kill-nothing"])
+
+    def test_a_default_run_leaves_out_deploy_committed_and_a_named_run_keeps_it(self):
+        # It can only skip until Cloud records the lane a Deploy followed, so a default run would always exit 1.
+        default = [row["name"] for row in volume_move.select_cases(volume_move.CASES, [])]
+        self.assertEqual(default, [row["name"] for row in volume_move.CASES if row["name"] != "deploy-committed"])
+        named = volume_move.select_cases(volume_move.CASES, ["deploy-committed", "clean"])
+        self.assertEqual([row["name"] for row in named], ["clean", "deploy-committed"])
+        reason = next(row for row in volume_move.CASES if row["name"] == "deploy-committed").get("opt_in") or ""
+        self.assertRegex(reason, r"https://github\.com/getployz/ployz/issues/\d+")
 
     def test_busy_names_the_run_a_volume_busy_refusal_holds_and_nothing_else(self):
         run = dict(id="run-9", kind="sync", state="running")
