@@ -130,6 +130,8 @@ class ClusterModel:
         # "no cursor".
         self.unread_procs = set()
         self.restart_reply = {}
+        # Machine to a line its journal read emits first that is not a JSON object.
+        self.garbage_journal = {}
 
     def process(self):
         self.ids += 1
@@ -201,7 +203,9 @@ class ClusterModel:
                       __REALTIME_TIMESTAMP=str(int(at * 1e6)), MESSAGE=text)
                  for index, (where, at, text) in enumerate(self.journal)
                  if where == machine and index > int(found[1]) and index not in self.vacuumed]
-        return (1 if self.poll_fails else 0), "".join(json.dumps(line) + "\n" for line in lines)
+        garbage = self.garbage_journal.get(machine)
+        return (1 if self.poll_fails else 0), ("" if garbage is None else garbage + "\n") + "".join(
+            json.dumps(line) + "\n" for line in lines)
 
     def tail_cursor(self, machine):
         return f"-- cursor: {self.cursor(machine, len(self.journal) - 1)}\n"
@@ -2223,6 +2227,85 @@ finally:
         self.assertEqual(summary["cases"], [])
         self.assertIn("disarming a leftover fault failed", summary["error"])
         self.assertFalse(summary["passed"])
+
+    def run_forget(self, **identity):
+        """Run kill-forget-writer whose first mirror rm fails after 3 s; its fault line at +1 carries identity."""
+        kill = next(case for case in volume_move.KILLS if case["name"] == "kill-forget-writer")
+        checks, model = self.checks()
+        self.first_move(model, 3, op=("volume", "mirror", "rm"),
+                        effect=lambda begun: model.log_fault("machine-1", begun + 1, **identity))
+        with redirect_stdout(io.StringIO()):
+            checks.run_all([kill])
+        return self.recorded(kill["name"])
+
+    def recorded(self, name):
+        """The case's whole record, with the credited event the summary leaves out."""
+        return json.loads((self.root / "out" / f"{name}.json").read_text())
+
+    def test_a_forget_fault_line_is_credited_by_the_volume_alone(self):
+        # A Forget want names nothing, so its line carries only the Volume.
+        result = self.run_forget()
+        self.assertEqual(result["triggered"]["identity"], dict(volume=PHYSICAL), result)
+        self.assertTrue(result["passed"], result)
+        result = self.run_forget(volume="other_vol")
+        self.assertIsNone(result["triggered"], result)
+        self.assertIn("the trigger never fired before the run ended", result["failures"], result)
+
+    def test_a_fault_line_before_cloud_records_an_epoch_is_not_credited(self):
+        # The want names the first run's epoch; until Cloud records one, no line can be matched against it.
+        def before(model):
+            self.model = model
+            postgres = model.postgres
+            model.postgres = lambda sql: (0, "") if sql.startswith("select epoch ") else postgres(sql)
+        result, _ = self.run_with("kill-snapshot", before, 3, lambda begun: self.model.log_fault("machine-1", begun + 1))
+        self.assertIsNone(self.recorded("kill-snapshot")["triggered"], result)
+        self.assertIn("the trigger never fired before the run ended", result["failures"], result)
+
+    def test_a_receive_is_not_looked_for_before_cloud_records_an_epoch(self):
+        # The receiving trigger needs the epoch to name the round pull; without one no shell runs on the Machine.
+        scripts = []
+
+        def before(model):
+            self.model = model
+            postgres, guest = model.postgres, model.guest
+            model.postgres = lambda sql: (0, "") if sql.startswith("select epoch ") else postgres(sql)
+            model.guest = lambda machine, script: (scripts.append(script), guest(machine, script))[1]
+            self.admit_pull(model, "machine-2", 1, 2)
+        result, _ = self.run_with("soak-1-rounds-runner-kill", before, 3)
+        self.assertIsNone(self.recorded("soak-1-rounds-runner-kill")["triggered"], result)
+        self.assertFalse([script for script in scripts if "pgrep -f" in script], result)
+
+    def test_the_first_qualifying_entry_after_the_cursor_is_the_one_stored(self):
+        # Two lines of the first run land before one poll; the earlier one is the credited event.
+        def effect(begun):
+            self.model.log_fault("machine-1", begun + 1)
+            self.model.log_fault("machine-1", begun + 1)
+        result, model = self.run_with("kill-snapshot", lambda model: setattr(self, "model", model), 5, effect)
+        self.assertTrue(result["passed"], result)
+        first = next(index for index, (where, _, text) in enumerate(model.journal)
+                     if where == "machine-1" and text.startswith("fault: "))
+        self.assertEqual(self.recorded("kill-snapshot")["triggered"]["cursor"], model.cursor("machine-1", first), result)
+
+    def test_trigger_polling_stops_once_the_first_run_is_terminal(self):
+        # The run ends at +3 and a line of this Volume lands at +10: nothing after the end may be credited, so the
+        # harness stops looking rather than wait for it.
+        result, model = self.run_with("kill-snapshot", lambda model: setattr(self, "model", model), 3,
+                                      lambda begun: self.model.log_fault("machine-1", begun + 10))
+        self.assertIsNone(self.recorded("kill-snapshot")["triggered"], result)
+        self.assertIn("the trigger never fired before the run ended", result["failures"], result)
+        self.assertFalse(any("could be credited" in failure for failure in result["failures"]), result)
+
+    def test_a_journal_entry_that_cannot_be_parsed_withholds_credit(self):
+        # A read that holds a line it cannot place may hide the credited one's order, so it credits nothing.
+        for garbage in ("not json", "[]"):
+            with self.subTest(garbage):
+                def before(model, garbage=garbage):
+                    self.model = model
+                    model.garbage_journal["machine-1"] = garbage
+                result, _ = self.run_with("kill-snapshot", before, 3,
+                                          lambda begun: self.model.log_fault("machine-1", begun + 1))
+                self.assertIsNone(self.recorded("kill-snapshot")["triggered"], result)
+                self.assertIn("the trigger never fired before the run ended", result["failures"], result)
 
     def test_a_fault_line_from_an_older_epoch_is_not_credited(self):
         # A late step of the closed epoch-1 run reaches its fault point after the clean start, naming snapshot w-1-0.
