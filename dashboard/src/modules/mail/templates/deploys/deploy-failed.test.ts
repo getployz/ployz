@@ -4,7 +4,7 @@ import { asTestDouble } from "#/lib/test-double";
 import { deployFailedMail } from "#/modules/mail/templates/deploys/deploy-failed";
 
 const deployment = (fields: Partial<DeploymentView>) => asTestDouble<DeploymentView>()({
-  id: "dep 1", environment: { id: "e", project: "shop", name: "pr 7" }, status: "failed", builds: [], nodes: [], outcome: null, ...fields,
+  id: "dep 1", environment: { id: "e", project: "shop", name: "pr 7" }, status: "failed", builds: [], nodes: [], runtime_names: {}, outcome: null, ...fields,
 });
 const source = (service: string, repository = "acme/web") => asTestDouble<GitSource>()({
   service, repository, branch: "feature/login", commit: "8a7ed6e9f0c1d2b3a4f5e6d7c8b9a0f1e2d3c4b5",
@@ -48,6 +48,16 @@ it("describes the Service whose build failed and opens its build log", () => {
   }, [source("web"), source("api", "acme/api")]);
   expect(failed.facts?.[0]).toEqual({ label: "Repository", value: "acme/api", mono: true });
   expect(failed.action?.url).toMatch(/\?logs=build&service=svc%20api$/);
+});
+
+it("names Services as authored, not by their Private DNS names", () => {
+  const failed = mail({
+    builds: [{ service: "api", commit: "8a7ed6e", status: "failed", message: "no Dockerfile" }],
+    nodes: [serviceNode("svc web", "web"), serviceNode("svc api", "api")],
+    runtime_names: { api: "private-api" },
+  }, [source("web"), source("private-api", "acme/api")]);
+  expect(failed.facts?.[0]).toEqual({ label: "Repository", value: "acme/api", mono: true });
+  expect(failed.facts).toContainEqual({ label: "Services", value: "web, api" });
 });
 
 it("counts several Services and falls back to the Environment when the deploy had no Git source", () => {
