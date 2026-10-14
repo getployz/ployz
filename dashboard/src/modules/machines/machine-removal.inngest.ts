@@ -44,14 +44,19 @@ export const decodeMachineRemoveFailureEvent = Schema.decodeUnknownOption(
 
 type StepTools = Pick<PloyzStepTools, "run" | "sendEvent">;
 
+export const MACHINE_REMOVE_RETRIES = 5;
+export const isLastTry = (attempt: number) => attempt >= MACHINE_REMOVE_RETRIES;
+
 export async function executeProcessMachineRemove({
   event,
   step,
   runId,
+  attempt: stepAttempt,
 }: {
   event: { data: unknown };
   step: StepTools;
   runId: string;
+  attempt: number;
 }) {
   const attemptId = await step.run(
     "normalize-machine-remove-attempt-id",
@@ -90,7 +95,11 @@ export async function executeProcessMachineRemove({
   const attempt = prepared.attempt;
   // Read before the removal: once the Server is gone the Cluster no longer names it or lists its copies.
   const leaving = await step.run("observe-leaving-server", () =>
-    runInngestEffect(observeLeavingServerActivity({ organizationId: attempt.organizationId, machineId: attempt.machineId })),
+    runInngestEffect(observeLeavingServerActivity({
+      organizationId: attempt.organizationId,
+      machineId: attempt.machineId,
+      lastTry: isLastTry(stepAttempt),
+    })),
   );
   const sent = await step.run("remove-machine", () =>
     runInngestEffect(Effect.scoped(removeMachineActivity({ ...attempt, inngestRunId: runId }))),
@@ -229,17 +238,18 @@ export const createProcessMachineRemove = (inngest: PloyzInngest) =>
   inngest.createFunction(
   {
     id: PROCESS_MACHINE_REMOVE_FUNCTION_ID,
-    retries: 5,
+    retries: MACHINE_REMOVE_RETRIES,
     triggers: [{ event: machineRemoveRequestedEventType }],
     concurrency: [{ key: "event.data.attemptId", limit: 1 }],
     onFailure: async ({ event }) =>
       executeProcessMachineRemoveOnFailure({ event }),
   },
-  async ({ event, step, runId }) =>
+  async ({ event, step, runId, attempt }) =>
     executeProcessMachineRemove({
       event,
       step,
       runId,
+      attempt,
     }),
   );
 
