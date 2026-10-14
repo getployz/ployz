@@ -40,7 +40,7 @@ export const queueOrganizationMail = Effect.fn("Notifications.queueOrganizationM
   yield* Effect.forEach(recipients, (recipient) =>
     Effect.gen(function* () {
       const token = signUnsubscribeToken(Redacted.value(config.encryptionSecret), { userId: recipient.userId, type: mail.type });
-      const url = `${origin}/unsubscribe?token=${token}`;
+      const url = `${origin}/api/mail/unsubscribe?token=${token}`;
       const unsubscribe = { label: NOTIFICATION_TYPES[mail.type].unsubscribe, url };
       const rendered = yield* Effect.promise(() => renderMail({ ...mail.content, unsubscribe }, origin));
       const headers = { "List-Unsubscribe": `<${url}>`, "List-Unsubscribe-Post": "List-Unsubscribe=One-Click" };

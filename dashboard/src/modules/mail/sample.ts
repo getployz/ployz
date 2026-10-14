@@ -14,5 +14,5 @@ export const sampleMail = (origin: string): MailContent => ({
     { label: "Failed with", value: "502 Bad Gateway" },
   ],
   reason: "You're getting this because you're a member of Acme on Ployz.",
-  unsubscribe: { label: "Unsubscribe from uptime emails", url: `${origin}/unsubscribe?token=sample` },
+  unsubscribe: { label: "Unsubscribe from uptime emails", url: `${origin}/api/mail/unsubscribe?token=sample` },
 });

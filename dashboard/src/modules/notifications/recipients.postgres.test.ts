@@ -105,7 +105,7 @@ describe("queueOrganizationMail", () => {
     for (const event of events) {
       const headers = event.data["headers"] as Record<string, string>;
       expect(headers["List-Unsubscribe-Post"]).toBe("List-Unsubscribe=One-Click");
-      const link = /^<(https:\/\/cloud\.example\.com\/unsubscribe\?token=(.+))>$/.exec(headers["List-Unsubscribe"] ?? "");
+      const link = /^<(https:\/\/cloud\.example\.com\/api\/mail\/unsubscribe\?token=(.+))>$/.exec(headers["List-Unsubscribe"] ?? "");
       expect(link).not.toBeNull();
       const [, url = "", token = ""] = link ?? [];
       const to = event.data["to"] === "ada@acme.test" ? ada : cy;
