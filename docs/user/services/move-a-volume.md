@@ -111,22 +111,24 @@ why. What happens next depends on how far it got.
   all its data. The run fails and names what went wrong. Run the move again when you're ready.
 - **After it stops and before `web-2` starts it**, Ployz deletes the copy on `web-2` first, then
   starts your service again on the old server. The run fails and names what went wrong.
-- **Once `web-2` is told to start your service**, the volume belongs to the new server, and your
-  service stays down until the move finishes there. The run says so: `volume move data --to
-  web-2 again continues from there`. Run that line; it picks up where the move stopped.
+- **Once `web-2` is told to start your service**, the volume belongs to the new server. Ployz
+  finishes the move there: `web-2` starts your service and the old server's container goes. The
+  run fails and names what went wrong, and `ployz volume runs data` shows the release that
+  finished it.
 
-If the move stopped and nothing started your service again, release the volume:
+If Ployz Cloud lost the run itself, the cleanup starts within about an hour. To start it now, release
+the volume:
 
 ```
 ployz volume release data
 ```
 
 Release ends a move that stopped. Before `web-2` starts your service, Release deletes the copy
-on `web-2` and starts your service again on the old server. Once `web-2` runs it, Release
-removes the old server's stopped container and the move is done.
+on `web-2` and starts your service again on the old server. Once `web-2` is told to start it,
+Release starts it there and removes the old server's stopped container.
 
-Once `web-2` is told to start your service, finishing the move still needs the old server to answer. If the old server
-dies, your service stays down until it comes back or you restore the volume.
+Finishing on `web-2` still needs the old server to answer for its container. If the old server
+dies, the release fails, and your service stays down until it comes back or you restore the volume.
 
 ## Restore a volume
 

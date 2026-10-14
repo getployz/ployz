@@ -15,7 +15,7 @@ import type {
   VolumeSwitchRequest,
   WantedCopy,
 } from "@ployz/sdk";
-import { and, desc, eq, inArray, isNull, lt, max, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, lt, max, or, type SQL, sql } from "drizzle-orm";
 import { Effect, Option, Schema } from "effect";
 import { NonRetriableError } from "inngest";
 import type { OperationAsked } from "#/modules/approvals/approvals.server";
@@ -28,7 +28,7 @@ import { enqueueEvent } from "#/modules/operations/outbox.server";
 import { loadOrganizationConnections } from "#/modules/machines/connections.server";
 import { organizationMachine } from "#/modules/machines/tables";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
-import { type Requirement, requirementFor, requirements } from "#/modules/runtime/daemon-compat";
+import { type Requirement, requirementFor, requirements, serverSupports } from "#/modules/runtime/daemon-compat";
 import { observeVolumeCopies, type PloyzSdkError, sdkFailureMessage } from "#/modules/runtime/ployz.server";
 import { alreadyOn, newestGuid, type PlanInput, type Planned, planFromCopies, type Refusal, type RefusalCode } from "#/modules/volume-run/plan";
 import { isBehind, isCurrent, releaseLine } from "#/modules/server-upgrade/server-upgrade";
@@ -49,6 +49,7 @@ import {
   VOLUME_RUN_UNCLAIMED_LIMIT_MS,
   type VolumeRunInput,
   type VolumeRunKind,
+  type VolumeRunPhase,
   type VolumeRunState,
   type VolumeRunView,
 } from "#/modules/volume-run/volume-run";
@@ -70,6 +71,9 @@ export type RunContext = {
   readonly args: AnyVolumeRunArgs;
   readonly orphan: boolean;
   readonly refquotaBytes: number;
+  readonly gen: number;
+  readonly phase: VolumeRunPhase;
+  readonly current: MachineId | null;
 };
 
 export type MachineRef = { readonly id: MachineId; readonly name: MachineName };
@@ -106,6 +110,9 @@ const contextOf = (row: VolumeRunRow): RunContext => ({
   args: row.args,
   orphan: row.orphan,
   refquotaBytes: row.refquotaBytes,
+  gen: row.gen,
+  phase: row.phase,
+  current: row.current,
 });
 
 const ended = (state: Exclude<VolumeRunState, "requested" | "running">, message: string | null) =>
@@ -245,7 +252,7 @@ export const planVolumeRun = Effect.fn("VolumeRun.plan")(function* (
     const refusal = yield* seedLandingRefusal(organizationId, input.environment, input.volumeId, input.args.into.volumeId);
     if (refusal !== null) return { ok: false, refusal } satisfies VolumeRunPlan;
   }
-  const members = yield* observeVolumeMembers(organizationId, volume.dockerVolume, input.kind).pipe(Effect.option);
+  const members = yield* observeVolumeMembers(organizationId, volume.dockerVolume, input).pipe(Effect.option);
   if (Option.isNone(members)) {
     return { ok: false, refusal: { code: "unavailable", message: "Your servers aren't answering. Try again once they are.", details: null } } satisfies VolumeRunPlan;
   }
@@ -420,7 +427,7 @@ export type SwitchReason = CopyRefusal | SwitchError["reason"];
 
 const SWITCH_REASONS = [
   "mismatch", "no_transition", "busy", "no_capacity", "behind", "written", "no_source",
-  "precondition", "volume_switching", "no_writer", "restore_point_gone",
+  "precondition", "volume_switching", "no_writer", "restore_point_gone", "stale",
 ] as const satisfies readonly SwitchReason[];
 
 const SwitchErrorDetails = Schema.Struct({ details: Schema.Struct({ reason: Schema.Literals(SWITCH_REASONS) }) });
@@ -433,7 +440,7 @@ export function switchErrorOf(error: PloyzSdkError): SwitchReason | null {
 
 const CopyRefusedDetails = Schema.Struct({
   details: Schema.Struct({
-    reason: Schema.Literals(["mismatch", "no_transition", "busy", "no_capacity", "behind", "written", "no_source"]),
+    reason: Schema.Literals(["mismatch", "no_transition", "busy", "no_capacity", "behind", "written", "no_source", "stale"]),
     copy: Schema.NullOr(Schema.Unknown),
   }),
 });
@@ -461,6 +468,8 @@ export function switchFailureMessage(reason: SwitchReason, ctx: Pick<RunContext,
       return `${machine.name} has no room for ${name}'s mirror`;
     case "restore_point_gone":
       return `the restore point is gone from ${name} on ${machine.name}`;
+    case "stale":
+      return `a newer run took ${name} on ${machine.name}`;
     case "busy":
       return undefined;
   }
@@ -511,7 +520,7 @@ export const setVolumeCopy = Effect.fn("VolumeRun.setVolumeCopy")(function* (
 ) {
   yield* requireOwner(ctx.id, inngestRunId);
   const session = yield* openSession(ctx.organizationId);
-  return yield* session.volumeSwitch(machine.id, { command: "set_volume_copy", payload: { name: ctx.dockerVolume, expect, want } }).pipe(
+  return yield* session.volumeSwitch(machine.id, { command: "set_volume_copy", payload: { name: ctx.dockerVolume, expect, want, gen: ctx.gen } }).pipe(
     Effect.map((reply): CopyAnswer => ({ ok: true, copy: reply.copy })),
     Effect.catch((error) => {
       const refused = decodeCopyRefused("cause" in error ? error.cause : undefined);
@@ -545,7 +554,7 @@ const serviceContainers = Effect.fn("VolumeRun.serviceContainers")(function* (or
     && container.resolved_spec.volumes.some(({ source }) => source.kind === "provisioned" && source.name === dockerVolume));
 }, Effect.scoped);
 
-/** The one Service container on `machine` that mounts this Volume: the cut stops it, an undo starts it, and B's start copies its spec. */
+/** The one Service container on `machine` that mounts this Volume, whose image B needs before the cut. */
 export const findHolder = Effect.fn("VolumeRun.findHolder")(function* (ctx: RunContext, inngestRunId: string, machine: MachineRef) {
   yield* requireOwner(ctx.id, inngestRunId);
   const holders = (yield* serviceContainers(ctx.organizationId, ctx.dockerVolume)).filter((container) => container.machine_id === machine.id);
@@ -560,13 +569,6 @@ export const findHolder = Effect.fn("VolumeRun.findHolder")(function* (ctx: RunC
     redactedSpec: holder.resolved_spec,
   };
   return { ok: true, holder: holderOf } as const;
-});
-
-/** Whether B already runs the Service, so a resent start can't be what makes it run. */
-export const runningOn = Effect.fn("VolumeRun.runningOn")(function* (ctx: RunContext, inngestRunId: string, machine: MachineRef) {
-  yield* requireOwner(ctx.id, inngestRunId);
-  return (yield* serviceContainers(ctx.organizationId, ctx.dockerVolume))
-    .some((container) => container.machine_id === machine.id && container.runtime.state === "running");
 });
 
 export type Kept = { readonly machine: MachineRef; readonly containerId: ContainerId };
@@ -597,33 +599,75 @@ export const copyImage = Effect.fn("VolumeRun.copyImage")(function* (ctx: RunCon
 export const creationKey = (ctx: Pick<RunContext, "volumeId">, at: SnapshotGuid) => `${ctx.volumeId}-${at}`;
 
 /**
- * B becomes the writer at G and creates the Service from A's stopped Container. The spec is read and sent inside one
- * step, so it never lands in a step result.
+ * The commit: this run makes `to` the writer. It wins once, and again for the run that already won it or a release that
+ * inherited it; a row taken over or committed elsewhere loses.
  */
-export const startOnTarget = Effect.fn("VolumeRun.startOnTarget")(function* (
+export const commitMove = Effect.fn("VolumeRun.commit")(function* (ctx: Pick<RunContext, "id">, inngestRunId: string, to: MachineId) {
+  const { drizzle } = yield* Database;
+  const rows = yield* drizzle.update(volumeRun)
+    .set({ phase: "committed", current: to, updatedAt: new Date() })
+    .where(and(
+      eq(volumeRun.id, ctx.id),
+      eq(volumeRun.inngestRunId, inngestRunId),
+      eq(volumeRun.state, "running"),
+      or(eq(volumeRun.phase, "warm"), and(eq(volumeRun.phase, "committed"), eq(volumeRun.current, to))),
+    ))
+    .returning({ id: volumeRun.id });
+  return rows.length === 1;
+});
+
+/**
+ * The point of no return: the commit, then B becomes the writer at G and creates the Service from the newest stopped
+ * Container elsewhere. One step, so B is never told to start by a run that does not own the commit, and the spec never
+ * lands in a step result. A B that already runs the Service is left alone.
+ */
+export const commitAndStart = Effect.fn("VolumeRun.commitAndStart")(function* (
   ctx: RunContext,
   inngestRunId: string,
-  move: { readonly from: MachineRef; readonly holder: Holder; readonly to: MachineRef; readonly expect: ExpectedCopy; readonly at: SnapshotGuid; readonly epoch: number },
+  start: { readonly to: MachineRef; readonly expect: ExpectedCopy; readonly at: SnapshotGuid; readonly epoch: number },
 ) {
-  yield* requireOwner(ctx.id, inngestRunId);
-  const { from, holder, to } = move;
+  const { to } = start;
+  if (!(yield* commitMove(ctx, inngestRunId, to.id))) {
+    const lost: CopyAnswer = { ok: false, reason: "stale", copy: null, message: `a newer run took ${ctx.volumeName} before ${to.name} started it` };
+    return lost;
+  }
+  const containers = yield* serviceContainers(ctx.organizationId, ctx.dockerVolume);
+  if (containers.some((container) => container.machine_id === to.id && container.runtime.state === "running")) {
+    const running: CopyAnswer = { ok: true, copy: null };
+    return running;
+  }
+  const [holder] = containers
+    .filter((container) => container.machine_id !== to.id && container.runtime.state !== "running")
+    .sort((a, b) => b.created_at_unix_nanos - a.created_at_unix_nanos);
+  if (holder === undefined) return yield* Effect.fail(new NonRetriableError(`${ctx.volumeName} has no stopped Service container to start on ${to.name}`));
   const session = yield* openSession(ctx.organizationId);
-  const { container } = yield* session.inspectContainer(from.id, holder.containerId).pipe(
-    Effect.mapError((error) => new Error(`reading ${holder.redactedSpec.name}'s spec on ${from.name}: ${sdkFailureMessage(error, [from])}`)),
+  const { container } = yield* session.inspectContainer(holder.machine_id, holder.container_id).pipe(
+    Effect.mapError((error) => new Error(`reading ${holder.resolved_spec.name}'s spec: ${sdkFailureMessage(error)}`)),
   );
   const spec = container.resolved_spec;
-  return yield* setVolumeCopy(ctx, inngestRunId, to, move.expect, {
+  return yield* setVolumeCopy(ctx, inngestRunId, to, start.expect, {
     kind: "writer",
-    at: move.at,
-    epoch: move.epoch,
+    at: start.at,
+    epoch: start.epoch,
     start: {
       kind: "create",
       namespace: holder.namespace,
       resolved_spec: { ...spec, container: { ...spec.container, pull_policy: "never" } },
-      creation_key: creationKey(ctx, move.at),
+      creation_key: creationKey(ctx, start.at),
     },
   });
 }, Effect.scoped);
+
+/** Removes the stopped Service containers the Move left on `machines`; a rerun finds the ones already gone gone. */
+export const removeKept = Effect.fn("VolumeRun.removeKept")(function* (ctx: RunContext, inngestRunId: string, machines: readonly MachineRef[]) {
+  yield* requireOwner(ctx.id, inngestRunId);
+  const containers = yield* serviceContainers(ctx.organizationId, ctx.dockerVolume);
+  for (const container of containers) {
+    const machine = machines.find((candidate) => candidate.id === container.machine_id);
+    if (machine === undefined || container.runtime.state === "running") continue;
+    yield* removeContainer(ctx, inngestRunId, machine, container.container_id);
+  }
+});
 
 export const removeContainer = Effect.fn("VolumeRun.removeContainer")(function* (ctx: RunContext, inngestRunId: string, machine: MachineRef, containerId: ContainerId) {
   yield* requireOwner(ctx.id, inngestRunId);
@@ -633,26 +677,39 @@ export const removeContainer = Effect.fn("VolumeRun.removeContainer")(function* 
   );
 }, Effect.scoped);
 
-/** Each managed Server's copy of `dockerVolume`; a Server that doesn't answer in time is a member that didn't answer. */
-export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(function* (organizationId: string, dockerVolume: string, kind?: VolumeRunKind) {
+const isDestination = (run: VolumeRunInput, machine: MachineRef) =>
+  (run.kind === "move" || run.kind === "mirror") && (run.args.machine === undefined ? run.args.to === machine.name : run.args.machine === machine.id);
+
+/**
+ * Each managed Server's copy of `dockerVolume`; a Server that doesn't answer in time is a member that didn't answer.
+ * For a run, a Server that holds a copy or receives one and lacks the generation floor is a member that lacks it.
+ */
+export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(function* (organizationId: string, dockerVolume: string, run?: VolumeRunInput) {
   const session = yield* openSession(organizationId);
   const frame = yield* session.watchFirstFrame(5_000);
   // A Docker-only Machine holds no copy and may not serve the verb, so it must not block the run.
   const managed = frame.machines.filter((observed) => observed.storage?.state !== "stateless");
-  return yield* Effect.forEach(managed, ({ machine }) =>
-    session.volumeSwitch(machine.id, { command: "inspect_volume_copy", payload: { name: dockerVolume } }).pipe(
-      Effect.map((view): Member => ({
-        machine: { id: machine.id, name: machine.name },
-        address: managementAddress(machine.public_key),
-        answered: true,
-        view,
-      })),
+  return yield* Effect.forEach(managed, ({ machine }) => {
+    const ref: MachineRef = { id: machine.id, name: machine.name };
+    const server = { name: machine.name, daemonVersion: machine.runtime.daemon_version };
+    const lacks = (capability: string) => lackSentence(organizationId, capability, server, run?.kind).pipe(
+      Effect.map((lack): Member => ({ machine: ref, answered: false, lack })),
+    );
+    const floorless = run !== undefined && serverSupports({ capabilities: machine.runtime.capabilities ?? [] }, requirements.volumeFloor) === false;
+    return session.volumeSwitch(machine.id, { command: "inspect_volume_copy", payload: { name: dockerVolume } }).pipe(
+      Effect.flatMap((view) => floorless && (view.copy !== null || isDestination(run, ref))
+        ? lacks(requirements.volumeFloor.capability)
+        : Effect.succeed<Member>({
+          machine: ref,
+          address: managementAddress(machine.public_key),
+          answered: true,
+          view,
+        })),
       Effect.timeout(OBSERVE_TIMEOUT),
-      Effect.catchTag("ServerLacks", (lack) => lackSentence(organizationId, lack.capability, { name: machine.name, daemonVersion: machine.runtime.daemon_version }, kind).pipe(
-        Effect.map((lack): Member => ({ machine: { id: machine.id, name: machine.name }, answered: false, lack })),
-      )),
-      Effect.orElseSucceed((): Member => ({ machine: { id: machine.id, name: machine.name }, answered: false })),
-    ), { concurrency: "unbounded" });
+      Effect.catchTag("ServerLacks", (lack) => lacks(lack.capability)),
+      Effect.orElseSucceed((): Member => ({ machine: ref, answered: false })),
+    );
+  }, { concurrency: "unbounded" });
 }, Effect.scoped);
 
 /** What a run of each kind is called when a Server can't run it. */
@@ -679,7 +736,8 @@ const lackSentence = Effect.fn("VolumeRun.lackSentence")(function* (
 
 export const observeMembers = Effect.fn("VolumeRun.observe")(function* (ctx: RunContext, inngestRunId: string) {
   yield* requireOwner(ctx.id, inngestRunId);
-  return yield* observeVolumeMembers(ctx.organizationId, ctx.dockerVolume, ctx.kind);
+  // SAFETY: the row's kind and args were written together from one VolumeRunInput.
+  return yield* observeVolumeMembers(ctx.organizationId, ctx.dockerVolume, { kind: ctx.kind, args: ctx.args } as VolumeRunInput);
 });
 
 /**
@@ -705,20 +763,53 @@ const CLOSED_BY = {
   cancellation: { state: "cancelled", message: "the run was cancelled" },
 } as const;
 
+type Closing = ReturnType<typeof ended>;
+
+/**
+ * Ends the running row `owned` picks. A Move it ended hands the Volume to a release run: back to A while warm, forward
+ * to B once committed. A release never starts another.
+ */
+const endAndRelease = Effect.fn("VolumeRun.endAndRelease")(function* (owned: SQL | undefined, closing: Closing) {
+  const database = yield* Database;
+  return yield* database.transaction(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    const rows = yield* drizzle.update(volumeRun).set(closing).where(and(owned, eq(volumeRun.state, "running"))).returning();
+    for (const row of rows.filter((ended) => ended.kind === "move")) {
+      const [release] = yield* drizzle.insert(volumeRun).values({
+        organizationId: row.organizationId,
+        environmentId: row.environmentId,
+        volumeId: row.volumeId,
+        volumeName: row.volumeName,
+        dockerVolume: row.dockerVolume,
+        refquotaBytes: row.refquotaBytes,
+        kind: "release",
+        args: {},
+        phase: row.phase,
+        current: row.current,
+        epoch: row.phase === "committed" ? row.epoch : null,
+      }).onConflictDoNothing().returning();
+      if (release !== undefined) yield* enqueueRun(release);
+    }
+    return rows.length;
+  }));
+});
+
+/** A failure after the rounds: the run ends its row and releases what it left in flight. */
+export const failAndRelease = (ctx: Pick<RunContext, "id">, inngestRunId: string, message: string) =>
+  endAndRelease(and(eq(volumeRun.id, ctx.id), eq(volumeRun.inngestRunId, inngestRunId)), ended("failed", message)).pipe(
+    Effect.andThen(Effect.fail(new NonRetriableError(clip(message)))),
+  );
+
 export const closeVolumeRun = Effect.fn("VolumeRun.close")(function* (
   inngestRunId: string,
   end: keyof typeof CLOSED_BY | { readonly error: string | null },
 ) {
-  const { drizzle } = yield* Database;
   const closing = end === "failure" || end === "cancellation"
     ? ended(CLOSED_BY[end].state, CLOSED_BY[end].message)
     : end.error === null
       ? ended("lost", "the run ended without recording how")
       : ended("failed", end.error.trim().length > 0 ? end.error : "the run failed");
-  const rows = yield* drizzle.update(volumeRun).set(closing)
-    .where(and(eq(volumeRun.inngestRunId, inngestRunId), eq(volumeRun.state, "running")))
-    .returning({ id: volumeRun.id });
-  return rows.length;
+  return yield* endAndRelease(eq(volumeRun.inngestRunId, inngestRunId), closing);
 });
 
 export type InngestRunLookup<R> = (runId: string) => Effect.Effect<InngestRunStatus, unknown, R>;
@@ -745,10 +836,7 @@ export const closeStaleVolumeRuns = <R>(lookup: InngestRunLookup<R>) => Effect.g
     const status = yield* lookup(row.inngestRunId).pipe(Effect.option);
     if (Option.isNone(status) || status.value === "running") continue;
     const [state, message] = STALE_ENDS[status.value];
-    const done = yield* drizzle.update(volumeRun).set(ended(state, message))
-      .where(and(eq(volumeRun.id, row.id), eq(volumeRun.inngestRunId, row.inngestRunId), eq(volumeRun.state, "running")))
-      .returning({ id: volumeRun.id });
-    closed += done.length;
+    closed += yield* endAndRelease(and(eq(volumeRun.id, row.id), eq(volumeRun.inngestRunId, row.inngestRunId)), ended(state, message));
   }
   return { not_started: unclaimed.length, closed };
 }).pipe(Effect.withSpan("VolumeRun.closeStale"));
