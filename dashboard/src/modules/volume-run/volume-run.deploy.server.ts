@@ -14,6 +14,7 @@ import {
   ended,
   holdDeployLane,
   keptOn,
+  laneInputOf,
   laneTarget,
   type MachineRef,
   observeMembers,
@@ -78,8 +79,8 @@ export const placeDeployVolumes = Effect.fn("VolumeRun.placeDeploy")(function* (
         if (targets.has(lane.volumeId)) beside.push(lane.id);
         continue;
       }
-      // SAFETY: a deploy row's args were written from a VolumeRunArgs["deploy"].
-      const deploy = lane.kind === "deploy" ? (lane.args as VolumeRunArgs["deploy"]) : null;
+      const input = laneInputOf(lane);
+      const deploy = input.kind === "deploy" ? input.args : null;
       if (deploy !== null && lane.inngestRunId === inngestRunId) {
         if (deploy.hold !== true) placed.push({ kind: "took", run: contextOf(lane), resume: deploy.resume });
         continue;
@@ -92,8 +93,7 @@ export const placeDeployVolumes = Effect.fn("VolumeRun.placeDeploy")(function* (
         continue;
       }
       const hold = deploy?.hold === true;
-      // SAFETY: a move row's args are a Destination.
-      const resume = lane.kind === "move" ? (lane.args as VolumeRunArgs["move"]) : (deploy?.resume ?? null);
+      const resume = input.kind === "move" ? input.args : (deploy?.resume ?? null);
       const { run } = yield* takeDeployLane(CLOUD(organizationId), {
         input: { volumeId: lane.volumeId, kind: "deploy", args: hold ? { deployment: deploymentId, resume: null, hold } : { deployment: deploymentId, resume } },
         volume: { environmentId, volumeName: lane.volumeName, dockerVolume: lane.dockerVolume, refquotaBytes: lane.refquotaBytes },
@@ -121,8 +121,10 @@ export const placeDeployVolumes = Effect.fn("VolumeRun.placeDeploy")(function* (
   }));
 });
 
-// SAFETY: a move row's args are a Destination.
-const pinned = (lane: Pick<typeof volumeRun.$inferSelect, "kind" | "args">) => (lane.kind === "move" ? (lane.args as VolumeRunArgs["move"]).machine ?? null : null);
+const pinned = (lane: Pick<typeof volumeRun.$inferSelect, "kind" | "args">) => {
+  const input = laneInputOf(lane);
+  return input.kind === "move" ? input.args.machine ?? null : null;
+};
 
 const answered = (members: readonly Member[]) => members.filter((member): member is AnsweredMember => member.answered);
 
