@@ -298,7 +298,6 @@ fn sites_import_the_trace_page_with_their_facts() {
 "
         )
     );
-    // The HTTP redirect site reports the HTTPS route it redirects to.
     assert!(
         site_text(&caddyfile, "http://secure.example.com")
             .contains(&format!("\timport ployz_trace {a} dep_7 {a}:2,{b}:1 ok\n"))

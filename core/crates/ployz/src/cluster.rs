@@ -982,8 +982,6 @@ impl Client {
         let mut tasks = JoinSet::new();
         let mut omissions = Vec::new();
         for machine in machines {
-            // TODO: the entry Machine's observer-relative Membership Observation is the
-            // current trust boundary; it can be stale and is not an authority or freshness proof.
             if machine.invites_rpc() {
                 tasks.spawn(list_on_machine(
                     self.clone(),

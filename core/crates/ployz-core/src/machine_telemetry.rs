@@ -110,7 +110,6 @@ pub enum TelemetryObservation {
     },
     /// Host telemetry and bridge endpoint capacity were requested together.
     Full {
-        /// Fresh host telemetry.
         host: MachineTelemetry,
         /// Fresh Ployz bridge endpoint capacity.
         bridge: BridgeEndpointCapacity,

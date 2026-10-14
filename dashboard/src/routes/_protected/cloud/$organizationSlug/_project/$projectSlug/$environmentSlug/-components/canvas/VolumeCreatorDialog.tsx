@@ -56,7 +56,6 @@ export function VolumeCreatorDialog({
     }
   }
 
-  // The Volume shows at once and saves in the background; a refused name comes back as a toast.
   function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const storage = volumeStorage(managed, sizeGB);

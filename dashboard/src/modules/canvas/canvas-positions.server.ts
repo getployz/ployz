@@ -25,7 +25,6 @@ export const updateCanvasPosition = Effect.fn("Canvas.updatePosition")(function*
         resourceId: input.resourceId, x, y, updatedAt: now })
       .onConflictDoUpdate({
         target: [environmentCanvasNodePosition.environmentId, environmentCanvasNodePosition.resourceType, environmentCanvasNodePosition.resourceId],
-        // Only its own Organization moves it.
         setWhere: eq(environmentCanvasNodePosition.organizationId, organization.id),
         set: { x, y, updatedAt: now },
       })

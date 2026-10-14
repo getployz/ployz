@@ -1235,8 +1235,6 @@ fn a_sync_id_stays_used_after_its_proposal_ends() {
     assert_eq!(db.env("production", "api"), json!({"X": "4", "Y": "0"}));
 }
 
-// Lifetime.
-
 #[test]
 fn a_save_ends_proposals_and_keeps_what_arrived() {
     let db = Db::new();
@@ -1304,8 +1302,6 @@ fn a_whole_discard_drops_membership_and_a_path_discard_rewinds_one_row() {
     assert!(db.proposals().is_empty());
     assert!(db.included().is_empty());
 }
-
-// Undo.
 
 #[test]
 fn undo_of_an_unrefreshed_proposal_removes_it() {

@@ -154,7 +154,6 @@ impl NamedRow {
         &self.row
     }
 
-    /// Its Service or Volume.
     #[must_use]
     pub const fn node(&self) -> &NodeName {
         &self.node

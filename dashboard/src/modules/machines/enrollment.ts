@@ -306,7 +306,6 @@ export function pairingEnrollmentStatus(founderMachineId: string | null): Organi
   return founderMachineId === null ? "pending" : "ready";
 }
 
-/** No pairing row means the organization is unclaimed. */
 export function organizationEnrollmentStatus(row: OrganizationEnrollmentRow | undefined): OrganizationEnrollmentStatus {
   return row?.status ?? "unclaimed";
 }

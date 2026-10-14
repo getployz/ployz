@@ -53,7 +53,6 @@ async fn an_image_service_deploys_through_the_hidden_store() {
     }
     assert_eq!(ployz(&["diff"])["changes"], json!([]));
 
-    // A staged edit ships with a targeted deploy of the reviewed version.
     ployz(&["set", "web.replicas=2"]);
     let plan = ployz(&["deploy", "web", "--plan"]);
     let version = plan["version"].as_str().unwrap();
@@ -206,7 +205,6 @@ async fn an_image_service_deploys_through_the_hidden_store() {
         &["env", "rm", "staging", "--confirm", "shop/staging"],
     );
     assert_eq!(code, Some(1), "{refused}");
-    // The retry accepts the loss as reviewed: at the refusal's version.
     let version = refused["error"]["details"]["version"].as_str().unwrap();
     assert_eq!(
         refused["error"]["details"]["next"],
