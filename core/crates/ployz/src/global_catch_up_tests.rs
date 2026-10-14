@@ -235,7 +235,7 @@ async fn another_namespaces_matching_shape_does_not_satisfy_catch_up() {
         qualified("shop", "api"),
         'c',
         Placement::default(),
-        running_on(&joiner, 'c'),
+        running_on(&joiner, 'a'),
     );
     let prod = global_service(
         qualified("prod", "api"),
@@ -589,6 +589,35 @@ async fn a_copy_started_under_a_pointer_carries_that_deploys_label() {
             .collect();
         assert_eq!(labels, vec![pointer.map(|pointer| pointer.deploy)]);
     }
+}
+
+#[tokio::test]
+async fn a_started_copy_gone_before_the_final_listing_is_not_published() {
+    let row = FakeRow::default();
+    *row.row.lock().unwrap() = Some(pointed("dep-a", &['d'], &[]));
+    let (joiner, mut client) = replacing_client(row.clone());
+    client.target_services = Some(vec![global_service(
+        qualified("app", "api"),
+        'a',
+        Placement::default(),
+        running_on(&joiner, 'e'),
+    )]);
+    let caught_up = catch_up_globals(
+        &mut client,
+        &joiner,
+        &tokio_util::sync::CancellationToken::new(),
+        |_| {},
+    )
+    .await;
+    assert!(
+        caught_up.is_err(),
+        "another running copy does not stand in for it"
+    );
+    assert_eq!(
+        *row.row.lock().unwrap(),
+        Some(pointed("dep-a", &['d'], &[]))
+    );
+    assert_eq!(*row.publishes.lock().unwrap(), 0);
 }
 
 #[tokio::test]

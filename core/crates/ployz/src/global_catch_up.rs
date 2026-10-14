@@ -414,7 +414,17 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
     let target_services = service_containers(target_containers);
     for (slot, id, started_under) in &expected {
         let identity = slot.identity();
-        if !slot.is_running_on(&target_services, this_machine) {
+        // The pointer names `id`, so `id` itself must run; another copy of this shape
+        // running here does not make it serve.
+        let runs = target_services.iter().any(|container| {
+            let observed = container.as_observation();
+            observed.container_id == *id
+                && matches!(
+                    observed.runtime,
+                    ployz_core::ContainerRuntimeObservation::Running { .. }
+                )
+        });
+        if !runs || !slot.is_running_on(&target_services, this_machine) {
             observe(CatchUpFact::Failed(identity.clone()));
             continue;
         }
