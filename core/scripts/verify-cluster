@@ -400,7 +400,7 @@ zfs version
 
 def overdue_drains(run, commands, backend):
     node = run["machines"][0]
-    containers = json.loads(cli(run, commands, ["--json", "--connect", "ssh://root@" + node["address"], "ps"]).stdout)["containers"]
+    containers = json.loads(cli(run, commands, ["--json", "--connect", "ssh://" + node["ssh"], "ps"]).stdout)["containers"]
     draining = {}
     for container in containers:
         if container.get("draining"):
