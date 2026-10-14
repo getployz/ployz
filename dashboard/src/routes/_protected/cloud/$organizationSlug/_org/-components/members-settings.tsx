@@ -47,19 +47,36 @@ export function MembersSettings({ organizationSlug }: { organizationSlug: string
   const { data } = useSuspenseQuery(organizationMembersQueryOptions(organizationSlug));
   const [inviting, setInviting] = useState(false);
   const [confirming, setConfirming] = useState<Pending>(null);
-  const refresh = () => queryClient.invalidateQueries({ queryKey: membersKey(organizationSlug) });
+  const queryKey = membersKey(organizationSlug);
+  const refresh = () => queryClient.invalidateQueries({ queryKey });
   const failed = (fallback: string) => (cause: unknown) => toast.error(toErrorMessage(cause, fallback));
+  const optimistic = <Input,>(fallback: string, apply: (current: typeof data, input: Input) => typeof data) => ({
+    onMutate: async (input: Input) => {
+      await queryClient.cancelQueries({ queryKey });
+      const previous = queryClient.getQueryData<typeof data>(queryKey);
+      if (previous) queryClient.setQueryData(queryKey, apply(previous, input));
+      return { previous };
+    },
+    onError: (cause: unknown, _input: Input, context: { previous: typeof data | undefined } | undefined) => {
+      if (context?.previous) queryClient.setQueryData(queryKey, context.previous);
+      failed(fallback)(cause);
+    },
+    onSettled: refresh,
+  });
 
   const setRole = useMutation({
     mutationFn: (input: { member: string; role: Role }) => setMemberRoleServerFn({ data: { organizationSlug, ...input } }),
-    onSettled: refresh,
-    onError: failed("Couldn't change the role."),
+    ...optimistic<{ member: string; role: Role }>("Couldn't change the role.", (current, input) => ({
+      ...current,
+      members: current.members.map((row) => row.email === input.member ? { ...row, role: input.role } : row),
+    })),
   });
   const remove = useMutation({
     mutationFn: (member: string) => removeMemberServerFn({ data: { organizationSlug, member } }),
-    onSuccess: () => setConfirming(null),
-    onSettled: refresh,
-    onError: failed("Couldn't remove the member."),
+    ...optimistic<string>("Couldn't remove the member.", (current, member) => ({
+      ...current,
+      members: current.members.filter((row) => row.email !== member),
+    })),
   });
   const leave = useMutation({
     mutationFn: () => leaveOrganizationServerFn({ data: { organizationSlug } }),
@@ -69,8 +86,10 @@ export function MembersSettings({ organizationSlug }: { organizationSlug: string
   });
   const revoke = useMutation({
     mutationFn: (invite: string) => revokeInviteServerFn({ data: { organizationSlug, invite } }),
-    onSettled: refresh,
-    onError: failed("Couldn't revoke the invite."),
+    ...optimistic<string>("Couldn't revoke the invite.", (current, invite) => ({
+      ...current,
+      invites: current.invites.filter((row) => row.id !== invite),
+    })),
   });
 
   const yourRole = data.members.find((row) => row.you)?.role ?? null;
@@ -115,7 +134,6 @@ export function MembersSettings({ organizationSlug }: { organizationSlug: string
                         size="sm"
                         aria-label={`Role of ${row.name}`}
                         value={row.role}
-                        disabled={setRole.isPending}
                         onChange={(event) => {
                           const role = roles.find((candidate) => candidate === event.target.value);
                           if (role) setRole.mutate({ member: row.email, role });
@@ -160,7 +178,7 @@ export function MembersSettings({ organizationSlug }: { organizationSlug: string
                   <TableCell className="text-muted-foreground">{formatDate(invite.expires_at)}</TableCell>
                   <TableCell className="text-right">
                     {manager ? (
-                      <Button variant="ghost" size="sm" disabled={revoke.isPending} onClick={() => revoke.mutate(invite.id)}>Revoke</Button>
+                      <Button variant="ghost" size="sm" onClick={() => revoke.mutate(invite.id)}>Revoke</Button>
                     ) : null}
                   </TableCell>
                 </TableRow>
@@ -184,10 +202,14 @@ export function MembersSettings({ organizationSlug }: { organizationSlug: string
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"
-              disabled={remove.isPending || leave.isPending}
-              onClick={() => confirming?.kind === "remove" ? remove.mutate(confirming.email) : leave.mutate()}
+              disabled={leave.isPending}
+              onClick={() => {
+                if (confirming?.kind !== "remove") return leave.mutate();
+                remove.mutate(confirming.email);
+                setConfirming(null);
+              }}
             >
-              {remove.isPending || leave.isPending ? <Spinner data-icon="inline-start" /> : null}
+              {leave.isPending ? <Spinner data-icon="inline-start" /> : null}
               {confirming?.kind === "remove" ? "Remove" : "Leave"}
             </AlertDialogAction>
           </AlertDialogFooter>
