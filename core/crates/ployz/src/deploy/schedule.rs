@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ployz_core::{ContainerId, DeployOperation, MachineId, ServiceName};
+use ployz_core::{ContainerId, DeployOperation, MachineId, RemoveContainerPurpose, ServiceName};
 
 /// New Containers one Machine starts at once for one Deploy. Containers still
 /// draining from an earlier Deploy are not tasks here, so they never count.
@@ -12,11 +12,36 @@ pub(crate) const MACHINE_WINDOW: usize = 5;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Task {
     pub(crate) machine: MachineId,
-    /// Creates a new Container, which takes a slot in its Machine's window.
-    pub(crate) starts: bool,
+    pub(crate) kind: TaskKind,
+}
+
+/// What a task waits for besides its step order.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TaskKind {
+    /// Creates a new Container: takes a slot in its Machine's window and waits
+    /// until its Machine routes every changed dependency.
+    Start,
+    /// Runs a hook against the dependencies, so it waits for its Machine's
+    /// acks like a start but takes no window slot.
+    Hook,
     /// Removes a copy the Service's previous pointer named, so it waits until
     /// every Machine routes the new pointer.
-    pub(crate) unroutes: bool,
+    Unroute,
+    Other,
+}
+
+impl TaskKind {
+    pub(crate) fn of(operation: &DeployOperation) -> Self {
+        match operation {
+            DeployOperation::RunHook { .. } => Self::Hook,
+            DeployOperation::RemoveContainer {
+                purpose: RemoveContainerPurpose::Rollout,
+                ..
+            } => Self::Unroute,
+            operation if starts_container(operation) => Self::Start,
+            _ => Self::Other,
+        }
+    }
 }
 
 /// Operation indices that run one after another, or together.
@@ -304,18 +329,17 @@ impl Schedule {
                     still_pending.push(task);
                     continue;
                 }
-                let Task {
-                    machine, starts, ..
-                } = self.task(task);
+                let Task { machine, kind } = self.task(task);
+                let starts = *kind == TaskKind::Start;
                 let window = windows.entry(*machine).or_insert(0);
-                let room = !*starts || *window < MACHINE_WINDOW;
+                let room = !starts || *window < MACHINE_WINDOW;
                 if room
                     && self
                         .missing_acks(&self.slot(group).group, task)
                         .next()
                         .is_none()
                 {
-                    if *starts {
+                    if starts {
                         *window += 1;
                         self.starting.insert(task);
                     }
@@ -410,17 +434,15 @@ impl Schedule {
         group: &'a ServiceGroup,
         task: usize,
     ) -> impl Iterator<Item = &'a ServiceName> {
-        let Task {
-            machine,
-            starts,
-            unroutes,
-        } = self.task(task);
+        let Task { machine, kind } = self.task(task);
         group.dependencies.iter().filter(move |dependency| {
             self.published.contains(*dependency)
-                && if *unroutes {
-                    !self.routed.contains(*dependency)
-                } else {
-                    *starts && !self.acked.contains(&((*dependency).clone(), *machine))
+                && match kind {
+                    TaskKind::Start | TaskKind::Hook => {
+                        !self.acked.contains(&((*dependency).clone(), *machine))
+                    }
+                    TaskKind::Unroute => !self.routed.contains(*dependency),
+                    TaskKind::Other => false,
                 }
         })
     }
@@ -473,8 +495,14 @@ mod tests {
     fn start(machine: char) -> Task {
         Task {
             machine: self::machine(machine),
-            starts: true,
-            unroutes: false,
+            kind: TaskKind::Start,
+        }
+    }
+
+    fn hook(machine: char) -> Task {
+        Task {
+            machine: self::machine(machine),
+            kind: TaskKind::Hook,
         }
     }
 
@@ -628,14 +656,9 @@ mod tests {
             .collect();
         tasks.push(Task {
             machine: machine('1'),
-            starts: false,
-            unroutes: false,
+            kind: TaskKind::Other,
         });
-        tasks.push(Task {
-            machine: machine('2'),
-            starts: false,
-            unroutes: false,
-        });
+        tasks.push(hook('2'));
         let mut schedule = Schedule::new(
             vec![
                 group("api", &[], steps),
@@ -753,13 +776,34 @@ mod tests {
     }
 
     #[test]
+    fn a_hook_waits_for_its_machine_to_route_a_changed_dependency() {
+        let mut schedule = Schedule::new(
+            vec![
+                group("db", &[], vec![Step::Parallel(vec![0])]),
+                group("app", &["db"], vec![Step::Serial(1), Step::Serial(2)]),
+            ],
+            vec![start('1'), hook('2'), start('2')],
+        );
+        assert_eq!(starts(&mut schedule), vec![0]);
+        schedule.apply(Event::Completed(0));
+        assert_eq!(publishes(&mut schedule), vec![0]);
+        schedule.apply(Event::Published(0));
+        assert!(
+            starts(&mut schedule).is_empty(),
+            "the migration would run against the old db"
+        );
+        assert_eq!(schedule.blocked_on_acks(), vec![(1, name("db"))]);
+        schedule.apply(ack("db", '2'));
+        assert_eq!(starts(&mut schedule), vec![1]);
+    }
+
+    #[test]
     fn serial_steps_run_one_at_a_time_and_a_non_start_takes_no_window_slot() {
         let steps = vec![Step::Serial(0), Step::Serial(1), Step::Parallel(vec![2, 3])];
         let tasks = vec![
             Task {
                 machine: machine('1'),
-                starts: false,
-                unroutes: false,
+                kind: TaskKind::Other,
             },
             start('1'),
             start('1'),
@@ -855,8 +899,7 @@ mod tests {
             vec![
                 Task {
                     machine: machine('1'),
-                    starts: false,
-                    unroutes: false,
+                    kind: TaskKind::Other,
                 },
                 start('1'),
                 start('1'),
@@ -885,8 +928,7 @@ mod tests {
                 start('1'),
                 Task {
                     machine: machine('1'),
-                    starts: false,
-                    unroutes: false,
+                    kind: TaskKind::Other,
                 },
             ],
         );

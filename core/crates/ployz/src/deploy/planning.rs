@@ -3,16 +3,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use ployz_core::{
     ContainerAction, ContainerId, ContainerKind, DataLoss, DependencyCondition, HookContainer,
     IngressHost, MachineId, MachineObservation, MembershipObservation, Namespace, ObservedDataLoss,
-    PreservedVolume, PruneRefusal, QualifiedService, RemoveContainerPurpose, RequestedServiceSpec,
-    ServiceId, ServiceMode, ServiceName, ServiceObservation, ServicePlacementEligibility,
-    ServicePlacementIneligibleReason, UpdateOrder, VolumeToCreate, explicit_ingress_hosts,
-    hostname_owners, machine_matches_placement, same_service_mode_kind,
+    PreservedVolume, PruneRefusal, QualifiedService, RequestedServiceSpec, ServiceId, ServiceMode,
+    ServiceName, ServiceObservation, ServicePlacementEligibility, ServicePlacementIneligibleReason,
+    UpdateOrder, VolumeToCreate, explicit_ingress_hosts, hostname_owners,
+    machine_matches_placement, same_service_mode_kind,
 };
 
 use super::{
     DeployIntent, DeployOperation, DeployPreview, DeploySnapshot, DeployWarning,
     EliminatingConstraint, PlanError, PlanOptions, ReplacementOperation,
-    schedule::{ServiceGroup, Step, starts_container},
+    schedule::{ServiceGroup, Step, TaskKind, starts_container},
 };
 
 pub(super) mod capacity;
@@ -212,15 +212,8 @@ fn service_group(
             .take(range.end)
             .skip(range.start)
     };
-    let rollout_removal = |operation: &DeployOperation| {
-        matches!(
-            operation,
-            DeployOperation::RemoveContainer {
-                purpose: RemoveContainerPurpose::Rollout,
-                ..
-            }
-        )
-    };
+    let rollout_removal =
+        |operation: &DeployOperation| TaskKind::of(operation) == TaskKind::Unroute;
     let publish = service.is_some()
         && indexed()
             .any(|(_, operation)| starts_container(operation) || rollout_removal(operation));

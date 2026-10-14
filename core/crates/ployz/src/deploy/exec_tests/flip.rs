@@ -670,6 +670,45 @@ async fn a_stop_first_replacement_waits_for_its_dependency_like_any_start() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_hook_does_not_run_until_its_changed_dependency_is_routed() {
+    let machine = machine('1');
+    let mut migration = spec(None, None, Some(5_000));
+    migration.name = ServiceName::parse("web").unwrap();
+    let plan = vec![
+        run(&machine, spec(None, None, None), true),
+        hook(&machine, migration),
+        web_run(&machine),
+    ];
+    let client = Scripted {
+        unrouted: Some(ServiceName::parse("api").unwrap()),
+        ..Scripted::new(vec![created(
+            Call::Run(machine, ContainerKind::ServiceContainer),
+            &container('a'),
+        )])
+    };
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert!(
+        matches!(
+            &outcome,
+            DeployOutcome::Failed {
+                failed: FailedOperation::Operation {
+                    operation: DeployOperation::RunHook { .. },
+                    error: ExecutionError::DependencyHealth {
+                        failure: DependencyHealthFailure::NotRouted { .. },
+                        ..
+                    },
+                },
+                ..
+            }
+        ),
+        "{outcome:?}"
+    );
+    client.assert_done();
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_dependent_that_never_gets_its_ack_removes_what_it_started_elsewhere() {
     let first = machine('1');
     let second = machine('2');

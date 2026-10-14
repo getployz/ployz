@@ -16,9 +16,9 @@ use ployz_core::{
     FailedOperation, HEALTH_POLL_INTERVAL, HealthFailure, HealthVerdict, HookFailure,
     InspectContainerRequest, ListContainersRequest, MachineAction, MachineId, MachineTarget,
     MembershipObservation, Namespace, NewContainer, OperationPhase, PublishServingPointerRequest,
-    PullPolicy, QualifiedService, RemoveContainerPurpose, RemoveVolumeRequest, ResolvedServiceSpec,
-    RpcError, RpcErrorCode, RunTarget, ServingPointer, ServingPointerPublication,
-    ServingPointerRead, SlotKey, StopOptions, UpdateOrder, op,
+    PullPolicy, QualifiedService, RemoveVolumeRequest, ResolvedServiceSpec, RpcError, RpcErrorCode,
+    RunTarget, ServingPointer, ServingPointerPublication, ServingPointerRead, SlotKey, StopOptions,
+    UpdateOrder, op,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc::UnboundedSender;
@@ -31,7 +31,7 @@ use ployz_core::EnvironmentValues;
 use super::{
     DeployOperation, DeployOutcome, ReplacementCompensation, ReplacementOperation, RestartAttempt,
     StopAttempt,
-    schedule::{Action, Event, Schedule, ServiceGroup, Task, starts_container},
+    schedule::{Action, Event, Schedule, ServiceGroup, Task, TaskKind, starts_container},
 };
 
 pub(super) use super::progress::Progress;
@@ -585,14 +585,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
         .iter()
         .map(|operation| Task {
             machine: operation.machine_id(),
-            starts: starts_container(operation),
-            unroutes: matches!(
-                operation,
-                DeployOperation::RemoveContainer {
-                    purpose: RemoveContainerPurpose::Rollout,
-                    ..
-                }
-            ),
+            kind: TaskKind::of(operation),
         })
         .collect();
     let mut schedule = Schedule::new(plan.groups().to_vec(), tasks);
