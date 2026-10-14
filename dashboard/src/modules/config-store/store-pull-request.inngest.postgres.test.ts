@@ -23,16 +23,16 @@ type PullState = { state: "open" | "closed"; updated_at: string };
 
 /** GitHub with `acme/web` (42) through installation 7: pull request 5 as `pull` says; check runs land in `posted`. */
 function github(pull: PullState, posted: unknown[]) {
-  return fakeGithubApiBy(({ url, body }): JsonValue => {
-    if (url.endsWith("/check-runs")) posted.push(body);
-    return url.endsWith("/pulls/5")
+  return fakeGithubApiBy(({ path, body }): JsonValue => {
+    if (path.endsWith("/check-runs")) posted.push(body);
+    return path.endsWith("/pulls/5")
       ? {
         number: 5, title: "Add search", user: { login: "ada", type: "User" }, head: { ref: "search", sha: HEAD },
         base: { ref: "main" }, merged: false, merge_commit_sha: null, commits: 1, ...pull,
       }
-      : url.includes("/check-runs?")
+      : path.includes("/check-runs?")
         ? { check_runs: [] }
-        : url.endsWith("/check-runs") ? { id: 99 } : { id: 42, full_name: "acme/web", private: true };
+        : path.endsWith("/check-runs") ? { id: 99 } : { id: 42, full_name: "acme/web", private: true };
   }).service;
 }
 

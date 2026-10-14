@@ -58,7 +58,7 @@ export const listInstallationReposPage = Effect.fn(
   const api = yield* GithubApi;
   const response = yield* api.json({
     installationId,
-    url: `https://api.github.com/installation/repositories?per_page=${GITHUB_REPOSITORIES_PAGE_SIZE}&page=${page}`,
+    path: `/installation/repositories?per_page=${GITHUB_REPOSITORIES_PAGE_SIZE}&page=${page}`,
     operation: "list_repositories",
     schema: GithubRepositoriesPageResponse,
   });
@@ -101,7 +101,7 @@ export const listGithubRepositoryBranches = Effect.fn(
   while (true) {
     const pageBranches = yield* api.json({
       installationId,
-      url: `https://api.github.com/repos/${repository}/branches?per_page=100&page=${page}`,
+      path: `/repos/${repository}/branches?per_page=100&page=${page}`,
       operation: "list_branches",
       schema: GithubBranchesResponse,
     });
@@ -116,10 +116,10 @@ export const listGithubRepositoryFiles = Effect.fn("Github.listGithubRepositoryF
   function* (installationId: number | null, repositoryFullName: string, ref: string) {
     const api = yield* GithubApi;
     const repositoryPath = repositoryFullName.split("/").map(encodeURIComponent).join("/");
-    const base = `https://api.github.com/repos/${repositoryPath}`;
+    const base = `/repos/${repositoryPath}`;
     const commit = yield* api.json({
       installationId,
-      url: `${base}/commits/${encodeURIComponent(ref)}`,
+      path: `${base}/commits/${encodeURIComponent(ref)}`,
       operation: "resolve_file_ref",
       schema: Schema.Struct({
         commit: Schema.Struct({ tree: Schema.Struct({ sha: githubExactShaSchema }) }),
@@ -127,7 +127,7 @@ export const listGithubRepositoryFiles = Effect.fn("Github.listGithubRepositoryF
     });
     const tree = yield* api.json({
       installationId,
-      url: `${base}/git/trees/${commit.commit.tree.sha}?recursive=1`,
+      path: `${base}/git/trees/${commit.commit.tree.sha}?recursive=1`,
       operation: "list_files",
       schema: Schema.Struct({
         truncated: Schema.Boolean,
@@ -155,7 +155,7 @@ export const readGithubRepositoryContents = Effect.fn("Github.readGithubReposito
     const filePath = path.split("/").map(encodeURIComponent).join("/");
     return yield* api.json({
       installationId,
-      url: `https://api.github.com/repos/${repositoryPath}/contents/${filePath}?ref=${encodeURIComponent(ref)}`,
+      path: `/repos/${repositoryPath}/contents/${filePath}?ref=${encodeURIComponent(ref)}`,
       operation: "fetch_contents",
       schema: Schema.Union([
         Schema.Array(Schema.Struct({ path: Schema.String })),

@@ -44,9 +44,9 @@ const origin = "http://localhost:3000";
 
 /** GitHub: the private acme/web (through installation 7) has branches main and dev, a Dockerfile and a src directory. */
 const github = fakeGithubApi({
-  "https://api.github.com/repos/acme/web/branches?per_page=100&page=1": [{ name: "main" }, { name: "dev" }],
-  "https://api.github.com/repos/acme/web/commits/main": { commit: { tree: { sha: "a".repeat(40) } } },
-  [`https://api.github.com/repos/acme/web/git/trees/${"a".repeat(40)}?recursive=1`]: {
+  "/repos/acme/web/branches?per_page=100&page=1": [{ name: "main" }, { name: "dev" }],
+  "/repos/acme/web/commits/main": { commit: { tree: { sha: "a".repeat(40) } } },
+  [`/repos/acme/web/git/trees/${"a".repeat(40)}?recursive=1`]: {
     truncated: false,
     tree: [
       { path: "Dockerfile", type: "blob", mode: "100644" },
@@ -54,10 +54,10 @@ const github = fakeGithubApi({
       { path: "src/main.ts", type: "blob", mode: "100644" },
     ],
   },
-  "https://api.github.com/repos/acme/web/contents/Dockerfile?ref=main": {
+  "/repos/acme/web/contents/Dockerfile?ref=main": {
     type: "file", size: 12, encoding: "base64", content: Buffer.from("FROM alpine\n").toString("base64"),
   },
-  "https://api.github.com/repos/acme/web/contents/src?ref=main": [{ path: "src/main.ts" }],
+  "/repos/acme/web/contents/src?ref=main": [{ path: "src/main.ts" }],
 });
 
 const encryption = makeSecretEncryption("fixture-server-access-encryption-1234567890");

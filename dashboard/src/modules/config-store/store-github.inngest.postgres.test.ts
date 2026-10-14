@@ -22,11 +22,11 @@ const here = { project: null, environment: null };
 
 /** GitHub with `acme/web` (42) through installation 7: `main` at `state.head`, suite 9 as `state.suite` says. */
 function github(state: { head: string; suite: { status: string; conclusion: string | null; updated_at: string } }) {
-  return fakeGithubApiBy(({ url }): JsonValue => url.includes("/git/ref/")
+  return fakeGithubApiBy(({ path }): JsonValue => path.includes("/git/ref/")
     ? { ref: "refs/heads/main", object: { type: "commit", sha: state.head } }
-    : url.includes("/compare/")
+    : path.includes("/compare/")
       ? { status: "ahead", files: [{ filename: "src/app.ts" }] }
-      : url.includes("/check-suites/")
+      : path.includes("/check-suites/")
         ? { id: 9, head_sha: H2, ...state.suite }
         : { id: 42, full_name: "acme/web", private: true }).service;
 }
@@ -106,12 +106,12 @@ it.live(
   () =>
     Effect.gen(function* () {
       const state = { head: H1, merged: false };
-      const services = yield* Layer.build(yield* storeTestCloud({ github: fakeGithubApiBy(({ url }): JsonValue =>
-        url.includes("/git/ref/")
+      const services = yield* Layer.build(yield* storeTestCloud({ github: fakeGithubApiBy(({ path }): JsonValue =>
+        path.includes("/git/ref/")
           ? { ref: "refs/heads/main", object: { type: "commit", sha: state.head } }
-          : url.includes("/compare/")
+          : path.includes("/compare/")
             ? { status: "ahead", files: [{ filename: "src/app.ts" }] }
-            : url.endsWith("/pulls/5")
+            : path.endsWith("/pulls/5")
               ? {
                 number: 5, title: "Add search", user: { login: "ada", type: "User" }, head: { ref: "search", sha: H2 },
                 base: { ref: "main" }, merged: state.merged, merge_commit_sha: state.merged ? MERGE : null, commits: 1,
