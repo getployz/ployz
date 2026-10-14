@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use ployz_core::{MachineId, MachineName, Namespace, RpcError, ServiceName};
+use ployz_core::{MachineId, MachineLogService, MachineName, Namespace, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ts_rs::TS;
@@ -108,6 +108,7 @@ pub enum CloudQuery {
         service: Option<ServiceName>,
     },
     Logs(LogsQuery),
+    ServerLogs(ServerLogsQuery),
     Metrics(MetricsQuery),
     Copies {
         namespace: Namespace,
@@ -131,6 +132,17 @@ pub struct LogsQuery {
     /// The Service's plain variables as the Store shows them. A Container's env value stays
     /// readable only when it is here under the same name; every other value is scrubbed.
     pub plain: BTreeMap<String, String>,
+}
+
+/// Log lines a Server's own process wrote: the Ployz daemon, Docker or Corrosion.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ServerLogsQuery {
+    pub process: MachineLogService,
+    pub server: Option<ServerRef>,
+    pub lines: LineCap,
+    #[ts(type = "{ secs: number, nanos: number } | null")]
+    pub since: Option<Duration>,
 }
 
 /// CPU, memory, network and disk of one Service or Server, and what Docker did

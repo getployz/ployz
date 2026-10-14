@@ -6,8 +6,9 @@
 )]
 
 use std::collections::BTreeMap;
+use std::time::Duration;
 
-use ployz_core::{DeployOutcome, DeployPreview, ServiceName};
+use ployz_core::{DeployOutcome, DeployPreview, MachineLogService, ServiceName};
 use ployz_core::{RpcError, RpcErrorCode};
 use ployz_store::tools::{
     Act, Action, Ask, Call, CloudQuery, Fix, Gate, INSTRUCTIONS, MetricsQuery, MetricsSince,
@@ -214,6 +215,7 @@ fn the_catalog_has_the_agreed_tools() {
             "service_update",
             "service_rename",
             "service_remove",
+            "domain_check",
             "domain_add",
             "domain_update",
             "domain_remove",
@@ -238,6 +240,7 @@ fn the_catalog_has_the_agreed_tools() {
             "github_ls",
             "github_connect",
             "server_show",
+            "server_logs",
             "server_metrics",
             "service_status",
             "service_logs",
@@ -397,6 +400,38 @@ fn review_reads_domain_changes_as_domains() {
         }),
         "{review}"
     );
+}
+
+#[test]
+fn domain_check_reads_one_domain_and_refuses_an_unknown_one() {
+    let store = shop();
+    let service = json!({ "name": "web", "image": "traefik/whoami" });
+    call(&store, "service_add", service, "add-1").ok();
+    let domain = json!({ "service": "web", "hostname": "app.example.com", "port": 8080 });
+    call(&store, "domain_add", domain, "domain-1").ok();
+
+    let run = call(
+        &store,
+        "domain_check",
+        json!({ "domain": "APP.example.com" }),
+        "check-1",
+    );
+    assert_eq!((run.reads, run.writes), (1, 0));
+    let checked = run.ok();
+    assert_eq!(checked["domain"]["domain"], "app.example.com", "{checked}");
+    assert_eq!(checked["service"], "web", "{checked}");
+    assert_eq!(checked["domain"]["port"], 8080, "{checked}");
+    assert_eq!(checked["at"], "shop/production", "{checked}");
+    assert_eq!(checked["domain"]["status"], "setting_up", "{checked}");
+
+    let missing = call(
+        &store,
+        "domain_check",
+        json!({ "domain": "nope.example.com" }),
+        "check-2",
+    )
+    .refused();
+    assert_eq!(missing.code.as_str(), "not_found", "{missing:?}");
 }
 
 #[test]
@@ -713,8 +748,9 @@ fn two_organizations_create_with_the_same_key() {
 }
 
 /// The tools that need Ployz Cloud's view of the Servers.
-const CLOUD_TOOLS: [&str; 19] = [
+const CLOUD_TOOLS: [&str; 20] = [
     "server_show",
+    "server_logs",
     "server_metrics",
     "service_status",
     "service_logs",
@@ -1843,4 +1879,58 @@ fn service_logs_names_only_plain_variables_and_says_why_a_server_did_not_answer(
         logs["notes"],
         json!(["web-2 did not answer: log store is rebuilding"])
     );
+}
+
+// Catches server_logs asking for the wrong Server or process, or losing the
+// window and line cap on the way to Cloud.
+#[test]
+fn server_logs_asks_for_one_servers_process_and_refuses_an_unknown_server() {
+    let store = shop();
+    let mut asked = Vec::new();
+    let mut cloud = |cloud: Cloud| match cloud {
+        Cloud::Ask(CloudQuery::Servers { .. }) => Ok(servers(&[("web-1", 'a')])),
+        Cloud::Ask(CloudQuery::ServerLogs(query)) => {
+            asked.push(query);
+            Ok(json!({
+                "servers": [{ "server": "web-1", "text": {
+                    "status": "shown", "lines": ["started\n"], "cut": false, "redacted": 0,
+                } }],
+                "seen": servers(&[])["seen"],
+                "notes": [],
+            }))
+        }
+        Cloud::Ask(query) => panic!("unexpected read: {query:?}"),
+        Cloud::Act(act) => panic!("logs act on nothing: {act:?}"),
+    };
+    let mut call =
+        |input: Value, key: &str| drive(&store, in_org(), "server_logs", input, key, &mut cloud);
+
+    let one = call(
+        json!({ "server": "web-1", "process": "docker", "lines": 50, "since_minutes": 15 }),
+        "server-logs-1",
+    );
+    assert_eq!(one.writes, 0);
+    let one = one.ok();
+    let every = call(json!({}), "server-logs-2").ok();
+    let unknown = call(json!({ "server": "nope" }), "server-logs-3");
+
+    assert_eq!(one["servers"][0]["server"], "web-1", "{one}");
+    assert_eq!(every["servers"][0]["server"], "web-1", "{every}");
+    assert_eq!(unknown.refused().code.as_str(), "not_found");
+    let [one, every] = asked.as_slice() else {
+        panic!("two server logs asks: {asked:?}");
+    };
+    assert_eq!(one.process, MachineLogService::Docker);
+    assert_eq!(
+        one.server.as_ref().map(|server| server.machine.to_string()),
+        Some(machine('a'))
+    );
+    assert_eq!(one.lines.get(), 50);
+    assert_eq!(one.since, Some(Duration::from_secs(15 * 60)));
+    assert_eq!(
+        every.process,
+        MachineLogService::Ployz,
+        "the daemon by default"
+    );
+    assert_eq!(every.server, None);
 }

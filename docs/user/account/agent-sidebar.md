@@ -12,9 +12,10 @@ keeps working in them after either is renamed. If the environment you're looking
 Ployz can't read where it is, the agent won't fall back to another environment. It refuses and asks
 you to name the project and environment to act in. It
 can create or rename a project, add, change and rename services, [configs](../services/configs.md)
-and volumes, add and change domains, review what's staged, restore or undo a saved version, publish
-and deploy. It can list an environment's deployments, follow one to its end, redeploy a failed,
-cancelled or unknown one, start a queued one now, and cancel one, like the
+and volumes, add and change domains, check a domain and list the DNS records it still needs,
+review what's staged, restore or undo a saved version, publish and deploy. It can list an
+environment's deployments, follow one to its end, redeploy a failed, cancelled or unknown one, start
+a queued one now, and cancel one, like the
 [deployment page](../deploy/deployments.md#redeploy-or-cancel-a-deployment)'s buttons. It can also
 read your GitHub repositories and work on your servers. It doesn't create environments.
 
@@ -28,6 +29,9 @@ replied. It can:
 - Read a service's recent logs from each server that ran it, with secrets from the container's
   environment replaced (**service logs**). Ployz support sees them only if your organization
   shows its logs to support. It reads the latest lines and doesn't follow new ones.
+- Read a server's own recent logs from the Ployz daemon, Docker or Corrosion, up to 200 lines,
+  with secret-shaped values replaced (**server logs**). Ployz support sees them only if your
+  organization shows its logs to support.
 - Read a service's or a server's [metrics](../observe/metrics.md), with the OOM kills, exits and
   restarts in the range (**service metrics**, **server metrics**). Name a deployment and it reads
   from that deployment's start and keeps only its events.

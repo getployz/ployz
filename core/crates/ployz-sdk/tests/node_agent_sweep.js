@@ -51,6 +51,7 @@ const cloudAnswers = {
     seen: fresh,
   }),
   logs: () => ({ servers: [{ server: "web-1", text: { status: "withheld", why: "no_lines" } }], seen: fresh }),
+  server_logs: () => ({ servers: [{ server: "web-1", text: { status: "shown", lines: ["started\n"], cut: false, redacted: 0 } }], seen: fresh, notes: [] }),
   metrics: () => ({
     since: NOW - 3600,
     until: NOW,
@@ -152,6 +153,7 @@ const FIXTURES = [
   ["domain_add", { service: "web", hostname: "app.example.com" }],
   ["domain_add", { service: "web", prefix: "shop" }],
   ["domain_update", { domain: "shop", prefix: "store" }],
+  ["domain_check", { domain: "store" }],
   ["service_inspect", { service: "web" }],
   ["service_update", { service: "web", set: { image: "nginx:1.28" } }],
   ["review", {}],
@@ -172,6 +174,7 @@ const FIXTURES = [
   ["github_ls", { repository: "acme/api", path: "src" }],
   ["github_connect", {}],
   ["server_show", { server: "web-1" }],
+  ["server_logs", { server: "web-1", process: "docker" }],
   ["server_metrics", { server: "web-1" }],
   ["service_status", { service: "web" }],
   ["service_logs", { service: "web" }, "not_found"],

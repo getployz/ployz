@@ -94,6 +94,12 @@ describe("callCloud", () => {
         ok: false,
         refusal: { code: "forbidden", message: "This Organization doesn't show its container logs to Ployz support.", details: null },
       });
+      const serverLogs = yield* callCloud(support, { ask: { query: "server_logs", process: "ployz", server: null, lines: 100, since: null } })
+        .pipe(runtime(connected(asked), opens), Effect.provide(services));
+      expect(serverLogs).toEqual({
+        ok: false,
+        refusal: { code: "forbidden", message: "This Organization doesn't show its Server logs to Ployz support.", details: null },
+      });
       expect(opens).toEqual([]);
       expect(asked).toEqual([]);
 
