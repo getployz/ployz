@@ -124,6 +124,9 @@ class Cluster:
         self.manifest = Path(manifest)
         self.run = json.loads(self.manifest.read_text())
         self.nodes = {node["name"]: node for node in self.run["machines"]}
+        for node in self.nodes.values():
+            node.setdefault("ssh", "root@" + node["address"])
+            node.setdefault("endpoint", f"[{node['address']}]:51820" if ":" in node["address"] else node["address"] + ":51820")
         self.machines = [node["name"] for node in self.run["machines"]]
         self.out = self.manifest.parent / "evidence" / f"warm-move-{time.strftime('%Y%m%dT%H%M%S')}"
         self.out.mkdir(parents=True, exist_ok=True)

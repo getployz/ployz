@@ -762,6 +762,11 @@ def main():
         reap(args)
         return 0
     run = json.loads(args.manifest.read_text())
+    for node in run["machines"]:
+        # Manifests written before ssh and endpoint were split out record only the address.
+        if "address" in node:
+            node.setdefault("ssh", "root@" + node["address"])
+            node.setdefault("endpoint", endpoint(node["address"]))
     if run["root"] != str(CORE) or Path(run["manifest"]).resolve() != args.manifest.resolve():
         raise RuntimeError("Use this run's originating checkout and manifest path")
     if run["state"] == "removed":
