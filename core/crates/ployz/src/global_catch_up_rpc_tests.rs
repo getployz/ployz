@@ -522,6 +522,137 @@ async fn top_level_catch_up_uses_fresh_target_eligibility_and_reuses_hidden_full
 }
 
 #[tokio::test]
+async fn an_ineligible_target_removes_a_copy_the_pointer_does_not_prove() {
+    use ployz_core::{
+        ContainerList, ContainerLocator, ContainerWant, DeploymentLogId, LocalMachinePhase,
+        MachineDetails, MachineList, MachineObservation, MembershipObservation, OpaquePayload,
+        RpcRequestBody, ServingPointer, ServingPointerRead,
+    };
+    use std::sync::{Arc, Mutex};
+    use tonic::{Request, Response};
+    for eligible in [false, true] {
+        let mut stale = machine('1', "joiner");
+        stale.accepts_services = true;
+        let mut fresh = stale.clone();
+        fresh.accepts_services = eligible;
+        let spec = requested(ServiceMode::Global)
+            .to_resolved(service_id('a'), ResolvedUpdateConfig::default())
+            .unwrap();
+        let mut old = grouped(qualified("app", "api"), spec, running_on(&fresh, 'a'))
+            .containers
+            .remove(0)
+            .into_observation();
+        old.try_update(|parts| {
+            parts
+                .labels
+                .insert(ployz_core::DEPLOYMENT_ID_LABEL.into(), "dep-a".into());
+        })
+        .unwrap();
+        let pointer = ServingPointer {
+            deploy: DeploymentLogId::parse("dep-b").unwrap(),
+            containers: vec![container_id('b')],
+            previous: Some(DeploymentLogId::parse("dep-a").unwrap()),
+            retiring: Vec::new(),
+        };
+        let local = Arc::new(Mutex::new(vec![old]));
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let (current, recorded, observed) = (local.clone(), calls.clone(), fresh.clone());
+        let (mut client, server) =
+            crate::connect::test_support::rpc_client(move |rpc: Request<OpaquePayload>| {
+                let (target, current, recorded, pointer) = (
+                    observed.clone(),
+                    current.clone(),
+                    recorded.clone(),
+                    pointer.clone(),
+                );
+                async move {
+                    #[expect(
+                        clippy::wildcard_enum_match_arm,
+                        reason = "fixture rejects every RPC that would create, run or publish"
+                    )]
+                    let response = match rpc.into_inner().decode_request().unwrap().body {
+                        RpcRequestBody::ListMachines(_) => RpcResponse::from(MachineList {
+                            enrollment: None,
+                            machines: vec![MachineObservation::new(
+                                target.clone(),
+                                MembershipObservation::Up,
+                            )],
+                        }),
+                        RpcRequestBody::ListContainers(_) => RpcResponse::from(ContainerList {
+                            containers: current.lock().unwrap().clone(),
+                        }),
+                        RpcRequestBody::ReadServingPointer(_) => {
+                            RpcResponse::from(ServingPointerRead {
+                                pointer: Some(pointer),
+                                ..Default::default()
+                            })
+                        }
+                        RpcRequestBody::Inspect(_) => {
+                            recorded.lock().unwrap().push("inspect");
+                            RpcResponse::from(MachineDetails {
+                                id: target.id,
+                                public_key: target.public_key,
+                                machine: Some(target),
+                                phase: LocalMachinePhase::Participating,
+                                advertised_endpoints: Vec::new(),
+                                store_version: Default::default(),
+                                rtts: Vec::new(),
+                                management_clients: Vec::new(),
+                                storage: None,
+                                upgrade: None,
+                                telemetry: None,
+                                token: None,
+                            })
+                        }
+                        RpcRequestBody::EnsureContainer(ensure) => match ensure.want {
+                            ContainerWant::Gone {
+                                container: ContainerLocator::Id(id),
+                                ..
+                            } => {
+                                recorded.lock().unwrap().push("gone");
+                                assert_eq!(id, container_id('a'));
+                                current.lock().unwrap().clear();
+                                ensured(ContainerNow::Absent {
+                                    of: ContainerLocator::Id(id),
+                                })
+                            }
+                            other => panic!("an unproven copy is never run: {other:?}"),
+                        },
+                        other => panic!("unexpected RPC: {other:?}"),
+                    };
+                    Ok(Response::new(response.encode().unwrap()))
+                }
+            })
+            .await;
+        let mut excluded = Vec::new();
+        let result = catch_up_globals(
+            &mut client,
+            &stale,
+            &tokio_util::sync::CancellationToken::new(),
+            |fact| {
+                if let CatchUpFact::Excluded(service) = fact {
+                    excluded.push(service);
+                }
+            },
+        )
+        .await;
+        if eligible {
+            let error = result.unwrap_err();
+            assert_eq!(error.unresolved, [qualified("app", "api")]);
+            assert!(excluded.is_empty());
+            assert!(!calls.lock().unwrap().contains(&"gone"));
+            assert_eq!(local.lock().unwrap().len(), 1, "an eligible copy stays put");
+        } else {
+            result.unwrap();
+            assert_eq!(excluded, [qualified("app", "api")]);
+            assert_eq!(calls.lock().unwrap().as_slice(), ["inspect", "gone"]);
+            assert!(local.lock().unwrap().is_empty());
+        }
+        server.abort();
+    }
+}
+
+#[tokio::test]
 async fn provisioned_globals_use_target_storage_and_report_unknown() {
     use ployz_core::{
         ContainerList, LocalMachinePhase, MachineDetails, OpaquePayload, RpcRequestBody,

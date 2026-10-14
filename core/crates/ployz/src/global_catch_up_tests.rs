@@ -400,6 +400,16 @@ impl CatchUpClient for FakeCatchUpClient {
         panic!("orchestration delegates capacity checks to run_slot")
     }
 
+    async fn retire_if_ineligible(
+        &mut self,
+        machine_id: &MachineId,
+        _new: &NewContainer,
+        _cancel: &tokio_util::sync::CancellationToken,
+    ) -> Result<bool, RpcError> {
+        assert_eq!(machine_id, &self.machine_id);
+        Ok(matches!(self.run_result, Ok(None)))
+    }
+
     async fn run_slot(
         &mut self,
         machine_id: &MachineId,
