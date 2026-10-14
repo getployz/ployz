@@ -98,6 +98,12 @@ A run that can't be stopped, such as a mirror removal, says it finishes on its o
 VolumeBusy: data is busy with a mirror removal; it finishes on its own
 ```
 
+While a deploy runs, each of these runs is refused until the deploy ends:
+
+```
+data is deploying; the Deploy ends its run
+```
+
 `volume sync` starts no run. It hands the mirror its pull and prints what it did, like Refresh
 now; `ployz volume show data` shows the download. `volume sync data --full` copies everything
 again as a run, and takes `--wait`.
