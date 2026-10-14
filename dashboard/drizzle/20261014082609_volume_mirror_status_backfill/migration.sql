@@ -8,4 +8,5 @@ JOIN LATERAL (
 	WHERE "organization_id" = "placement"."organization_id" AND "volume_id" = "placement"."volume_id" AND "kind" = 'sync' AND "state" = 'done'
 	ORDER BY "created_at" DESC, "id" DESC LIMIT 1
 ) AS "run" ON "run"."finished_at" IS NOT NULL
-ON CONFLICT DO NOTHING;
+ON CONFLICT ("volume_id","machine_id") DO UPDATE SET "matched_at" = EXCLUDED."matched_at", "updated_at" = EXCLUDED."updated_at"
+WHERE "volume_mirror_status"."matched_at" IS NULL;
