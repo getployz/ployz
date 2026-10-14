@@ -467,8 +467,11 @@ class ClusterModel:
         if sql.startswith("select phase, state "):
             return 0, f"{row['phase']}|{row['state']}\n" if row else ""
         if sql.startswith("select again.id, again.state "):
-            return 0, "".join(f"{again['id']}|{again['state']}\n" for again in self.runs
-                              if again.get("requeue_of") == run_id)
+            # Postgres answers what the query asks: without the Deploy that took run, any later move matches.
+            taken = "took.args -> 'resume' = first.args" in sql
+            later = self.runs[self.runs.index(row) + 1:] if row else []
+            return 0, "".join(f"{again['id']}|{again['state']}\n" for again in later if again["kind"] == "move"
+                              and (again.get("requeue_of") == run_id if taken else True))
         if (self.lane and self.lane["row"]["id"] == run_id and self.pid_file.exists()
                 and int(self.pid_file.read_text()) not in self.workers):
             self.take("cancelled")
@@ -1822,8 +1825,9 @@ class VolumeMoveTests(unittest.TestCase):
                                   result.get("skipped") or "", result)
 
     def test_a_fault_line_from_before_the_barrier_is_behind_its_cursor_whatever_the_clock_says(self):
-        # A Forget want names no epoch, so an earlier invocation's forget of this Volume logged the same line; only
-        # the cursor puts it behind the barrier.
+        # A Forget want names no epoch, and a rebuilt Cloud counts gens again from the start, so an earlier
+        # invocation's forget of this Volume logged the same line, gen included; only the cursor puts it behind the
+        # barrier.
         kill = next(case for case in volume_move.KILLS if case["name"] == "kill-forget-writer")
         checks, model = self.checks()
         model.offset["machine-1"] = 20.0
@@ -1832,7 +1836,8 @@ class VolumeMoveTests(unittest.TestCase):
         def an_old_fault_line(case, other):
             prepare(case, other)
             model.log_fault("machine-1", model.clock() - 15,
-                            f'fault: killing daemon inside the effect verb="SetVolumeCopy.WriterToForget" volume={PHYSICAL}')
+                            f'fault: killing daemon inside the effect verb="SetVolumeCopy.WriterToForget" volume={PHYSICAL} '
+                            f'gen={model.gen(model.epoch(f"run-{len(model.runs)}"))}')
         checks.prepare = an_old_fault_line
         self.first_move(model, 1, op=("volume", "mirror", "rm"))
         with redirect_stdout(io.StringIO()):
