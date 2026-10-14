@@ -52,8 +52,8 @@ always keeps an owner, so its last owner can't leave or step down until they mak
 an owner.
 
 When someone leaves or is removed, they lose the organization at once: its dashboard, their
-organization tokens, and their signed-in CLIs' access to its servers. If they open it again, it
-says they're no longer a member.
+organization tokens, and their signed-in CLIs' access to its servers. If they joined by invite and
+open it again, it says they're no longer a member.
 
 ## Let Ployz support in
 
