@@ -264,7 +264,8 @@ A node answers two questions in two places, and neither ever stands in for the o
 - An optional value is an input with a placeholder, blank while unset. Only a setting most resources never need (pre-deploy command, root directory) hides behind a small link.
 - Danger comes last as plain rows: what it does, what follows in muted text, and a soft destructive button. Never red text on a red surface.
 - Panel headers are the same shape: the name, renameable, without a kind label, and no second line.
-- Settings pages (Environment, Project, Organization's General and Builds, a Server) use the same sections, rows and danger rows as the panels. There is one Danger section per page, last.
+- Settings pages (Environment, Project, Organization's General, GitHub and Builds, a Server) use the same sections, rows and danger rows as the panels. There is one Danger section per page, last.
+- Organization › GitHub is where an organization's GitHub accounts connect and disconnect. Each account is a row: avatar, login, its repository count, who connected it and when, and Disconnect. Disconnect affects only this organization, so its confirmation says so and uninstalling stays on GitHub. Members see the rows without the buttons. Every Connect GitHub prompt elsewhere, like the source picker's, goes through the same route and lands here.
 - Settings autosave, except a name: renaming changes addresses and URLs, so it waits for an explicit Rename (a project's Rename button, a service's or volume's pencil and its dialog). Everything else saves as it's set, staged where it deploys.
 - Buttons and titles use sentence case: "Forget servers", "Generate domain".
 

@@ -11,7 +11,8 @@ its Git branch. [How builds work](../builds/overview.md) covers what happens in 
 1. Go to **Projects**, click **New project** and choose **GitHub repository**. (To add it to a
    project you already have, click **Create** on that project's canvas instead.) The first time,
    click **Connect GitHub**, pick the account or organization, choose the repositories Ployz may
-   use, and install the Ployz GitHub App.
+   use, and install the Ployz GitHub App. GitHub sends you back to **Settings → GitHub**, which
+   lists the account.
 2. Search for the repository, or paste its URL, and pick it.
 3. Before you deploy, set what your app needs to start:
    - To make it public, open **Settings → Networking** and click
@@ -25,8 +26,9 @@ its Git branch. [How builds work](../builds/overview.md) covers what happens in 
 ![The GitHub Repository picker before GitHub is connected, with a public repository's URL typed](../images/service-source-github.png)
 
 The service is named after the repository and follows its default Git branch. The GitHub App
-reads your code, pull requests and checks, and can't push code. To give Ployz more repositories
-later, choose **Set up GitHub** above the repository list.
+reads your code, pull requests and checks, and can't push code. The repository list groups
+repositories by GitHub account. To give Ployz more repositories later, choose **Set up GitHub**
+above the repository list.
 
 ## Deploy a public repository without the app
 
@@ -118,12 +120,22 @@ workspace, leave the root directory at `/`. Set a
 
 A GitHub installation belongs to the organization it is connected to, not to the person who
 installed it. Everyone in the organization can pick its repositories, and it stays connected
-when that person leaves. One installation can be connected to more than one organization.
+when that person leaves. **Settings → GitHub** lists each connected account with its
+repositories, who connected it, and when. Only an owner or admin can connect or disconnect one;
+members see the list.
 
-To stop an organization from using an installation, run `ployz github ls` to find its ID, then
-`ployz github disconnect <id>`. Only an owner or admin can. Builds that organization has in
-flight on GitHub through that installation stop, and their deploys fail with "GitHub account
-`<login>` was disconnected". Other organizations connected to the same installation keep it.
+One installation can be connected to more than one organization. To connect one you already
+installed, open **Settings → GitHub** in the other organization and click **Use existing
+installation**. Ployz connects only installations GitHub lists for you. When GitHub lists
+several new ones, Ployz asks which to connect.
+
+To stop an organization from using an account, click **Disconnect** on its row, or run
+`ployz github ls` and then `ployz github disconnect <login>`. Builds that organization has in
+flight on GitHub through that account stop, and their deploys fail with "GitHub account
+`<login>` was disconnected". Other organizations connected to the same installation keep it,
+and the app stays installed on GitHub. To uninstall it, use **Uninstall on GitHub** after you
+disconnect.
+
 Suspending the app on GitHub hides its repositories from every organization until you unsuspend
 it; the connections stay. Uninstalling the app on GitHub removes it from every organization at
 once. Either way, builds in flight through it stop within seconds, and their deploys fail with

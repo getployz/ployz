@@ -201,6 +201,7 @@ function github(state: { branchGone: boolean; heads: number; archives: string[] 
     },
     app: () => Effect.die("unused"),
     installationRepositories: () => Effect.die("unused"),
+    userInstallations: () => Effect.die("unused"),
   };
 }
 

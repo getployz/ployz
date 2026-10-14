@@ -146,6 +146,8 @@ GITHUB_CLIENT_ID=verify-oauth-client
 GITHUB_CLIENT_SECRET=verify-oauth-secret
 GITHUB_APP_ID=1
 GITHUB_APP_SLUG=ployz-verify
+GITHUB_APP_CLIENT_ID=verify-app-client
+GITHUB_APP_CLIENT_SECRET=verify-app-client-secret
 GITHUB_APP_WEBHOOK_SECRET=verify-webhook-secret
 GITHUB_APP_PRIVATE_KEY='$key'
 $github_origin

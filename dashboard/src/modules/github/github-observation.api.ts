@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { Context, Data, Effect, Layer, Result, Schema } from "effect";
+import { Context, Data, Effect, Layer, Redacted, Result, Schema } from "effect";
 import type { GithubAccess, GithubDisconnected } from "#/modules/github/github-access";
 import {
   GITHUB_COMPARE_STATUSES,
@@ -60,7 +60,9 @@ export type GithubObservationOperation =
   | "fetch_pull_request"
   | "list_check_runs"
   | "create_check_run"
-  | "update_check_run";
+  | "update_check_run"
+  | "exchange_user_code"
+  | "list_user_installations";
 
 export type GithubObservationErrorCode =
   | "invalid_input"
@@ -177,6 +179,20 @@ const installationRepositoriesSchema = Schema.Struct({
   total_count: Schema.Finite.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0), Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER)),
 });
 export type GithubInstallationRepositoriesResponse = typeof installationRepositoriesSchema.Type;
+const userAccessTokenSchema = Schema.Struct({ access_token: nonEmptyString });
+const userSchema = Schema.Struct({ login: nonEmptyString });
+const userInstallationsSchema = Schema.Struct({
+  installations: Schema.Array(Schema.Struct({
+    id: githubIdSchema,
+    account: Schema.Struct({ login: nonEmptyString, type: nonEmptyString, avatar_url: Schema.NullOr(Schema.String) }),
+    suspended_at: Schema.NullOr(Schema.String),
+  })),
+});
+/** The GitHub user who authorized the App, and the installations of it they can reach. */
+export type GithubUserInstallations = {
+  readonly login: string;
+  readonly installations: ReadonlyArray<typeof userInstallationsSchema.Type["installations"][number]>;
+};
 export const GITHUB_REPOSITORIES_PAGE_SIZE = 100;
 
 export type GithubJsonRequest<S extends Schema.ConstraintDecoder<unknown>> = {
@@ -209,6 +225,11 @@ export interface GithubApiService {
   readonly installationRepositories: (
     input: { installationId: number; page: number },
   ) => Effect.Effect<GithubInstallationRepositoriesResponse, GithubObservationError>;
+  /**
+   * Who authorized the App with this OAuth `code`, and which installations they can reach. The user token is used for
+   * these two reads and never leaves this call.
+   */
+  readonly userInstallations: (code: string) => Effect.Effect<GithubUserInstallations, GithubObservationError>;
 }
 
 export class GithubApi extends Context.Service<GithubApi, GithubApiService>()(
@@ -637,6 +658,30 @@ export const GithubApiLive = Layer.effect(
         catch: () => githubObservationError({ code: "request_failed", operation: "download_source", retriable: false }),
       });
     });
-    return { json, app, installationRepositories, archive };
+    const userInstallations: GithubApiService["userInstallations"] = Effect.fn("GithubApi.userInstallations")(function* (code) {
+      const failed = (status?: number) =>
+        githubObservationError({ code: "request_failed", operation: "exchange_user_code", status, retriable: false });
+      const exchanged = yield* Effect.tryPromise({
+        try: async (signal) => {
+          const response = await fetch(`${config.github.origins.web}/login/oauth/access_token`, {
+            signal,
+            method: "POST",
+            headers: { Accept: "application/json", "Content-Type": "application/json" },
+            body: JSON.stringify({ client_id: config.github.appClientId, client_secret: Redacted.value(config.github.appClientSecret), code }),
+          });
+          if (!response.ok) throw failed(response.status);
+          const body: unknown = await response.json();
+          return body;
+        },
+        catch: (error) => error instanceof GithubObservationError ? error : failed(),
+      });
+      const { access_token: token } = yield* Schema.decodeUnknownEffect(userAccessTokenSchema)(exchanged).pipe(Effect.mapError(() => failed()));
+      const user = yield* request({ token, path: "/user", operation: "list_user_installations", schema: userSchema });
+      const listed = yield* request({
+        token, path: "/user/installations?per_page=100", operation: "list_user_installations", schema: userInstallationsSchema,
+      });
+      return { login: user.login, installations: listed.installations };
+    });
+    return { json, app, installationRepositories, archive, userInstallations };
   }),
 );

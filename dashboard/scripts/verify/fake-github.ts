@@ -43,7 +43,7 @@ const site = {
 const repository = (id: number, name: string, extra: Partial<Repository> = {}): Repository =>
   ({ id, name, private: true, default_branch: "main", branches: ["main", "dev"], files: site, ...extra });
 const DEFAULT_FIXTURE: Fixture = {
-  app: { slug: "ployz-verify", afterInstall: { callbackPath: null } },
+  app: { slug: "ployz-verify", afterInstall: { callbackPath: "/api/github/callback" } },
   users: [
     { id: 9001, login: "ada", name: "Ada Lovelace", email: "ada@example.com" },
     { id: 9002, login: "grace", name: "Grace Hopper", email: "grace@example.com" },

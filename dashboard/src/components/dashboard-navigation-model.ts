@@ -94,7 +94,7 @@ export type DashboardNavSection = ReturnType<typeof placeSections>[number];
 /** The search keys that pick a Settings page's section. */
 export interface DashboardSectionSearch {
   scope?: "environment" | "project";
-  section?: "general" | "builds";
+  section?: "general" | "github" | "builds";
 }
 
 /** Where `section` lives in `scope`; a section the scope lacks falls back to its home (Architecture or Projects). */
@@ -165,6 +165,7 @@ function placeSections(
     const to = organizationDestinations["organization-settings"].path;
     return [
       { label: "General", current: open === "general", ...linkOptions({ to, params, search: {} }) },
+      { label: "GitHub", current: open === "github", ...linkOptions({ to, params, search: { section: "github" as const } }) },
       { label: "Builds", current: open === "builds", ...linkOptions({ to, params, search: { section: "builds" as const } }) },
       ...billingEnabled
         ? [{ label: "Billing", current: open === "billing", ...linkOptions({ to: organizationDestinations.billing.path, params, search: {} }) }]

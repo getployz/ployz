@@ -150,10 +150,11 @@ type Reply = {
   readonly unreachable?: ReadonlyArray<string>;
   readonly servers?: { readonly confirmed: ReadonlyArray<string>; readonly unconfirmed: ReadonlyArray<string> };
   readonly signed_out?: { readonly id: string };
-  readonly linked?: boolean;
   readonly ready?: boolean;
-  readonly install_url?: string;
-  readonly installations?: ReadonlyArray<{ readonly id: number; readonly account: string; readonly repositories: number }>;
+  readonly connect_url?: string;
+  readonly installations?: ReadonlyArray<{
+    readonly id: number; readonly account: string; readonly repositories: number; readonly connected_by: string | null;
+  }>;
   readonly repositories?: ReadonlyArray<{ readonly repository: string; readonly installation: number }>;
   readonly branches?: ReadonlyArray<string>;
   readonly access?: string;
@@ -515,8 +516,8 @@ it.live(
       yield* Effect.gen(function* () {
         const alice = yield* signUp("alice");
         const empty = yield* cli("GET", "github", alice);
-        assert.deepInclude(empty.json, { linked: false, ready: false, installations: [], repositories: [] });
-        assert.match(empty.json.install_url ?? "", /^http:\/\/127\.0\.0\.1:4555\/apps\/.+\/installations\/new$/);
+        assert.deepInclude(empty.json, { ready: false, installations: [], repositories: [] });
+        assert.match(empty.json.connect_url ?? "", /\/api\/github\/connect\?organization=[a-z0-9-]+$/);
 
         const database = yield* Database;
         const [row] = yield* database.drizzle.select({ userId: member.userId }).from(member)
@@ -536,8 +537,10 @@ it.live(
         });
         const connected = yield* cli("GET", "github", alice);
         assert.deepInclude(connected.json, { ready: true });
-        assert.deepStrictEqual(connected.json.installations?.map(({ id, account, repositories }) => ({ id, account, repositories })),
-          [{ id: 7, account: "acme", repositories: 1 }, { id: 8, account: "alice", repositories: 0 }]);
+        assert.deepStrictEqual(
+          connected.json.installations?.map(({ id, account, repositories, connected_by }) => ({ id, account, repositories, connected_by })),
+          [{ id: 7, account: "acme", repositories: 1, connected_by: "alice" }, { id: 8, account: "alice", repositories: 0, connected_by: "alice" }],
+        );
 
         const branches = yield* cli("GET", "github/branches?repository=ACME/web", alice);
         assert.deepInclude(branches.json, { access: "connected", branches: ["dev", "main"] });
@@ -563,11 +566,12 @@ it.live(
           details: { valid_children: ["acme/web"] },
         });
 
-        const removed = yield* cli("DELETE", "github/7", alice);
+        const removed = yield* cli("DELETE", "github/ACME", alice);
         assert.deepStrictEqual(removed.json.disconnected, { id: 7, account: "acme" });
         assert.strictEqual(removed.json.uninstall_url, "http://127.0.0.1:4555/organizations/acme/settings/installations/7");
+        assert.strictEqual((yield* cli("DELETE", "github/acme", alice)).status, 404);
         assert.strictEqual((yield* cli("DELETE", "github/7", alice)).status, 404);
-        const personal = yield* cli("DELETE", "github/8", alice);
+        const personal = yield* cli("DELETE", "github/alice", alice);
         assert.strictEqual(personal.json.uninstall_url, "http://127.0.0.1:4555/settings/installations/8");
         assert.deepInclude((yield* cli("GET", "github", alice)).json, { ready: false, installations: [] });
       }).pipe(Effect.provide(layer));

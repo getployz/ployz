@@ -27,6 +27,8 @@ import { Route as ApiCliSplatRouteImport } from './routes/api/cli/$'
 import { Route as ApiCliManifestRouteImport } from './routes/api/cli/manifest'
 import { Route as ApiConfigSplatRouteImport } from './routes/api/config/$'
 import { Route as ApiEnrollTokenRouteImport } from './routes/api/enroll/$token'
+import { Route as ApiGithubCallbackRouteImport } from './routes/api/github/callback'
+import { Route as ApiGithubConnectRouteImport } from './routes/api/github/connect'
 import { Route as ApiGithubWebhookRouteImport } from './routes/api/github/webhook'
 import { Route as ApiMailUnsubscribeRouteImport } from './routes/api/mail/unsubscribe'
 import { Route as ApiOrgChangesRouteImport } from './routes/api/org/changes'
@@ -155,6 +157,16 @@ const ApiConfigSplatRoute = ApiConfigSplatRouteImport.update({
 const ApiEnrollTokenRoute = ApiEnrollTokenRouteImport.update({
   id: '/api/enroll/$token',
   path: '/api/enroll/$token',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiGithubCallbackRoute = ApiGithubCallbackRouteImport.update({
+  id: '/api/github/callback',
+  path: '/api/github/callback',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiGithubConnectRoute = ApiGithubConnectRouteImport.update({
+  id: '/api/github/connect',
+  path: '/api/github/connect',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiGithubWebhookRoute = ApiGithubWebhookRouteImport.update({
@@ -436,6 +448,8 @@ export interface FileRoutesByFullPath {
   '/api/cli/manifest': typeof ApiCliManifestRoute
   '/api/config/$': typeof ApiConfigSplatRoute
   '/api/enroll/$token': typeof ApiEnrollTokenRouteWithChildren
+  '/api/github/callback': typeof ApiGithubCallbackRoute
+  '/api/github/connect': typeof ApiGithubConnectRoute
   '/api/github/webhook': typeof ApiGithubWebhookRoute
   '/api/mail/unsubscribe': typeof ApiMailUnsubscribeRoute
   '/api/org/changes': typeof ApiOrgChangesRoute
@@ -490,6 +504,8 @@ export interface FileRoutesByTo {
   '/api/cli/manifest': typeof ApiCliManifestRoute
   '/api/config/$': typeof ApiConfigSplatRoute
   '/api/enroll/$token': typeof ApiEnrollTokenRouteWithChildren
+  '/api/github/callback': typeof ApiGithubCallbackRoute
+  '/api/github/connect': typeof ApiGithubConnectRoute
   '/api/github/webhook': typeof ApiGithubWebhookRoute
   '/api/mail/unsubscribe': typeof ApiMailUnsubscribeRoute
   '/api/org/changes': typeof ApiOrgChangesRoute
@@ -546,6 +562,8 @@ export interface FileRoutesById {
   '/api/cli/manifest': typeof ApiCliManifestRoute
   '/api/config/$': typeof ApiConfigSplatRoute
   '/api/enroll/$token': typeof ApiEnrollTokenRouteWithChildren
+  '/api/github/callback': typeof ApiGithubCallbackRoute
+  '/api/github/connect': typeof ApiGithubConnectRoute
   '/api/github/webhook': typeof ApiGithubWebhookRoute
   '/api/mail/unsubscribe': typeof ApiMailUnsubscribeRoute
   '/api/org/changes': typeof ApiOrgChangesRoute
@@ -606,6 +624,8 @@ export interface FileRouteTypes {
     | '/api/cli/manifest'
     | '/api/config/$'
     | '/api/enroll/$token'
+    | '/api/github/callback'
+    | '/api/github/connect'
     | '/api/github/webhook'
     | '/api/mail/unsubscribe'
     | '/api/org/changes'
@@ -660,6 +680,8 @@ export interface FileRouteTypes {
     | '/api/cli/manifest'
     | '/api/config/$'
     | '/api/enroll/$token'
+    | '/api/github/callback'
+    | '/api/github/connect'
     | '/api/github/webhook'
     | '/api/mail/unsubscribe'
     | '/api/org/changes'
@@ -715,6 +737,8 @@ export interface FileRouteTypes {
     | '/api/cli/manifest'
     | '/api/config/$'
     | '/api/enroll/$token'
+    | '/api/github/callback'
+    | '/api/github/connect'
     | '/api/github/webhook'
     | '/api/mail/unsubscribe'
     | '/api/org/changes'
@@ -772,6 +796,8 @@ export interface RootRouteChildren {
   ApiCliManifestRoute: typeof ApiCliManifestRoute
   ApiConfigSplatRoute: typeof ApiConfigSplatRoute
   ApiEnrollTokenRoute: typeof ApiEnrollTokenRouteWithChildren
+  ApiGithubCallbackRoute: typeof ApiGithubCallbackRoute
+  ApiGithubConnectRoute: typeof ApiGithubConnectRoute
   ApiGithubWebhookRoute: typeof ApiGithubWebhookRoute
   ApiMailUnsubscribeRoute: typeof ApiMailUnsubscribeRoute
   ApiOrgChangesRoute: typeof ApiOrgChangesRoute
@@ -914,6 +940,20 @@ declare module '@tanstack/react-router' {
       path: '/api/enroll/$token'
       fullPath: '/api/enroll/$token'
       preLoaderRoute: typeof ApiEnrollTokenRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/github/callback': {
+      id: '/api/github/callback'
+      path: '/api/github/callback'
+      fullPath: '/api/github/callback'
+      preLoaderRoute: typeof ApiGithubCallbackRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/github/connect': {
+      id: '/api/github/connect'
+      path: '/api/github/connect'
+      fullPath: '/api/github/connect'
+      preLoaderRoute: typeof ApiGithubConnectRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/github/webhook': {
@@ -1410,6 +1450,8 @@ const rootRouteChildren: RootRouteChildren = {
   ApiCliManifestRoute: ApiCliManifestRoute,
   ApiConfigSplatRoute: ApiConfigSplatRoute,
   ApiEnrollTokenRoute: ApiEnrollTokenRouteWithChildren,
+  ApiGithubCallbackRoute: ApiGithubCallbackRoute,
+  ApiGithubConnectRoute: ApiGithubConnectRoute,
   ApiGithubWebhookRoute: ApiGithubWebhookRoute,
   ApiMailUnsubscribeRoute: ApiMailUnsubscribeRoute,
   ApiOrgChangesRoute: ApiOrgChangesRoute,

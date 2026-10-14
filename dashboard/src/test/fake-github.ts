@@ -33,6 +33,7 @@ export function fakeGithubApiBy(answer: (request: GithubRequest) => JsonValue | 
     archive: () => Effect.die("no archives in this test"),
     app: () => Effect.die("no app reads in this test"),
     installationRepositories: () => Effect.die("no installation listings in this test"),
+    userInstallations: () => Effect.die("no user authorizations in this test"),
     json: (request) => {
       calls.push({ path: request.path, access: request.access });
       const found = answer(request);

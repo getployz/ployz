@@ -244,9 +244,12 @@ fn serve(
         (Some(_), "/api/cli/github") => (
             200,
             json!({
-                "install_url": "https://github.com/apps/ployz/installations/new",
-                "linked": true, "ready": true,
-                "installations": [{ "id": 7, "account": "acme", "account_type": "Organization", "repositories": 1 }],
+                "connect_url": "https://cloud.example/api/github/connect?organization=acme",
+                "ready": true,
+                "installations": [{
+                    "id": 7, "account": "acme", "account_type": "Organization", "repositories": 1,
+                    "connected_by": "Ada", "connected_at": "2026-10-14T00:00:00.000Z",
+                }],
                 "repositories": [{ "repository": "acme/web", "private": true, "default_branch": "main", "installation": 7 }],
             }),
         ),
@@ -281,7 +284,7 @@ fn serve(
             } }),
             )
         }
-        (Some(_), "/api/cli/github/7") => (
+        (Some(_), "/api/cli/github/acme") => (
             200,
             json!({
                 "disconnected": { "id": 7, "account": "acme" },
@@ -3163,11 +3166,16 @@ fn github_lists_branches_reads_files_and_disconnects_in_cloud() {
         error(&cloud, &["github", "cat", "acme/nope", "Dockerfile"])["code"],
         "not_found"
     );
-    let removed = ok(&cloud, &["github", "disconnect", "7"]);
+    assert_eq!(listed["installations"][0]["account"], "acme");
+    let removed = ok(&cloud, &["github", "disconnect", "acme"]);
     assert_eq!(removed["disconnected"]["account"], "acme");
     assert_eq!(
-        error(&cloud, &["github", "disconnect", "8"])["code"],
+        error(&cloud, &["github", "disconnect", "bob-gh"])["code"],
         "not_found"
+    );
+    assert_eq!(
+        failed(&cloud, &["github", "disconnect", "acme/web"], 2)["code"],
+        "invalid_argument"
     );
     let pending = ok(&cloud, &["github", "connect"]);
     assert_eq!(pending["status"], "pending");
