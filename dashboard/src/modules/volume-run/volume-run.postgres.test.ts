@@ -3179,6 +3179,21 @@ describe("volume runs", () => {
         expect(verbs).toEqual(["writer@fsn-2(create)"]);
       });
 
+      it("refuses to start B once an older row decides the Volume instead of the commitment it followed", async () => {
+        afterCut();
+        const restored = await requested({ kind: "restore", args: { from: "fsn-1" } });
+        await harness.pool.query("update volume_run set state = 'failed', epoch = 2, finished_at = now() where id = $1", [restored.id]);
+        const taken = await moving("committed");
+        await harness.pool.query("update volume_run set state = 'failed', finished_at = now() where id = $1", [taken.id]);
+        deployNodes = [{ type: "service", id: "svc-api", name: "api", outcome: "pending", rows: [] }];
+        const placed = await place();
+
+        await harness.pool.query("update volume_run set current = null where id = $1", [taken.id]);
+
+        await expect(fence(placed[0])).rejects.toThrow("data changed since this Deploy placed it; Deploy again");
+        expect(verbs).toEqual([]);
+      });
+
       it("a silent B fails the follow with what to do", async () => {
         await failedCommit();
         const placed = await place();
