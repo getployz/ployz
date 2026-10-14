@@ -71,7 +71,8 @@ pub(crate) fn set(mode: Mode) {
     MODE.store(mode.to_u8(), Ordering::Relaxed);
 }
 
-/// The mode this process renders in.
+/// The process's output mode, set before dispatch and readable from any thread;
+/// `Mode::Plain` until then.
 #[must_use]
 pub fn mode() -> Mode {
     Mode::from_u8(MODE.load(Ordering::Relaxed))
