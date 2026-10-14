@@ -169,7 +169,6 @@ PLOYZ_TOKEN=$revoked c token "status with a revoked PLOYZ_TOKEN" $P status
 PLOYZ_TOKEN=$revoked c token "token ls with a revoked PLOYZ_TOKEN --json" $P token ls --json
 
 # ---------- org ----------
-# Inserted directly so Ada's sessions keep acting in ada; the switcher would move them all to babbage.
 sql "WITH o AS (INSERT INTO organization (name, slug) VALUES ('Babbage Labs', 'babbage') RETURNING id)
   INSERT INTO member (user_id, organization_id, role) SELECT u.id, o.id, 'owner' FROM o, \"user\" u WHERE u.email = 'ada@example.com'" >/dev/null \
   || { echo "creating the Babbage Labs Organization failed" >&2; exit 1; }
