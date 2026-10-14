@@ -3,7 +3,7 @@ import type { EnvironmentRef } from "@ployz/sdk";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import type { VolumeCopies } from "#/modules/volume-copies/volume-copies";
 import { copiesFromPlacement } from "#/modules/volume-copies/volume-copies.placement";
-import { lastMirrorRefreshQueryOptions } from "#/modules/volume-copies/volume-copies.queries";
+import { mirrorStatusesQueryOptions } from "#/modules/volume-copies/volume-copies.queries";
 import { mirroredVolumes, type PlacementVolume } from "#/modules/volume-placement/volume-placement";
 import { useVolumePlacements } from "#/modules/volume-placement/volume-placement.queries";
 import { useActiveVolumeRuns, volumeMembersQueryOptions } from "#/modules/volume-run/volume-run.queries";
@@ -18,7 +18,7 @@ export function useCanvasCopies(
   const running = volumes.flatMap((volume) => runs.some((run) => run.volume_id === volume.id) ? [volume.id] : []);
   const ids = [...new Set([...placed, ...running])];
   const members = useQueries({ queries: ids.map((id) => volumeMembersQueryOptions(organizationSlug, environment, id)) });
-  const synced = useQueries({ queries: ids.map((id) => lastMirrorRefreshQueryOptions(organizationSlug, id)) });
+  const synced = useQueries({ queries: ids.map((id) => mirrorStatusesQueryOptions(organizationSlug, id)) });
   return new Map(ids.flatMap((id, index) => {
     const volume = volumes.find((entry) => entry.id === id);
     const answered = members[index]?.data;
@@ -28,8 +28,7 @@ export function useCanvasCopies(
       members: answered,
       row: rows.find((row) => row.volumeId === id) ?? null,
       active: runs.find((run) => run.volume_id === id) ?? null,
-      lastSync: synced[index]?.data?.ended ?? null,
-      lastDone: synced[index]?.data?.done ?? null,
+      statuses: synced[index]?.data ?? [],
     });
     return copies === null ? [] : [[id, copies] as const];
   }));

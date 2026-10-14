@@ -2,6 +2,7 @@ import type { webhooks } from "#/modules/billing/polar-api";
 import { Schema } from "effect";
 import type { ServerPolicyChange } from "#/modules/machines/server-policy";
 import type { UpgradeTrigger } from "#/modules/server-upgrade/server-upgrade";
+import type { VolumeRunKind } from "#/modules/volume-run/volume-run";
 import { eventType, staticSchema } from "inngest";
 import { githubCheckSuiteReceivedEventDataSchema, githubPullRequestReceivedEventDataSchema, githubPushReceivedEventDataSchema, type GithubCheckSuiteReceivedEventData, type GithubCheckSuiteReceivedEventInput, type GithubPullRequestReceivedEventData, type GithubPullRequestReceivedEventInput, type GithubPushReceivedEventData, type GithubPushReceivedEventInput } from "#/modules/github/github-ingestion.contracts";
 import { asReferenceId } from "#/lib/json";
@@ -80,7 +81,12 @@ export type VolumeRunRequestedEventData = {
   environment: string;
   volumeId: string;
   runId: string;
+  /** The kind of the warm lane this run took over, so the run fences that lane's Machines before it plans. */
+  took?: VolumeRunKind;
 };
+export const volumeRunTakenEvent = "volume/run.taken";
+
+export type VolumeRunTakenEventData = { runId: string };
 export const serverDrainRequestedEvent = "server/drain.requested";
 export const namespaceCleanupRequestedEvent = "namespace/cleanup.requested";
 export const serviceActRequestedEvent = "service/act.requested";
@@ -272,6 +278,10 @@ export const volumeRunRequestedEventType = eventType(
   volumeRunRequestedEvent,
   { schema: staticSchema<VolumeRunRequestedEventData>() },
 );
+export const volumeRunTakenEventType = eventType(
+  volumeRunTakenEvent,
+  { schema: staticSchema<VolumeRunTakenEventData>() },
+);
 export const inngestFunctionFinishedEventType = eventType(
   "inngest/function.finished",
   { schema: staticSchema<{ function_id: string; run_id: string; error?: { name: string; message: string } | null }>() },
@@ -369,6 +379,11 @@ export function createCliServerUpgradeRequestedEvent(data: ServerUpgradeRequeste
 /** Keyed by the run's row: sending it again for the same request runs nothing new. */
 export function createVolumeRunRequestedEvent(data: VolumeRunRequestedEventData) {
   return { id: `volume-run-${data.runId}`, name: volumeRunRequestedEvent, data } as const;
+}
+
+/** Keyed by the ended row: a row is taken over once. */
+export function createVolumeRunTakenEvent(data: VolumeRunTakenEventData) {
+  return { id: `volume-run-taken-${data.runId}`, name: volumeRunTakenEvent, data } as const;
 }
 
 /** Keyed by the Drain's row: sending it again for the same request runs nothing new. */
@@ -554,6 +569,7 @@ export type InngestSendableEvent =
   | ReturnType<typeof createNamespaceCleanupRequestedEvent>
   | ReturnType<typeof createServiceActRequestedEvent>
   | ReturnType<typeof createVolumeRunRequestedEvent>
+  | ReturnType<typeof createVolumeRunTakenEvent>
   | ReturnType<typeof createClusterDomainSyncRequestedEvent>
   | ReturnType<typeof createConfigFirstServerJoinedEvent>
   | ReturnType<typeof createOrganizationBillingSyncRequestedEvent>

@@ -37,6 +37,33 @@ impl fmt::Display for WriterEpoch {
     }
 }
 
+/// Which lane Cloud opened on a Volume. The Machine keeps the newest one it accepted per
+/// Volume as its floor and refuses a lower one. A request without one reads as 0.
+#[derive(
+    Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS,
+)]
+#[serde(transparent)]
+#[ts(type = "number")]
+pub struct VolumeGen(u64);
+
+impl VolumeGen {
+    #[must_use]
+    pub const fn new(gen_: u64) -> Self {
+        Self(gen_)
+    }
+
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl fmt::Display for VolumeGen {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
 /// The idempotency key a driver gives a new Container.
 ///
 /// Invariant: non-empty, at most 512 bytes. No charset rule: the daemon hashes
@@ -140,6 +167,9 @@ pub struct SetVolumeCopyRequest {
     pub name: DockerVolumeName,
     pub expect: ExpectedCopy,
     pub want: WantedCopy,
+    #[serde(default)]
+    #[ts(as = "Option<VolumeGen>", optional)]
+    pub r#gen: VolumeGen,
 }
 
 /// What the sender believes this Machine holds. Compared by equality; a copy already at
@@ -183,6 +213,8 @@ pub enum WantedCopy {
     Snapshot { name: SnapshotName },
     /// No run snapshots on a Writer, no slot on a Mirror.
     Forget,
+    /// Raise the floor to `gen` and answer with the copy, whatever `expect` says.
+    Floor,
 }
 
 /// The Container a Writer runs: one Docker already holds, or one to create under a key.
@@ -227,6 +259,8 @@ pub enum CopyRefusal {
     Written,
     /// A pull names no `from`.
     NoSource,
+    /// The request's `gen` is below the floor: a newer lane owns the Volume.
+    Stale,
 }
 
 /// `RpcError.details` of a refused `SetVolumeCopy`: the reason and the copy it left.
@@ -234,6 +268,10 @@ pub enum CopyRefusal {
 pub struct SetVolumeCopyRefused {
     pub reason: CopyRefusal,
     pub copy: Option<VolumeCopy>,
+    /// The floor that refused a Stale request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub floor: Option<VolumeGen>,
 }
 
 impl SetVolumeCopyRefused {
@@ -253,7 +291,8 @@ impl SetVolumeCopyRefused {
             | CopyRefusal::Busy
             | CopyRefusal::Behind
             | CopyRefusal::Written
-            | CopyRefusal::NoSource => RpcErrorCode::Conflict,
+            | CopyRefusal::NoSource
+            | CopyRefusal::Stale => RpcErrorCode::Conflict,
         };
         RpcError {
             code,
@@ -420,6 +459,7 @@ pub fn plan(
             expected(NoneToMirror)
         }
         (None, WantedCopy::Forget) => AtWant,
+        (_, WantedCopy::Floor) => AtWant,
     }
 }
 
@@ -1024,7 +1064,14 @@ mod tests {
         let refused = SetVolumeCopyRefused {
             reason: CopyRefusal::Busy,
             copy: Some(root(1, false, None)),
+            floor: None,
         };
+        assert!(
+            serde_json::to_value(&refused)
+                .unwrap()
+                .get("floor")
+                .is_none()
+        );
         let error = refused.clone().rpc_error("the Container still runs");
         assert_eq!(error.code, RpcErrorCode::Conflict);
         assert_eq!(
@@ -1034,8 +1081,54 @@ mod tests {
         let capacity = SetVolumeCopyRefused {
             reason: CopyRefusal::NoCapacity,
             copy: None,
+            floor: None,
         }
         .rpc_error("no room");
         assert_eq!(capacity.code, RpcErrorCode::Unavailable);
+    }
+
+    #[test]
+    fn a_stale_refusal_names_the_floor_and_conflicts() {
+        let stale = SetVolumeCopyRefused {
+            reason: CopyRefusal::Stale,
+            copy: None,
+            floor: Some(VolumeGen::new(7)),
+        };
+        assert_eq!(
+            serde_json::to_value(&stale).unwrap(),
+            serde_json::json!({"reason": "stale", "copy": null, "floor": 7})
+        );
+        let error = stale.clone().rpc_error("a newer lane owns the Volume");
+        assert_eq!(error.code, RpcErrorCode::Conflict);
+        assert_eq!(
+            SetVolumeCopyRefused::from_details(&error.details),
+            Some(stale)
+        );
+    }
+
+    #[test]
+    fn a_request_without_gen_reads_as_zero_and_a_floor_want_parses() {
+        let request: SetVolumeCopyRequest = serde_json::from_value(serde_json::json!({
+            "name": "data",
+            "expect": {"kind": "none"},
+            "want": {"kind": "floor"},
+        }))
+        .unwrap();
+        assert_eq!(request.r#gen, VolumeGen::new(0));
+        assert_eq!(request.want, WantedCopy::Floor);
+        let sent = SetVolumeCopyRequest {
+            r#gen: VolumeGen::new(7),
+            ..request
+        };
+        let wire = serde_json::to_value(&sent).unwrap();
+        assert_eq!(wire.get("gen"), Some(&serde_json::json!(7)));
+        assert_eq!(
+            wire.get("want"),
+            Some(&serde_json::json!({"kind": "floor"}))
+        );
+        assert_eq!(
+            serde_json::from_value::<SetVolumeCopyRequest>(wire).unwrap(),
+            sent
+        );
     }
 }

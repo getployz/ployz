@@ -19,8 +19,10 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: cloud-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Every main commit runs to the end, so each leaves its builds behind for later runs and local verify.
+  # A shared group would still cancel a pending main run, so main groups by commit.
+  group: cloud-${{ github.event_name }}-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -67,49 +69,43 @@ jobs:
     name: Prepare matching SDK
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    # The SDK built from these sources: an earlier run's upload, or this run's build.
+    outputs:
+      name: ${{ steps.lookup.outputs.name }}
+      run-id: ${{ steps.lookup.outputs.run-id || github.run_id }}
     steps:
       - uses: actions/checkout@v6
         with:
           ref: ${{ inputs.release-tag }}
+      - name: Find an earlier build of these sources
+        id: lookup
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 ../core/scripts/artifacts.py lookup sdk --extra "features= profile=release" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-node@v6
+        if: steps.lookup.outputs.run-id == ''
         with:
           node-version: 22
-      - uses: actions/cache/restore@v4
-        id: sdk-cache
-        with:
-          path: |
-            core/crates/ployz-sdk/ployz-sdk.node
-            core/crates/ployz-sdk/generated/config-wasm.mjs
-          # No restore prefix: a binding from different source is not valid evidence.
-          key: cloud-sdk-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('core/Cargo.toml', 'core/Cargo.lock', 'core/.cargo/**', 'core/crates/**', '!core/crates/*/tests/**', '!core/crates/ployzd/**', '!core/crates/ployz-testkit/**', 'core/scripts/build-cloud-sdk.sh', 'core/scripts/build-config-wasm.sh', '.github/actions/setup-rust/action.yml', '.github/workflows/cloud.yml') }}
       - uses: ./.github/actions/setup-rust
-        if: steps.sdk-cache.outputs.cache-hit != 'true'
+        if: steps.lookup.outputs.run-id == ''
         with:
           cache-key: cloud-sdk
       - uses: taiki-e/install-action@v2
-        if: steps.sdk-cache.outputs.cache-hit != 'true'
+        if: steps.lookup.outputs.run-id == ''
         with:
           tool: wasm-bindgen@0.2.127
-      - name: Build SDK when its inputs changed
-        if: steps.sdk-cache.outputs.cache-hit != 'true'
+      - name: Build and test the SDK
+        if: steps.lookup.outputs.run-id == ''
         run: bash scripts/pr-check.sh sdk
-      - name: Verify config runs on WASM and RPC on napi
-        run: node ../core/crates/ployz-sdk/tests/config-contract.mjs
-      - uses: actions/cache/save@v4
-        if: steps.sdk-cache.outputs.cache-hit != 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main'
-        with:
-          path: |
-            core/crates/ployz-sdk/ployz-sdk.node
-            core/crates/ployz-sdk/generated/config-wasm.mjs
-          key: ${{ steps.sdk-cache.outputs.cache-primary-key }}
+      # Local verify runs download these too, so main keeps them longer.
       - uses: actions/upload-artifact@v4
+        if: steps.lookup.outputs.run-id == ''
         with:
-          name: cloud-sdk
+          name: ${{ steps.lookup.outputs.name }}
           path: |
             core/crates/ployz-sdk/ployz-sdk.node
             core/crates/ployz-sdk/generated/config-wasm.mjs
-          compression-level: 0
-          retention-days: 1
+          retention-days: ${{ github.ref == 'refs/heads/main' && 14 || 3 }}
           if-no-files-found: error
 
   build:
@@ -126,7 +122,9 @@ jobs:
       - uses: ./.github/actions/setup-cloud
       - uses: actions/download-artifact@v4
         with:
-          name: cloud-sdk
+          name: ${{ needs.sdk.outputs.name }}
+          run-id: ${{ needs.sdk.outputs.run-id }}
+          github-token: ${{ github.token }}
           path: core/crates/ployz-sdk
       - name: Build and verify frontend package
         run: pnpm pr:check build
@@ -170,7 +168,9 @@ jobs:
       - uses: ./.github/actions/setup-cloud
       - uses: actions/download-artifact@v4
         with:
-          name: cloud-sdk
+          name: ${{ needs.sdk.outputs.name }}
+          run-id: ${{ needs.sdk.outputs.run-id }}
+          github-token: ${{ github.token }}
           path: core/crates/ployz-sdk
       - name: Unit and PostgreSQL tests
         env:

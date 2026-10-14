@@ -7,7 +7,7 @@ import { ForgetServer, ForgetServers, RemoveServer, UpgradeServer, VOLUME_RUN_BO
 import { RequestServerUpgradeInput } from "#/modules/server-upgrade/server-upgrade";
 import { RefreshMirrorInput } from "#/modules/volume-copies/volume-copies";
 import { DeleteCopyInput, StageRestoreInput } from "#/modules/volume-placement/volume-placement";
-import type { VolumeRunKind } from "#/modules/volume-run/volume-run";
+import type { VolumeRunRequestKind } from "#/modules/volume-run/volume-run";
 
 /** The tool name a request key is scoped to: the same key under another tool is another request. */
 export const OPERATION_TOOLS = [
@@ -326,7 +326,7 @@ export const OPERATIONS = {
 
 export type OperationName = keyof typeof OPERATIONS;
 
-/** The idempotency tool of each Volume Run kind. */
+/** The idempotency tool of each Volume Run kind a caller requests. */
 export const VOLUME_TOOLS = {
   mirror: OPERATIONS["volume.mirror"].idempotency,
   sync: OPERATIONS["volume.sync"].idempotency,
@@ -335,4 +335,4 @@ export const VOLUME_TOOLS = {
   delete_mirror: OPERATIONS["volume.remove_mirror"].idempotency,
   restore: OPERATIONS["volume.restore"].idempotency,
   seed: OPERATIONS["volume.seed"].idempotency,
-} as const satisfies Record<VolumeRunKind, OperationTool>;
+} as const satisfies Record<VolumeRunRequestKind, OperationTool>;

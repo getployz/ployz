@@ -26,12 +26,13 @@ import { readCliServerDrain } from "#/modules/machines/server-drain.server";
 import { freshApproval, freshOperationDigest, planClean } from "#/modules/machines/server-operations.server";
 import { readCliServerUpgrade } from "#/modules/server-upgrade/server-upgrade.server";
 import { type Admission, REQUEST_KEY_HEADER, requestKeyOf } from "#/modules/operations/keyed.server";
-import { ForgetServer, ForgetServers, NewVolumeRun, RemoveServer, UpgradeServer } from "#/modules/operations/cli-wire";
+import { ForgetServer, ForgetServers, NewVolumeRun, RemoveServer, SyncVolume, UpgradeServer } from "#/modules/operations/cli-wire";
 import { cleanNamespace, drainServer, forgetServer, removeServer, runVolume, upgradeServer } from "#/modules/operations/operations.server";
 import { removeOrganization } from "#/modules/organization/organization-removal.server";
 import { NotFound, Validation } from "#/server/public-error";
 import type { VolumeRunInput } from "#/modules/volume-run/volume-run";
 import { getVolumeRun, listVolumeRuns } from "#/modules/volume-run/volume-run.server";
+import { refreshMirror } from "#/modules/volume-copies/volume-copies.refresh.server";
 
 const NewToken = Schema.Struct({
   name: Schema.Trim.check(Schema.isMinLength(1), Schema.isMaxLength(64)),
@@ -45,7 +46,7 @@ function volumeRunInput(body: typeof NewVolumeRun.Type): VolumeRunInput {
     case "mirror":
       return { kind: "mirror", args: { to: body.to } };
     case "sync":
-      return { kind: "sync", args: { full: body.full ?? false } };
+      return { kind: "sync", args: { full: true } };
     case "delete_mirror":
       return { kind: "delete_mirror", args: { slot: body.slot ?? null, confirmed_name: body.confirm ?? null } };
     case "move":
@@ -248,6 +249,13 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
         const run = yield* runVolume(caller, input, call);
         return run.ok ? { run: yield* getVolumeRun(caller.organization.id, run.id) } : refusal(run.refusal);
       }).pipe(Effect.catchTag("NotFound", (missing) => Effect.succeed(missingRefusal(missing.message))));
+    }
+    case "POST volumes/:id/sync": {
+      const body = yield* decodeBody(SyncVolume, request, "A volume sync takes its environment.");
+      return yield* refreshMirror({ userId: caller.userId, organizationId: caller.organization.id }, body.environment, id ?? "").pipe(
+        Effect.map((synced) => synced.ok ? { lines: synced.lines } : refusal(synced.refusal)),
+        Effect.catchTag("NotFound", (missing) => Effect.succeed(missingRefusal(missing.message))),
+      );
     }
     case "GET volumes/:id/runs":
       return { runs: yield* listVolumeRuns(caller.organization.id, id ?? "") };

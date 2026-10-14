@@ -42,6 +42,7 @@ pub struct LocalMachine {
 }
 
 mod container;
+pub(crate) use container::CutRefusal;
 mod management_client;
 mod upgrade;
 
@@ -679,7 +680,8 @@ impl LocalMachine {
         Ok(())
     }
 
-    /// Demote every root through the plugin, then make Docker forget each demoted name.
+    /// Demote every root through the plugin, make Docker forget each demoted name, then
+    /// forget every Volume floor, so a lane from a new cluster starts at any `gen`.
     /// A Machine without Docker has no volume driver and nothing to depart.
     ///
     /// # Errors
@@ -700,7 +702,12 @@ impl LocalMachine {
                 .await
                 .map_err(|error| Error::Cleanup(format!("Docker kept Volume {name}: {error}")))?;
         }
-        Ok(())
+        containers.clear_floors().await.map_err(|error| {
+            Error::Cleanup(format!(
+                "the Volume floors stayed: {}",
+                ployz_core::error_chain::inline(&error)
+            ))
+        })
     }
 }
 

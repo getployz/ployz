@@ -121,6 +121,7 @@ describe("machine remove Inngest boundary", () => {
       events: [{ name: "machine/remove.requested", data: { attemptId } }],
       steps: [
         { id: "claim-machine-remove", handler: () => ({ kind: "ready", attempt: { id: attemptId } }) },
+        { id: "observe-leaving-server", handler: () => ({ machine: { id: "machine-1", name: "two" }, writes: ["data"] }) },
         { id: "remove-machine", handler: () => ({ kind: "refused", failureCode: "conflict", message: "Server two answers and holds copies of Volumes data; removing it without a reset leaves them behind. No changes made." }) },
         { id: "complete-refused", handler: () => undefined },
       ],
@@ -129,6 +130,7 @@ describe("machine remove Inngest boundary", () => {
     expect(output.result).toEqual({ attemptId, status: "failed" });
     expect(output.ctx.step.run).toHaveBeenCalledWith("complete-refused", expect.any(Function));
     expect(output.ctx.step.run).not.toHaveBeenCalledWith("release-server", expect.any(Function));
+    expect(output.ctx.step.run).not.toHaveBeenCalledWith("release-volume-lanes", expect.any(Function));
   });
 
   it("leaves a superseded attempt alone: nothing is released, completed or synced", async () => {
@@ -138,13 +140,14 @@ describe("machine remove Inngest boundary", () => {
       events: [{ name: "machine/remove.requested", data: { attemptId } }],
       steps: [
         { id: "claim-machine-remove", handler: () => ({ kind: "ready", attempt: { id: attemptId } }) },
+        { id: "observe-leaving-server", handler: () => ({ machine: { id: "machine-1", name: "two" }, writes: ["data"] }) },
         { id: "remove-machine", handler: () => ({ kind: "superseded" }) },
       ],
     }).execute();
 
     expect(output.result).toEqual({ attemptId, status: "superseded", skipped: true });
     const steps = output.ctx.step.run.mock.calls.map(([id]) => id);
-    expect(steps).toEqual(["normalize-machine-remove-attempt-id", "claim-machine-remove", "remove-machine"]);
+    expect(steps).toEqual(["normalize-machine-remove-attempt-id", "claim-machine-remove", "observe-leaving-server", "remove-machine"]);
     expect(output.ctx.step.sendEvent).not.toHaveBeenCalled();
   });
 
@@ -155,8 +158,10 @@ describe("machine remove Inngest boundary", () => {
       events: [{ name: "machine/remove.requested", data: { attemptId } }],
       steps: [
         { id: "claim-machine-remove", handler: () => ({ kind: "ready", attempt: { id: attemptId, organizationId: "org-1", machineId: "machine-1", noReset: false } }) },
+        { id: "observe-leaving-server", handler: () => ({ machine: { id: "machine-1", name: "two" }, writes: ["data"] }) },
         { id: "remove-machine", handler: () => ({ kind: "left", resetWarning: "Docker reset failed", generation: "1" }) },
         { id: "forget-machine", handler: () => ({ kind: "removed", resetWarning: "Docker reset failed", generation: "1" }) },
+        { id: "release-volume-lanes", handler: () => [] },
         { id: "release-server", handler: () => ({ kind: "kept", reason: "its reset didn't finish" }) },
         { id: "complete-succeeded", handler: () => undefined },
         { id: "request-cluster-domain-sync", handler: () => undefined },
@@ -168,8 +173,10 @@ describe("machine remove Inngest boundary", () => {
     expect(steps).toEqual([
       "normalize-machine-remove-attempt-id",
       "claim-machine-remove",
+      "observe-leaving-server",
       "remove-machine",
       "forget-machine",
+      "release-volume-lanes",
       "release-server",
       "complete-succeeded",
     ]);

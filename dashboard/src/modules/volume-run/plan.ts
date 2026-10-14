@@ -103,7 +103,7 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
   const unknown = (member: Exclude<Member, AnsweredMember>) => member.lack === undefined
     ? refuse("unanswered", `${member.machine.name} did not answer; ${name}'s copies are unknown`)
     : refuse("server_lacks", member.lack);
-  const midRun = () => refuse("volume_switching", `${name} is mid-run; wait or volume release ${name}`);
+  const midRun = () => refuse("volume_switching", `${name} is mid-run; ployz volume release ${name} stops it`);
 
   if (input.kind === "delete_mirror") {
     if (input.orphan) {
@@ -157,7 +157,7 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
   if (input.kind === "move") return planMove(name, input.args, answered, root ?? null);
 
   if (root === undefined) {
-    if (mirrors.length > 0) return refuse("no_writer", `${name} has no writer; volume release ${name} ends a move cut short`);
+    if (mirrors.length > 0) return refuse("no_writer", `${name} has no writer; ployz volume release ${name} ends a move cut short`);
     return refuse("no_writer", `${name} has no writer; deploy ${name} before mirroring it`);
   }
   if (roleOf(root) === "cutting") return midRun();
@@ -192,7 +192,7 @@ function planMove(name: string, args: VolumeRunArgs["move"], answered: readonly 
   const move = (writer: AnsweredMember, start: MoveStart): Planned => ({ ok: true, phase: { kind: "move", writer, target, start } });
 
   if (root === target) {
-    if (roleOf(root) === "cutting") return refuse("volume_switching", `${name} is mid-run; wait or volume release ${name}`);
+    if (roleOf(root) === "cutting") return refuse("volume_switching", `${name} is mid-run; ployz volume release ${name} stops it`);
     const at = newestGuid(root.view.copy);
     const behind = at === null ? [] : others.filter((member) => newestGuid(member.view.copy) === at);
     if (behind.length === 0) return { ok: false, refusal: alreadyOn(name, to) };
@@ -206,7 +206,7 @@ function planMove(name: string, args: VolumeRunArgs["move"], answered: readonly 
 
   const [source, second] = others;
   if (source === undefined) return refuse("no_writer", `${name} has no writer; deploy ${name} before moving it`);
-  if (second !== undefined) return refuse("second_mirror", `${name} has copies on ${others.map(named).join(" and ")}; volume release ${name} first`);
+  if (second !== undefined) return refuse("second_mirror", `${name} has copies on ${others.map(named).join(" and ")}; ployz volume release ${name} first`);
   const at = newestGuid(source.view.copy);
   if (at === null) return refuse("no_writer", `${name} has no writer; deploy ${name} before moving it`);
   return move(source, newestGuid(target.view.copy) === at ? "start" : "final");
@@ -239,7 +239,7 @@ function planRestore(name: string, from: string, answered: readonly AnsweredMemb
  * epoch is old. Only a writable root can be the writer, so a read-only one is old beside any writable one. Writable
  * roots whose epochs tie leave no way to tell, so neither is old.
  */
-function oldCopy(roots: readonly AnsweredMember[]): { readonly old: AnsweredMember; readonly writer: AnsweredMember } | null {
+export function oldCopy(roots: readonly AnsweredMember[]): { readonly old: AnsweredMember; readonly writer: AnsweredMember } | null {
   const writable = (root: AnsweredMember) => roleOf(root) === "writer";
   const above = (a: AnsweredMember, b: AnsweredMember) => Number(writable(a)) - Number(writable(b)) || epochOf(a) - epochOf(b);
   const [writer, next] = [...roots].sort((a, b) => above(b, a));
