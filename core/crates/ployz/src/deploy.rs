@@ -20,6 +20,7 @@ mod planning;
 mod progress;
 mod render;
 mod report;
+mod schedule;
 
 pub(crate) use apply::{Outcome, apply_requested};
 pub(crate) use convergence::{Converged, OldCopy, Replacement, converge};
@@ -37,6 +38,7 @@ pub use ployz_core::{
     OperationPhase, OperationRow, OperationStatus, PlanOptions, PruneRefusal,
     ReplacementCompensation, ReplacementOperation, RestartAttempt, ServiceAttempt, StopAttempt,
 };
+pub use schedule::{ServiceGroup, Step};
 
 pub(crate) use progress::pending_rows;
 

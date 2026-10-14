@@ -7,8 +7,8 @@ use ployz_core::{
     ContainerObservation, ContainerRefusal, ContainerRefusalReason, ContainerRuntimeObservation,
     ContainerWant, DockerVolumeName, Drain, EnsuredContainer, ImageIngestOpened, ImageIngestReason,
     ImagePulled, ImagesRemoved, LocalMachinePhase, MachineStorageObservation, Namespace,
-    NewContainer, PruneImagesRequest, PullImageFromMachineRequest, ResolvedServiceSpec, RunTarget,
-    Start, StopOptions, VolumeGen, VolumeRemoved,
+    NewContainer, PruneImagesRequest, PullImageFromMachineRequest, PullImageRequest,
+    ResolvedServiceSpec, RunTarget, Start, StopOptions, VolumeGen, VolumeRemoved,
 };
 use ployz_core::{
     AnswerWhen, HEALTH_POLL_INTERVAL, HealthFailure, HealthPoll, HealthVerdict, HealthcheckSpec,
@@ -18,6 +18,7 @@ use ployz_core::{
 use super::super::ingress::admit_ingress_service;
 use super::{Error, LocalMachine};
 use crate::docker::{ContainerCreated, ContainerRequest, ImageIngest, same_creation};
+use crate::docker_image::ImagePull;
 use crate::machine::{STORAGE_OBSERVATION_TIMEOUT, local_storage};
 
 /// Why the cut's Container half left the root a writer.
@@ -185,7 +186,7 @@ impl LocalMachine {
                     &spec,
                     creation_key,
                     deployment_id,
-                    registry_auth,
+                    ImagePull::Policy(registry_auth.as_ref()),
                 )
                 .await
         })
@@ -247,7 +248,7 @@ impl LocalMachine {
                             &resolved_spec,
                             Some(creation_key.as_str().to_owned()),
                             None,
-                            None,
+                            ImagePull::Policy(None),
                         )
                         .await?
                         .container_id
@@ -526,6 +527,30 @@ impl LocalMachine {
             .map_err(Error::StoragePreparation)
     }
 
+    /// Pull one image from its registry under shared admission, like a peer pull.
+    ///
+    /// # Errors
+    ///
+    /// Returns when Docker is unavailable, admission is busy, or the pull fails.
+    pub(crate) async fn pull_image(&self, request: PullImageRequest) -> Result<ImagePulled, Error> {
+        let local = self.clone();
+        let shared = self.owner.admission_lock().read_owned().await;
+        self.finish_admitted(shared, async move {
+            local
+                .containers
+                .as_ref()
+                .ok_or(Error::DockerUnavailable)?
+                .pull_image(
+                    &request.image,
+                    request.policy,
+                    request.registry_auth.as_ref(),
+                )
+                .await?;
+            Ok(ImagePulled {})
+        })
+        .await
+    }
+
     /// Pull one image from peer ingest under shared admission: transfers run side by
     /// side, and exclusive work, such as Reset or image removal, waits for them.
     ///
@@ -713,7 +738,7 @@ impl LocalMachine {
             } => {
                 let local = self.clone();
                 self.finish_installed(move |installation| async move {
-                    local
+                    match local
                         .stop_behind_ingress(
                             &installation,
                             &id,
@@ -721,8 +746,11 @@ impl LocalMachine {
                             drain,
                             &StopOptions::default(),
                         )
-                        .await?
-                        .ok();
+                        .await
+                    {
+                        Ok(_) | Err(Error::Docker(crate::docker::Error::ContainerNotFound(_))) => {}
+                        Err(error) => return Err(error),
+                    }
                     let turn = local.owner.admission_lock().write_owned().await;
                     let removed = local
                         .containers
@@ -731,8 +759,10 @@ impl LocalMachine {
                         .remove(&id, anonymous_volumes == AnonymousVolumes::Remove, false)
                         .await;
                     drop(turn);
-                    removed?;
-                    Ok(())
+                    match removed {
+                        Ok(()) | Err(crate::docker::Error::ContainerNotFound(_)) => Ok(()),
+                        Err(error) => Err(error.into()),
+                    }
                 })
                 .await?;
                 None
@@ -789,7 +819,11 @@ impl LocalMachine {
                         &new.resolved_spec,
                         Some(new.slot.creation_key.as_str().to_owned()),
                         new.deployment_id,
-                        new.registry_auth,
+                        if new.image_prepared {
+                            ImagePull::Prepared
+                        } else {
+                            ImagePull::Policy(new.registry_auth.as_ref())
+                        },
                     )
                     .await;
                 let created = match created {
@@ -820,7 +854,7 @@ impl LocalMachine {
         spec: &ResolvedServiceSpec,
         creation_key: Option<String>,
         deployment_id: Option<ployz_core::DeploymentLogId>,
-        registry_auth: Option<ployz_core::RegistryAuth>,
+        image: ImagePull<'_>,
     ) -> Result<ContainerCreated, Error> {
         let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
         let record = self.record();
@@ -837,7 +871,7 @@ impl LocalMachine {
                 ContainerRequest {
                     creation_key: creation_key.as_deref(),
                     deployment_id: deployment_id.as_ref(),
-                    registry_auth: registry_auth.as_ref(),
+                    image,
                     kind,
                     namespace,
                     spec,

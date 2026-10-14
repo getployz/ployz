@@ -272,6 +272,42 @@ async fn tail_logs_reads_each_target_from_its_live_source_without_the_observer()
 }
 
 #[tokio::test]
+async fn a_pulled_image_answers_only_after_docker_holds_it() {
+    use axum::http::Method;
+    let (data_dir, _store, service, fake) = fake_docker_service("ployzd-pull-image").await;
+    let image = "example.test/api:1";
+    service
+        .pull_image(Request::new(
+            op::PullImage::into_request(ployz_core::PullImageRequest {
+                image: image.into(),
+                policy: ployz_core::PullPolicy::Always,
+                registry_auth: None,
+            })
+            .encode()
+            .unwrap(),
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+        .decode_response()
+        .unwrap()
+        .decode::<op::PullImage>()
+        .unwrap();
+    let requests = fake.requests.lock().unwrap().clone();
+    let pulled = requests
+        .iter()
+        .position(|(method, path)| *method == Method::POST && path.ends_with("/images/create"));
+    let inspected = requests.iter().rposition(|(method, path)| {
+        *method == Method::GET && path.ends_with(&format!("/images/{image}/json"))
+    });
+    assert!(
+        matches!((pulled, inspected), (Some(pulled), Some(inspected)) if pulled < inspected),
+        "{requests:?}"
+    );
+    std::fs::remove_dir_all(data_dir).unwrap();
+}
+
+#[tokio::test]
 async fn keyed_creation_replays_conflicts_and_obeys_new_work_admission() {
     use serde_json::json;
     #[derive(Clone)]
@@ -2250,6 +2286,29 @@ mod ensure_container {
     }
 
     #[tokio::test]
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture edits")]
+    async fn a_prepared_image_is_never_pulled_again_at_creation() {
+        let (data_dir, _store, service, fake) = fake_docker_service("ployzd-ensure-prepared").await;
+        let mut spec = spec("example.test/api:1");
+        spec["container"]["pull_policy"] = json!("always");
+        let pulls =
+            |fake: &FakeDocker| ends_with(&requests(fake), Method::POST, "/images/create").count();
+
+        let mut prepared = run_new("k1", spec.clone());
+        prepared["want"]["container"]["new"]["image_prepared"] = json!(true);
+        present(&ensure(&service, prepared).await);
+        assert_eq!(pulls(&fake), 0);
+
+        present(&ensure(&service, run_new("k2", spec)).await);
+        assert_eq!(
+            pulls(&fake),
+            1,
+            "an unprepared image pulls under its policy"
+        );
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
     async fn a_slot_holding_another_spec_refuses_and_shows_the_occupant() {
         let (data_dir, _store, service, fake) = fake_docker_service("ployzd-ensure-occupied").await;
         let first = ensure(&service, run_new("k1", spec("example.test/api:1"))).await;
@@ -2576,13 +2635,14 @@ mod ensure_container {
 }
 
 mod serving_pointer {
+    use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
 
     use futures_util::{SinkExt, StreamExt};
     use ployz_core::{
-        DeploymentLogId, Machine, NotPointerPublisher, OpaquePayload, PublishServingPointerRequest,
-        QualifiedService, ReadServingPointerRequest, Rpc, RpcError, ServingPointer,
-        ServingPointerPublication, ServingPointerRead,
+        ContainerId, DeploymentLogId, Machine, NotPointerPublisher, OpaquePayload,
+        PublishServingPointerRequest, QualifiedService, ReadServingPointerRequest, Rpc, RpcError,
+        ServingPointer, ServingPointerPublication, ServingPointerRead,
     };
     use serde_json::{Value, json};
     use tokio::net::UnixListener;
@@ -2899,6 +2959,63 @@ mod serving_pointer {
         );
         low_task.abort();
         high_task.abort();
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn read_acks_only_machines_routing_every_pointed_container() {
+        use crate::corrosion::{IngressRouteAck, IngressRouteChange};
+
+        let dir = std::env::temp_dir().join(format!("ployzd-pointer-{}", MachineId::random()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (service, task) = machine(&dir, &[], Vec::new()).await;
+        let local = service.local();
+        let replicated = local.replicated().unwrap();
+        let web = QualifiedService::parse("app/web").unwrap();
+        let first = MachineId::random();
+        let second = MachineId::random();
+        let third = MachineId::random();
+        let pointed = ContainerId::parse("a".repeat(64)).unwrap();
+        replicated
+            .compare_and_set_serving_pointer(&api(), None, &pointer("d1", "a"))
+            .await
+            .unwrap();
+        let ack = |deploy: &str, containers: &[ContainerId]| {
+            IngressRouteChange::Upsert(IngressRouteAck {
+                deploy: DeploymentLogId::parse(deploy).unwrap(),
+                containers: containers.iter().copied().collect(),
+            })
+        };
+        replicated
+            .publish_ingress_routes(
+                &first,
+                &BTreeMap::from([
+                    (api(), ack("d1", &[pointed])),
+                    (web.clone(), ack("w1", &[pointed])),
+                ]),
+            )
+            .await
+            .unwrap();
+        replicated
+            .publish_ingress_routes(
+                &second,
+                &BTreeMap::from([(api(), ack("d1", &[])), (web, ack("w2", &[pointed]))]),
+            )
+            .await
+            .unwrap();
+        replicated
+            .publish_ingress_routes(&third, &BTreeMap::from([(api(), ack("d0", &[pointed]))]))
+            .await
+            .unwrap();
+
+        let read = read(&service).await.unwrap();
+        assert_eq!(read.pointer, Some(pointer("d1", "a")));
+        assert_eq!(
+            read.acks,
+            BTreeMap::from([(first, DeploymentLogId::parse("d1").unwrap())]),
+            "second routes none of the pointed copies, third routes the fallback"
+        );
+        task.abort();
         std::fs::remove_dir_all(dir).ok();
     }
 }

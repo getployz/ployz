@@ -21,8 +21,9 @@ use ployz_core::{
     MANAGED_LABEL, Machine, MachineDetails, MachineId, MachineList, MachineName,
     MachineObservation, MachinePath, MachineRpc, MachineRpcServer, MachineStorageObservation,
     MembershipObservation, NAMESPACE_LABEL, ObservedDataLoss, OpaquePayload, PROTOCOL_MAJOR,
-    RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, Registered, RpcError, RpcErrorCode, RpcRequestBody,
-    RpcResponse, RuntimeWatchFrame, RuntimeWatchRequest, VolumeInventory, VolumeObservationFailure,
+    QualifiedService, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, Registered, RpcError, RpcErrorCode,
+    RpcRequestBody, RpcResponse, RuntimeWatchFrame, RuntimeWatchRequest, ServingPointer,
+    ServingPointerPublication, ServingPointerRead, VolumeInventory, VolumeObservationFailure,
     VolumeRemoved, WireGuardPublicKey, encode_runtime_watch_frame, op,
 };
 use serde_json::Value;
@@ -185,6 +186,8 @@ pub(super) struct DiscoveryService {
     pub(super) reset_warning: Arc<Mutex<Option<String>>>,
     pub(super) reset_machines: Arc<Mutex<Vec<MachineId>>>,
     pub(super) removed_machines: Arc<Mutex<Vec<MachineId>>>,
+    /// Serving Pointers published so far; every Machine acks a pointer as soon as it lands.
+    pointers: Arc<Mutex<BTreeMap<QualifiedService, ServingPointer>>>,
     pub(super) management_clients: Arc<Mutex<Vec<ployz_core::ManagementClientLabel>>>,
     /// Inspect fails, so who manages the Machine can't be read.
     pub(super) inspect_fails: bool,
@@ -250,6 +253,7 @@ impl DiscoveryService {
             reset_warning: Arc::new(Mutex::new(None)),
             reset_machines: Arc::new(Mutex::new(Vec::new())),
             removed_machines: Arc::new(Mutex::new(Vec::new())),
+            pointers: Arc::new(Mutex::new(BTreeMap::new())),
             management_clients: Arc::default(),
             inspect_fails: false,
             leave_unavailable: false,
@@ -1186,18 +1190,51 @@ impl MachineRpc for DiscoveryService {
     }
     async fn publish_serving_pointer(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
+        let RpcRequestBody::PublishServingPointer(publish) =
+            request.into_inner().decode_request().unwrap().body
+        else {
+            panic!("expected pointer publication");
+        };
+        let mut pointers = self.pointers.lock().unwrap();
+        let current = pointers.get(&publish.service).cloned();
+        let publication = if current == publish.read {
+            pointers.insert(publish.service, publish.pointer);
+            ServingPointerPublication::Published
+        } else {
+            ServingPointerPublication::Superseded { current }
+        };
+        Ok(Response::new(
+            RpcResponse::from(publication).encode().unwrap(),
+        ))
     }
     async fn read_serving_pointer(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        let RpcRequestBody::ReadServingPointer(read) =
+            request.into_inner().decode_request().unwrap().body
+        else {
+            panic!("expected pointer read");
+        };
+        let pointer = self.pointers.lock().unwrap().get(&read.service).cloned();
+        let acks = pointer
+            .iter()
+            .flat_map(|pointer| {
+                self.machines
+                    .iter()
+                    .map(move |observed| (observed.machine.id, pointer.deploy.clone()))
+            })
+            .collect();
         Ok(Response::new(
-            RpcResponse::from(ployz_core::ServingPointerRead { pointer: None })
-                .encode()
-                .unwrap(),
+            RpcResponse::from(ServingPointerRead {
+                all_routed: pointer.is_some(),
+                pointer,
+                acks,
+            })
+            .encode()
+            .unwrap(),
         ))
     }
     async fn prune_images(
@@ -1205,6 +1242,16 @@ impl MachineRpc for DiscoveryService {
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         Err(Status::unimplemented("unused"))
+    }
+    async fn pull_image(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Ok(Response::new(
+            RpcResponse::from(ployz_core::ImagePulled {})
+                .encode()
+                .unwrap(),
+        ))
     }
     async fn pull_image_from_machine(
         &self,

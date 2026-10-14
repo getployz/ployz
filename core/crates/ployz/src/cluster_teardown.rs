@@ -131,7 +131,7 @@ impl Client {
                 Ok(ployz_core::DeployOutcome::Success { .. }) => {
                     destroyed_namespaces.push(namespace.name);
                 }
-                Ok(ployz_core::DeployOutcome::Failed { .. }) => {}
+                Ok(_) => {}
                 Err(error) if UnconfirmedDataLoss::from_rpc_error(&error).is_some() => {
                     return Err(error);
                 }

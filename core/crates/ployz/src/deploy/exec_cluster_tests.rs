@@ -582,6 +582,7 @@ async fn run_container(
                 resolved_spec,
                 deployment_id: None,
                 registry_auth: None,
+                image_prepared: false,
                 answer: ployz_core::AnswerWhen::Started,
             }),
         },

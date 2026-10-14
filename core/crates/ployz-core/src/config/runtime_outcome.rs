@@ -32,6 +32,10 @@ pub enum RuntimeFailureKind {
     Hook,
     /// Execution was cancelled.
     Cancelled,
+    /// Another Deploy published a Service's Serving Pointer first.
+    Superseded,
+    /// Another runner took over the environment.
+    Interrupted,
 }
 
 /// Public counts contain no operation inputs or provider error messages.
@@ -190,6 +194,33 @@ pub fn project_runtime_outcome(
             };
             (summary, completed, Some(operation), unexecuted)
         }
+        DeployOutcome::Superseded {
+            completed,
+            unexecuted,
+            ..
+        } => (
+            RuntimeOutcomeSummary::Failed {
+                completed: completed.len(),
+                unexecuted: unexecuted.len(),
+                reason: RuntimeFailureKind::Superseded,
+            },
+            completed,
+            None,
+            unexecuted,
+        ),
+        DeployOutcome::Interrupted {
+            completed,
+            unexecuted,
+        } => (
+            RuntimeOutcomeSummary::Failed {
+                completed: completed.len(),
+                unexecuted: unexecuted.len(),
+                reason: RuntimeFailureKind::Interrupted,
+            },
+            completed,
+            None,
+            unexecuted,
+        ),
     };
     if completed.len() + usize::from(failed.is_some()) + pending.len() != preview.operations.len() {
         return Err(invalid());

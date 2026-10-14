@@ -1,6 +1,10 @@
 //! Local Machine RPC. Listeners take [`super::MachineApi`], not this type.
 
-use std::{collections::BTreeSet, path::PathBuf, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::PathBuf,
+    sync::Arc,
+};
 
 use ployz_core::{
     CapabilityAdvertisement, CertificateMaterialChange, CertificateMaterialPublished,
@@ -13,7 +17,7 @@ use serde_json::Value;
 use tonic::{Request, Response, Status};
 
 use crate::{
-    corrosion::{AdminClient, CertificateMaterial, ReplicatedStore},
+    corrosion::{AdminClient, CertificateMaterial, IngressRouteRow, ReplicatedStore},
     docker::{ContainerRuntime, ImageIngest},
     logs::{RpcStream, open_journal_logs, serve_logs},
     machine::{LocalMachine, LocalMachineError, LocalMachineRecord, RecordOwner, StoreError},
@@ -568,6 +572,22 @@ impl MachineRpc for MachineService {
         )
     }
 
+    async fn pull_image(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::PullImage>(request)?;
+        if request.image.is_empty() {
+            return respond(RpcError {
+                code: RpcErrorCode::InvalidArgument,
+                message: "image is required".into(),
+                details: Value::Null,
+                cause: Vec::new(),
+            });
+        }
+        finish(self.local.pull_image(request).await)
+    }
+
     async fn pull_image_from_machine(
         &self,
         request: Request<OpaquePayload>,
@@ -689,11 +709,54 @@ impl MachineRpc for MachineService {
             Ok(replicated) => replicated,
             Err(error) => return respond(error),
         };
-        match replicated.serving_pointer(&request.service).await {
-            Ok(pointer) => respond(ServingPointerRead { pointer }),
-            Err(error) => respond(cluster_store_error(error)),
-        }
+        let pointer = match replicated.serving_pointer(&request.service).await {
+            Ok(pointer) => pointer,
+            Err(error) => return respond(cluster_store_error(error)),
+        };
+        let acks: BTreeMap<_, _> = match replicated.ingress_routes().await {
+            Ok(routes) => routes
+                .into_iter()
+                .filter_map(|((machine_id, service), row)| match row {
+                    IngressRouteRow::Acked(ack)
+                        if service == request.service && routes_pointer(&ack, pointer.as_ref()) =>
+                    {
+                        Some((machine_id, ack.deploy))
+                    }
+                    IngressRouteRow::Acked(_)
+                    | IngressRouteRow::UnknownDeploy(_)
+                    | IngressRouteRow::UnknownContainers => None,
+                })
+                .collect(),
+            Err(error) => return respond(cluster_store_error(error)),
+        };
+        let all_routed = match self.local.ingress_machines().await {
+            Ok(Some(machines)) => {
+                pointer.is_some() && machines.iter().all(|machine| acks.contains_key(machine))
+            }
+            Ok(None) => false,
+            Err(error) => return local_error(error),
+        };
+        respond(ServingPointerRead {
+            pointer,
+            acks,
+            all_routed,
+        })
     }
+}
+
+/// The Machine routes the pointer's deploy and every Container it names; an ack
+/// for a fallback deploy or for a subset of the pointed copies proves nothing.
+fn routes_pointer(
+    ack: &crate::corrosion::IngressRouteAck,
+    pointer: Option<&ployz_core::ServingPointer>,
+) -> bool {
+    pointer.is_some_and(|pointer| {
+        ack.deploy == pointer.deploy
+            && pointer
+                .containers
+                .iter()
+                .all(|container| ack.containers.contains(container))
+    })
 }
 
 #[allow(clippy::result_large_err)]

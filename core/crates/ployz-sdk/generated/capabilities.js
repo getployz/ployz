@@ -17,6 +17,7 @@ exports.capabilities = Object.freeze([
   "ployz.image.list.v1",
   "ployz.image.prune.v1",
   "ployz.image.pull-from-machine.v1",
+  "ployz.image.pull.v1",
   "ployz.logs.history.v2",
   "ployz.logs.tail.v1",
   "ployz.machine.enroll.v1",

@@ -72,19 +72,7 @@ impl RetireHost for DaemonHost {
                 down: BTreeSet::new(),
             };
         };
-        let states =
-            match tokio::time::timeout(MEMBERSHIP_SAMPLE_TIMEOUT, self.admin.membership_states())
-                .await
-            {
-                Ok(Ok(states)) => Some(membership_states_by_address(states)),
-                _ => {
-                    tracing::warn!(
-                        "membership sample failed; every Machine must ack before retiring"
-                    );
-                    None
-                }
-            };
-        required_ackers(machines.as_ref().clone(), &self.machine_id, states.as_ref())
+        sample_ackers(machines.as_ref().clone(), &self.machine_id, &self.admin).await
     }
 
     type Withdrawal = crate::docker::Withdrawal;
@@ -178,6 +166,24 @@ impl Membership {
             .map(|((machine, _), _)| machine.as_str().to_owned())
             .collect()
     }
+}
+
+/// Machines whose ingress must ack: every one not reported Down, or every one
+/// when membership cannot be sampled.
+pub(crate) async fn sample_ackers(
+    machines: ReplicatedObservations<Machine, MachineId>,
+    local: &MachineId,
+    admin: &AdminClient,
+) -> Membership {
+    let states =
+        match tokio::time::timeout(MEMBERSHIP_SAMPLE_TIMEOUT, admin.membership_states()).await {
+            Ok(Ok(states)) => Some(membership_states_by_address(states)),
+            _ => {
+                tracing::warn!("membership sample failed; every Machine must ack");
+                None
+            }
+        };
+    required_ackers(machines, local, states.as_ref())
 }
 
 fn required_ackers(

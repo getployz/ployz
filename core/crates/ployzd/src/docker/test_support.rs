@@ -227,6 +227,8 @@ async fn fake_docker(
             },
             |container| (StatusCode::OK, container),
         )
+    } else if method == Method::POST && path.ends_with("/images/create") {
+        (StatusCode::OK, serde_json::json!({}))
     } else if method == Method::GET && path.contains("/images/") && path.ends_with("/json") {
         if let Some(barrier) = &fake.image_barrier {
             barrier.wait().await;
@@ -488,7 +490,7 @@ pub(super) fn container_request<'spec, Storage>(
 ) -> ContainerRequest<'spec, Storage, std::future::Ready<Result<(), Error>>> {
     ContainerRequest {
         deployment_id: None,
-        registry_auth: None,
+        image: crate::docker_image::ImagePull::Policy(None),
         creation_key: None,
         kind,
         namespace,

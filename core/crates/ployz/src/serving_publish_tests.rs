@@ -62,6 +62,13 @@ pub(crate) fn pointer(deploy: char, containers: &[char], retiring: &[char]) -> S
     }
 }
 
+/// `pointer` as a rotation leaves it: `previous` names the Deploy its retiring
+/// Containers came from.
+pub(crate) fn retired_from(mut pointer: ServingPointer, deploy: char) -> ServingPointer {
+    pointer.previous = Some(DeploymentLogId::parse(format!("dep-{deploy}")).unwrap());
+    pointer
+}
+
 pub(crate) fn container(id: char) -> ContainerId {
     ContainerId::parse(id.to_string().repeat(64)).unwrap()
 }
@@ -135,7 +142,7 @@ async fn a_lost_amendment_retries_over_the_winner_and_keeps_both_changes() {
     assert_eq!(amended, Amendment::Published { retries: 1 });
     assert_eq!(
         *fake.row.lock().unwrap(),
-        Some(pointer('a', &['4', '2'], &['1']))
+        Some(retired_from(pointer('a', &['4', '2'], &['1']), 'a'))
     );
 }
 
@@ -247,8 +254,26 @@ async fn cancelling_a_sent_publish_says_it_may_have_been_written() {
 }
 
 #[test]
+fn a_first_pointer_that_gains_retiring_ids_names_its_own_deploy_as_previous() {
+    let first = pointer('a', &['1', '2'], &[]);
+    assert_eq!(
+        replacing('3', '1').apply(&first),
+        Applied::Next(retired_from(pointer('a', &['2', '3'], &['1']), 'a'))
+    );
+}
+
+#[test]
+fn a_rotation_that_retires_nothing_leaves_previous_alone() {
+    let first = pointer('a', &['1'], &[]);
+    assert_eq!(
+        labelled('2', 'a').apply(&first),
+        Applied::Next(pointer('a', &['1', '2'], &[]))
+    );
+}
+
+#[test]
 fn a_rotation_prunes_only_retiring_ids_the_listing_lacked_before_the_read() {
-    let read = pointer('a', &['1'], &['8', '9']);
+    let read = retired_from(pointer('a', &['1'], &['8', '9']), 'a');
     let listed = [container('1'), container('2'), container('9')];
     let rotation = Rotation {
         joining: vec![Join {
@@ -264,13 +289,13 @@ fn a_rotation_prunes_only_retiring_ids_the_listing_lacked_before_the_read() {
     assert_eq!(rotation.pruning, [container('8')]);
     assert_eq!(
         rotation.apply(&read),
-        Applied::Next(pointer('a', &['2'], &['9', '1'])),
+        Applied::Next(retired_from(pointer('a', &['2'], &['9', '1']), 'a')),
         "8 is gone from the listing; 9 still runs and keeps retiring"
     );
-    let later = pointer('a', &['1'], &['8', '9', '7']);
+    let later = retired_from(pointer('a', &['1'], &['8', '9', '7']), 'a');
     assert_eq!(
         rotation.apply(&later),
-        Applied::Next(pointer('a', &['2'], &['9', '7', '1'])),
+        Applied::Next(retired_from(pointer('a', &['2'], &['9', '7', '1']), 'a')),
         "7 retired after the listing; the listing proves nothing about it"
     );
     let prune_only = Rotation {
@@ -279,21 +304,21 @@ fn a_rotation_prunes_only_retiring_ids_the_listing_lacked_before_the_read() {
     };
     assert_eq!(
         prune_only.apply(&read),
-        Applied::Next(pointer('a', &['1'], &[])),
+        Applied::Next(retired_from(pointer('a', &['1'], &[]), 'a')),
         "pruning alone is a change worth publishing"
     );
 }
 
 #[test]
 fn a_rotation_joins_with_evidence_retires_named_ids_and_reports_no_change() {
-    let current = pointer('a', &['1', '2'], &['9']);
+    let current = retired_from(pointer('a', &['1', '2'], &['9']), 'a');
     assert_eq!(
         replacing('3', '1').apply(&current),
-        Applied::Next(pointer('a', &['2', '3'], &['9', '1']))
+        Applied::Next(retired_from(pointer('a', &['2', '3'], &['9', '1']), 'a'))
     );
     assert_eq!(
         labelled('3', 'a').apply(&current),
-        Applied::Next(pointer('a', &['1', '2', '3'], &['9'])),
+        Applied::Next(retired_from(pointer('a', &['1', '2', '3'], &['9']), 'a')),
         "a source labelled with the row's deploy is evidence without being named"
     );
     assert_eq!(
@@ -307,7 +332,7 @@ fn a_rotation_joins_with_evidence_retires_named_ids_and_reports_no_change() {
     );
     assert_eq!(
         replacing('2', '1').apply(&current),
-        Applied::Next(pointer('a', &['2'], &['9', '1'])),
+        Applied::Next(retired_from(pointer('a', &['2'], &['9', '1']), 'a')),
         "a copy already pointed joins without evidence"
     );
 }
@@ -481,6 +506,7 @@ mod rpc {
                                 Some(refusal) => RpcResponse::from(refusal.rpc_error()),
                                 None => RpcResponse::from(ServingPointerRead {
                                     pointer: row.lock().unwrap().clone(),
+                                    ..Default::default()
                                 }),
                             }
                         }
@@ -556,7 +582,7 @@ mod rpc {
         assert_eq!(amended, Amendment::Published { retries: 0 });
         assert_eq!(
             *fixture.row.lock().unwrap(),
-            Some(pointer('a', &['2'], &['1']))
+            Some(retired_from(pointer('a', &['2'], &['1']), 'a'))
         );
         server.abort();
     }

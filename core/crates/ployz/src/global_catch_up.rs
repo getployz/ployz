@@ -42,6 +42,12 @@ pub(crate) trait CatchUpClient: PointerClient {
         &mut self,
         machine_id: &MachineId,
     ) -> Result<Option<BridgeEndpointCapacity>, Failure>;
+    async fn retire_if_ineligible(
+        &mut self,
+        machine_id: &MachineId,
+        new: &NewContainer,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> Result<bool, RpcError>;
     /// Run the Global slot's Container on `machine_id`, or retire its copies there and
     /// answer `None` when the Machine is not eligible for it.
     async fn run_slot(
@@ -81,6 +87,26 @@ impl CatchUpClient for Client {
         Ok(details.telemetry.map(|telemetry| telemetry.into_bridge()))
     }
 
+    async fn retire_if_ineligible(
+        &mut self,
+        machine_id: &MachineId,
+        new: &NewContainer,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> Result<bool, RpcError> {
+        match slot_eligibility(self, machine_id, &new.slot.namespace, &new.resolved_spec).await? {
+            ServicePlacementEligibility::Eligible => Ok(false),
+            ServicePlacementEligibility::Ineligible(_) => {
+                let service = QualifiedService::new(
+                    new.slot.namespace.clone(),
+                    new.resolved_spec.name.clone(),
+                );
+                retire_copies(self, machine_id, &service, POINTED_RETIRE_WAIT, cancel).await?;
+                Ok(true)
+            }
+            ServicePlacementEligibility::Unknown(reason) => Err(unknown_eligibility(reason)),
+        }
+    }
+
     async fn run_slot(
         &mut self,
         machine_id: &MachineId,
@@ -88,19 +114,8 @@ impl CatchUpClient for Client {
         cancel: &tokio_util::sync::CancellationToken,
     ) -> Result<Option<ContainerId>, RpcError> {
         let target = MachineTarget::from(machine_id);
-        match slot_eligibility(self, machine_id, &new.slot.namespace, &new.resolved_spec).await? {
-            ServicePlacementEligibility::Eligible => {}
-            ServicePlacementEligibility::Ineligible(_) => {
-                let service = QualifiedService::new(
-                    new.slot.namespace.clone(),
-                    new.resolved_spec.name.clone(),
-                );
-                retire_copies(self, machine_id, &service, POINTED_RETIRE_WAIT, cancel).await?;
-                return Ok(None);
-            }
-            ServicePlacementEligibility::Unknown(reason) => {
-                return Err(unknown_eligibility(reason));
-            }
+        if self.retire_if_ineligible(machine_id, &new, cancel).await? {
+            return Ok(None);
         }
         // Explicit Deploy replacement keys also distinguish the previous Container.
         // Reuse its exact persisted creation when catch-up finds it.
@@ -371,6 +386,7 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
             resolved_spec: slot.resolved_spec().clone(),
             deployment_id: None,
             registry_auth: None,
+            image_prepared: false,
             answer: ployz_core::AnswerWhen::Started,
         };
         let started_under = tokio::select! {
@@ -385,8 +401,23 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
         };
         let started_under = match started_under {
             Ok(Some(pointer)) if !provenance.proven_by(&pointer) => {
-                observe(CatchUpFact::Failed(identity.clone()));
-                failures.push((identity, OUTDATED.to_owned()));
+                match client
+                    .retire_if_ineligible(&this_machine.id, &new, cancel)
+                    .await
+                {
+                    Ok(true) => {
+                        unresolved.retain(|service| service != &identity);
+                        observe(CatchUpFact::Excluded(identity));
+                    }
+                    Ok(false) => {
+                        observe(CatchUpFact::Failed(identity.clone()));
+                        failures.push((identity, OUTDATED.to_owned()));
+                    }
+                    Err(error) => {
+                        observe(CatchUpFact::Failed(identity.clone()));
+                        failures.push((identity, crate::ui::row(&error)));
+                    }
+                }
                 continue;
             }
             Ok(pointer) => pointer.map(|pointer| pointer.deploy),

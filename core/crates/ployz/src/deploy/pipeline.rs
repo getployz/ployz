@@ -9,8 +9,8 @@ use std::net::IpAddr;
 use std::time::SystemTime;
 
 use ployz_core::{
-    DataLossConfirmation, MachineId, MachineObservation, Namespace, ObservedDataLoss,
-    PortPublication, RpcError, RpcErrorCode, UnconfirmedDataLoss,
+    DataLossConfirmation, DeploymentLogId, MachineId, MachineObservation, Namespace,
+    ObservedDataLoss, PortPublication, RpcError, RpcErrorCode, UnconfirmedDataLoss,
 };
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
@@ -183,11 +183,11 @@ impl Client {
     ) -> DeployOutcome<ExecutionError> {
         let mut client = self.clone();
         client.registry_auth.clone_from(preview.registry_auth());
-        // A CLI Deploy has no deployment id, so each run names its own slots.
-        let run = client.deployment_id.as_ref().map_or_else(
-            || uuid::Uuid::new_v4().simple().to_string(),
-            |id| id.as_str().to_owned(),
-        );
+        let run = client.deployment_id.clone().unwrap_or_else(|| {
+            DeploymentLogId::parse(uuid::Uuid::new_v4().simple().to_string())
+                .expect("a simple uuid is a deployment log id")
+        });
+        client.deployment_id = Some(run.clone());
         execute_operation_sequence(preview, &run, &client, cancellation, progress).await
     }
 

@@ -120,14 +120,17 @@ fn pointed_or_fallback<'serving>(
     if all_visible && any_pointed_routable {
         return pointed;
     }
+    // The previous deploy is its labelled copies plus the retiring ids that
+    // carry no deploy label; a retiring copy labelled with an older deploy is
+    // never revived.
     let previous = pointer.previous.as_ref().map(DeploymentLogId::as_str);
     let fallback = others.into_iter().filter(|container| {
         previous.is_some_and(|previous| {
-            container
-                .as_observation()
-                .labels
-                .get(DEPLOYMENT_ID_LABEL)
-                .is_some_and(|deploy| deploy == previous)
+            let observation = container.as_observation();
+            match observation.labels.get(DEPLOYMENT_ID_LABEL) {
+                Some(deploy) => deploy == previous,
+                None => pointer.retiring.contains(&observation.container_id),
+            }
         })
     });
     pointed.into_iter().chain(fallback).collect()
@@ -628,6 +631,30 @@ mod tests {
                 assert!(!unaddressed.contains(&id), "{}: routed {id}", case.name);
             }
         }
+    }
+
+    #[test]
+    fn an_unlabelled_old_copy_serves_through_retiring_until_the_pointed_copy_is_visible() {
+        let mut unlabelled = visibility_row('1', 1, HEALTHY);
+        unlabelled
+            .try_update(|parts| {
+                parts.labels.remove(DEPLOYMENT_ID_LABEL);
+            })
+            .unwrap();
+        let containers = service_containers([unlabelled]);
+        let pointer = ServingPointer {
+            deploy: DeploymentLogId::parse("d2").unwrap(),
+            containers: vec![ContainerId::parse("b".repeat(64)).unwrap()],
+            previous: Some(DeploymentLogId::parse("pin-d2").unwrap()),
+            retiring: vec![ContainerId::parse("1".repeat(64)).unwrap()],
+        };
+
+        let routed: Vec<char> = serving_containers(&containers, |_| Some(&pointer))
+            .into_iter()
+            .map(|serving| id_char(serving.as_container()))
+            .collect();
+
+        assert_eq!(routed, ['1']);
     }
 
     #[test]

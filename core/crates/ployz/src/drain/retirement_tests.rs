@@ -9,7 +9,7 @@ use super::*;
 use crate::global_fixtures::{
     global_service, grouped, machine, qualified, requested, running_on, service_id,
 };
-use crate::serving_publish::tests::{FakeRow, container, pointer};
+use crate::serving_publish::tests::{FakeRow, container, pointer, retired_from};
 
 struct FakeRetireClient {
     machine_id: MachineId,
@@ -359,7 +359,10 @@ async fn a_pointed_global_retires_through_the_pointer_and_waits_for_its_copies_t
     )
     .await
     .unwrap();
-    assert_eq!(*row.row.lock().unwrap(), Some(pointer('a', &['1'], &['2'])));
+    assert_eq!(
+        *row.row.lock().unwrap(),
+        Some(retired_from(pointer('a', &['1'], &['2']), 'a'))
+    );
     assert!(server.copies.is_empty());
 }
 
@@ -438,7 +441,7 @@ async fn a_pointed_copy_is_never_removed_while_an_unnamed_one_beside_it_is() {
     assert!(error.message.contains("still retiring"), "{error:?}");
     assert_eq!(
         *row.row.lock().unwrap(),
-        Some(pointer('a', &['1'], &['2'])),
+        Some(retired_from(pointer('a', &['1'], &['2']), 'a')),
         "only the id the pointer named is amended into retiring"
     );
     assert_eq!(server.copies, [container('2')], "the pointed copy stays");
@@ -637,6 +640,7 @@ mod rpc {
                         RpcRequestBody::ReadServingPointer(_) => {
                             RpcResponse::from(ServingPointerRead {
                                 pointer: row.lock().unwrap().clone(),
+                                ..Default::default()
                             })
                         }
                         RpcRequestBody::PublishServingPointer(request) => {
@@ -695,7 +699,7 @@ mod rpc {
         let (retired, row, ensured) =
             retire_from_ineligible(Some(pointer('d', &['a'], &[])), None).await;
         retired.unwrap();
-        assert_eq!(row, Some(pointer('d', &[], &['a'])));
+        assert_eq!(row, Some(retired_from(pointer('d', &[], &['a']), 'd')));
         assert_eq!(ensured, 0);
     }
 
@@ -704,7 +708,7 @@ mod rpc {
         let (retired, row, ensured) =
             retire_from_ineligible(None, Some(pointer('d', &['a'], &[]))).await;
         retired.unwrap();
-        assert_eq!(row, Some(pointer('d', &[], &['a'])));
+        assert_eq!(row, Some(retired_from(pointer('d', &[], &['a']), 'd')));
         assert_eq!(ensured, 0, "the pointed copy is never removed directly");
     }
 

@@ -17,7 +17,7 @@ use super::{
 use crate::deploy::{Converged, OldCopy, Replacement};
 use crate::drain::retirement::Retirement;
 use crate::serving_publish::Amendment;
-use crate::serving_publish::tests::{FakeRow, container, pointer};
+use crate::serving_publish::tests::{FakeRow, container, pointer, retired_from};
 
 fn namespace(value: &str) -> Namespace {
     Namespace::parse(value).unwrap()
@@ -708,7 +708,7 @@ async fn a_drain_publishes_its_replacements_by_id_and_retires_what_they_replaced
     assert_eq!(amended, Amendment::Published { retries: 0 });
     assert_eq!(
         *fake.row.lock().unwrap(),
-        Some(pointer('a', &['2', '9'], &['1'])),
+        Some(retired_from(pointer('a', &['2', '9'], &['1']), 'a')),
         "the replacement serves though it carries no deploy label"
     );
 }

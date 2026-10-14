@@ -11,7 +11,7 @@ use ployz_core::rpc::op;
 use ployz_core::{
     ContainerId, ContainerObservation, DeploymentLogId, LiveServices, MachineTarget,
     NotPointerPublisher, PublishServingPointerRequest, QualifiedService, ReadServingPointerRequest,
-    RpcError, ServingPointer, ServingPointerPublication,
+    RpcError, ServingPointer, ServingPointerPublication, ServingPointerRead,
 };
 
 use tokio_util::sync::CancellationToken;
@@ -56,23 +56,7 @@ impl PointerClient for Client {
         at: &mut MachineTarget,
         service: &QualifiedService,
     ) -> Result<Option<ServingPointer>, RpcError> {
-        let request = ReadServingPointerRequest {
-            service: service.clone(),
-        };
-        let read = match self
-            .read::<op::ReadServingPointer>(request.clone(), at)
-            .await
-        {
-            Err(error) => match NotPointerPublisher::from_error(&error) {
-                Some(refusal) => {
-                    *at = MachineTarget::from(&refusal.publisher);
-                    self.read::<op::ReadServingPointer>(request, at).await
-                }
-                None => Err(error),
-            },
-            read => read,
-        };
-        read.map(|read| read.pointer)
+        self.read_at(at, service).await.map(|read| read.pointer)
     }
 
     async fn publish_pointer_at(
@@ -104,6 +88,40 @@ impl Client {
         service: &QualifiedService,
     ) -> Result<Option<ServingPointer>, RpcError> {
         self.read_pointer(service).await
+    }
+
+    /// The Service's Serving Pointer and the Machines that acked a deploy of it,
+    /// as the publishing Machine holds them.
+    pub(crate) async fn serving_pointer_read(
+        &mut self,
+        service: &QualifiedService,
+    ) -> Result<ServingPointerRead, RpcError> {
+        let mut at = self.publisher().await?;
+        self.read_at(&mut at, service).await
+    }
+
+    /// Read at `at`, following one refusal to the Machine it names.
+    async fn read_at(
+        &mut self,
+        at: &mut MachineTarget,
+        service: &QualifiedService,
+    ) -> Result<ServingPointerRead, RpcError> {
+        let request = ReadServingPointerRequest {
+            service: service.clone(),
+        };
+        match self
+            .read::<op::ReadServingPointer>(request.clone(), at)
+            .await
+        {
+            Err(error) => match NotPointerPublisher::from_error(&error) {
+                Some(refusal) => {
+                    *at = MachineTarget::from(&refusal.publisher);
+                    self.read::<op::ReadServingPointer>(request, at).await
+                }
+                None => Err(error),
+            },
+            read => read,
+        }
     }
 
     /// Write `request.pointer` only if the row still holds `request.read`. A refusal
@@ -166,6 +184,13 @@ impl Client {
 /// | retiring -> gone    | every up Machine acknowledged the row                             | ployzd retire |
 /// | unnamed -> gone     | a read immediately before each stop or removal shows no row naming it | drain, retirement, catch-up |
 /// | pointed -> gone     | never directly: pointed -> retiring first                         |     |
+///
+/// A Deploy succeeds the row it admitted with a row of its own; see `succession`.
+///
+/// | transition          | evidence                                                          | who |
+/// |---------------------|-------------------------------------------------------------------|-----|
+/// | pointed -> retiring | the admitted row names the id in `containers` and the succeeding Deploy's plan does not keep it | deploy |
+/// | retiring -> pointed | the succeeding Deploy's plan keeps the copy (a rollback)          | deploy |
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct Rotation {
     pub(crate) joining: Vec<Join>,
@@ -211,7 +236,9 @@ impl Rotation {
         }
     }
 
-    fn apply(&self, current: &ServingPointer) -> Applied {
+    /// A row that gains its first retiring id names its own deploy in `previous`, so a
+    /// Machine that cannot see every pointed copy yet keeps routing the retiring ones.
+    pub(crate) fn apply(&self, current: &ServingPointer) -> Applied {
         let mut next = current.clone();
         next.retiring.retain(|id| !self.pruning.contains(id));
         for join in &self.joining {
@@ -232,6 +259,9 @@ impl Rotation {
                 next.retiring.push(*id);
             }
         }
+        if !next.retiring.is_empty() && next.previous.is_none() {
+            next.previous = Some(current.deploy.clone());
+        }
         if next == *current {
             Applied::Unchanged
         } else {
@@ -241,11 +271,47 @@ impl Rotation {
 }
 
 #[derive(Debug, Eq, PartialEq)]
-enum Applied {
+pub(crate) enum Applied {
     Unchanged,
     Next(ServingPointer),
     /// `current` carries no evidence for a joining copy.
     Unproven,
+}
+
+/// The row `deploy` publishes over `admitted` to point at `containers`, the copies its
+/// plan kept plus the ones it started. Every admitted copy the plan drops rotates into
+/// `retiring`, and `admitted`'s own retiring ids stay there until a complete listing
+/// proves them absent. With no admitted row nothing retires: no row names the old
+/// copies, so a read before each stop or removal finds them unnamed.
+pub(crate) fn succession(
+    admitted: Option<&ServingPointer>,
+    deploy: DeploymentLogId,
+    containers: Vec<ContainerId>,
+) -> ServingPointer {
+    let Some(admitted) = admitted else {
+        return ServingPointer {
+            deploy,
+            containers,
+            previous: None,
+            retiring: Vec::new(),
+        };
+    };
+    let dropped = admitted
+        .containers
+        .iter()
+        .filter(|id| !containers.contains(id))
+        .copied();
+    let mut next = match Rotation::leaving(dropped).apply(admitted) {
+        Applied::Next(next) => next,
+        Applied::Unchanged | Applied::Unproven => admitted.clone(),
+    };
+    next.retiring.retain(|id| !containers.contains(id));
+    ServingPointer {
+        deploy,
+        containers,
+        previous: Some(admitted.deploy.clone()),
+        retiring: next.retiring,
+    }
 }
 
 /// The ids `read.retiring` names that `listed`, a complete listing taken after `read`,
@@ -269,16 +335,22 @@ pub(crate) enum Protection {
     Retiring(ServingPointer),
 }
 
+impl Protection {
+    pub(crate) fn of(read: Option<ServingPointer>, copy: &ContainerId) -> Self {
+        match read {
+            Some(pointer) if pointer.containers.contains(copy) => Self::Pointed(pointer),
+            Some(pointer) if pointer.retiring.contains(copy) => Self::Retiring(pointer),
+            _ => Self::Unnamed,
+        }
+    }
+}
+
 pub(crate) async fn protection<C: PointerClient>(
     client: &mut C,
     service: &QualifiedService,
     copy: &ContainerId,
 ) -> Result<Protection, RpcError> {
-    Ok(match client.read_pointer(service).await? {
-        Some(pointer) if pointer.containers.contains(copy) => Protection::Pointed(pointer),
-        Some(pointer) if pointer.retiring.contains(copy) => Protection::Retiring(pointer),
-        _ => Protection::Unnamed,
-    })
+    Ok(Protection::of(client.read_pointer(service).await?, copy))
 }
 
 /// What amending one Service's pointer came to.

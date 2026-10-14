@@ -295,6 +295,19 @@ pub enum DeployOutcome<E> {
         failed: FailedOperation<E>,
         unexecuted: Vec<DeployOperation>,
     },
+    /// Another Deploy published `service`'s Serving Pointer first. The lost
+    /// compare-and-set is never retried; this Deploy's Containers of `service`
+    /// were removed and `unexecuted` holds every operation not completed.
+    Superseded {
+        completed: Vec<DeployOperation>,
+        service: QualifiedService,
+        unexecuted: Vec<DeployOperation>,
+    },
+    /// The store handed this Deploy's environment to another runner while it ran.
+    Interrupted {
+        completed: Vec<DeployOperation>,
+        unexecuted: Vec<DeployOperation>,
+    },
 }
 
 /// Why a Deploy Operation did not complete.
@@ -730,6 +743,11 @@ pub enum MachineAction {
     StopContainer,
     RemoveContainer,
     RemoveVolume,
+    /// Make a Service image present before any Container changes.
+    PullImage,
+    ListContainers,
+    ReadServingPointer,
+    PublishServingPointer,
 }
 
 impl Display for MachineAction {
@@ -742,6 +760,10 @@ impl Display for MachineAction {
             Self::StopContainer => "stop Container",
             Self::RemoveContainer => "remove Container",
             Self::RemoveVolume => "remove Volume",
+            Self::PullImage => "pull image",
+            Self::ListContainers => "list Containers",
+            Self::ReadServingPointer => "read Serving Pointer",
+            Self::PublishServingPointer => "publish Serving Pointer",
         })
     }
 }
@@ -816,6 +838,9 @@ pub enum DependencyHealthFailure {
         container_id: ContainerId,
         failure: HealthFailure,
     },
+    /// The Machine a dependent starts on never routed the dependency's new Deploy.
+    #[error("machine {machine_id} did not route the dependency's Deploy in time")]
+    NotRouted { machine_id: MachineId },
 }
 
 /// Why a pre-deploy hook container did not succeed.

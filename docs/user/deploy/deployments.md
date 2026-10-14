@@ -157,10 +157,12 @@ The CLI does the same with `ployz deployment retry`, `start` and `cancel`, and
 
 ## Deploy without downtime
 
-Ployz swaps in the new version one replica at a time: it starts a new one, waits until it's
-ready, then stops an old one, so your app keeps serving. Before any replica stops, its server
-marks it as stopping so every server taking web traffic stops sending it requests, and the
-replica stops a few seconds later.
+Ployz starts the new replicas of a service alongside the old ones and waits until they're all
+ready. Then every server switches the service's traffic to the new replicas at once, and the old
+replicas stop once every server has switched, so your app keeps serving. A server that stops
+answering holds the old replicas for at most five minutes; after that they stop anyway. Before
+any replica stops, its server marks it as stopping so every server taking web traffic stops
+sending it requests, and the replica stops a few seconds later.
 
 - **Set a health check.** Under **Settings → Deploy**, set **Healthcheck** to an HTTP path like
   `/up` or a command like `pg_isready -h 127.0.0.1`. A new replica is ready when the path answers
@@ -172,14 +174,16 @@ replica stops a few seconds later.
 - **Migrations run first.** A **Pre-deploy command**, like `npm run migrate`, runs once with the
   new code before any replica is replaced. If it fails or runs past 5 minutes, the deployment
   fails and the old version keeps running.
-- **Services start in order.** If `web`'s [variables](../services/variables.md) reference
-  `${{ postgres.DATABASE_URL }}`, `postgres` comes up first, and passes its health check first if
-  it has one.
+- **Services that depend on each other start in order.** If `web`'s
+  [variables](../services/variables.md) reference `${{ postgres.DATABASE_URL }}`, `postgres`
+  switches first, and passes its health check first if it has one. Services that don't depend on
+  each other deploy at the same time.
 
 ## When a deploy fails
 
-Where a new replica doesn't come up, the old one keeps serving. Ployz doesn't roll back: what
-was already replaced keeps the new version, and services later in the order stay as they were.
+Where a new replica doesn't come up, the old ones keep serving. Ployz doesn't roll back: a
+service that already switched keeps the new version, services that depend on the failed one
+stay as they were, and services that don't depend on it may have switched already.
 
 > [!WARNING]
 > Ployz doesn't undo a pre-deploy command. If a migration ran and the deploy then failed, your

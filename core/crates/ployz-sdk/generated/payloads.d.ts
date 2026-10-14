@@ -914,7 +914,7 @@ export type DeleteConfig = { environment: EnvironmentRef, config: ConfigName, };
 
 export type DependencyCondition = "service_started" | "service_healthy";
 
-export type DependencyHealthFailure = { "type": "cancelled" } | { "type": "no_containers" } | { "type": "observation", error: RpcError, } | { "type": "container", container_id: ContainerId, failure: HealthFailure, };
+export type DependencyHealthFailure = { "type": "cancelled" } | { "type": "no_containers" } | { "type": "observation", error: RpcError, } | { "type": "container", container_id: ContainerId, failure: HealthFailure, } | { "type": "not_routed", machine_id: MachineId, };
 
 export type Deploy = { id: DeploymentId, environment: EnvironmentRef,
 /**
@@ -979,7 +979,7 @@ machine_id: MachineId,
  */
 specs: Array<ServiceStorageSpec>, } | { "type": "wait_healthy", machine_id: MachineId, dependent: QualifiedService, dependency: QualifiedService, } | { "type": "run_container", machine_id: MachineId, spec: ResolvedServiceSpec, skip_health_monitor: boolean, } | { "type": "stop_container", machine_id: MachineId, container_id: ContainerId, purpose: StopContainerPurpose, } | { "type": "remove_container", machine_id: MachineId, container_id: ContainerId, purpose: RemoveContainerPurpose, } | { "type": "replace_container" } & ReplacementOperation | { "type": "stop_hook", machine_id: MachineId, container_id: ContainerId, } | { "type": "run_hook", machine_id: MachineId, spec: ResolvedServiceSpec, old_hook_containers: Array<[MachineId, ContainerId]>, } | { "type": "remove_volume", id: DockerVolumeId, };
 
-export type DeployOutcome<E> = { "type": "success", completed: Array<DeployOperation>, } | { "type": "failed", completed: Array<DeployOperation>, failed: FailedOperation<E>, unexecuted: Array<DeployOperation>, };
+export type DeployOutcome<E> = { "type": "success", completed: Array<DeployOperation>, } | { "type": "failed", completed: Array<DeployOperation>, failed: FailedOperation<E>, unexecuted: Array<DeployOperation>, } | { "type": "superseded", completed: Array<DeployOperation>, service: QualifiedService, unexecuted: Array<DeployOperation>, } | { "type": "interrupted", completed: Array<DeployOperation>, unexecuted: Array<DeployOperation>, };
 
 export type DeployPreview = {
 /**
@@ -2098,7 +2098,7 @@ accepts_ingress: boolean, id: MachineId, name: MachineName, subnet: MachineSubne
  */
 build_concurrency: BuildConcurrency | null, };
 
-export type MachineAction = "PrepareVolumes" | "CreateContainer" | "StartContainer" | "InspectContainer" | "StopContainer" | "RemoveContainer" | "RemoveVolume";
+export type MachineAction = "PrepareVolumes" | "CreateContainer" | "StartContainer" | "InspectContainer" | "StopContainer" | "RemoveContainer" | "RemoveVolume" | "PullImage" | "ListContainers" | "ReadServingPointer" | "PublishServingPointer";
 
 export type MachineCleanupResult = { "status": "cleaned", removals: Array<ImageRemoval>, } | { "status": "unsupported" } | { "status": "unknown", message: string, };
 
@@ -2567,7 +2567,11 @@ deployment_id?: DeploymentLogId | null,
 /**
  * Credentials for pulling the image; used for this pull only, never stored.
  */
-registry_auth?: RegistryAuth | null, answer?: AnswerWhen, };
+registry_auth?: RegistryAuth | null,
+/**
+ * A `PullImage` already placed the image, so creation uses it without pulling.
+ */
+image_prepared?: boolean, answer?: AnswerWhen, };
 
 export type NodeChange = { name: string,
 /**
@@ -3289,7 +3293,7 @@ export type RunTarget = { "new": NewContainer } | { "existing": ContainerLocator
 
 export type RunnerId = string;
 
-export type RuntimeFailureKind = "machine" | "health" | "dependency_health" | "hook" | "cancelled";
+export type RuntimeFailureKind = "machine" | "health" | "dependency_health" | "hook" | "cancelled" | "superseded" | "interrupted";
 
 export type RuntimeOutcomeProjection = {
 /**

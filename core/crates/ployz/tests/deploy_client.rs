@@ -191,6 +191,95 @@ async fn provisioned_volume_deploy_reaches_container_creation() {
     server.abort();
 }
 
+fn replicated_on_both(name: &str) -> RequestedServiceSpec {
+    let mut spec = spec(name);
+    spec.mode =
+        serde_json::from_value(serde_json::json!({ "mode": "replicated", "replicas": 2 })).unwrap();
+    spec
+}
+
+#[tokio::test]
+async fn deploy_pulls_an_always_image_on_every_target_before_any_container_change() {
+    let (one, two) = (machine('a', "one"), machine('b', "two"));
+    let service = DeployService::new(one.clone()).with_machines(vec![one.clone(), two.clone()]);
+    let (pulls, creation_pulls, created) = (
+        service.image_pulls(),
+        service.creation_pulls(),
+        service.created_specs(),
+    );
+    let (mut client, server) = connected(service).await;
+
+    let outcome = client
+        .run(
+            DeployIntent::apply_one(
+                Namespace::parse("app").unwrap(),
+                replicated_on_both("web"),
+                skip_health(),
+            ),
+            &CancellationToken::new(),
+            None,
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(created.lock().unwrap().len(), 2);
+    let pulls = pulls.lock().unwrap().clone();
+    let pulled = pulls
+        .iter()
+        .map(|pull| pull.machine)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(pulled, [one.machine.id, two.machine.id].into());
+    for pull in &pulls {
+        assert_eq!(pull.image, "nginx");
+        assert_eq!(pull.policy, ployz_core::PullPolicy::Always);
+        assert_eq!(
+            pull.mutations_before, 0,
+            "pulled after a Container change: {pull:?}"
+        );
+    }
+    assert_eq!(
+        creation_pulls.load(Ordering::SeqCst),
+        0,
+        "creation pulled an image the pull phase already placed"
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn a_registry_pull_failure_on_one_machine_fails_the_deploy_with_nothing_touched() {
+    let (one, two) = (machine('a', "one"), machine('b', "two"));
+    let service = DeployService::new(one.clone())
+        .with_machines(vec![one, two.clone()])
+        .fail_pulls_on(two.machine.id);
+    let (mutating, created) = (service.mutating_rpcs(), service.created_specs());
+    let (mut client, server) = connected(service).await;
+
+    let outcome = client
+        .run(
+            DeployIntent::apply_one(
+                Namespace::parse("app").unwrap(),
+                replicated_on_both("web"),
+                skip_health(),
+            ),
+            &CancellationToken::new(),
+            None,
+        )
+        .await
+        .unwrap();
+
+    let DeployOutcome::Failed { completed, .. } = outcome else {
+        panic!("expected a failed Deploy: {outcome:?}");
+    };
+    assert!(completed.is_empty());
+    assert!(created.lock().unwrap().is_empty());
+    assert_eq!(mutating.load(Ordering::SeqCst), 0);
+    server.abort();
+}
+
 #[tokio::test]
 async fn volume_ensure_failure_is_reported_on_the_container_operation() {
     let machine = machine('a', "one");

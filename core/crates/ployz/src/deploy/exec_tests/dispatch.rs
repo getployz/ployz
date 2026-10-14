@@ -63,16 +63,15 @@ async fn dispatches_the_complete_algebra() {
         },
     ];
     let plan = operations.clone();
+    let older = DeploymentLogId::parse("older").unwrap();
     let client = Scripted::new(vec![
         created(Call::Run(first, ContainerKind::ServiceContainer), &new_run),
         ok(Call::Stop(first, old)),
         ok(Call::Stop(first, bind_conflict)),
-        ok(Call::Remove(first, removed)),
         created(
             Call::Run(first, ContainerKind::ServiceContainer),
             &replacement,
         ),
-        ok(Call::Remove(first, old)),
         ok(Call::StopNow(second, hook)),
         ok(Call::Discard(second, hook)),
         created(Call::Run(first, ContainerKind::PreDeployHook), &new_hook),
@@ -82,7 +81,17 @@ async fn dispatches_the_complete_algebra() {
             machine_id: first,
             name: DockerVolumeName::parse("data").unwrap(),
         })),
+        ok(Call::Remove(first, removed)),
     ]);
+    client.pointers.lock().unwrap().insert(
+        QualifiedService::new(test_namespace(), ServiceName::parse("api").unwrap()),
+        ServingPointer {
+            deploy: older.clone(),
+            containers: vec![old, removed],
+            previous: None,
+            retiring: Vec::new(),
+        },
+    );
 
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
 
@@ -90,6 +99,32 @@ async fn dispatches_the_complete_algebra() {
         outcome,
         DeployOutcome::Success {
             completed: operations,
+        }
+    );
+    let pins = client.pins();
+    let [amendment] = pins.as_slice() else {
+        panic!("the stop of the pointed copy amends the admitted row");
+    };
+    assert_eq!(
+        amendment.pointer,
+        ServingPointer {
+            deploy: older.clone(),
+            containers: vec![removed],
+            previous: Some(older.clone()),
+            retiring: vec![old],
+        }
+    );
+    let publications = client.publications();
+    let [publication] = publications.as_slice() else {
+        panic!("one pointer flip for the one Service");
+    };
+    assert_eq!(
+        publication.pointer,
+        ServingPointer {
+            deploy: run_id(),
+            containers: vec![new_run, replacement, nested],
+            previous: Some(older),
+            retiring: vec![old, removed],
         }
     );
     client.assert_done();
@@ -289,14 +324,17 @@ async fn standalone_stop_and_remove_tolerate_missing_targets() {
 }
 
 #[tokio::test]
-async fn global_start_failure_retains_the_keyed_container_for_retry() {
+async fn global_start_failure_leaves_nothing_of_the_keyed_container() {
     let machine = machine('1');
     let mut service = spec(None, None, None);
     service.mode = ployz_core::ServiceMode::Global;
-    let client = Scripted::new(vec![failed(
-        Call::Run(machine, ContainerKind::ServiceContainer),
-        "start failed",
-    )]);
+    let client = Scripted::new(vec![
+        failed(
+            Call::Run(machine, ContainerKind::ServiceContainer),
+            "start failed",
+        ),
+        ok(Call::DiscardSlot(machine, ContainerKind::ServiceContainer)),
+    ]);
     let outcome = execute_with(
         &[run(&machine, service, false)],
         &client,
@@ -307,45 +345,28 @@ async fn global_start_failure_retains_the_keyed_container_for_retry() {
     client.assert_done();
 }
 
-fn new_want(kind: ContainerKind, spec: &ResolvedServiceSpec, key: &str) -> ContainerWant {
-    ContainerWant::Running {
-        container: RunTarget::New(NewContainer {
-            slot: slot_key(&test_namespace(), kind, key.to_owned()),
-            resolved_spec: spec.clone(),
-            deployment_id: None,
-            registry_auth: None,
-            answer: ployz_core::AnswerWhen::Started,
-        }),
-    }
-}
-
-fn ensured(machine_id: &MachineId, id: &ContainerId) -> ployz_core::RpcResponse {
-    ployz_core::RpcResponse::from(ployz_core::EnsuredContainer::Ensured {
-        health: None,
-        now: ContainerNow::Present(observation(machine_id, id, running())),
-    })
-}
-
 #[tokio::test]
-async fn a_private_image_is_created_with_its_services_credentials_only() {
-    use ployz_core::{EnsureContainerRequest, OpaquePayload, RegistryAuth, RpcRequestBody};
+async fn a_private_image_is_pulled_with_its_services_credentials_only() {
+    use ployz_core::{OpaquePayload, PullImageRequest, RegistryAuth, RpcRequestBody};
     use std::sync::Arc;
     use tonic::{Request, Response};
 
-    let captured = Arc::new(Mutex::new(Vec::<EnsureContainerRequest>::new()));
+    let captured = Arc::new(Mutex::new(Vec::<PullImageRequest>::new()));
     let requests = captured.clone();
     let (mut client, server) =
         crate::connect::test_support::rpc_client(move |rpc: Request<OpaquePayload>| {
             let requests = requests.clone();
             async move {
-                let RpcRequestBody::EnsureContainer(request) =
+                let RpcRequestBody::PullImage(request) =
                     rpc.into_inner().decode_request().unwrap().body
                 else {
-                    panic!("only ensure is expected");
+                    panic!("only pull is expected");
                 };
                 requests.lock().unwrap().push(request);
                 Ok(Response::new(
-                    ensured(&machine('1'), &container('a')).encode().unwrap(),
+                    ployz_core::RpcResponse::from(ployz_core::ImagePulled {})
+                        .encode()
+                        .unwrap(),
                 ))
             }
         })
@@ -359,35 +380,19 @@ async fn a_private_image_is_created_with_its_services_credentials_only() {
         password: "token".into(),
     };
     client.registry_auth = std::collections::BTreeMap::from([(private.name.clone(), auth.clone())]);
-    for (kind, specification) in [
-        (ContainerKind::ServiceContainer, &private),
-        (ContainerKind::PreDeployHook, &private),
-        (ContainerKind::ServiceContainer, &public),
-    ] {
-        MachineOperations::ensure_container(
-            &client,
-            &machine('1'),
-            new_want(kind, specification, "run:0"),
-        )
-        .await
-        .unwrap();
+    for specification in [&private, &public] {
+        MachineOperations::ensure_image(&client, &machine('1'), specification)
+            .await
+            .unwrap();
     }
     server.abort();
     let sent = captured
         .lock()
         .unwrap()
         .iter()
-        .map(|request| {
-            let ContainerWant::Running {
-                container: RunTarget::New(new),
-            } = &request.want
-            else {
-                panic!("unexpected want {:?}", request.want);
-            };
-            new.registry_auth.clone()
-        })
+        .map(|request| request.registry_auth.clone())
         .collect::<Vec<_>>();
-    assert_eq!(sent, [Some(auth.clone()), Some(auth), None]);
+    assert_eq!(sent, [Some(auth), None]);
 }
 
 /// What the Machine is asked to want for a Container removed for `purpose`.
@@ -568,10 +573,13 @@ async fn global_replacement_scopes_creation_to_the_old_container_and_retires_it_
     let new = container('b');
     let mut service = spec(None, None, None);
     service.mode = ployz_core::ServiceMode::Global;
-    let client = Scripted::new(vec![
-        created(Call::Run(machine, ContainerKind::ServiceContainer), &new),
-        ok(Call::Remove(machine, old)),
-    ]);
+    let client = Scripted {
+        observations: Some(vec![serving(&machine, &old, None)]),
+        ..Scripted::new(vec![created(
+            Call::Run(machine, ContainerKind::ServiceContainer),
+            &new,
+        )])
+    };
     let operation = DeployOperation::ReplaceContainer(ReplacementOperation {
         machine_id: machine,
         old_container_id: old,
@@ -582,6 +590,16 @@ async fn global_replacement_scopes_creation_to_the_old_container_and_retires_it_
         execute_with(&[operation], &client, &CancellationToken::new()).await,
         DeployOutcome::Success { .. }
     ));
+    let publications = [client.pins(), client.publications()].concat();
+    let [pin, publication] = publications.as_slice() else {
+        panic!("a pin of what served, then one pointer flip");
+    };
+    assert_eq!(pin.pointer.containers, vec![old]);
+    assert_eq!(
+        publication.pointer.previous,
+        Some(pin.pointer.deploy.clone())
+    );
+    assert_eq!(publication.pointer.retiring, vec![old]);
     let slots = client.slots.lock().unwrap();
     let [slot] = slots.as_slice() else {
         panic!("expected one new Container");
@@ -599,8 +617,9 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
     use crate::deploy::{DeployIntent, DeploySnapshot, PlanOptions, plan_deploy};
     use ployz_core::{
         BridgeEndpointCapacity, ContainerDetails, ContainerList, EnsuredContainer, Machine,
-        MachineName, MachineObservation, MembershipObservation, OpaquePayload,
-        RequestedServiceSpec, RpcRequestBody, RpcResponse, ServiceMode, WireGuardPublicKey,
+        MachineList, MachineName, MachineObservation, MembershipObservation, OpaquePayload,
+        RequestedServiceSpec, RpcRequestBody, RpcResponse, ServiceMode, ServingPointerRead,
+        WireGuardPublicKey,
     };
     use std::{collections::BTreeMap, sync::Arc};
     use tonic::{Request, Response};
@@ -643,12 +662,17 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
     let remote = state.clone();
     let keys = Arc::new(Mutex::new(Vec::new()));
     let captured = keys.clone();
+    let listed_target = target.clone();
+    let row = Arc::new(Mutex::new(None));
     let (client, server) =
         crate::connect::test_support::rpc_client(move |rpc: Request<OpaquePayload>| {
             let remote = remote.clone();
             let captured = captured.clone();
+            let fake_target = listed_target.clone();
+            let row = row.clone();
             async move {
                 let mut remote = remote.lock().unwrap();
+                let mut row = row.lock().unwrap();
                 #[expect(
                     clippy::wildcard_enum_match_arm,
                     reason = "fixture exercises only replacement failure and retry primitives"
@@ -667,6 +691,25 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
                             environment: None,
                         })
                     }
+                    RpcRequestBody::ListMachines(_) => RpcResponse::from(MachineList {
+                        enrollment: None,
+                        machines: vec![MachineObservation::new(
+                            fake_target.clone(),
+                            MembershipObservation::Up,
+                        )],
+                    }),
+                    RpcRequestBody::ReadServingPointer(_) => {
+                        RpcResponse::from(ServingPointerRead {
+                            all_routed: row.is_some(),
+                            pointer: row.clone(),
+                            acks: BTreeMap::new(),
+                        })
+                    }
+                    RpcRequestBody::PublishServingPointer(publish) => {
+                        *row = Some(publish.pointer);
+                        RpcResponse::from(ServingPointerPublication::Published)
+                    }
+                    RpcRequestBody::PullImage(_) => RpcResponse::from(ployz_core::ImagePulled {}),
                     RpcRequestBody::ListContainers(_) => RpcResponse::from(ContainerList {
                         containers: remote.clone(),
                     }),
@@ -758,7 +801,8 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
     );
     let first = plan_deploy(&intent, &snapshot(1)).unwrap();
     assert!(matches!(
-        execute_operation_sequence(&first, "run", &client, &CancellationToken::new(), None).await,
+        execute_operation_sequence(&first, &run_id(), &client, &CancellationToken::new(), None)
+            .await,
         DeployOutcome::Failed { .. }
     ));
     assert_eq!(
@@ -787,6 +831,7 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
                 resolved_spec: spec.clone(),
                 deployment_id: None,
                 registry_auth: None,
+                image_prepared: true,
                 answer: ployz_core::AnswerWhen::Started,
             }),
         },

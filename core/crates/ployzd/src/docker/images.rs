@@ -1,5 +1,6 @@
-//! Image Cleanup on this Machine: find each repository's superseded build images and
-//! remove them unforced, keeping any a Container uses.
+//! Images on this Machine: a deploy's registry pull, and Image Cleanup, which finds
+//! each repository's superseded build images and removes them unforced, keeping any a
+//! Container uses.
 //!
 //! Only `repository:ployz-sha256-*` tags, which Direct Image Transfer creates, are
 //! candidates.
@@ -10,7 +11,10 @@ use bollard::{
     errors::Error as DockerError,
     query_parameters::{ListContainersOptionsBuilder, RemoveImageOptions},
 };
-use ployz_core::{DiskSpace, ImageRemoval, ImageRemovalOutcome, ImageSummary, ImagesRemoved};
+use ployz_core::{
+    DiskSpace, ImageRemoval, ImageRemovalOutcome, ImageSummary, ImagesRemoved, PullPolicy,
+    RegistryAuth,
+};
 
 use super::{ContainerRuntime, Error};
 
@@ -25,6 +29,28 @@ const IDLE_SECONDS: i64 = 7 * 24 * 60 * 60;
 const PRESSURE_FREE_PERCENT: u64 = 20;
 
 impl ContainerRuntime {
+    /// Make `image` present as `policy` asks, then confirm Docker holds it.
+    ///
+    /// # Errors
+    ///
+    /// Returns when the pull fails or the image is absent afterwards, as under `Never`.
+    pub async fn pull_image(
+        &self,
+        image: &str,
+        policy: PullPolicy,
+        auth: Option<&RegistryAuth>,
+    ) -> Result<(), Error> {
+        let docker = &self.docker.client;
+        crate::docker_image::prepare_image(docker, image, policy, auth)
+            .await
+            .map_err(Error::ImagePull)?;
+        docker
+            .inspect_image(image)
+            .await
+            .map_err(Error::ImagePull)?;
+        Ok(())
+    }
+
     /// Unix seconds this Machine last tagged the image, when Docker recorded it.
     pub(super) async fn last_tagged(&self, id: &str) -> Result<Option<i64>, Error> {
         match self.docker.client.inspect_image(id).await {

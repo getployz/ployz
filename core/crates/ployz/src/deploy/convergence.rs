@@ -927,7 +927,10 @@ mod tests {
                                     cause: Vec::new(),
                                 })
                             } else {
-                                RpcResponse::from(ServingPointerRead { pointer })
+                                RpcResponse::from(ServingPointerRead {
+                                    pointer,
+                                    ..Default::default()
+                                })
                             }
                         }
                         RpcRequestBody::EnsureContainer(ensure) => match ensure.want {

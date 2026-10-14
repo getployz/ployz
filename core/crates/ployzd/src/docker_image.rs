@@ -6,6 +6,15 @@ use bollard::{
 use futures_util::TryStreamExt;
 use ployz_core::{PullPolicy, RegistryAuth};
 
+/// How Container creation obtains its image.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ImagePull<'auth> {
+    /// Prepare the image as the spec's pull policy asks, with these credentials.
+    Policy(Option<&'auth RegistryAuth>),
+    /// A deploy's pull phase already placed the image; creation uses it as is.
+    Prepared,
+}
+
 /// Make `image` present as `policy` asks, pulling with `auth` for a private image.
 pub(crate) async fn prepare_image(
     docker: &Docker,

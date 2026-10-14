@@ -1,4 +1,7 @@
-use std::{collections::VecDeque, sync::Mutex};
+use std::{
+    collections::{BTreeMap, BTreeSet, VecDeque},
+    sync::Mutex,
+};
 
 use ployz_core::{
     ContainerRuntimeObservation, DependencyHealthFailure, DockerVolumeId, DockerVolumeName,
@@ -32,12 +35,16 @@ async fn execute_with<C: MachineOperations>(
 ) -> DeployOutcome<ExecutionError> {
     super::execute_operation_sequence(
         &crate::deploy::DeployPlan::for_execution_test(plan.to_vec(), test_namespace()),
-        "run",
+        &run_id(),
         client,
         cancellation,
         None,
     )
     .await
+}
+
+fn run_id() -> DeploymentLogId {
+    DeploymentLogId::parse("run").unwrap()
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -84,27 +91,111 @@ enum Reply {
 
 struct Step(Call, Reply);
 
+struct AmendmentStall {
+    requested: tokio::sync::Notify,
+    released: tokio::sync::Notify,
+    spent: std::sync::atomic::AtomicBool,
+}
+
+impl AmendmentStall {
+    fn new() -> Self {
+        Self {
+            requested: tokio::sync::Notify::new(),
+            released: tokio::sync::Notify::new(),
+            spent: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    async fn hold_amendment(&self) {
+        self.requested.notify_one();
+        self.released.notified().await;
+    }
+
+    async fn release_on_first_start(&self) {
+        if self.spent.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
+        self.requested.notified().await;
+        self.released.notify_one();
+    }
+}
+
 struct Scripted {
     steps: Mutex<VecDeque<Step>>,
+    amendment_stall: Option<AmendmentStall>,
     observations: Option<Vec<ContainerObservation>>,
     slots: Mutex<Vec<SlotKey>>,
     answers: Mutex<Vec<AnswerWhen>>,
     deploys: Mutex<Vec<Option<ployz_core::DeploymentLogId>>>,
     cancel_on_prepare: Option<CancellationToken>,
     runs_global: bool,
+    pull_error: Option<RpcError>,
+    pulled: Mutex<BTreeSet<MachineId>>,
+    /// No Machine acks this run's pointer of this Service.
+    unrouted: Option<ServiceName>,
+    /// This Machine never acks this run's pointers.
+    unrouted_machine: Option<MachineId>,
+    superseded: Option<ServiceName>,
+    /// The row lands but the reply never arrives.
+    lost_reply: bool,
+    /// The write fails in transit and never lands.
+    dropped_publish: bool,
+    /// No Machine routes a pin.
+    unrouted_pin: bool,
+    /// No Machine routes a row naming one of these Containers.
+    dead: Vec<ContainerId>,
+    /// Another Deploy writes this row just before this run's pin.
+    rival: Option<ServingPointer>,
+    pointers: Mutex<BTreeMap<QualifiedService, ServingPointer>>,
+    publications: Mutex<Vec<PublishServingPointerRequest>>,
+    /// Each drained removal with the number of flips before it.
+    removed_after: Mutex<Vec<(ContainerId, usize)>>,
 }
 
 impl Scripted {
     fn new(steps: Vec<Step>) -> Self {
         Self {
             steps: Mutex::new(steps.into()),
+            amendment_stall: None,
             observations: None,
             slots: Mutex::new(Vec::new()),
             answers: Mutex::new(Vec::new()),
             deploys: Mutex::new(Vec::new()),
             cancel_on_prepare: None,
             runs_global: false,
+            pull_error: None,
+            pulled: Mutex::new(BTreeSet::new()),
+            unrouted: None,
+            unrouted_machine: None,
+            superseded: None,
+            lost_reply: false,
+            dropped_publish: false,
+            unrouted_pin: false,
+            dead: Vec::new(),
+            rival: None,
+            pointers: Mutex::new(BTreeMap::new()),
+            publications: Mutex::new(Vec::new()),
+            removed_after: Mutex::new(Vec::new()),
         }
+    }
+
+    /// This run's flips, without the pins written before any start.
+    fn publications(&self) -> Vec<PublishServingPointerRequest> {
+        self.writes(true)
+    }
+
+    fn pins(&self) -> Vec<PublishServingPointerRequest> {
+        self.writes(false)
+    }
+
+    fn writes(&self, flips: bool) -> Vec<PublishServingPointerRequest> {
+        self.publications
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|write| (write.pointer.deploy == run_id()) == flips)
+            .cloned()
+            .collect()
     }
 
     fn answers(&self) -> Vec<AnswerWhen> {
@@ -112,6 +203,10 @@ impl Scripted {
     }
 
     fn next(&self, call: Call) -> Reply {
+        if let Call::Remove(_, container) = call {
+            let writes = self.publications().len();
+            self.removed_after.lock().unwrap().push((container, writes));
+        }
         let Step(expected, reply) = self
             .steps
             .lock()
@@ -145,6 +240,13 @@ impl MachineOperations for Scripted {
     ) -> Result<Vec<ContainerObservation>, RpcError> {
         if let Some(observations) = &self.observations {
             return Ok(observations.clone());
+        }
+        let scripted = matches!(
+            self.steps.lock().unwrap().front(),
+            Some(Step(Call::List(listed), _)) if listed == service
+        );
+        if !scripted {
+            return Ok(Vec::new());
         }
         match self.next(Call::List(service.clone())) {
             Reply::Listed(containers) => Ok(containers),
@@ -211,6 +313,9 @@ impl MachineOperations for Scripted {
                 (call, container)
             }
         };
+        if let (Call::Run(..), Some(stall)) = (&call, &self.amendment_stall) {
+            stall.release_on_first_start().await;
+        }
         let healthy = settled.then_some(HealthVerdict::Healthy);
         let present = |container_id: &ContainerId| {
             ContainerNow::Present(observation(machine_id, container_id, running()))
@@ -298,6 +403,83 @@ impl MachineOperations for Scripted {
     ) -> Result<bool, RpcError> {
         Ok(self.runs_global)
     }
+
+    async fn ensure_image(
+        &self,
+        machine_id: &MachineId,
+        _spec: &ResolvedServiceSpec,
+    ) -> Result<(), RpcError> {
+        self.pulled.lock().unwrap().insert(*machine_id);
+        self.pull_error.clone().map_or(Ok(()), Err)
+    }
+
+    async fn read_pointer(
+        &self,
+        service: &QualifiedService,
+    ) -> Result<ServingPointerRead, RpcError> {
+        let pointer = self.pointers.lock().unwrap().get(service).cloned();
+        // Lagging ingress routes every row up to this run's, never this run's.
+        let ours = pointer
+            .as_ref()
+            .is_some_and(|pointer| pointer.deploy == run_id());
+        let routed = if ours {
+            self.unrouted.as_ref() != Some(&service.name)
+        } else {
+            !self.unrouted_pin
+        } && pointer
+            .as_ref()
+            .is_none_or(|pointer| !pointer.containers.iter().any(|id| self.dead.contains(id)));
+        let lagging = ours.then_some(self.unrouted_machine).flatten();
+        let acks = match &pointer {
+            Some(pointer) if routed => self
+                .pulled
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|machine| lagging.as_ref() != Some(*machine))
+                .map(|machine| (*machine, pointer.deploy.clone()))
+                .collect(),
+            _ => BTreeMap::new(),
+        };
+        let all_routed = pointer.is_some() && routed && lagging.is_none();
+        Ok(ServingPointerRead {
+            pointer,
+            acks,
+            all_routed,
+        })
+    }
+
+    async fn publish_pointer(
+        &self,
+        request: PublishServingPointerRequest,
+    ) -> Result<ServingPointerPublication, RpcError> {
+        self.publications.lock().unwrap().push(request.clone());
+        let flip = request.pointer.deploy == run_id();
+        if let Some(stall) = &self.amendment_stall
+            && !flip
+            && !request.pointer.retiring.is_empty()
+        {
+            stall.hold_amendment().await;
+        }
+        if flip && self.dropped_publish {
+            return Err(error("connection reset"));
+        }
+        let mut pointers = self.pointers.lock().unwrap();
+        if let Some(rival) = self.rival.clone().filter(|_| !flip) {
+            pointers.insert(request.service.clone(), rival);
+        }
+        let current = pointers.get(&request.service).cloned();
+        if flip && self.superseded.as_ref() == Some(&request.service.name)
+            || current != request.read
+        {
+            return Ok(ServingPointerPublication::Superseded { current });
+        }
+        pointers.insert(request.service, request.pointer);
+        if flip && self.lost_reply {
+            return Err(error("reply lost"));
+        }
+        Ok(ServingPointerPublication::Published)
+    }
 }
 
 fn unit(reply: Reply) -> Result<(), RpcError> {
@@ -326,6 +508,8 @@ fn id_of(locator: &ContainerLocator) -> ContainerId {
 
 #[path = "exec_tests/dispatch.rs"]
 mod dispatch;
+#[path = "exec_tests/flip.rs"]
+mod flip;
 #[path = "exec_tests/health.rs"]
 mod health;
 #[path = "exec_tests/hooks.rs"]
@@ -446,6 +630,27 @@ fn observation(
         labels: Default::default(),
     })
     .unwrap()
+}
+
+/// A running, addressed Container that `newest_shape` selects, labelled with
+/// the Deploy that created it when `deploy` is given.
+fn serving(
+    machine_id: &MachineId,
+    container_id: &ContainerId,
+    deploy: Option<&str>,
+) -> ContainerObservation {
+    let mut observation = observation(machine_id, container_id, running());
+    observation
+        .try_update(|parts| {
+            parts.address = Some(ployz_core::ContainerAddress("10.210.1.2".parse().unwrap()));
+            if let Some(deploy) = deploy {
+                parts
+                    .labels
+                    .insert(ployz_core::DEPLOYMENT_ID_LABEL.into(), deploy.into());
+            }
+        })
+        .unwrap();
+    observation
 }
 
 fn machine(hex: char) -> MachineId {

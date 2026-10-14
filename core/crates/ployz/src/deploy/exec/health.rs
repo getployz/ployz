@@ -12,7 +12,7 @@ use super::{MachineOperations, Progress};
 pub(super) async fn wait_healthy<C: MachineOperations>(
     client: &C,
     index: usize,
-    progress: &mut Progress,
+    progress: &Progress,
     dependency: &QualifiedService,
     cancellation: &CancellationToken,
 ) -> Result<(), ExecutionError> {
@@ -35,6 +35,19 @@ pub(super) async fn wait_healthy<C: MachineOperations>(
                 && container.namespace == dependency.namespace
                 && container.resolved_spec.name == dependency.name
         });
+        // The row says which copies serve. A superseded copy stays on its
+        // Machine until every Machine routes the row, and may be stopped or
+        // crashlooping by then, so it must not fail the dependent.
+        let serving = client
+            .read_pointer(dependency)
+            .await
+            .map_err(|error| {
+                dependency_health_error(dependency, DependencyHealthFailure::Observation { error })
+            })?
+            .pointer;
+        if let Some(serving) = &serving {
+            containers.retain(|container| serving.containers.contains(&container.container_id));
+        }
         if containers.is_empty() {
             return Err(dependency_health_error(
                 dependency,
