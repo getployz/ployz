@@ -3159,7 +3159,6 @@ fn github_lists_branches_reads_files_and_disconnects_in_cloud() {
     assert_eq!(pending["next"], "ployz github connect --wait");
 }
 
-/// Run `ployz --json ARGS` against `store` with `input` on stdin; returns (exit code, stdout).
 /// `NODE`, or `NODE.name`: a row as reads name it.
 fn label(row: &Value) -> String {
     match row["name"].as_str() {
@@ -3172,6 +3171,7 @@ fn labels(rows: &Value) -> Vec<String> {
     rows.as_array().unwrap().iter().map(label).collect()
 }
 
+/// Run `ployz --json ARGS` against `store` with `input` on stdin; returns (exit code, stdout).
 fn piped(store: &Target, args: &[&str], input: &str) -> (Option<i32>, String) {
     let home = tempfile::tempdir().unwrap();
     let mut command = store.command(home.path());
