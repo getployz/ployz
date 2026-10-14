@@ -1024,6 +1024,12 @@ impl MachineRpc for JoinDaemon {
     ) -> Result<Response<OpaquePayload>, Status> {
         unused()
     }
+    async fn pull_image(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        rpc_ok(ployz_core::ImagePulled {})
+    }
     async fn pull_image_from_machine(
         &self,
         _request: Request<OpaquePayload>,

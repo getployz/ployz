@@ -3,8 +3,8 @@ use std::future::Future;
 use ployz_core::{
     EnsureImageIngestRequest, FanoutSelector, ImageIngestDestination, ImageIngestReason, Machine,
     MachineFailure, MachineId, MachineImages, MachineSuccess, MachineTarget, PartialResult,
-    PeerImagePull, PullImageFromMachineRequest, PullPolicy, RpcError, op,
-    resolve_machine_selectors,
+    PeerImagePull, PullImageFromMachineRequest, PullImageRequest, PullPolicy, RegistryAuth,
+    RpcError, op, resolve_machine_selectors,
 };
 use thiserror::Error;
 
@@ -198,6 +198,38 @@ pub(crate) async fn ensure_cluster_image(
                 },
                 source: opened.destination,
                 platform: (*platform).to_owned(),
+            },
+            Some(&MachineTarget::from(dest)),
+        )
+        .await
+        .map(|_| ())
+        .map_err(rpc_error)
+}
+
+/// Make `image` present on `dest` as `policy` asks before a Deploy changes any
+/// Container. A peer that holds the image serves it as [`ensure_cluster_image`]
+/// does; `dest` then pulls from its registry as `policy` asks and confirms it holds
+/// the image, so `Never` fails here for an absent image.
+///
+/// # Errors
+///
+/// Returns when the peer step fails, the registry pull fails, or `dest` does not
+/// hold the image afterwards.
+pub(crate) async fn pull_cluster_image(
+    client: &Client,
+    dest: &MachineId,
+    image: &str,
+    policy: PullPolicy,
+    registry_auth: Option<RegistryAuth>,
+) -> Result<(), RpcError> {
+    ensure_cluster_image(client, dest, image, policy).await?;
+    client
+        .clone()
+        .call::<op::PullImage>(
+            PullImageRequest {
+                image: image.to_owned(),
+                policy,
+                registry_auth,
             },
             Some(&MachineTarget::from(dest)),
         )

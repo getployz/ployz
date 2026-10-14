@@ -154,12 +154,12 @@ pub(super) trait MachineOperations {
         slot: &SlotKey,
         spec: &ResolvedServiceSpec,
     ) -> Result<bool, RpcError>;
-    /// Make `image` present on `machine_id` before any Container changes.
+    /// Make the image `spec` runs present on `machine_id`, pulled as its policy
+    /// asks, before any Container changes.
     async fn ensure_image(
         &self,
         machine_id: &MachineId,
-        image: &str,
-        policy: PullPolicy,
+        spec: &ResolvedServiceSpec,
     ) -> Result<(), RpcError>;
     async fn read_pointer(
         &self,
@@ -175,10 +175,16 @@ impl MachineOperations for Client {
     async fn ensure_image(
         &self,
         machine_id: &MachineId,
-        image: &str,
-        policy: PullPolicy,
+        spec: &ResolvedServiceSpec,
     ) -> Result<(), RpcError> {
-        crate::image::ensure_cluster_image(self, machine_id, image, policy).await
+        crate::image::pull_cluster_image(
+            self,
+            machine_id,
+            &spec.container.image,
+            spec.container.pull_policy,
+            self.registry_auth.get(&spec.name).cloned(),
+        )
+        .await
     }
 
     async fn read_pointer(
@@ -267,14 +273,6 @@ impl MachineOperations for Client {
                     new.slot.creation_key = key;
                 }
                 new.deployment_id.clone_from(&self.deployment_id);
-                new.registry_auth = self.registry_auth.get(&new.resolved_spec.name).cloned();
-                crate::image::ensure_cluster_image(
-                    self,
-                    machine_id,
-                    &new.resolved_spec.container.image,
-                    new.resolved_spec.container.pull_policy,
-                )
-                .await?;
                 None
             }
             ContainerWant::Running { .. } => Some(TARGET_RPC_TIMEOUT),
@@ -452,11 +450,10 @@ impl<C: MachineOperations> MachineOperations for RestartTolerant<'_, C> {
     async fn ensure_image(
         &self,
         machine_id: &MachineId,
-        image: &str,
-        policy: PullPolicy,
+        spec: &ResolvedServiceSpec,
     ) -> Result<(), RpcError> {
         wait_out_restart(self.cancellation, || {
-            self.inner.ensure_image(machine_id, image, policy)
+            self.inner.ensure_image(machine_id, spec)
         })
         .await
     }
@@ -977,21 +974,26 @@ async fn pull_images<C: MachineOperations>(
     client: &C,
     operations: &[DeployOperation],
 ) -> Result<(), (usize, ExecutionError)> {
-    let mut pulls: BTreeMap<(MachineId, String), (usize, PullPolicy)> = BTreeMap::new();
+    // One pull per image on each Machine, under the strongest policy any of its
+    // Services asks for: what `Always` pulls also satisfies `Missing` and `Never`.
+    let mut pulls: BTreeMap<(MachineId, &str), (usize, &ResolvedServiceSpec)> = BTreeMap::new();
     for (index, operation) in operations.iter().enumerate() {
         let Some(spec) = operation.spec() else {
             continue;
         };
-        pulls
-            .entry((operation.machine_id(), spec.container.image.clone()))
-            .or_insert((index, spec.container.pull_policy));
+        let pull = pulls
+            .entry((operation.machine_id(), spec.container.image.as_str()))
+            .or_insert((index, spec));
+        if strength(spec.container.pull_policy) > strength(pull.1.container.pull_policy) {
+            pull.1 = spec;
+        }
     }
     let results = join_all(
         pulls
             .iter()
-            .map(|((machine, image), (index, policy))| async move {
+            .map(|((machine, _), (index, spec))| async move {
                 client
-                    .ensure_image(machine, image, *policy)
+                    .ensure_image(machine, spec)
                     .await
                     .map_err(|error| (*index, machine_error(MachineAction::PullImage, error)))
             }),
@@ -1002,6 +1004,14 @@ async fn pull_images<C: MachineOperations>(
         .filter_map(Result::err)
         .min_by_key(|(index, _)| *index)
         .map_or(Ok(()), Err)
+}
+
+fn strength(policy: PullPolicy) -> u8 {
+    match policy {
+        PullPolicy::Never => 0,
+        PullPolicy::Missing => 1,
+        PullPolicy::Always => 2,
+    }
 }
 
 /// Points the Service at the Containers it keeps plus the ones this Deploy
@@ -1466,6 +1476,7 @@ async fn run_new<C: MachineOperations>(
             resolved_spec: spec.clone(),
             deployment_id: None,
             registry_auth: None,
+            image_prepared: true,
             answer,
         }),
     };

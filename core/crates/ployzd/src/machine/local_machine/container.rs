@@ -7,8 +7,8 @@ use ployz_core::{
     ContainerObservation, ContainerRefusal, ContainerRefusalReason, ContainerRuntimeObservation,
     ContainerWant, CopyRefusal, DockerVolumeName, Drain, EnsuredContainer, ImageIngestOpened,
     ImageIngestReason, ImagePulled, ImagesRemoved, LocalMachinePhase, MachineStorageObservation,
-    Namespace, NewContainer, PruneImagesRequest, PullImageFromMachineRequest, ResolvedServiceSpec,
-    RunTarget, StopOptions, VolumeRemoved,
+    Namespace, NewContainer, PruneImagesRequest, PullImageFromMachineRequest, PullImageRequest,
+    ResolvedServiceSpec, RunTarget, StopOptions, VolumeRemoved,
 };
 use ployz_core::{
     AnswerWhen, HEALTH_POLL_INTERVAL, HealthFailure, HealthPoll, HealthVerdict, HealthcheckSpec,
@@ -18,6 +18,7 @@ use ployz_core::{
 use super::super::ingress::admit_ingress_service;
 use super::{Error, LocalMachine};
 use crate::docker::{ContainerCreated, ContainerRequest, ImageIngest, same_creation};
+use crate::docker_image::ImagePull;
 use crate::machine::{STORAGE_OBSERVATION_TIMEOUT, local_storage};
 
 impl LocalMachine {
@@ -177,7 +178,7 @@ impl LocalMachine {
                     &spec,
                     creation_key,
                     deployment_id,
-                    registry_auth,
+                    ImagePull::Policy(registry_auth.as_ref()),
                 )
                 .await
         })
@@ -402,6 +403,30 @@ impl LocalMachine {
             .open(address)
             .await
             .map_err(Error::StoragePreparation)
+    }
+
+    /// Pull one image from its registry under shared admission, like a peer pull.
+    ///
+    /// # Errors
+    ///
+    /// Returns when Docker is unavailable, admission is busy, or the pull fails.
+    pub(crate) async fn pull_image(&self, request: PullImageRequest) -> Result<ImagePulled, Error> {
+        let local = self.clone();
+        let shared = self.owner.admission_lock().read_owned().await;
+        self.finish_admitted(shared, async move {
+            local
+                .containers
+                .as_ref()
+                .ok_or(Error::DockerUnavailable)?
+                .pull_image(
+                    &request.image,
+                    request.policy,
+                    request.registry_auth.as_ref(),
+                )
+                .await?;
+            Ok(ImagePulled {})
+        })
+        .await
     }
 
     /// Pull one image from peer ingest under shared admission: transfers run side by
@@ -658,7 +683,11 @@ impl LocalMachine {
                         &new.resolved_spec,
                         Some(new.slot.creation_key.as_str().to_owned()),
                         new.deployment_id,
-                        new.registry_auth,
+                        if new.image_prepared {
+                            ImagePull::Prepared
+                        } else {
+                            ImagePull::Policy(new.registry_auth.as_ref())
+                        },
                     )
                     .await;
                 let created = match created {
@@ -689,7 +718,7 @@ impl LocalMachine {
         spec: &ResolvedServiceSpec,
         creation_key: Option<String>,
         deployment_id: Option<ployz_core::DeploymentLogId>,
-        registry_auth: Option<ployz_core::RegistryAuth>,
+        image: ImagePull<'_>,
     ) -> Result<ContainerCreated, Error> {
         let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
         let record = self.record();
@@ -706,7 +735,7 @@ impl LocalMachine {
                 ContainerRequest {
                     creation_key: creation_key.as_deref(),
                     deployment_id: deployment_id.as_ref(),
-                    registry_auth: registry_auth.as_ref(),
+                    image,
                     kind,
                     namespace,
                     spec,

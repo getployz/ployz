@@ -339,6 +339,7 @@ fn new_want(kind: ContainerKind, spec: &ResolvedServiceSpec, key: &str) -> Conta
             resolved_spec: spec.clone(),
             deployment_id: None,
             registry_auth: None,
+            image_prepared: true,
             answer: ployz_core::AnswerWhen::Started,
         }),
     }
@@ -838,6 +839,7 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
                 resolved_spec: spec.clone(),
                 deployment_id: None,
                 registry_auth: None,
+                image_prepared: true,
                 answer: ployz_core::AnswerWhen::Started,
             }),
         },

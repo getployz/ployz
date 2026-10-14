@@ -2706,7 +2706,11 @@ deployment_id?: DeploymentLogId | null,
 /**
  * Credentials for pulling the image; used for this pull only, never stored.
  */
-registry_auth?: RegistryAuth | null, answer?: AnswerWhen, };
+registry_auth?: RegistryAuth | null,
+/**
+ * A `PullImage` already placed the image, so creation uses it without pulling.
+ */
+image_prepared?: boolean, answer?: AnswerWhen, };
 
 export type NodeChange = {
 /**

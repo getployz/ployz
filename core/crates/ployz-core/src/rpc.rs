@@ -474,6 +474,9 @@ pub struct NewContainer {
     /// Credentials for pulling the image; used for this pull only, never stored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub registry_auth: Option<crate::RegistryAuth>,
+    /// A `PullImage` already placed the image, so creation uses it without pulling.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub image_prepared: bool,
     #[serde(default, skip_serializing_if = "AnswerWhen::is_started")]
     pub answer: AnswerWhen,
 }
@@ -700,7 +703,18 @@ impl PeerImagePull {
     }
 }
 
-/// Successful `PullImageFromMachine` payload.
+/// Make one image present on this Machine as `policy` asks, pulling from its registry.
+/// The image must be present afterwards, so `Never` fails for an absent image.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PullImageRequest {
+    pub image: String,
+    pub policy: crate::PullPolicy,
+    /// Credentials for a private image; used for this pull only, never stored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registry_auth: Option<crate::RegistryAuth>,
+}
+
+/// Successful `PullImage` and `PullImageFromMachine` payload.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ImagePulled {}
 

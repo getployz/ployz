@@ -333,8 +333,7 @@ impl MachineOperations for Scripted {
     async fn ensure_image(
         &self,
         machine_id: &MachineId,
-        _image: &str,
-        _policy: PullPolicy,
+        _spec: &ResolvedServiceSpec,
     ) -> Result<(), RpcError> {
         self.pulled.lock().unwrap().insert(*machine_id);
         self.pull_error.clone().map_or(Ok(()), Err)

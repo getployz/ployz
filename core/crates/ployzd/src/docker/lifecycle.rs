@@ -19,7 +19,10 @@ use ployz_core::{
 #[cfg(test)]
 use ployz_core::MachineGateway;
 
-use crate::{docker_image::prepare_image, network::DOCKER_NETWORK_NAME};
+use crate::{
+    docker_image::{ImagePull, prepare_image},
+    network::DOCKER_NETWORK_NAME,
+};
 
 use super::{
     ContainerRuntime, Error, ManagedLabels, create, docker_error, spec_store::ConfigOperation,
@@ -40,8 +43,8 @@ pub(crate) struct ContainerRequest<'spec, Storage, Admission> {
     /// Optional identity of this currently existing creation.
     pub(crate) creation_key: Option<&'spec str>,
     pub(crate) deployment_id: Option<&'spec ployz_core::DeploymentLogId>,
-    /// Credentials for pulling a private image, used for this pull only.
-    pub(crate) registry_auth: Option<&'spec ployz_core::RegistryAuth>,
+    /// How creation obtains the image.
+    pub(crate) image: ImagePull<'spec>,
     /// Whether this is a long-running Service Container or a Pre-deploy Hook.
     pub(crate) kind: ContainerKind,
     /// Namespace that owns the resulting container.
@@ -70,7 +73,7 @@ impl ContainerRuntime {
             ContainerRequest {
                 creation_key: None,
                 deployment_id: None,
-                registry_auth: None,
+                image: ImagePull::Policy(None),
                 kind,
                 namespace,
                 spec,
@@ -99,7 +102,7 @@ impl ContainerRuntime {
         let ContainerRequest {
             creation_key,
             deployment_id,
-            registry_auth,
+            image,
             kind,
             namespace,
             spec,
@@ -144,7 +147,7 @@ impl ContainerRuntime {
             spec,
             creation_key,
             deployment_id,
-            registry_auth,
+            image,
         )
         .await
         .map_err(E::from)
@@ -162,7 +165,7 @@ impl ContainerRuntime {
         spec: &ResolvedServiceSpec,
         creation_key: Option<&str>,
         deployment_id: Option<&ployz_core::DeploymentLogId>,
-        registry_auth: Option<&ployz_core::RegistryAuth>,
+        image: ImagePull<'_>,
     ) -> Result<ContainerCreated, Error> {
         let reserved_name =
             creation_key.map(|key| creation_name(&machine.id, namespace, kind, key));
@@ -191,14 +194,16 @@ impl ContainerRuntime {
                 .get_or_insert_default()
                 .insert(LABEL_CREATION_KEY.into(), key.into());
         }
-        prepare_image(
-            &self.docker.client,
-            &spec.container.image,
-            spec.container.pull_policy,
-            registry_auth,
-        )
-        .await
-        .map_err(Error::ImagePull)?;
+        if let ImagePull::Policy(registry_auth) = image {
+            prepare_image(
+                &self.docker.client,
+                &spec.container.image,
+                spec.container.pull_policy,
+                registry_auth,
+            )
+            .await
+            .map_err(Error::ImagePull)?;
+        }
         let mut config_operation = self.specs.config_operation().await;
         // Another request may have won while admission and image preparation ran.
         if let (Some(name), Some(key)) = (&reserved_name, creation_key)

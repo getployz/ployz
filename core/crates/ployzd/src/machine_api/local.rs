@@ -536,6 +536,22 @@ impl MachineRpc for MachineService {
         )
     }
 
+    async fn pull_image(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::PullImage>(request)?;
+        if request.image.is_empty() {
+            return respond(RpcError {
+                code: RpcErrorCode::InvalidArgument,
+                message: "image is required".into(),
+                details: Value::Null,
+                cause: Vec::new(),
+            });
+        }
+        finish(self.local.pull_image(request).await)
+    }
+
     async fn pull_image_from_machine(
         &self,
         request: Request<OpaquePayload>,

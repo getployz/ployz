@@ -1196,6 +1196,16 @@ impl MachineRpc for DiscoveryService {
     ) -> Result<Response<OpaquePayload>, Status> {
         Err(Status::unimplemented("unused"))
     }
+    async fn pull_image(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Ok(Response::new(
+            RpcResponse::from(ployz_core::ImagePulled {})
+                .encode()
+                .unwrap(),
+        ))
+    }
     async fn pull_image_from_machine(
         &self,
         request: Request<OpaquePayload>,

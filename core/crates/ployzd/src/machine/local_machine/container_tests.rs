@@ -487,6 +487,7 @@ mod plan {
             resolved_spec: spec(image),
             deployment_id: None,
             registry_auth: None,
+            image_prepared: false,
             answer: ployz_core::AnswerWhen::Started,
         }
     }
