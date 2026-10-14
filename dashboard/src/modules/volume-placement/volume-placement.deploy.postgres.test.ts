@@ -365,6 +365,17 @@ describe("deploying a Volume placement", () => {
       expect(await placement()).toMatchObject({ mirrors: [], staged: null, deploymentId: null });
     });
 
+    it("fences the replanned run before it plans, though it took over no lane", async () => {
+      const { started } = await restoring();
+      await endRun(started.wait.runId, "failed", "web-1 did not answer the fence");
+      members = [member("web-1", "writer"), member("web-2", "mirror")];
+      send.mockClear();
+      const moving = await run(advancePlacement(organizationId, "dep-1", started.wait, inspect, answered));
+      if (moving.kind !== "wait") throw new Error("expected a run");
+      expect(send).toHaveBeenCalledWith(expect.objectContaining({ name: "volume/run.requested", data: expect.objectContaining({ runId: moving.wait.runId, took: "restore" }) }));
+      expect(send).not.toHaveBeenCalledWith(expect.objectContaining({ name: "volume/run.taken" }));
+    });
+
     it("fails the Deploy when the copies after the fence plan the same restore", async () => {
       const { started } = await restoring();
       await endRun(started.wait.runId, "failed", "web-2 did not answer");

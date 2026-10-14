@@ -177,8 +177,8 @@ const unseededVolume = Effect.fn("VolumePlacement.unseededVolume")(function* (
  * Volume and the others, stay staged. A failed restore is dropped once the Store records the failure. A warm run already
  * on the Volume yields to the Deploy's; a run that keeps the Volume, one past its return or another Deploy's, fails the
  * Deploy, with that change and every one it never reached staged for the next Deploy. A fenced run that fails is planned
- * again from the copies its fence left before any other run starts, failing the Deploy if that plans the same run or
- * never reaches the Volume; a replanned run never replans.
+ * again before any other run starts, and the new run fences too, since the failed fence may have left Machines unfloored.
+ * The Deploy fails if that plans the same run or never reaches the Volume; a replanned run never replans.
  */
 export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
   organizationId: string, deploymentId: string, waited: PlacementWait | null, inspect: MemberInspector = inspectVolumeCopies,
@@ -270,7 +270,9 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
     }
     // Touching the row without changing it confirms the claim right before the run starts.
     if (!(yield* settleClaimed(row.volumeId, deploymentId, {}))) return { kind: "stopped" } satisfies PlacementAdvance;
-    const requested = yield* requestVolumeRun(CLOUD(organizationId), { volumeId: runsOn, environment, ...step.run }, { end: "yielded" });
+    const requested = yield* requestVolumeRun(CLOUD(organizationId), { volumeId: runsOn, environment, ...step.run }, {
+      end: "yielded", fences: replanning?.waited.step.run.kind,
+    });
     if (requested.ok) {
       return { kind: "wait", wait: { runId: requested.run.id, volumeId: row.volumeId, step, fenced: requested.took && replanning === null } } satisfies PlacementAdvance;
     }

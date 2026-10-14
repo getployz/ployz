@@ -381,6 +381,8 @@ export type RequestOptions = {
   readonly id?: string;
   /** `yielded` takes over a warm lane as a Deploy or a staged placement does; a release always cancels. */
   readonly end?: "yielded";
+  /** The kind of a fenced run this one replaces: it fences before it plans even when it takes over no lane. */
+  readonly fences?: VolumeRunKind;
 };
 
 export const requestVolumeRun = Effect.fn("VolumeRun.request")(function* (
@@ -394,7 +396,7 @@ export const requestVolumeRun = Effect.fn("VolumeRun.request")(function* (
     const refusal = yield* seedLandingRefusal(caller.organizationId, input.environment, input.volumeId, input.args.into.volumeId);
     if (refusal !== null) return { ok: false, refusal, busy: null } as const;
   }
-  return yield* database.transaction(insertRun(caller, input, volume, options.id ?? crypto.randomUUID(), options.end ?? endOf(input.kind)));
+  return yield* database.transaction(insertRun(caller, input, volume, options.id ?? crypto.randomUUID(), options.end ?? endOf(input.kind), options.fences));
 });
 
 export type LaneTaker = {
@@ -403,6 +405,7 @@ export type LaneTaker = {
   readonly id: string;
   /** The one lane this taker may end; finding another, or none, leaves the Volume alone. */
   readonly lane?: string;
+  readonly fences?: VolumeRunKind;
 };
 
 export type LaneTake = { readonly run: VolumeRunView; readonly ended: VolumeRunView | null };
@@ -429,7 +432,7 @@ const TAKE_ROUNDS = 3;
  * insert; the next round reads it under the lock and takes it over too. A lane that ended before the read leaves the
  * Volume free, so any taker inserts again.
  */
-const takeLane = Effect.fn("VolumeRun.takeLane")(function* (caller: Caller, { input, volume, id, lane: only }: LaneTaker, end: LaneEnd | null, inngestRunId: string | null = null) {
+const takeLane = Effect.fn("VolumeRun.takeLane")(function* (caller: Caller, { input, volume, id, lane: only, fences }: LaneTaker, end: LaneEnd | null, inngestRunId: string | null = null) {
   const { drizzle } = yield* Database;
   for (let round = 1; ; round++) {
     const lane = end === null ? undefined : yield* activeLane(input.volumeId, true);
@@ -463,7 +466,7 @@ const takeLane = Effect.fn("VolumeRun.takeLane")(function* (caller: Caller, { in
         .limit(1);
       if (held !== undefined) return yield* new LaneRefused({ refusal: yield* laneRefusal(held, input.kind), busy: volumeRunView(held) });
       // A release floors and plans on its own; only a yielding run fences the lane it took before it plans.
-      if (inngestRunId === null) yield* enqueueRun(inserted, end === "yielded" ? taken?.kind : undefined);
+      if (inngestRunId === null) yield* enqueueRun(inserted, end === "yielded" ? taken?.kind ?? fences : undefined);
       if (taken !== undefined) yield* enqueueEvent(createVolumeRunTakenEvent({ runId: taken.id }));
       return { run: volumeRunView(inserted), ended: taken === undefined ? null : volumeRunView(taken) } satisfies LaneTake;
     }
@@ -479,9 +482,10 @@ const refused = (error: LaneRefused) => Effect.succeed({ ok: false, refusal: err
 
 export const insertRun = Effect.fn("VolumeRun.insert")(function* (
   caller: Caller, input: { readonly volumeId: string } & VolumeRunInput, volume: ResolvedVolume, id: string, end: LaneEnd | null = endOf(input.kind),
+  fences?: VolumeRunKind,
 ) {
   const database = yield* Database;
-  const taken = yield* database.transaction(takeLane(caller, { input, volume, id }, end)).pipe(Effect.catchTag("LaneRefused", refused));
+  const taken = yield* database.transaction(takeLane(caller, { input, volume, id, fences }, end)).pipe(Effect.catchTag("LaneRefused", refused));
   return "ok" in taken ? taken : { ok: true, run: taken.run, took: taken.ended !== null } as const;
 });
 
