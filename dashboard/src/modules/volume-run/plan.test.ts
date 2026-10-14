@@ -368,18 +368,15 @@ function follow(input: PlanInput, members: readonly Member[]) {
   if (step === null) throw new Error(`no step in: ${planned.refusal.message}`);
   const [, removed, verb, to] = step;
   const gone = removed?.split(" and ") ?? [];
-  expect(members.map((each) => each.machine.name)).toEqual(expect.arrayContaining(gone));
-  const left = members.filter((each) => !gone.includes(each.machine.name));
   const kept = keptCut(members);
-  expect(named(left, "cutting")).toEqual([kept]);
   const slots = named(members, "mirror");
+  expect([...gone].sort()).toEqual([...named(members, "cutting").filter((name) => name !== kept), ...(verb === "move" ? slots.slice(1) : [])].sort());
+  const left = members.filter((each) => !gone.includes(each.machine.name));
   if (verb === "release") {
-    expect(named(left, "mirror")).toEqual(slots);
     expect(outcome(release, left)).toBe(`release cut ${kept}`);
     return;
   }
   expect(to).toBe(slots[0] ?? "<another server>");
-  expect(named(left, "mirror")).toEqual(slots.slice(0, 1));
   const target = slots[0] ?? left.find((each) => roleOf(each) === "empty")?.machine.name ?? "no empty Server";
   expect(outcome(move(target), left)).toBe(`move ${kept}->${target} at cut`);
   if (slots.length > 0) expect(outcome(move(named(left, "empty")[0] ?? "no empty Server"), left)).toBe("refuse second_mirror");
@@ -391,15 +388,24 @@ describe("follow every next step a refusal names", () => {
     ["one slot", [member("fsn-3", "mirror")]],
     ["two slots", [member("fsn-4", "behind"), member("fsn-3", "mirror")]],
   ];
-  const lone: [string, PlanInput][] = [["release", release], ["sync", sync()], ["seed", seed], ["mirror rm", remove(null)], ["move onto its own Server", move("fsn-2")]];
+  const cuts: [string, Member[]][] = [
+    ["a newer cut with a snapshot", [member("fsn-1", "cut", { epoch: 8 }), member("fsn-2", "cut", { epoch: 9 })]],
+    ["a newer cut with no snapshot", [member("fsn-1", "cut", { epoch: 8 }), bare("fsn-2", 9)]],
+    ["a lone cut with no snapshot", [bare("fsn-2", 9)]],
+  ];
+  const kinds: [string, PlanInput][] = [
+    ["release", release],
+    ["sync", sync()],
+    ["mirror", mirror("fsn-9")],
+    ["seed", seed],
+    ["mirror rm", remove(null)],
+    ["move onto the newest cut's Server", move("fsn-2")],
+  ];
   const fourth = member("fsn-9", "empty");
 
   it.each<[string, PlanInput, Member[]]>([
-    ...beside.flatMap(([slots, each]): [string, PlanInput, Member[]][] => [
-      [`a newer cut with a snapshot beside ${slots}`, release, [member("fsn-1", "cut", { epoch: 8 }), member("fsn-2", "cut", { epoch: 9 }), ...each, fourth]],
-      [`a newer cut with no snapshot beside ${slots}`, release, [member("fsn-1", "cut", { epoch: 8 }), bare("fsn-2", 9), ...each, fourth]],
-      ...lone.map(([kind, input]): [string, PlanInput, Member[]] => [`${kind} on a lone cut with no snapshot beside ${slots}`, input, [bare("fsn-2", 9), ...each, fourth]]),
-    ]),
+    ...beside.flatMap(([slots, each]) => cuts.flatMap(([state, held]) => kinds.map(([kind, input]): [string, PlanInput, Member[]] =>
+      [`${kind} on ${state} beside ${slots}`, input, [...held, ...each, fourth]]))),
     ["a tie where one cut holds a snapshot", release, [bare("fsn-1", 9), member("fsn-2", "cut", { epoch: 9 }), fourth]],
     ["a tie where no cut holds a snapshot", release, [bare("fsn-1", 9), bare("fsn-2", 9), member("fsn-3", "mirror"), fourth]],
     ["three cuts with the top two tied", release, [member("fsn-1", "cut", { epoch: 7 }), member("fsn-2", "cut", { epoch: 9 }), bare("fsn-3", 9), fourth]],
