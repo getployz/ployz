@@ -423,10 +423,24 @@ class Pool(unittest.TestCase):
         self.assertEqual([entry["id"] for entry in boat.read(boat.POOL)], ["bx_sibling"])
         self.assertEqual(sorted(self.calls), [["delete", sandbox, "--yes"] for sandbox in ["bx_gone", "bx_old", "bx_stopped"]])
 
+    def test_a_claim_budgets_the_starts_its_discarded_candidates_need(self):
+        boat.write(boat.BAKES, ["bake-a"])
+        boat.write(boat.POOL, [parked("bx_a", 1)])
+        limits = dict(maxActiveSandboxes=100, activeSandboxes=1, starts=dict(
+            minute=dict(remaining=2), hour=dict(remaining=60), day=dict(remaining=200), unlimited=False))
+        answers = dict(list=dict(sandboxes=[dict(id="bx_a", state="ready")]), limits=limits)
+        with unittest.mock.patch.object(boat, "boat_json", lambda *args: answers[args[0]]), \
+                contextlib.redirect_stderr(io.StringIO()) as said:
+            # No fingerprint of bake-a exists, so the candidate fails its proof.
+            with self.assertRaisesRegex(RuntimeError, "Starts this minute: need up to 3, 2 left"):
+                self.provider("machine-1", "machine-2", "machine-3").create()
+        self.assertIn("no fingerprint of this bake", said.getvalue())
+
     def test_park_counts_only_its_own_bake_toward_the_pool_size(self):
         boat.write(boat.BAKES, ["bake-a", "bake-b"])
+        limits = dict(maxActiveSandboxes=100, activeSandboxes=0, starts=dict(unlimited=True))
         listing = self.listing(bx_b1="ready", bx_b2="ready", bx_new="ready")
-        with unittest.mock.patch.object(boat, "boat_json", listing), unittest.mock.patch.object(boat, "POOL_SIZE", 2):
+        with unittest.mock.patch.object(boat, "boat_json", lambda *args: limits if args[0] == "limits" else listing()), unittest.mock.patch.object(boat, "POOL_SIZE", 2):
             provider = self.provider("machine-1")
             provider.create()
             boat.write(boat.POOL, [parked("bx_b1", 1, image="bake-b"), parked("bx_b2", 2, image="bake-b"), parked("bx_gone", 3)])

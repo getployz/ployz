@@ -541,6 +541,11 @@ class Provider:
             if found:
                 return self.discard(name, "differs from a fresh clone in " + "; ".join(found))
         each(verify, names[:len(picked)])
+        # preflight counted every candidate as covered; a discarded one needs a start preflight never budgeted.
+        reused = sum(bool(entry.get("reused")) for name, entry in self.record()["sandboxes"].items() if name in names)
+        problems = shortfalls(len(names) - reused, boat_json("limits")) if reused < len(names) else []
+        if problems:
+            raise RuntimeError("Boat cannot start the Machines the pool did not cover now.\n" + "\n".join(problems))
 
     def discard(self, name, why):
         """Delete a claimed sandbox that is not provably clean, so start() launches a fresh one in its place."""
