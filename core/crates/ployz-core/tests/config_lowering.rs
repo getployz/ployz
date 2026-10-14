@@ -158,10 +158,8 @@ fn lowering_retains_commands_limits_restart_and_network_ownership() {
         spec["container"]["image"],
         "registry.test/api@sha256:captured"
     );
-    assert_eq!(
-        spec["container"]["command"],
-        json!(["/bin/sh", "-c", "exec app"])
-    );
+    assert_eq!(spec["container"]["entrypoint"], json!(["exec", "app"]));
+    assert_eq!(spec["container"]["command"], json!([]));
     assert_eq!(
         spec["pre_deploy"]["command"],
         json!(["/bin/sh", "-c", "migrate"])
@@ -559,4 +557,50 @@ fn config_reference_cycles_drop_only_their_own_edges() {
         names,
         [&json!("app"), &json!("a"), &json!("b"), &json!("db")]
     );
+}
+
+#[test]
+fn start_command_follows_how_the_image_was_built() {
+    let start = r#"echo "$PORT" && serve --port $PORT"#;
+    let lower = |built_with: Value, start: Value| {
+        let config = json!({"version":2,"privateDns":"api",
+            "source":{"version":1,"type":"image","image":"registry.test/api:1","credentials":{"type":"none"}},
+            "startCommand":start,"preDeployCommand":"migrate","healthcheck":{"type":"none"},
+            "restartPolicy":"on-failure"
+        });
+        let intent = lowered(json!({"namespace":"production",
+            "snapshots":[{"config":config,"resolvedEnv":{},"builtWith":built_with}]}))
+        .unwrap();
+        let container = &intent["target"][0]["container"];
+        assert_eq!(
+            intent["target"][0]["pre_deploy"]["command"],
+            json!(["/bin/sh", "-c", "migrate"])
+        );
+        (
+            container["entrypoint"].clone(),
+            container["command"].clone(),
+        )
+    };
+    // Railpack's `/bin/bash -c` ENTRYPOINT runs the whole string as a script.
+    assert_eq!(
+        lower(json!("railpack"), json!(start)),
+        (json!([]), json!([start]))
+    );
+    // Pulled and Dockerfile images exec it without a shell, cut at `&&`.
+    for built_with in [Value::Null, json!("dockerfile")] {
+        assert_eq!(
+            lower(built_with, json!(start)),
+            (json!(["echo", "$PORT"]), json!([]))
+        );
+    }
+    // Nothing left to run keeps the image's own ENTRYPOINT and CMD, as no command does.
+    for start in [json!("&& serve"), Value::Null] {
+        assert_eq!(lower(Value::Null, start), (json!([]), json!([])));
+    }
+    let error = lowered(json!({"namespace":"production","snapshots":[{"resolvedEnv":{},"config":{
+        "version":2,"privateDns":"api","startCommand":"serve 'unclosed",
+        "source":{"version":1,"type":"image","image":"registry.test/api:1","credentials":{"type":"none"}},
+        "healthcheck":{"type":"none"},"restartPolicy":"on-failure"}}]}))
+    .unwrap_err();
+    assert_eq!(error.path, "startCommand");
 }

@@ -165,8 +165,10 @@ once**, from the next build. See
 ### Start command
 
 Empty by default, so the service runs what the image or the build sets. Set one, like
-`npm run worker`, to run something else from the same code; it runs in a shell, so `$PORT` works.
-See [Override the start command](../deploy/docker-image.md#override-the-start-command).
+`npm run worker`, to run something else from the same code. On a Railpack build it runs in a
+shell, so `$PORT` and `&&` work. On an image or a Dockerfile build it replaces the `ENTRYPOINT`
+and runs without a shell; wrap it in `sh -c '…'` to get one. See
+[Override the start command](../deploy/docker-image.md#override-the-start-command).
 
 ### Pre-deploy command
 
