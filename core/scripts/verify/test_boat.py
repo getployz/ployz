@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -174,16 +175,25 @@ class Registry(unittest.TestCase):
         self.assertEqual(json.loads(boat.registry("run1").read_text())["sandboxes"]["machine-1"]["state"], "stopped")
 
     def test_the_ssh_control_socket_fits_a_unix_socket_path(self):
-        def path(run, runtime="/run/user/4294967295"):
+        runtime = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, runtime)
+        # The accented directory's socket directory is 40 characters, too long only in bytes; the other is too long either way.
+        accented, long = Path(runtime, "é" * (39 - len(runtime) - 11)), Path(runtime, "r" * 40)
+        accented.mkdir(), long.mkdir()
+
+        def path(run, runtime=runtime):
             with unittest.mock.patch.dict("os.environ", XDG_RUNTIME_DIR=runtime):
                 return boat.Provider(dict(id=run, manifest=self.run["manifest"]), self.fake, Path(".")).control_path()
         for run in ["bake-" + "f" * 10, "20261014T034406-9a4821d75f"]:
-            self.assertTrue(path(run).startswith("/run/user/4294967295/ployz-boat/"))
+            self.assertTrue(path(run).startswith(f"{runtime}/ployz-boat/"))
             # %C expands to 40 hex characters and ssh adds a 17-character suffix while it binds.
             self.assertLessEqual(len(path(run).replace("%C", "0" * 40)) + 17, 107)
         self.assertNotEqual(path("a"), path("b"))
-        self.assertTrue(path("a", "/tmp/" + "é" * 20).startswith("/tmp/ployz-boat-"))
-        long = path("a", "/" + "r" * 74)
+        self.assertTrue(path("a", str(accented)).startswith("/tmp/ployz-boat-"))
+        # su without "-" keeps another user's runtime directory, and a logout removes one.
+        self.assertTrue(path("a", "/run/user/4294967295").startswith(f"/tmp/ployz-boat-{os.getuid()}/"))
+        self.assertTrue(path("a", "/").startswith(f"/tmp/ployz-boat-{os.getuid()}/"))
+        long = path("a", str(long))
         self.assertTrue(long.startswith(f"/tmp/ployz-boat-{os.getuid()}/"))
         self.assertLessEqual(len(long.replace("%C", "0" * 40)) + 17, 107)
 
