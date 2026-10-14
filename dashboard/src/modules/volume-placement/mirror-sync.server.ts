@@ -7,7 +7,7 @@ import { deployClaim } from "#/modules/volume-placement/volume-placement.server"
 import { expectOf, roleOf } from "#/modules/volume-run/plan";
 import { volumeMirrorStatus, volumeRun } from "#/modules/volume-run/tables";
 import { ACTIVE_VOLUME_RUN_STATES, type AnsweredMember, copyName, type Member } from "#/modules/volume-run/volume-run";
-import { askCopy, DRAIN_MS, observeVolumeMembers, requestVolumeRun } from "#/modules/volume-run/volume-run.server";
+import { askCopy, type CopyAnswer, DRAIN_MS, observeVolumeMembers, requestVolumeRun, SwitchAttemptError } from "#/modules/volume-run/volume-run.server";
 import { Database } from "#/server/database.server";
 
 export type SyncedVolume = {
@@ -45,6 +45,9 @@ export type CopyAsk = typeof askCopy;
 
 type Slot = Extract<VolumeCopy, { kind: "slot" }>;
 type SlotMember = AnsweredMember & { readonly view: { readonly copy: Slot } };
+
+/** A mirror's answer, or why it couldn't be asked: that mirror skips the round and the others still get theirs. */
+type MirrorAnswer = CopyAnswer | { readonly ok: false; readonly reason: "unreached"; readonly copy: null; readonly message: string };
 
 const isSlot = (member: Member): member is SlotMember => member.answered && member.view.copy?.kind === "slot";
 const pullingTo = (copy: Slot) => copy.pull !== null && copy.pull.failure === null ? copy.pull.target : null;
@@ -139,6 +142,16 @@ const newestGen = Effect.fn("MirrorSync.newestGen")(function* (volumeId: string)
 });
 
 /**
+ * The writer reuses a snapshot name it already holds, so each sync names its own. Postgres never hands out a transaction
+ * id twice, and the time in front keeps the round above a lane run's.
+ */
+const snapshotRound = Effect.fn("MirrorSync.snapshotRound")(function* () {
+  const { drizzle } = yield* Database;
+  const [row] = yield* drizzle.execute<{ xid: string }>(sql`select pg_current_xact_id()::text as xid`, "objects");
+  return `${Date.now()}${row?.xid ?? ""}`;
+});
+
+/**
  * The one mirror sync: the 15-minute cron, a user's sync and Refresh now, and the refresh after a Deploy all run it.
  * It reports each failed pull once, before anything else, so an open lane never hides one. With a lane open it says
  * why it does nothing. Otherwise it snapshots the writer and hands each idle mirror the pull, without waiting for it.
@@ -205,6 +218,13 @@ export const syncMirrors = Effect.fn("MirrorSync.sync")(function* (
   const asker = { organizationId, dockerVolume: volume.dockerVolume, volumeName: volume.name, gen };
   const steps: MirrorStep[] = [];
   const named = (member: Member) => copyName(volume.name, member.machine.name);
+  const pull = (member: SlotMember, copy: Slot, target: string) =>
+    ask(asker, member.machine, expectOf(copy), { kind: "mirror", from: writer.address, target, drain: DRAIN_MS }).pipe(
+      Effect.catchIf(
+        (error) => error instanceof SwitchAttemptError,
+        (error) => Effect.succeed<MirrorAnswer>({ ok: false, reason: "unreached", copy: null, message: error.message }),
+      ),
+    );
 
   // The Machine finishes a landed pull only when asked for it again, so resend each pull before calling it busy.
   const busy: MirrorStep[] = [];
@@ -216,7 +236,7 @@ export const syncMirrors = Effect.fn("MirrorSync.sync")(function* (
       idle.push({ member, copy });
       continue;
     }
-    const resent = yield* ask(asker, member.machine, expectOf(copy), { kind: "mirror", from: writer.address, target, drain: DRAIN_MS });
+    const resent = yield* pull(member, copy, target);
     if (resent.ok && resent.copy?.kind === "slot" && resent.copy.pull === null) idle.push({ member, copy: resent.copy });
     else if (resent.ok || resent.reason === "busy") busy.push({ kind: "pulling", mirror: named(member), target });
     else busy.push({ kind: "refused", mirror: named(member), message: resent.message });
@@ -224,7 +244,7 @@ export const syncMirrors = Effect.fn("MirrorSync.sync")(function* (
   // A writer keeps its newest two snapshots, so a new one while a pull runs could prune that pull's source.
   if (busy.length > 0) return yield* answer(reported, { kind: "synced", mirrors: busy });
 
-  const snapshot = yield* ask(asker, writer.machine, { kind: "writer", epoch }, { kind: "snapshot", name: `w-${epoch}-${Math.floor(Date.now() / 1000)}` });
+  const snapshot = yield* ask(asker, writer.machine, { kind: "writer", epoch }, { kind: "snapshot", name: `w-${epoch}-${yield* snapshotRound()}` });
   if (!snapshot.ok) return yield* answer(reported, { kind: "refused", message: snapshot.message });
   const target: Snapshot | null = snapshot.copy?.newest ?? null;
   if (target === null) return yield* answer(reported, { kind: "refused", message: `${named(writer)} made no snapshot` });
@@ -239,7 +259,7 @@ export const syncMirrors = Effect.fn("MirrorSync.sync")(function* (
       const status = statuses.find((row) => row.machineId === member.machine.id);
       if (status?.okSnapshot !== copy.newest.name) yield* recordSuccess(organizationId, volume.volumeId, member.machine.id, copy.newest, false);
     }
-    const handed = yield* ask(asker, member.machine, expectOf(copy), { kind: "mirror", from: writer.address, target: target.name, drain: DRAIN_MS });
+    const handed = yield* pull(member, copy, target.name);
     // A concurrent sync's hand-off moves the copy past this one's expect, so this one is refused as a mismatch.
     const pulling = handed.copy?.kind === "slot" ? pullingTo(handed.copy) : null;
     if (handed.ok) {
