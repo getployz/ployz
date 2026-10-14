@@ -551,7 +551,7 @@ class VolumeMove:
     def setup(self):
         first, second = self.machines
         # A run killed while armed leaves the fault file behind, and the first case would fire it.
-        if failed := self.fault(None, check=False):
+        if failed := self.fault(None):
             raise RuntimeError(f"disarming a leftover fault failed on {', '.join(failed)}")
         self.cli("server", "set", second, "--accepts-services=false")
         self.cli("project", "new", "verify")
@@ -616,12 +616,16 @@ class VolumeMove:
             return None
         return sorted(acked - {int(line) for line in result.stdout.split() if line.isdigit()})
 
-    def fault(self, value, machine=None, check=True):
-        """Arm or disarm without a restart: the daemons read the file on every check, and a restart would leave a
-        Machine unanswered mid-move."""
+    def fault(self, value, machine=None):
+        """Arm or disarm without a restart, and return the Machines whose write failed: the daemons read the file on
+        every check, and a restart would leave a Machine unanswered mid-move."""
         script = fault_script(value)
         targets = [machine] if machine else self.machines
-        return [target for target in targets if self.sh(target, script, check=check).returncode]
+        return [target for target in targets if self.sh(target, script, check=False).returncode]
+
+    def arm(self, plan):
+        if failed := [machine for machine, value in plan.items() if self.fault(value, machine)]:
+            raise RuntimeError(f"arming the fault failed on {', '.join(failed)}")
 
     def journal(self, machine):
         """Every daemon and plugin journal entry on machine after its barrier cursor, as dict(cursor, boot_id, line),
@@ -1238,7 +1242,7 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
         known = {row["id"] for row in self.listed_runs(case["name"])}
         # Arm only once the Volume is idle: a cron sync crosses the same SetVolumeCopy points and would trip it.
         plan = arming(case, side)
-        arm = (lambda: [self.fault(value, machine) for machine, value in plan.items()]) if plan else None
+        arm = (lambda: self.arm(plan)) if plan else None
         late = case.get("arm") == "stopped"
         # A trigger must be the first run's, so it starts behind the clean-start barrier on every Machine.
         row = (self.start_op(case["op"], destination, None if late else arm, clean=bool(case["trigger"]))
@@ -1261,8 +1265,8 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
                 self.act(case, side, row, result)
         elif case["action"] != "none":
             self.act(case, side, row, result)
-        if plan:
-            self.fault(None)
+        if plan and (failed := self.fault(None)):
+            raise RuntimeError(f"disarming the fault failed on {', '.join(failed)}")
         result["run"] = self.wait_run(row, limit=TAKEN_LIMIT if case.get("expect", {}).get("move") in TAKEN else 1800)
         if case.get("expect", {}).get("inside_hold") and result.get("triggered"):
             result["released"] = self.released(case, row, result["triggered"])
@@ -1354,7 +1358,7 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
                     if isinstance(error, Skipped):
                         result["skipped"] = str(error)
                     try:
-                        failed = self.fault(None, check=False) if case["fault"] else []
+                        failed = self.fault(None) if case["fault"] else []
                         if failed:
                             raise RuntimeError(f"disarming the fault failed on {', '.join(failed)}")
                         result["heal"] = self.heal(self.other(self.writer()))
