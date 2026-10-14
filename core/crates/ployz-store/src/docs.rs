@@ -41,7 +41,6 @@ pub struct Hit {
     pub title: &'static str,
     pub heading: &'static str,
     pub anchor: &'static str,
-    pub score: f64,
     pub excerpt: String,
 }
 
@@ -96,12 +95,11 @@ fn search(query: &str) -> Found {
     let results = index
         .search(query, RESULTS)
         .into_iter()
-        .map(|(section, score)| Hit {
+        .map(|section| Hit {
             path: section.path,
             title: section.title,
             heading: &section.heading,
             anchor: &section.anchor,
-            score: (f64::from(score) * 100.0).round() / 100.0,
             excerpt: excerpt(&section.text, index.first_match(&section.text, &terms)),
         })
         .collect();
