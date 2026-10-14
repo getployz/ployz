@@ -33,6 +33,7 @@ import {
   type MachineRef,
   noteRun,
   observeMembers,
+  observeReachable,
   organizationsWithMachines,
   refuseRun,
   releaseChangedMessage,
@@ -428,13 +429,13 @@ const FORWARD_WAITS = waitsFor(15 * 60);
 async function finishRelease(steps: RunSteps, current: MachineId, plan: ReleasePlan | undefined) {
   const { step, runEffect, run, runId } = steps;
   for (let check = 0; ; check += 1) {
-    const members: Member[] = await step.run(check === 0 ? "01-observe" : `01-observe-${check}`, () => runEffect(observeMembers(run, runId)));
-    const to = members.find((member) => member.machine.id === current)?.machine
+    const members: Member[] | null = await step.run(check === 0 ? "01-observe" : `01-observe-${check}`, () => runEffect(observeReachable(run, runId)));
+    const to = members?.find((member) => member.machine.id === current)?.machine
       ?? { id: current, name: (await step.run("02-target", () => runEffect(laneTarget(run)))) ?? current };
-    const forward = planForwardRelease(run.volumeName, to, members);
-    if (forward.kind === "blocked") return fail(steps, "02-failed", forward.message);
-    if (forward.kind === "waiting") {
-      const silent = forward.servers.map((machine) => machine.name).join(" and ");
+    const forward = members === null ? null : planForwardRelease(run.volumeName, to, members);
+    if (forward?.kind === "blocked") return fail(steps, "02-failed", forward.message);
+    if (members === null || forward === null || forward.kind === "waiting") {
+      const silent = forward?.kind === "waiting" ? forward.servers.map((machine) => machine.name).join(" and ") : "the Servers";
       const wait = FORWARD_WAITS[check];
       if (wait === undefined) {
         return fail(steps, "02-unanswered", `${silent} did not answer for 15m; ${run.volumeName} still finishes on ${to.name}; ployz volume release ${run.volumeName} tries again`);

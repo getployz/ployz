@@ -1175,6 +1175,12 @@ export const observeMembers = Effect.fn("VolumeRun.observe")(function* (ctx: Run
   return yield* observeVolumeMembers(ctx.organizationId, ctx.dockerVolume, ctx);
 });
 
+/** observeMembers, or null when no Server could be reached at all, which a forward release waits out like a silent one. */
+export const observeReachable = Effect.fn("VolumeRun.observeReachable")(function* (ctx: RunContext, inngestRunId: string) {
+  yield* requireOwner(ctx.id, inngestRunId);
+  return yield* observeVolumeMembers(ctx.organizationId, ctx.dockerVolume, ctx).pipe(Effect.orElseSucceed(() => null));
+});
+
 /**
  * The epoch the run gives a new writer: above every epoch the Machines show and every epoch this Volume's runs took,
  * so neither a Cloud database reset nor a Machine reset can reuse one. Taken once; a replay reads it back.
