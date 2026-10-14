@@ -236,7 +236,9 @@ if [ "$with_inngest" = 1 ]; then
 fi
 if [ "${FAKE_GITHUB:-0}" = 1 ]; then
   cat <<EOF | tee -a "$run/info"
+github origin: $fake_github (PLOYZ_VERIFY_GITHUB_ORIGIN), every GitHub URL Cloud builds points at this fake
 fake github on $fake_github (requests $run/fake-github.log, fixtures $dash/.verify/github.json)
+  bob: sign in at $base/auth as $(node -e 'const { bob } = JSON.parse(process.argv[1]); process.stdout.write(`${bob.email} / ${bob.password}`)' "$seed")
   webhook: curl -X POST $fake_github/_fake/webhook -d '{"event":"installation_repositories","action":"added","installation":7,"repositories":["acme/docs"]}'
 EOF
 fi

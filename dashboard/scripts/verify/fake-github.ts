@@ -1,3 +1,6 @@
+// The fake GitHub a FAKE_GITHUB=1 verify lab points every GitHub URL at: the App's API, its install and OAuth pages,
+// tarballs, and a control route that signs and posts webhooks to Cloud. up.sh runs it with runner.mjs until down.sh
+// stops it. Prints `VERIFY_FAKE_GITHUB <url>` once listening, then one line per request.
 import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -10,9 +13,9 @@ type Repository = {
   awaitsGrant?: true;
   files: Record<string, string>;
 };
-type Installation = { id: number; account: { login: string; type: "User" | "Organization" }; users: string[]; repositories: Repository[] };
+type Installation = { id: number; account: { id: number; login: string; type: "User" | "Organization" }; users: string[]; repositories: Repository[] };
 type Fixture = {
-  app: { slug: string; afterInstall: { closeWindow: true } | { callbackUrl: string } };
+  app: { slug: string; afterInstall: { callbackPath: string | null } };
   users: User[];
   installations: Installation[];
 };
@@ -25,26 +28,46 @@ const site = {
 const repository = (id: number, name: string, extra: Partial<Repository> = {}): Repository =>
   ({ id, name, private: true, default_branch: "main", branches: ["main", "dev"], files: site, ...extra });
 const DEFAULT_FIXTURE: Fixture = {
-  app: { slug: "ployz-verify", afterInstall: { closeWindow: true } },
+  app: { slug: "ployz-verify", afterInstall: { callbackPath: null } },
   users: [
     { id: 9001, login: "ada", name: "Ada Lovelace", email: "ada@example.com" },
     { id: 9002, login: "grace", name: "Grace Hopper", email: "grace@example.com" },
+    { id: 9003, login: "bob", name: "Bob Bobson", email: "bob@example.com" },
   ],
   installations: [
-    { id: 7, account: { login: "acme", type: "Organization" }, users: ["ada", "grace"], repositories: [
+    { id: 7, account: { id: 5001, login: "acme", type: "Organization" }, users: ["ada", "grace"], repositories: [
       repository(4242, "blog", { private: false }), repository(4243, "web"), repository(4244, "docs", { awaitsGrant: true }),
     ] },
-    { id: 8, account: { login: "ada", type: "User" }, users: ["ada"], repositories: [repository(4250, "notes")] },
-    { id: 9, account: { login: "hopper-labs", type: "Organization" }, users: ["grace"], repositories: [repository(4260, "compiler")] },
+    { id: 8, account: { id: 9001, login: "ada", type: "User" }, users: ["ada"], repositories: [repository(4250, "notes")] },
+    { id: 9, account: { id: 5003, login: "hopper-labs", type: "Organization" }, users: ["grace"], repositories: [repository(4260, "compiler")] },
+    { id: 10, account: { id: 9003, login: "bob", type: "User" }, users: ["bob"], repositories: [repository(4270, "shop")] },
   ],
 };
 
-function loadFixture(): Fixture {
-  if (!existsSync(FIXTURE_PATH)) {
-    mkdirSync(dirname(FIXTURE_PATH), { recursive: true });
-    writeFileSync(FIXTURE_PATH, `${JSON.stringify(DEFAULT_FIXTURE, null, 2)}\n`);
+/**
+ * `edited` with every default it lacks: missing keys, and entries of an id-keyed list whose id it doesn't have.
+ * What it has wins, so edits survive; an entry deleted from a default list comes back.
+ */
+function withDefaults(edited: unknown, defaults: unknown): unknown {
+  const idOf = (entry: unknown) => (typeof entry === "object" && entry !== null && "id" in entry ? entry.id : undefined);
+  if (Array.isArray(edited) && Array.isArray(defaults) && defaults.every((entry) => idOf(entry) !== undefined)) {
+    const merged = edited.map((entry) => withDefaults(entry, defaults.find((d) => idOf(d) === idOf(entry))));
+    return [...merged, ...defaults.filter((d) => !edited.some((entry) => idOf(entry) === idOf(d)))];
   }
-  return JSON.parse(readFileSync(FIXTURE_PATH, "utf8")) as Fixture;
+  if (typeof edited !== "object" || edited === null || Array.isArray(edited)) return edited ?? defaults;
+  if (typeof defaults !== "object" || defaults === null || Array.isArray(defaults)) return edited;
+  const merged: Record<string, unknown> = { ...defaults };
+  for (const [key, value] of Object.entries(edited)) merged[key] = withDefaults(value, (defaults as Record<string, unknown>)[key]);
+  return merged;
+}
+
+function loadFixture(): Fixture {
+  const fixture = existsSync(FIXTURE_PATH)
+    ? withDefaults(JSON.parse(readFileSync(FIXTURE_PATH, "utf8")), DEFAULT_FIXTURE) as Fixture
+    : DEFAULT_FIXTURE;
+  mkdirSync(dirname(FIXTURE_PATH), { recursive: true });
+  writeFileSync(FIXTURE_PATH, `${JSON.stringify(fixture, null, 2)}\n`);
+  return fixture;
 }
 
 const sha1 = (...parts: string[]) => createHash("sha1").update(parts.join("\0")).digest("hex");
@@ -83,7 +106,7 @@ export async function run() {
   });
   const installationJson = (i: Installation) => ({
     id: i.id, app_slug: fixture.app.slug, target_type: i.account.type,
-    account: { login: i.account.login, type: i.account.type, avatar_url: `${origin}/${i.account.login}.png` },
+    account: { id: i.account.id, login: i.account.login, type: i.account.type, avatar_url: `${origin}/${i.account.login}.png` },
     html_url: i.account.type === "Organization"
       ? `${origin}/organizations/${i.account.login}/settings/installations/${i.id}`
       : `${origin}/settings/installations/${i.id}`,
@@ -269,13 +292,13 @@ export async function run() {
       const from = user(url.searchParams.get("login") ?? target?.users[0]);
       if (!target || !from) return notFound;
       const delivered = await sendWebhook({ event: "installation", action: "created", installation: id, sender: from.login });
-      const after = fixture.app.afterInstall;
-      if ("closeWindow" in after) {
+      const { callbackPath } = fixture.app.afterInstall;
+      if (callbackPath === null) {
         return { status: 200, html: page(`Installed on ${target.account.login} (Cloud answered ${delivered.status})`, [], "setTimeout(() => window.close(), 800)") };
       }
       const code = token("code");
       codes.set(code, from);
-      const back = new URL(after.callbackUrl);
+      const back = new URL(callbackPath, cloud);
       back.searchParams.set("code", code);
       back.searchParams.set("installation_id", String(id));
       back.searchParams.set("setup_action", "install");
