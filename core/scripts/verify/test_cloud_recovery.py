@@ -61,7 +61,7 @@ class SlowDeploy:
         self.now = 20
         self.returncode = 0
         self.deployment["status"] = "applied"
-        return "of verify/production: applied", None
+        return "1 updated · 2 unchanged · across 1 servers", None
 
 
 class Recovery(unittest.TestCase):
