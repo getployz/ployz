@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "revision": "e53d37d25b04",
+  "revision": "2d5949cfe5f5",
   "commands": [
     {
       "name": "server_upgrade_policy_show",
@@ -516,8 +516,8 @@
         "properties": {
           "email": {
             "type": "string",
-            "minLength": 1,
-            "description": "Who the link is for, as a label. Anyone with the link can use it"
+            "pattern": "^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$",
+            "description": "Who the link is for. Cloud emails it there when email is on. Anyone with the link can use it"
           },
           "role": {
             "type": "string",
@@ -555,6 +555,12 @@
           },
           "expires_at": {
             "type": "string"
+          },
+          "emailed_to": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -562,7 +568,8 @@
           "email",
           "role",
           "link",
-          "expires_at"
+          "expires_at",
+          "emailed_to"
         ],
         "additionalProperties": false
       },

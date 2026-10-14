@@ -2,6 +2,7 @@ import "@tanstack/react-start/server-only";
 import { Effect, Schema } from "effect";
 import { defineCommand, refused } from "#/modules/commands/command.server";
 import type { Caller } from "#/modules/identity/actor";
+import { emailInvite } from "#/modules/organization/invitation-mail.server";
 import { createInvite, listPendingInvites, revokeInvite } from "#/modules/organization/invitation.server";
 import { listMembers, MANAGE, OWN, removeMembership, setMemberRole } from "#/modules/organization/membership.server";
 import { AppConfig } from "#/server/config.server";
@@ -33,7 +34,13 @@ const Invited = Schema.Struct({
   role: InviteRole,
   link: Schema.String,
   expires_at: Schema.String,
+  emailed_to: Schema.NullOr(Schema.String),
 });
+
+/** One address, so a mailed invite has exactly one recipient. */
+const InviteEmail = Schema.String.check(Schema.isPattern(/^[^\s@]+@[^\s@]+\.[^\s@]+$/u, {
+  message: "Enter one email address, like bob@example.com",
+}));
 
 const Changed = Schema.Struct({ email: Schema.String, role: MemberRole });
 const Removed = Schema.Struct({ email: Schema.String });
@@ -91,7 +98,7 @@ export const orgMemberInvite = defineCommand({
   typed: null,
   positional: [],
   input: Schema.Struct({
-    email: Schema.optionalKey(Schema.NonEmptyString.annotate({ description: "Who the link is for, as a label. Anyone with the link can use it" })),
+    email: Schema.optionalKey(InviteEmail.annotate({ description: "Who the link is for. Cloud emails it there when email is on. Anyone with the link can use it" })),
     role: Schema.optionalKey(InviteRole.annotate({ description: "The role it grants. member when left out" })),
   }),
   output: Invited,
@@ -100,16 +107,14 @@ export const orgMemberInvite = defineCommand({
     if (!manages(caller)) return refused("forbidden", MANAGE);
     const config = yield* AppConfig;
     const invite = yield* createInvite(caller.organization.id, caller.userId, { email: input.email ?? null, role: input.role ?? "member" });
+    const link = new URL(`/invite/${invite.token}`, config.app.url).toString();
+    const emailedTo = yield* emailInvite(invite, caller.organization.id, caller.userId, link);
     return {
       ok: true,
-      output: {
-        id: invite.id,
-        email: invite.email,
-        role: invite.role,
-        link: new URL(`/invite/${invite.token}`, config.app.url).toString(),
-        expires_at: invite.expiresAt.toISOString(),
-      },
-      message: "Send this link to the person you are inviting. It is shown only once.",
+      output: { id: invite.id, email: invite.email, role: invite.role, link, expires_at: invite.expiresAt.toISOString(), emailed_to: emailedTo },
+      message: emailedTo === null
+        ? "Send this link to the person you're inviting. It works once and lasts 7 days."
+        : `Emailed to ${emailedTo}. The link works once and lasts 7 days.`,
     } as const;
   }).pipe(Effect.catchTag("Conflict", conflictRefused)),
 });

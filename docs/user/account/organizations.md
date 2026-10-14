@@ -40,11 +40,13 @@ Everyone in an organization has one role:
   anyone, turn support access on or off, or forget servers.
 
 To invite someone, go to **Organization → Members** and click **Invite**. Pick **Member** or
-**Admin**, add their email if you want to remember who it's for, and click **Make link**. Copy
-the link and send it to them yourself. Ployz doesn't email it. Whoever opens it, signs in and
-clicks **Join** joins with that role, so send it only to the person you mean. A link works once
-and expires after 7 days. Owners and admins see pending invites, who sent them and when they
-expire. Click **Revoke** to cancel one. The list updates as soon as someone joins.
+**Admin**, add their email, and click **Make link**. When Ployz Cloud has email on, it emails the
+link to that address, and the dialog tells you where it went. A self-hosted Cloud without email,
+or an invite with no email, sends nothing, so copy the link from the dialog and send it to them
+yourself. Whoever opens the link, signs in and clicks **Join** joins with that role, so share it
+only with the person you mean. A link works once and expires after 7 days. Owners and admins see
+pending invites, who sent them and when they expire. Click **Revoke** to cancel one. The list
+updates as soon as someone joins.
 
 Owners and admins change a role with the select beside each person, and click **Remove** to take
 someone out. To leave an organization yourself, click **Leave** on your own row. An organization
