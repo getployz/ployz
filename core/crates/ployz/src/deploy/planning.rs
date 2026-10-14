@@ -306,12 +306,35 @@ pub(super) fn prepare_namespace_removal(
     let intent = DeployIntent::apply_all(namespace.clone(), [], PlanOptions::default());
     let mut planned = plan_operations(&intent, snapshot)?;
     if volumes == VolumeFate::Destroy && planned.prune_refusal.is_none() {
+        let first = planned.operations.len();
         planned.operations.extend(
             planned
                 .preserved_volumes
                 .drain(..)
                 .map(|volume| DeployOperation::RemoveVolume { id: volume.id }),
         );
+        // Volume removal joins the tail so it runs after every stop, one at a time.
+        let range = first..planned.operations.len();
+        match planned.groups.last_mut() {
+            Some(tail) if tail.service.is_none() && !range.is_empty() => {
+                tail.steps.extend(range.map(Step::Serial));
+            }
+            _ if !range.is_empty() => {
+                let every_service = planned
+                    .groups
+                    .iter()
+                    .filter_map(|group| group.service.clone())
+                    .collect();
+                planned.groups.push(service_group(
+                    &planned.operations,
+                    None,
+                    every_service,
+                    range,
+                    None,
+                ));
+            }
+            _ => {}
+        }
     }
     Ok(seal_plan(planned, snapshot, namespace))
 }
