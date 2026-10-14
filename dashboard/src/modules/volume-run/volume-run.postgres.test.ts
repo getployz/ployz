@@ -3104,6 +3104,25 @@ describe("volume runs", () => {
         expect(await place()).toMatchObject([{ kind: "follow", to: "fsn-2", ended: true }]);
       });
 
+      it("cuts outside B name the step that finishes the commitment, from a release and from a mirror removal, and that step is accepted", async () => {
+        await failedCommit();
+        const cut = newSnap("f-2");
+        machines = [
+          { name: "fsn-1", pool: true, copy: writerCopy(cut, 8, true) },
+          { name: "fsn-2", pool: true, copy: slotCopy(cut) },
+          { name: "fsn-3", pool: true, copy: writerCopy(cut, 9, true) },
+          { name: "fsn-4", pool: true, copy: slotCopy(cut) },
+        ];
+        const advice = "data has unfinished cuts on fsn-1 and fsn-3, so release cannot finish it on fsn-2; ployz server rm fsn-1 and fsn-3, then ployz volume release data";
+        const plan = (input: VolumeRunInput) => runEffect(planVolumeRun(organizationId, { volumeId, environment, ...input }));
+
+        expect(await plan({ kind: "release", args: {} })).toMatchObject({ ok: false, refusal: { message: advice } });
+        expect(await plan({ kind: "delete_mirror", args: { slot: "fsn-4", confirmed_name: null } })).toMatchObject({ ok: false, refusal: { message: advice } });
+
+        machines = machines.filter((fake) => fake.name !== "fsn-1" && fake.name !== "fsn-3");
+        expect(await plan({ kind: "release", args: {} })).toMatchObject({ ok: true, input: { kind: "release", args: { plan: { forward: { to: idOf("fsn-2") } } } } });
+      });
+
       it("a Deploy targeting the Volume holds it beside the follow: a Move is refused as deploying, then as owed once the Deploy ends", async () => {
         await failedCommit();
         const owes = "data finishes on fsn-2; ployz volume release data finishes it now";

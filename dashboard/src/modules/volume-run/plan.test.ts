@@ -574,10 +574,20 @@ describe("planForwardRelease", () => {
     ["B with no copy", [member("fsn-1", "mirror"), member("fsn-2", "empty")], "blocked: data's Move committed, but fsn-2 holds no copy to start. Restore from fsn-1's copy: ployz volume restore data --from fsn-1"],
     ["B with no snapshot", [member("fsn-1", "empty"), member("fsn-2", "seed")], "blocked: data's Move committed, but fsn-2 holds no copy to start. No other server's copy is known to hold its newest data."],
     ["a writer outside B", [member("fsn-1", "writer"), member("fsn-2", "final")], "blocked: data-fsn-1 is still a writer copy, so data can't finish on fsn-2; ployz volume restore data --from fsn-1 keeps fsn-1's data"],
-    ["a cut root outside B", [member("fsn-1", "cut"), member("fsn-2", "final")], "blocked: data-fsn-1 is still a writer copy, so data can't finish on fsn-2; ployz volume restore data --from fsn-1 keeps fsn-1's data"],
+    ["a cut root outside B", [member("fsn-1", "cut"), member("fsn-2", "final")], "blocked: data has an unfinished cut on fsn-1, so release cannot finish it on fsn-2; ployz server rm fsn-1, then ployz volume release data"],
     ["B a slot, the rest stopped", [member("fsn-1", "mirror"), member("fsn-2", "final"), member("fsn-3", "empty")], "ready on fsn-2, removing on fsn-1,fsn-3"],
     ["B already the writer", [member("fsn-1", "mirror"), member("fsn-2", "writer", { epoch: 4 })], "ready on fsn-2, removing on fsn-1"],
   ])("%s", (_, members, expected) => {
     expect(forward(members)).toBe(expected);
+  });
+
+  it("names steps the planner accepts when cuts outside B began at different epochs, beside an unrelated mirror", () => {
+    const members = [member("fsn-1", "cut", { epoch: 8 }), member("fsn-3", "cut", { epoch: 9 }), member("fsn-2", "final"), member("fsn-4", "mirror")];
+    const planned = planForwardRelease("data", B, members);
+    if (planned.kind !== "blocked") throw new Error(`planned ${planned.kind}, not a refusal`);
+    expect(planned.message).toBe("data has unfinished cuts on fsn-1 and fsn-3, so release cannot finish it on fsn-2; ployz server rm fsn-1 and fsn-3, then ployz volume release data");
+    const step = /; ployz server rm (.+), then ployz volume release data$/.exec(planned.message);
+    const gone = step?.[1]?.split(" and ") ?? [];
+    expect(forward(members.filter((each) => !gone.includes(each.machine.name)))).toBe("ready on fsn-2, removing on fsn-4");
   });
 });
