@@ -4,7 +4,7 @@ import { Effect, Layer, Schema } from "effect";
 import { Inngest } from "inngest";
 import { describe, expect, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
-import { callCloud } from "#/modules/agent/call-cloud.server";
+import { callCloud, NO_SERVERS_MESSAGE } from "#/modules/agent/call-cloud.server";
 import { decideApproval } from "#/modules/approvals/approvals.server";
 import type { Caller } from "#/modules/identity/actor";
 import { freshApproval, freshOperationDigest, UNREACHABLE_MESSAGE } from "#/modules/machines/server-operations.server";
@@ -13,7 +13,7 @@ import { attemptIdOf } from "#/modules/operations/keyed.server";
 import { OrganizationRuntime, type ScopedRuntimeClientSession } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
 import { Database } from "#/server/database.server";
-import { seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
+import { enrollStoreServer, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000c101";
 const DRAIN = "00000000-0000-4000-8000-00000000c102";
@@ -127,10 +127,32 @@ describe("callCloud", () => {
       expect(allowed).toEqual({ ok: true, value: TAIL });
     }));
 
-  // Catches an unreachable Cluster surfacing as a crash or an empty tail instead of a refusal naming the fix.
+  const REMOVE: Act = {
+    attempt: "a".repeat(32),
+    digest: "b".repeat(64),
+    action: { action: "remove_server", server: { machine: MACHINE, name: "web-2" }, loss: null },
+  };
+
+  // Catches an Organization that never added a Server told its Servers aren't answering.
+  it.live("tells an Organization with no Servers to add one, for a logs ask and a removal", () =>
+    Effect.gen(function* () {
+      const services = yield* Layer.build(yield* storeTestCloud());
+      yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
+      const noServers = {
+        ok: false,
+        refusal: { code: "unavailable", message: NO_SERVERS_MESSAGE, details: { fix: { fix: "connect_servers" } } },
+      };
+      for (const opened of [{ status: "unreachable", error: null }, { status: "no_connection" }] as const) {
+        expect(yield* callCloud(member, { ask: LOGS }).pipe(runtime(opened, []), Effect.provide(services))).toEqual(noServers);
+        expect(yield* callCloud(member, { act: REMOVE }).pipe(runtime(opened, []), Effect.provide(services))).toEqual(noServers);
+      }
+    }));
+
+  // Catches an unreachable Cluster surfacing as a crash, an empty tail, or the no-Servers refusal.
   it.live("refuses a logs ask clearly when the Organization's Servers aren't connected", () =>
     Effect.gen(function* () {
       const services = yield* Layer.build(yield* storeTestCloud());
+      yield* Effect.all([seedStoreOrganization(ORGANIZATION), enrollStoreServer(ORGANIZATION)]).pipe(Effect.provide(services));
       for (const opened of [{ status: "unreachable", error: null }, { status: "no_connection" }] as const) {
         const heard = yield* callCloud(member, { ask: LOGS }).pipe(runtime(opened, []), Effect.provide(services));
         expect(heard).toEqual({
@@ -150,12 +172,7 @@ describe("callCloud", () => {
           dataLossIfMachineRemoved: () => Effect.fail(new Error("the Server hung up")),
         }),
       };
-      const act: Act = {
-        attempt: "a".repeat(32),
-        digest: "b".repeat(64),
-        action: { action: "remove_server", server: { machine: MACHINE, name: "web-2" }, loss: null },
-      };
-      const heard = yield* callCloud(member, { act }).pipe(runtime(reading, []), Effect.provide(services));
+      const heard = yield* callCloud(member, { act: REMOVE }).pipe(runtime(reading, []), Effect.provide(services));
       expect(heard).toEqual({ ok: false, refusal: { code: "unavailable", message: "Cloud couldn't answer this. Try again.", details: null } });
     }));
 

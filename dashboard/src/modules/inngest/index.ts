@@ -28,6 +28,7 @@ import {
   createStoreSweepRequested,
 } from "#/modules/config-store/store-github.inngest";
 import { createRefreshVolumeMirrors } from "#/modules/volume-placement/volume-placement.inngest";
+import { createSendUptimeAlerts } from "#/modules/uptime/alert-mail.inngest";
 import { createUptimeMaintenanceFunctions } from "#/modules/uptime/maintenance.inngest";
 import { createVolumeRunFunctions } from "#/modules/volume-run/volume-run.inngest";
 import { createSweepOperationOutbox } from "#/modules/operations/outbox.server";
@@ -66,6 +67,7 @@ export function createInngestFunctions(inngest: PloyzInngest) {
     createSweepOperationOutbox(inngest),
     createRefreshVolumeMirrors(inngest),
     ...createUptimeMaintenanceFunctions(inngest),
+    createSendUptimeAlerts(inngest),
     createSendMail(inngest),
   ];
 }

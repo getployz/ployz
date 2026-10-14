@@ -52,6 +52,9 @@ export const getFirstOrganizationIdForUser = Effect.fn(
   return rows[0]?.organizationId ?? null;
 });
 
+/** `/cloud/<slug>` paths Cloud's own pages take. A base slug among them always gets a suffix. */
+const RESERVED_SLUGS: ReadonlySet<string> = new Set(["account"]);
+
 /** Inserts an Organization under the first free slug from `baseSlug`, owned by `userId`. */
 const insertOrganization = Effect.fn("Organization.insertOrganization")(function* (
   userId: string,
@@ -64,7 +67,7 @@ const insertOrganization = Effect.fn("Organization.insertOrganization")(function
       Effect.gen(function* () {
         const rows = yield* database.drizzle
           .insert(organization)
-          .values({ name, slug: getSlugWithSuffix(baseSlug, attempt) })
+          .values({ name, slug: getSlugWithSuffix(baseSlug, RESERVED_SLUGS.has(baseSlug) ? attempt + 1 : attempt) })
           .onConflictDoNothing()
           .returning({ id: organization.id, slug: organization.slug });
         return rows[0] ?? null;
