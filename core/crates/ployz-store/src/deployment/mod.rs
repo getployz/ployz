@@ -558,7 +558,7 @@ impl DeployedNode {
         }
     }
 
-    /// Its ID as text; a Service's is its lineage ID.
+    /// Its node ID.
     #[must_use]
     pub fn id(&self) -> &str {
         match self {
