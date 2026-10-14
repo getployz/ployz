@@ -12,7 +12,8 @@ const CONFIG_STORE_TOOLS = new Set(["volume_add", "volume_update", "volume_remov
 const ADDRESSING = {
   agent: new Set(["request_key"]),
   cli: new Set(["kind"]),
-  ui: new Set(["organizationSlug", "requestId", "approvalId"]),
+  // `stops` is what a Drain's confirm showed as stopping: the dialog's approval, like `approvalId`.
+  ui: new Set(["organizationSlug", "requestId", "approvalId", "stops"]),
 } as const;
 
 const AgentTools = Schema.fromJsonString(Schema.Struct({

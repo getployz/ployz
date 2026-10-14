@@ -3,6 +3,7 @@ import type { DrainReport, DrainScope, QualifiedService } from "@ployz/sdk";
 import { and, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { Data, Effect, Option, Schedule, Schema } from "effect";
 import type { MachineId } from "#/db/tables";
+import { listNames } from "#/lib/plural";
 import { gateOperation, operationDigest } from "#/modules/approvals/approvals.server";
 import type { Actor, Caller } from "#/modules/identity/actor";
 import { createServerDrainRequestedEvent, type ServerDrainRequestedEventData } from "#/modules/inngest/events";
@@ -20,6 +21,7 @@ import {
   type RequestServerDrainInput,
 } from "#/modules/machines/server-drain";
 import { planDrain } from "#/modules/machines/server-operations.server";
+import { splitQualifiedService } from "#/modules/machines/server-services";
 import { serverDrainAttempt } from "#/modules/machines/tables";
 import { serversLackingEnsure } from "#/modules/runtime/daemon-compat.server";
 import { requireAccess } from "#/modules/organization/access.server";
@@ -92,7 +94,8 @@ const enqueueDrain = (row: DrainAttemptRow) =>
   enqueueEvent(createServerDrainRequestedEvent({ attemptId: row.id, organizationId: row.organizationId, machineId: row.machineId }));
 
 /**
- * Drain on a Server page: any member may, and confirming it is their approval. The admitted Drain's row takes the id
+ * Drain on a Server page: any member may, and confirming it is their approval, so a plan that now stops a Service the
+ * dialog didn't show as stopping is refused. The admitted Drain's row takes the id
  * the tab minted and is written with its run's event, so the same request again returns it. A click while another
  * Drain is active on the Server returns that one.
  */
@@ -119,6 +122,12 @@ export const requestServerDrain = Effect.fn("ServerDrain.request")(function* (ca
   if (existing !== null) return existing;
   const plan = yield* planDrain(organizationId, input.machineId);
   if (plan === null) return yield* new NotFound({ message: "The server was not found." });
+  const unseen = plan.effects.flatMap(({ kind, name }) =>
+    kind === "removes_service" && name !== undefined && !input.stops.includes(name) ? [splitQualifiedService(name).name] : []);
+  if (unseen.length > 0) {
+    const names = listNames(unseen);
+    return yield* new Conflict({ userFacing: true, message: `Draining now stops ${names}. Review the drain again.` });
+  }
   const gated = yield* gateOperation(caller, null, plan);
   if (!gated.ok) return yield* new Conflict({ userFacing: true, message: gated.refusal.message });
   return yield* database.transaction(Effect.gen(function* () {

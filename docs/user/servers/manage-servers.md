@@ -77,7 +77,8 @@ service that runs on no other server, which the drain removes. Draining turns se
 each replicated service's containers to your other servers one at a time. Each new container runs
 the same image, and each one starts and is healthy before the old container is removed.
 Pre-deploy commands don't run again, and nothing is deployed. The drain starts once you confirm:
-the dialog is the approval. Drains in one organization run one
+the dialog is the approval. If a global service's last other copy stopped while the dialog was open,
+the drain doesn't start; open it again to see what stops now. Drains in one organization run one
 at a time: a second one reads **Queued · Waiting on web-1**. While a drain runs, the
 **Drain** row counts the services left to move and lists them as **Pending**; each one leaves the
 list as it leaves the server. You can leave the page while one runs.

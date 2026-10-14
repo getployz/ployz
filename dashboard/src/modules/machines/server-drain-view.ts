@@ -253,9 +253,14 @@ type RunningService = {
   readonly identity: string;
   readonly name: string;
   readonly namespace: string | null;
-  /** The one Server running this Global Service, when only one does (`servicesOnServers`). */
-  readonly soleGlobalOn?: string | null;
+  /** One copy per Server, and where a copy runs now (`servicesOnServers`). */
+  readonly global?: boolean;
+  readonly runningOn?: ReadonlySet<string>;
 };
+
+/** A Drain removes a Global it runs here when no other Server runs a copy, as its plan does. */
+const stopsOn = (service: RunningService, machineId: string) =>
+  service.global === true && ![...service.runningOn ?? []].some((id) => id !== machineId);
 
 /**
  * What runs here split by whether a Drain acts on it: a Drain leaves Namespaces no Project owns (`strays`) alone. The
@@ -297,7 +302,7 @@ export function drainDialogRows(
     ({ key: service.identity, name: service.name, namespace: service.namespace, stays });
   const rows = [
     ...split.drainable.map((service) => row(service,
-      service.soleGlobalOn === machineId ? "stops" : pinned.has(service.identity) ? "data" : null)),
+      stopsOn(service, machineId) ? "stops" : pinned.has(service.identity) ? "data" : null)),
     ...split.unowned.map((service) => row(service, "unowned")),
   ];
   return [...rows.filter((entry) => entry.stays === null), ...rows.filter((entry) => entry.stays !== null)];

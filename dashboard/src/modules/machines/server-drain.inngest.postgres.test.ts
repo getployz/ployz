@@ -104,8 +104,8 @@ describe("drain-server", () => {
       }),
     ))) as typeof runInngestEffect;
 
-  const request = (id = requestId, machine = machineId) =>
-    runEffect(requestServerDrain(caller, { organizationSlug: "acme", machineId: machine, requestId: id }));
+  const request = (id = requestId, machine = machineId, stops: string[] = []) =>
+    runEffect(requestServerDrain(caller, { organizationSlug: "acme", machineId: machine, requestId: id, stops }));
   /** One run of the Drain. The test engine mints a run ID per step execution; Inngest keeps one per run. */
   const drain = (attemptId = requestId, machine = machineId, runId = "run-drain") => new InngestTestEngine({
     function: createDrainServer(new Inngest({ id: "test" }), runEffect),
@@ -241,11 +241,17 @@ describe("drain-server", () => {
 
   it("a dashboard Drain that retires the last copy of a Global runs without asking anyone", async () => {
     frame = frameOf("global");
-    expect(await request()).toMatchObject({ drain: { attemptId: requestId, state: "pending" } });
+    expect(await request(requestId, machineId, ["shop-production/api"])).toMatchObject({ drain: { attemptId: requestId, state: "pending" } });
     expect((await harness.pool.query(`select count(*)::int as n from operation_approvals`)).rows).toEqual([{ n: 0 }]);
     await drain();
 
     expect(drainCalls).toEqual([[machineId, { scope: "services", services: ["shop-production/api"] }]]);
+  });
+
+  it("refuses a dashboard Drain that would stop a Service its dialog showed as moving", async () => {
+    frame = frameOf("global");
+    await expect(request()).rejects.toThrow("Draining now stops api. Review the drain again.");
+    expect(await rows()).toEqual([]);
   });
 
   it("plans again when its turn comes and refuses a destroy its gate never saw, without asking the Engine", async () => {

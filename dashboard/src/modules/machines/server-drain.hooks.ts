@@ -18,7 +18,7 @@ export type ServerDrain = {
   readonly view: DrainView;
   /** Open the confirm dialog. */
   readonly ask: () => void;
-  readonly dialog: { readonly open: boolean; readonly onOpenChange: (open: boolean) => void; readonly onConfirm: () => void };
+  readonly dialog: { readonly open: boolean; readonly onOpenChange: (open: boolean) => void; readonly onConfirm: (stops: readonly string[]) => void };
 };
 
 /**
@@ -61,9 +61,9 @@ export function useServerDrain(
     );
   };
 
-  const send = (requestId: string) => {
+  const send = (requestId: string, stops: readonly string[]) => {
     setRequested(requestId);
-    requestServerDrainServerFn({ data: { organizationSlug, machineId: server.id, requestId } }).then(
+    requestServerDrainServerFn({ data: { organizationSlug, machineId: server.id, requestId, stops: [...stops] } }).then(
       (answer) => {
         setRequested((current) => (current === requestId ? answer.drain.attemptId : current));
         stageOff();
@@ -77,9 +77,9 @@ export function useServerDrain(
     );
   };
 
-  const confirm = () => {
+  const confirm = (stops: readonly string[]) => {
     setOpen(false);
-    send(crypto.randomUUID());
+    send(crypto.randomUUID(), stops);
   };
 
   return {

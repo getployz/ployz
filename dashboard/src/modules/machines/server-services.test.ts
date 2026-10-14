@@ -19,10 +19,11 @@ describe("servicesOnServers", () => {
     expect([...(services[0]?.machineIds ?? [])]).toEqual(["m1", "m2"]);
   });
 
-  it("names the one Server running a Global Service, and none when it runs on more or isn't Global", () => {
-    const sole = (containers: RuntimeContainerRecord[]) => servicesOnServers([{ identity: "shop/agent", containers }])[0]?.soleGlobalOn;
-    expect(sole([globalSlot("m1", "running"), globalSlot("m2", "exited")])).toBe("m1");
-    expect(sole([globalSlot("m1", "running"), globalSlot("m2", "running")])).toBeNull();
-    expect(sole([{ ...container("m1"), kind: "service_container", runtime: { state: "running" } }])).toBeNull();
+  it("marks a Global Service and the Servers running a copy of it", () => {
+    const service = (containers: RuntimeContainerRecord[]) => servicesOnServers([{ identity: "shop/agent", containers }])[0];
+    const agent = service([globalSlot("m1", "running"), globalSlot("m2", "exited")]);
+    expect([agent?.global, [...agent?.runningOn ?? []]]).toEqual([true, ["m1"]]);
+    const plain = service([{ ...container("m1"), kind: "service_container", runtime: { state: "running" } }]);
+    expect([plain?.global, [...plain?.runningOn ?? []]]).toEqual([false, ["m1"]]);
   });
 });

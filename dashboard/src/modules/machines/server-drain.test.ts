@@ -217,12 +217,12 @@ describe("Drain hints", () => {
     expect(drainDialogRows(view({}), web2.id, [postgres], none).map((row) => row.stays)).toEqual([null]);
   });
 
-  it("marks a Global Service whose only running copy is here as stopping, and one running elsewhere too as moving", () => {
-    const agent = { identity: "shop/agent", name: "agent", namespace: "shop", soleGlobalOn: web2.id };
-    const spread = { identity: "shop/spread", name: "spread", namespace: "shop", soleGlobalOn: null };
-    expect(drainDialogRows(view({}), web2.id, [agent, spread], none).map((row) => [row.name, row.stays]))
-      .toEqual([["spread", null], ["agent", "stops"]]);
-    expect(drainDialogRows(view({}), "elsewhere", [agent], none).map((row) => row.stays)).toEqual([null]);
+  it("marks a Global Service as stopping when no other Server runs a copy, even when none runs here", () => {
+    const global = (name: string, runningOn: string[]) =>
+      ({ identity: `shop/${name}`, name, namespace: "shop", global: true, runningOn: new Set(runningOn) });
+    const rows = drainDialogRows(view({}), web2.id,
+      [global("agent", [web2.id]), global("crashed", []), global("spread", [web2.id, "elsewhere"])], none);
+    expect(rows.map((row) => [row.name, row.stays])).toEqual([["spread", null], ["agent", "stops"], ["crashed", "stops"]]);
   });
 
   it("lists what a Drain under way still has to move, without what no Project owns", () => {

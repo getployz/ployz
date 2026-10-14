@@ -14,16 +14,16 @@ export function splitQualifiedService(service: string) {
 /**
  * Each Service with a container on some Server, named as the Engine names it: `namespace/name`. Hook containers are
  * one-off jobs and do not count, and neither does Ployz's own ingress and DNS (`ployz-system`): nothing the user runs.
- * `soleGlobalOn` is the one Server running a Global Service, when only one does: draining it stops the Service.
+ * A `global` Service runs one copy per Server; `runningOn` is where a copy is running now.
  */
 export function servicesOnServers(runtime: readonly Pick<RuntimeServiceRecord, "identity" | "containers">[]) {
   return runtime.flatMap(({ identity, containers }) => {
     const { namespace, name } = splitQualifiedService(identity);
     if (containers.length === 0 || namespace === SYSTEM_NAMESPACE) return [];
-    const running = new Set(containers
+    const runningOn = new Set(containers
       .filter((container) => container.kind === "service_container" && container.runtime?.state === "running")
       .map((container) => container.machineId));
-    const soleGlobalOn = containers.some((container) => container.global) && running.size === 1 ? [...running][0] ?? null : null;
-    return [{ identity, name, namespace, machineIds: new Set(containers.map((container) => container.machineId)), soleGlobalOn }];
+    const global = containers.some((container) => container.global === true);
+    return [{ identity, name, namespace, machineIds: new Set(containers.map((container) => container.machineId)), global, runningOn }];
   });
 }

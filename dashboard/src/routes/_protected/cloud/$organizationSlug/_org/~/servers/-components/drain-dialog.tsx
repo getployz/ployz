@@ -16,7 +16,8 @@ export function DrainDialog({ serverName, rows, open, onOpenChange, onConfirm }:
   rows: readonly DrainDialogRow[];
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onConfirm: () => void;
+  /** Gets the Services the dialog showed as stopping: Cloud refuses a Drain that would now stop others. */
+  onConfirm: (stops: readonly string[]) => void;
 }) {
   const moves = rows.some((row) => row.stays === null);
   return (
@@ -53,7 +54,7 @@ export function DrainDialog({ serverName, rows, open, onOpenChange, onConfirm }:
       }
       actionLabel="Drain"
       variant={rows.some((row) => row.stays === "stops") ? "destructive" : "default"}
-      onConfirm={onConfirm}
+      onConfirm={() => onConfirm(rows.filter((row) => row.stays === "stops").map((row) => row.key))}
     />
   );
 }

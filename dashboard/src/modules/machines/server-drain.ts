@@ -37,6 +37,8 @@ export const RequestServerDrainInput = Schema.Struct({
   machineId: machineIdStringSchema,
   /** Minted by the confirming tab: the row's id, so sending the same request again returns the same Drain. */
   requestId: Schema.String.check(Schema.isUUID()),
+  /** The Services the confirm dialog showed as stopping. A Drain that would now stop another one is refused. */
+  stops: Schema.Array(Schema.String),
 });
 export type RequestServerDrainInput = typeof RequestServerDrainInput.Type;
 
