@@ -30,7 +30,6 @@ import type { InngestRunStatus } from "#/modules/inngest/client";
 import { configDeploymentAdmittedEvent } from "#/modules/inngest/events";
 import { createCloseFinishedVolumeRun, createCloseStaleVolumeRuns, createRunVolume } from "#/modules/volume-run/volume-run.inngest";
 import { operationsOn } from "#/modules/operations/operation-history.server";
-import { observeLeavingServerActivity } from "#/modules/machines/machine-removal.server";
 import {
   askCopy,
   closeStaleVolumeRuns,
@@ -39,6 +38,8 @@ import {
   commitMove,
   type CopyAnswer,
   listVolumeRuns,
+  observeOrganization,
+  observeOrganizationCopies,
   orphanSlotNames,
   releaseLanesOff,
   requestVolumeRun,
@@ -1164,8 +1165,17 @@ describe("volume runs", () => {
       expect(await lanes()).toMatchObject([{ id: move.id, state: "failed", message: "data's writer was on fsn-2 (removed). No other server's copy is known to hold its newest data." }]);
     });
 
-    it("observing the leaving Server fails, for the step to retry, while Cloud holds no pairing to ask its copies", async () => {
-      await expect(runEffect(observeLeavingServerActivity({ organizationId, machineId: idOf("fsn-2") }))).rejects.toThrow();
+    it("observing the Cluster's copies fails while Cloud holds no pairing to ask them, and the copies alone read as none", async () => {
+      expect(await runEffect(observeOrganization(organizationId).pipe(Effect.flip, Effect.orDie))).toMatchObject({ _tag: "ClusterNotPaired", organizationId });
+      expect(await runEffect(observeOrganizationCopies(organizationId).pipe(Effect.orDie))).toEqual([]);
+    });
+
+    it("removing a Server takes a warm Move bound for it by id, though the Cluster no longer names it", async () => {
+      const run = await requested({ kind: "move", args: { to: "fsn-2", machine: idOf("fsn-2") } });
+      await harness.pool.query("update volume_run set state = 'running', inngest_run_id = 'run-1' where id = $1", [run.id]);
+
+      expect(await runEffect(releaseLanesOff(organizationId, { id: idOf("fsn-2"), name: null }, []))).toHaveLength(1);
+      expect(await lanes()).toMatchObject([{ id: run.id, state: "cancelled" }, { kind: "release", state: "requested" }]);
     });
 
     it("removing a Server leaves a committed lane bound elsewhere alone", async () => {

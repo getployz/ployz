@@ -4,7 +4,7 @@ import { Effect, Exit } from "effect";
 import { asTestDouble } from "#/lib/test-double";
 import { MissingDataLossIdentities } from "#/modules/runtime/data-loss-confirm";
 import { ServerLacks } from "#/modules/runtime/daemon-compat";
-import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
+import { OrganizationRuntime, RUNTIME_FRAME_TIMEOUT_MS } from "#/modules/runtime/organization-runtime.server";
 import { asSdkFailure, PloyzProviderError, type PloyzSession } from "#/modules/runtime/ployz.server";
 import { RuntimeConnectionFailure } from "#/modules/runtime/runtime-connection-errors";
 import { Database } from "#/server/database.server";
@@ -81,19 +81,24 @@ describe("observeLeavingServerActivity", () => {
   const writerOn = (machine: MachineId, name: string) =>
     asTestDouble<CopyObservation["copies"][number]>()({ machine_id: machine, name, role: "writer" });
   let frame: "answers" | "omits" | "times out";
+  let membership: string;
   let observed: CopyObservation | null;
+  let waited: number | null;
 
   const observe = () => {
     const session = asTestDouble<PloyzSession>()({
-      watchFirstFrame: () => frame === "times out"
-        ? Effect.fail(new RuntimeConnectionFailure({ cause: new Error("Runtime watch timed out") }))
-        : Effect.succeed({
-          machines: [
-            { machine: { id: other, name: "fsn-1" } },
-            ...frame === "answers" ? [{ machine: { id: leaving, name: "fsn-2" } }] : [],
-          ],
-          containers: [],
-        }),
+      watchFirstFrame: (timeoutMs: number) => {
+        waited = timeoutMs;
+        return frame === "times out"
+          ? Effect.fail(new RuntimeConnectionFailure({ cause: new Error("Runtime watch timed out") }))
+          : Effect.succeed({
+            machines: [
+              { machine: { id: other, name: "fsn-1" }, membership: "up" },
+              ...frame === "answers" ? [{ machine: { id: leaving, name: "fsn-2" }, membership }] : [],
+            ],
+            containers: [],
+          });
+      },
     });
     const observeCopies = () => observed === null
       ? Effect.fail(new PloyzProviderError({ operation: "observe copies", cause: new Error("transport error") }))
@@ -109,11 +114,18 @@ describe("observeLeavingServerActivity", () => {
 
   beforeEach(() => {
     frame = "answers";
+    membership = "up";
+    waited = null;
     observed = { copies: [writerOn(leaving, "data"), writerOn(other, "logs")], unanswered: [] };
   });
 
   it("names the leaving Server and the Volumes it writes", async () => {
     expect(await observe()).toEqual(Exit.succeed({ machine: { id: leaving, name: "fsn-2" }, writes: ["data"] }));
+  });
+
+  it("waits for the Cluster frame as long as the removal itself does", async () => {
+    await observe();
+    expect(waited).toBe(RUNTIME_FRAME_TIMEOUT_MS);
   });
 
   it("fails, for the step to retry, when the Cluster frame times out", async () => {
@@ -131,8 +143,19 @@ describe("observeLeavingServerActivity", () => {
     expect(await observe()).toEqual(Exit.succeed({ machine: { id: leaving, name: null }, writes: ["data"] }));
   });
 
-  it("writes nothing when the leaving Machine itself does not answer", async () => {
+  it("fails, for the step to retry, when the leaving Machine reads up but its copies do not answer", async () => {
+    observed = { copies: [writerOn(other, "logs")], unanswered: [leaving] };
+    expect(await observe()).toMatchObject({ _tag: "Failure" });
+  });
+
+  it("writes nothing when the leaving Machine is down and its copies do not answer", async () => {
+    membership = "down";
     observed = { copies: [writerOn(other, "logs")], unanswered: [leaving] };
     expect(await observe()).toEqual(Exit.succeed({ machine: { id: leaving, name: "fsn-2" }, writes: [] }));
+  });
+
+  it("reads past another Server that does not answer", async () => {
+    observed = { copies: [writerOn(leaving, "data")], unanswered: [other] };
+    expect(await observe()).toEqual(Exit.succeed({ machine: { id: leaving, name: "fsn-2" }, writes: ["data"] }));
   });
 });
