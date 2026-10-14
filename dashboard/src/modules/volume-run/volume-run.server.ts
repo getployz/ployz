@@ -229,15 +229,22 @@ export const owedCommitments = Effect.fn("VolumeRun.owedCommitments")(function* 
 // A sync's cut assumes a writer, and an owed Volume has none until the finish starts one on B.
 const OWED_KINDS: ReadonlySet<VolumeRunKind> = new Set<VolumeRunKind>(["move", "mirror", "seed", "sync"]);
 
-/** A run that would undo or copy around a Move still owed its finish, or destroy the copy it finishes on. */
+/**
+ * A run that would undo or copy around a Move still owed its finish, or destroy the copy it finishes on. That copy is
+ * known by its Machine's id, since the Server may be renamed; the recorded name stands in while the Cluster is silent.
+ */
 const refusedWhileOwed = Effect.fn("VolumeRun.refusedWhileOwed")(function* (input: VolumeLaneInput, pending: Owed) {
   if (OWED_KINDS.has(input.kind)) return true;
   if (input.kind !== "delete_mirror") return false;
-  return input.args.slot === null || input.args.slot === (yield* laneTarget(pending));
+  const { slot } = input.args;
+  if (slot === null) return true;
+  const named = (yield* namedMachines(pending.organizationId)).find((machine) => machine.name === slot);
+  return named === undefined ? slot === (yield* laneTarget(pending)) : named.id === pending.current;
 });
 
 const owedRefusal = Effect.fn("VolumeRun.owedRefusal")(function* (pending: Owed) {
-  const target = (yield* laneTarget(pending)) ?? "its new Server";
+  const { name } = yield* machineNamed(pending.organizationId, pending.current);
+  const target = name ?? (yield* laneTarget(pending)) ?? "its new Server";
   const message = `${pending.volumeName} finishes on ${target}; ployz volume release ${pending.volumeName} finishes it now`;
   return { code: "conflict", message, details: { run: volumeRunView(pending) } } satisfies StoreRefusal;
 });
