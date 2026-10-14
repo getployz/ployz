@@ -571,7 +571,7 @@ describe("volume runs", () => {
 
       const swept = await runEffect(closeStaleVolumeRuns(lookup));
 
-      expect(swept).toEqual({ not_started: 1, closed: 4 });
+      expect(swept).toEqual({ not_started: 1, unheld: 0, closed: 4 });
       expect(looked.sort()).toEqual(["r-cancelled", "r-completed", "r-failed", "r-missing", "r-running"]);
       expect(Object.fromEntries((await rows()).map((row) => [row.id.slice(-2), row.state]))).toEqual({
         "01": "not_started", "02": "requested", "03": "lost", "04": "failed", "05": "cancelled", "06": "lost", "07": "running", "08": "running",
@@ -1215,7 +1215,7 @@ describe("volume runs", () => {
 
       const swept = await runEffect(closeStaleVolumeRuns(() => Effect.succeed("running" as const)));
 
-      expect(swept).toEqual({ not_started: 1, closed: 0 });
+      expect(swept).toEqual({ not_started: 1, unheld: 0, closed: 0 });
       expect(await byVolume()).toEqual({ "v-old": ["not_started", "event never delivered"], "v-fresh": ["requested", null] });
     });
 
@@ -1228,7 +1228,7 @@ describe("volume runs", () => {
 
       const swept = await runEffect(closeStaleVolumeRuns((runId) => Effect.succeed(runId === "r-over" ? "cancelled" as const : "running" as const)));
 
-      expect(swept).toEqual({ not_started: 0, closed: 1 });
+      expect(swept).toEqual({ not_started: 0, unheld: 0, closed: 1 });
       expect(await lane("v-over")).toEqual([
         { kind: "move", state: "cancelled", phase: "warm", current: null, epoch: null },
         { kind: "release", state: "requested", phase: "warm", current: null, epoch: null },
@@ -1259,7 +1259,7 @@ describe("volume runs", () => {
 
       const swept = await runEffect(closeStaleVolumeRuns(() => Effect.succeed("failed" as const)));
 
-      expect(swept).toEqual({ not_started: 0, closed: 2 });
+      expect(swept).toEqual({ not_started: 0, unheld: 0, closed: 2 });
       expect(await lane("v-took")).toEqual([
         { kind: "deploy", state: "failed", phase: "warm", current: null, epoch: null },
         { kind: "move", state: "requested", phase: "warm", current: null, epoch: null },
@@ -1267,7 +1267,19 @@ describe("volume runs", () => {
       expect(await lane("v-plain")).toEqual([{ kind: "deploy", state: "failed", phase: "warm", current: null, epoch: null }]);
       expect(send).toHaveBeenCalledTimes(1);
       expect(send).toHaveBeenCalledWith(expect.objectContaining({ name: "volume/run.requested", data: expect.objectContaining({ volumeId: "v-took" }) }));
-      expect(await runEffect(closeStaleVolumeRuns(() => Effect.succeed("failed" as const)))).toEqual({ not_started: 0, closed: 0 });
+      expect(await runEffect(closeStaleVolumeRuns(() => Effect.succeed("failed" as const)))).toEqual({ not_started: 0, unheld: 0, closed: 0 });
+    });
+    it("clears the stamps of a Deploy whose Inngest run is over, and keeps a live one's and one it cannot look up", async () => {
+      await insert("v-over", "done", "r-mirror", old);
+      await insert("v-live", "done", "r-mirror", old);
+      await insert("v-unknown", "done", "r-mirror", old);
+      await harness.pool.query("update volume_run set held_by = case volume_id when 'v-over' then 'd-over' when 'v-live' then 'd-live' else 'd-unknown' end");
+
+      const swept = await runEffect(closeStaleVolumeRuns((runId) => runId === "d-unknown" ? Effect.fail("unreachable") : Effect.succeed(runId === "d-over" ? "completed" as const : "running" as const)));
+
+      expect(swept).toEqual({ not_started: 0, unheld: 1, closed: 0 });
+      expect(Object.fromEntries((await harness.pool.query("select volume_id, held_by from volume_run")).rows.map((row: { volume_id: string; held_by: string | null }) => [row.volume_id, row.held_by])))
+        .toEqual({ "v-over": null, "v-live": "d-live", "v-unknown": "d-unknown" });
     });
   });
 
@@ -2727,6 +2739,75 @@ describe("volume runs", () => {
       expect(await request({ kind: "move", args: { to: "fsn-2" } })).toMatchObject({ ok: false, busy: expect.objectContaining({ kind: "deploy", args: expect.objectContaining({ deployment: "d-2" }) }) });
       expect(await runEffect(finishDeployVolumes("deploy-2", "done"))).toEqual({ ended: 0, requeued: [], refused: [] });
       expect(await lanes()).toEqual([]);
+    });
+
+    describe("a lane the Deploy places beside, which ends while the Deploy runs", () => {
+      const deploying = { ok: false, refusal: { code: "conflict", message: "data is deploying; the Deploy ends its run" } } as const;
+      const end = (id: string) => harness.pool.query("update volume_run set state = 'done', finished_at = now() where id = $1", [id]);
+      const moves = async () => (await lanes()).filter((lane) => lane.kind === "move");
+
+      it("a mirror: a Move, a release or a staged placement asked after it ends is refused, and leaves no row", async () => {
+        const mirroring = await requested({ kind: "mirror", args: { to: "fsn-2" } });
+        expect(await place()).toEqual([]);
+        expect(await request({ kind: "move", args: { to: "fsn-2" } })).toMatchObject({ ...deploying, busy: expect.objectContaining({ id: mirroring.id, kind: "mirror" }) });
+
+        await end(mirroring.id);
+        send.mockClear();
+
+        for (const end of [undefined, "yielded"] as const) {
+          expect(await runEffect(requestVolumeRun({ userId, organizationId }, { volumeId, environment, kind: "move", args: { to: "fsn-2" } }, { end }))).toMatchObject({
+            ...deploying, refusal: { ...deploying.refusal, details: { run: expect.objectContaining({ id: mirroring.id }) } }, busy: expect.objectContaining({ id: mirroring.id }),
+          });
+        }
+        expect(await request({ kind: "release", args: {} })).toMatchObject(deploying);
+        expect(await lanes()).toMatchObject([{ id: mirroring.id, kind: "mirror", state: "done" }]);
+        expect(send).not.toHaveBeenCalled();
+
+        expect(await finish()).toEqual({ ended: 0, requeued: [], refused: [] });
+        expect(await requested({ kind: "move", args: { to: "fsn-2" } })).toMatchObject({ kind: "move", state: "requested" });
+      });
+
+      it("a committed Move the Deploy follows: a Move asked after it ends is refused until the Deploy finishes", async () => {
+        afterCut();
+        const committed = await moving("committed");
+        expect(await place()).toMatchObject([{ kind: "follow", run: { id: committed.id } }]);
+
+        await end(committed.id);
+
+        expect(await request({ kind: "move", args: { to: "fsn-1" } })).toMatchObject({ ...deploying, busy: expect.objectContaining({ id: committed.id, kind: "move" }) });
+        expect(await moves()).toMatchObject([{ id: committed.id, state: "done" }]);
+        expect(send).not.toHaveBeenCalled();
+
+        expect(await finish()).toEqual({ ended: 0, requeued: [], refused: [] });
+        expect(await requested({ kind: "move", args: { to: "fsn-1" } })).toMatchObject({ kind: "move", state: "requested" });
+      });
+
+      it("another Deploy places over the stamp and takes it, so the Volume stays held until that Deploy finishes", async () => {
+        const mirroring = await requested({ kind: "mirror", args: { to: "fsn-2" } });
+        await place();
+
+        expect(await runEffect(placeDeployVolumes(organizationId, "env-1", "d-2", "deploy-2"))).toEqual([]);
+        expect(await finish()).toEqual({ ended: 0, requeued: [], refused: [] });
+        await end(mirroring.id);
+        expect(await request({ kind: "move", args: { to: "fsn-2" } })).toMatchObject({ ...deploying, busy: expect.objectContaining({ id: mirroring.id }) });
+
+        expect(await runEffect(placeDeployVolumes(organizationId, "env-1", "d-3", "deploy-3"))).toEqual([]);
+        expect(await lanes()).toMatchObject([{ id: mirroring.id, state: "done" }, { kind: "deploy", state: "running", inngest_run_id: "deploy-3", args: { hold: true } }]);
+        expect(await runEffect(finishDeployVolumes("deploy-3", "done"))).toEqual({ ended: 0, requeued: [], refused: [] });
+        expect(await request({ kind: "move", args: { to: "fsn-2" } })).toMatchObject({ ...deploying, busy: expect.objectContaining({ id: mirroring.id }) });
+
+        expect(await runEffect(finishDeployVolumes("deploy-2", "done"))).toEqual({ ended: 0, requeued: [], refused: [] });
+        expect(await requested({ kind: "move", args: { to: "fsn-2" } })).toMatchObject({ kind: "move", state: "requested" });
+      });
+
+      it("a Deploy's own stamp on the Volume refuses none of the moves it requests again", async () => {
+        const taken = await moving();
+        await place();
+        await harness.pool.query("update volume_run set held_by = $2 where id = $1", [taken.id, DEPLOY]);
+
+        expect(await finish()).toEqual({ ended: 1, requeued: [expect.any(String)], refused: [] });
+        expect(await moves()).toMatchObject([{ id: taken.id, state: "yielded" }, { state: "requested", args: { to: "fsn-2" } }]);
+      });
     });
 
     it("with a delete_mirror lane: plain beside it, no hold and no Floor call", async () => {
