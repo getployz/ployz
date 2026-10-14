@@ -43,12 +43,26 @@ const currentConsent = (adapter: Adapter, grant: Grant) =>
 
 const revoked = () => new APIError("BAD_REQUEST", { error: "invalid_grant", error_description: "the connection was revoked" });
 
+/**
+ * The grant a token request may mint under, bound by the `/oauth2/token` before hook. better-auth merges a hook's
+ * returned `context` onto the endpoint context, and the provider hands that same context to claim extensions, so the
+ * binding travels with the request and nothing else.
+ */
+const BOUND_GRANT = "ployzBoundGrant";
+const BoundGrant = Schema.Struct({ [BOUND_GRANT]: Schema.String });
+const boundGrant = (ctx: OAuthClaimExtensionInput["ctx"]) =>
+  Option.map(Schema.decodeUnknownOption(BoundGrant)(ctx), (bound) => bound[BOUND_GRANT]);
+
 // The consent row's id names the grant, so revoking it and connecting again yields a new id the old token can't carry.
-// No consent means the grant was revoked, so a code or refresh token from it mints nothing, not even a refresh token.
+// A request mints only under the grant the hook bound to its credential. A request the hook bound nothing for mints
+// nothing: for the code and refresh grants that means no credential row stood, which the provider refuses first anyway,
+// and this Cloud issues no other token with a user and Organization behind it.
 const grantClaims = async ({ ctx, user, client, referenceId }: OAuthClaimExtensionInput) => {
   if (user === undefined || user === null || referenceId === undefined) return {};
+  const bound = boundGrant(ctx);
+  if (Option.isNone(bound)) throw revoked();
   const consent = await currentConsent(ctx.context.adapter, { clientId: client.clientId, userId: user.id, referenceId });
-  if (consent === null) throw revoked();
+  if (consent === null || consent.id !== bound.value) throw revoked();
   return { org: referenceId, grant: consent.id };
 };
 
@@ -91,7 +105,8 @@ const DeleteConsent = Schema.Struct({ id: Schema.String });
 /**
  * Every credential belongs to the grant that stood when it was made. Disconnecting deletes that consent, and connecting
  * again makes a newer one, so a code or refresh token older than the current consent is from a revoked grant and mints
- * nothing. Timestamps are whole seconds, so only a strictly older credential is refused.
+ * nothing. Timestamps are whole seconds, so only a strictly older credential is refused. The consent that passes is
+ * bound to the request, so a disconnect and reconnect while the request is in flight can't hand it the newer grant.
  */
 const bindCredentialsToGrant = {
   id: "ployz-bind-credentials-to-grant",
@@ -105,7 +120,8 @@ const bindCredentialsToGrant = {
           const credential = await presented(ctx.context.adapter, request.value);
           if (credential === undefined) return;
           const consent = await currentConsent(ctx.context.adapter, credential);
-          if (consent !== null && seconds(credential.createdAt) < seconds(consent.createdAt)) throw revoked();
+          if (consent === null || seconds(credential.createdAt) < seconds(consent.createdAt)) throw revoked();
+          return { context: { [BOUND_GRANT]: consent.id } };
         }),
       },
       {

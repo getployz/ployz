@@ -1,7 +1,9 @@
 import { createHash, randomBytes } from "node:crypto";
 import { it } from "@effect/vitest";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
-import { sql } from "drizzle-orm";
+import { sql, type Table } from "drizzle-orm";
+import type { NodePgDatabase } from "drizzle-orm/node-postgres";
+import type { PgAsyncSelectBuilder, PgTable, SelectedFields } from "drizzle-orm/pg-core";
 import { Effect, Fiber, Layer, Schedule, Schema } from "effect";
 import { afterEach, expect, vi } from "vitest";
 import { connectAgent } from "#/modules/agent/connect.server";
@@ -11,10 +13,10 @@ import type { PolarService } from "#/modules/billing/polar-provider.server";
 import type { Caller } from "#/modules/identity/actor";
 import type { JsonObject } from "#/db/tables";
 import { oauthConsent, oauthRefreshToken } from "#/modules/identity/oauth-tables";
-import { member } from "#/modules/identity/tables";
+import { member, verification } from "#/modules/identity/tables";
 import { REQUEST_KEY_HEADER } from "#/modules/operations/keyed.server";
 import { Auth, AuthLive } from "#/server/auth.server";
-import { Database } from "#/server/database.server";
+import { BetterAuthDatabase, Database } from "#/server/database.server";
 import { acmeWeb, enrollStoreServer, seedStoreGitService, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
 
 const origin = "http://localhost:3000";
@@ -55,10 +57,61 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+type Hold = { readonly table: Table; skip: number; readonly reached: () => void; readonly wait: Promise<void> };
+let held: Hold | undefined;
+
+/** Pause here when a test holds this read of `table`, until it releases it. */
+const holdOf = async (table: Table) => {
+  const hold = held;
+  if (hold === undefined || hold.table !== table) return;
+  if (hold.skip > 0) {
+    hold.skip -= 1;
+    return;
+  }
+  held = undefined;
+  hold.reached();
+  await hold.wait;
+};
+
+/** The real better-auth database with every table read able to pause mid-request, so a test can interleave a disconnect. */
+const holdableDatabase = (drizzle: NodePgDatabase): NodePgDatabase => {
+  function select(): PgAsyncSelectBuilder<undefined>;
+  function select<T extends SelectedFields>(fields: T): PgAsyncSelectBuilder<T>;
+  function select(fields?: SelectedFields) {
+    const builder = fields === undefined ? drizzle.select() : drizzle.select(fields);
+    const from = (source: PgTable) => {
+      const query = builder.from(source);
+      const execute = query.execute.bind(query);
+      query.execute = async () => {
+        await holdOf(source);
+        return execute();
+      };
+      return query;
+    };
+    return Object.create(builder, { from: { value: from } });
+  }
+  return Object.create(drizzle, { select: { value: select } });
+};
+const HoldableBetterAuthDatabase = Layer.effect(
+  BetterAuthDatabase,
+  Effect.map(BetterAuthDatabase, ({ drizzle }) => ({ drizzle: holdableDatabase(drizzle) })),
+);
+
+/** Hold the next read of `table` after `skip` earlier ones, until `release`; `reached` resolves once it's held. */
+const holdRead = (table: Table, skip = 0) => {
+  let reached!: () => void;
+  let release!: () => void;
+  const ready = new Promise<void>((resolve) => { reached = resolve; });
+  const wait = new Promise<void>((resolve) => { release = resolve; });
+  held = { table, skip, reached, wait };
+  return { reached: Effect.promise(() => ready), release: Effect.sync(release) };
+};
+
 /** A Cloud, hosted or self-hosted, with every route the remote endpoint answers on, run as a browser or agent would. */
 const cloudOf = Effect.fn(function* (hosted: boolean) {
   const cloud = yield* storeTestCloud(hosted ? { env: HOSTED_ENV, polar: hostedPolar } : {});
-  const services = yield* Layer.build(Layer.merge(AuthLive.pipe(Layer.provide(cloud)), cloud));
+  const auth = AuthLive.pipe(Layer.provide(HoldableBetterAuthDatabase), Layer.provide(cloud));
+  const services = yield* Layer.build(Layer.merge(auth, cloud));
   const run = Effect.runPromiseWith(services);
   const provided = <A, E>(effect: Effect.Effect<A, E, Layer.Success<typeof cloud> | Auth>) => effect.pipe(Effect.provide(services));
   return { run, provided };
@@ -439,6 +492,44 @@ it.live("a code redeemed while disconnected yields no refresh token that works a
 
     if (minted !== undefined) expect((yield* refresh(shop, clientId, minted)).status).toBe(400);
     expect(redeemed.status).toBe(400);
+  }).pipe(Effect.scoped), 30_000);
+
+/**
+ * A token request that passed the hook's check but hasn't consumed its credential yet, held at the provider's own read
+ * of it, with Bo disconnecting and connecting again meanwhile. The hook's own read of the credential row comes first,
+ * so the held read is the second one on that table.
+ */
+const resumedAfterReconnect = Effect.fn(function* (shop: Shop, clientId: string, kind: "code" | "refresh") {
+  const old = yield* connectTokens(shop, clientId);
+  const pending = yield* issueCode(shop, clientId);
+  yield* aSecondLater;
+  const request = kind === "code"
+    ? { hold: holdRead(verification, 1), send: redeem(shop, pending) }
+    : { hold: holdRead(oauthRefreshToken, 1), send: refresh(shop, clientId, old.refresh_token ?? expect.fail("connect issued no refresh token")) };
+  const inFlight = yield* Effect.forkScoped(request.send);
+  yield* request.hold.reached;
+
+  expect((yield* disconnect(shop)).status).toBe(200);
+  yield* aSecondLater;
+  const renewed = yield* connectTokens(shop, clientId);
+  yield* request.hold.release;
+  const answered = yield* Fiber.join(inFlight);
+  expect((yield* raw(shop, renewed.access_token)).status).toBe(200);
+  return answered;
+});
+
+it.live("a redemption held after its check, resumed after a disconnect and reconnect, mints nothing", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const answered = yield* resumedAfterReconnect(shop, yield* registerAgent(shop), "code");
+    expect(answered).toEqual({ status: 400, body: { error: "invalid_grant", error_description: "the connection was revoked" } });
+  }).pipe(Effect.scoped), 30_000);
+
+it.live("a refresh held after its check, resumed after a disconnect and reconnect, mints nothing", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const answered = yield* resumedAfterReconnect(shop, yield* registerAgent(shop), "refresh");
+    expect(answered).toEqual({ status: 400, body: { error: "invalid_grant", error_description: "the connection was revoked" } });
   }).pipe(Effect.scoped), 30_000);
 
 it.live("disconnecting a consent id that isn't one answers 404", () =>
