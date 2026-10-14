@@ -11,10 +11,10 @@ export const createRefreshVolumeMirrors = (inngest: PloyzInngest, runEffect: Eff
     { id: "refresh-volume-mirrors", retries: 1, triggers: [{ cron: "*/15 * * * *" }], concurrency: [{ limit: 1 }] },
     async ({ step }) => {
       const organizations = await step.run("list-organizations", () => runEffect(organizationsWithMachines()));
-      let requested = 0;
+      let synced = 0;
       for (const organizationId of organizations) {
-        requested += (await step.run(`refresh-${organizationId}`, () => runEffect(refreshMirrors(organizationId, null)))).length;
+        synced += (await step.run(`refresh-${organizationId}`, () => runEffect(refreshMirrors(organizationId, null)))).length;
       }
-      return { requested };
+      return { synced };
     },
   );

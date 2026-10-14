@@ -808,7 +808,7 @@ expect: Revision | null, };
 
 export type CopyObservation = { copies: Array<ObservedCopy>, unanswered: Array<MachineId>, };
 
-export type CopyRefusal = "mismatch" | "no_transition" | "busy" | "no_capacity" | "behind" | "written" | "no_source";
+export type CopyRefusal = "mismatch" | "no_transition" | "busy" | "no_capacity" | "behind" | "written" | "no_source" | "stale";
 
 export type CopyRole = "writer" | "slot" | "switching";
 
@@ -4084,11 +4084,15 @@ remove_on_close: boolean | null,
  */
 include_bots: boolean | null, };
 
-export type SetVolumeCopyRefused = { reason: CopyRefusal, copy: VolumeCopy | null, };
+export type SetVolumeCopyRefused = { reason: CopyRefusal, copy: VolumeCopy | null,
+/**
+ * The floor that refused a Stale request.
+ */
+floor?: VolumeGen, };
 
 export type SetVolumeCopyReply = { copy: VolumeCopy | null, };
 
-export type SetVolumeCopyRequest = { name: DockerVolumeName, expect: ExpectedCopy, want: WantedCopy, };
+export type SetVolumeCopyRequest = { name: DockerVolumeName, expect: ExpectedCopy, want: WantedCopy, gen?: VolumeGen, };
 
 export type SetVolumeSharedWrites = {
 /**
@@ -4579,6 +4583,8 @@ export type VolumeCopyView = { copy: VolumeCopy | null, };
 
 export type VolumeDriver = { name: string, options: { [key in string]: string }, };
 
+export type VolumeGen = number;
+
 export type VolumeId = string;
 
 export type VolumeKind = { "kind": "docker", } | { "kind": "provisioned", maximumBytes: ProvisionedVolumeMaximumBytes, };
@@ -4774,7 +4780,7 @@ volumes: Array<VolumeListing>, };
 
 export type Waiting = { server: string, why: string, fix: Fix, };
 
-export type WantedCopy = { "kind": "writer", at: SnapshotGuid, epoch: WriterEpoch, start: CopyStart | null, } | { "kind": "mirror", from: string | null, target: SnapshotName, drain: Drain, } | { "kind": "snapshot", name: SnapshotName, } | { "kind": "forget" };
+export type WantedCopy = { "kind": "writer", at: SnapshotGuid, epoch: WriterEpoch, start: CopyStart | null, } | { "kind": "mirror", from: string | null, target: SnapshotName, drain: Drain, } | { "kind": "snapshot", name: SnapshotName, } | { "kind": "forget" } | { "kind": "floor" };
 
 export type WireGuardPublicKey = Array<number>;
 

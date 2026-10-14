@@ -15,6 +15,11 @@ check "instance started" "[ -f '$run/seed.json' ] && [ -f '$run/env' ]" "run scr
 check "postgres container up" "[ \"\$(docker inspect -f '{{.State.Running}}' $name)\" = true ]" "run scripts/verify/up.sh"
 check "vite running" "kill -0 \$(cat '$run/vite.pid')" "see $run/vite.log"
 check "fake Hosted DNS running" "kill -0 \$(cat '$run/hosted-dns.pid')" "see $run/hosted-dns.log"
+if [ ! -f "$run/uptime" ] && kill -0 "$(cat "$run/seed-uptime.pid" 2>/dev/null)" 2>/dev/null; then
+  echo "wait  uptime seeding (Monitoring tab) -> until [ -s $run/uptime ]; do sleep 1; done"
+else
+  check "uptime seeded (Monitoring tab)" "[ \"\$(cat '$run/uptime')\" = ok ]" "see $run/seed-uptime.log"
+fi
 if [ -f "$run/inngest.pid" ]; then
   check "inngest dev running" "kill -0 \$(cat '$run/inngest.pid')" "see $run/inngest.log"
   check "worker connected to inngest" "[ \"\$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:\$(cat '$run/worker.port')/ready)\" = 200 ]" "see $run/worker.log"

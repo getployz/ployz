@@ -152,6 +152,19 @@ impl MachineService {
         request: &impl serde::Serialize,
     ) -> Result<Response<OpaquePayload>, Status> {
         let _guard = self.switch_mutation.lock().await;
+        self.volume_verb::<T>(verb, route, request).await
+    }
+
+    /// A Volume verb that takes no switch lock. A read may land beside a cut's drain: the
+    /// write that follows it rechecks the copy under the lock, so a stale view ends in a
+    /// refusal, never a wrong flip.
+    #[allow(clippy::result_large_err)]
+    async fn volume_verb<T: serde::de::DeserializeOwned + Into<RpcResponse>>(
+        &self,
+        verb: &'static str,
+        route: &str,
+        request: &impl serde::Serialize,
+    ) -> Result<Response<OpaquePayload>, Status> {
         if let Err(error) = self.require_joined() {
             return respond(error);
         }
@@ -335,7 +348,7 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::InspectVolumeCopy>(request)?;
-        self.switch_verb::<ployz_core::VolumeCopyView>(
+        self.volume_verb::<ployz_core::VolumeCopyView>(
             "InspectVolumeCopy",
             "Volume.Inspect",
             &request,

@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::{
-    ConfigError, FileMode, ServiceConfig, ServiceEnvValue, ServiceHealthcheck, ServiceSource,
-    ValuePart, ValuePartOwner, VolumeKind, parse_service_config,
+    BuildMethod, ConfigError, FileMode, ServiceConfig, ServiceEnvValue, ServiceHealthcheck,
+    ServiceSource, ValuePart, ValuePartOwner, VolumeKind, parse_service_config,
 };
 use crate::{
     ByteQuantity, ConfigFileName, ConfigMount, ConfigName, ConfigSpec, ConfiguredHealthcheck,
@@ -79,6 +79,11 @@ pub struct LowerDeploymentSnapshot {
     /// Run in order after the service's own pre-deploy command, in the same hook.
     #[serde(default)]
     pub setup_commands: Vec<String>,
+    /// How Ployz builds the image its source was replaced with; None when the Service
+    /// pulls its authored image. A Railpack image keeps its shell ENTRYPOINT for the
+    /// start command, any other has the start command replace it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub built_with: Option<BuildMethod>,
 }
 
 /// One Volume the Namespace holds.
@@ -128,7 +133,8 @@ impl std::fmt::Debug for LowerDeploymentConfigFile {
 /// Lower captured authored settings and adapter-supplied image/environment inputs.
 /// No source lookup, build, provider execution, or Cluster observation occurs here.
 /// Missing PORT defaults to 8080; authored values take precedence, including invalid ones.
-/// Domains without an explicit target and HTTP healthchecks use that same container PORT.
+/// Domains without an explicit target use that same container PORT. An HTTP healthcheck probes
+/// the port every domain sends traffic to; with no domains, or domains on different ports, PORT.
 /// Each mounted Config file mounts read-only at `<dir>/<file>`, named `<config>/<file>`.
 ///
 /// # Errors
@@ -174,13 +180,22 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
         environment
             .entry("PORT".into())
             .or_insert_with(|| DEFAULT_SERVICE_PORT.to_string());
+        let route_ports = config
+            .routes
+            .iter()
+            .map(|route| target_port(route.target_port, &environment, "routes"))
+            .collect::<Result<Vec<_>, _>>()?;
         let healthcheck = match &config.healthcheck {
             ServiceHealthcheck::None => Some(HealthcheckSpec::Disabled),
             ServiceHealthcheck::Http {
                 path,
                 timeout_seconds,
             } => {
-                let port = target_port(None, &environment, "healthcheck")?;
+                // Cloud always sets PORT, so a shared domain target better says where the app listens.
+                let port = match route_ports.split_first() {
+                    Some((first, rest)) if rest.iter().all(|port| port == first) => *first,
+                    _ => target_port(None, &environment, "healthcheck")?,
+                };
                 Some(HealthcheckSpec::Http(HttpHealthcheck {
                     path: path.clone(),
                     port,
@@ -299,11 +314,11 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
             }
         }
         let mut ports = Vec::new();
-        for route in &config.routes {
+        for (route, container_port) in config.routes.iter().zip(route_ports) {
             ports.push(PortPublication::Ingress {
                 hostname: IngressHost::parse(route.hostname.clone()).map_err(lowering_error)?,
                 load_balancer_port: std::num::NonZeroU16::new(443).expect("HTTPS port is nonzero"),
-                container_port: target_port(route.target_port, &environment, "routes")?,
+                container_port,
                 http_protocol: HttpProtocol::Https,
             });
         }
@@ -350,6 +365,16 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
                 })
             })
             .transpose()?;
+        // Railway's start command rules: Railpack's `/bin/bash -c` ENTRYPOINT runs the
+        // command as one shell string; any other image has it replace ENTRYPOINT and
+        // CMD, split into argv without a shell. An empty split keeps the image's own.
+        let (entrypoint, command) = match config.start_command.as_deref() {
+            None => (Vec::new(), Vec::new()),
+            Some(start) if snapshot.built_with == Some(BuildMethod::Railpack) => {
+                (Vec::new(), vec![start.to_owned()])
+            }
+            Some(start) => (super::split_start_command(start)?, Vec::new()),
+        };
         let mut spec = RequestedServiceSpec {
             name: config.private_dns,
             mode: ServiceMode::Replicated {
@@ -357,11 +382,7 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
             },
             container: ServiceContainerSpec {
                 image: image.clone(),
-                command: config
-                    .start_command
-                    .as_deref()
-                    .map(command)
-                    .unwrap_or_default(),
+                command,
                 environment,
                 pull_policy: PullPolicy::Missing,
                 restart,
@@ -374,7 +395,7 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
                         .map_err(lowering_error)?,
                     ..Default::default()
                 },
-                entrypoint: Vec::new(),
+                entrypoint,
                 labels: crate::ContainerLabels::parse(
                     snapshot
                         .service_id

@@ -3,7 +3,17 @@
 
   python3 scripts/test-verify-volume-move.py catalog
   python3 scripts/test-verify-volume-move.py lease
-  python3 scripts/test-verify-volume-move.py run <manifest> [--soak [--size-gb 8]]
+  python3 scripts/test-verify-volume-move.py run <manifest> [--case NAME ...] [--soak [--size-gb 8]]
+
+`run` plays every case below in order, or only the named ones:
+  clean             a move with no fault
+  deploy-plain      a Deploy with no move: it lands this case's version on the writer
+  deploy-warm       a Deploy while B's warm pull is held: the move yields, the app stays on A, one requeue
+  deploy-after-cut  a Deploy after the cut, before commit: the move yields, the app goes back to A, one requeue
+  deploy-committed  a Deploy after commit: it follows the move to B, no requeue
+  undo-before-cut   `volume release` while warm: the move is cancelled, the app stays on A
+  undo-after-cut    `volume release` after commit: refused, the move finishes on B
+  kill-*            the daemon killed inside each copy cell, one kill per cell
 
 `run` needs a ready two-Machine Incus vc with Cloud and verify faults:
   PLOYZ_VERIFY_CARGO_ARGS='--features ployz/verify-faults,ployzd/verify-faults' \\
@@ -53,13 +63,28 @@ LEASE_PATTERNS = {
 }
 LEASE_FILE = "le" + "ase.rs"
 
+SERVICE = "db"
+VOLUME = "data"
+IMAGE = "postgres:16-alpine"
+# A SetVolumeCopy held 90 s outlasts Cloud's 10 s call, but Inngest retries the step for about 2.5 min, so the move
+# survives the hold.
+HOLD = 90
+# A takeover ends the taken row in the same transaction, so a row still open this long after it never will.
+TAKEN_LIMIT = 60
+TAKEN = {"yielded", "cancelled"}
+MOUNT_ERRORS = ("Provisioned Volume status has an invalid mountpoint", "error while mounting volume")
+
 # `machine` is the side the effect runs on: the Volume's writer before the case, or the other Machine.
 # `fault` is a daemon fault point, set on `fault_on` or on both Machines; only the side that serves it fires it.
+# A `delay-rpc` holds every request to its cell, and the warm rounds and the final pull send the same one, so
+# `arm="stopped"` arms it only once the first run's cut line is credited, past the warm rounds.
 # `mirror` is whether the other Machine must hold a mirror before the case starts.
 # `trigger` says when `action` runs: once a fault line appears in a journal, once `zfs receive` runs on
-# `machine`, once the first run's cut has stopped every holder of the Volume on the writer, or on the `nth`
-# fault line `machine` logs after that. A `delay-rpc` names one cell, so it never slows the pull polls of another
-# step past Cloud's timeout.
+# `machine`, once the first run's cut has stopped every holder of the Volume on the writer, or on the first
+# fault line `machine` logs for the first run's final pull after that cut; `committed` reads the first run's row
+# in Cloud's Postgres. A `delay-rpc` names one cell, so it never slows the pull polls of another step past Cloud's
+# timeout.
+# `expect` names what `judge` checks beyond `assess`; a side name in it means that side's Machine.
 KILLS = [
     # A restart check, not a mid-effect resume: the kill lands after the take, so the resend finds the snapshot and only prunes.
     dict(name="kill-snapshot", cell="Writer>Snapshot", step="1-rounds", op="move", machine="writer",
@@ -81,15 +106,35 @@ KILLS = [
          recover="rerun"),
 ]
 
+def held(case):
+    """Hold the case's cell for HOLD seconds on the destination, so the action provably lands inside it."""
+    transition = case["cell"].replace(">", "To")
+    return dict(case, fault_on="other", fault=f"delay-rpc:SetVolumeCopy.{transition}:{HOLD}", hold=HOLD)
+
+
 CASES = [
     dict(name="clean", cell=None, step="move", op="move", machine="writer", fault=None, trigger=None,
-         action="none", recover="rerun"),
-    dict(name="undo-before-cut", cell="Writer>Writer", step="3-cut", op="move", machine="writer",
-         fault_on="writer", fault="kill-daemon:SetVolumeCopy.WriterToMirror", trigger="fault", action="cancel",
-         recover="release"),
-    dict(name="undo-after-cut", cell="Mirror>Writer", step="5-writer", op="move", machine="other",
-         fault_on="other", fault="delay-rpc:SetVolumeCopy.MirrorToWriter:90", trigger="fault-after-stop",
-         action="cancel", recover="release"),
+         action="none", recover="rerun", expect=dict(move="done", writer="other")),
+    dict(name="deploy-plain", cell=None, step="deploy", op=None, machine="writer", fault=None, trigger=None,
+         action="deploy", recover="rerun", expect=dict(writer="writer", version=True)),
+    held(dict(name="deploy-warm", cell="Mirror>Mirror", step="1-rounds", op="move", machine="other",
+              mirror="present", trigger="fault", action="deploy", recover="rerun",
+              expect=dict(move="yielded", requeues=1, writer="other", on_writer=True, inside_hold=True,
+                          version=True))),
+    held(dict(name="deploy-after-cut", cell="Mirror>Mirror", step="4-final", op="move", machine="other",
+              arm="stopped", trigger="fault-after-stop", action="deploy", recover="rerun",
+              expect=dict(move="yielded", requeues=1, writer="other", on_writer=True, inside_hold=True,
+                          version=True))),
+    held(dict(name="deploy-committed", cell="Mirror>Writer", step="5-writer", op="move", machine="other",
+              trigger="committed", action="deploy", recover="rerun",
+              expect=dict(move="done", requeues=0, writer="other", version=True))),
+    held(dict(name="undo-before-cut", cell="Mirror>Mirror", step="1-rounds", op="move", machine="other",
+              mirror="present", trigger="fault", action="release", recover="release",
+              expect=dict(move="cancelled", release="done", writer="writer"))),
+    held(dict(name="undo-after-cut", cell="Mirror>Writer", step="5-writer", op="move", machine="other",
+              trigger="committed", action="release", recover="release",
+              expect=dict(move="done", requeues=0, writer="other",
+                          refusal=f"{VOLUME} is starting on {{other}}; it finishes there"))),
     *KILLS,
 ]
 
@@ -116,7 +161,7 @@ def soak_cases():
     return clean + faulted
 
 
-TERMINAL = {"done", "failed", "cancelled", "lost", "not_started"}
+TERMINAL = {"done", "failed", "cancelled", "yielded", "lost", "not_started"}
 AUXILIARY = "Failed to send signal SIGKILL to auxiliary processes"
 BUSY_LIMIT = 180
 # The trigger window opens this long after the barrier restart returns. It is a hold, not a bound: Moby's
@@ -136,15 +181,22 @@ RESTART = (f"test -d {CGROUP} || {{ echo 'no cgroup v2 system.slice'; exit 1; }}
 # WriterToMirror logs this under the exclusive turn once every holder of the Volume stopped, naming the Volume and
 # the want's target snapshot (local_volume_copy.rs).
 CUT_LINE = "cut: holders stopped"
+# faults.rs logs this when a held verb resumes, with `by=disarm` or `by=limit` and the held verb's identity.
+RELEASE_LINE = "fault: releasing switch verb"
 SNAPSHOT_BOUND = 8
-SERVICE = "db"
-VOLUME = "data"
-IMAGE = "postgres:16-alpine"
+
+
+def fault_script(value):
+    """The file the daemons read a fault from, written whole so no check reads half a value."""
+    if not value:
+        return "rm -f /run/ployz/fault"
+    return (f"mkdir -p /run/ployz && printf '%s\\n' {shlex.quote(value)} > /run/ployz/fault.tmp "
+            "&& mv /run/ployz/fault.tmp /run/ployz/fault")
 
 
 def cut_of(line):
-    """The Volume and target a cut line names, or None for any other line."""
-    found = re.search(re.escape(CUT_LINE) + r" volume=(\S+) target=(\S+)", line)
+    """The Volume, target and gen a cut line names, or None for any other line."""
+    found = re.search(re.escape(CUT_LINE) + r" volume=(\S+) target=(\S+) gen=(\S+)", line)
     return found and found.groups()
 
 
@@ -157,7 +209,7 @@ def fault_fields(line):
 
 
 def arming(case, side):
-    """Each Machine's PLOYZD_FAULT for the case."""
+    """Each Machine's fault file value for the case."""
     if not case["fault"]:
         return {}
     targets = [side[case["fault_on"]]] if case.get("fault_on") else [side["writer"], side["other"]]
@@ -319,6 +371,44 @@ def assess(states, lost, *, bound=SNAPSHOT_BOUND):
     return failures
 
 
+def judge(result, side):
+    """The case's own expectations, beyond the one-writer health `assess` checks."""
+    expect, failures = result.get("expect", {}), []
+    move, action = result.get("run") or {}, result.get("acted") or {}
+    if "move" in expect and move.get("state") != expect["move"]:
+        failures.append(f"move {move.get('id')} is {move.get('state')}, expected {expect['move']}")
+    requeues = result.get("requeues", [])
+    if "requeues" in expect and len(requeues) != expect["requeues"]:
+        failures.append(f"{len(requeues)} requeued moves, expected {expect['requeues']}")
+    failures += [f"requeued move {row['id']} ended {row['state']}, expected done"
+                 for row in requeues if row.get("state") != "done"]
+    if "writer" in expect and result.get("final_writer") != side[expect["writer"]]:
+        failures.append(f"final writer {result.get('final_writer')}, expected {side[expect['writer']]}")
+    if action.get("case") == "deploy":
+        if action["exit_code"]:
+            failures.append(f"the Deploy exited {action['exit_code']}: {action['output'][-300:]}")
+        failures += [f"the Deploy printed '{error}': it met the Volume mid-cut" for error in action["mount_errors"]]
+        if expect.get("on_writer") and action["running_after"] != [side["writer"]]:
+            failures.append(f"after the Deploy {SERVICE} runs on {action['running_after']}, expected only {side['writer']}")
+        if expect.get("inside_hold") and result.get("released") != "disarm":
+            failures.append(f"the hold was released by {result.get('released')}, not the disarm after the Deploy: "
+                            "the Deploy did not land inside it")
+        if expect.get("version") and result.get("version") != result["name"]:
+            failures.append(f"{SERVICE} runs VC_DEPLOY={result.get('version')}, not this case's Deploy")
+    if action.get("case") == "release":
+        ended = next((row for row in result.get("later", []) if row["id"] == action["release"].get("id")),
+                     action["release"])
+        if "release" in expect and ended.get("state") != expect["release"]:
+            failures.append(f"release ended {ended.get('state')}, expected {expect['release']}")
+        if "refusal" in expect:
+            text = expect["refusal"].format(**side)
+            if ended.get("state") != "refused" or text not in json.dumps(ended.get("reply")):
+                failures.append(f"release on a committed lane was not refused with '{text}': {json.dumps(ended)[:300]}")
+            if action["changed"]:
+                failures.append(f"release on a committed lane changed rows: {action['changed']}")
+    return failures
+
+
 def read_acks(path):
     acks = []
     if not path or not Path(path).exists():
@@ -441,7 +531,7 @@ class VolumeMove:
 
     def setup(self):
         first, second = self.machines
-        # A run killed while armed leaves PLOYZD_FAULT behind, and the first case would fire it.
+        # A run killed while armed leaves the fault file behind, and the first case would fire it.
         if failed := self.fault(None, check=False):
             raise RuntimeError(f"disarming a leftover fault failed on {', '.join(failed)}")
         self.cli("server", "set", second, "--accepts-services=false")
@@ -508,10 +598,9 @@ class VolumeMove:
         return sorted(acked - {int(line) for line in result.stdout.split() if line.isdigit()})
 
     def fault(self, value, machine=None, check=True):
-        script = "touch /etc/default/ployz; sed -i '/^PLOYZD_FAULT=/d' /etc/default/ployz; "
-        if value:
-            script += f"echo {shlex.quote('PLOYZD_FAULT=' + value)} >> /etc/default/ployz; "
-        script += RESTART
+        """Arm or disarm without a restart: the daemons read the file on every check, and a restart would leave a
+        Machine unanswered mid-move."""
+        script = fault_script(value)
         targets = [machine] if machine else self.machines
         return [target for target in targets if self.sh(target, script, check=check).returncode]
 
@@ -535,46 +624,53 @@ class VolumeMove:
                                 line=message if isinstance(message, str) else ""))
         return entries
 
-    def epoch(self, run):
-        """The epoch Cloud recorded on run's row once its workflow took one. None before that, or when the read
-        fails."""
+    def marks(self, run):
+        """The epoch and gen Cloud recorded on run's row, as dict(epoch, gen). Gen is set when the row is inserted;
+        the epoch stays None until the workflow takes one, and both stay None when the read fails."""
         if run.get("id") not in self.epochs:
-            query = self.psql(f"select epoch from volume_run where id = '{run.get('id')}'")
-            if query.returncode or not query.stdout.strip().isdigit():
-                return None
-            self.epochs[run["id"]] = int(query.stdout.strip())
+            query = self.psql(f"select gen, coalesce(epoch, -1) from volume_run where id = '{run.get('id')}'")
+            fields = query.stdout.strip().split("|")
+            if query.returncode or len(fields) != 2 or not all(re.fullmatch(r"-?\d+", field) for field in fields):
+                return dict(epoch=None, gen=None)
+            gen, epoch = int(fields[0]), int(fields[1])
+            if epoch < 0:
+                return dict(epoch=None, gen=gen)
+            self.epochs[run["id"]] = dict(epoch=epoch, gen=gen)
         return self.epochs[run["id"]]
 
-    def want(self, case, epoch):
-        """The want fields a fault at case's step names for the first run's epoch, as field to pattern. A Forget
-        want carries no name, so it gives {} and the line is credited by Volume alone. None without an
-        epoch when the want needs one."""
+    def want(self, case, marks):
+        """The want fields a fault at case's step names for the first run, as field to pattern. Every want carries
+        the run's gen, so a Forget, which names nothing else, is still this run's. None without a mark the want
+        needs."""
+        epoch, gen = marks["epoch"], marks["gen"]
+        if gen is None:
+            return None
         verb = case["fault"].split(":")[1]
         patterns = {"Snapshot": {"snapshot": rf"w-{epoch}-\d+"},
                     "Mirror": {"target": f"f-{epoch}" if case["step"] in ("3-cut", "4-final") else rf"w-{epoch}-\d+"},
                     "Writer": {"epoch": str(epoch)}}
         destination = verb.rsplit("To", 1)[-1]
         if destination not in patterns:
-            return {}
-        return patterns[destination] if epoch is not None else None
+            return {"gen": str(gen)}
+        return dict(patterns[destination], gen=str(gen)) if epoch is not None else None
 
-    def its(self, case, epoch, line):
+    def its(self, case, marks, line):
         """The identity a fault line carries when it is the first run's: this Volume and the want its step implies.
         None for any other line. The verb needs no check: ployzd logs a fault line only for the armed verb."""
-        fields, want = fault_fields(line), self.want(case, epoch)
+        fields, want = fault_fields(line), self.want(case, marks)
         if fields is None or want is None or fields.get("volume") != self.physical:
             return None
         if not all(re.fullmatch(pattern, fields.get(key, "")) for key, pattern in want.items()):
             return None
-        return {key: fields[key] for key in ("volume", "target", "snapshot", "at", "epoch") if key in fields}
+        return {key: fields[key] for key in ("volume", "target", "snapshot", "at", "epoch", "gen") if key in fields}
 
-    def identity(self, case, epoch, line):
+    def identity(self, case, marks, line):
         if case["trigger"] != "stopped":
-            return self.its(case, epoch, line)
+            return self.its(case, marks, line)
         found = cut_of(line)
-        if epoch is None or found != (self.physical, f"f-{epoch}"):
+        if marks["epoch"] is None or found != (self.physical, f"f-{marks['epoch']}", str(marks["gen"])):
             return None
-        return dict(volume=found[0], target=found[1])
+        return dict(volume=found[0], target=found[1], gen=found[2])
 
     def receiving(self, machine, epoch):
         """The receiving trigger: a receive into this Volume's mirror while its slot parent names a round pull of the
@@ -593,19 +689,44 @@ class VolumeMove:
         return dict(machine=machine, kind="receiving", line=f"ployz:pull={lines[1]}", cursor=None, boot_id=None,
                     identity=dict(volume=self.physical, target=lines[1]), poll_end_mono=time.monotonic())
 
-    def trigger(self, case, side, epoch):
+    def committed(self, run):
+        """The committed trigger: the first run's own row, read now, records the committed phase while it still
+        runs. Cloud commits the move before it asks the new writer to start, so the action follows the commit."""
+        query = self.psql(f"select phase, state from volume_run where id = '{run.get('id')}'")
+        if query.returncode or query.stdout.strip() != "committed|running":
+            return None
+        return dict(machine=None, kind="committed", line=f"move {run['id']} phase committed state running",
+                    cursor=None, boot_id=None, identity=dict(run=run["id"], phase="committed"),
+                    poll_end_mono=time.monotonic())
+
+    def trigger(self, case, side, run):
         """The event the trigger credits, or None: the first entry after the barrier cursor whose identity is the
         first run's. Position in one Machine's journal orders it; across Machines, Cloud's step order does."""
+        if case["trigger"] == "committed":
+            return self.committed(run)
+        marks = self.marks(run)
         machine = side[case.get("trigger_machine", case["machine"])]
         if case["trigger"] == "receiving":
-            return self.receiving(machine, epoch)
+            return self.receiving(machine, marks["epoch"])
         entries = self.journal(machine)
         if entries is None:
             return None
         for entry in entries:
-            if identity := self.identity(case, epoch, entry["line"]):
+            if identity := self.identity(case, marks, entry["line"]):
                 return dict(machine=machine, kind=case["trigger"], line=entry["line"][:300], cursor=entry["cursor"],
                             boot_id=entry["boot_id"], identity=identity, poll_end_mono=time.monotonic())
+        return None
+
+    def released(self, case, run, event):
+        """How the credited hold ended: the `by` of the first release line after it with the same identity, or None
+        before one. The harness disarms only after the action returned, so `disarm` proves the hold outlasted it."""
+        entries = self.journal(event["machine"])
+        cursors = [entry["cursor"] for entry in entries or []]
+        if event["cursor"] not in cursors:
+            return None
+        for entry in entries[cursors.index(event["cursor"]) + 1:]:
+            if RELEASE_LINE in entry["line"] and self.its(case, self.marks(run), entry["line"]) == event["identity"]:
+                return fault_fields(entry["line"]).get("by")
         return None
 
     def busy_work(self, machine, op):
@@ -692,8 +813,8 @@ class VolumeMove:
             raise Skipped(f"could not list the Volume's runs before {op}")
         return run_rows(data)
 
-    def start_op(self, op, destination, arm=None, clean=False):
-        """Request op once the Volume is idle.
+    def start_op(self, op, destination, arm=None, clean=False, wait=True):
+        """Request op once the Volume is idle, or at once when wait is False.
 
         A clean start also waits out every admitted pull and zfs receive on every Machine, then restarts every
         Machine so no earlier work survives in a process, checks quiet again and marks since.
@@ -709,7 +830,7 @@ class VolumeMove:
         stale = set()
         clean = clean or bool(arm)
         while True:
-            holder = self.wait_idle(deadline) or holder
+            holder = (self.wait_idle(deadline) if wait else None) or holder
             if clean and not checked:
                 listed = self.listed_runs(op)
                 active = [row for row in listed if row.get("state") not in TERMINAL]
@@ -746,14 +867,14 @@ class VolumeMove:
                 if arm:
                     arm()
                     armed = True
-                    # A run that started and ended while arm() restarted the daemon may have fired the fault, and
-                    # wait_trigger would credit its fault line to this op.
+                    # A run that started and ended around arm() may have fired the fault, and wait_trigger would
+                    # credit its fault line to this op.
                     if others := [row for row in self.listed_runs(op) if row["id"] not in settled]:
                         holder = others[0]
                         skip = f"a run took the Volume while the fault was armed on {op}"
                         break
             code, data = self.cli(*args[op], check=False)
-            refused = busy(data)
+            refused = busy(data) if wait else None
             if refused and not (refused["id"] == "ended" and holder):
                 holder = refused
             if not refused:
@@ -823,7 +944,7 @@ class VolumeMove:
         return details["approval_id"]
 
     def wait_run(self, row, limit=1800):
-        if row.get("state") in TERMINAL | {"refused"}:
+        if row is None or row.get("state") in TERMINAL | {"refused"}:
             return row
         deadline = self.clock() + limit
         last = row
@@ -838,11 +959,25 @@ class VolumeMove:
         """row as Cloud lists it now, or row itself when the list does not hold it."""
         return next((found for found in self.runs() if found["id"] == row.get("id")), row)
 
+    def settle(self, known):
+        """Wait out every row Cloud started since the case began: requeues, and releases onFailure started."""
+        known, ended = set(known), []
+        while True:
+            rows = [row for row in self.runs() if row["id"] not in known]
+            if not rows:
+                self.sleep(4)
+                rows = [row for row in self.runs() if row["id"] not in known]
+                if not rows:
+                    return ended[::-1]
+            for row in rows:
+                known.add(row["id"])
+                ended.append(self.wait_run(row))
+
     def wait_trigger(self, case, row, side, limit=900):
         """The credited event, or None once the first run ends without one."""
         deadline = self.clock() + limit
         while self.clock() < deadline:
-            if credited := self.trigger(case, side, self.epoch(row)):
+            if credited := self.trigger(case, side, row):
                 return credited
             if self.row(row).get("state") in TERMINAL | {"refused"}:
                 return None
@@ -863,13 +998,27 @@ class VolumeMove:
         return self.runner(["docker", "exec", postgres, "psql", "-U", "postgres", "-d", "ployz_cloud", "-Atc", sql],
                            capture_output=True, text=True, timeout=60)
 
-    def inngest_run(self, row):
-        """Cloud records the Inngest run that claimed a request; a request no run picked up has none."""
-        sql = f"select inngest_run_id from volume_run where id = '{row['id']}'"
+    def query(self, sql):
         query = self.psql(sql)
         if query.returncode:
             raise RuntimeError(f"psql exited {query.returncode} on {sql!r}: {(query.stderr or '').strip()[:500]}")
         return query.stdout.strip()
+
+    def inngest_run(self, row):
+        """Cloud records the Inngest run that claimed a request; a request no run picked up has none."""
+        return self.query(f"select inngest_run_id from volume_run where id = '{row['id']}'")
+
+    def requeued(self, run):
+        """The moves Cloud requested again for run, as rows: a Deploy that took run stores run's args as its resume,
+        and its end requests a move with exactly those args, with no user, after the Deploy's own row."""
+        first = f"(select volume_id, args, gen from volume_run where id = '{run['id']}')"
+        rows = self.query(
+            "select again.id, again.state from volume_run again, " + first + " as first "
+            "where again.volume_id = first.volume_id and again.kind = 'move' and again.args = first.args "
+            "and again.requested_by_user_id is null and exists (select 1 from volume_run took "
+            "where took.volume_id = first.volume_id and took.kind = 'deploy' and took.args -> 'resume' = first.args "
+            "and took.gen > first.gen and took.gen < again.gen) order by again.gen")
+        return [dict(id=id, state=state) for id, state in (line.split("|", 1) for line in rows.splitlines())]
 
     def unclaimed(self, run):
         """A request no Inngest run claimed sent nothing to a Machine, so whatever the trigger saw is another run's."""
@@ -909,9 +1058,52 @@ class VolumeMove:
         return [dict(kill="runner", pid=old, alive_before=alive_before, alive_after_kill=alive_after, new_pid=new,
                      landed=alive_before and not alive_after and new != old and alive(new))], after
 
-    def act(self, action, machine, row):
-        """Carry out the action, and read the first run's row right after it returned: a live row proves the action
-        landed inside the run. A cancel proves itself through the run's state instead."""
+    def running_on(self):
+        return sorted(machine for machine, state in self.states().items()
+                      if any(container["state"] == "running" for container in state["containers"]))
+
+    def version(self):
+        machine, container = self.running_container()
+        if not container:
+            return None
+        env = self.sh(machine, f"/usr/bin/docker inspect -f '{{{{range .Config.Env}}}}{{{{println .}}}}{{{{end}}}}' "
+                               f"{container} | grep '^VC_DEPLOY=' || true", check=False).stdout.strip()
+        return env.partition("=")[2] or None
+
+    def deploy(self, name):
+        self.cli("set", f"{SERVICE}.env.VC_DEPLOY={name}")
+        began = self.clock()
+        result = self.command("cli", "--timeout", 1500, self.manifest, "--", "--json", "deploy", check=False,
+                              timeout=1500)
+        seconds = round(self.clock() - began, 2)
+        output = result.stdout + result.stderr
+        return dict(exit_code=result.returncode, seconds=seconds, running_after=self.running_on(),
+                    mount_errors=[error for error in MOUNT_ERRORS if error in output], output=output[-1500:])
+
+    def release(self, move):
+        before = self.runs()
+        row = self.start_op("release", None, wait=False)
+        after = self.runs()
+        seen = {found["id"]: found["state"] for found in before}
+        changed = [f"{found['id']} {seen.get(found['id'], 'new')} -> {found['state']}" for found in after
+                   if seen.get(found["id"]) != found["state"]
+                   and not (found["id"] == move.get("id") and found["state"] in ("running", "done"))]
+        return dict(release=row, changed=changed)
+
+    def act(self, case, side, row, result):
+        """Carry out the action, and read the first run's row right after it returned: a live row, or the state the
+        action itself gives it, proves the action landed inside the run. A Deploy or release records what it did in
+        `acted`, a kill or cancel whether it landed in `action_evidence`; a cancel proves itself through the run's
+        state instead of the row read."""
+        action = case["action"]
+        if action in ("deploy", "release"):
+            acted = self.deploy(case["name"]) if action == "deploy" else self.release(row)
+            result["acted"] = dict(case=action, **acted)
+            result["row_after_action"] = self.row(row) if row else None
+            return
+        result["action_evidence"], result["row_after_action"] = self.kill(action, side[case["machine"]], row)
+
+    def kill(self, action, machine, row):
         if action == "cancel":
             # Every later case needs the runner, so it starts again however the cancel ends.
             try:
@@ -939,12 +1131,16 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
         return [], self.row(row)
 
     def outside_run(self, case, result):
-        """The row read after the action must still be live; a terminal row leaves the credited event and the action
-        to a later run."""
+        """The row read after the action must still be live, or hold the state the action itself gives it: a Deploy
+        yields a warm move and a release cancels one, and either follows a committed move to its end, since Cloud
+        waits on a lane past its return. Any other terminal row leaves the credited event and the action to a later
+        run."""
         after = result.get("row_after_action")
-        if after is None or after.get("state") not in TERMINAL:
-            return None
         event = result["triggered"]
+        own = case.get("expect", {}).get("move") if case["action"] in ("deploy", "release") else None
+        if after is None or after.get("state") not in TERMINAL or (
+                after.get("state") == own and (own in TAKEN or event["kind"] == "committed")):
+            return None
         if case["action"] == "none":
             return (f"the first run {after.get('id')} ended {after.get('state')} before the {event['kind']} on "
                     f"{event['machine']} could be credited: {event['line']}")
@@ -955,7 +1151,7 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
         """At the case end the credited event must still be the first qualifying line after the barrier cursor. No
         later line stands in for it."""
         event = result["triggered"]
-        again = self.trigger(case, side, self.epoch(result["run"]))
+        again = self.trigger(case, side, result["run"])
         if again is None or any(again[key] != event[key] for key in ("cursor", "boot_id", "line")):
             return (f"the credited {event['kind']} on {event['machine']} did not re-qualify at the case end: "
                     f"{json.dumps(again)[:300]}")
@@ -978,6 +1174,18 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
                               check=False).stdout
             (self.out / f"{name}-{machine}.zfs").write_text(listing)
 
+    def recover(self, case, destination):
+        """Recover only an unhealthy end state, and only once every run the case started has ended."""
+        states = self.states()
+        if not placement(states) and self.healthy(limit=60):
+            return [], []
+        op = "release" if case["recover"] == "release" else case["op"] or "release"
+        row = self.start_op(op, destination)
+        reply = json.dumps(row.get("reply"))
+        if row["state"] == "refused" and "busy" in reply.lower():
+            return [row], [f"recovery {op} was refused as busy: {reply[:300]}"]
+        return [self.wait_run(row)], []
+
     def run_case(self, case):
         self.case_name = case["name"]
         writer = self.writer()
@@ -986,56 +1194,81 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
         destination = other
         self.prepare(case, other)
         started = self.clock()
+        known = {row["id"] for row in self.runs()}
         # Arm only once the Volume is idle: a cron sync crosses the same SetVolumeCopy points and would trip it.
         plan = arming(case, side)
         arm = (lambda: [self.fault(value, machine) for machine, value in plan.items()]) if plan else None
+        late = case.get("arm") == "stopped"
         # A trigger must be the first run's, so it starts behind the clean-start barrier on every Machine.
-        row = self.start_op(case["op"], destination, arm, clean=bool(case["trigger"]))
+        row = (self.start_op(case["op"], destination, None if late else arm, clean=bool(case["trigger"]))
+               if case["op"] else None)
         if case["trigger"]:
             started = self.since
         result = dict(case, writer_before=writer, destination=destination, started=started)
-        if row.get("state") == "refused":
+        if row and row.get("state") == "refused":
             # Busy refusals are skips and approvals are answered, so this is a defect; a rerun would pass it.
             raise RuntimeError(f"{case['op']} was refused: {json.dumps(row.get('reply'))[:1500]}")
         result["run"] = row
+        if late and (cut := self.wait_trigger(dict(case, trigger="stopped", trigger_machine="writer"), row, side)):
+            result["armed_after"] = cut
+            arm()
         if case["trigger"]:
             credited = self.wait_trigger(case, row, side)
             result["triggered"] = credited
             if credited:
                 # The action lands first: a read before it would delay it past the event the trigger credits.
-                result["action_evidence"], result["row_after_action"] = self.act(case["action"], side[case["machine"]], row)
+                self.act(case, side, row, result)
+        elif case["action"] != "none":
+            self.act(case, side, row, result)
         if plan:
             self.fault(None)
-        result["run"] = self.wait_run(row)
-        result["recovery"] = []
-        if result["run"].get("state") != "done":
-            op = "release" if case["recover"] == "release" else case["op"]
-            result["recovery"].append(self.wait_run(self.start_op(op, destination)))
+        result["run"] = self.wait_run(row, limit=TAKEN_LIMIT if case.get("expect", {}).get("move") in TAKEN else 1800)
+        if case.get("expect", {}).get("inside_hold") and result.get("triggered"):
+            result["released"] = self.released(case, row, result["triggered"])
+        result["later"] = self.settle(known | {row["id"]} if row and "id" in row else known)
+        if row and "id" in row and "requeues" in case.get("expect", {}):
+            result["requeues"] = self.requeued(row)
+        if "expect" in case:
+            result["recovery"], busy = self.recover(case, destination)
+        else:
+            # A case with no expectation reruns whatever did not end done, so it passes only on where that left it.
+            result["recovery"], busy = [], []
+            if result["run"].get("state") != "done":
+                op = "release" if case["recover"] == "release" else case["op"]
+                result["recovery"].append(self.wait_run(self.start_op(op, destination)))
         self.healthy()
         states = self.states()
-        result.update(ended=self.clock(), states=states, final_writer=final_writer(states), runs=self.runs()[:6])
+        result.update(ended=self.clock(), states=states, final_writer=final_writer(states), runs=self.runs()[:6],
+                      version=self.version())
         lost = self.lost()
         result["probe"] = dict(lost=lost)
-        result["failures"] = assess(states, lost)
+        result["failures"] = assess(states, lost) + busy + judge(result, side)
         if case["trigger"] and not result.get("triggered"):
             result["failures"].append("the trigger never fired before the run ended")
         if result.get("triggered") and (unowned := self.outside_run(case, result) or self.unclaimed(result["run"])):
             result["failures"].append(unowned)
-        if result.get("triggered") and result["triggered"]["kind"] != "receiving" and (
+        if result.get("triggered") and result["triggered"]["kind"] not in ("receiving", "committed") and (
                 stale := self.requalify(case, side, result)):
             result["failures"].append(stale)
         evidence = result.get("action_evidence")
-        if result.get("triggered") and case["action"] != "none" and not (evidence and all(e["landed"] for e in evidence)):
+        if (result.get("triggered") and case["action"] not in ("none", "deploy", "release")
+                and not (evidence and all(e["landed"] for e in evidence))):
             result["failures"].append(f"no evidence the {case['action']} landed: {json.dumps(evidence)[:500]}")
         if case["action"] == "cancel" and result.get("triggered") and result["run"].get("state") not in ("cancelled", "lost"):
             result["failures"].append(f"the cancel did not land: the run ended {result['run'].get('state')}")
-        last = (result["recovery"] or [result["run"]])[-1]
-        if last.get("state") != "done":
-            result["failures"].append(f"the last run ended {last.get('state')}")
-        # A move or its rerun ends on the destination; a mirror op never moves the writer, and an undo's Release restores it.
-        expected = destination if case["op"] == "move" and case["recover"] == "rerun" else writer
-        if result["final_writer"] != expected:
-            result["failures"].append(f"the Volume ended on {result['final_writer']}, not {expected}")
+        if "expect" in case:
+            # judge holds the case's own run to its expected state and writer, so only a recovery must end done.
+            result["failures"] += [f"the recovery {row.get('id')} ended {row.get('state')}"
+                                   for row in result["recovery"] if row.get("state") != "done"]
+        else:
+            last = (result["recovery"] or [result["run"]])[-1]
+            if last.get("state") != "done":
+                result["failures"].append(f"the last run ended {last.get('state')}")
+            # A move or its rerun ends on the destination; a mirror op never moves the writer, and an undo's Release
+            # restores it.
+            expected = destination if case["op"] == "move" and case["recover"] == "rerun" else writer
+            if result["final_writer"] != expected:
+                result["failures"].append(f"the Volume ended on {result['final_writer']}, not {expected}")
         if case["op"] in ("mirror", "mirror-rm"):
             want = "present" if case["op"] == "mirror" else "absent"
             got = "absent" if states[destination]["readonly"].get(self.fs()) in (None, "absent") else "present"
@@ -1132,7 +1365,7 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
             cases=[dict(name=result["name"], cell=result.get("cell"), step=result.get("step"),
                         passed=result["passed"], skipped=result.get("skipped"),
                         final_writer=result.get("final_writer"),
-                        run=result.get("run", {}).get("state"),
+                        run=(result.get("run") or {}).get("state"),
                         recovery=[row.get("state") for row in result.get("recovery", [])],
                         gap=result.get("probe", {}).get("longest_gap_seconds"), failures=result["failures"])
                    for result in results],

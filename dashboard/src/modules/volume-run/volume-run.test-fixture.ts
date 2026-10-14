@@ -14,6 +14,7 @@ export const COPIES = {
   final: { kind: "slot", slot: "1", readonly: true, newest: { ...snapshot, name: "f-1" }, resume_token: null, pull: null },
   behind: { kind: "slot", slot: "1", readonly: true, newest: older, resume_token: null, pull: null },
   pulling: { kind: "slot", slot: "1", readonly: true, newest: older, resume_token: null, pull: { target: snapshot.name, failure: null } },
+  failed: { kind: "slot", slot: "1", readonly: true, newest: older, resume_token: null, pull: { target: snapshot.name, failure: "no space" } },
 } satisfies Record<string, VolumeCopy>;
 
 export type Copy = keyof typeof COPIES | "empty" | "unanswered";

@@ -18,7 +18,7 @@ const Destination = Schema.String.check(Schema.isNonEmpty());
 /** `volume mirror|sync|mirror rm|move|release|restore`, each one kind of `POST volumes/:id/runs`. */
 export const VOLUME_RUN_BODIES = {
   mirror: Schema.Struct({ environment: RunEnvironment, kind: Schema.Literal("mirror"), to: Destination }),
-  sync: Schema.Struct({ environment: RunEnvironment, kind: Schema.Literal("sync"), full: Schema.optional(Schema.Boolean) }),
+  sync: Schema.Struct({ environment: RunEnvironment, kind: Schema.Literal("sync"), full: Schema.Literal(true) }),
   delete_mirror: Schema.Struct({
     environment: RunEnvironment,
     kind: Schema.Literal("delete_mirror"),
@@ -31,3 +31,6 @@ export const VOLUME_RUN_BODIES = {
 } as const;
 
 export const NewVolumeRun = Schema.Union(Object.values(VOLUME_RUN_BODIES));
+
+/** `volume sync` without `--full`: the mirror sync, answered once the mirror has the pull. */
+export const SyncVolume = Schema.Struct({ environment: RunEnvironment });

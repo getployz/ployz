@@ -4,8 +4,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { MachineId } from "@ployz/sdk";
 import { copiesFromPlacement } from "#/modules/volume-copies/volume-copies.placement";
 import type { PlacementRow } from "#/modules/volume-placement/volume-placement";
-import type { Member, VolumeRunView } from "#/modules/volume-run/volume-run";
-import { COPIES, member, run } from "#/modules/volume-run/volume-run.test-fixture";
+import type { Member } from "#/modules/volume-run/volume-run";
+import { COPIES, member } from "#/modules/volume-run/volume-run.test-fixture";
 import { type CopyServer, VolumeCopiesPanel } from "./StoreVolumeCopies";
 
 const NOW = new Date("2026-10-12T12:00:00Z");
@@ -28,14 +28,15 @@ const mirrorAsOf = (server: string, when: Date): Member => {
 const server = (name: string, storage: CopyServer["storage"] = "pool"): CopyServer => ({ id: id(name), name, storage });
 
 function panel(members: Member[], placement: PlacementRow | null, options: {
-  open?: string; upgrade?: string[]; servers?: CopyServer[]; lastDone?: VolumeRunView; refreshing?: boolean; deploying?: boolean;
+  open?: string; upgrade?: string[]; servers?: CopyServer[]; matchedAt?: string; refreshing?: boolean; deploying?: boolean;
 } = {}) {
   const stage = vi.fn();
   const refresh = vi.fn();
   const deleteCopy = vi.fn(() => Promise.resolve());
   const restore = vi.fn();
   const onOpen = vi.fn();
-  const copies = copiesFromPlacement({ volume, members, row: placement, active: null, lastSync: null, lastDone: options.lastDone ?? null });
+  const copies = copiesFromPlacement({ volume, members, row: placement, active: null,
+    statuses: options.matchedAt === undefined ? [] : [{ machine: id("web-2"), okAt: options.matchedAt, matchedAt: options.matchedAt, failedAt: null, failure: null }] });
   render(<VolumeCopiesPanel volume={volume} members={members} rows={placement ? [placement] : []} running={null} copies={copies}
     servers={options.servers ?? members.map((entry) => server(entry.machine.name))} accepting={members.map((entry) => entry.machine.id)}
     upgrade={options.upgrade ?? []} seeds disabled={false} deploying={options.deploying ?? false} stage={stage} restore={restore}
@@ -160,7 +161,7 @@ describe("mirror detail", () => {
   });
 
   const silent = () => [member("web-1", "writer"), member("web-2", "unanswered")];
-  const doneAgo = (minutes: number) => ({ ...run("sync", { full: false }, "done"), finished_at: new Date(NOW.getTime() - minutes * 60_000).toISOString() });
+  const matchedAgo = (minutes: number) => new Date(NOW.getTime() - minutes * 60_000).toISOString();
   const refreshNow = () => screen.getByRole("button", { name: "Refresh now" }) as HTMLButtonElement;
 
   it("runs a round on Refresh now", () => {
@@ -177,14 +178,14 @@ describe("mirror detail", () => {
   });
 
   it("says why a silent mirror's refresh was skipped", () => {
-    panel(silent(), row(["web-2"]), { open: "web-2", lastDone: doneAgo(135) });
+    panel(silent(), row(["web-2"]), { open: "web-2", matchedAt: matchedAgo(135) });
     expect(screen.getByText("Refresh skipped")).toBeTruthy();
     expect(screen.getByText(/^web-2 is not answering\. Ployz retries every 15 minutes\. Until it catches up, a failover loses 2 hours of writes\.$/)).toBeTruthy();
     expect(refreshNow().disabled).toBe(false);
   });
 
   it("hides the skipped prose while a round runs", () => {
-    panel(silent(), row(["web-2"]), { open: "web-2", lastDone: doneAgo(135), refreshing: true });
+    panel(silent(), row(["web-2"]), { open: "web-2", matchedAt: matchedAgo(135), refreshing: true });
     expect(screen.queryByText("Refresh skipped")).toBeNull();
   });
 
@@ -193,4 +194,3 @@ describe("mirror detail", () => {
     expect(screen.getByRole("list", { name: "Live" })).toBeTruthy();
   });
 });
-

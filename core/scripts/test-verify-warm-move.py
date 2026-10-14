@@ -255,12 +255,12 @@ class Cluster:
     # Faults
 
     def fault(self, machine, value):
-        script = "touch /etc/default/ployz; sed -i '/^PLOYZD_FAULT=/d' /etc/default/ployz; "
+        """Arm or disarm without a restart: the daemons read /run/ployz/fault on every check."""
         if value:
-            script += f"echo {shlex.quote('PLOYZD_FAULT=' + value)} >> /etc/default/ployz; "
-        script += ("systemctl restart ployz.service; systemctl stop ployz-volume-plugin.service || true; "
-                   "for i in $(seq 60); do systemctl is-active --quiet ployz.service && break; sleep 1; done")
-        self.sh(machine, script)
+            self.sh(machine, f"mkdir -p /run/ployz && printf '%s\\n' {shlex.quote(value)} > /run/ployz/fault.tmp "
+                             "&& mv /run/ployz/fault.tmp /run/ployz/fault")
+        else:
+            self.sh(machine, "rm -f /run/ployz/fault")
 
     def fault_lines(self, machine, since):
         output = self.sh(machine, f"journalctl -u ployz.service --since @{int(since) - 2} --no-pager -o short-unix "
@@ -399,6 +399,37 @@ class Cluster:
         if not done(row) or not self.exists(to, fs(phys)):
             raise CheckError(f"mirror {volume} --to {to} did not land: {text_of(row, data)[:800]}")
 
+    def sync(self, volume):
+        """`ployz volume sync`: no run, just the lines saying what it handed each mirror."""
+        code, data = self.cli("volume", "sync", volume)
+        lines = data.get("lines") if code == 0 and isinstance(data, dict) else None
+        if not isinstance(lines, list):
+            raise CheckError(f"sync {volume} refused: exit {code} {say(data)[:600]}")
+        return lines
+
+    def synced(self, volume, mirror, limit=600):
+        """Sync until the mirror on `mirror` holds a snapshot taken by this sync, the data a restore from it gets."""
+        phys = self.physical(volume)
+        deadline = time.monotonic() + limit
+        answers = []
+        while time.monotonic() < deadline:
+            lines = self.sync(volume)
+            answers.append(lines)
+            handed = re.search(r" (?:is pulling|already holds) (\S+)$", "\n".join(lines), re.M)
+            if handed is None:
+                time.sleep(4)
+                continue
+            target = handed.group(1)
+            while time.monotonic() < deadline:
+                if f"{fs(phys)}@{target}" in self.snapshots(mirror, fs(phys)):
+                    return lines
+                copy = self.inspect(mirror, phys) or {}
+                failure = (copy.get("pull") or {}).get("failure")
+                if failure:
+                    raise CheckError(f"sync {volume}: {mirror} could not receive {target}: {failure}")
+                time.sleep(3)
+        raise CheckError(f"sync {volume}: {mirror} did not land a new snapshot within {limit}s: {say(answers)[-800:]}")
+
     def restore(self, volume, source, limit=1800):
         return self.accepted("volume", "restore", volume, "--from", source, "--wait", timeout=limit)
 
@@ -432,15 +463,28 @@ class Cluster:
                     break
         return evidence
 
+    def next_run(self, volume, kind, earlier, limit=180):
+        """The first `kind` run on `volume` created after the row `earlier`, as soon as it shows."""
+        deadline = time.monotonic() + limit
+        while time.monotonic() < deadline:
+            _, data = self.cli("volume", "runs", volume)
+            later = [row for row in run_rows(data) if row.get("kind") == kind and row.get("id") != earlier.get("id")
+                     and row.get("created_at", "") > earlier.get("created_at", "")]
+            if later:
+                return min(later, key=lambda row: row["created_at"])
+            time.sleep(4)
+        return None
+
     def stop_move(self, volume, phys, source, target):
-        """Hold a Move to `target` in its MirrorToWriter step, then cancel it with the runner down."""
-        self.fault(target, "delay-rpc:SetVolumeCopy.MirrorToWriter:90")
+        """Hold a Move to `target` in its last pull after the cut, before it commits, then cancel it with the
+        runner down. The Move ends warm, so Cloud starts a release back to `source`."""
+        self.fault(target, "delay-rpc:SetVolumeCopy.MirrorToMirror:25")
         since = time.time()
         code, row, data = self.start_run("volume", "move", volume, "--to", target)
         if row is None:
             self.fault(target, None)
             raise CheckError(f"move refused: {say(data)[:600]}")
-        held = self.wait_held(volume, row, phys, source, target, "MirrorToWriter", since)
+        held = self.wait_held(volume, row, phys, source, target, "MirrorToMirror", since)
         self.runner("kill")
         try:
             cancelled = self.cancel(row["id"])
@@ -627,9 +671,7 @@ def restore_only_holder(vc):
     if not done(moved) or not vc.ready(B, phys):
         raise CheckError(f"move india to {B}: {text_of(moved, data)[:600]}")
     vc.psql(B, phys, "insert into kept values (2)")
-    _, synced, data = vc.run_volume("volume", "sync", "india", volume="india")
-    if not done(synced):
-        raise CheckError(f"sync india: {text_of(synced, data)[:600]}")
+    vc.synced("india", A)
     vc.psql(B, phys, "insert into kept values (3)")
     refusals = {}
     for source, phrase in ((A, f"also has copies on {B}"), (B, f"writer is already on {B}")):
@@ -716,9 +758,7 @@ def returning_old_copy_demoted(vc):
     if not done(moved) or not vc.ready(B, phys):
         raise CheckError(f"move kilo to {B}: {text_of(moved, data)[:600]}")
     vc.psql(B, phys, "insert into kept values (2)")
-    _, synced, data = vc.run_volume("volume", "sync", "kilo", volume="kilo")
-    if not done(synced):
-        raise CheckError(f"sync kilo: {text_of(synced, data)[:600]}")
+    vc.synced("kilo", A)
     container = vc.containers(B, phys)[0]
     loop = (f"i=1000; while :; do /usr/bin/docker exec {container} psql -U postgres -Atc \"insert into kept values ($i)\" "
             ">/dev/null 2>&1 && i=$((i+1)); sleep 1; done")
@@ -737,10 +777,12 @@ def returning_old_copy_demoted(vc):
         joined = vc.rejoin(B)
         lost = vc.psql(B, phys, "select count(*) from kept where n >= 1000", required=False) \
             if vc.containers(B, phys) else "no db"
-        code_s, demoted, data_s = vc.run_volume("volume", "sync", "kilo", volume="kilo")
+        synced = vc.sync("kilo")
+        named = re.search(r"has two primaries; run (\S+) makes", "\n".join(synced))
+        demoted = vc.wait_run("kilo", named.group(1)) if named else None
     finally:
         vc.sh(B, f"test -f {WRITER_PID} && kill \"$(cat {WRITER_PID})\"; rm -f {WRITER_PID}", required=False)
-    demote = text_of(demoted, data_s)
+    demote = text_of(demoted, synced)
     b_copies = {where: value for where, value in vc.copies(phys).items() if where.startswith(B + ":")}
     writable = vc.writable(phys)
     rows = vc.rows(A, phys)
@@ -748,8 +790,8 @@ def returning_old_copy_demoted(vc):
         f"restore on {A} succeeded": code_r == 0,
         f"{B} returned with a writable root": bool(returned),
         f"{B} added back": bool(joined),
-        "the next run fails asking for a rerun":
-            refused(code_s, demoted) and "is now read-only" in demote and "Run this again" in demote,
+        "the next sync opens a run that fails asking for a rerun":
+            bool(named) and refused(0, demoted) and "is now read-only" in demote and "Run this again" in demote,
         f"{B} copy kept and read-only": bool(b_copies) and all(value == "on" for value in b_copies.values()),
         f"exactly one writable copy, the root on {A}": writable == [f"{A}:{root(phys)}"],
         f"rows on {A} intact": rows == "1,2,3",
@@ -814,7 +856,7 @@ def delete_mirrored_environment(vc):
     deletion_verdicts(vc, "delete_mirrored_environment", phys, vc.wait_gone(phys))
 
 
-# A stale SetVolumeCopy replay changes nothing
+# A stale SetVolumeCopy replay changes nothing. It carries an old gen, so the floor refuses it
 
 def stale_replay_refused(vc):
     phys = vc.physical("delta")
@@ -831,13 +873,13 @@ def stale_replay_refused(vc):
                f"run {text_of(back, data)[:400]}; {A} copy {say(a_copy)[:400]}; {B} copy {say(b_copy)[:400]}")
     first_newest = after_first.get("newest") or {}
     replays = [
-        ("cut replayed on the first writer", A, "mismatch",
+        ("cut replayed on the first writer", A, "stale",
          dict(expect=dict(kind="writer", epoch=e0),
               want=dict(kind="mirror", **{"from": None}, target=first_newest.get("name"), drain=0))),
-        ("promote replayed on the first target", B, "mismatch",
+        ("promote replayed on the first target", B, "stale",
          dict(expect=dict(kind="mirror", newest=first_newest.get("guid"), slot=b_copy.get("slot")),
               want=dict(kind="writer", at=first_newest.get("guid"), epoch=after_first.get("epoch"), start=None))),
-        ("older epoch on the writer", A, "no_transition",
+        ("older epoch on the writer", A, "stale",
          dict(expect=dict(kind="writer", epoch=a_copy.get("epoch")),
               want=dict(kind="writer", at=(a_copy.get("newest") or {}).get("guid"), epoch=after_first.get("epoch"),
                         start=None))),
@@ -906,6 +948,20 @@ def deploy_refused_mid_move(vc):
 
 # Release after a stopped Move
 
+def settled(row):
+    return row is not None and row.get("state") in TERMINAL
+
+
+def release_after_cancel(vc, volume, move, limit=1500):
+    """Wait for the release a cancelled Move starts, then run `volume release`, which takes that release over
+    while it runs or meets it ended. Answers the cancel's release once ended, and the CLI's exit and row."""
+    auto = vc.next_run(volume, "release", move)
+    code, released, data = vc.run_volume("volume", "release", volume, volume=volume, limit=limit)
+    if auto is not None:
+        auto = vc.wait_run(volume, auto["id"], limit=limit)
+    return auto, code, released, data
+
+
 def release_after_stopped_move(vc):
     phys = vc.physical("bravo")
     vc.psql(A, phys, "create table if not exists marks (note text); insert into marks values ('pre-05')")
@@ -913,17 +969,23 @@ def release_after_stopped_move(vc):
     if stopped["run"].get("state") not in STOPPED or not stopped["held"]:
         raise CheckError(f"the Move did not stop after the cut: {say(stopped)[:1200]}")
     a_copy = vc.inspect(A, phys)
-    _, released, data = vc.run_volume("volume", "release", "bravo", volume="bravo")
+    auto, code, released, data = release_after_cancel(vc, "bravo", stopped["run"])
     ready = vc.ready(A, phys)
     marks = vc.psql(A, phys, "select note from marks", required=False) if ready else "no db"
     writable = vc.writable(phys)
+    b_copy = vc.inspect(B, phys) or {}
+    cut = (a_copy or {}).get("newest") or {}
     judged(vc, "release_after_stopped_move", {
-        "release done": done(released),
+        "the cancel starts a release": auto is not None,
+        "no release left running": settled(auto) and (released is None or settled(released)),
+        "a release ends done, the cancel's or the one run after it": done(auto) or done(released),
         f"db runs on {A} with the row from before the Move": ready and "pre-05" in marks,
         f"{A} root writable": vc.prop(A, root(phys), "readonly") == "off",
-        f"{B} keeps no slot": not vc.exists(B, slot(phys)),
+        f"{B} keeps no slot at the cut's snapshot": not vc.exists(B, slot(phys))
+        or (b_copy.get("kind") == "slot" and (b_copy.get("newest") or {}).get("guid") != cut.get("guid")),
         f"exactly one writable copy, on {A}": writable == [f"{A}:{root(phys)}"],
-    }, f"stopped {say(stopped)[:800]}; {A} copy when stopped {say(a_copy)[:300]}; release {text_of(released, data)[:500]}; "
+    }, f"stopped {say(stopped)[:800]}; {A} copy when stopped {say(a_copy)[:300]}; {B} copy {say(b_copy)[:300]}; "
+       f"cancel's release {say(auto)[:500]}; release exit {code} {text_of(released, data)[:500]}; "
        f"marks {marks!r}; running {vc.live(phys)}; writable {writable}")
 
 
@@ -931,17 +993,17 @@ def thaw_takes_15_seconds(vc):
     phys = vc.physical("bravo")
     source = B if vc.containers(B, phys) else A
     target = other(source)
-    stopped = vc.stop_move("bravo", phys, source, target)
-    if stopped["run"].get("state") not in STOPPED or not stopped["held"]:
-        raise CheckError(f"the Move did not stop after the cut: {say(stopped)[:1200]}")
     vc.slow_runc(source, "thaw", phys, 15)
     try:
         with Recorder(vc, "thaw", phys) as recorder:
-            _, released, data = vc.run_volume("volume", "release", "bravo", volume="bravo", limit=900)
-            first = dict(run=released, delay=vc.start_log(source, "thaw"))
+            stopped = vc.stop_move("bravo", phys, source, target)
+            if stopped["run"].get("state") not in STOPPED or not stopped["held"]:
+                raise CheckError(f"the Move did not stop after the cut: {say(stopped)[:1200]}")
+            auto, code, released, data = release_after_cancel(vc, "bravo", stopped["run"], limit=900)
+            first = dict(auto=auto, exit=code, run=released, delay=vc.start_log(source, "thaw"))
             vc.plain_runc(source, "thaw")
-            retried = released
-            if not done(released):
+            retried = None
+            if not (done(auto) or done(released)):
                 _, retried, data = vc.run_volume("volume", "release", "bravo", volume="bravo", limit=900)
             ready = vc.ready(source, phys)
             worst = recorder.timeline()
@@ -949,11 +1011,13 @@ def thaw_takes_15_seconds(vc):
         vc.plain_runc(source, "thaw")
     single = worst["writable"][0] <= 1 and worst["running"][0] <= 1
     vc.verdict("thaw_takes_15_seconds",
-               done(released) and "begin" in first["delay"] and ready
+               (done(auto) or done(released)) and "begin" in first["delay"] and ready
                and vc.prop(source, root(phys), "readonly") == "off" and single,
-               f"source {source}; first release {say(first)[:1200]}; ready={ready}; max {worst}")
-    vc.verdict("slow_thaw_retry_safe", done(retried) and ready and single and not vc.containers(target, phys),
-               f"release {text_of(retried, data)[:500]}; running {vc.live(phys)}; max {worst}")
+               f"source {source}; first releases {say(first)[:1500]}; ready={ready}; max {worst}")
+    vc.verdict("slow_thaw_retry_safe",
+               (done(auto) or done(released) or done(retried)) and settled(auto) and ready and single
+               and not vc.containers(target, phys),
+               f"retry {text_of(retried, data)[:500]}; running {vc.live(phys)}; max {worst}")
 
 
 # Mirror reuse and failing starts
@@ -990,19 +1054,25 @@ def start_fails_then_move_again(vc):
         with Recorder(vc, "golf", phys) as recorder:
             _, first, data = vc.move("golf", target, limit=1200)
             failed_log = vc.start_log(target, "golf")
+            forward = vc.next_run("golf", "release", first) if first else None
             vc.sh(target, "rm -f /tmp/golf-fail-start")
-            _, again, data_again = vc.move("golf", target, limit=900)
+            if forward is not None:
+                forward = vc.wait_run("golf", forward["id"], limit=900)
             ready = vc.ready(target, phys)
             worst = recorder.timeline()
     finally:
         vc.plain_runc(target, "golf")
         vc.sh(target, "rm -f /tmp/golf-fail-start", required=False)
     live = vc.live(phys)
-    ok = ("fail " in failed_log and (first or {}).get("state") == "failed" and done(again) and ready
-          and worst["writable"][0] <= 1 and worst["running"][0] <= 1 and len(live[target]) == 1 and not live[source])
-    vc.verdict("start_fails_then_move_again", ok,
-               f"first {text_of(first, data)[:700]}; again {text_of(again, data_again)[:500]}; "
-               f"start log {vc.start_log(target, 'golf')!r}; max {worst}; running {live}")
+    judged(vc, "start_fails_then_move_again", {
+        f"the start on {target} failed": "fail " in failed_log,
+        "the Move ends failed": (first or {}).get("state") == "failed",
+        f"the release it starts ends done once {target} starts": done(forward),
+        f"db ready on {target}": ready,
+        f"one container on {target}, none on {source}": len(live[target]) == 1 and not live[source],
+        "at most one writable copy and one running writer": worst["writable"][0] <= 1 and worst["running"][0] <= 1,
+    }, f"first {text_of(first, data)[:700]}; release {say(forward)[:500]}; "
+       f"start log {vc.start_log(target, 'golf')!r}; max {worst}; running {live}")
 
 
 def start_takes_15_seconds(vc):

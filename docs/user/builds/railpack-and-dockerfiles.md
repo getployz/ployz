@@ -27,7 +27,7 @@ When Railpack picks the wrong build step:
 
 Railpack still works out the rest, like installing dependencies. To change how your app
 starts, set **Start command** under **Settings → Deploy**, like `node server.js`. It runs in a
-shell, so `$PORT` works.
+shell, so `$PORT` and `&&` work.
 
 For anything else, like extra system packages, add a `railpack.json` to the root directory or
 set Railpack's own `RAILPACK_*` variables on the service.
@@ -49,6 +49,10 @@ first; see [Deploy a monorepo](../deploy/github.md#deploy-a-monorepo).
 
 **Dockerfile path** suggests paths from the top of the repository, so with a root directory set,
 shorten them to start from it.
+
+A **Start command** on a Dockerfile build replaces the Dockerfile's `ENTRYPOINT` and `CMD` and runs
+without a shell, as on an image service. See
+[Override the start command](../deploy/docker-image.md#override-the-start-command).
 
 ## Use variables at build time
 

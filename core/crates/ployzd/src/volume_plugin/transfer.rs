@@ -9,20 +9,21 @@ use std::{
 };
 
 use futures_util::StreamExt as _;
-use ployz_core::{ManagementAddress, SendSource, SendStream};
+use ployz_core::{ManagementAddress, SendSource, SendStream, VolumeGen};
 use ployzd::faults::{Identity, Want};
 use tokio::{io::AsyncWriteExt as _, process::Command};
 
 use super::{DockerVolumeName, VolumeStorage};
 
-/// The Volume and target a pull of `stream` lands.
-pub(super) fn pulling(stream: &SendStream) -> Identity<'_> {
+/// The Volume and target a pull of `stream` lands, for the lane at `gen`.
+pub(super) fn pulling(stream: &SendStream, r#gen: VolumeGen) -> Identity<'_> {
     let (SendSource::Full { target }
     | SendSource::Incremental { target, .. }
     | SendSource::Resume { target, .. }) = &stream.source;
     Identity {
         volume: &stream.name,
         want: Want::Mirror { target },
+        r#gen,
     }
 }
 
@@ -115,9 +116,10 @@ impl VolumeStorage {
         fs: &str,
         bound: u64,
         fault: &'static str,
+        r#gen: VolumeGen,
     ) -> Result<(), ReceiveFailure> {
         let opened = self.open_stream(from, stream).await?;
-        self.receive_opened(opened, fs, bound, fault, pulling(stream))
+        self.receive_opened(opened, fs, bound, fault, pulling(stream, r#gen))
             .await
     }
 

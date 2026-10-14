@@ -16,6 +16,7 @@ import type {
 import { InngestTestEngine, mockCtx } from "@inngest/test";
 import { Effect, Exit } from "effect";
 import { Inngest, NonRetriableError } from "inngest";
+import type { PoolClient } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { CloudStore } from "#/modules/config-store/store-sdk.server";
@@ -23,13 +24,19 @@ import { InngestClient } from "#/modules/inngest/client";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { requirements, ServerLacks } from "#/modules/runtime/daemon-compat";
 import { PloyzProviderError, type PloyzSdkError, type PloyzSession } from "#/modules/runtime/ployz.server";
-import { createRunStoreDeployment } from "#/modules/config-store/store-deployment.inngest";
+import { createCancelStoreDeployment, createRunStoreDeployment } from "#/modules/config-store/store-deployment.inngest";
 import type { InngestRunStatus } from "#/modules/inngest/client";
 import { createCloseFinishedVolumeRun, createCloseStaleVolumeRuns, createRunVolume } from "#/modules/volume-run/volume-run.inngest";
+import { operationsOn } from "#/modules/operations/operation-history.server";
 import {
+  askCopy,
   closeStaleVolumeRuns,
   closeVolumeRun,
+  commitAndStart,
+  commitMove,
+  listVolumeRuns,
   orphanSlotNames,
+  releaseLanesOff,
   requestVolumeRun,
   requireOwner,
   type RunContext,
@@ -38,8 +45,10 @@ import {
   startOrphanDeletes,
   volumeBusyMessage,
 } from "#/modules/volume-run/volume-run.server";
+import { PATIENCE_WAITS } from "#/modules/volume-run/patience";
 import type { VolumeRunInput } from "#/modules/volume-run/volume-run";
 import { member } from "#/modules/volume-run/volume-run.test-fixture";
+import { type DeployLane, fenceDeployVolume, finishDeployVolumes, placeDeployVolumes } from "#/modules/volume-run/volume-run.deploy.server";
 import type { Caller } from "#/modules/identity/actor";
 import { runVolume } from "#/modules/operations/operations.server";
 import type { Database } from "#/server/database.server";
@@ -55,24 +64,28 @@ const environment = { project: "shop", environment: "production" };
 const inngest = new Inngest({ id: "volume-run-test" });
 const send = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
 
-/** A pull to `target` that fails with a message, or whose Machine restarts mid-receive and keeps `pull` set. */
-type PullFault = { target: string; kind: "fail" | "restart" };
+type PullFault = { target: string; kind: "fail" | "restart" | "stall" };
 
 type FakeMachine = {
   name: string;
+  /** A renamed Server keeps its id; the default derives it from the name. */
+  id?: MachineId;
   pool: boolean;
   stateless?: boolean;
   silent?: boolean;
   lacks?: string;
+  capabilities?: string[];
   copy: VolumeCopy | null;
   /** Writes since the writer's newest snapshot: a Snapshot takes a new one only while this is above zero. */
   writes?: number;
   pullFault?: PullFault;
   /** A restart stopped the running receive; the next Mirror set resumes it. */
   stopped?: boolean;
+  /** The gen floor a Floor set raised; a set with a lower gen is stale. */
+  floor?: number;
 };
 
-type FakeContainer = { machine: string; id: string; running: boolean };
+type FakeContainer = { machine: string; id: string; running: boolean; created?: number };
 
 /**
  * What a fake Machine does with the next request of one label: refuse, apply it and lose the reply, fail to answer, or
@@ -110,6 +123,8 @@ const label = (fake: FakeMachine, want: WantedCopy) => {
       return `snapshot@${fake.name}(${want.name})`;
     case "forget":
       return `forget@${fake.name}`;
+    case "floor":
+      return `floor@${fake.name}`;
   }
 };
 
@@ -123,13 +138,15 @@ describe("volume runs", () => {
   let slotIds: number;
   let verbs: string[];
   let failNext: Map<string, Fault>;
-  let beforeSet: Map<string, () => void>;
+  let beforeSet: Map<string, () => void | Promise<void>>;
+  /** Runs while a writer start reads the kept Container's spec, between the commit and the send. */
+  let beforeStart: (() => Promise<void>) | null;
   let sent: SetVolumeCopyRequest[];
   let held: Map<string, () => CopyRefusal | null>;
   let storeVolumes: Array<{ id: string; name: string; storage: { kind: "provisioned"; maximumBytes: number } | { kind: "docker" }; change?: "delete" }>;
 
   const machine = (target: string) => {
-    const found = machines.find((entry) => idOf(entry.name) === target);
+    const found = machines.find((entry) => (entry.id ?? idOf(entry.name)) === target);
     if (found === undefined) throw new Error(`no fake Machine ${target}`);
     return found;
   };
@@ -195,7 +212,7 @@ describe("volume runs", () => {
    * keeps `pull`; a resend for the running target changes nothing.
    */
   const transition = (fake: FakeMachine, expect: ExpectedCopy, want: WantedCopy): CopyRefusal | null => {
-    if (atWant(fake, want)) return null;
+    if (want.kind === "floor" || atWant(fake, want)) return null;
     const copy = fake.copy;
     if (want.kind === "mirror" && copy?.kind === "slot" && copy.pull?.target === want.target && copy.newest?.name === want.target) {
       fake.copy = { ...copy, pull: null };
@@ -255,6 +272,7 @@ describe("volume runs", () => {
     const pull = copy?.kind === "slot" ? copy.pull : null;
     if (copy?.kind !== "slot" || pull === null || pull.failure !== null || fake.stopped === true) return;
     const fault = fake.pullFault;
+    if (fault?.target === pull.target && fault.kind === "stall") return;
     if (fault?.target === pull.target && fault.kind === "fail") fake.copy = { ...copy, pull: { ...pull, failure: "disk full" } };
     else if (fault?.target === pull.target) {
       fake.pullFault = undefined;
@@ -270,7 +288,7 @@ describe("volume runs", () => {
   const session = asTestDouble<PloyzSession>()({
     watchFirstFrame: () => Effect.succeed({
       machines: machines.map((fake) => ({
-        machine: { id: idOf(fake.name), name: fake.name, public_key: Array.from({ length: 32 }, (_, index) => index), runtime: { daemon_version: fake.lacks ?? "" } },
+        machine: { id: fake.id ?? idOf(fake.name), name: fake.name, public_key: Array.from({ length: 32 }, (_, index) => index), runtime: { daemon_version: fake.lacks ?? "", capabilities: fake.capabilities } },
         storage: fake.stateless === true ? { state: "stateless" } : fake.pool ? { state: "pool", size_bytes: 1, used_bytes: 0, free_bytes: 1 } : { state: "ready" },
       })),
       containers: containers.map((container) => ({
@@ -280,14 +298,18 @@ describe("volume runs", () => {
         namespace: "shop-production",
         resolved_spec: { name: "web", container: { pull_policy: "always", environment: {} }, volumes: [{ source: { kind: "provisioned", name: dockerVolume } }] },
         runtime: { state: container.running ? "running" : "exited" },
+        created_at_unix_nanos: container.created ?? 0,
       })),
     }),
-    inspectContainer: (target: string, container: string) => Effect.sync(() => ({
-      container: {
-        container_id: container,
-        resolved_spec: { name: "web", container: { pull_policy: "always", environment: { POSTGRES_PASSWORD: `secret-${machine(target).name}` } }, volumes: [{ source: { kind: "provisioned", name: dockerVolume } }] },
-      },
-    })),
+    inspectContainer: (target: string, container: string) => Effect.promise(async () => {
+      await beforeStart?.();
+      return {
+        container: {
+          container_id: container,
+          resolved_spec: { name: "web", container: { pull_policy: "always", environment: { POSTGRES_PASSWORD: `secret-${machine(target).name}` } }, volumes: [{ source: { kind: "provisioned", name: dockerVolume } }] },
+        },
+      };
+    }),
     copyContainerImage: (from: string, container: string, to: string) => Effect.sync(() => {
       verbs.push(`copy_image@${machine(from).name}->${machine(to).name}(${container})`);
     }),
@@ -314,34 +336,39 @@ describe("volume runs", () => {
       const key = verb.replace(/\(.*$/, "");
       sent.push(request.payload);
       verbs.push(verb);
-      beforeSet.get(key)?.();
+      const hook = beforeSet.get(key);
       beforeSet.delete(key);
-      const fault = failNext.get(key);
-      failNext.delete(key);
-      if (fault === "lost") {
-        transition(fake, expected, want);
-        return fail("down");
-      }
-      if (fault === "held") {
-        held.set(key, () => transition(fake, expected, want));
-        return fail("down");
-      }
-      if (fault !== undefined) return fail(fault);
-      if (want.kind === "mirror") {
-        receive(fake);
-        fake.stopped = false;
-        const copy = fake.copy;
-        // The daemon answers a failed receive once, and the next resend retries it. Only a request its planner lets
-        // through gets the answer: a source, and the expect matching or naming this slot.
-        const passes = copy?.kind === "slot" && want.from !== null
-          && ((expected.kind === "mirror" && expected.slot === copy.slot) || matches(copy, expected));
-        if (passes && copy.pull?.target === want.target && copy.pull.failure !== null) {
-          fake.copy = { ...copy, pull: { ...copy.pull, failure: null } };
-          return Effect.succeed({ copy });
+      return Effect.promise(async () => hook?.()).pipe(Effect.andThen((): Effect.Effect<VolumeCopyView, PloyzSdkError> => {
+        const fault = failNext.get(key);
+        failNext.delete(key);
+        if (fault === "lost") {
+          transition(fake, expected, want);
+          return fail("down");
         }
-      }
-      const refused = transition(fake, expected, want);
-      return refused === null ? Effect.succeed({ copy: fake.copy }) : fail(refused);
+        if (fault === "held") {
+          held.set(key, () => transition(fake, expected, want));
+          return fail("down");
+        }
+        if (fault !== undefined) return fail(fault);
+        const gen = request.payload.gen ?? 0;
+        if (gen < (fake.floor ?? 0)) return fail("stale");
+        if (want.kind === "floor") fake.floor = gen;
+        if (want.kind === "mirror") {
+          receive(fake);
+          fake.stopped = false;
+          const copy = fake.copy;
+          // The daemon answers a failed receive once, and the next resend retries it. Only a request its planner lets
+          // through gets the answer: a source, and the expect matching or naming this slot.
+          const passes = copy?.kind === "slot" && want.from !== null
+            && ((expected.kind === "mirror" && expected.slot === copy.slot) || matches(copy, expected));
+          if (passes && copy.pull?.target === want.target && copy.pull.failure !== null) {
+            fake.copy = { ...copy, pull: { ...copy.pull, failure: null } };
+            return Effect.succeed({ copy });
+          }
+        }
+        const refused = transition(fake, expected, want);
+        return refused === null ? Effect.succeed({ copy: fake.copy }) : fail(refused);
+      }));
     }),
   });
 
@@ -350,6 +377,8 @@ describe("volume runs", () => {
       Effect.provideService(InngestClient, inngest),
       Effect.provideService(CloudStore, {
         open: Effect.succeed(asTestDouble<ConfigStore>()({
+          githubCancel: async () => [],
+          abandonDeployment: async (id: string) => ({ id, status: "failed" }),
           read: async (_: string, query: { query: string }) => query.query === "namespaces"
             ? { namespaces: [{ namespace: "shop-production", project: "shop", environment: "production" }] }
             : { environment: { id: "env-1", project: "shop", name: "production", revision: 1 }, volumes: storeVolumes },
@@ -368,28 +397,42 @@ describe("volume runs", () => {
     if (!result.ok) throw new Error(result.refusal.message);
     return result.run;
   };
-  const settled = ["05-cut", "08-start", "13-start", "13-undo", "14-undo", "04-resume", "03-restore", "03-demote", "03-reset-forget-mirror", "03-reset-forget-writer", "04-forget"];
+  const settled = ["05-cut", "07-start", "03-start", "04-resume", "05-resume", "03-restore", "03-demote", "03-reset-forget-mirror", "03-reset-forget-writer", "04-forget"];
   const sleeps = [
-    ...["03-r0", "03-r1", "03-r2", "06-final"].flatMap((prefix) => Array.from({ length: 9 }, (_, poll) => `${prefix}-wait-${poll}`)),
+    ...["03-r0", "03-r1", "03-r2", "06-final"].flatMap((prefix) => Array.from({ length: 9 }, (_, poll) => `${prefix}-backoff-${poll}`)),
     ...[...settled, ...["03-r0", "03-r1", "03-r2"].flatMap((round) => [`${round}-snapshot`, `${round}-pull`]), "06-final-pull",
-      ...["fsn-2", "fsn-3"].flatMap((server) => [`13-forget-${server}`, `03-forget-${server}`])]
+      ...["fsn-2", "fsn-3"].flatMap((server) => [`04-forget-${server}`, `03-forget-${server}`])]
       .flatMap((id) => Array.from({ length: 6 }, (_, check) => `${id}-wait-${check + 1}`)),
   ].map((id) => ({ id, handler: () => undefined }));
-  const execute = (runRowId: string, runId = "run-1", steps?: Array<{ id: string; handler: () => object | undefined }>, volume = volumeId) => new InngestTestEngine({
+  const execute = (runRowId: string, runId = "run-1", steps?: Array<{ id: string; handler: () => object | undefined }>, volume = volumeId, took?: string) => new InngestTestEngine({
     function: createRunVolume(new Inngest({ id: "test" }), runEffect),
-    events: [{ name: "volume/run.requested", data: { organizationId, environment: "env-1", volumeId: volume, runId: runRowId } }],
+    events: [{ name: "volume/run.requested", data: { organizationId, environment: "env-1", volumeId: volume, runId: runRowId, took } }],
     transformCtx: (ctx) => ({ ...mockCtx(ctx), runId }),
     steps: [...(steps ?? []), ...sleeps],
   }).execute();
+  /** Runs the row as Inngest would from the event its request sent, `took` and all. */
+  const deliver = (runRowId: string, runId = "run-1") => {
+    const event = send.mock.calls.flatMap(([sent]) => [sent].flat()).find((sent) => sent.id === `volume-run-${runRowId}`);
+    if (event === undefined) throw new Error(`no event sent for ${runRowId}`);
+    // SAFETY: the event was built by createVolumeRunRequestedEvent.
+    const { took } = event.data as { took?: string };
+    return execute(runRowId, runId, undefined, volumeId, took);
+  };
   const rows = async () => (await harness.pool.query(
-    `select id, kind, state, epoch, inngest_run_id, message, orphan, volume_id, docker_volume, refquota_bytes, finished_at
+    `select id, kind, state, epoch, phase, current, inngest_run_id, message, orphan, volume_id, docker_volume, refquota_bytes, finished_at
      from volume_run order by created_at, id`,
   )).rows as Array<{
-    id: string; kind: string; state: string; epoch: string | null; inngest_run_id: string | null; message: string | null;
-    orphan: boolean; volume_id: string; docker_volume: string; refquota_bytes: string; finished_at: Date | null;
+    id: string; kind: string; state: string; epoch: string | null; phase: string; current: string | null; inngest_run_id: string | null;
+    message: string | null; orphan: boolean; volume_id: string; docker_volume: string; refquota_bytes: string; finished_at: Date | null;
   }>;
+  /** The release a failed Move requested, which the test runs as Inngest would. */
+  const releaseRow = async () => {
+    const found = (await rows()).find((row) => row.kind === "release");
+    if (found === undefined) throw new Error("no release row");
+    return found;
+  };
   const context = (id: string): RunContext => ({
-    id, organizationId, volumeId, volumeName: "data", dockerVolume, kind: "sync", args: { full: false }, orphan: false, refquotaBytes: 0,
+    id, organizationId, volumeId, volumeName: "data", dockerVolume, kind: "sync", args: { full: false }, orphan: false, refquotaBytes: 0, gen: 0, phase: "warm", current: null,
   });
   const running = async (id: string) =>
     harness.pool.query(`update volume_run set state = 'running', inngest_run_id = 'run-1' where id = $1`, [id]);
@@ -401,6 +444,7 @@ describe("volume runs", () => {
     verbs = [];
     failNext = new Map();
     beforeSet = new Map();
+    beforeStart = null;
     sent = [];
     held = new Map();
     guids = 0;
@@ -504,10 +548,10 @@ describe("volume runs", () => {
 
       const swept = await runEffect(closeStaleVolumeRuns(lookup));
 
-      expect(swept).toEqual({ lost: 1, closed: 4 });
+      expect(swept).toEqual({ not_started: 1, closed: 4 });
       expect(looked.sort()).toEqual(["r-cancelled", "r-completed", "r-failed", "r-missing", "r-running"]);
       expect(Object.fromEntries((await rows()).map((row) => [row.id.slice(-2), row.state]))).toEqual({
-        "01": "lost", "02": "requested", "03": "lost", "04": "failed", "05": "cancelled", "06": "lost", "07": "running", "08": "running",
+        "01": "not_started", "02": "requested", "03": "lost", "04": "failed", "05": "cancelled", "06": "lost", "07": "running", "08": "running",
       });
     });
 
@@ -537,7 +581,7 @@ describe("volume runs", () => {
   });
 
   describe("C1", () => {
-    it("volume_run_second_request_refused: VolumeBusy names the run in the way, until it ends", async () => {
+    it("volume_run_second_request_refused: VolumeBusy names the Volume and how to stop its run, until it ends", async () => {
       const first = await requested({ kind: "mirror", args: { to: "fsn-2" } });
 
       const second = await request({ kind: "sync", args: { full: false } });
@@ -546,12 +590,12 @@ describe("volume runs", () => {
         ok: false,
         refusal: {
           code: "conflict",
-          message: `VolumeBusy: run ${first.id} (mirror) is requested; volume runs ${first.id} shows it`,
+          message: "VolumeBusy: data is busy with a mirror; ployz volume release data stops it",
           details: { run: expect.objectContaining({ id: first.id }) },
         },
+        busy: expect.objectContaining({ id: first.id, kind: "mirror", state: "requested" }),
       });
-      expect(volumeBusyMessage({ id: first.id, kind: "mirror", state: "running" }))
-        .toBe(`VolumeBusy: run ${first.id} (mirror) is running; volume runs ${first.id} shows it`);
+      expect(volumeBusyMessage({ kind: "sync", volumeName: "data" })).toBe("VolumeBusy: data is busy with a mirror refresh; ployz volume release data stops it");
       expect(await rows()).toHaveLength(1);
 
       await execute(first.id);
@@ -560,21 +604,765 @@ describe("volume runs", () => {
   });
 
 
+  describe("takeover", () => {
+    const lanes = async () => (await harness.pool.query(
+      "select id, kind, state, phase, message, gen from volume_run order by gen")).rows as Array<{ id: string; kind: string; state: string; phase: string; message: string | null; gen: string }>;
+    const move = async (phase: "warm" | "committed" = "warm") => {
+      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
+      await harness.pool.query("update volume_run set state = 'running', inngest_run_id = 'run-1', phase = $2, current = $3 where id = $1",
+        [run.id, phase, phase === "committed" ? idOf("fsn-2") : null]);
+      send.mockClear();
+      return run;
+    };
+    const release = () => request({ kind: "release", args: {} });
+
+    it("a release during a warm Move ends the Move cancelled and starts after it, then tells the Move's run", async () => {
+      const taken = await move();
+
+      const released = await release();
+
+      expect(released).toMatchObject({ ok: true, run: { kind: "release", state: "requested" } });
+      const [old, next] = await lanes();
+      expect(old).toMatchObject({ id: taken.id, state: "cancelled", message: "volume release took this run over" });
+      expect(next).toMatchObject({ kind: "release", state: "requested", phase: "warm" });
+      expect(Number(next?.gen)).toBeGreaterThan(Number(old?.gen));
+      expect(send).toHaveBeenCalledWith(expect.objectContaining({ id: `volume-run-taken-${taken.id}`, name: "volume/run.taken", data: { runId: taken.id } }));
+    });
+
+    it("two releases racing for one warm Move: exactly one of them ends it", async () => {
+      const taken = await move();
+
+      const results = await Promise.all([release(), release()]);
+
+      const all = await lanes();
+      expect(all.filter((lane) => lane.id === taken.id)).toMatchObject([{ state: "cancelled" }]);
+      expect(all.filter((lane) => lane.state === "requested")).toHaveLength(1);
+      expect(send.mock.calls.flatMap(([event]) => [event].flat()).filter((event) => event.id === `volume-run-taken-${taken.id}`)).toHaveLength(1);
+      expect(results.some((result) => result.ok)).toBe(true);
+    });
+
+    it("a release on a committed Move refuses, says where it finishes, and changes no row", async () => {
+      const committed = await move("committed");
+      const before = await lanes();
+
+      expect(await release()).toEqual({
+        ok: false,
+        refusal: {
+          code: "conflict", message: "data is starting on fsn-2; it finishes there",
+          details: { run: expect.objectContaining({ id: committed.id }), move_to: "fsn-2" },
+        },
+        busy: expect.objectContaining({ id: committed.id }),
+      });
+      expect(await request({ kind: "sync", args: { full: false } })).toEqual({
+        ok: false,
+        refusal: { code: "conflict", message: "VolumeBusy: data is starting on fsn-2; it finishes there", details: { run: expect.objectContaining({ id: committed.id }) } },
+        busy: expect.objectContaining({ id: committed.id }),
+      });
+      expect(await lanes()).toEqual(before);
+      expect(send).not.toHaveBeenCalled();
+    });
+
+    it("a release on a restore lane, or on a committed release no move row explains, refuses with no move_to", async () => {
+      const restoring = await requested({ kind: "restore", args: { from: "fsn-2" } });
+
+      expect(await release()).toEqual({
+        ok: false,
+        refusal: { code: "conflict", message: "data is starting on fsn-2; it finishes there", details: { run: expect.objectContaining({ id: restoring.id }) } },
+        busy: expect.objectContaining({ id: restoring.id }),
+      });
+
+      await harness.pool.query("update volume_run set kind = 'release', args = '{}', phase = 'committed', current = $2 where id = $1", [restoring.id, idOf("fsn-2")]);
+      expect(await release()).toEqual({
+        ok: false,
+        refusal: { code: "conflict", message: "data is starting on its new Server; it finishes there", details: { run: expect.objectContaining({ id: restoring.id }) } },
+        busy: expect.objectContaining({ id: restoring.id }),
+      });
+    });
+
+    it("a release on a running seed refuses, saying the copy finishes on its own, and the seed keeps running", async () => {
+      const [seeding] = (await harness.pool.query(
+        `insert into volume_run (organization_id, environment_id, volume_id, volume_name, docker_volume, kind, args, state, inngest_run_id)
+         values ($1, 'env-1', $2, 'data', $3, 'seed', $4, 'running', 'run-seed') returning id`,
+        [organizationId, volumeId, dockerVolume, JSON.stringify({ into: { volumeId: "vol2", dockerVolume: "shop-production_vol-vol2", name: "data-copy" } })])).rows as Array<{ id: string }>;
+
+      expect(await release()).toEqual({
+        ok: false,
+        refusal: { code: "conflict", message: "data is being copied into data-copy; it finishes on its own", details: { run: expect.objectContaining({ id: seeding?.id }) } },
+        busy: expect.objectContaining({ id: seeding?.id, kind: "seed" }),
+      });
+      expect(await request({ kind: "sync", args: { full: false } })).toMatchObject({
+        ok: false, refusal: { message: "VolumeBusy: data is being copied into data-copy; it finishes on its own" },
+      });
+      expect(await lanes()).toMatchObject([{ id: seeding?.id, state: "running" }]);
+      expect(send).not.toHaveBeenCalled();
+    });
+
+    it("a release on a Deploy's lane refuses, so the Deploy ends it, and a Deploy yields it", async () => {
+      const [deployed] = (await harness.pool.query(
+        `insert into volume_run (organization_id, environment_id, volume_id, volume_name, docker_volume, kind, args, state, inngest_run_id)
+         values ($1, 'env-1', $2, 'data', $3, 'deploy', '{"deployment":"d-1","resume":null}', 'running', 'deploy-1') returning id`,
+        [organizationId, volumeId, dockerVolume])).rows as Array<{ id: string }>;
+
+      expect(await release()).toMatchObject({
+        ok: false,
+        refusal: { code: "conflict", message: "data is deploying; the Deploy ends its run", details: { run: expect.objectContaining({ id: deployed?.id }) } },
+        busy: expect.objectContaining({ id: deployed?.id, kind: "deploy" }),
+      });
+      expect(await runEffect(requestVolumeRun({ userId, organizationId }, { volumeId, environment, kind: "mirror", args: { to: "fsn-2" } }, { end: "yielded" })))
+        .toMatchObject({ ok: true, run: { kind: "mirror" } });
+      expect(await lanes()).toMatchObject([{ id: deployed?.id, state: "yielded", message: "a Deploy took this run over" }, { kind: "mirror", state: "requested" }]);
+    });
+
+    describe("a lane landing between the read and the insert", () => {
+      const landings = {
+        sync: '{"full":false}',
+        release: "{}",
+        delete_mirror: '{"slot":"fsn-2","confirmed_name":null}',
+      };
+      const waitingOnLock = async () => {
+        for (let poll = 0; poll < 200; poll++) {
+          const { rows: waiting } = await harness.pool.query(
+            "select 1 from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'");
+          if (waiting.length > 0) return;
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+        throw new Error("the insert never waited on the landing lane");
+      };
+
+      for (const [kind, args] of Object.entries(landings)) {
+        it(`${kind}: a yielded request waits for it to commit, then takes it over and goes first`, async () => {
+          const landing = await harness.pool.connect();
+          try {
+            await landing.query("begin");
+            const { rows: [landed] } = await landing.query(
+              `insert into volume_run (organization_id, environment_id, volume_id, volume_name, docker_volume, kind, args, state)
+               values ($1, 'env-1', $2, 'data', $3, $4, $5, 'requested') returning id`,
+              [organizationId, volumeId, dockerVolume, kind, args]) as { rows: Array<{ id: string }> };
+
+            const taking = runEffect(requestVolumeRun({ userId, organizationId }, { volumeId, environment, kind: "mirror", args: { to: "fsn-2" } }, { end: "yielded" }));
+            await waitingOnLock();
+            await landing.query("commit");
+
+            expect(await taking).toMatchObject({ ok: true, run: { kind: "mirror", state: "requested" } });
+            expect(await lanes()).toMatchObject([
+              { id: landed?.id, kind, state: "yielded", message: "a Deploy took this run over" },
+              { kind: "mirror", state: "requested" },
+            ]);
+            expect(send).toHaveBeenCalledWith(expect.objectContaining({ name: "volume/run.taken", data: { runId: landed?.id } }));
+          } finally {
+            landing.release();
+          }
+        });
+      }
+
+      it("a plain request still refuses the lane that landed, naming it", async () => {
+        const landing = await harness.pool.connect();
+        try {
+          await landing.query("begin");
+          const { rows: [landed] } = await landing.query(
+            `insert into volume_run (organization_id, environment_id, volume_id, volume_name, docker_volume, kind, args, state)
+             values ($1, 'env-1', $2, 'data', $3, 'sync', '{"full":false}', 'requested') returning id`,
+            [organizationId, volumeId, dockerVolume]) as { rows: Array<{ id: string }> };
+          const asking = request({ kind: "mirror", args: { to: "fsn-2" } });
+          await waitingOnLock();
+          await landing.query("commit");
+
+          expect(await asking).toMatchObject({ ok: false, refusal: { code: "conflict" }, busy: expect.objectContaining({ id: landed?.id, kind: "sync" }) });
+          expect(await lanes()).toMatchObject([{ id: landed?.id, state: "requested" }]);
+        } finally {
+          landing.release();
+        }
+      });
+    });
+
+    it("a release with no run open repairs from the copies, taking nothing over", async () => {
+      expect(await release()).toMatchObject({ ok: true });
+
+      expect(await lanes()).toMatchObject([{ kind: "release", state: "requested" }]);
+      expect(send).not.toHaveBeenCalledWith(expect.objectContaining({ name: "volume/run.taken" }));
+    });
+
+    it("a release that took a Move whose cut flipped plans from the copy the Floor returns", async () => {
+      const G = newSnap("f-1");
+      containers = [{ machine: "fsn-1", id: "web-fsn-1", running: false }];
+      named("fsn-1").copy = writerCopy(base, 0, true);
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(G) };
+      beforeSet.set("floor@fsn-1", () => { named("fsn-1").copy = slotCopy(G, null, "3"); });
+      await move();
+      const released = await release();
+      if (!released.ok) throw new Error(released.refusal.message);
+
+      const output = await deliver(released.run.id, "run-2");
+
+      expect(output.result).toEqual({ runId: released.run.id, released: "fsn-1" });
+      expect(verbs).toEqual(["floor@fsn-1", "floor@fsn-2", "forget@fsn-2", "writer@fsn-1(kept)"]);
+      expect(named("fsn-1").copy).toMatchObject({ kind: "root", readonly: false, newest: G });
+      expect(containers).toEqual([{ machine: "fsn-1", id: "web-fsn-1", running: true }]);
+    });
+
+    it("a release that took a warm Move on a Volume with no Service floors and plans on its own, and ends done", async () => {
+      containers = [];
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
+      await move();
+      const released = await release();
+      if (!released.ok) throw new Error(released.refusal.message);
+
+      const output = await deliver(released.run.id, "run-2");
+
+      expect(output.error).toBeUndefined();
+      expect(verbs).toEqual(["floor@fsn-1", "floor@fsn-2", "writer@fsn-1(none)"]);
+      expect((await lanes()).find((lane) => lane.id === released.run.id)).toMatchObject({ state: "done" });
+    });
+
+    it("a release that took a warm Move before B got a copy floors B too, so the Move's late Mirror cannot land there", async () => {
+      await move();
+      const released = await release();
+      if (!released.ok) throw new Error(released.refusal.message);
+
+      const output = await execute(released.run.id, "run-2");
+
+      expect(output.error).toBeUndefined();
+      expect(verbs.slice(0, 2)).toEqual(["floor@fsn-1", "floor@fsn-2"]);
+      const gen = Number((await lanes()).find((lane) => lane.id === released.run.id)?.gen);
+      expect(sent[1]).toMatchObject({ expect: { kind: "none" }, want: { kind: "floor" }, gen });
+      expect(named("fsn-2").copy).toBeNull();
+    });
+
+    it("a staged run that took a warm Move whose cut flipped floors A and promotes it back to the writer before it plans", async () => {
+      const G = newSnap("f-1");
+      containers = [{ machine: "fsn-1", id: "web-fsn-1", running: false }];
+      named("fsn-1").copy = slotCopy(G, null, "3");
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(G) };
+      await move();
+      const staged = await runEffect(requestVolumeRun({ userId, organizationId }, { volumeId, environment, kind: "mirror", args: { to: "fsn-2" } }, { end: "yielded" }));
+      if (!staged.ok) throw new Error(staged.refusal.message);
+      const run = staged.run;
+
+      await deliver(run.id, "run-2");
+
+      expect(verbs.slice(0, 2)).toEqual(["floor@fsn-1", "writer@fsn-1(kept)"]);
+      expect(sent[1]).toMatchObject({
+        expect: { kind: "mirror", newest: G.guid },
+        want: { kind: "writer", at: G.guid, start: { kind: "kept", container_id: "web-fsn-1" } },
+        gen: sent[0]?.gen,
+      });
+      expect(named("fsn-1").copy).toMatchObject({ kind: "root", readonly: false, newest: G });
+      expect(containers).toEqual([{ machine: "fsn-1", id: "web-fsn-1", running: true }]);
+      expect(await lanes()).toMatchObject([{ kind: "move", state: "yielded" }, { id: run.id, state: "done" }]);
+    });
+
+    it("a staged Restore that took a warm Move whose cut flipped, then fails its plan, leaves the Service started on A", async () => {
+      const G = newSnap("f-1");
+      containers = [{ machine: "fsn-1", id: "web-fsn-1", running: false }];
+      named("fsn-1").copy = slotCopy(G, null, "3");
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(G) };
+      await move();
+      const staged = await runEffect(requestVolumeRun({ userId, organizationId }, { volumeId, environment, kind: "restore", args: { from: "fsn-2" } }, { end: "yielded" }));
+      if (!staged.ok) throw new Error(staged.refusal.message);
+
+      await deliver(staged.run.id, "run-2");
+
+      expect(verbs).toEqual(["floor@fsn-1", "writer@fsn-1(kept)"]);
+      expect(containers).toEqual([{ machine: "fsn-1", id: "web-fsn-1", running: true }]);
+      expect(await lanes()).toMatchObject([{ kind: "move", state: "yielded" }, { id: staged.run.id, state: "failed" }]);
+    });
+  });
+
+  describe("a Server leaving", () => {
+    const lanes = async () => (await harness.pool.query(
+      "select id, kind, state, phase, message from volume_run order by gen")).rows as Array<{ id: string; kind: string; state: string; phase: string; message: string | null }>;
+    const fsn = (name: string) => ({ id: idOf(name), name });
+    const warmMove = async () => {
+      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
+      await harness.pool.query("update volume_run set state = 'running', inngest_run_id = 'run-1' where id = $1", [run.id]);
+      return run;
+    };
+    const releaseRow = async () => {
+      const [lane] = (await lanes()).filter((row) => row.kind === "release");
+      if (lane === undefined) throw new Error("no release requested");
+      return lane;
+    };
+
+    it("removing the target of a warm Move takes its lane with a release, and the Service stays on A", async () => {
+      const move = await warmMove();
+
+      expect(await runEffect(releaseLanesOff(organizationId, fsn("fsn-2"), []))).toHaveLength(1);
+
+      expect(await lanes()).toMatchObject([
+        { id: move.id, state: "cancelled", message: "volume release took this run over" },
+        { kind: "release", state: "requested" },
+      ]);
+      machines = machines.filter((fake) => fake.name !== "fsn-2");
+      const output = await execute((await releaseRow()).id, "run-2");
+      expect(output.result).toMatchObject({ released: "fsn-1" });
+      expect(containers).toEqual([{ machine: "fsn-1", id: "web-fsn-1", running: true }]);
+    });
+
+    it("a Server neither bound for nor writing a lane's Volume leaves the lane alone, and a second pass takes nothing", async () => {
+      await warmMove();
+
+      expect(await runEffect(releaseLanesOff(organizationId, fsn("fsn-3"), []))).toEqual([]);
+      expect(await lanes()).toMatchObject([{ kind: "move", state: "running" }]);
+
+      await runEffect(releaseLanesOff(organizationId, fsn("fsn-2"), []));
+      expect(await runEffect(releaseLanesOff(organizationId, fsn("fsn-2"), [dockerVolume]))).toEqual([]);
+      expect(await lanes()).toMatchObject([{ kind: "move", state: "cancelled" }, { kind: "release", state: "requested" }]);
+    });
+
+    it("a run that starts after the read, once the Move it saw ended, is not the one a leaving Server takes", async () => {
+      const move = await warmMove();
+      const other = await harness.pool.connect();
+      try {
+        await other.query("begin");
+        await other.query("select id from volume_run where id = $1 for update", [move.id]);
+        const releasing = runEffect(releaseLanesOff(organizationId, fsn("fsn-2"), []));
+        while ((await harness.pool.query("select 1 from pg_stat_activity where wait_event_type = 'Lock'")).rowCount === 0) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        await other.query("update volume_run set state = 'done', finished_at = now() where id = $1", [move.id]);
+        await other.query(`
+          insert into volume_run (id, organization_id, environment_id, volume_id, volume_name, docker_volume, refquota_bytes, kind, args, state, inngest_run_id)
+          select gen_random_uuid(), organization_id, environment_id, volume_id, volume_name, docker_volume, refquota_bytes, 'mirror', '{"to":"fsn-3"}', 'running', 'run-9'
+          from volume_run where id = $1`, [move.id]);
+        await other.query("commit");
+
+        expect(await releasing).toEqual([]);
+      } finally {
+        other.release();
+      }
+      expect(await lanes()).toMatchObject([{ id: move.id, state: "done" }, { kind: "mirror", state: "running" }]);
+    });
+
+    it("removing the source of a warm Move releases, and the release names B's copy to restore from", async () => {
+      const at = newSnap("f-1");
+      await warmMove();
+
+      expect(await runEffect(releaseLanesOff(organizationId, fsn("fsn-1"), [dockerVolume]))).toHaveLength(1);
+      machines = [{ name: "fsn-2", pool: true, copy: slotCopy(at) }];
+      containers = [];
+      await execute((await releaseRow()).id, "run-2");
+
+      expect(await releaseRow()).toMatchObject({
+        state: "failed", message: "data has no writer and no stopped Service on its copies; ployz volume restore data --from fsn-2",
+      });
+    });
+
+    it("removing B after the Move committed fails the release forward and names A's copy to restore from", async () => {
+      const at = newSnap("f-1");
+      const move = await warmMove();
+      await harness.pool.query("update volume_run set state = 'cancelled', phase = 'committed', current = $2 where id = $1", [move.id, idOf("fsn-2")]);
+      const release = await requested({ kind: "release", args: {} });
+      await harness.pool.query("update volume_run set phase = 'committed', current = $2 where id = $1", [release.id, idOf("fsn-2")]);
+      machines = [{ name: "fsn-1", pool: true, copy: slotCopy(at) }];
+
+      await execute(release.id, "run-2");
+
+      expect(await releaseRow()).toMatchObject({
+        state: "failed", message: "data's writer was on fsn-2 (removed). Restore from fsn-1's copy: ployz volume restore data --from fsn-1",
+      });
+    });
+  });
+
+  describe("lane gen", () => {
+    const gens = async () => (await harness.pool.query(
+      "select gen from volume_run where volume_id = $1 order by created_at, id", [volumeId])).rows.map((row: { gen: string }) => Number(row.gen));
+
+    it("rises with each run on a Volume", async () => {
+      const first = await requested({ kind: "sync", args: { full: false } });
+      await execute(first.id, "run-1");
+      const second = await requested({ kind: "sync", args: { full: false } });
+      await execute(second.id, "run-2");
+      await requested({ kind: "sync", args: { full: false } });
+
+      const [a = 0, b = 0, c = 0] = await gens();
+      expect(b).toBeGreaterThan(a);
+      expect(c).toBeGreaterThan(b);
+    });
+
+    it("never gives two inserts on one Volume the same number, even while both are open", async () => {
+      const lane = await Promise.all([1, 2].map(() => request({ kind: "sync", args: { full: false } })));
+      expect(lane.filter((result) => result.ok)).toHaveLength(1);
+      expect(await gens()).toHaveLength(1);
+
+      const insert = (client: { query: typeof harness.pool.query }) => client.query(
+        `insert into volume_run (organization_id, environment_id, volume_id, volume_name, docker_volume, kind, args, state)
+         values ($1, 'env-1', $2, 'data', $3, 'sync', '{"full":false}', 'done') returning gen`,
+        [organizationId, volumeId, dockerVolume]);
+      const one = await harness.pool.connect();
+      const two = await harness.pool.connect();
+      try {
+        await one.query("begin");
+        await two.query("begin");
+        await Promise.all([insert(one), insert(two)]);
+        await Promise.all([one.query("commit"), two.query("commit")]);
+      } finally {
+        one.release();
+        two.release();
+      }
+      const all = await gens();
+      expect(all).toHaveLength(3);
+      expect(new Set(all).size).toBe(3);
+    });
+
+    it("cannot be chosen by a writer", async () => {
+      await expect(harness.pool.query(
+        `insert into volume_run (organization_id, environment_id, volume_id, volume_name, docker_volume, kind, args, gen)
+         values ($1, 'env-1', $2, 'data', $3, 'sync', '{"full":false}', 1)`,
+        [organizationId, volumeId, dockerVolume])).rejects.toThrow(/gen/);
+    });
+
+    it("rides on every SetVolumeCopy a full Move sends", async () => {
+      first(machines).writes = 1;
+      const move = await requested({ kind: "move", args: { to: "fsn-2" } });
+
+      await execute(move.id);
+
+      const [gen] = await gens();
+      expect(verbs.at(-2)).toBe("writer@fsn-2(create)");
+      expect(sent.map((payload) => payload.gen)).toEqual(sent.map(() => gen));
+    });
+
+    it("is the gen of the row that sent it, so a Move's release sends its own", async () => {
+      failNext.set("cut@fsn-1", "written");
+      const move = await requested({ kind: "move", args: { to: "fsn-2" } });
+      await execute(move.id);
+      const fromMove = sent.length;
+
+      await execute((await releaseRow()).id, "run-2");
+
+      const [moveGen = 0, releaseGen = 0] = await gens();
+      expect(releaseGen).toBeGreaterThan(moveGen);
+      expect(sent.slice(0, fromMove).map((payload) => payload.gen)).toEqual(sent.slice(0, fromMove).map(() => moveGen));
+      expect(sent.slice(fromMove).map((payload) => payload.gen)).toEqual([releaseGen, releaseGen, releaseGen]);
+    });
+
+    it("starts a new row warm", async () => {
+      await requested({ kind: "mirror", args: { to: "fsn-2" } });
+
+      expect((await harness.pool.query("select phase from volume_run")).rows).toEqual([{ phase: "warm" }]);
+    });
+  });
+
+  describe("claim by row", () => {
+    it("a duplicate event for a finished row exits at the claim and leaves the row as the first run left it", async () => {
+      const run = await requested({ kind: "mirror", args: { to: "fsn-2" } });
+      await execute(run.id, "run-1");
+      const before = await rows();
+      verbs = [];
+
+      const duplicate = await execute(run.id, "run-duplicate");
+
+      expect(duplicate.result).toEqual({ runId: run.id, settled: "done" });
+      expect(verbs).toEqual([]);
+      expect(await rows()).toEqual(before);
+    });
+
+    it("two events for one row at once run it once", async () => {
+      const run = await requested({ kind: "mirror", args: { to: "fsn-2" } });
+
+      const both = await Promise.all([execute(run.id, "run-1"), execute(run.id, "run-2")]);
+
+      expect(both.map((output) => output.result).filter((result) => expect.objectContaining({ settled: expect.any(String) }).asymmetricMatch(result))).toHaveLength(1);
+      const [row] = await rows();
+      expect(row).toMatchObject({ state: "done" });
+      expect(["run-1", "run-2"]).toContain(row?.inngest_run_id);
+    });
+  });
+
+  describe("lane sweep", () => {
+    const old = "now() - interval '20 minutes'";
+    const insert = (volume: string, state: string, run: string | null, at: string) => harness.pool.query(
+      `insert into volume_run (organization_id, environment_id, volume_id, volume_name, docker_volume, kind, args, state, inngest_run_id, created_at, updated_at)
+       values ($1, 'env-1', $2, 'data', 'd', 'move', '{"to":"fsn-2"}', $3, $4, ${at}, ${at})`,
+      [organizationId, volume, state, run]);
+    const byVolume = async () => Object.fromEntries((await harness.pool.query(
+      "select volume_id, state, message from volume_run")).rows.map((row: { volume_id: string; state: string; message: string | null }) =>
+      [row.volume_id, [row.state, row.message]]));
+
+    it("closes an unclaimed requested row after the grace period as never delivered, and leaves a fresh one", async () => {
+      await insert("v-old", "requested", null, old);
+      await insert("v-fresh", "requested", null, "now() - interval '1 minute'");
+
+      const swept = await runEffect(closeStaleVolumeRuns(() => Effect.succeed("running" as const)));
+
+      expect(swept).toEqual({ not_started: 1, closed: 0 });
+      expect(await byVolume()).toEqual({ "v-old": ["not_started", "event never delivered"], "v-fresh": ["requested", null] });
+    });
+
+    const lane = async (volume: string) => (await harness.pool.query(
+      "select kind, state, phase, current, epoch from volume_run where volume_id = $1 order by created_at, id", [volume])).rows;
+
+    it("a warm Move whose Inngest run is over ends and starts the release back to A, and a live one is left", async () => {
+      await insert("v-over", "running", "r-over", old);
+      await insert("v-live", "running", "r-live", old);
+
+      const swept = await runEffect(closeStaleVolumeRuns((runId) => Effect.succeed(runId === "r-over" ? "cancelled" as const : "running" as const)));
+
+      expect(swept).toEqual({ not_started: 0, closed: 1 });
+      expect(await lane("v-over")).toEqual([
+        { kind: "move", state: "cancelled", phase: "warm", current: null, epoch: null },
+        { kind: "release", state: "requested", phase: "warm", current: null, epoch: null },
+      ]);
+      expect(await lane("v-live")).toEqual([{ kind: "move", state: "running", phase: "warm", current: null, epoch: null }]);
+      expect(send).toHaveBeenCalledWith(expect.objectContaining({ name: "volume/run.requested", data: expect.objectContaining({ volumeId: "v-over" }) }));
+    });
+
+    it("a committed Move whose Inngest run is over starts the release forward to B, at the Move's epoch", async () => {
+      await insert("v-over", "running", "r-over", old);
+      await harness.pool.query("update volume_run set phase = 'committed', current = $1, epoch = 3", [idOf("fsn-2")]);
+
+      await runEffect(closeStaleVolumeRuns(() => Effect.succeed("cancelled" as const)));
+
+      expect(await lane("v-over")).toEqual([
+        { kind: "move", state: "cancelled", phase: "committed", current: idOf("fsn-2"), epoch: "3" },
+        { kind: "release", state: "requested", phase: "committed", current: idOf("fsn-2"), epoch: "3" },
+      ]);
+    });
+
+    it("a Deploy whose Inngest run is over ends and requests the move it took over again, once", async () => {
+      const deploy = (volume: string, resume: string) => harness.pool.query(
+        `insert into volume_run (organization_id, environment_id, volume_id, volume_name, docker_volume, kind, args, state, inngest_run_id, created_at, updated_at)
+         values ($1, 'env-1', $2, 'data', 'd', 'deploy', $3, 'running', 'r-deploy', ${old}, ${old})`,
+        [organizationId, volume, `{"deployment":"d-1","resume":${resume}}`]);
+      await deploy("v-took", '{"to":"fsn-2"}');
+      await deploy("v-plain", "null");
+
+      const swept = await runEffect(closeStaleVolumeRuns(() => Effect.succeed("failed" as const)));
+
+      expect(swept).toEqual({ not_started: 0, closed: 2 });
+      expect(await lane("v-took")).toEqual([
+        { kind: "deploy", state: "failed", phase: "warm", current: null, epoch: null },
+        { kind: "move", state: "requested", phase: "warm", current: null, epoch: null },
+      ]);
+      expect(await lane("v-plain")).toEqual([{ kind: "deploy", state: "failed", phase: "warm", current: null, epoch: null }]);
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(send).toHaveBeenCalledWith(expect.objectContaining({ name: "volume/run.requested", data: expect.objectContaining({ volumeId: "v-took" }) }));
+      expect(await runEffect(closeStaleVolumeRuns(() => Effect.succeed("failed" as const)))).toEqual({ not_started: 0, closed: 0 });
+    });
+  });
+
+  describe("stale", () => {
+    it("a Stale reply ends the run at once, with no retry and no release", async () => {
+      failNext.set("cut@fsn-1", "stale");
+      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
+
+      const output = await execute(run.id);
+
+      expect(output.error).toBeDefined();
+      expect(verbs.filter((verb) => verb.startsWith("cut@"))).toEqual(["cut@fsn-1(f-1)"]);
+      expect(verbs.at(-1)).toBe("cut@fsn-1(f-1)");
+      expect(await rows()).toEqual([expect.objectContaining({ kind: "move", state: "failed", message: "a newer run took data on fsn-1" })]);
+      expect(send).toHaveBeenCalledTimes(1);
+    });
+
+    it("a Stale reply to a run whose row was taken over leaves the row as the taker left it", async () => {
+      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
+      beforeSet.set("cut@fsn-1", async () => {
+        await harness.pool.query("update volume_run set inngest_run_id = 'run-taker' where id = $1", [run.id]);
+        failNext.set("cut@fsn-1", "stale");
+      });
+
+      const output = await execute(run.id);
+
+      expect(output.error).toBeDefined();
+      expect(verbs.at(-1)).toBe("cut@fsn-1(f-1)");
+      expect(await rows()).toEqual([expect.objectContaining({ kind: "move", state: "running", inngest_run_id: "run-taker", message: null, finished_at: null })]);
+    });
+
+    it("a run that loses the commit stops like a Stale run, and never tells B to start", async () => {
+      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
+      const takeOverOnPull = (pulls: number): void => {
+        beforeSet.set("pull@fsn-2", async () => {
+          if (pulls > 1) return takeOverOnPull(pulls - 1);
+          await harness.pool.query("update volume_run set inngest_run_id = 'run-taker' where id = $1", [run.id]);
+        });
+      };
+      takeOverOnPull(4);
+
+      const output = await execute(run.id);
+
+      expect(output.error).toBeDefined();
+      expect(verbs.at(-1)).toBe("pull@fsn-2(f-1)");
+      expect(verbs.some((verb) => verb.startsWith("writer@"))).toBe(false);
+      expect(await rows()).toEqual([expect.objectContaining({ kind: "move", state: "running", phase: "warm", inngest_run_id: "run-taker" })]);
+    });
+  });
+
+  describe("commit", () => {
+    const B = idOf("fsn-2");
+    const owned = async () => {
+      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
+      await running(run.id);
+      return { ...context(run.id), kind: "move" as const, args: { to: "fsn-2" } };
+    };
+
+    it("wins once, and again on a replay for the run that won it", async () => {
+      const ctx = await owned();
+
+      expect(await runEffect(commitMove(ctx, "run-1", B))).toBe(true);
+      expect(await runEffect(commitMove(ctx, "run-1", B))).toBe(true);
+      expect(await rows()).toMatchObject([{ phase: "committed", current: B, state: "running" }]);
+    });
+
+    it("refuses a row already committed to another Machine", async () => {
+      const ctx = await owned();
+      await runEffect(commitMove(ctx, "run-1", B));
+
+      expect(await runEffect(commitMove(ctx, "run-1", idOf("fsn-3")))).toBe(false);
+      expect(await rows()).toMatchObject([{ phase: "committed", current: B }]);
+    });
+
+    it("refuses a run whose row was taken over, and sends B nothing", async () => {
+      const ctx = await owned();
+      await harness.pool.query("update volume_run set inngest_run_id = 'run-taker' where id = $1", [ctx.id]);
+
+      expect(await runEffect(commitMove(ctx, "run-1", B))).toBe(false);
+      const answer = await runEffect(commitAndStart(ctx, "run-1", { to: { id: B, name: "fsn-2" }, from: null, expect: { kind: "none" }, at: base.guid, epoch: 1 }));
+
+      expect(answer).toMatchObject({ ok: false, reason: "stale" });
+      expect(verbs).toEqual([]);
+      expect(await rows()).toMatchObject([{ phase: "warm", current: null, inngest_run_id: "run-taker" }]);
+    });
+
+    it("refuses a run whose row was taken over after the commit, and sends B nothing", async () => {
+      const ctx = await owned();
+      containers = [{ machine: "fsn-1", id: "web-fsn-1", running: false }];
+      beforeStart = async () => { await harness.pool.query("update volume_run set inngest_run_id = 'run-taker' where id = $1", [ctx.id]); };
+
+      await expect(runEffect(commitAndStart(ctx, "run-1", { to: { id: B, name: "fsn-2" }, from: null, expect: { kind: "none" }, at: base.guid, epoch: 1 })))
+        .rejects.toThrow(/no longer owns/);
+      expect(verbs).toEqual([]);
+      expect(await rows()).toMatchObject([{ phase: "committed", current: B, inngest_run_id: "run-taker" }]);
+    });
+
+    it("starts B from A's stopped Container, not a newer one another Machine keeps", async () => {
+      const ctx = await owned();
+      machines.push({ name: "fsn-3", pool: true, copy: null });
+      containers = [{ machine: "fsn-1", id: "web-fsn-1", running: false, created: 1 }, { machine: "fsn-3", id: "web-fsn-3", running: false, created: 2 }];
+      const A = { id: idOf("fsn-1"), name: "fsn-1" };
+
+      await runEffect(commitAndStart(ctx, "run-1", { to: { id: B, name: "fsn-2" }, from: A, expect: { kind: "none" }, at: base.guid, epoch: 1 }));
+
+      expect(sent.at(-1)?.want).toMatchObject({ kind: "writer", start: { kind: "create", resolved_spec: { container: { environment: { POSTGRES_PASSWORD: "secret-fsn-1" } } } } });
+    });
+
+    it("with no source named, refuses to guess between stopped Containers on two Machines", async () => {
+      const ctx = await owned();
+      machines.push({ name: "fsn-3", pool: true, copy: null });
+      containers = [{ machine: "fsn-1", id: "web-fsn-1", running: false, created: 1 }, { machine: "fsn-3", id: "web-fsn-3", running: false, created: 2 }];
+
+      await expect(runEffect(commitAndStart(ctx, "run-1", { to: { id: B, name: "fsn-2" }, from: null, expect: { kind: "none" }, at: base.guid, epoch: 1 })))
+        .rejects.toThrow("data has 2 stopped Service containers on fsn-1 and fsn-3; starting it on fsn-2 needs exactly one");
+      expect(verbs).toEqual([]);
+    });
+  });
+
+  describe("on failure", () => {
+    const B = idOf("fsn-2");
+    const owned = async (phase: "warm" | "committed") => {
+      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
+      await harness.pool.query(
+        "update volume_run set state = 'running', inngest_run_id = 'run-1', phase = $2, current = $3, epoch = 4 where id = $1",
+        [run.id, phase, phase === "committed" ? B : null]);
+      return run;
+    };
+
+    it("on a warm row starts a release back to A", async () => {
+      const G = newSnap("f-1");
+      named("fsn-1").copy = slotCopy(G);
+      for (const container of containers) container.running = false;
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(G, null, "2") };
+      await owned("warm");
+
+      expect(await runEffect(closeVolumeRun("run-1", "failure"))).toBe(1);
+      expect(await rows()).toMatchObject([{ kind: "move", state: "failed" }, { kind: "release", state: "requested", phase: "warm", current: null, epoch: null }]);
+      await execute((await releaseRow()).id, "run-2");
+
+      expect(verbs).toEqual(["floor@fsn-1", "floor@fsn-2", "forget@fsn-2", "writer@fsn-1(kept)"]);
+      expect(named("fsn-1").copy).toMatchObject({ kind: "root", readonly: false, newest: G });
+      expect(containers).toEqual([{ machine: "fsn-1", id: "web-fsn-1", running: true }]);
+    });
+
+    it("on a committed row finishes on B at the Move's epoch and removes A's stopped Container", async () => {
+      const G = newSnap("f-1");
+      named("fsn-1").copy = slotCopy(G);
+      for (const container of containers) container.running = false;
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(G, null, "2") };
+      await owned("committed");
+
+      expect(await runEffect(closeVolumeRun("run-1", "failure"))).toBe(1);
+      expect(await rows()).toMatchObject([{ kind: "move", state: "failed" }, { kind: "release", state: "requested", phase: "committed", current: B, epoch: "4" }]);
+      const output = await execute((await releaseRow()).id, "run-2");
+
+      expect(output.result).toMatchObject({ moved: "fsn-2" });
+      expect(verbs).toEqual(["writer@fsn-2(create)", "remove@fsn-1(web-fsn-1)"]);
+      expect(sent.at(-1)).toMatchObject({ want: { kind: "writer", at: G.guid, epoch: 4, start: { kind: "create", creation_key: `${volumeId}-${G.guid}` } } });
+      expect(named("fsn-2").copy).toMatchObject({ kind: "root", readonly: false, epoch: 4, newest: G });
+      expect(containers).toEqual([{ machine: "fsn-2", id: `created-${volumeId}-${G.guid}`, running: true }]);
+      expect((await releaseRow()).state).toBe("done");
+    });
+
+    it("on a committed row whose B already runs the Service only removes A's stopped Container", async () => {
+      const G = newSnap("f-1");
+      named("fsn-1").copy = slotCopy(G);
+      for (const container of containers) container.running = false;
+      machines[1] = { name: "fsn-2", pool: true, copy: writerCopy(G, 4) };
+      containers.push({ machine: "fsn-2", id: "created-1", running: true });
+      await owned("committed");
+
+      await runEffect(closeVolumeRun("run-1", "failure"));
+      await execute((await releaseRow()).id, "run-2");
+
+      expect(verbs).toEqual(["remove@fsn-1(web-fsn-1)"]);
+      expect(containers).toEqual([{ machine: "fsn-2", id: "created-1", running: true }]);
+    });
+
+    it("on a row it no longer owns does nothing", async () => {
+      const run = await owned("committed");
+      await harness.pool.query("update volume_run set inngest_run_id = 'run-taker' where id = $1", [run.id]);
+
+      expect(await runEffect(closeVolumeRun("run-1", "failure"))).toBe(0);
+      expect(await rows()).toEqual([expect.objectContaining({ kind: "move", state: "running", inngest_run_id: "run-taker" })]);
+      expect(send).toHaveBeenCalledTimes(1);
+    });
+
+    it("on a run of another kind ends it with no release", async () => {
+      const run = await requested({ kind: "sync", args: { full: false } });
+      await running(run.id);
+
+      expect(await runEffect(closeVolumeRun("run-1", "failure"))).toBe(1);
+      expect(await rows()).toEqual([expect.objectContaining({ kind: "sync", state: "failed" })]);
+    });
+  });
+
+  describe("yielded", () => {
+    it("reads back from volume runs and operation history", async () => {
+      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
+      await harness.pool.query(
+        "update volume_run set state = 'yielded', message = 'a Deploy took the Volume', finished_at = now() where id = $1", [run.id]);
+
+      expect(await runEffect(listVolumeRuns(organizationId, volumeId)))
+        .toMatchObject([{ id: run.id, state: "yielded", message: "a Deploy took the Volume" }]);
+      expect(await runEffect(operationsOn(organizationId, { kind: "volume", volume: volumeId }, null, 10)))
+        .toMatchObject([{ attempt: run.id, state: "superseded", reason: "a Deploy took the Volume" }]);
+    });
+  });
+
   describe("epoch", () => {
     it("takes one above the highest epoch a copy shows, in its root or its newest snapshot's name", async () => {
       machines = [
-        { name: "fsn-1", pool: true, copy: writerCopy(snap("10", "w-7-2"), 3) },
-        { name: "fsn-2", pool: true, copy: slotCopy(snap("10", "f-5")) },
+        { name: "fsn-1", pool: true, copy: writerCopy(snap("10", "w-7-2"), 3), writes: 1 },
+        { name: "fsn-2", pool: true, copy: null },
         { name: "fsn-3", pool: false, copy: null },
         { name: "docker-1", pool: false, stateless: true, copy: null, silent: true },
       ];
-      const run = await requested({ kind: "sync", args: { full: false } });
+      const run = await requested({ kind: "mirror", args: { to: "fsn-2" } });
 
       const output = await execute(run.id);
 
       expect(output.error).toBeUndefined();
       expect(await rows()).toMatchObject([{ epoch: "8", state: "done" }]);
-      expect(verbs).toEqual(["snapshot@fsn-1(w-8-0)"]);
+      expect(verbs).toContain("snapshot@fsn-1(w-8-0)");
     });
 
     it("takes one above every epoch this Volume's runs took, so a Machine reset can't reuse one", async () => {
@@ -583,7 +1371,7 @@ describe("volume runs", () => {
          values ($1, 'env-1', $2, 'data', $3, 'sync', '{"full":false}', 'done', 12, now())`,
         [organizationId, volumeId, dockerVolume]);
       machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
-      const run = await requested({ kind: "sync", args: { full: false } });
+      const run = await requested({ kind: "sync", args: { full: true } });
 
       await execute(run.id);
 
@@ -592,13 +1380,13 @@ describe("volume runs", () => {
 
     it("a replay reads back the epoch the run took", async () => {
       machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
-      const run = await requested({ kind: "sync", args: { full: false } });
+      const run = await requested({ kind: "sync", args: { full: true } });
       await harness.pool.query(`update volume_run set epoch = 40 where id = $1`, [run.id]);
 
       await execute(run.id);
 
       expect(await rows()).toMatchObject([{ epoch: "40", state: "done" }]);
-      expect(verbs).toEqual(["snapshot@fsn-1(w-40-0)"]);
+      expect(verbs).toContain("snapshot@fsn-1(w-40-0)");
     });
   });
 
@@ -610,7 +1398,7 @@ describe("volume runs", () => {
 
       expect(output.result).toEqual({ runId: run.id, rounds: 1 });
       expect(verbs).toEqual(["snapshot@fsn-1(w-1-0)", "pull@fsn-2(ployz-10)", "pull@fsn-2(ployz-10)", "snapshot@fsn-1(w-1-1)"]);
-      expect(sent[1]).toEqual({ name: dockerVolume, expect: { kind: "none" }, want: { kind: "mirror", from: expect.any(String), target: "ployz-10", drain: 3_000 } });
+      expect(sent[1]).toEqual({ name: dockerVolume, expect: { kind: "none" }, want: { kind: "mirror", from: expect.any(String), target: "ployz-10", drain: 3_000 }, gen: expect.any(Number) });
       expect(machines[1]?.copy).toMatchObject({ kind: "slot", newest: base, pull: null });
     });
 
@@ -639,6 +1427,30 @@ describe("volume runs", () => {
       expect(await rows()).toMatchObject([{ state: "failed", message: "data-fsn-2 could not receive ployz-10: disk full" }]);
     });
 
+    it("mirror: a pull that never lands gives up after six hours of checks backing off to five minutes", async () => {
+      machines[1] = { name: "fsn-2", pool: true, copy: null, pullFault: { target: "ployz-10", kind: "stall" } };
+      const run = await requested({ kind: "mirror", args: { to: "fsn-2" } });
+      const waits = PATIENCE_WAITS.map((_, check) => ({ id: `03-r0-backoff-${check}`, handler: () => undefined }));
+
+      await execute(run.id, "run-1", waits);
+
+      expect(verbs.filter((verb) => verb === "pull@fsn-2(ployz-10)")).toHaveLength(PATIENCE_WAITS.length + 1);
+      expect(await rows()).toMatchObject([{ state: "failed", message: "data-fsn-2 has not finished ployz-10 after 6h" }]);
+    });
+
+    it("mirror: a pull the 5 s checks started replays none of its checks into the new schedule, so it lands instead of giving up", async () => {
+      const run = await requested({ kind: "mirror", args: { to: "fsn-2" } });
+      const pulling = { ok: true, copy: slotCopy(null, { target: "ployz-10", failure: null }) };
+      const old = Array.from({ length: 100 }, (_, poll) => [
+        { id: `03-r0-wait-${poll}`, handler: () => undefined },
+        { id: `03-r0-repull-${poll}`, handler: () => pulling },
+      ]).flat();
+
+      await execute(run.id, "run-1", old);
+
+      expect(await rows()).toMatchObject([{ state: "done" }]);
+    });
+
     it("mirror: a Server without a Pool gets the mirror", async () => {
       machines[1] = { name: "fsn-2", pool: false, copy: null };
       const run = await requested({ kind: "mirror", args: { to: "fsn-2" } });
@@ -650,14 +1462,15 @@ describe("volume runs", () => {
       expect(await rows()).toMatchObject([{ state: "done", message: null }]);
     });
 
-    it("sync: a mirror already at the writer's newest needs no pull", async () => {
+    it("a plain sync row with one primary ends without touching a copy, since the mirror sync runs with no row", async () => {
       machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
       const run = await requested({ kind: "sync", args: { full: false } });
 
       const output = await execute(run.id);
 
       expect(output.result).toEqual({ runId: run.id, rounds: 0 });
-      expect(verbs).toEqual(["snapshot@fsn-1(w-1-0)"]);
+      expect(verbs).toEqual([]);
+      expect(await rows()).toMatchObject([{ state: "done" }]);
     });
 
     it("sync --full: forgets both copies' shared snapshots, then pulls from nothing", async () => {
@@ -762,18 +1575,28 @@ describe("volume runs", () => {
       expect(verbs.filter((verb) => verb.startsWith("cut@"))).toEqual(["cut@fsn-1(f-1)", "cut@fsn-1(f-1)"]);
     });
 
-    it("a cut refused as written undoes to A, which starts its kept Container", async () => {
+    it("a cut refused as written fails the Move and starts a release that leaves A writing and running", async () => {
       failNext.set("cut@fsn-1", "written");
       const run = await requested({ kind: "move", args: { to: "fsn-2" } });
 
       const output = await execute(run.id);
 
       expect(output.error).toBeDefined();
-      expect(verbs.slice(-2)).toEqual(["cut@fsn-1(f-1)", "writer@fsn-1(kept)"]);
-      expect(sent.at(-1)).toMatchObject({ expect: { kind: "writer", epoch: 0 }, want: { kind: "writer", epoch: 1 } });
-      expect(named("fsn-1").copy).toMatchObject({ kind: "root", readonly: false, epoch: 1 });
+      expect(verbs.at(-1)).toBe("cut@fsn-1(f-1)");
+      expect(await rows()).toMatchObject([
+        { kind: "move", state: "failed", message: "data on fsn-1 was written after its final snapshot" },
+        { kind: "release", state: "requested", phase: "warm" },
+      ]);
+      const release = await releaseRow();
+      expect(send).toHaveBeenLastCalledWith(expect.objectContaining({ id: `volume-run-${release.id}` }));
+
+      await execute(release.id, "run-2");
+
+      expect(verbs.at(-1)).toBe("writer@fsn-1(kept)");
+      expect(sent.at(-1)).toMatchObject({ expect: { kind: "writer", epoch: 0 }, want: { kind: "writer", epoch: 2 } });
+      expect(named("fsn-1").copy).toMatchObject({ kind: "root", readonly: false, epoch: 2 });
       expect(containers).toEqual([{ machine: "fsn-1", id: "web-fsn-1", running: true }]);
-      expect(await rows()).toMatchObject([{ state: "failed", message: "data on fsn-1 was written after its final snapshot" }]);
+      expect((await releaseRow()).state).toBe("done");
     });
 
     it("a cut whose reply was lost fails only the attempt, and the retry reads the cut as done", async () => {
@@ -793,18 +1616,22 @@ describe("volume runs", () => {
       expect(verbs).toEqual(["pull@fsn-2(f-1)", "pull@fsn-2(f-1)", "writer@fsn-2(create)", "remove@fsn-1(web-fsn-1)"]);
     });
 
-    it("a final pull that fails forgets nothing B lacks and makes A the writer again", async () => {
+    it("a final pull that fails releases back to A, forgetting nothing B lacks", async () => {
       machines[1] = { name: "fsn-2", pool: true, copy: null, pullFault: { target: "f-1", kind: "fail" } };
       const run = await requested({ kind: "move", args: { to: "fsn-2" } });
 
       const output = await execute(run.id);
+      await execute((await releaseRow()).id, "run-2");
 
       expect(output.error).toBeDefined();
-      expect(verbs.slice(-4)).toEqual(["cut@fsn-1(f-1)", "pull@fsn-2(f-1)", "pull@fsn-2(f-1)", "writer@fsn-1(kept)"]);
+      expect(verbs.slice(-6)).toEqual(["cut@fsn-1(f-1)", "pull@fsn-2(f-1)", "pull@fsn-2(f-1)", "floor@fsn-1", "floor@fsn-2", "writer@fsn-1(kept)"]);
       expect(verbs.filter((verb) => verb === "pull@fsn-2(f-1)")).toHaveLength(2);
-      expect(named("fsn-1").copy).toMatchObject({ kind: "root", readonly: false, epoch: 1, newest: at("f-1") });
+      expect(named("fsn-1").copy).toMatchObject({ kind: "root", readonly: false, epoch: 2, newest: at("f-1") });
       expect(machines.filter((fake) => fake.copy?.kind === "root")).toHaveLength(1);
-      expect(await rows()).toMatchObject([{ state: "failed", message: "data-fsn-2 could not receive f-1: disk full" }]);
+      expect(await rows()).toMatchObject([
+        { kind: "move", state: "failed", message: "data-fsn-2 could not receive f-1: disk full" },
+        { kind: "release", state: "done" },
+      ]);
     });
 
     it("a final pull a restart of B stopped resumes and lands", async () => {
@@ -816,6 +1643,56 @@ describe("volume runs", () => {
       expect(output.result).toEqual({ runId: run.id, moved: "fsn-2" });
       expect(verbs.filter((verb) => verb === "pull@fsn-2(f-1)")).toHaveLength(3);
       expect(named("fsn-2")).toMatchObject({ stopped: false, copy: { kind: "root", readonly: false, newest: at("f-1") } });
+    });
+
+    const landLatePullBeforeEachAsk = (times: number) => {
+      let landed = 0;
+      const land = () => {
+        landed += 1;
+        named("fsn-2").copy = slotCopy(newSnap(`w-0-${landed}`));
+        if (landed < times) beforeSet.set("pull@fsn-2", land);
+      };
+      beforeSet.set("pull@fsn-2", land);
+    };
+
+    it("a pull whose mirror moved since the run observed it asks again from the newest B holds, and the Move lands", async () => {
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
+      landLatePullBeforeEachAsk(1);
+      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
+
+      const output = await execute(run.id);
+
+      expect(output.result).toEqual({ runId: run.id, moved: "fsn-2" });
+      expect(sent.filter((payload) => payload.want.kind === "mirror" && payload.expect.kind === "mirror").slice(0, 2).map((payload) => payload.expect)).toEqual([
+        { kind: "mirror", newest: base.guid, slot: "1" },
+        { kind: "mirror", newest: at("w-0-1").guid, slot: "1" },
+      ]);
+      expect(named("fsn-2").copy).toMatchObject({ kind: "root", readonly: false, epoch: 1, newest: at("f-1") });
+      expect(await rows()).toMatchObject([{ state: "done" }]);
+    });
+
+    it("a pull whose mirror keeps moving fails the Move with B's refusal", async () => {
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
+      landLatePullBeforeEachAsk(10);
+      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
+
+      const output = await execute(run.id);
+
+      expect(output.error).toBeDefined();
+      expect(verbs.filter((verb) => verb.startsWith("pull@"))).toHaveLength(4);
+      expect(await rows()).toMatchObject([{ kind: "move", state: "failed", message: "data's copy on fsn-2 changed under this run" }, { kind: "release" }]);
+    });
+
+    it("a pull refused by a B that became a root fails the Move with B's refusal, asking once", async () => {
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
+      failNext.set("pull@fsn-2", new RawFault({ code: "failed_precondition", message: "mismatch", details: { reason: "mismatch", copy: writerCopy(base, 5) } }));
+      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
+
+      const output = await execute(run.id);
+
+      expect(output.error).toBeDefined();
+      expect(verbs.filter((verb) => verb.startsWith("pull@"))).toEqual(["pull@fsn-2(f-1)"]);
+      expect(await rows()).toMatchObject([{ kind: "move", state: "failed", message: "data's copy on fsn-2 changed under this run" }, { kind: "release" }]);
     });
 
     it("again after the cut continues from the final pull", async () => {
@@ -873,21 +1750,22 @@ describe("volume runs", () => {
     });
 
     it.each([
-      ["a writer at another snapshot", () => writerCopy(base, 5), "data-fsn-2 writes at a snapshot other than f-1"],
-      ["a read-only copy mid-cut", () => writerCopy(snapshots.get("f-1") ?? null, 5, true), "data-fsn-2 is a read-only copy mid-cut"],
-    ])("an undo that finds B %s refuses and never makes A the writer", async (_, became, state) => {
+      ["a writer at another snapshot", () => writerCopy(base, 5)],
+      ["a read-only copy mid-cut", () => writerCopy(snapshots.get("f-1") ?? null, 5, true)],
+    ])("a release that finds B %s never makes A the writer", async (_, became) => {
       cut(newSnap("f-1"));
       beforeSet.set("pull@fsn-2", () => { named("fsn-2").copy = became(); });
       failNext.set("pull@fsn-2", "no_capacity");
       const run = await requested({ kind: "move", args: { to: "fsn-2" } });
 
       const output = await execute(run.id);
+      await execute((await releaseRow()).id, "run-2");
 
       expect(output.error).toBeDefined();
-      expect(verbs).toEqual(["pull@fsn-2(f-1)"]);
+      expect(verbs[0]).toBe("pull@fsn-2(f-1)");
       expect(named("fsn-1").copy).toMatchObject({ kind: "slot" });
       expect(containers).toEqual([{ machine: "fsn-1", id: "web-fsn-1", running: false }]);
-      expect((await rows())[0]?.message).toContain(state);
+      expect(machines.filter((fake) => fake.copy?.kind === "root").map((fake) => fake.name)).toEqual(["fsn-2"]);
     });
 
     it("refuses a writer with no Service container, before any verb", async () => {
@@ -918,7 +1796,7 @@ describe("volume runs", () => {
       const output = await execute(run.id);
 
       expect(output.result).toEqual({ runId: run.id, released: "fsn-1" });
-      expect(verbs).toEqual(["writer@fsn-1(kept)"]);
+      expect(verbs).toEqual(["floor@fsn-1", "floor@fsn-2", "writer@fsn-1(kept)"]);
       expect(named("fsn-1").copy).toMatchObject({ kind: "root", readonly: false });
       expect(containers).toEqual([{ machine: "fsn-1", id: "web-fsn-1", running: true }]);
     });
@@ -943,7 +1821,7 @@ describe("volume runs", () => {
       const output = await execute(run.id);
 
       expect(output.error).toBeDefined();
-      expect(verbs).toEqual([]);
+      expect(verbs).toEqual(["floor@fsn-1", "floor@fsn-2"]);
       expect(named("fsn-1").copy).toMatchObject({ kind: "root", readonly: true });
       expect(await rows()).toMatchObject([{ state: "failed", message: "data on fsn-1 stopped before its first snapshot; volume move data --to <another server> again" }]);
     });
@@ -955,7 +1833,7 @@ describe("volume runs", () => {
       const output = await execute(run.id);
 
       expect(output.result).toEqual({ runId: run.id, released: "fsn-1" });
-      expect(verbs).toEqual(["writer@fsn-1(kept)"]);
+      expect(verbs).toEqual(["floor@fsn-1", "floor@fsn-2", "writer@fsn-1(kept)"]);
       expect(machines[1]?.copy).toEqual(slotCopy(base));
     });
 
@@ -968,7 +1846,7 @@ describe("volume runs", () => {
       const output = await execute(run.id);
 
       expect(output.result).toEqual({ runId: run.id, released: "fsn-2" });
-      expect(verbs).toEqual(["writer@fsn-2(kept)", "remove@fsn-1(web-fsn-1)"]);
+      expect(verbs).toEqual(["floor@fsn-1", "floor@fsn-2", "writer@fsn-2(kept)", "remove@fsn-1(web-fsn-1)"]);
     });
 
     it("with only slots, forgets B's copy at G before A becomes the writer again", async () => {
@@ -979,7 +1857,7 @@ describe("volume runs", () => {
       const output = await execute(run.id);
 
       expect(output.result).toEqual({ runId: run.id, released: "fsn-1" });
-      expect(verbs).toEqual(["forget@fsn-2", "writer@fsn-1(kept)"]);
+      expect(verbs).toEqual(["floor@fsn-1", "floor@fsn-2", "forget@fsn-2", "writer@fsn-1(kept)"]);
       expect(named("fsn-1").copy).toMatchObject({ kind: "root", readonly: false, epoch: 2, newest: at });
       expect(machines[1]?.copy).toBeNull();
     });
@@ -991,8 +1869,9 @@ describe("volume runs", () => {
       await execute(release.id);
       const move = await requested({ kind: "move", args: { to: "fsn-2" } });
       await running(move.id);
+      const { rows: [row] } = await harness.pool.query("select gen from volume_run where id = $1", [move.id]) as { rows: Array<{ gen: string }> };
 
-      const late = await runEffect(setVolumeCopy({ ...context(move.id), kind: "move", args: { to: "fsn-2" } }, "run-1", { id: idOf("fsn-2"), name: "fsn-2" }, { kind: "mirror", newest: at.guid, slot: "1" }, {
+      const late = await runEffect(setVolumeCopy({ ...context(move.id), kind: "move", args: { to: "fsn-2" }, gen: Number(row?.gen) }, "run-1", { id: idOf("fsn-2"), name: "fsn-2" }, { kind: "mirror", newest: at.guid, slot: "1" }, {
         kind: "writer",
         at: at.guid,
         epoch: 1,
@@ -1003,47 +1882,18 @@ describe("volume runs", () => {
       expect(machines.filter((fake) => fake.copy?.kind === "root" && !fake.copy.readonly).map((fake) => fake.name)).toEqual(["fsn-1"]);
     });
 
-    it("with only slots, a B that became the writer and runs the Service meanwhile sends the Move forward", async () => {
-      const at = G();
-      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(at) };
-      beforeSet.set("forget@fsn-2", () => {
-        named("fsn-2").copy = writerCopy(at, 1);
-        containers.push({ machine: "fsn-2", id: "created-1", running: true });
-      });
-      const run = await requested({ kind: "release", args: {} });
-
-      const output = await execute(run.id);
-
-      expect(output.result).toEqual({ runId: run.id, released: null });
-      expect(verbs).toEqual(["forget@fsn-2", "remove@fsn-1(web-fsn-1)"]);
-    });
-
-    it("with only slots, a B that became the writer but runs nothing gets B's start again before A's Container goes", async () => {
+    it("with only slots, a B that became the writer meanwhile refuses the forget, and A's Container stays stopped", async () => {
       const at = G();
       machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(at) };
       beforeSet.set("forget@fsn-2", () => { named("fsn-2").copy = writerCopy(at, 1); });
-      const run = await requested({ kind: "release", args: {} });
-
-      const output = await execute(run.id);
-
-      expect(output.result).toEqual({ runId: run.id, released: null });
-      expect(verbs).toEqual(["forget@fsn-2", "writer@fsn-2(create)", "remove@fsn-1(web-fsn-1)"]);
-      expect(sent.at(-1)).toMatchObject({ expect: { kind: "writer", epoch: 1 }, want: { kind: "writer", at: at.guid, epoch: 1, start: { kind: "create", creation_key: `${volumeId}-${at.guid}` } } });
-      expect(containers).toEqual([{ machine: "fsn-2", id: `created-${volumeId}-${at.guid}`, running: true }]);
-    });
-
-    it("with only slots, a B start that fails keeps A's Container, so the Service is not down on both Machines", async () => {
-      const at = G();
-      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(at) };
-      beforeSet.set("forget@fsn-2", () => { named("fsn-2").copy = writerCopy(at, 1); });
-      failNext.set("writer@fsn-2", "no_capacity");
       const run = await requested({ kind: "release", args: {} });
 
       const output = await execute(run.id);
 
       expect(output.error).toBeDefined();
-      expect(verbs).toEqual(["forget@fsn-2", "writer@fsn-2(create)"]);
+      expect(verbs).toEqual(["floor@fsn-1", "floor@fsn-2", "forget@fsn-2"]);
       expect(containers).toEqual([{ machine: "fsn-1", id: "web-fsn-1", running: false }]);
+      expect(machines.filter((fake) => fake.copy?.kind === "root").map((fake) => fake.name)).toEqual(["fsn-2"]);
       expect(await rows()).toMatchObject([{ state: "failed" }]);
     });
 
@@ -1055,8 +1905,8 @@ describe("volume runs", () => {
 
       await execute(run.id);
 
-      expect(verbs).toEqual([]);
-      expect(await rows()).toMatchObject([{ state: "failed", message: "data has no writer and no stopped Service on its copies; volume restore data --from <server>" }]);
+      expect(verbs).toEqual(["floor@fsn-1", "floor@fsn-2"]);
+      expect(await rows()).toMatchObject([{ state: "failed", message: "data has no writer and no stopped Service on its copies; ployz volume restore data --from fsn-1" }]);
     });
   });
 
@@ -1066,61 +1916,60 @@ describe("volume runs", () => {
       const request = held.get(key);
       if (request === undefined) throw new Error(`nothing held for ${key}`);
       held.delete(key);
-      request();
+      const refused = request();
       inspect(named("fsn-2"));
+      return refused;
     };
 
-    const endTwoRuns = async () => {
+    it("a committed Move cancelled while B's start is in flight finishes on B, and the late start changes nothing", async () => {
       failNext.set("writer@fsn-2", "held");
       const move = await requested({ kind: "move", args: { to: "fsn-2" } });
       await execute(move.id, "run-1");
       const G = snapshots.get("f-1");
       expect(sent.at(-1)).toMatchObject({ expect: { kind: "mirror", newest: G?.guid }, want: { kind: "writer", at: G?.guid } });
       await runEffect(closeVolumeRun("run-1", "cancellation"));
+      expect(await rows()).toMatchObject([
+        { kind: "move", state: "cancelled", phase: "committed", current: idOf("fsn-2") },
+        { kind: "release", state: "requested", phase: "committed", current: idOf("fsn-2"), epoch: "1" },
+      ]);
 
-      const release = await requested({ kind: "release", args: {} });
-      await execute(release.id, "run-2");
-      expect(verbs.slice(-2)).toEqual(["forget@fsn-2", "writer@fsn-1(kept)"]);
+      await execute((await releaseRow()).id, "run-2");
 
-      failNext.set("pull@fsn-2", "held");
-      const mirror = await requested({ kind: "mirror", args: { to: "fsn-2" } });
-      await execute(mirror.id, "run-3");
-      expect(sent.at(-1)).toMatchObject({ expect: { kind: "none" }, want: { kind: "mirror", target: "f-1" } });
-      await runEffect(closeVolumeRun("run-3", "cancellation"));
-    };
+      expect(verbs.slice(-2)).toEqual(["writer@fsn-2(create)", "remove@fsn-1(web-fsn-1)"]);
+      expect(land("writer@fsn-2")).toBeNull();
+      expect(writable()).toEqual(["fsn-2"]);
+      expect(containers).toEqual([{ machine: "fsn-2", id: `created-${volumeId}-${G?.guid}`, running: true }]);
+    });
 
-    it("two ended runs whose requests land late, B's start then B's pull, leave one writable root", async () => {
-      await endTwoRuns();
+    it("a warm Move cancelled mid final pull releases back to A, and the late pull leaves one writable root", async () => {
+      beforeSet.set("cut@fsn-1", () => { failNext.set("pull@fsn-2", "held"); });
+      const move = await requested({ kind: "move", args: { to: "fsn-2" } });
+      await execute(move.id, "run-1");
+      expect(sent.at(-1)).toMatchObject({ want: { kind: "mirror", target: "f-1" } });
+      await runEffect(closeVolumeRun("run-1", "cancellation"));
 
-      land("writer@fsn-2");
+      await execute((await releaseRow()).id, "run-2");
+      expect(verbs.at(-1)).toBe("writer@fsn-1(kept)");
       land("pull@fsn-2");
 
       expect(writable()).toEqual(["fsn-1"]);
+      expect(containers).toEqual([{ machine: "fsn-1", id: "web-fsn-1", running: true }]);
     });
 
-    it("two ended runs whose requests land late, B's pull then B's start, leave one writable root", async () => {
-      await endTwoRuns();
-
-      land("pull@fsn-2");
-      land("writer@fsn-2");
-
-      expect(named("fsn-2").copy).toMatchObject({ kind: "slot", newest: snapshots.get("f-1") });
-      expect(writable()).toEqual(["fsn-1"]);
-    });
-
-    it("a cut from an ended run that lands after the undo before the cut refuses, and A keeps writing and running", async () => {
+    it("a cut from an ended run that lands after the release refuses, and A keeps writing and running", async () => {
       failNext.set("cut@fsn-1", "held");
       const move = await requested({ kind: "move", args: { to: "fsn-2" } });
       await execute(move.id, "run-1");
       failNext.set("cut@fsn-1", "written");
       await execute(move.id, "run-1");
-      expect(await rows()).toMatchObject([{ state: "failed", epoch: "1" }]);
+      expect(await rows()).toMatchObject([{ kind: "move", state: "failed", epoch: "1" }, { kind: "release", state: "requested" }]);
 
+      await execute((await releaseRow()).id, "run-2");
       const refused = held.get("cut@fsn-1");
       held.delete("cut@fsn-1");
 
       expect(refused?.()).toBe("mismatch");
-      expect(named("fsn-1").copy).toMatchObject({ kind: "root", readonly: false, epoch: 1 });
+      expect(named("fsn-1").copy).toMatchObject({ kind: "root", readonly: false, epoch: 2 });
       expect(containers).toEqual([{ machine: "fsn-1", id: "web-fsn-1", running: true }]);
     });
   });
@@ -1250,7 +2099,7 @@ describe("volume runs", () => {
         .then(() => null, (error: Error) => error);
 
       expect(failure).toBeInstanceOf(NonRetriableError);
-      expect(await rows()).toMatchObject([{ state: "failed", message: "data is mid-run; wait or volume release data" }]);
+      expect(await rows()).toMatchObject([{ state: "failed", message: "data is mid-run; ployz volume release data stops it" }]);
     });
   });
 
@@ -1339,6 +2188,49 @@ describe("volume runs", () => {
       });
       expect(await rows()).toEqual([]);
       expect(send).not.toHaveBeenCalled();
+    });
+
+    it("a Mirror Remove on a busy Volume is refused as busy before it asks", async () => {
+      machines = [
+        { name: "fsn-1", pool: true, copy: null },
+        { name: "fsn-2", pool: true, copy: slotCopy(base) },
+      ];
+      const busy = await requested({ kind: "sync", args: { full: false } });
+      send.mockClear();
+
+      const admitted = await run({ kind: "delete_mirror", args: { slot: null, confirmed_name: "data" } });
+
+      expect(admitted).toEqual({
+        ok: false,
+        refusal: { code: "conflict", message: "VolumeBusy: data is busy with a mirror refresh; ployz volume release data stops it", details: { run: expect.objectContaining({ id: busy.id }) } },
+      });
+      expect((await rows()).map((row) => row.id)).toEqual([busy.id]);
+      expect(send).not.toHaveBeenCalled();
+    });
+
+    it("a Move onto a Server without the generation floor is refused before any row, naming the Server", async () => {
+      machines[1] = { name: "fsn-2", pool: true, copy: null, capabilities: [requirements.volumeMove.capability] };
+
+      const admitted = await run({ kind: "move", args: { to: "fsn-2" } });
+
+      expect(admitted).toMatchObject({ ok: false, refusal: { message: "Volume move needs a newer Ployz on fsn-2." } });
+      expect(await rows()).toEqual([]);
+      expect(send).not.toHaveBeenCalled();
+    });
+
+    it("a Move off a writer without the generation floor is refused before any row, naming the writer", async () => {
+      first(machines).capabilities = [requirements.volumeMove.capability];
+
+      const admitted = await run({ kind: "move", args: { to: "fsn-2" } });
+
+      expect(admitted).toMatchObject({ ok: false, refusal: { message: "Volume move needs a newer Ployz on fsn-1." } });
+      expect(await rows()).toEqual([]);
+    });
+
+    it("a Server without the floor that holds no copy and receives none does not hold a Move back", async () => {
+      machines.push({ name: "fsn-3", pool: true, copy: null, capabilities: [requirements.volumeMove.capability] });
+
+      expect(await run({ kind: "move", args: { to: "fsn-2" } })).toMatchObject({ ok: true });
     });
 
     it("a Move onto the writer beside a mirror synced to its final snapshot, with no stopped Container, is refused", async () => {
@@ -1440,6 +2332,339 @@ describe("volume runs", () => {
 
       expect(started).toEqual([]);
       expect(await rows()).toEqual([]);
+    });
+  });
+  describe("a Deploy on a busy Volume", () => {
+    const DEPLOY = "deploy-1";
+    const A = { id: idOf("fsn-1"), name: "fsn-1" } as const;
+    type Lane = { id: string; kind: string; state: string; phase: string; message: string | null; gen: string; inngest_run_id: string | null; args: VolumeRunInput["args"] };
+    const lanes = async () => (await harness.pool.query(
+      "select id, kind, state, phase, message, gen, inngest_run_id, args from volume_run order by gen")).rows as Lane[];
+    const moving = async (phase: "warm" | "committed" = "warm") => {
+      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
+      await harness.pool.query("update volume_run set state = 'running', inngest_run_id = 'run-move', epoch = 1, phase = $2, current = $3 where id = $1",
+        [run.id, phase, phase === "committed" ? idOf("fsn-2") : null]);
+      send.mockClear();
+      return run;
+    };
+    const place = () => runEffect(placeDeployVolumes(organizationId, "env-1", "d-1", DEPLOY));
+    const fence = (lane: DeployLane | undefined) => {
+      if (lane === undefined) throw new Error("the Deploy placed no lane");
+      return runEffect(fenceDeployVolume(lane, DEPLOY));
+    };
+    const finish = () => runEffect(finishDeployVolumes(DEPLOY, "done"));
+    const afterCut = () => {
+      const cut = newSnap("f-1");
+      machines = [{ name: "fsn-1", pool: true, copy: slotCopy(cut) }, { name: "fsn-2", pool: true, copy: slotCopy(cut) }];
+      containers = [{ machine: "fsn-1", id: "web-fsn-1", running: false }];
+      return cut;
+    };
+
+    it("during a warm move: the move yields, the Deploy's row takes the next gen, the Floor goes to A before anything else, the app stays on A, and the move is requested again once", async () => {
+      const taken = await moving();
+
+      const placed = await place();
+
+      expect(placed).toMatchObject([{ kind: "took", run: { kind: "deploy", volumeId }, resume: { to: "fsn-2" } }]);
+      const [old, mine] = await lanes();
+      expect(old).toMatchObject({ id: taken.id, state: "yielded", message: "a Deploy took this run over" });
+      expect(mine).toMatchObject({ kind: "deploy", state: "running", inngest_run_id: DEPLOY, args: { deployment: "d-1", resume: { to: "fsn-2" } } });
+      expect(Number(mine?.gen)).toBe(Number(old?.gen) + 1);
+      expect(send).toHaveBeenCalledWith(expect.objectContaining({ name: "volume/run.taken", data: { runId: taken.id } }));
+
+      expect(await fence(placed[0])).toEqual({ on: "fsn-1" });
+      expect(verbs).toEqual(["floor@fsn-1"]);
+      expect(sent[0]).toMatchObject({ want: { kind: "floor" }, gen: Number(mine?.gen) });
+      expect(containers).toEqual([{ machine: "fsn-1", id: "web-fsn-1", running: true }]);
+
+      send.mockClear();
+      expect(await finish()).toEqual({ ended: 1, requeued: [expect.any(String)], refused: [] });
+      expect(await lanes()).toMatchObject([
+        { id: taken.id, state: "yielded" },
+        { kind: "deploy", state: "done" },
+        { kind: "move", state: "requested", args: { to: "fsn-2" } },
+      ]);
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(send).toHaveBeenCalledWith(expect.objectContaining({ name: "volume/run.requested" }));
+      expect(await finish()).toEqual({ ended: 0, requeued: [], refused: [] });
+      expect((await lanes()).filter((lane) => lane.kind === "move")).toHaveLength(2);
+    });
+
+    it("a dead move after the takeover is stale on A and its commit is refused, so B never starts the app", async () => {
+      const taken = await moving();
+      const [placed] = await place();
+      await fence(placed);
+      const [old] = await lanes();
+      const dead: RunContext = { ...context(taken.id), kind: "move", args: { to: "fsn-2" }, gen: Number(old?.gen) };
+
+      const cut = await runEffect(askCopy(dead, A, { kind: "writer", epoch: 0 }, { kind: "snapshot", name: "f-1" }));
+
+      expect(cut).toMatchObject({ ok: false, reason: "stale" });
+      expect(await runEffect(commitMove(dead, "run-move", idOf("fsn-2")))).toBe(false);
+      expect(await runEffect(commitAndStart(dead, "run-move", { to: { id: idOf("fsn-2"), name: "fsn-2" }, from: null, expect: { kind: "none" }, at: base.guid, epoch: 1 })))
+        .toMatchObject({ ok: false, reason: "stale" });
+      expect(verbs).toEqual(["floor@fsn-1", "snapshot@fsn-1(f-1)"]);
+      expect(containers).toEqual([{ machine: "fsn-1", id: "web-fsn-1", running: true }]);
+      expect(machines[0]?.copy).toMatchObject({ kind: "root", newest: { guid: base.guid } });
+    });
+
+    it("after the cut finished but before the floor rose: the reply is a slot, and the promote starts the stopped app on A", async () => {
+      const cut = afterCut();
+      await moving();
+      const [placed] = await place();
+
+      expect(await fence(placed)).toEqual({ on: "fsn-1" });
+
+      expect(verbs).toEqual(["floor@fsn-1", "writer@fsn-1(kept)"]);
+      expect(sent[1]).toMatchObject({
+        expect: { kind: "mirror", newest: cut.guid },
+        want: { kind: "writer", at: cut.guid, epoch: 2, start: { kind: "kept", container_id: "web-fsn-1" } },
+        gen: sent[0]?.gen,
+      });
+      expect(machines[0]?.copy).toMatchObject({ kind: "root", readonly: false, epoch: 2, newest: { guid: cut.guid } });
+      expect(machines[1]?.copy).toMatchObject({ kind: "slot" });
+      expect(containers).toEqual([{ machine: "fsn-1", id: "web-fsn-1", running: true }]);
+    });
+
+    it("a cut that flips A between the observe and the floor: the promote still starts the stopped app on A", async () => {
+      const cut = newSnap("f-1");
+      machines = [{ name: "fsn-1", pool: true, copy: writerCopy(base, 1, true) }, { name: "fsn-2", pool: true, copy: slotCopy(cut) }];
+      containers = [{ machine: "fsn-1", id: "web-fsn-1", running: false }];
+      beforeSet.set("floor@fsn-1", () => { named("fsn-1").copy = slotCopy(cut); });
+      await moving();
+      const [placed] = await place();
+
+      expect(await fence(placed)).toEqual({ on: "fsn-1" });
+
+      expect(verbs).toEqual(["floor@fsn-1", "writer@fsn-1(kept)"]);
+      expect(machines[0]?.copy).toMatchObject({ kind: "root", readonly: false, newest: { guid: cut.guid } });
+      expect(containers).toEqual([{ machine: "fsn-1", id: "web-fsn-1", running: true }]);
+    });
+
+    it("on a committed lane: it follows to B with the move's gen and the app runs only on B", async () => {
+      const cut = afterCut();
+      const taken = await moving("committed");
+
+      const placed = await place();
+
+      expect(placed).toMatchObject([{ kind: "follow", run: { id: taken.id, kind: "move" }, to: "fsn-2", epoch: 1 }]);
+      expect(await fence(placed[0])).toEqual({ on: "fsn-2" });
+      expect(verbs).toEqual(["writer@fsn-2(create)"]);
+      expect(sent[0]).toMatchObject({ want: { kind: "writer", at: cut.guid, epoch: 1 }, gen: Number((await lanes())[0]?.gen) });
+      expect(containers.filter((container) => container.running)).toEqual([{ machine: "fsn-2", id: `created-${volumeId}-${cut.guid}`, running: true }]);
+      expect(machines[0]?.copy).toMatchObject({ kind: "slot" });
+      expect(await lanes()).toMatchObject([{ id: taken.id, kind: "move", state: "running" }]);
+      expect(await finish()).toEqual({ ended: 0, requeued: [], refused: [] });
+      expect(await fence(placed[0])).toEqual({ on: "fsn-2" });
+      expect(verbs).toEqual(["writer@fsn-2(create)"]);
+    });
+
+    it("on a committed lane whose B was renamed since the commit: it follows B by id and starts the app there", async () => {
+      const cut = afterCut();
+      await moving("committed");
+      machines[1] = { id: idOf("fsn-2"), name: "fsn-two", pool: true, copy: slotCopy(cut) };
+
+      const placed = await place();
+
+      expect(placed).toMatchObject([{ kind: "follow", to: "fsn-2", machine: idOf("fsn-2"), epoch: 1 }]);
+      expect(await fence(placed[0])).toEqual({ on: "fsn-two" });
+      expect(verbs).toEqual(["writer@fsn-two(create)"]);
+      expect(containers.filter((container) => container.running)).toEqual([{ machine: "fsn-two", id: `created-${volumeId}-${cut.guid}`, running: true }]);
+    });
+
+    it("with no lane, and with a delete_mirror lane: plain, no Floor call", async () => {
+      expect(await place()).toEqual([]);
+      const pruning = await requested({ kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null } });
+
+      expect(await place()).toEqual([]);
+
+      expect(verbs).toEqual([]);
+      expect(await lanes()).toMatchObject([{ id: pruning.id, kind: "delete_mirror", state: "requested" }]);
+    });
+
+    it("with a sync lane: the sync yields, since its demote cuts the writer, and the Deploy floors A with nothing to request again", async () => {
+      const syncing = await requested({ kind: "sync", args: { full: false } });
+      send.mockClear();
+
+      const placed = await place();
+
+      expect(placed).toMatchObject([{ kind: "took", run: { kind: "deploy" }, resume: null }]);
+      expect(await lanes()).toMatchObject([{ id: syncing.id, state: "yielded", message: "a Deploy took this run over" }, { kind: "deploy", state: "running" }]);
+      expect(await fence(placed[0])).toEqual({ on: "fsn-1" });
+      expect(verbs).toEqual(["floor@fsn-1"]);
+      expect(await finish()).toEqual({ ended: 1, requeued: [], refused: [] });
+      expect(await lanes()).toMatchObject([{ id: syncing.id, state: "yielded" }, { kind: "deploy", state: "done" }]);
+    });
+
+    it("with a sync lane and two roots: the Deploy floors the newer-epoch root, the one the sync's demote keeps", async () => {
+      machines = [{ name: "fsn-1", pool: true, copy: writerCopy(base, 1) }, { name: "fsn-2", pool: true, copy: writerCopy(base, 3) }];
+      await requested({ kind: "sync", args: { full: false } });
+
+      const [placed] = await place();
+
+      expect(await fence(placed)).toEqual({ on: "fsn-2" });
+      expect(verbs).toEqual(["floor@fsn-2"]);
+    });
+
+    it("with a sync lane and two roots at one epoch: the fence fails naming both, and floors neither", async () => {
+      machines = [{ name: "fsn-1", pool: true, copy: writerCopy(base, 2) }, { name: "fsn-2", pool: true, copy: writerCopy(base, 2) }];
+      await requested({ kind: "sync", args: { full: false } });
+
+      const [placed] = await place();
+
+      await expect(fence(placed)).rejects.toThrow("data has two writers, data-fsn-1 and data-fsn-2");
+      expect(verbs).toEqual([]);
+    });
+
+    it("the Deploy function floors, promotes, then runs the deployment, and ends its lane after", async () => {
+      afterCut();
+      const taken = await moving();
+
+      const deployed = await new InngestTestEngine({
+        function: createRunStoreDeployment(new Inngest({ id: "test" }), runEffect as Parameters<typeof createRunStoreDeployment>[1]),
+        events: [{ name: "config/deployment.admitted", data: { organizationId, environmentId: "env-1", deploymentId: "d-1" } }],
+        steps: [
+          { id: "record-run", handler: () => undefined },
+          { id: "plan-builds", handler: () => [] },
+          { id: "placement-0", handler: () => ({ kind: "done" }) },
+          { id: "refresh-mirrors", handler: () => undefined },
+          { id: "run-deployment", handler: () => {
+            verbs.push("run-deployment");
+            return { ran: { id: "d-1", status: "applied", remove: false } };
+          } },
+          { id: "sync-uptime", handler: () => undefined },
+          { id: "forget-run", handler: () => undefined },
+          { id: "delete-orphan-mirrors", handler: () => undefined },
+        ],
+        transformCtx: (ctx) => ({ ...mockCtx(ctx), runId: DEPLOY }),
+      }).execute();
+
+      expect(deployed.error).toBeUndefined();
+      expect(verbs).toEqual(["floor@fsn-1", "writer@fsn-1(kept)", "run-deployment"]);
+      expect(deployed.ctx.step.run).toHaveBeenCalledWith(`fence-${volumeId}`, expect.any(Function));
+      expect(await lanes()).toMatchObject([
+        { id: taken.id, kind: "move", state: "yielded" },
+        { kind: "deploy", state: "done", inngest_run_id: DEPLOY },
+        { kind: "move", state: "requested", args: { to: "fsn-2" } },
+      ]);
+    });
+
+    it("a Deploy that fails after taking a move over ends its row failed and requests the move again, once", async () => {
+      const taken = await moving();
+      const [placed] = await place();
+      await fence(placed);
+      const worker = createRunStoreDeployment(new Inngest({ id: "test" }), runEffect);
+      const onFailure = worker.opts.onFailure;
+      if (onFailure === undefined) throw new Error("the worker ends its lanes when it fails");
+      // SAFETY: the failure handler reads only the failed run's ID and its triggering event.
+      const failed = () => onFailure({ event: { data: { run_id: DEPLOY, event: { data: { organizationId, environmentId: "env-1", deploymentId: "d-1" } } } } } as never);
+      send.mockClear();
+
+      await failed();
+
+      expect(await lanes()).toMatchObject([
+        { id: taken.id, state: "yielded" },
+        { kind: "deploy", state: "failed", message: "the Deploy failed", inngest_run_id: DEPLOY },
+        { kind: "move", state: "requested", args: { to: "fsn-2" } },
+      ]);
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(send).toHaveBeenCalledWith(expect.objectContaining({ name: "volume/run.requested" }));
+
+      await failed();
+
+      expect((await lanes()).filter((lane) => lane.kind === "move")).toHaveLength(2);
+      expect(send).toHaveBeenCalledTimes(1);
+    });
+
+    it("a Deploy cancelled after taking a move over ends its row cancelled and requests the move again, once", async () => {
+      const taken = await moving();
+      const [placed] = await place();
+      await fence(placed);
+      const cancel = () => new InngestTestEngine({
+        function: createCancelStoreDeployment(new Inngest({ id: "test" }), runEffect),
+        events: [{ name: "inngest/function.cancelled", data: { function_id: "run-store-deployment", run_id: DEPLOY } }],
+      }).execute();
+      send.mockClear();
+
+      expect((await cancel()).error).toBeUndefined();
+
+      expect(await lanes()).toMatchObject([
+        { id: taken.id, state: "yielded" },
+        { kind: "deploy", state: "cancelled", message: "the Deploy was cancelled", inngest_run_id: DEPLOY },
+        { kind: "move", state: "requested", args: { to: "fsn-2" } },
+      ]);
+      expect(send).toHaveBeenCalledTimes(1);
+
+      expect((await cancel()).error).toBeUndefined();
+
+      expect((await lanes()).filter((lane) => lane.kind === "move")).toHaveLength(2);
+      expect(send).toHaveBeenCalledTimes(1);
+    });
+
+    it("a second Deploy taking over the first's running row carries the move it took, so the move is still requested again once", async () => {
+      const taken = await moving();
+      await place();
+
+      const placed = await runEffect(placeDeployVolumes(organizationId, "env-1", "d-2", "deploy-2"));
+
+      expect(placed).toMatchObject([{ kind: "took", resume: { to: "fsn-2" } }]);
+      expect(await lanes()).toMatchObject([
+        { id: taken.id, state: "yielded" },
+        { kind: "deploy", state: "yielded", inngest_run_id: DEPLOY },
+        { kind: "deploy", state: "running", inngest_run_id: "deploy-2", args: { deployment: "d-2", resume: { to: "fsn-2" } } },
+      ]);
+      expect(await finish()).toEqual({ ended: 0, requeued: [], refused: [] });
+      expect(await runEffect(finishDeployVolumes("deploy-2", "done"))).toEqual({ ended: 1, requeued: [expect.any(String)], refused: [] });
+      expect((await lanes()).filter((lane) => lane.kind === "move")).toMatchObject([{ id: taken.id }, { state: "requested", args: { to: "fsn-2" } }]);
+    });
+
+    describe("a lane landing while the Deploy places", () => {
+      const landings = {
+        sync: '{"full":false}',
+        release: "{}",
+        delete_mirror: '{"slot":"fsn-2","confirmed_name":null}',
+      };
+      const land = (landing: PoolClient, kind: string, args: string) => landing.query<{ id: string }>(
+        `insert into volume_run (organization_id, environment_id, volume_id, volume_name, docker_volume, kind, args, state)
+         values ($1, 'env-1', $2, 'data', $3, $4, $5, 'requested') returning id`,
+        [organizationId, volumeId, dockerVolume, kind, args]);
+
+      for (const [kind, args] of Object.entries(landings)) {
+        it(`${kind} on a free Volume: the Deploy is plain beside it and the lane keeps its row`, async () => {
+          const landing = await harness.pool.connect();
+          try {
+            await landing.query("begin");
+            const { rows: [landed] } = await land(landing, kind, args);
+
+            const placed = await place();
+            await landing.query("commit");
+
+            expect(placed).toEqual([]);
+            expect(await finish()).toEqual({ ended: 0, requeued: [], refused: [] });
+            expect(await lanes()).toMatchObject([{ id: landed?.id, kind, state: "requested" }]);
+            expect(verbs).toEqual([]);
+          } finally {
+            landing.release();
+          }
+        });
+
+        it(`${kind} during a warm move: the lane the Deploy locks is the only active row, so the landing cannot insert`, async () => {
+          const taken = await moving();
+          const landing = await harness.pool.connect();
+          try {
+            await landing.query("begin");
+            await expect(land(landing, kind, args)).rejects.toMatchObject({ code: "23505" });
+            await landing.query("rollback");
+          } finally {
+            landing.release();
+          }
+
+          const placed = await place();
+
+          expect(placed).toMatchObject([{ kind: "took", run: { kind: "deploy" } }]);
+          expect(await lanes()).toMatchObject([{ id: taken.id, state: "yielded" }, { kind: "deploy", state: "running" }]);
+        });
+      }
     });
   });
   describe("orphan hooks", () => {
