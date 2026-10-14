@@ -80,6 +80,16 @@ enum Command {
         #[arg(long)]
         attempt: MachineUpgradeAttemptId,
     },
+    /// Write this release's systemd unit files for an installer running another release.
+    #[command(hide = true)]
+    InstallUnits {
+        #[arg(long)]
+        bin_dir: PathBuf,
+        #[arg(long)]
+        run_dir: PathBuf,
+        #[arg(long)]
+        systemd_dir: PathBuf,
+    },
     /// Install or replace this Machine's daemon release.
     Install {
         /// Release channel (stable or beta) or exact published version.
@@ -169,6 +179,15 @@ async fn run(args: Args) -> Result<ExitCode, Error> {
         ployzd::installer::upgrade::run_worker(attempt, &args.data_dir, &run_dir)
             .await
             .map_err(io::Error::other)?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    if let Some(Command::InstallUnits {
+        bin_dir,
+        run_dir,
+        systemd_dir,
+    }) = &args.command
+    {
+        ployzd::installer::write_units(bin_dir, run_dir, systemd_dir).map_err(io::Error::other)?;
         return Ok(ExitCode::SUCCESS);
     }
     if let Some(Command::Install {

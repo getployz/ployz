@@ -9,6 +9,8 @@ mod storage;
 mod test_support;
 pub mod upgrade;
 
+pub use self::host::write_units;
+
 use std::{
     io,
     os::unix::fs::PermissionsExt,
@@ -23,8 +25,8 @@ use crate::mutation;
 
 use self::{
     host::{
-        create_user_and_directories, install_docker, install_prerequisites, install_systemd,
-        verify_docker, verify_running_daemon, verify_software_prerequisites,
+        activate_units, create_user_and_directories, install_docker, install_prerequisites,
+        install_units, verify_docker, verify_running_daemon, verify_software_prerequisites,
     },
     release::{ReleaseSource, install_binaries, installed_release, resolve_release},
     storage::prepare_storage,
@@ -256,7 +258,10 @@ async fn install_locked(
     let mut restart_required = !paths.systemd_dir.join("ployz.service").is_file();
     restart_required |=
         install_binaries(source, paths, installed.as_ref(), &target, &mut progress).await?;
-    install_systemd(paths, installation_only)?;
+    install_units(paths).await?;
+    if !installation_only {
+        activate_units()?;
+    }
     if matches!(request.mode, InstallMode::PrepareHost { .. }) {
         install_docker(paths).await?;
     }

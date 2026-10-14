@@ -6,8 +6,10 @@ use std::{
     os::unix::fs::MetadataExt,
     path::Path,
     process::{Command, Stdio},
+    time::Duration,
 };
 
+use tokio::time::timeout;
 use tonic::transport::Endpoint;
 
 use crate::filesystem::{MACHINE_API_SOCKET_MODE, PLOYZ_DIR_MODE, atomic_write};
@@ -19,6 +21,8 @@ use super::{
     Error, InstallPaths, PLOYZ_USER, command_exists, refuse, run_apt, run_host, systemctl,
 };
 use ployz_build::{MINIMUM_BUILDX, MINIMUM_DOCKER_API, MINIMUM_DOCKER_RELEASE};
+
+const INSTALL_UNITS_TIMEOUT: Duration = Duration::from_secs(10);
 
 const DOCKER_DAEMON_CONFIG: &str = r#"{
   "features": { "containerd-snapshotter": true },
@@ -174,44 +178,67 @@ pub(super) fn verify_software_prerequisites(paths: &InstallPaths) -> Result<(), 
     Ok(())
 }
 
-pub(super) fn install_systemd(paths: &InstallPaths, install_only: bool) -> Result<(), Error> {
-    fs::create_dir_all(&paths.systemd_dir).map_err(|source| Error::Io {
+pub(super) async fn install_units(paths: &InstallPaths) -> Result<(), Error> {
+    let mut command = tokio::process::Command::new(paths.daemon());
+    command
+        .arg("install-units")
+        .arg("--bin-dir")
+        .arg(&paths.bin_dir)
+        .arg("--run-dir")
+        .arg(&paths.run_dir)
+        .arg("--systemd-dir")
+        .arg(&paths.systemd_dir)
+        .kill_on_drop(true);
+    match timeout(INSTALL_UNITS_TIMEOUT, command.output()).await {
+        Ok(Ok(output)) if output.status.success() => Ok(()),
+        _ => write_units(&paths.bin_dir, &paths.run_dir, &paths.systemd_dir),
+    }
+}
+
+/// Writes this release's systemd unit files without contacting systemd.
+///
+/// # Errors
+///
+/// Returns the first unit directory, file, or legacy unit removal that failed.
+pub fn write_units(bin_dir: &Path, run_dir: &Path, systemd_dir: &Path) -> Result<(), Error> {
+    fs::create_dir_all(systemd_dir).map_err(|source| Error::Io {
         stage: "create systemd unit directory",
         source,
     })?;
     write_file_atomically(
-        &paths.systemd_dir.join("ployz.service"),
-        &machine_daemon_service_unit(&paths.bin_dir),
+        &systemd_dir.join("ployz.service"),
+        &machine_daemon_service_unit(bin_dir),
         "write Machine daemon service unit",
     )?;
     write_file_atomically(
-        &paths.systemd_dir.join("ployz.socket"),
-        &machine_api_socket_unit(&paths.run_dir),
+        &systemd_dir.join("ployz.socket"),
+        &machine_api_socket_unit(run_dir),
         "write Machine API socket unit",
     )?;
     write_file_atomically(
-        &paths.systemd_dir.join("ployz-volume-plugin.socket"),
+        &systemd_dir.join("ployz-volume-plugin.socket"),
         volume_plugin_socket_unit(),
         "write Volume plugin socket unit",
     )?;
     write_file_atomically(
-        &paths.systemd_dir.join("ployz-volume-plugin.service"),
-        &volume_plugin_service_unit(&paths.bin_dir),
+        &systemd_dir.join("ployz-volume-plugin.service"),
+        &volume_plugin_service_unit(bin_dir),
         "write Volume plugin service unit",
     )?;
-    remove_legacy_observe_unit(&paths.systemd_dir)?;
-    if !install_only {
-        systemctl("reload systemd units", ["daemon-reload"])?;
-        systemctl("enable daemon", ["enable", "ployz.service"])?;
-        systemctl(
-            "enable Machine API socket",
-            ["enable", "--now", "ployz.socket"],
-        )?;
-        systemctl(
-            "enable volume plugin socket",
-            ["enable", "--now", "ployz-volume-plugin.socket"],
-        )?;
-    }
+    remove_legacy_observe_unit(systemd_dir)
+}
+
+pub(super) fn activate_units() -> Result<(), Error> {
+    systemctl("reload systemd units", ["daemon-reload"])?;
+    systemctl("enable daemon", ["enable", "ployz.service"])?;
+    systemctl(
+        "enable Machine API socket",
+        ["enable", "--now", "ployz.socket"],
+    )?;
+    systemctl(
+        "enable volume plugin socket",
+        ["enable", "--now", "ployz-volume-plugin.socket"],
+    )?;
     Ok(())
 }
 
