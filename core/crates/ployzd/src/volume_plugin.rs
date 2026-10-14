@@ -380,7 +380,7 @@ mod tests {
     mod copy_tests;
     mod seed_tests;
 
-    use fake_zfs::{USABLE_POOL, fake_zfs};
+    use fake_zfs::{USABLE_POOL, fake_zfs, fake_zfs_seeding};
 
     #[tokio::test]
     async fn docker_can_create_and_mount_a_bounded_volume() {

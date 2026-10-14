@@ -342,6 +342,16 @@ async fn departure_during_a_seed_copy_stops_it_and_destroys_the_slot() {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     let pid = fs::read_to_string(pid).unwrap();
+    assert_eq!(
+        property(&test, "tank/ployz-mirror/seed/fs", "readonly").as_deref(),
+        Some("on"),
+        "a receive sets its -o properties before any data arrives"
+    );
+    assert_eq!(
+        property(&test, "tank/ployz-mirror/seed/fs", "ployz:seed"),
+        None,
+        "a partial seed carries no mark of a completed one"
+    );
 
     let reply = post(&socket, "/Storage.Demote", json!(null)).await;
     assert_eq!(reply, json!({"Ok": ["data", "seed"]}));
@@ -349,49 +359,89 @@ async fn departure_during_a_seed_copy_stops_it_and_destroys_the_slot() {
     assert!(!test.0.join("seed-slot").exists());
 }
 
+/// Seeds `into` from `point` of `data` with the fake naming `into` as its seed Volume,
+/// and waits until the receive has exited and the copy is being verified.
+async fn completed_seed(test: &TestDir, into: &str, point: &str, guid: &str) -> PathBuf {
+    for marker in ["root", "volume"] {
+        fs::write(test.0.join(marker), "").unwrap();
+    }
+    set_property(test, "tank/ployz/data", "snapshots", point);
+    let (zpool, zfs) = fake_zfs_seeding(&test.0, USABLE_POOL, into);
+    let socket = test.0.join("plugin.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    tokio::spawn(serve(listener, VolumeStorage::with_programs(zpool, zfs)));
+    let request = json!({"name": "data", "into": into, "guid": guid});
+    post(&socket, "/Volume.Seed", request).await;
+    let verified = format!("get -Hp -o value refquota tank/ployz-mirror/{into}/fs");
+    for _ in 0..300 {
+        if commands(test).contains(&verified) {
+            return socket;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("the seed of {into} never finished its receive");
+}
+
 #[tokio::test]
-async fn departure_destroys_an_unlanded_seed_and_keeps_its_point_in_the_source() {
-    // No marks: a copy v0.3.0-beta.1 finished. A seed mark: one an earlier build finished.
-    // Both marks: a landing interrupted before its rename.
-    for marks in [
-        &[][..],
-        &[("ployz:seed", "77")],
-        &[("ployz:seed", "77"), ("ployz:promote", "on")],
-    ] {
+async fn departure_keeps_a_completed_seed_whose_source_pruned_its_point() {
+    // `base` is judged before `data` and `seed` after it.
+    for into in ["base", "seed"] {
         let test = TestDir::new();
-        set_property(&test, "tank/ployz/data", "snapshots", POINT);
+        let socket = completed_seed(&test, into, POINT, "77").await;
         set_property(
             &test,
-            "tank/ployz-mirror/seed/fs",
+            "tank/ployz/data",
             "snapshots",
-            "tank/ployz-mirror/seed/fs@w-1-1\t77\t1700000000",
-        );
-        for (property, value) in marks {
-            set_property(&test, "tank/ployz-mirror/seed/fs", property, value);
-        }
-        let (socket, _server) = start(
-            &test,
-            USABLE_POOL,
-            &["root", "volume", "seed-slot", "seed-fs"],
+            "tank/ployz/data@w-1-2\t78\t1700000100",
         );
 
         let reply = post(&socket, "/Storage.Demote", json!(null)).await;
-        assert_eq!(reply, json!({"Ok": ["data", "seed"]}), "{marks:?}");
-        assert!(!test.0.join("seed-slot").exists(), "{marks:?}");
+        assert_eq!(reply, json!({"Ok": ["data"]}), "{into}");
+        assert!(test.0.join("seed-fs").exists(), "{into}: the seed is kept");
         assert_eq!(
-            snapshot_names(&test, "tank/ployz-mirror/data/fs")
-                .iter()
-                .filter(|name| *name == "w-1-1")
-                .count(),
-            1,
-            "{marks:?}: the sealed source keeps the point"
-        );
-        assert_eq!(
-            property(&test, "tank/ployz-mirror/data/fs", "readonly").as_deref(),
-            Some("on"),
-            "{marks:?}"
+            snapshot_names(&test, &format!("tank/ployz-mirror/{into}/fs")),
+            vec!["w-1-1"],
+            "{into}: it holds the only copy of the point"
         );
     }
+}
+
+#[tokio::test]
+async fn departure_keeps_a_completed_seed_of_a_departure_snapshot() {
+    let test = TestDir::new();
+    let point = "tank/ployz/data@dep-1700000000\t77\t1700000000";
+    let socket = completed_seed(&test, "seed", point, "77").await;
+
+    let reply = post(&socket, "/Storage.Demote", json!(null)).await;
+    assert_eq!(reply, json!({"Ok": ["data"]}));
+    assert_eq!(
+        snapshot_names(&test, "tank/ployz-mirror/seed/fs"),
+        vec!["dep-1700000000"]
+    );
+}
+
+#[tokio::test]
+async fn departure_keeps_a_seed_whose_landing_stopped_before_the_rename() {
+    let test = TestDir::new();
+    set_property(&test, "tank/ployz/data", "snapshots", POINT);
+    set_property(&test, "tank/ployz-mirror/seed", "ployz:pull", "w-1-1");
+    set_property(
+        &test,
+        "tank/ployz-mirror/seed/fs",
+        "snapshots",
+        "tank/ployz-mirror/seed/fs@w-1-1\t77\t1700000000",
+    );
+    set_property(&test, "tank/ployz-mirror/seed/fs", "ployz:seed", "77");
+    set_property(&test, "tank/ployz-mirror/seed/fs", "ployz:promote", "on");
+    let (socket, _server) = start(
+        &test,
+        USABLE_POOL,
+        &["root", "volume", "seed-slot", "seed-fs"],
+    );
+
+    let reply = post(&socket, "/Storage.Demote", json!(null)).await;
+    assert_eq!(reply, json!({"Ok": ["data"]}));
+    assert!(test.0.join("seed-fs").exists());
 }
 
 #[tokio::test]
