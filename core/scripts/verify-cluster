@@ -512,7 +512,7 @@ def host_runs():
             continue
         try:
             found += [{**run, "provider": name} for run in importlib.import_module(name).runs()]
-        except (RuntimeError, OSError, subprocess.SubprocessError) as error:
+        except (RuntimeError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
             # One provider being unreachable must not hide or block the other's runs.
             print(f"Skipping {name} runs: {str(error).splitlines()[0]}", file=sys.stderr)
     return found

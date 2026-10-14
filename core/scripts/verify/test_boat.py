@@ -231,7 +231,7 @@ class Registry(unittest.TestCase):
     def test_prepare_spares_a_bake_a_live_run_uses(self):
         bakes = [f"{boat.BAKED}{day}" + "0" * 8 for day in ["10", "11", "12", "13"]]
         ledger = boat.REGISTRY / "bakes.ledger"
-        boat.write(ledger, bakes)
+        boat.write(ledger, [*bakes, bakes[2]])
         boat.write(boat.registry("live"), dict(run="live", image=bakes[0], sandboxes={}))
         service = boat.REGISTRY / "core/crates/ployzd/src/corrosion/service.rs"
         service.parent.mkdir(parents=True)
@@ -255,7 +255,7 @@ class Registry(unittest.TestCase):
              contextlib.suppress(RuntimeError), contextlib.redirect_stderr(io.StringIO()):
             self.provider.prepare()
         self.assertEqual(removed, [bakes[1]])
-        self.assertIn(self.run["image"], boat.read(ledger))
+        self.assertEqual(boat.read(ledger), [bakes[0], bakes[2], bakes[3], self.run["image"]])
 
     def test_a_failed_delete_still_deletes_the_rest_then_fails(self):
         self.registered(**{"machine-1": dict(id="bx_a", state="running"), "machine-2": dict(id="bx_b", state="running")})
