@@ -635,7 +635,10 @@ class ClusterModel:
                 self.row("release", "failed")
             message = f"{volume_move.VOLUME} is starting on {lane['destination']}; it finishes there"
             # Cloud's refusal carries the active lane it read, the way laneRefusal returns volumeRunView(lane).
-            run = dict(lane["row"], id="run-other") if self.mutation == "refusal-other-run" else lane["row"]
+            run = dict(lane["row"], id="run-other") if self.mutation == "refusal-other-run" else dict(lane["row"])
+            if self.mutation in ("release-ends-move", "refusal-other-run"):
+                self.clock.now = max(self.clock(), lane["until"])
+                self.advance()
             return 1, json.dumps(dict(error=dict(code="conflict", message=message, details=dict(run=run))))
         if lane:
             self.take("cancelled")
@@ -2697,8 +2700,10 @@ finally:
         # for the 1-rounds, 3-cut and 4-final soak steps.
         unfired = [case for case in every if case["step"] in ("1-rounds", "3-cut", "4-final") and "soak" in case["name"]]
         corpus = [("every clean and kill case", True,
-                   [case for case in every if "undo" not in case["name"] and case not in unfired], {}),
-                  ("every soak case whose trigger never fires", False, unfired, {})]
+                   [case for case in every if "undo" not in case["name"] and case not in unfired
+                    and case["name"] != "deploy-committed"], {}),
+                  ("every soak case whose trigger never fires", False, unfired, {}),
+                  ("a Deploy that follows a committed lane", False, [cases["deploy-committed"]], {})]
         corpus += [(f"planted {mutation}", False, [cases["clean"]], dict(mutation=mutation))
                    for mutation in ("two-writers", "stopped", "snapshots", "lost")]
         corpus += [(f"planted {mutation}", False, [cases["deploy-plain"], cases[name]], dict(mutation=mutation))
@@ -2866,13 +2871,12 @@ finally:
             self.assertEqual(seen[name], {"stepped ahead", "stepped behind", "slewed fast", "slewed slow"}, name)
 
     def test_each_deploy_and_undo_case_passes_against_a_correct_model(self):
-        summary, model = self.run_cases(volume_move.CASES[:7])
+        summary, model = self.run_cases([case for case in volume_move.CASES[:7] if case["name"] != "deploy-committed"])
         self.assertTrue(summary["passed"], json.dumps(summary["cases"], indent=1))
         self.assertEqual(summary["deploy_baseline_seconds"], PLAIN_DEPLOY)
         runs = {case["name"]: case["run"] for case in summary["cases"]}
-        self.assertEqual([runs[name] for name in ("deploy-warm", "deploy-after-cut", "deploy-committed",
-                                                  "undo-before-cut", "undo-after-cut")],
-                         ["yielded", "yielded", "done", "cancelled", "done"])
+        self.assertEqual([runs[name] for name in ("deploy-warm", "deploy-after-cut", "undo-before-cut", "undo-after-cut")],
+                         ["yielded", "yielded", "cancelled", "done"])
         result = json.loads((self.root / "out" / "deploy-after-cut.json").read_text())
         self.assertEqual(result["acted"]["running_after"], [result["writer_before"]])
         self.assertEqual([row["state"] for row in result["requeues"]], ["done"])
@@ -2920,7 +2924,7 @@ finally:
     def test_a_release_on_a_committed_lane_is_credited_only_by_a_refusal_naming_the_first_run(self):
         # The refusal carries the lane Cloud read inside the release, so it must be the first run's.
         case = next(case for case in volume_move.CASES if case["name"] == "undo-after-cut")
-        for mutation, passed in ((None, True), ("refusal-other-run", False)):
+        for mutation, passed in ((None, True), ("release-ends-move", True), ("refusal-other-run", False)):
             with self.subTest(mutation):
                 self.setUp()
                 summary, _ = self.run_cases([case], mutation)

@@ -419,6 +419,15 @@ def judge(result, side, baseline):
     return failures
 
 
+def refused_run(row):
+    """The run id a refused release names: Cloud's refusal carries the active lane it read inside the release."""
+    reply = row.get("reply") if row.get("state") == "refused" else None
+    error = reply.get("error") if isinstance(reply, dict) else None
+    details = error.get("details") if isinstance(error, dict) else None
+    run = details.get("run") if isinstance(details, dict) else None
+    return run.get("id") if isinstance(run, dict) else None
+
+
 def read_acks(path):
     acks = []
     if not path or not Path(path).exists():
@@ -1162,8 +1171,17 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
             return (f"the first run's row could not be read after {what}, so nothing places it inside the credited "
                     f"{event['kind']} on {event['machine']}: {event['line']}")
         own = case.get("expect", {}).get("move") if case["action"] in ("deploy", "release") else None
-        if after["state"] in LIVE or (after["state"] == own and (own in TAKEN or event["kind"] == "committed")):
+        if after["state"] in LIVE or (after["state"] == own and own in TAKEN):
             return None
+        if event["kind"] == "committed" and after["state"] == own and case["action"] == "deploy":
+            raise Skipped(f"the Deploy returned after the first run {after['id']} ended {after['state']}, and a followed "
+                          "committed lane leaves no row that places the Deploy inside it")
+        if event["kind"] == "committed" and after["state"] == own:
+            named = refused_run(result["acted"]["release"])
+            if named == after["id"]:
+                return None
+            return (f"the release's refusal names run {named}, not the first run {after['id']}, so nothing places it "
+                    f"inside the credited {event['kind']} on {event['machine']}: {event['line']}")
         if case["action"] == "none":
             return (f"the first run {after.get('id')} ended {after.get('state')} before the {event['kind']} on "
                     f"{event['machine']} could be credited: {event['line']}")
