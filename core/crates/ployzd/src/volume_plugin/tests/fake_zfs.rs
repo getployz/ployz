@@ -391,7 +391,6 @@ case "$*" in
       tank/ployz-mirror/data/fs|tank/ployz-mirror/{seed}/fs) ;;
       *) echo "unexpected fake zfs command: $*" >&2; exit 2 ;;
     esac
-    echo $$ > '{props}/receive-pid'
     # Like OpenZFS, a resumable receive makes its dataset and sets every -o property but
     # refquota, keylocation and sharesmb before it reads any stream data.
     case "$fs" in
@@ -410,7 +409,8 @@ case "$*" in
       fi
       previous=$option
     done
-    if [ -e '{props}/stall-read' ]; then exec sleep 30; fi
+    echo $$ > '{props}/receive-pid'
+    while [ -e '{props}/stall-read' ]; do sleep 0.01; done
     read -r verb arg guid || verb=empty
     if [ -e '{props}/stall-exit' ]; then cat >/dev/null; exec sleep 30; fi
     if [ -e '{props}/receive-fails' ]; then cat >/dev/null; echo 'cannot receive: out of space' >&2; exit 1; fi

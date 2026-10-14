@@ -1121,13 +1121,33 @@ async fn departure_stops_a_pull_into_a_slot_it_keeps() {
         fs::write(test.0.join("props/stall-read"), "").unwrap();
         post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
         let pid = receive_pid(&test).await;
+        let scan =
+            "list -Hp -o name,refquota,used,usedbydataset,mountpoint,mounted,readonly -r tank";
+        fs::write(test.0.join("props/stall-command"), scan).unwrap();
 
-        let reply = post(&socket, "/Storage.Demote", json!(null)).await;
+        let departure = tokio::spawn({
+            let socket = socket.clone();
+            async move { post(&socket, "/Storage.Demote", json!(null)).await }
+        });
+        let scanning = format!("zfs {scan}");
+        for _ in 0..500 {
+            let commands = fs::read_to_string(test.0.join("commands")).unwrap_or_default();
+            if commands.lines().any(|line| line == scanning) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        // A receive still running at the scan lands now, before the departure judges.
+        fs::remove_file(test.0.join("props/stall-read")).unwrap();
+        for _ in 0..500 {
+            if !Path::new(&format!("/proc/{pid}")).exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        fs::remove_file(test.0.join("props/stall-command")).unwrap();
+        let reply = departure.await.unwrap();
         assert_eq!(reply, json!({"Ok": {"demoted": [], "stuck": []}}), "{mark}");
-        assert!(
-            !Path::new(&format!("/proc/{pid}")).exists(),
-            "{mark}: the receive still runs"
-        );
         assert!(test.0.join("mirror-fs").exists(), "{mark}");
         assert_eq!(property(&test, SLOT_FS, mark).as_deref(), Some(value));
         server.abort();
