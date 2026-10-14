@@ -193,11 +193,6 @@ pub(super) fn test_groups(operations: &[DeployOperation]) -> Vec<ServiceGroup> {
     groups
 }
 
-/// Consecutive starts run together, and a rolling Service's run of starts
-/// takes one step per Machine; everything else runs one at a time. A Service
-/// whose Containers change flips its pointer; its rollout removals then follow
-/// in a second group, so a failed Service still has every old copy and a
-/// removed one serves until the pointer drops it.
 fn service_group(
     operations: &[DeployOperation],
     service: Option<ServiceName>,

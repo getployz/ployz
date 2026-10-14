@@ -922,8 +922,6 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
     outcome
 }
 
-/// Put a Service that did not switch back on its old copies: remove every new
-/// Container, then start every old one a stop-first replacement stopped.
 async fn restore_group<C: MachineOperations>(
     client: &C,
     started: Vec<(MachineId, ContainerId)>,
@@ -1161,8 +1159,6 @@ fn strength(policy: PullPolicy) -> u8 {
     }
 }
 
-/// The row this run publishes for `group`: the kept copies plus every started one,
-/// with every old copy a stop-first replacement stopped retiring.
 fn proposed(
     current: Option<&ServingPointer>,
     run: &DeploymentLogId,
