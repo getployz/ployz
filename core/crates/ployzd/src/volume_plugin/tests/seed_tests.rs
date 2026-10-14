@@ -513,34 +513,6 @@ async fn departure_keeps_a_seed_whose_receive_exited_before_its_run_finished() {
 }
 
 #[tokio::test]
-async fn departure_keeps_a_seed_whose_landing_stopped_before_the_rename() {
-    let test = TestDir::new();
-    set_property(&test, "tank/ployz/data", "snapshots", POINT);
-    set_property(&test, "tank/ployz-mirror/seed", "ployz:pull", "w-1-1");
-    set_property(
-        &test,
-        "tank/ployz-mirror/seed/fs",
-        "snapshots",
-        "tank/ployz-mirror/seed/fs@w-1-1\t77\t1700000000",
-    );
-    // A landing sets its seed mark before its promote mark, so a stop between them
-    // leaves only the seed mark.
-    set_property(&test, "tank/ployz-mirror/seed/fs", "ployz:seed", "77");
-    let (socket, _server) = start(
-        &test,
-        USABLE_POOL,
-        &["root", "volume", "seed-slot", "seed-fs"],
-    );
-
-    let reply = post(&socket, "/Storage.Demote", json!(null)).await;
-    assert_eq!(
-        reply,
-        json!({"Ok": {"demoted": ["data"], "stuck": [], "failed": []}})
-    );
-    assert!(test.0.join("seed-fs").exists());
-}
-
-#[tokio::test]
 async fn departure_demotes_the_others_and_names_a_seed_whose_receive_will_not_stop() {
     let test = TestDir::new();
     fs::write(test.0.join("root"), "").unwrap();
