@@ -429,9 +429,9 @@ const FORWARD_WAITS = waitsFor(15 * 60);
 async function finishRelease(steps: RunSteps, current: MachineId, plan: ReleasePlan | undefined) {
   const { step, runEffect, run, runId } = steps;
   for (let check = 0; ; check += 1) {
-    const members: Member[] | null = await step.run(check === 0 ? "01-observe" : `01-observe-${check}`, () => runEffect(observeReachable(run, runId)));
+    const members = await step.run(check === 0 ? "01-observe" : `01-observe-${check}`, () => runEffect(observeReachable(run, runId)));
     const to = members?.find((member) => member.machine.id === current)?.machine
-      ?? { id: current, name: (await step.run("02-target", () => runEffect(laneTarget(run)))) ?? current };
+      ?? { id: current, name: (await step.run(check === 0 ? "02-target" : `02-target-${check}`, () => runEffect(laneTarget(run)))) ?? current };
     const forward = members === null ? null : planForwardRelease(run.volumeName, to, members);
     if (forward?.kind === "blocked") return fail(steps, "02-failed", forward.message);
     if (members === null || forward === null || forward.kind === "waiting") {

@@ -209,9 +209,11 @@ const owed = (row: VolumeRunRow | undefined): Owed | null =>
     ? { ...row, current: row.current }
     : null;
 
-export const commitment = Effect.fn("VolumeRun.commitment")(function* (volumeId: string) {
+export const commitment = Effect.fn("VolumeRun.commitment")(function* (volumeId: string, organizationId?: string) {
   const { drizzle } = yield* Database;
-  const [newest] = yield* drizzle.select().from(volumeRun).where(and(eq(volumeRun.volumeId, volumeId), MEANINGFUL)).orderBy(desc(volumeRun.gen)).limit(1);
+  const inOrganization = organizationId === undefined ? undefined : eq(volumeRun.organizationId, organizationId);
+  const [newest] = yield* drizzle.select().from(volumeRun)
+    .where(and(eq(volumeRun.volumeId, volumeId), inOrganization, MEANINGFUL)).orderBy(desc(volumeRun.gen)).limit(1);
   return { newest, owed: owed(newest) };
 });
 
@@ -732,8 +734,8 @@ export const inspectVolumeCopies = Effect.fn("VolumeRun.inspectCopies")(function
 
 /** Whether the Volume's committed Move is still owed its finish, so the Copies tab offers no move or mirror. */
 export const isVolumeOwed = Effect.fn("VolumeRun.isOwed")(function* (organizationId: string, volumeId: string) {
-  const { owed } = yield* commitment(volumeId);
-  return owed !== null && owed.organizationId === organizationId;
+  const { owed } = yield* commitment(volumeId, organizationId);
+  return owed !== null;
 });
 
 /** Every run in progress across the organization's Volumes, for the canvas trays. */
