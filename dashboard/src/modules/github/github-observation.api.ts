@@ -99,6 +99,11 @@ export function isGithubObservationNotFound(
   return cause instanceof GithubObservationError && cause.code === "not_found";
 }
 
+/** A missing permission is a 403 GitHub won't lift by waiting; rate limits are retriable 403s. */
+export function githubLacksPermission(cause: unknown): cause is GithubObservationError {
+  return cause instanceof GithubObservationError && cause.status === 403 && !cause.retriable;
+}
+
 function resolvedRepositoryPath(
   repository: GithubResolvedRepository,
 ): string | null {

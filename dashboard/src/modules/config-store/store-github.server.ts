@@ -16,7 +16,8 @@ import type {
   GithubCheckSuiteReceivedEventData,
   GithubPushReceivedEventData,
 } from "#/modules/github/github-ingestion.contracts";
-import { listGithubInstallationOrganizationIds } from "#/modules/github/github.repository";
+import { organizationAccess, type GithubAccess } from "#/modules/github/github-access";
+import { listLinkedOrganizationIds } from "#/modules/github/github.repository";
 import type { ConfigDeploymentAdmittedEventData } from "#/modules/inngest/events";
 
 /** GitHub told Cloud something it can't use yet; the worker retries. */
@@ -45,13 +46,13 @@ export function pullRequestEvent(
  * this tells it a head it saw already carries the merge.
  */
 export const mergedInto = Effect.fn("StoreGithub.mergedInto")(function* (
-  installationId: number, repositoryId: number, live: Pick<LivePullRequest, "mergeCommitSha" | "targetBranch">,
+  access: GithubAccess, repositoryId: number, live: Pick<LivePullRequest, "mergeCommitSha" | "targetBranch">,
 ) {
   if (!live.mergeCommitSha) return null;
-  const repository = yield* resolveGithubRepository(installationId, repositoryId);
-  const branch = yield* resolveGithubBranchHead(installationId, repository, `refs/heads/${live.targetBranch}`);
+  const repository = yield* resolveGithubRepository(access, repositoryId);
+  const branch = yield* resolveGithubBranchHead(access, repository, `refs/heads/${live.targetBranch}`);
   if (branch.state !== "present") return null;
-  const comparison = yield* compareInstallationRepositoryCommits(installationId, repository, live.mergeCommitSha, branch.headSha)
+  const comparison = yield* compareInstallationRepositoryCommits(access, repository, live.mergeCommitSha, branch.headSha)
     .pipe(Effect.catchIf(isGithubObservationNotFound, () => Effect.succeed(null)));
   return comparison?.status === "ahead" || comparison?.status === "identical" ? branch.headSha : null;
 });
@@ -63,17 +64,17 @@ export const mergedInto = Effect.fn("StoreGithub.mergedInto")(function* (
  * ponytail: a PR Environment this closes leaves the Servers at the next sweep.
  */
 const observeMerged = Effect.fn("StoreGithub.observeMerged")(function* (
-  store: ConfigStore, organizationId: string, payload: GithubPushReceivedEventData,
+  store: ConfigStore, access: GithubAccess, organizationId: string, payload: GithubPushReceivedEventData,
 ) {
   const awaiting = yield* storeTry(() => store.awaitingMerge(organizationId, payload.repositoryId, payload.branch));
   const deployments: ConfigDeploymentAdmittedEventData[] = [];
   for (const number of awaiting) {
-    const live = yield* fetchInstallationPullRequest(payload.installationId, payload.repositoryId, number).pipe(
+    const live = yield* fetchInstallationPullRequest(access, payload.repositoryId, number).pipe(
       Effect.catchIf(isGithubObservationNotFound, () => Effect.succeed(null)),
     );
     const { updatedAt } = live ?? {};
     if (!live?.mergeCommitSha || live.targetBranch !== payload.branch || !updatedAt) continue;
-    const targetHead = yield* mergedInto(payload.installationId, payload.repositoryId, live);
+    const targetHead = yield* mergedInto(access, payload.repositoryId, live);
     const written = yield* storeSystem(organizationId, pullRequestEvent(payload.repositoryId, number, { ...live, updatedAt }, targetHead));
     deployments.push(...admittedEvents(organizationId, written));
   }
@@ -85,16 +86,16 @@ const observeMerged = Effect.fn("StoreGithub.observeMerged")(function* (
  * worker applied first makes the Store refuse the stale base, so it reads and compares again.
  */
 const observeBranchFor = Effect.fn("StoreGithub.observeBranchFor")(function* (
-  store: ConfigStore, organizationId: string, payload: GithubPushReceivedEventData,
+  store: ConfigStore, access: GithubAccess, organizationId: string, payload: GithubPushReceivedEventData,
   repository: GithubResolvedRepository, head: string | null,
 ) {
-  const merged = yield* observeMerged(store, organizationId, payload);
+  const merged = yield* observeMerged(store, access, organizationId, payload);
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const base = yield* storeTry(() => store.branchHead(organizationId, payload.repositoryId, payload.branch));
     // No changed paths (a force-push, diverged or long history) deploys every Service that follows the branch.
     let changed: string[] | null = null;
     if (base !== null && head !== null && base !== head && !payload.forced) {
-      changed = yield* compareInstallationRepositoryCommits(payload.installationId, repository, base, head).pipe(
+      changed = yield* compareInstallationRepositoryCommits(access, repository, base, head).pipe(
         Effect.map((comparison) =>
           comparison.status === "ahead" && comparison.pathsComplete ? [...comparison.changedPaths] : null),
         Effect.catchIf(isGithubObservationNotFound, () => Effect.succeed(null)),
@@ -113,34 +114,47 @@ const observeBranchFor = Effect.fn("StoreGithub.observeBranchFor")(function* (
 });
 
 /**
- * A push, as each Organization of the installation's members sees it: Cloud reads the branch's head from GitHub now,
+ * The Organizations linked to the installation, and the access the fan-out reads GitHub with: the first linked one's.
+ * Every linked Organization shares the installation's one token, so one read serves them all.
+ */
+const linkedOrganizations = Effect.fn("StoreGithub.linkedOrganizations")(function* (installationId: number) {
+  const organizations = yield* listLinkedOrganizationIds(installationId);
+  const first = organizations[0];
+  if (first === undefined) return null;
+  return { organizations, access: organizationAccess(first, installationId) };
+});
+
+/**
+ * A push, as each Organization linked to the installation sees it: Cloud reads the branch's head from GitHub now,
  * never the webhook's, so a late delivery can't bring back an older head. Resolves to the Deployments to dispatch.
  */
 export const observeStoreBranch = Effect.fn("StoreGithub.observeBranch")(function* (payload: GithubPushReceivedEventData) {
   const store = yield* cloudStore;
-  const organizations = yield* listGithubInstallationOrganizationIds(payload.installationId);
-  if (organizations.length === 0) return [];
-  const repository = yield* resolveGithubRepository(payload.installationId, payload.repositoryId);
-  const live = yield* resolveGithubBranchHead(payload.installationId, repository, payload.ref);
+  const linked = yield* linkedOrganizations(payload.installationId);
+  if (linked === null) return [];
+  const { access } = linked;
+  const repository = yield* resolveGithubRepository(access, payload.repositoryId);
+  const live = yield* resolveGithubBranchHead(access, repository, payload.ref);
   const head = live.state === "present" ? live.headSha : null;
   const deployments: ConfigDeploymentAdmittedEventData[] = [];
-  for (const organizationId of organizations) {
-    deployments.push(...yield* observeBranchFor(store, organizationId, payload, repository, head));
+  for (const organizationId of linked.organizations) {
+    deployments.push(...yield* observeBranchFor(store, organizationAccess(organizationId, payload.installationId), organizationId, payload, repository, head));
   }
   return deployments;
 });
 
 /**
- * A check suite's result as GitHub has it now, for each Organization of the installation's members; the Store keeps
+ * A check suite's result as GitHub has it now, for each Organization linked to the installation; the Store keeps
  * the newest and lets a deploy waiting for the commit's CI go. Resolves to the Deployments to dispatch.
  */
 export const observeStoreCheckSuite = Effect.fn("StoreGithub.observeCheckSuite")(function* (
   payload: GithubCheckSuiteReceivedEventData,
 ) {
-  const organizations = yield* listGithubInstallationOrganizationIds(payload.installationId);
-  if (organizations.length === 0) return [];
-  const repository = yield* resolveGithubRepository(payload.installationId, payload.repositoryId);
-  const suite = yield* fetchInstallationCheckSuite(payload.installationId, repository, payload.checkSuiteId);
+  const linked = yield* linkedOrganizations(payload.installationId);
+  if (linked === null) return [];
+  const { access, organizations } = linked;
+  const repository = yield* resolveGithubRepository(access, payload.repositoryId);
+  const suite = yield* fetchInstallationCheckSuite(access, repository, payload.checkSuiteId);
   const event: SystemEvent = {
     event: "check_suite", repository_id: payload.repositoryId, suite: suite.checkSuiteId, head: suite.headSha,
     // GitHub's other statuses (requested, waiting, pending) are still running, as `other` reads.

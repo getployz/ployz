@@ -6,7 +6,7 @@ import { GithubApi } from "#/modules/github/github-observation.api";
 import type { ReadableRepository } from "#/modules/github/readable-repository.server";
 import { fakeGithubApi } from "#/test/fake-github";
 
-const web: ReadableRepository = { fullName: "acme/web", repositoryId: 11, installationId: 7, defaultBranch: "main" };
+const web: ReadableRepository = { organizationId: "org", fullName: "acme/web", repositoryId: 11, installationId: 7, defaultBranch: "main" };
 const sha = "b".repeat(40);
 const base = "/repos/acme/web";
 

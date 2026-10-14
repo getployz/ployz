@@ -128,7 +128,8 @@ export const makeGithubTokens = Effect.fn("GithubTokens.make")(function* (
   });
   const installationToken: GithubTokensService["installationToken"] = Effect.fn("GithubTokens.installation")(function* (organizationId, installationId) {
     if (!isValidGithubId(installationId)) return yield* mintFailed({ code: "request_failed", retriable: false });
-    const link = yield* findInstallationLink(organizationId, installationId).pipe(Effect.provideService(Database, database));
+    // A database that can't answer is a defect here, not a GitHub observation.
+    const link = yield* findInstallationLink(organizationId, installationId).pipe(Effect.provideService(Database, database), Effect.orDie);
     if (!link.linked) return yield* new GithubDisconnected({ organizationId, installationId, accountLogin: link.accountLogin });
     return yield* cached(installationId);
   });

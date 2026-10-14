@@ -7,6 +7,7 @@ import { expect, vi } from "vitest";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { callStore } from "#/modules/config-store/config-store.server";
 import { createStorePullRequest } from "#/modules/config-store/store-github.inngest";
+import { unlinkGithubInstallation } from "#/modules/github/github.repository";
 import { githubPullRequestReceivedEvent } from "#/modules/inngest/events";
 import { makeInngestEffectRunner } from "#/server/run.server";
 import { fakeGithubApiBy } from "#/test/fake-github";
@@ -122,6 +123,13 @@ it.live(
       expect(requested).toContainEqual(expect.objectContaining({ data: expect.objectContaining({ deploymentId: closed.removals[0] }) }));
       expect(yield* Effect.promise(() => store.read(ORGANIZATION, { query: "deployment", id: closed.removals[0] ?? "" })))
         .toMatchObject({ remove: true, status: "queued" });
+
+      // The Organization disconnected acme: its pull requests no longer reach the Store, and no check is published.
+      expect(yield* unlinkGithubInstallation({ organizationId: ORGANIZATION, installationId: 7 }).pipe(Effect.provide(services))).toBe(true);
+      const checksBefore = posted.length;
+      Object.assign(pull, { state: "open", updated_at: "2026-09-29T14:00:00Z" });
+      expect(yield* run("unlinked")).toMatchObject({ admitted: [], removals: [], check: "skipped" });
+      expect(posted).toHaveLength(checksBefore);
     }),
   60_000,
 );

@@ -7,8 +7,9 @@ import { gatherGitEvidence } from "#/modules/config-store/git-evidence.server";
 import { gatherVolumeEvidence } from "#/modules/config-store/volume-evidence.server";
 import type { Actor } from "#/modules/identity/actor";
 import { user } from "#/modules/identity/tables";
-import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
+import { cloudStore, refusedWith, storeTry } from "#/modules/config-store/store-sdk.server";
 import { commandEnvironment, StoreRefused } from "#/modules/config-store/store.contract";
+import { deploymentRun } from "#/modules/config-store/tables";
 import { requireAccess } from "#/modules/organization/access.server";
 import { answerForSupport, viewForSupport } from "#/modules/support-access/support-view";
 import { sendInngestEvent } from "#/modules/inngest/client";
@@ -21,6 +22,7 @@ import {
 } from "#/modules/inngest/events";
 import { Database } from "#/server/database.server";
 import { PostHog } from "#/modules/analytics/posthog.server";
+import { organizationAccess } from "#/modules/github/github-access";
 import { cancelGithubRun } from "#/modules/github/github-build.server";
 import { countOrganizationMachines, loadOrganizationConnections } from "#/modules/machines/connections.server";
 import { writeAdmitted } from "#/modules/volume-placement/volume-placement.server";
@@ -39,10 +41,36 @@ export const readStore = <Q extends ConfigQuery>(organizationId: string, query: 
 export const cancelStoreGithubBuilds = Effect.fn("ConfigStore.cancelGithubBuilds")(function* (deploymentId: string) {
   const store = yield* cloudStore;
   const builds = yield* storeTry(() => store.githubCancel(deploymentId));
-  yield* Effect.forEach(builds, ({ run }) => cancelGithubRun({ installationId: run.installation_id, fullName: run.repository, runId: run.run_id }).pipe(
-    Effect.ignore,
-  ), { concurrency: 4, discard: true });
+  yield* Effect.forEach(builds, (build) => cancelGithubRun({
+    access: organizationAccess(build.organization, build.run.installation_id), fullName: build.run.repository, runId: build.run.run_id,
+  }).pipe(Effect.ignore), { concurrency: 4, discard: true });
   return builds.length;
+});
+
+/**
+ * Stop the runs on GitHub of the Organization's builds through `installationId`, while its link still holds the token.
+ * The Store keeps the builds building: the worker's next look finds the link gone and fails the Deployment with it.
+ */
+export const cancelStoreGithubRuns = Effect.fn("ConfigStore.cancelGithubRuns")(function* (organizationId: string, installationId: number) {
+  const store = yield* cloudStore;
+  const { drizzle } = yield* Database;
+  const runs = yield* drizzle.select({ deploymentId: deploymentRun.deploymentId }).from(deploymentRun)
+    .where(eq(deploymentRun.organizationId, organizationId));
+  const access = organizationAccess(organizationId, installationId);
+  let cancelled = 0;
+  for (const { deploymentId } of runs) {
+    const view = yield* storeTry(() => store.read(organizationId, { query: "deployment", id: deploymentId })).pipe(
+      Effect.catchIf(refusedWith("not_found"), () => Effect.succeed(null)));
+    for (const build of view?.builds ?? []) {
+      if (build.status !== "building") continue;
+      const github = yield* storeTry(() => store.githubBuild(`${deploymentId}.${build.service}`)).pipe(
+        Effect.catchIf(refusedWith("not_found"), () => Effect.succeed(null)));
+      if (github === null || github.status !== "building" || github.run.installation_id !== installationId) continue;
+      yield* cancelGithubRun({ access, fullName: github.run.repository, runId: github.run.run_id }).pipe(Effect.ignore);
+      cancelled += 1;
+    }
+  }
+  return cancelled;
 });
 
 /**

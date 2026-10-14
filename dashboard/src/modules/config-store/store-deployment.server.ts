@@ -11,6 +11,7 @@ import { discardFailedRestore, type FailedRestore, releasePlacementClaims } from
 import { extractUpload, releaseUpload } from "#/modules/config-store/upload.server";
 import { eq } from "drizzle-orm";
 import type { GithubApi } from "#/modules/github/github-observation.api";
+import { GithubDisconnected } from "#/modules/github/github-access";
 import { GithubSourceError, materializeGithubSource, resolveGithubSourceSha } from "#/modules/github/github-source.server";
 import type { ConfigDeploymentAdmittedEventData } from "#/modules/inngest/events";
 import type { AppConfig } from "#/server/config.server";
@@ -27,7 +28,9 @@ export type StoreEffectRunner = <A, E extends Error>(program: Effect.Effect<A, E
 export class SourceUnreadable extends Data.TaggedError("SourceUnreadable")<{ readonly message: string }> {}
 
 const fromGithub = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.mapError((error) => new SourceUnreadable({
-  message: error instanceof GithubSourceError ? error.message : "GitHub didn't answer while reading the source. Deploy again.",
+  message: error instanceof GithubSourceError || error instanceof GithubDisconnected
+    ? error.message
+    : "GitHub didn't answer while reading the source. Deploy again.",
 })));
 
 const identity = (organizationId: string, source: GitSource) => ({

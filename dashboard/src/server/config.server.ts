@@ -15,11 +15,13 @@ import {
 const Uuid = Schema.String.check(Schema.isUUID());
 const DEFAULT_HOSTED_DNS_URL = new URL("https://dns.ployz.app/");
 const DEFAULT_POSTHOG_HOST = new URL("https://us.i.posthog.com");
-export type GithubOrigins = { readonly api: string; readonly web: string; readonly codeload: string };
+/** `oidc` is GitHub Actions' token issuer: every runner token names it, and its JWKS signs them. */
+export type GithubOrigins = { readonly api: string; readonly web: string; readonly codeload: string; readonly oidc: string };
 const GITHUB_ORIGINS: GithubOrigins = {
   api: "https://api.github.com",
   web: "https://github.com",
   codeload: "https://codeload.github.com",
+  oidc: "https://token.actions.githubusercontent.com",
 };
 const NonEmptySecret = Schema.Redacted(Schema.NonEmptyString);
 const EncryptionSecret = Schema.Redacted(
@@ -202,7 +204,7 @@ const resolveGithubOrigins = Effect.fn("Config.resolveGithubOrigins")(function* 
     });
   }
   yield* Effect.logInfo(`GitHub origin ${origin.origin} (PLOYZ_VERIFY_GITHUB_ORIGIN)`);
-  return { api: origin.origin, web: origin.origin, codeload: origin.origin } satisfies GithubOrigins;
+  return { api: origin.origin, web: origin.origin, codeload: origin.origin, oidc: origin.origin } satisfies GithubOrigins;
 });
 
 /** Comma-separated user ids, taken exactly: no email or domain matching. */

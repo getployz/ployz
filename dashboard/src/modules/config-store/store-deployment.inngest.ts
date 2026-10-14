@@ -53,7 +53,11 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Store
         return step.run("servers-failed", () => runEffect(failStoreDeploymentUnrun(event.data.organizationId, event.data.environmentId, event.data.deploymentId, runId, failure)));
       }
       const github = await step.run("plan-builds", () => runEffect(planStoreGithubBuilds(event.data)));
-      await Promise.all(github.map((target) => walkGithub(event.data.organizationId, target, step, runEffect)));
+      const walked = await Promise.all(github.map((target) => walkGithub(event.data.organizationId, target, step, runEffect)));
+      const disconnected = walked.find((failed) => failed !== null);
+      if (disconnected !== undefined) {
+        return step.run("github-failed", () => runEffect(failStoreDeploymentUnrun(event.data.organizationId, event.data.environmentId, event.data.deploymentId, runId, disconnected)));
+      }
       const storage = await walkPlacement(event.data, step, runEffect);
       if (storage.kind === "failed") {
         return step.run("storage-failed", () => runEffect(failStoreDeploymentUnrun(event.data.organizationId, event.data.environmentId, event.data.deploymentId, runId, storage.message, storage.restore)));
@@ -126,13 +130,14 @@ type Step = Parameters<Parameters<PloyzInngest["createFunction"]>[1]>[0]["step"]
  * checks in and pushes. Each wait first reads whether a final report already ended it; each timeout also asks GitHub,
  * which catches a completion that landed between waits. With a Builder after GitHub, the first wait is the start limit.
  * Whatever GitHub doesn't build, the runner builds on the servers when the walk has them next, or fails with why.
+ * Resolves to why the Deployment fails instead, when the Organization disconnected the installation mid-build.
  */
-async function walkGithub(organizationId: string, target: StoreGithubTarget, step: Step, runEffect: StoreEffectRunner) {
+async function walkGithub(organizationId: string, target: StoreGithubTarget, step: Step, runEffect: StoreEffectRunner): Promise<string | null> {
   const key = target.service;
   const started = await step.run(`github-start-${key}`, () => runEffect(startStoreGithubBuild(organizationId, target)));
-  if (started.kind !== "dispatched") return;
+  if (started.kind !== "dispatched") return null;
   for (let check = 0; ; check += 1) {
-    if (!(await step.run(`github-open-${key}-${check}`, () => runEffect(storeGithubBuildOpen(target))))) return;
+    if (!(await step.run(`github-open-${key}-${check}`, () => runEffect(storeGithubBuildOpen(target))))) return null;
     const startLimit = check === 0 && target.hasNext;
     const ended = await step.waitForEvent(`github-wait-${key}-${check}`, {
       event: githubBuildRunCompletedEvent, if: `async.data.runId == ${started.runId}`,
@@ -140,7 +145,8 @@ async function walkGithub(organizationId: string, target: StoreGithubTarget, ste
     });
     const seen = { ended: ended !== null, startLimit };
     const found = await step.run(`github-check-${key}-${check}`, () => runEffect(checkStoreGithubBuild(organizationId, target, seen)));
-    if (found === "done") return;
+    if (found === "done") return null;
+    if (found !== "waiting") return found.failed;
   }
 }
 

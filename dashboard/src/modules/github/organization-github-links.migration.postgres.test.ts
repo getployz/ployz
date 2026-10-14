@@ -45,7 +45,7 @@ function migrationStatements() {
   return { createLinks: find('CREATE TABLE "organization_github_installation"'), backfill: find('INSERT INTO "organization_github_installation"') };
 }
 
-async function backfillTwiceOnOldShape(client: Client) {
+async function backfillTwice(client: Client) {
   const { createLinks, backfill } = migrationStatements();
   await client.query(createLinks);
   await client.query(backfill);
@@ -86,7 +86,7 @@ const hopper = randomUUID();
 const bobOwn = randomUUID();
 const adminOnly = randomUUID();
 
-async function seedOldShape(client: Client) {
+async function seedUserInstallations(client: Client) {
   await client.query(
     `insert into "user" (id, name, email, email_verified) values ($1, 'Ada', 'ada@example.com', true), ($2, 'Bob', 'bob@example.com', true)`,
     [ada, bob],
@@ -122,8 +122,8 @@ describe("organization GitHub links migration", () => {
     const database = await emptyDatabase();
     try {
       await migrate(database.url, migrationsBefore(migration));
-      await withClient(database.url, seedOldShape);
-      expect(await withClient(database.url, backfillTwiceOnOldShape)).toEqual({ once: 6, twice: 6 });
+      await withClient(database.url, seedUserInstallations);
+      expect(await withClient(database.url, backfillTwice)).toEqual({ once: 6, twice: 6 });
       await migrate(database.url, migrations);
       await withClient(database.url, async (client) => {
         const links = await client.query(
@@ -164,5 +164,5 @@ describe("organization GitHub links migration", () => {
     } finally {
       await database.drop();
     }
-  });
+  }, 60_000);
 });

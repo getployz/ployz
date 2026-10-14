@@ -5,8 +5,10 @@ import { cancelStoreGithubBuilds, connectionsOf } from "#/modules/config-store/c
 import { cloudStore, refusedWith, storeTry } from "#/modules/config-store/store-sdk.server";
 import type { StoreRefused } from "#/modules/config-store/store.contract";
 import { pinStoreSources } from "#/modules/config-store/store-deployment.server";
+import { GithubDisconnected, organizationAccess } from "#/modules/github/github-access";
 import { cancelGithubRun, checkGithubBuildWorkflow, dispatchGithubBuildWorkflow, githubRunCompleted } from "#/modules/github/github-build.server";
 import { verifyGithubOidcToken } from "#/modules/github/github-oidc.server";
+import { findInstallationLink } from "#/modules/github/github-token.server";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import { createGithubBuildRunCompletedEvent, type ConfigDeploymentAdmittedEventData } from "#/modules/inngest/events";
 import { requirements, serversLacking } from "#/modules/runtime/daemon-compat";
@@ -112,8 +114,9 @@ export const startStoreGithubBuild = Effect.fn("StoreGithub.start")(function* (o
   );
   if (target.installationId === null) return yield* skip(`GitHub builds need the Ployz GitHub App on ${target.repository}`);
   const installationId = target.installationId;
+  const access = organizationAccess(organizationId, installationId);
   return yield* Effect.gen(function* () {
-    const workflow = yield* checkGithubBuildWorkflow(installationId, target.repositoryId);
+    const workflow = yield* checkGithubBuildWorkflow(access, target.repositoryId);
     const repository = workflow.fullName ?? target.repository;
     if (workflow.readiness === "no_permission") return yield* skip(`the Ployz GitHub App can't run Actions in ${repository}`);
     if (workflow.readiness !== "ready" || !workflow.fullName || !workflow.defaultBranch) {
@@ -127,12 +130,12 @@ export const startStoreGithubBuild = Effect.fn("StoreGithub.start")(function* (o
     const config = yield* AppConfig;
     const fullName = workflow.fullName;
     const run = yield* dispatchGithubBuildWorkflow({
-      installationId, fullName, defaultBranch: workflow.defaultBranch,
+      access, fullName, defaultBranch: workflow.defaultBranch,
       inputs: { build: target.build, cloud: config.app.url.origin, runner: start.runner },
     });
     // The run must not build untracked: whatever stops Cloud recording it (cancelled or replaced meanwhile, a
     // failure it retries) cancels it first.
-    const cancel = cancelGithubRun({ installationId, fullName, runId: run.runId }).pipe(Effect.ignore);
+    const cancel = cancelGithubRun({ access, fullName, runId: run.runId }).pipe(Effect.ignore);
     const handed = yield* storeTry(() => store.githubDispatched(target.build, {
       run_id: run.runId, run_url: run.runUrl, workflow_ref: run.workflowRef, repository: fullName, installation_id: installationId,
     })).pipe(
@@ -145,21 +148,29 @@ export const startStoreGithubBuild = Effect.fn("StoreGithub.start")(function* (o
   }).pipe(
     // GitHub failing before dispatch is GitHub being unusable, not the build failing.
     Effect.catchTag("GithubObservationError", (error) => skip(`GitHub couldn't take the build: ${error.message}`)),
+    // The Organization disconnected the installation: the build can't read the repository, with GitHub or the Servers.
+    Effect.catchTag("GithubDisconnected", (error) => skip(error.message)),
     // Started or ended by a retried step already.
     Effect.catchIf(refusedWith("conflict"), () => Effect.succeed(done)),
   );
 });
 
-const githubRun = (build: GithubBuild) => ({ installationId: build.run.installation_id, fullName: build.run.repository, runId: build.run.run_id });
+const githubRun = (build: GithubBuild) => ({
+  access: organizationAccess(build.organization, build.run.installation_id), fullName: build.run.repository, runId: build.run.run_id,
+});
 
 /** Whether GitHub says the run completed; GitHub unreachable reads as still running. */
 const runEnded = (build: GithubBuild) => githubRunCompleted(githubRun(build)).pipe(Effect.orElseSucceed(() => false));
 
+/** What one look at a dispatched build resolves to: the walk waits on, is done, or the Deployment fails with why. */
+export type StoreGithubCheck = "waiting" | "done" | { failed: string };
+
 /**
  * One look at a dispatched build, after its run completed (the webhook), its final report came, or a wait timed out.
- * A Deployment cancelled or replaced meanwhile stops it. A run past its budget is cancelled and ended. A run that
- * hasn't checked in by the start limit (`startLimit`: another Builder follows) is skipped and cancelled; GitHub keeps
- * one that started. Resolves to whether the walk waits on.
+ * A Deployment cancelled or replaced meanwhile stops it. An Organization that disconnected the installation meanwhile
+ * can't read what GitHub built, so its builds stop and the Deployment fails with the disconnect. A run past its budget
+ * is cancelled and ended. A run that hasn't checked in by the start limit (`startLimit`: another Builder follows) is
+ * skipped and cancelled; GitHub keeps one that started.
  */
 export const checkStoreGithubBuild = Effect.fn("StoreGithub.check")(function* (
   organizationId: string, target: StoreGithubTarget, seen: { ended: boolean; startLimit: boolean },
@@ -172,6 +183,11 @@ export const checkStoreGithubBuild = Effect.fn("StoreGithub.check")(function* (
   if (view.status !== "queued" && view.status !== "running") {
     yield* cancelStoreGithubBuilds(deploymentId);
     return "done" as const;
+  }
+  const link = yield* findInstallationLink(organizationId, build.run.installation_id);
+  if (!link.linked) {
+    yield* cancelStoreGithubBuilds(deploymentId);
+    return { failed: new GithubDisconnected({ organizationId, installationId: build.run.installation_id, accountLogin: link.accountLogin }).message };
   }
   const finish = (timedOut: boolean) => Effect.gen(function* () {
     const connections = yield* connectionsOf(organizationId);
@@ -231,6 +247,9 @@ export const checkInStoreGithubBuild = Effect.fn("StoreGithub.checkIn")(function
   const store = yield* cloudStore;
   return yield* Effect.gen(function* () {
     const build = yield* storeTry(() => store.githubBuild(buildId));
+    // A Build Grant reads the Organization's secrets: none for a run whose installation it disconnected meanwhile.
+    const link = yield* findInstallationLink(build.organization, build.run.installation_id);
+    if (!link.linked) return yield* new Forbidden({ message: `GitHub account \`${link.accountLogin}\` was disconnected` });
     const connections = yield* connectionsOf(build.organization);
     return yield* storeTry(() => store.githubCheckIn(buildId, claims, connections));
   }).pipe(Effect.catchTag("StoreRefused", (error) => Effect.fail(refused(error))));

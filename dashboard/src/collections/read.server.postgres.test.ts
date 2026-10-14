@@ -4,8 +4,8 @@ import { assert, it } from "@effect/vitest";
 import { ConfigProvider, Effect, Layer, Schema } from "effect";
 import { Inngest } from "inngest";
 import { readCollection } from "./read.server";
-import { listCachedGithubRepositoriesForUser } from "#/modules/github/github.repository";
-import { githubRepositoryCache } from "#/modules/github/tables";
+import { listCachedGithubRepositoriesForOrganization } from "#/modules/github/github.repository";
+import { githubInstallation, githubRepositoryCache, organizationGithubInstallation } from "#/modules/github/tables";
 import { environmentCanvasNodePosition } from "#/modules/canvas/tables";
 import { member } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
@@ -124,19 +124,25 @@ it.live(
         const otherCookie = otherSignup.headers.get("set-cookie")?.split(";", 1)[0];
         const otherSession = yield* auth.getSession(new Headers({ cookie: otherCookie ?? "" }));
         if (!otherSession) return yield* Effect.die("Missing second session");
+        const otherOrganizationId = crypto.randomUUID();
+        yield* database.drizzle.insert(organization).values({ id: otherOrganizationId, name: "Other", slug: "other-org" });
         const row = {
           installationId: 42, repositoryId: 9007199254740990, name: "repo", fullName: "acme/repo",
           defaultBranch: "main", private: true, htmlUrl: "https://github.com/acme/repo",
           repoUpdatedAt: new Date("2026-01-01T00:00:00Z"), syncedAt: new Date("2026-01-02T00:00:00Z"),
         };
-        yield* database.drizzle.insert(githubRepositoryCache).values([
-          { ...row, userId }, { ...row, userId: otherSession.user.id, name: "private-other" },
+        yield* database.drizzle.insert(githubInstallation).values([
+          { installationId: 42, accountLogin: "acme", accountType: "Organization" },
+          { installationId: 43, accountLogin: "other", accountType: "Organization" },
         ]);
-        // The repository cache is read per user, outside the Org Store.
-        assert.deepStrictEqual(yield* listCachedGithubRepositoriesForUser(userId), [{ ...row, userId }]);
-        assert.deepStrictEqual((yield* listCachedGithubRepositoriesForUser(otherSession.user.id)).map((row) => row.name), ["private-other"]);
-        const otherOrganizationId = crypto.randomUUID();
-        yield* database.drizzle.insert(organization).values({ id: otherOrganizationId, name: "Other", slug: "other-org" });
+        yield* database.drizzle.insert(organizationGithubInstallation).values([
+          { organizationId, installationId: 42, connectedByUserId: userId, connectedGithubLogin: "acme" },
+          { organizationId: otherOrganizationId, installationId: 43, connectedByUserId: otherSession.user.id, connectedGithubLogin: "other" },
+        ]);
+        yield* database.drizzle.insert(githubRepositoryCache).values([row, { ...row, installationId: 43, name: "private-other" }]);
+        // The repository cache is read per Organization through its links, outside the Org Store.
+        assert.deepStrictEqual(yield* listCachedGithubRepositoriesForOrganization(organizationId), [row]);
+        assert.deepStrictEqual((yield* listCachedGithubRepositoriesForOrganization(otherOrganizationId)).map((row) => row.name), ["private-other"]);
         const place = { environmentId: crypto.randomUUID(), resourceType: "service", x: 1, y: 2 };
         yield* database.drizzle.insert(environmentCanvasNodePosition).values([
           { ...place, organizationId, resourceId: crypto.randomUUID() },

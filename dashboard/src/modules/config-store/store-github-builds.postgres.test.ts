@@ -7,12 +7,13 @@ import { expect } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { callStore, gatherTrusted } from "#/modules/config-store/config-store.server";
 import {
-  checkInStoreGithubBuild, planStoreGithubBuilds, recordStoreGithubBuildSteps, startStoreGithubBuild,
+  checkInStoreGithubBuild, checkStoreGithubBuild, planStoreGithubBuilds, recordStoreGithubBuildSteps, startStoreGithubBuild,
 } from "#/modules/config-store/store-github-builds.server";
-import { GITHUB_OIDC_ISSUER, GithubOidcKeys } from "#/modules/github/github-oidc.server";
+import { GithubOidcKeys } from "#/modules/github/github-oidc.server";
+import { unlinkGithubInstallation } from "#/modules/github/github.repository";
 import { type ConnectedRuntimeClient, OrganizationRuntime, type OrganizationRuntimeService } from "#/modules/runtime/organization-runtime.server";
 import { fakeGithubApiBy } from "#/test/fake-github";
-import { acmeWeb, seedStoreGitService, storeTestCloud } from "#/test/store-cloud";
+import { acmeWeb, seedStoreGitService, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000b001";
 const PROJECT = "00000000-0000-4000-8000-00000000b002";
@@ -24,6 +25,7 @@ const HEAD = "c".repeat(40);
 const RUN = 9001;
 const WORKFLOW = "acme/web/.github/workflows/ployz-build.yml@refs/heads/main";
 const here = { project: null, environment: null };
+const ISSUER = "https://token.actions.githubusercontent.com";
 
 const signing = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
 const jwk = { ...signing.publicKey.export({ format: "jwk" }), kid: "key-1" };
@@ -32,7 +34,7 @@ type RunnerClaims = { repository_id: string; job_workflow_ref: string; run_id: s
 function oidcToken(claims: Partial<RunnerClaims> = {}, key: crypto.KeyObject = signing.privateKey) {
   const part = (json: string) => Buffer.from(json).toString("base64url");
   const body = `${part(JSON.stringify({ alg: "RS256", kid: "key-1" }))}.${part(JSON.stringify({
-    iss: GITHUB_OIDC_ISSUER, aud: "http://localhost:3000", exp: Math.floor(Date.now() / 1000) + 300,
+    iss: ISSUER, aud: "http://localhost:3000", exp: Math.floor(Date.now() / 1000) + 300,
     repository_id: "42", job_workflow_ref: WORKFLOW, run_id: String(RUN), event_name: "workflow_dispatch", ...claims,
   }))}`;
   return `${body}.${crypto.sign("RSA-SHA256", Buffer.from(body), key).toString("base64url")}`;
@@ -57,6 +59,7 @@ it.live(
         Effect.provide(services),
         Effect.provideService(GithubOidcKeys, { keys: Effect.succeed([jwk]) }),
       );
+      yield* provided(seedStoreOrganization(ORGANIZATION));
       const store = yield* provided(seedStoreGitService(ORGANIZATION, { project: PROJECT, environment: ENVIRONMENT, service: SERVICE }));
       const write = (command: ConfigCommand) => Effect.promise(() => store.write(ORGANIZATION, command, acmeWeb()));
       yield* write({ command: "admit", admit: "deploy", id: DEPLOYMENT, environment: here, services: [], version: null, accept_volume_loss: [] });
@@ -153,6 +156,22 @@ it.live(
       } } satisfies StoreCall;
       const trusted = yield* provided(gatherTrusted(ORGANIZATION, admission, (query) => store.read(ORGANIZATION, query)));
       expect(trusted.servers).toBe(0);
+
+      // The Organization disconnects acme while GitHub holds a build: the runner's check-in is refused, the worker's
+      // next look cancels the run and fails the Deployment with the disconnect.
+      const disconnected = "00000000-0000-4000-8000-00000000b105";
+      yield* write({ command: "admit", admit: "deploy", id: disconnected, environment: here, services: [], version: null, accept_volume_loss: [] });
+      const held = `${disconnected}.web`;
+      yield* Effect.promise(() => store.pinSources(disconnected, { web: HEAD }));
+      yield* Effect.promise(() => store.githubDispatched(held, {
+        run_id: 9105, run_url: "https://github.com/acme/web/actions/runs/9105", workflow_ref: WORKFLOW, repository: "acme/web", installation_id: 7,
+      }));
+      expect(yield* provided(unlinkGithubInstallation({ organizationId: ORGANIZATION, installationId: 7 }))).toBe(true);
+      expect(yield* provided(Effect.flip(checkInStoreGithubBuild(request(oidcToken({ run_id: "9105" })), held))))
+        .toMatchObject({ _tag: "Forbidden", message: "GitHub account `acme` was disconnected" });
+      const look = yield* provided(checkStoreGithubBuild(ORGANIZATION, { ...target, build: held }, { ended: false, startLimit: false }));
+      expect(look).toEqual({ failed: "GitHub account `acme` was disconnected" });
+      expect(yield* Effect.promise(() => store.githubBuild(held))).toMatchObject({ status: "failed" });
     }),
   60_000,
 );

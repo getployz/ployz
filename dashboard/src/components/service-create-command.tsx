@@ -94,12 +94,14 @@ type ServiceCreateCommandProps = ProjectCommandProps | ServiceCommandProps;
 
 type RootPanelProps = {
   mode: CreateMode;
+  organizationSlug: string;
   onSelectItem: (item: CreateMenuItem) => void;
   isPending: boolean;
 };
 
 type GitPanelReposProps = {
   mode: CreateMode;
+  organizationSlug: string;
   query: string;
   disabled: boolean;
   onSelectRepo: (repo: {
@@ -112,13 +114,13 @@ type GitPanelReposProps = {
 
 type GitPanelProps = GitPanelReposProps;
 
-function RootPanel({ mode, onSelectItem, isPending }: RootPanelProps) {
-  const { queryClient, sessionId, userId } = useCollectionScope();
+function RootPanel({ mode, organizationSlug, onSelectItem, isPending }: RootPanelProps) {
+  const { queryClient, sessionId } = useCollectionScope();
   const [chosen, setChosen] = useState<CreateMenuItem["id"] | null>(null);
   // "GitHub repository" is one tap away: its picker opens with repositories already read.
   useEffect(() => {
-    preloadGithubRepos({ queryClient, sessionId, userId });
-  }, [queryClient, sessionId, userId]);
+    preloadGithubRepos({ queryClient, sessionId, organizationSlug });
+  }, [queryClient, sessionId, organizationSlug]);
   const items = getCreateMenuItems({ includeEmptyProject: mode === "project" }).filter(({ id, panel }) =>
     mode === "service" || panel || id === "empty-project",
   );
@@ -416,6 +418,7 @@ export function ServiceCreateCommand(props: ServiceCreateCommandProps) {
           {panel.kind === "root" ? (
             <RootPanel
               mode={mode}
+              organizationSlug={props.organizationSlug}
               onSelectItem={selectCreateItem}
               isPending={isPending}
             />
@@ -423,6 +426,7 @@ export function ServiceCreateCommand(props: ServiceCreateCommandProps) {
           {panel.kind === "git" ? (
             <GitPanel
               mode={mode}
+              organizationSlug={props.organizationSlug}
               query={query}
               disabled={isPending}
               onSelectRepo={({ fullName, defaultBranch }) => {
