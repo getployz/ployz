@@ -82,7 +82,7 @@ async fn seed_copies_the_point_into_a_slot_then_lands_it_as_a_root() {
     assert!(log.contains("zfs send tank/ployz/data@w-1-1\n"), "{log}");
     assert!(
         log.contains(
-            "zfs receive -u -s -o readonly=on -o refquota=1073741824 -o ployz:seed=77 tank/ployz-mirror/seed/fs\n"
+            "zfs receive -u -s -o readonly=on -o refquota=1073741824 tank/ployz-mirror/seed/fs\n"
         ),
         "the copy carries the source's bound: {log}"
     );
@@ -350,20 +350,46 @@ async fn departure_during_a_seed_copy_stops_it_and_destroys_the_slot() {
 }
 
 #[tokio::test]
-async fn departure_keeps_a_seed_copy_that_has_not_landed() {
-    let test = TestDir::new();
-    let (socket, _server) = start(&test, USABLE_POOL, &["root", "volume"]);
-    set_property(&test, "tank/ployz/data", "snapshots", POINT);
-    post(&socket, "/Volume.Seed", seed(77)).await;
-    for _ in 0..200 {
-        if snapshot_names(&test, "tank/ployz-mirror/seed/fs") == ["w-1-1"] {
-            break;
+async fn departure_destroys_an_unlanded_seed_and_keeps_its_point_in_the_source() {
+    // No marks: a copy v0.3.0-beta.1 finished. A seed mark: one an earlier build finished.
+    // Both marks: a landing interrupted before its rename.
+    for marks in [
+        &[][..],
+        &[("ployz:seed", "77")],
+        &[("ployz:seed", "77"), ("ployz:promote", "on")],
+    ] {
+        let test = TestDir::new();
+        set_property(&test, "tank/ployz/data", "snapshots", POINT);
+        set_property(
+            &test,
+            "tank/ployz-mirror/seed/fs",
+            "snapshots",
+            "tank/ployz-mirror/seed/fs@w-1-1\t77\t1700000000",
+        );
+        for (property, value) in marks {
+            set_property(&test, "tank/ployz-mirror/seed/fs", property, value);
         }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    assert!(!test.0.join("seed-volume").exists(), "nothing landed yet");
+        let (socket, _server) = start(
+            &test,
+            USABLE_POOL,
+            &["root", "volume", "seed-slot", "seed-fs"],
+        );
 
-    let reply = post(&socket, "/Storage.Demote", json!(null)).await;
-    assert_eq!(reply, json!({"Ok": ["data"]}));
-    assert!(test.0.join("seed-fs").exists(), "the seed copy is gone");
+        let reply = post(&socket, "/Storage.Demote", json!(null)).await;
+        assert_eq!(reply, json!({"Ok": ["data", "seed"]}), "{marks:?}");
+        assert!(!test.0.join("seed-slot").exists(), "{marks:?}");
+        assert_eq!(
+            snapshot_names(&test, "tank/ployz-mirror/data/fs")
+                .iter()
+                .filter(|name| *name == "w-1-1")
+                .count(),
+            1,
+            "{marks:?}: the sealed source keeps the point"
+        );
+        assert_eq!(
+            property(&test, "tank/ployz-mirror/data/fs", "readonly").as_deref(),
+            Some("on"),
+            "{marks:?}"
+        );
+    }
 }
