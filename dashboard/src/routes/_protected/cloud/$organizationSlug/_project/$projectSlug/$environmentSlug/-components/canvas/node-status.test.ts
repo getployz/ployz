@@ -155,6 +155,24 @@ describe("containerTrouble", () => {
     expect(containerTrouble([], now)).toBeNull();
   });
 
+  it("says nothing for Deploys that stop a replica cleanly and start it again", () => {
+    const minute = 60_000;
+    const exited = (code: number, at: number) => ({ ...marker("exit", "nginx-1", web1, at), exitCode: code });
+    const deploys = [40, 30, 20, 10].flatMap((ago) => [exited(0, now - ago * minute), exited(0, now - ago * minute + 1_000)]);
+    const restarts = [30, 20, 10].map((ago) => marker("restart", "nginx-1", web1, now - ago * minute + 3_000));
+    expect(containerTrouble([...deploys, ...restarts].sort((a, b) => a.at - b.at), now)).toBeNull();
+  });
+
+  it("drops Restarting once a crash loop goes quiet for ten minutes", () => {
+    const minute = 60_000;
+    const crashLoop = [25, 20, 15].flatMap((ago) => [
+      { ...marker("exit", "web-1", web1, now - ago * minute), exitCode: 1 },
+      marker("restart", "web-1", web1, now - ago * minute + 2_000),
+    ]);
+    expect(containerTrouble(crashLoop, now - 6 * minute)).toBe("Restarting");
+    expect(containerTrouble(crashLoop, now - 4 * minute)).toBeNull();
+  });
+
   it("counts only markers from the hour before now", () => {
     const hour = 60 * 60_000;
     expect(containerTrouble([marker("oom", "web-1", web1, now - hour + 1)], now)).toBe("OOM");
