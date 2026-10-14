@@ -234,7 +234,8 @@ const fenceFollowed = Effect.fn("VolumeRun.fenceFollowed")(function* (lane: Extr
   const { run, to } = lane;
   if (run.kind !== "restore") {
     const { newest } = yield* commitment(run.volumeId);
-    if (newest !== undefined && newest.gen > run.gen) {
+    const successor = newest !== undefined && newest.kind !== "restore" && newest.current === run.current && newest.epoch === lane.epoch;
+    if (newest !== undefined && newest.gen > run.gen && !successor) {
       return yield* Effect.fail(new NonRetriableError(`${run.volumeName} changed since this Deploy placed it; Deploy again`));
     }
   }
