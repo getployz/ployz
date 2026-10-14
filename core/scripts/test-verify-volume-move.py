@@ -16,11 +16,12 @@ since it measures the Deploy the others are held to:
   undo-after-cut    `volume release` after commit: refused, the move finishes on B
   kill-*            the daemon killed inside each copy cell, one kill per cell
 
-`run` needs a ready two-Machine Incus vc with Cloud and verify faults:
+`run` needs a ready two-Machine vc, Incus or Boat, with Cloud and verify faults:
   PLOYZ_VERIFY_CARGO_ARGS='--features ployz/verify-faults,ployzd/verify-faults' \\
     scripts/verify-cluster up --machines 2 --daemon checkout --cloud
-Hold /tmp/ployz-warm-move-vc.lock across up, the run and down. `--soak` holds about 8 GB of Postgres per
-Machine copy, so give it room with `up --disk 48GiB --memory 4GiB`.
+For an Incus vc, hold /tmp/ployz-warm-move-vc.lock across up, the run and down; a Boat vc (`up --provider boat`)
+skips it. `--soak` holds about 8 GB of Postgres per Machine copy, so give an Incus vc room with
+`up --disk 48GiB --memory 4GiB`; a Boat sandbox already has that room.
 Results land in the run's evidence/volume-move-<time>/, one JSON per case and summary.json.
 """
 

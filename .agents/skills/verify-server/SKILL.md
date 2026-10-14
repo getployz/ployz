@@ -11,7 +11,7 @@ Run from `core/` on the Linux development host. From a Mac, SSH to that host and
 flowchart LR
     Agent[Agent verifying a feature] --> Helper[verify-cluster]
     Helper --> Build[Compile checkout binaries]
-    Helper --> Provider[VM provider: initially Incus]
+    Helper --> Provider[Provider: Incus VMs or Boat sandboxes]
     Build --> Enroll[Install when needed and enroll]
     Provider --> Enroll
     Enroll --> Cluster[Disposable real Machines]
@@ -29,7 +29,7 @@ scripts/verify-cluster doctor "$run"
 
 `--daemon checkout` is the command's default; it builds and installs this checkout's runtime. `PLOYZ_VERIFY_CARGO_ARGS` appends to that `cargo build`; `PLOYZ_VERIFY_CARGO_ARGS="--features ployz/verify-faults,ployzd/verify-faults"` builds the fault hooks and `ployz debug volume-rpc` that Volume switch verification drives. When every Machine boots the same release, the run uses that release's cached image and skips daemon compilation, per-Machine binary uploads and installation. A mixed run boots the shared base image and installs each Machine's daemon. Channel selection resolves to an exact version, recorded per Machine in the manifest. The host CLI still comes from this checkout because the released CLI enrolls through Cloud rather than supporting standalone enrollment.
 
-`up` returns an absolute manifest path on stdout. Each invocation creates a separate cluster, SSH credentials, CLI context, Config Store and application workspace. The manifest records each Machine's daemon source, version and binary hashes, and the run's artifact hashes and timings. Incus is the initial provider; its image, bridge and VM commands stay in `scripts/verify/incus.py`.
+`up` returns an absolute manifest path on stdout. Each invocation creates a separate cluster, SSH credentials, CLI context, Config Store and application workspace. The manifest records each Machine's daemon source, version and binary hashes, and the run's artifact hashes and timings. Incus is the default provider; its image, bridge and VM commands stay in `scripts/verify/incus.py`. `--provider boat` runs each Machine as a Boat sandbox instead; see [Boat sandboxes](#boat-sandboxes).
 
 The first run for an image recipe prepares Ubuntu with Docker, real ZFS, Corrosion, Caddy and the scenario workload images (nginx, Postgres, Alpine, whoami), so checks do not pull them from Docker Hub. Later runs boot clones with cached dependencies. Published daemons and their systemd units stay installed in release images; checkout runs install their own binaries and units. The host CLI drives both and reads each Entry Machine over SSH. Machine identities are created after cloning. Compilation overlaps image preparation and VM boot; installation and enrollment wait for the required binaries. Phase timings overlap; `total` records elapsed startup time.
 
@@ -92,7 +92,7 @@ Each script under `scripts/` boots or takes a run, prints its verdicts and exits
 - `test-verify-merge-removals.py --cloud` checks that a PR merge removes Services and never Volume data. Run it after changing merges or removals.
 - `test-verify-volume-move.py run <manifest>` checks one Move under faults in each RPC step; `--soak` adds a large Volume. Run it after changing the Move steps or `SetVolumeCopy`.
 - `test-verify-volume-fences.py <manifest>` checks that a readonly slot stays hidden from Docker. Run it after changing the volume plugin or slot handling.
-- `test-verify-warm-move.py [check ...]` checks Restore, Server removal and rejoin, demotion of a returning copy, deletion, stale `SetVolumeCopy` replays, deploys held mid-Move, Release, mirror reuse and slow or failing starts. `--list` names the checks and the Machines each needs; with no `--manifest` it boots that many under `/tmp/ployz-warm-move-vc.lock` and takes them down. Run it after changing Warm Move, Volume runs or `server rm`.
+- `test-verify-warm-move.py [check ...]` checks Restore, Server removal and rejoin, demotion of a returning copy, deletion, stale `SetVolumeCopy` replays, deploys held mid-Move, Release, mirror reuse and slow or failing starts. `--list` names the checks and the Machines each needs; with no `--manifest` it boots that many under `/tmp/ployz-warm-move-vc.lock` and takes them down. `--provider boat` boots Boat sandboxes and skips the lock. Run it after changing Warm Move, Volume runs or `server rm`.
 
 The three volume scripts need the fault build, `PLOYZ_VERIFY_CARGO_ARGS='--features ployz/verify-faults,ployzd/verify-faults'`. A fault build reads its armed fault from `/run/ployz/fault` on every check, so a script arms one by writing that file on a Machine and disarms it by removing the file, with no restart. A daemon refuses to start when the file holds something that is not a fault point. `leak-memory` is read only at start. A `--manifest` run for the Move and Warm Move scripts must also come from `up --cloud`.
 
@@ -122,6 +122,16 @@ scripts/verify-cluster reap <run-id> ...       # consider only these runs
 Each run records its checkout, manifest, creation time, agent session and owner process in the manifest and on its Incus project. `reap` removes runs whose checkout or manifest is gone or that are older than `--older-than` hours (24). It keeps a run whose owner process still lives unless `--force`. To remove one of your own runs whose manifest you lost, pass `<run-id> --older-than 0 --force --yes`.
 
 When `cli`, `exec`, `probe` or `doctor` finds a Machine stopped that `power off` did not stop, it exits 75 and prints an infrastructure failure, not a product result. The message names the killer QEMU logged (usually earlyoom; `sudo journalctl -u earlyoom` shows why) and the `power on` line that restarts the Machine. Rerun the check after restarting; do not report it as a feature failure. A Machine that `power off` stopped is not an infrastructure failure: `cli` and `probe` return the product's result, and `doctor` or `exec` on that Machine exit 1 with the same restart line.
+
+## Boat sandboxes
+
+```bash
+run=$(scripts/verify-cluster up --provider boat --machines 3)
+```
+
+`--provider boat` runs each Machine as a small Boat sandbox (2 vCPU, 4 GB, 69 GB disk) cloned from the `ployz-verify-024` snapshot, so it uses no RAM or disk on this host. Every command after `up` takes the same manifest and behaves as with Incus. The host needs the `boat` CLI on `PATH` (override with `BOAT_CLI`), logged in with a key that may create, read, exec, stop and delete its own sandboxes. `--memory` and `--disk` are refused. `up` checks `boat limits` first and refuses a run that exceeds the active-sandbox headroom or this minute's start budget. Each Boat run gets its own sandboxes, so it never takes `/tmp/ployz-warm-move-vc.lock`; Incus runs still do.
+
+The host reaches each sandbox over root SSH at its IPv4 `sshEndpoint`; Machines peer over their public IPv6 addresses. Boot disables UFW and pulls the scenario images, since the snapshot keeps none. `power off` resets the guest with sysrq after disabling the Ployz and Docker units, so the sandbox keeps its address, as `incus stop --force` does. Sandboxes carry a six-hour auto-stop (`PLOYZ_VERIFY_BOAT_TTL` in seconds). Each run records its sandbox ids in `~/.cache/ployz/verify/boat/<run>.json`, which `ls` and `reap` read; `down` deletes only those ids. When the key lacks `sandbox.delete-own`, `down` stops each sandbox instead, keeps it in that file and says so.
 
 ## Cloud pairing
 
