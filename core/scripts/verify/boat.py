@@ -352,7 +352,7 @@ def pick(entries, image, want):
     """Parked sandboxes of `image` a run may claim, newest first and one per node; tidy() the entries first."""
     picked, nodes = [], set()
     for entry in sorted(entries, key=lambda entry: -entry["parked_at"]):
-        if entry["image"] == image and len(picked) < want and boat_node(entry["ip"]) not in nodes:
+        if entry["image"] == image and not entry.get("retiring") and len(picked) < want and boat_node(entry["ip"]) not in nodes:
             picked.append(entry)
             nodes.add(boat_node(entry["ip"]))
     return picked
@@ -379,6 +379,8 @@ def stale(entries, states, kept, force=False):
             found.append((entry, "gone"))
         elif state not in UP_STATES:
             found.append((entry, state))
+        elif entry.get("retiring"):
+            found.append((entry, "retiring"))
         elif entry["image"] not in kept:
             found.append((entry, "retired bake"))
         elif force:
@@ -387,10 +389,29 @@ def stale(entries, states, kept, force=False):
 
 
 def tidy(entries, states, owned):
-    """Drop entries some run holds and stale() ones; returns the stale ones for the caller to delete off the lock."""
-    dead = [entry for entry, reason in stale(entries, states, kept_bakes()) if entry["id"] not in owned]
-    entries[:] = [entry for entry in entries if entry not in dead and entry["id"] not in owned]
+    """Drop entries some run holds and mark stale() ones retiring; returns those for the caller to retire() off the lock."""
+    entries[:] = [entry for entry in entries if entry["id"] not in owned]
+    dead = [entry for entry, reason in stale(entries, states, kept_bakes())]
+    for entry in dead:
+        entry["retiring"] = True
     return dead
+
+
+def deleted(result):
+    """Whether a `boat delete` left the sandbox gone."""
+    return not result.returncode or (error(result) or {}).get("status") == 404
+
+
+def retire(dead, delete):
+    """Delete retiring pool entries, then drop from the pool each one Boat confirms gone; returns each delete's result.
+
+    An entry stays in the pool until then, so a failed delete or a crash leaves it for the next tidy() rather than orphaned."""
+    results = each(lambda entry: delete(entry["id"]), dead)
+    gone = {entry["id"] for entry, result in zip(dead, results) if deleted(result)}
+    if gone:
+        with pool() as entries:
+            entries[:] = [entry for entry in entries if entry["id"] not in gone]
+    return results
 
 
 def fingerprint(text):
@@ -465,20 +486,18 @@ def reap_pool(force, yes):
         # States read under the lock cannot miss a sandbox a run parks or claims meanwhile.
         found = stale(entries, sandbox_states(), kept_bakes(), force)
         if yes:
-            entries[:] = [entry for entry in entries if all(entry is not other for other, reason in found)]
-    rows = []
-    for entry, reason in found:
-        row = dict(id=entry["id"], reason=reason, action="remove")
-        rows.append(row)
-        if not yes:
-            continue
-        result = subprocess.run([*cli(), "delete", entry["id"], "--yes", "--json"], stdin=subprocess.DEVNULL, capture_output=True, timeout=60)
-        if result.returncode and (error(result) or {}).get("status") != 404:
-            with pool() as entries:
-                entries.append(entry)
-            row.update(action="failed", reason=str(error(result) or result.stderr.decode(errors="replace").strip()).splitlines()[0])
-        else:
+            for entry, reason in found:
+                entry["retiring"] = True
+    rows = [dict(id=entry["id"], reason=reason, action="remove") for entry, reason in found]
+    if not yes:
+        return rows
+    results = retire([entry for entry, reason in found], lambda sandbox: subprocess.run(
+        [*cli(), "delete", sandbox, "--yes", "--json"], stdin=subprocess.DEVNULL, capture_output=True, timeout=60))
+    for row, result in zip(rows, results):
+        if deleted(result):
             row["action"] = "removed"
+        else:
+            row.update(action="failed", reason=str(error(result) or result.stderr.decode(errors="replace").strip()).splitlines()[0])
     return rows
 
 
@@ -591,8 +610,7 @@ class Provider:
             self.record(lambda record: record["sandboxes"].update(
                 {name: dict(id=entry["id"], state="running", created=int(time.time()), ip=entry["ip"], ssh=entry["ssh"],
                             reused=True) for name, entry in zip(names, picked)}))
-        for entry in dead:
-            self.boat("delete", entry["id"], "--yes", check=False)
+        retire(dead, lambda sandbox: self.boat("delete", sandbox, "--yes", check=False))
         expected = read(fingerprints(self.run["image"]))
 
         def verify(name):
@@ -614,8 +632,7 @@ class Provider:
         """Delete a claimed sandbox that is not provably clean, so start() launches a fresh one in its place."""
         sandbox = self.sandbox(dict(name=name))["id"]
         print(f"{name}: not reusing {sandbox}: {why}", file=sys.stderr)
-        result = self.boat("delete", sandbox, "--yes", check=False)
-        gone = not result.returncode or (error(result) or {}).get("status") == 404
+        gone = deleted(self.boat("delete", sandbox, "--yes", check=False))
 
         def drop(record):
             entry = record["sandboxes"].pop(name)
@@ -889,14 +906,13 @@ systemctl enable --now {PLOYZ_UNITS} $observe
             with pool() as entries:
                 dead = tidy(entries, sandbox_states(), registered())
                 # Only this bake's sandboxes count, so a sibling checkout's parked bake never fills the pool for this one.
-                full = sum(other["image"] == image for other in entries) >= POOL_SIZE
+                full = sum(other["image"] == image for other in entries if not other.get("retiring")) >= POOL_SIZE
                 if not full:
                     entries.append(dict(id=entry["id"], image=image, ip=entry["ip"], ssh=entry["ssh"], parked_at=int(time.time())))
                     self.mark(name, state="parked")
         except RuntimeError as why:
             print(f"Deleting {entry['id']} ({name}) instead of reusing it: {why}", file=sys.stderr)
-        for other in dead:
-            self.boat("delete", other["id"], "--yes", check=False)
+        retire(dead, lambda sandbox: self.boat("delete", sandbox, "--yes", check=False))
         if full:
             print(f"Deleting {entry['id']} ({name}): the pool already holds {POOL_SIZE} of this bake.", file=sys.stderr)
 

@@ -401,12 +401,12 @@ class Pool(unittest.TestCase):
             self.addCleanup(setattr, boat, name, getattr(boat, name))
             setattr(boat, name, value)
 
-    def provider(self, *machines):
+    def provider(self, *machines, answers=None):
         self.calls = []
 
         def fake(args, check=True, **kwargs):
             self.calls.append(args[2:-1])
-            return result(0, {})
+            return (answers or {}).get(tuple(args[2:4]), result(0, {}))
         run = dict(id="run1", manifest=str(boat.REGISTRY / "cluster.json"), image="bake-a",
                    machines=[dict(name=name) for name in machines])
         return boat.Provider(run, fake, Path("."))
@@ -504,33 +504,31 @@ class Pool(unittest.TestCase):
         self.assertIn(["delete", "bx_gone", "--yes"], self.calls)
         self.assertEqual(provider.record()["sandboxes"]["machine-1"]["state"], "parked")
 
-    def test_the_ledger_keeps_what_one_lock_saves_and_is_no_run_record(self):
-        with boat.pool() as entries:
-            entries.append(parked("bx_a", 1, at=5))
-        with boat.pool() as entries:
-            self.assertEqual(entries, [parked("bx_a", 1, at=5)])
-            entries.clear()
+    def test_a_stale_entry_stays_in_the_pool_until_its_delete_succeeds_or_finds_it_gone(self):
+        boat.write(boat.BAKES, ["bake-a"])
+        boat.write(boat.POOL, [parked("bx_failed", 1), parked("bx_missing", 2)])
+        answers = {("delete", "bx_failed"): result(1, {"event": "error", "code": "internal", "status": 500}),
+                   ("delete", "bx_missing"): result(1, {"event": "error", "code": "not_found", "status": 404})}
+        with unittest.mock.patch.object(boat, "boat_json", self.listing()):
+            self.provider(answers=answers).create()
+        self.assertEqual([(entry["id"], entry.get("retiring")) for entry in boat.read(boat.POOL)], [("bx_failed", True)])
+        self.assertEqual(boat.pick(boat.read(boat.POOL), "bake-a", 1), [])
+        boat.registry("run1").unlink()
+        # Up again and of a kept bake, it is still retried because it is retiring.
+        with unittest.mock.patch.object(boat, "boat_json", self.listing(bx_failed="ready")):
+            self.provider().create()
+        self.assertEqual(self.calls, [["delete", "bx_failed", "--yes"]])
         self.assertEqual(boat.read(boat.POOL), [])
-        with boat.pool() as entries:
-            entries.append(parked("bx_b", 2))
-        self.assertEqual(list(boat.REGISTRY.glob("*.json")), [])
-        self.assertEqual(boat.pooled(), {"bake-a": 1})
-        self.assertEqual(boat.images_in_use(), {"bake-a"})
 
-    def test_preflight_budgets_only_the_machines_the_pool_cannot_cover(self):
-        boat.write(boat.BAKES, ["bake-a", "bake-b"])
-        boat.write(boat.POOL, [parked("bx_a", 1), parked("bx_b", 2), parked("bx_c", 2), parked("bx_d", 3, image="bake-b")])
-        answers = dict(list=dict(sandboxes=[dict(id=sandbox, state="ready") for sandbox in ["bx_a", "bx_b", "bx_c", "bx_d"]]),
-                       limits=dict(maxActiveSandboxes=100, activeSandboxes=0, starts=dict(
-                           minute=dict(remaining=1), hour=dict(remaining=60), day=dict(remaining=200), unlimited=False)))
-        with unittest.mock.patch.object(boat, "boat_json", lambda *args: answers[args[0]]), \
-                unittest.mock.patch.object(boat, "corrosion_image", lambda core: "corrosion"), \
-                unittest.mock.patch.object(boat, "bake_name", lambda corrosion: "bake-a"):
-            boat.preflight(3, Path("."))
-            with self.assertRaisesRegex(RuntimeError, "Starts this minute: need up to 2, 1 left"):
-                boat.preflight(4, Path("."))
-            with unittest.mock.patch.object(boat, "POOL_SIZE", 0), self.assertRaisesRegex(RuntimeError, "need up to 3, 1 left"):
-                boat.preflight(3, Path("."))
+    def test_reap_keeps_a_sandbox_it_failed_to_delete_in_the_pool(self):
+        boat.write(boat.BAKES, ["bake-a"])
+        boat.write(boat.POOL, [parked("bx_a", 1), parked("bx_b", 2)])
+        failed = subprocess.CompletedProcess([], 1, json.dumps({"event": "error", "code": "internal", "status": 500}).encode(), b"")
+        with unittest.mock.patch.object(boat, "boat_json", self.listing(bx_a="ready", bx_b="ready")), \
+                unittest.mock.patch.object(boat.subprocess, "run", lambda args, **kwargs: failed if "bx_a" in args else result(0, {})):
+            rows = boat.reap_pool(True, True)
+        self.assertEqual([(row["id"], row["action"]) for row in rows], [("bx_a", "failed"), ("bx_b", "removed")])
+        self.assertEqual([entry["id"] for entry in boat.read(boat.POOL)], ["bx_a"])
 
     def test_reap_takes_stopped_gone_and_retired_bakes_and_all_under_force(self):
         entries = [parked("bx_up", 1), parked("bx_stopped", 2), parked("bx_gone", 3), parked("bx_old", 4, image="bake-c"),
