@@ -27,7 +27,7 @@
                   "excerpt": "Custom domains are free. 1. In Settings → Networking, click Custom Domain. 2. Enter the Domain, like app.example.com, leave Target port blank to use PORT, and click Save route. 3. Create the DNS…",
                   "heading": "Add a custom domain",
                   "path": "services/domains.md",
-                  "score": 49.22,
+                  "score": 49.23,
                   "title": "Domains"
                 },
                 {
@@ -96,7 +96,7 @@
                   "excerpt": "Custom domains are free. 1. In Settings → Networking, click Custom Domain. 2. Enter the Domain, like app.example.com, leave Target port blank to use PORT, and click Save route. 3. Create the DNS…",
                   "heading": "Add a custom domain",
                   "path": "services/domains.md",
-                  "score": 49.22,
+                  "score": 49.23,
                   "title": "Domains"
                 },
                 {
