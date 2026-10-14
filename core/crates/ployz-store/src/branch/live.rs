@@ -52,7 +52,6 @@ pub(crate) fn branch_plan(
     let uses = own(&plan(&BranchPicks::Preset {
         preset: BranchPreset::Uses,
     })?);
-    // "Plus what it uses" only when it adds something to "Only what changes".
     let presets = match uses == only {
         true => vec![BranchPreset::Only, BranchPreset::All],
         false => vec![BranchPreset::Only, BranchPreset::Uses, BranchPreset::All],

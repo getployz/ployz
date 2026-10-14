@@ -84,7 +84,6 @@ async fn sending_a_removal_again_skips_a_machine_already_forgotten_by_id() {
         service.removed_machines.lock().unwrap().as_slice(),
         &[worker.id]
     );
-    // A name that no longer resolves isn't taken as removed.
     let error = client
         .remove_machine(worker.name.as_str(), &confirmed)
         .await
