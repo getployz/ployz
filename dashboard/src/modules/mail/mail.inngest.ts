@@ -16,16 +16,21 @@ const MailSendRequestedData = Schema.Struct({
   html: Schema.optionalKey(NonEmptyString),
 });
 
+export const SEND_MAIL_RETRIES = 5;
+
+/** Doubling from an hour, the retries outlast PostShiba's 24-hour cap as well as its hourly one. */
+export const throttledRetryHours = (attempt: number) => 2 ** attempt;
+
 /** Inngest decides retries, so the Mailer's verdict becomes Inngest's error here and nowhere else. */
-const toInngestError = (error: MailSendError) => {
+const toInngestError = (error: MailSendError, attempt: number) => {
   if (error._tag === "MailRejected") return new NonRetriableError(error.message, { cause: error });
-  if (error.retryAfter !== null) return new RetryAfterError(error.message, error.retryAfter, { cause: error });
+  if (error.throttled) return new RetryAfterError(error.message, `${throttledRetryHours(attempt)}h`, { cause: error });
   return error;
 };
 
 /** The event id keys the send, so every retry of this run delivers one mail. */
 export async function executeSendMail(
-  { event, step }: { event: { id?: string; data: unknown }; step: StepTools },
+  { event, step, attempt }: { event: { id?: string; data: unknown }; step: StepTools; attempt: number },
   runEffect: EffectRunner,
 ) {
   const decoded = Schema.decodeUnknownOption(MailSendRequestedData)(event.data);
@@ -33,7 +38,7 @@ export async function executeSendMail(
   const key = event.id;
   if (key === undefined) throw new NonRetriableError("The mail/send event has no id to key its send.");
   return step.run("send-mail", () =>
-    runEffect(sendMail(decoded.value, key).pipe(Effect.mapError(toInngestError))),
+    runEffect(sendMail(decoded.value, key).pipe(Effect.mapError((error) => toInngestError(error, attempt)))),
   );
 }
 
@@ -42,12 +47,12 @@ export const createSendMail = (inngest: PloyzInngest, runEffect: EffectRunner = 
   inngest.createFunction(
     {
       id: "send-mail",
-      retries: 5,
+      retries: SEND_MAIL_RETRIES,
       triggers: [{ event: mailSendRequestedEventType }],
       // PostShiba's cluster cap: every mail shares one hourly budget.
       throttle: { limit: 100, period: "1h" },
     },
-    async ({ event, step }) => executeSendMail({ event, step }, runEffect),
+    async ({ event, step, attempt }) => executeSendMail({ event, step, attempt }, runEffect),
   );
 
 export const queueMail = (message: MailMessage, key: string) =>

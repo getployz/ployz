@@ -2,7 +2,7 @@ import { InngestTestEngine } from "@inngest/test";
 import { Effect } from "effect";
 import { Inngest } from "inngest";
 import { describe, expect, it } from "vitest";
-import { createSendMail } from "#/modules/mail/mail.inngest";
+import { SEND_MAIL_RETRIES, createSendMail, throttledRetryHours } from "#/modules/mail/mail.inngest";
 import {
   MailRejected,
   MailUnavailable,
@@ -63,10 +63,17 @@ describe("send-mail", () => {
     );
   });
 
-  it("waits an hour when the cluster is throttled", async () => {
+  it("keeps a throttled mail through a 24-hour cap", () => {
+    const waited = Array.from({ length: SEND_MAIL_RETRIES }, (_, attempt) => throttledRetryHours(attempt));
+
+    expect(waited[0]).toBe(1);
+    expect(waited.reduce((total, hours) => total + hours, 0)).toBeGreaterThan(24);
+  });
+
+  it("waits before retrying a throttled cluster", async () => {
     const output = await run(
       [],
-      Effect.fail(new MailUnavailable({ status: 429, code: "throttled", message: "Cap reached.", retryAfter: "1h" })),
+      Effect.fail(new MailUnavailable({ status: 429, code: "throttled", message: "Cap reached.", throttled: true })),
     );
 
     expect(output.error).toEqual(
@@ -77,7 +84,7 @@ describe("send-mail", () => {
   it("retries a mail PostShiba could not take yet", async () => {
     const output = await run(
       [],
-      Effect.fail(new MailUnavailable({ status: 503, code: "inject_unavailable", message: "Busy.", retryAfter: null })),
+      Effect.fail(new MailUnavailable({ status: 503, code: "inject_unavailable", message: "Busy.", throttled: false })),
     );
 
     expect(output.error).toEqual(expect.objectContaining({ message: "Busy." }));

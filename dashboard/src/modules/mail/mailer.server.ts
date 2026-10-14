@@ -25,8 +25,8 @@ export class MailUnavailable extends Data.TaggedError("MailUnavailable")<{
   readonly status: number | null;
   readonly code: string;
   readonly message: string;
-  /** Throttled at the cluster's cap: retrying sooner hits the same cap. */
-  readonly retryAfter: "1h" | null;
+  /** At the cluster's hourly or 24-hour cap, which PostShiba does not tell apart: retrying soon hits it again. */
+  readonly throttled: boolean;
 }> {}
 
 export type MailSendError = MailRejected | MailUnavailable;
@@ -60,7 +60,7 @@ const failureOf = (status: number, failure: typeof SendFailure.Type): MailSendEr
   // inject errors carry their own verdict: inject_failed can be final.
   const retryable = RETRYABLE_CODES.has(code) || (failure.retryable ?? status >= 500);
   return retryable
-    ? new MailUnavailable({ status, code, message, retryAfter: code === "throttled" ? "1h" : null })
+    ? new MailUnavailable({ status, code, message, throttled: code === "throttled" })
     : new MailRejected({ status, code, message });
 };
 
@@ -101,7 +101,7 @@ export const makePostShibaMailer = (
           status: null,
           code: "network",
           message: `PostShiba could not be reached: ${cause instanceof Error ? cause.message : String(cause)}`,
-          retryAfter: null,
+          throttled: false,
         }),
     });
     if (!response.ok) {
@@ -115,7 +115,7 @@ export const makePostShibaMailer = (
         status: response.status,
         code: "unreadable_response",
         message: `PostShiba answered ${response.status} without a message id.`,
-        retryAfter: null,
+        throttled: false,
       });
     }
     return { status: "sent", messageId: accepted.value.message_id } as const;

@@ -61,11 +61,11 @@ describe("PostShiba Mailer", () => {
     }),
   );
 
-  it.effect("waits an hour when the cluster is throttled", () =>
+  it.effect("reports a throttled cluster", () =>
     Effect.gen(function* () {
       const failure = yield* Effect.flip(sendWith(429, { error: "throttled", retryable: true }));
       assert.instanceOf(failure, MailUnavailable);
-      assert.strictEqual(failure.retryAfter, "1h");
+      assert.strictEqual(failure.throttled, true);
     }),
   );
 
@@ -81,7 +81,7 @@ describe("PostShiba Mailer", () => {
       for (const [status, body] of answers) {
         const failure = yield* Effect.flip(sendWith(status, body));
         assert.instanceOf(failure, MailUnavailable, `${status} ${JSON.stringify(body)}`);
-        assert.strictEqual(failure.retryAfter, null);
+        assert.strictEqual(failure.throttled, false);
       }
     }),
   );
