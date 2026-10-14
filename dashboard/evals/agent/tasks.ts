@@ -1,7 +1,7 @@
 import type { ConfigCommand } from "@ployz/sdk";
 import { Effect, Option, Schema } from "effect";
 import { ACTS, STORE_WRITES, TAPE_WRITES } from "./acted";
-import { environmentRef, FAILURE } from "./fixture";
+import { environmentRef, STAGING_DEPLOYMENT_4_FAILURE } from "./fixture";
 import type { Control, FleetScenario } from "./fleet";
 import { delta, type Multiset } from "./snapshot";
 import { type Call, type Evidence, outcome } from "./trial";
@@ -279,7 +279,7 @@ const t14: Task = {
     const final = evidence.transcript.at(-1)?.said ?? "";
     return need(
       [final.includes("worker"), "the final message does not name worker"],
-      [final.includes("Missing script"), `the final message does not quote "${FAILURE}"`],
+      [final.includes("Missing script"), `the final message does not quote "${STAGING_DEPLOYMENT_4_FAILURE}"`],
     );
   },
 };
