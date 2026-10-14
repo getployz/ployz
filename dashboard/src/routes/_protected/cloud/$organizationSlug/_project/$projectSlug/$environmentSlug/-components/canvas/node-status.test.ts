@@ -168,6 +168,13 @@ describe("containerTrouble", () => {
     expect(containerTrouble([...loop, deploy, ...crashed("web-1", web1, now - 2 * 60_000)], now)).toBeNull();
   });
 
+  it("takes a stop by SIGTERM or SIGKILL for a requested stop, not a crash", () => {
+    const stopped = (code: number) =>
+      [8, 6].flatMap((ago) => [{ ...marker("exit", "web-1", web1, now - ago * 60_000), exitCode: code }, marker("restart", "web-1", web1, now - ago * 60_000 + 1_000)]);
+    expect(containerTrouble(stopped(143), now)).toBeNull();
+    expect(containerTrouble(stopped(137), now)).toBeNull();
+  });
+
   it("tells apart same-named replicas on different Servers", () => {
     expect(containerTrouble([...crashed("web-1", web1), ...crashed("web-1", web2)], now)).toBeNull();
   });

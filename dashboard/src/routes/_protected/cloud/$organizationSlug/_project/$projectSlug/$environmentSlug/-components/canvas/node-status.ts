@@ -86,9 +86,15 @@ export const TROUBLE_WINDOW_MS = 60 * 60_000;
 export const LOOP_QUIET_MS = 10 * 60_000;
 
 /**
+ * Exit codes of a container stopped by SIGTERM, or SIGKILL once the stop times out. Docker never restarts a stopped
+ * container and an OOM kill has its own marker, so a restart after one was asked for, not a crash.
+ */
+const STOP_SIGNAL_EXITS: ReadonlySet<number> = new Set([137, 143]);
+
+/**
  * What `markers` say at `now` (Unix milliseconds): only those in the hour before it count, however old the read is.
- * A replica's crash loop is its run of restarts that each followed a non-zero exit; a clean exit, as a Deploy or a
- * requested restart leaves, ends the run. The replica is Restarting once its run reaches two, until it stays up for
+ * A replica's crash loop is its run of restarts that each followed a crash: a non-zero exit not from a stop signal. Any
+ * other exit, as a Deploy or a requested restart leaves, ends the run. The replica is Restarting once its run reaches two, until it stays up for
  * `LOOP_QUIET_MS`.
  */
 export function containerTrouble(markers: readonly Pick<Marker, "kind" | "at" | "server" | "replica" | "exitCode">[], now: number): ContainerTrouble | null {
@@ -99,7 +105,7 @@ export function containerTrouble(markers: readonly Pick<Marker, "kind" | "at" | 
     const replica = `${marker.server.id}/${marker.replica}`;
     const loop = loops.get(replica) ?? { crashed: false, restarts: 0, last: 0 };
     if (marker.kind === "exit") {
-      if (marker.exitCode !== undefined && marker.exitCode !== 0) loops.set(replica, { ...loop, crashed: true });
+      if (marker.exitCode !== undefined && marker.exitCode !== 0 && !STOP_SIGNAL_EXITS.has(marker.exitCode)) loops.set(replica, { ...loop, crashed: true });
       else loops.delete(replica);
     } else if (marker.kind === "restart" && loop.crashed) {
       loops.set(replica, { crashed: false, restarts: loop.restarts + 1, last: marker.at });
