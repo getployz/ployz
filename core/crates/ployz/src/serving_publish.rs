@@ -189,7 +189,9 @@ pub(crate) fn complete_members<E>(
 }
 
 /// `pointer` with `joining` added to its Containers and `leaving` moved to `retiring`,
-/// or `None` when it already holds exactly that.
+/// or `None` when it already holds exactly that. A pointer that retires anything
+/// names the Deploy those Containers came from in `previous`, so a Machine that
+/// cannot see every pointed Container yet keeps routing them.
 pub(crate) fn rotated(
     pointer: &ServingPointer,
     joining: &[ployz_core::ContainerId],
@@ -206,6 +208,9 @@ pub(crate) fn rotated(
         if !next.retiring.contains(id) && !next.containers.contains(id) {
             next.retiring.push(*id);
         }
+    }
+    if !next.retiring.is_empty() && next.previous.is_none() {
+        next.previous = Some(pointer.deploy.clone());
     }
     (next != *pointer).then_some(next)
 }

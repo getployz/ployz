@@ -50,6 +50,13 @@ pub(crate) fn pointer(deploy: char, containers: &[char], retiring: &[char]) -> S
     }
 }
 
+/// `pointer` as a rotation leaves it: `previous` names the Deploy its retiring
+/// Containers came from.
+pub(crate) fn retired_from(mut pointer: ServingPointer, deploy: char) -> ServingPointer {
+    pointer.previous = Some(DeploymentLogId::parse(format!("dep-{deploy}")).unwrap());
+    pointer
+}
+
 pub(crate) fn container(id: char) -> ContainerId {
     ContainerId::parse(id.to_string().repeat(64)).unwrap()
 }
@@ -78,8 +85,8 @@ async fn two_publishes_from_the_same_read_yield_exactly_one_published() {
         }
     };
     let (first, second) = tokio::join!(
-        publish(pointer('b', &['2'], &['1'])),
-        publish(pointer('c', &['3'], &['1']))
+        publish(retired_from(pointer('b', &['2'], &['1']), 'a')),
+        publish(retired_from(pointer('c', &['3'], &['1']), 'a'))
     );
     let published = [&first, &second]
         .iter()
@@ -127,7 +134,7 @@ async fn a_lost_amendment_retries_over_the_winner_and_keeps_both_changes() {
     assert_eq!(amended, Amendment::Published { retries: 1 });
     assert_eq!(
         *fake.row.lock().unwrap(),
-        Some(pointer('a', &['4', '2'], &['1']))
+        Some(retired_from(pointer('a', &['4', '2'], &['1']), 'a'))
     );
 }
 
@@ -150,13 +157,29 @@ async fn an_amendment_gives_up_after_three_lost_retries() {
 
 #[test]
 fn rotation_joins_retires_and_reports_no_change() {
-    let current = pointer('a', &['1', '2'], &['9']);
+    let current = retired_from(pointer('a', &['1', '2'], &['9']), 'z');
     assert_eq!(
         rotated(&current, &[container('3')], &[container('1')]),
-        Some(pointer('a', &['2', '3'], &['9', '1']))
+        Some(retired_from(pointer('a', &['2', '3'], &['9', '1']), 'z'))
     );
     assert_eq!(
         rotated(&current, &[container('2')], &[container('9')]),
         None
+    );
+}
+
+#[test]
+fn a_first_pointer_that_gains_retiring_ids_names_its_own_deploy_as_previous() {
+    let first = pointer('a', &['1', '2'], &[]);
+    let rotated = rotated(&first, &[container('3')], &[container('1')]).unwrap();
+    assert_eq!(rotated, retired_from(pointer('a', &['2', '3'], &['1']), 'a'));
+}
+
+#[test]
+fn a_rotation_that_retires_nothing_leaves_previous_alone() {
+    let first = pointer('a', &['1'], &[]);
+    assert_eq!(
+        rotated(&first, &[container('2')], &[]),
+        Some(pointer('a', &['1', '2'], &[]))
     );
 }
