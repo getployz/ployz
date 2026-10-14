@@ -16,7 +16,7 @@ async fn departure_demotes_each_root_to_a_slot() {
     let (socket, server) = start(&test, USABLE_POOL, &["root", "volume", "mounted"]);
 
     let response = post(&socket, "/Storage.Demote", json!(null)).await;
-    assert_eq!(response, json!({"Ok": ["data"]}));
+    assert_eq!(response, json!({"Ok": {"demoted": ["data"], "stuck": []}}));
 
     let log = commands(&test);
     let order = [
@@ -56,7 +56,7 @@ async fn a_departed_root_without_run_snapshots_restores_from_its_departure_snaps
     let test = TestDir::new();
     let (socket, server) = start(&test, USABLE_POOL, &["root", "volume", "mounted"]);
     let response = post(&socket, "/Storage.Demote", json!(null)).await;
-    assert_eq!(response, json!({"Ok": ["data"]}));
+    assert_eq!(response, json!({"Ok": {"demoted": ["data"], "stuck": []}}));
 
     let copy = post(&socket, "/Volume.Copy.Inspect", json!({"name": "data"})).await;
     assert_eq!(copy.pointer("/Ok/kind"), Some(&json!("slot")), "{copy}");
@@ -90,7 +90,7 @@ async fn departure_without_a_pool_demotes_nothing() {
     let test = TestDir::new();
     let (socket, server) = start(&test, "", &[]);
     let response = post(&socket, "/Storage.Demote", json!(null)).await;
-    assert_eq!(response, json!({"Ok": []}));
+    assert_eq!(response, json!({"Ok": {"demoted": [], "stuck": []}}));
     server.abort();
 }
 
@@ -100,7 +100,7 @@ async fn departure_on_a_machine_without_zfs_demotes_nothing() {
     let (socket, server) = start(&test, "", &[]);
     fs::remove_file(test.0.join("zpool")).unwrap();
     let response = post(&socket, "/Storage.Demote", json!(null)).await;
-    assert_eq!(response, json!({"Ok": []}));
+    assert_eq!(response, json!({"Ok": {"demoted": [], "stuck": []}}));
     let capacity = post(&socket, "/Storage.Inspect", json!(null)).await;
     assert!(capacity.get("Ok").is_some(), "{capacity}");
     server.abort();
@@ -122,7 +122,11 @@ async fn departure_destroys_a_received_mirror_and_the_emptied_mirror_root() {
         let (socket, server) = start(&test, USABLE_POOL, markers);
 
         let response = post(&socket, "/Storage.Demote", json!(null)).await;
-        assert_eq!(response, json!({"Ok": ["data"]}), "{markers:?}");
+        assert_eq!(
+            response,
+            json!({"Ok": {"demoted": ["data"], "stuck": []}}),
+            "{markers:?}"
+        );
         let log = commands(&test);
         assert!(
             log.contains("zfs destroy -r tank/ployz-mirror/data\n"),
@@ -152,7 +156,7 @@ async fn departure_keeps_a_mirror_root_a_slot_appeared_in() {
     fs::write(test.0.join("props/mirror-child-appears"), "").unwrap();
 
     let response = post(&socket, "/Storage.Demote", json!(null)).await;
-    assert_eq!(response, json!({"Ok": ["data"]}));
+    assert_eq!(response, json!({"Ok": {"demoted": ["data"], "stuck": []}}));
     assert!(test.0.join("mirror-root").exists());
     server.abort();
 }
@@ -171,7 +175,7 @@ async fn departure_answers_what_it_demoted_when_the_empty_mirror_root_stays() {
     .unwrap();
 
     let response = post(&socket, "/Storage.Demote", json!(null)).await;
-    assert_eq!(response, json!({"Ok": ["data"]}));
+    assert_eq!(response, json!({"Ok": {"demoted": ["data"], "stuck": []}}));
     assert!(
         !test.0.join("props/fail-command").exists(),
         "the root destroy never ran"
@@ -196,7 +200,11 @@ async fn departure_keeps_a_copy_this_machine_wrote() {
         let (socket, server) = start(&test, USABLE_POOL, &["root", "mirror", "mirror-fs"]);
 
         let response = post(&socket, "/Storage.Demote", json!(null)).await;
-        assert_eq!(response, json!({"Ok": []}), "{property}");
+        assert_eq!(
+            response,
+            json!({"Ok": {"demoted": [], "stuck": []}}),
+            "{property}"
+        );
         let log = commands(&test);
         assert!(!log.contains("zfs destroy"), "{property}: {log}");
         assert!(test.0.join("mirror-fs").exists(), "{property}");
@@ -234,7 +242,7 @@ async fn departure_moves_a_root_into_the_empty_slot_beside_it() {
     let (socket, server) = start(&test, USABLE_POOL, &["root", "volume", "mirror"]);
 
     let response = post(&socket, "/Storage.Demote", json!(null)).await;
-    assert_eq!(response, json!({"Ok": ["data"]}));
+    assert_eq!(response, json!({"Ok": {"demoted": ["data"], "stuck": []}}));
     assert_departed_into_a_slot(&test, &socket).await;
     let log = commands(&test);
     assert!(
@@ -282,7 +290,7 @@ async fn departure_interrupted_before_the_rename_finishes_on_retry() {
     fs::remove_file(test.0.join("rename-fails")).unwrap();
 
     let retried = post(&socket, "/Storage.Demote", json!(null)).await;
-    assert_eq!(retried, json!({"Ok": ["data"]}));
+    assert_eq!(retried, json!({"Ok": {"demoted": ["data"], "stuck": []}}));
     assert_departed_into_a_slot(&test, &socket).await;
     server.abort();
 }
@@ -305,7 +313,7 @@ async fn departure_interrupted_after_the_rename_seals_the_slot_on_retry() {
 
     let retried = post(&socket, "/Storage.Demote", json!(null)).await;
     assert_departed_into_a_slot(&test, &socket).await;
-    assert_eq!(retried, json!({"Ok": ["data"]}));
+    assert_eq!(retried, json!({"Ok": {"demoted": ["data"], "stuck": []}}));
     server.abort();
 }
 

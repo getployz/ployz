@@ -13,8 +13,8 @@ use ployz_core::{
     LeaveRequest, Left, LeftPhase, LocalMachinePhase, Machine, MachineDetails, MachineId,
     MachineIdentity, MachineList, MachineObservation, MachineToken, MachineUpdated,
     ManagementAddress, MembershipEvidence, PublicIpDiscovery, RegisterRequest, Registered,
-    RpcError, RpcErrorCode, RttObservation, RttStatistics, SelectedEndpoint, UpdateMachineRequest,
-    synthesize_membership,
+    RpcError, RpcErrorCode, RttObservation, RttStatistics, SelectedEndpoint, StorageDeparture,
+    UpdateMachineRequest, synthesize_membership,
 };
 use thiserror::Error;
 
@@ -684,21 +684,31 @@ impl LocalMachine {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Cleanup`] when the plugin cannot demote or Docker keeps a name.
+    /// Returns [`Error::Cleanup`] when the plugin cannot demote, a Volume's copy would not
+    /// stop, or Docker keeps a name.
     async fn depart_storage(&self) -> Result<(), Error> {
         let Some(containers) = &self.containers else {
             return Ok(());
         };
-        let demoted: Vec<DockerVolumeName> = self
+        let departure: StorageDeparture = self
             .plugin
             .call("Storage.Demote", &())
             .await
             .map_err(|error| Error::Cleanup(format!("storage departure failed: {error}")))?;
-        for name in &demoted {
+        // A retry answers only what it changes, so the demoted are forgotten now even
+        // when a stuck Volume fails this departure.
+        for name in &departure.demoted {
             containers
                 .forget_volume(name)
                 .await
                 .map_err(|error| Error::Cleanup(format!("Docker kept Volume {name}: {error}")))?;
+        }
+        if !departure.stuck.is_empty() {
+            let stuck: Vec<String> = departure.stuck.iter().map(ToString::to_string).collect();
+            return Err(Error::Cleanup(format!(
+                "the copies of Volumes {} did not stop; retry the departure",
+                stuck.join(", ")
+            )));
         }
         Ok(())
     }

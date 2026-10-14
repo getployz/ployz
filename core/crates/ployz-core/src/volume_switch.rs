@@ -11,6 +11,15 @@ use crate::{CopyRole, DockerVolumeName, MachineName, RpcError, RpcErrorCode, Wri
 /// mounts a handed-over Volume and starts its Container.
 pub const VOLUME_PLUGIN_CALL_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// What a storage departure changed. The daemon forgets each `demoted` name in Docker.
+/// A `stuck` Volume's copy would not stop, so its datasets are left as they were and the
+/// departure fails naming it; a retry demotes it once the copy has stopped.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct StorageDeparture {
+    pub demoted: Vec<DockerVolumeName>,
+    pub stuck: Vec<DockerVolumeName>,
+}
+
 /// ZFS `guid` of a snapshot; stable across send and receive.
 ///
 /// A decimal string on the wire: guids span all of u64, and a JSON number above 2^53 loses

@@ -9,7 +9,7 @@
 use std::collections::BTreeSet;
 
 use axum::{Json, extract::State};
-use ployz_core::RpcError;
+use ployz_core::{RpcError, StorageDeparture};
 use ployzd::machine_pool::MachinePool;
 
 use super::{
@@ -32,24 +32,21 @@ enum Departure<'datasets> {
 }
 
 impl VolumeStorage {
-    /// Demotes every root to a slot and destroys every received mirror. Answers the names it
-    /// changed, for the daemon to forget in Docker.
-    async fn demote_all(&self, now_unix_seconds: i64) -> super::Result<Vec<String>> {
+    /// Demotes every root to a slot and destroys every received mirror, except where a copy
+    /// would not stop. Answers the names it changed, for the daemon to forget in Docker, and
+    /// the names it left.
+    async fn demote_all(&self, now_unix_seconds: i64) -> super::Result<StorageDeparture> {
         let _guard = self.admit_mutation().await?;
         let Some(pool) = self.pool.one_usable().await? else {
-            return Ok(Vec::new());
+            return Ok(StorageDeparture::default());
         };
         let _pool_guard = self.pool.lock_mutation().await?;
         // Every receive starts under admission, so once these stop no slot changes
-        // between the scan and the decisions taken from it.
+        // between the scan and the decisions taken from it. A stuck receive may still
+        // write, so its Volume is not judged.
         let stuck = self.receives.stop_all(self.stop_deadline).await;
         if !stuck.is_empty() {
-            return Err(format!(
-                "the copies of Volumes {} did not stop within {:?}; retry the departure",
-                stuck.join(", "),
-                self.stop_deadline
-            )
-            .into());
+            tracing::warn!(stuck = %stuck.join(", "), deadline = ?self.stop_deadline, "copies did not stop; leaving their Volumes");
         }
         let datasets = self.datasets(&pool).await?;
         let names: BTreeSet<&str> = datasets
@@ -58,6 +55,7 @@ impl VolumeStorage {
                 Place::Root(name) | Place::Slot(name) => Some(name),
                 Place::Outside => None,
             })
+            .filter(|name| !stuck.iter().any(|stuck| stuck == name))
             .collect();
         let mut demoted = Vec::new();
         for name in names {
@@ -66,11 +64,17 @@ impl VolumeStorage {
                 .demote_copy(&pool, &datasets, &name, now_unix_seconds)
                 .await?
             {
-                demoted.push(name.to_string());
+                demoted.push(departed_name(&name.to_string())?);
             }
         }
         self.drop_empty_mirror_root(&pool).await;
-        Ok(demoted)
+        Ok(StorageDeparture {
+            demoted,
+            stuck: stuck
+                .iter()
+                .map(|name| departed_name(name))
+                .collect::<super::Result<_>>()?,
+        })
     }
 
     /// Destroys `<pool>/ployz-mirror` once no slot is left in it, so a departed Machine
@@ -256,7 +260,12 @@ impl VolumeStorage {
 
 pub(super) async fn demote(
     State(storage): State<VolumeStorage>,
-) -> Json<Result<Vec<String>, RpcError>> {
+) -> Json<Result<StorageDeparture, RpcError>> {
     let now = chrono::Utc::now().timestamp();
     Json(storage.demote_all(now).await.map_err(internal))
+}
+
+fn departed_name(name: &str) -> super::Result<ployz_core::DockerVolumeName> {
+    name.parse()
+        .map_err(|error| format!("invalid Volume name {name:?}: {error}").into())
 }

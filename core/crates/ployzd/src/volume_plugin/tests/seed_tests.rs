@@ -354,7 +354,10 @@ async fn departure_during_a_seed_copy_stops_it_and_destroys_the_slot() {
     );
 
     let reply = post(&socket, "/Storage.Demote", json!(null)).await;
-    assert_eq!(reply, json!({"Ok": ["data", "seed"]}));
+    assert_eq!(
+        reply,
+        json!({"Ok": {"demoted": ["data", "seed"], "stuck": []}})
+    );
     assert!(!Path::new(&format!("/proc/{}", pid.trim())).exists());
     assert!(!test.0.join("seed-slot").exists());
 }
@@ -396,7 +399,11 @@ async fn departure_keeps_a_completed_seed_whose_source_pruned_its_point() {
         );
 
         let reply = post(&socket, "/Storage.Demote", json!(null)).await;
-        assert_eq!(reply, json!({"Ok": ["data"]}), "{into}");
+        assert_eq!(
+            reply,
+            json!({"Ok": {"demoted": ["data"], "stuck": []}}),
+            "{into}"
+        );
         assert!(test.0.join("seed-fs").exists(), "{into}: the seed is kept");
         assert_eq!(
             snapshot_names(&test, &format!("tank/ployz-mirror/{into}/fs")),
@@ -413,7 +420,7 @@ async fn departure_keeps_a_completed_seed_of_a_departure_snapshot() {
     let socket = completed_seed(&test, "seed", point, "77").await;
 
     let reply = post(&socket, "/Storage.Demote", json!(null)).await;
-    assert_eq!(reply, json!({"Ok": ["data"]}));
+    assert_eq!(reply, json!({"Ok": {"demoted": ["data"], "stuck": []}}));
     assert_eq!(
         snapshot_names(&test, "tank/ployz-mirror/seed/fs"),
         vec!["dep-1700000000"]
@@ -440,7 +447,7 @@ async fn departure_keeps_a_seed_whose_landing_stopped_before_the_rename() {
     );
 
     let reply = post(&socket, "/Storage.Demote", json!(null)).await;
-    assert_eq!(reply, json!({"Ok": ["data"]}));
+    assert_eq!(reply, json!({"Ok": {"demoted": ["data"], "stuck": []}}));
     assert!(test.0.join("seed-fs").exists());
 }
 
@@ -479,6 +486,9 @@ async fn departure_demotes_the_others_and_names_a_seed_whose_receive_will_not_st
         "a stuck seed leaves every other Volume to be demoted"
     );
     let again = post(&socket, "/Storage.Demote", json!(null)).await;
-    assert!(again.get("Ok").is_some(), "the departure released admission: {again}");
+    assert!(
+        again.get("Ok").is_some(),
+        "the departure released admission: {again}"
+    );
     server.abort();
 }

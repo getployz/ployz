@@ -53,7 +53,10 @@ async fn harness(initialized: bool) -> Harness {
         store.enroll(initialize_request()).unwrap();
     }
     let plugin = FakePlugin::default();
-    plugin.reply("Storage.Demote", json!({"Ok": ["data"]}));
+    plugin.reply(
+        "Storage.Demote",
+        json!({"Ok": {"demoted": ["data"], "stuck": []}}),
+    );
     let (client, _server) = plugin.serve(&data_dir);
     let (runtime, docker) = fake_runtime_with(FakeDocker::default()).await;
     let (replicated, _cluster) = fake_cluster::store().await;
@@ -328,7 +331,10 @@ async fn a_join_whose_departure_fails_stays_uninitialized_and_retries() {
         LocalMachinePhase::Uninitialized
     );
 
-    test.plugin.reply("Storage.Demote", json!({"Ok": ["data"]}));
+    test.plugin.reply(
+        "Storage.Demote",
+        json!({"Ok": {"demoted": ["data"], "stuck": []}}),
+    );
     test.local.enroll(request).await.unwrap();
     assert_eq!(
         test.plugin.routes_called(),
