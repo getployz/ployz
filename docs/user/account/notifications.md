@@ -10,12 +10,14 @@ every organization you belong to.
 Each kind of email has a row, set to **Email** or **None**:
 
 - **Uptime incidents**: when a check goes down, and when it recovers.
-- **Failed GitHub deploys**: when a deploy from a push or pull request fails.
+- **Failed GitHub deploys**: when a deploy from a push or pull request fails, or Cloud loses
+  track of it partway. The email names the repository, branch, commit and service, and links
+  to the logs. A deploy you start yourself doesn't send one.
 - **Failed automatic upgrades**: when an automatic server upgrade fails.
 
 Everything starts at **Email**. A change saves as you pick it.
 
-Ployz Cloud doesn't send these emails yet. Your choices apply once it does.
+Ployz Cloud doesn't send uptime or upgrade emails yet. Your choices for them apply once it does.
 
 ## Turn an email off from the email
 
