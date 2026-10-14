@@ -75,11 +75,11 @@ pub(crate) struct VolumeAdd {
     /// Write only if the place is still at this revision. Omit unless you just read it.
     #[serde(default)]
     expect_revision: Option<u64>,
-    /// Project name. Omit for the one you are in.
+    /// Project name.
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(NODE_NAME))]
     project: Option<ProjectName>,
-    /// Environment name, e.g. staging. Omit for the one you are in.
+    /// Environment name, e.g. staging.
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(NODE_NAME))]
     environment: Option<EnvironmentName>,
@@ -157,11 +157,11 @@ pub(crate) struct VolumeUpdate {
     /// Write only if the place is still at this revision. Omit unless you just read it.
     #[serde(default)]
     expect_revision: Option<u64>,
-    /// Project name. Omit for the one you are in.
+    /// Project name.
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(NODE_NAME))]
     project: Option<ProjectName>,
-    /// Environment name, e.g. staging. Omit for the one you are in.
+    /// Environment name, e.g. staging.
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(NODE_NAME))]
     environment: Option<EnvironmentName>,
@@ -231,11 +231,11 @@ pub(crate) struct VolumeRemove {
     /// Write only if the place is still at this revision. Omit unless you just read it.
     #[serde(default)]
     expect_revision: Option<u64>,
-    /// Project name. Omit for the one you are in.
+    /// Project name.
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(NODE_NAME))]
     project: Option<ProjectName>,
-    /// Environment name, e.g. staging. Omit for the one you are in.
+    /// Environment name, e.g. staging.
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(NODE_NAME))]
     environment: Option<EnvironmentName>,

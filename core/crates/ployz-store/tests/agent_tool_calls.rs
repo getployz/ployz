@@ -209,6 +209,7 @@ fn the_catalog_has_the_agreed_tools() {
     assert_eq!(
         names,
         [
+            "docs",
             "environment_show",
             "project_create",
             "project_rename",
@@ -2087,4 +2088,53 @@ fn server_logs_asks_for_one_servers_process_and_refuses_an_unknown_server() {
         "the daemon by default"
     );
     assert_eq!(every.server, None);
+}
+
+#[test]
+fn docs_answer_from_the_binary_on_any_store() {
+    let store = shop();
+    let run = drive(
+        &store,
+        StoreAt::Local,
+        "docs",
+        json!({ "query": "add a custom domain" }),
+        "docs-search",
+        &mut no_cloud,
+    );
+    assert_eq!((run.reads, run.writes), (0, 0));
+    let found = run.ok();
+    assert_eq!(found["query"], "add a custom domain");
+    assert_eq!(found["results"][0]["path"], "services/domains.md");
+    assert_eq!(found["results"][0]["anchor"], "add-a-custom-domain");
+
+    let page = call(
+        &store,
+        "docs",
+        json!({ "query": "services/domains.md#add-a-custom-domain" }),
+        "docs-page",
+    )
+    .ok();
+    assert_eq!(page["path"], "services/domains.md");
+    assert!(
+        page["content"]
+            .as_str()
+            .unwrap()
+            .contains("## Add a custom domain")
+    );
+
+    let refusal = call(
+        &store,
+        "docs",
+        json!({ "query": "services/domain.md" }),
+        "docs-missing",
+    )
+    .refused();
+    assert_eq!(refusal.code, RpcErrorCode::NotFound);
+    assert_eq!(refusal.did_you_mean.as_deref(), Some("services/domains.md"));
+    assert!(
+        refusal
+            .valid
+            .iter()
+            .any(|path| path == "services/domains.md")
+    );
 }

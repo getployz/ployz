@@ -20,11 +20,11 @@ pub(crate) const REPOSITORY: &str = "^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$";
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct EnvironmentShow {
-    /// Project name. Omit for the one you are in.
+    /// Project name.
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(NODE_NAME))]
     project: Option<ProjectName>,
-    /// Environment name, e.g. staging. Omit for the one you are in.
+    /// Environment name, e.g. staging.
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(NODE_NAME))]
     environment: Option<EnvironmentName>,
@@ -144,11 +144,11 @@ pub(crate) struct EnvironmentPr {
     /// Write only if the place is still at this revision. Omit unless you just read it.
     #[serde(default)]
     expect_revision: Option<u64>,
-    /// Project name. Omit for the one you are in.
+    /// Project name.
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(NODE_NAME))]
     project: Option<ProjectName>,
-    /// Environment name, e.g. staging. Omit for the one you are in.
+    /// Environment name, e.g. staging.
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(NODE_NAME))]
     environment: Option<EnvironmentName>,
@@ -230,11 +230,11 @@ impl Tool for EnvironmentPr {
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct EnvironmentSetup {
-    /// Project name. Omit for the one you are in.
+    /// Project name.
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(NODE_NAME))]
     project: Option<ProjectName>,
-    /// Environment name, e.g. staging. Omit for the one you are in.
+    /// Environment name, e.g. staging.
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(NODE_NAME))]
     environment: Option<EnvironmentName>,
