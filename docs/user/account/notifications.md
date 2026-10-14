@@ -17,9 +17,8 @@ Each kind of email has a row, set to **Email** or **None**:
 
 Everything starts at **Email**. A change saves as you pick it.
 
-Ployz Cloud doesn't send upgrade emails yet. Your choice for them applies once it does. An
-uptime email that couldn't go out within an hour of the check going down or recovering is
-skipped, not sent late.
+Ployz Cloud sends all three kinds. An uptime email that couldn't go out within an hour of the
+check going down or recovering is skipped, not sent late.
 
 ## Turn an email off from the email
 
