@@ -540,8 +540,9 @@ class ClusterModel:
         elif name == "cut":
             self.running.pop(machine, None)
             epoch = self.epoch(lane["row"]["id"])
+            gen = 999 if self.mutation == "cut-other-gen" else self.gen(epoch)
             self.log_fault(machine, lane["until"],
-                           f" INFO cut: holders stopped volume={PHYSICAL} target=f-{epoch} gen={self.gen(epoch)}")
+                           f" INFO cut: holders stopped volume={PHYSICAL} target=f-{epoch} gen={gen}")
             self.copies[machine] = "mirror"
         elif name == "start":
             self.copies[machine] = "writer"
@@ -608,7 +609,9 @@ class ClusterModel:
                 self.clock.now = max(self.clock(), lane["until"])
             lane = self.take("yielded")
             requeues = {"requeue-none": 0, "requeue-twice": 2}.get(self.mutation, 1)
-            self.queued += [(self.row("move", "running", requeue_of=lane["row"]["id"]), lane["destination"])
+            # An unrelated move, say one a user asked for, lands where the requeue would.
+            of = None if self.mutation == "requeue-unrelated" else lane["row"]["id"]
+            self.queued += [(self.row("move", "running", requeue_of=of), lane["destination"])
                             for _ in range(requeues)]
         if lane or version != self.current:
             # A Deploy with nothing new to roll out, like the setup's, returns at once.
@@ -2648,6 +2651,10 @@ finally:
                   ("every soak case whose trigger never fires", False, unfired, {})]
         corpus += [(f"planted {mutation}", False, [cases["clean"]], dict(mutation=mutation))
                    for mutation in ("two-writers", "stopped", "snapshots", "lost")]
+        corpus += [(f"planted {mutation}", False, [cases["deploy-plain"], cases[name]], dict(mutation=mutation))
+                   for mutation, name in (("deploy-waits", "deploy-warm"), ("requeue-unrelated", "deploy-warm"),
+                                          ("yielded-running", "deploy-warm"), ("requeue-none", "deploy-after-cut"),
+                                          ("cut-other-gen", "deploy-after-cut"))]
 
         def trip(model, begun, case, trips):
             def fire():
@@ -2816,6 +2823,35 @@ finally:
         self.assertEqual([row["state"] for row in result["requeues"]], ["done"])
         self.assertEqual(model.fault, {"machine-1": None, "machine-2": None})
 
+    def test_a_committed_trigger_credits_only_the_first_runs_own_row_while_it_runs(self):
+        # The committed credit is a row read: the first run's row must record the committed phase and still run.
+        case = next(case for case in volume_move.CASES if case["name"] == "deploy-committed")
+        for label, reads in (("this run committed and running", None),
+                             ("committed but already ended", "committed|done"),
+                             ("running but not yet committed", "copying|running")):
+            with self.subTest(label):
+                self.setUp()
+                checks, model = self.checks()
+                seen, postgres = [], model.postgres
+
+                def read(sql, reads=reads, postgres=postgres, seen=seen):
+                    if sql.startswith("select phase, state "):
+                        seen.append(sql)
+                        if reads:
+                            return 0, reads
+                    return postgres(sql)
+                model.postgres = read
+                with redirect_stdout(io.StringIO()):
+                    result = checks.run_all([case])["cases"][0]
+                first = model.runs[0]["id"] if reads else None
+                self.assertTrue(seen and all("id = 'run-" in sql for sql in seen), seen)
+                if reads is None:
+                    self.assertTrue(result["passed"], result)
+                    self.assertEqual(self.recorded(case["name"])["triggered"]["identity"]["phase"], "committed")
+                else:
+                    self.assertIsNotNone(first)
+                    self.assertIn("the trigger never fired before the run ended", result["failures"], result)
+
     def test_each_deploy_and_undo_defect_fails_with_a_message_naming_it(self):
         cases = {row["name"]: row for row in volume_move.CASES}
         planted = [
@@ -2827,6 +2863,8 @@ finally:
             ("yielded-running", "deploy-warm", "is still running after 60s, expected yielded"),
             ("mount-error", "deploy-after-cut",
              "the Deploy printed 'Provisioned Volume status has an invalid mountpoint'"),
+            ("requeue-unrelated", "deploy-warm", "0 requeued moves, expected 1"),
+            ("cut-other-gen", "deploy-after-cut", "the trigger never fired before the run ended"),
         ]
         for mutation, name, message in planted:
             with self.subTest(mutation):
