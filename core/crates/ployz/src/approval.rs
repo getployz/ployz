@@ -47,6 +47,7 @@ pub(crate) enum Verb {
     Publish,
     Deploy,
     Drain,
+    Set,
     Clean,
     Remove,
     Forget,
@@ -60,6 +61,7 @@ impl Verb {
             Self::Publish => "publish",
             Self::Deploy => "deploy",
             Self::Drain => "drain",
+            Self::Set => "change",
             Self::Clean => "cleanup",
             Self::Remove => "removal",
             Self::Forget => "forgetting",
@@ -73,11 +75,27 @@ impl Verb {
             Self::Publish => "published",
             Self::Deploy => "deployed",
             Self::Drain => "drained",
+            Self::Set => "changed",
             Self::Clean => "cleaned",
             Self::Remove => "removed",
             Self::Forget => "forgotten",
             Self::Release => "released",
             Self::RemoveMirror => "removed",
+        }
+    }
+
+    /// `this change to web-2`, but `this removal of web-1`.
+    fn preposition(self) -> &'static str {
+        match self {
+            Self::Set => "to",
+            Self::Publish
+            | Self::Deploy
+            | Self::Drain
+            | Self::Clean
+            | Self::Remove
+            | Self::Forget
+            | Self::Release
+            | Self::RemoveMirror => "of",
         }
     }
 }
@@ -98,7 +116,7 @@ impl Asked {
         }
     }
 
-    /// `this deploy to shop/production`, `this removal of web-1`.
+    /// `this deploy to shop/production`, `this removal of web-1`, `this change to web-2`.
     pub(crate) fn what(&self, verb: Verb) -> String {
         let noun = verb.noun();
         match &self.subject {
@@ -106,7 +124,9 @@ impl Asked {
                 "this {noun} to {}/{}",
                 diff.environment.project, diff.environment.name
             ),
-            Subject::Operation(operation) => format!("this {noun} of {}", operation.name),
+            Subject::Operation(operation) => {
+                format!("this {noun} {} {}", verb.preposition(), operation.name)
+            }
         }
     }
 
@@ -285,4 +305,36 @@ pub(crate) async fn decide(
     )
     .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Verb;
+
+    /// Cloud names every operation it gates with one of its `OperationVerb`s; one this CLI
+    /// cannot read leaves its `approval_required` refusal unasked.
+    #[test]
+    fn every_operation_verb_cloud_sends_is_a_verb() {
+        let approvals = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../dashboard/src/modules/approvals/approvals.ts");
+        let source = std::fs::read_to_string(approvals).unwrap();
+        let union = source
+            .lines()
+            .find_map(|line| line.strip_prefix("export type OperationVerb = "))
+            .expect(
+                "wants `export type OperationVerb = ...` on one line in dashboard/src/modules/approvals/approvals.ts",
+            );
+        let verbs: Vec<&str> = union
+            .trim_end_matches(';')
+            .split('|')
+            .map(|verb| verb.trim().trim_matches('"'))
+            .collect();
+        assert!(verbs.contains(&"drain"), "{union}");
+        for verb in verbs {
+            assert!(
+                serde_json::from_value::<Verb>(serde_json::json!(verb)).is_ok(),
+                "Cloud asks approval to {verb}, which `Verb` does not read"
+            );
+        }
+    }
 }

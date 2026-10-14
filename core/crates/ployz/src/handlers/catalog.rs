@@ -644,6 +644,27 @@ mod tests {
     }
 
     #[test]
+    fn service_lifecycle_asks_exactly_when_its_agent_tool_does() {
+        let commands = commands();
+        let tools = ployz_store::tools::catalog();
+        for verb in ["start", "stop", "restart"] {
+            let command = commands
+                .iter()
+                .find(|entry| entry.command == format!("service {verb}"))
+                .unwrap_or_else(|| panic!("service {verb} is a command"));
+            let tool = tools
+                .iter()
+                .find(|tool| tool.name == format!("service_{verb}"))
+                .unwrap_or_else(|| panic!("service_{verb} is a tool"));
+            assert_eq!(
+                command.approval == Approval::Never,
+                tool.gate == ployz_store::tools::Gate::Never,
+                "service {verb}"
+            );
+        }
+    }
+
+    #[test]
     fn every_argument_that_reads_stdin_is_marked() {
         let unmarked: Vec<String> = commands()
             .into_iter()

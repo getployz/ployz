@@ -1,4 +1,4 @@
-//! The tool that creates a Project with its Default Environment.
+//! Tools on Projects: create one with its Default Environment, rename one.
 
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -8,7 +8,7 @@ use super::machine::{Cx, Stop, Tool, at};
 use super::refusal::Call;
 use super::step::RequestKey;
 use crate::catalog::NODE_NAME;
-use crate::{CreateProject, EnvironmentId, ProjectId, ProjectName};
+use crate::{CreateProject, EnvironmentId, ProjectId, ProjectName, RenameProject};
 
 const REQUEST_KEY: &str = "^[A-Za-z0-9_-]{8,64}$";
 
@@ -49,6 +49,39 @@ impl Tool for ProjectCreate {
             "project": created.project.name,
             "environment": created.environment.name,
             "next": Call::new("environment_show", json!({ "project": created.project.name })),
+        }))
+    }
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ProjectRename {
+    #[schemars(with = "String", pattern(NODE_NAME))]
+    project: ProjectName,
+    /// New name, unique in the Organization.
+    #[schemars(with = "String", pattern(NODE_NAME))]
+    to: ProjectName,
+}
+
+impl Tool for ProjectRename {
+    const NAME: &'static str = "project_rename";
+    const DESCRIPTION: &'static str =
+        "Rename a Project. Applies at once; its Environments keep running.";
+    const READ_ONLY: bool = false;
+
+    fn example() -> Value {
+        json!({ "project": "docs", "to": "handbook" })
+    }
+
+    fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
+        let renamed = cx.write(&RenameProject {
+            project: self.project.clone(),
+            name: self.to,
+        })?;
+        Ok(json!({
+            "at": renamed.name,
+            "project": renamed.name,
+            "renamed_from": self.project,
         }))
     }
 }
