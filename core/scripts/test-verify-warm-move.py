@@ -508,7 +508,8 @@ class Cluster:
             attempts.append(f"exit {code} {say(data)[:300]}")
             if code == 0:
                 return attempts
-            retry = "does not match" in say(data) or find_key(data, "code") == "unavailable"
+            retry = ("does not match" in say(data) or "aren't answering" in say(data)
+                     or find_key(data, "code") == "unavailable")
             if not retry or time.monotonic() > deadline:
                 raise CheckError(f"server forget {machine} --confirm dead refused: {attempts[-3:]}")
             time.sleep(2)
