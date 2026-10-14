@@ -2292,7 +2292,7 @@ describe("volume runs", () => {
   });
 
   describe("admission", () => {
-    const caller: Caller = { userId, organization: { id: organizationId, slug: "acme" }, credential: { kind: "session", id: "session-1" }, support: null };
+    const caller: Caller = { userId, organization: { id: organizationId, slug: "acme" }, credential: { kind: "session", id: "session-1" }, support: null, via: "agent" };
     const run = (input: VolumeRunInput) => runEffect(runVolume(caller, { volumeId, environment, ...input }, { key: null, approvalId: null }));
 
     it("a Mirror Remove of the last copy asks first, names the copy it deletes, and writes no run", async () => {

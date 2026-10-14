@@ -516,7 +516,8 @@ async function* startOnce(
  * One sidebar turn, or the resumption of one, as `caller` in their thread: the event stream the client renders. `model`
  * replaces the configured one, for the agent eval.
  */
-export const agentChat = Effect.fn("Agent.chat")(function* (caller: Caller, request: ChatRequest, model?: AnyTextAdapter) {
+export const agentChat = Effect.fn("Agent.chat")(function* (person: Caller, request: ChatRequest, model?: AnyTextAdapter) {
+  const caller: Caller = { ...person, via: "agent" };
   const run: Run = Effect.runPromiseWith(yield* Effect.context<AgentServices>());
   const scope: AgentScope = { organizationId: caller.organization.id, userId: caller.userId };
   const persistence = yield* agentPersistence(scope);

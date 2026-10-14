@@ -14,6 +14,8 @@ const runtimeWatchContainerSchema = Schema.Struct({
   namespace: Schema.String,
   kind: Schema.String,
   runtime: Schema.optionalKey(runtimeContainerStateSchema),
+  /** Present only on a Global Service's containers. */
+  global: Schema.optionalKey(Schema.Literal(true)),
 });
 
 const runtimeWatchMachineSchema = Schema.Struct({
@@ -258,11 +260,12 @@ function runtimeContainerRecordFromWatch(
     namespace: container.namespace,
     kind: container.kind,
   };
-  return container.runtime ? { ...record, runtime: container.runtime } : record;
+  const observed = container.runtime ? { ...record, runtime: container.runtime } : record;
+  return container.global ? { ...observed, global: container.global } : observed;
 }
 
 function runtimeWatchContainerForTransport(container: RuntimeWatchView["containers"][number]) {
-  return {
+  const transport = {
     container_id: container.container_id,
     display_name: container.display_name,
     machine_id: container.machine_id,
@@ -274,4 +277,5 @@ function runtimeWatchContainerForTransport(container: RuntimeWatchView["containe
       ? { state: container.runtime.state, code: container.runtime.code }
       : { state: container.runtime.state },
   };
+  return container.resolved_spec.mode.mode === "global" ? { ...transport, global: true as const } : transport;
 }

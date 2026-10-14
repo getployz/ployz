@@ -31,6 +31,8 @@ export const runtimeContainerRecordSchema = Schema.Struct({
   namespace: Schema.String,
   kind: Schema.String,
   runtime: Schema.optionalKey(runtimeContainerStateSchema),
+  /** Present only on a Global Service's containers: one runs on every Server. */
+  global: Schema.optionalKey(Schema.Literal(true)),
 });
 
 export type RuntimeContainerRecord = typeof runtimeContainerRecordSchema.Type;

@@ -12,7 +12,7 @@ const { agentCloudCall } = createRequire(import.meta.url)("@ployz/sdk") as Pick<
 
 /** `POST /api/cli/agent/ask` and `/act`: `ployz mcp` hands an agent tool's Cloud part to Cloud, as the Caller. */
 export const handleAgentRequest = Effect.fn("Agent.handleCli")(function* (request: Request, part: "ask" | "act") {
-  const caller = yield* resolveCaller(request.headers);
+  const caller = { ...yield* resolveCaller(request.headers), via: "agent" } as const;
   const body: unknown = yield* Effect.tryPromise({
     try: () => request.json(),
     catch: () => new Validation({ message: "Expected a JSON body.", userFacing: true }),

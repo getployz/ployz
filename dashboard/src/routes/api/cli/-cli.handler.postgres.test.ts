@@ -21,6 +21,8 @@ import { OrganizationRuntime, OrganizationRuntimeLive } from "#/modules/runtime/
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
 import { DEFAULT_SERVER_UPGRADE_SETTINGS } from "#/modules/server-upgrade/server-upgrade";
 import { operationApprovals } from "#/modules/approvals/tables";
+import type { Caller } from "#/modules/identity/actor";
+import { forgetServer } from "#/modules/operations/operations.server";
 import { callStore, readStore } from "#/modules/config-store/config-store.server";
 import { CloudStoreLive } from "#/modules/config-store/store-sdk.server";
 import { organization } from "#/modules/organization/tables";
@@ -776,6 +778,37 @@ it.live(
           ["namespace:left-behind", "approved"],
           [`server:${fra1}`, "pending"],
         ]);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "a person forgetting a Server from its dashboard modal starts it at once, and a sidebar agent's forget asks first",
+  () =>
+    Effect.gen(function* () {
+      const inngest = new Inngest({ id: "dashboard-forget-test" });
+      const sent = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
+      const layer = yield* cliLayer(fakeServers().layer, { runtime: leftBehindCluster, inngest });
+      yield* Effect.gen(function* () {
+        const { drizzle } = yield* Database;
+        const { organization: org } = yield* signUp("alice");
+        const [alice] = yield* drizzle.select({ userId: member.userId }).from(member).where(eq(member.organizationId, org.id));
+        assert.isDefined(alice);
+        const { userId } = alice;
+        const caller = (via: Caller["via"]): Caller =>
+          ({ userId, organization: { id: org.id, slug: org.slug }, credential: { kind: "session", id: "session-1" }, support: null, via });
+
+        const agent = yield* forgetServer(caller("agent"), fra1, { key: "agent-forget", approvalId: null });
+        assert.strictEqual(agent?.ok, false);
+        assert.lengthOf(sent.mock.calls, 0);
+
+        const person = yield* forgetServer(caller("dashboard"), fra1, { key: "modal-forget", approvalId: null });
+        assert.strictEqual(person?.ok, true);
+        assert.lengthOf(yield* drizzle.select().from(machineRemoveAttempt), 1);
+        assert.lengthOf(sent.mock.calls, 1);
+        const approvals = yield* drizzle.select({ status: operationApprovals.status }).from(operationApprovals);
+        assert.deepStrictEqual(approvals.map(({ status }) => status), ["pending"]);
       }).pipe(Effect.provide(layer));
     }),
   60_000,
