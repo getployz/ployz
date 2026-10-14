@@ -30,7 +30,11 @@ describe("actAlert", () => {
   });
 
   it("offers no Retry for a run that targeted one server, since a retry here runs on every server", () => {
-    expect(actAlert({ ...restart, verb: "stop", state: "failed", scoped: true })).toMatchObject({ title: "Stop failed", retry: null });
+    expect(actAlert({ ...restart, state: "failed", scoped: true })).toMatchObject({ title: "Restart stopped", retry: null });
+  });
+
+  it("offers no Retry for a failed stop, so a stop always goes through its confirm", () => {
+    expect(actAlert({ ...restart, verb: "stop", state: "failed" })).toMatchObject({ title: "Stop failed", retry: null });
   });
 
   it("shows nothing while a run moves or once it ended done", () => {
