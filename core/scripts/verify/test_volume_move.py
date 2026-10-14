@@ -2558,6 +2558,23 @@ finally:
             with self.subTest(name):
                 self.signalled(name, mid_run=True, in_summary=False)
 
+    def test_an_interrupt_mid_case_disarms_that_cases_fault(self):
+        # Interrupted is a BaseException, so the case's own failure handler never runs, and no later setup may come.
+        case = next(case for case in volume_move.CASES if case["name"] == "deploy-warm")
+        checks, model = self.checks()
+        polled, seen = checks.trigger, []
+
+        def interrupted(*args):
+            if any(model.fault.values()):
+                seen.append(dict(model.fault))
+                raise volume_move.Interrupted("SIGTERM")
+            return polled(*args)
+        checks.trigger = interrupted
+        with redirect_stdout(io.StringIO()), self.assertRaises(volume_move.Interrupted):
+            checks.run_all([case])
+        self.assertTrue(seen, "the case was never interrupted while armed")
+        self.assertEqual(set(model.fault.values()), {None}, model.fault)
+
     def test_a_signal_during_summarize_leaves_a_summary(self):
         # Builder 1 left a second signal inside summarize as an open window; the first signal may land there too.
         for name in ("SIGTERM", "SIGHUP"):
