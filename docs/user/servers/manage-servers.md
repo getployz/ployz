@@ -258,8 +258,8 @@ on.
 > [!WARNING]
 > Volumes stay on the removed server's disk as copies, and your services lose them until you
 > make a copy the writer again with `ployz volume restore`. The server's mirrors of volumes
-> written on other servers are deleted, and so is a restore still copying there. A restore that
-> finished copying stays as a copy. Copy off any data you need first.
+> written on other servers are deleted, and so is a restore that hasn't received any data there
+> yet. A restore that has received data stays as a copy. Copy off any data you need first.
 
 1. Open the server and click **Remove server**.
 2. Ployz lists the volumes on the server. Type the server's name and click **Remove**.
@@ -328,28 +328,13 @@ Ployz refuses to forget a server that answers and holds a copy of any volume. Re
 `ployz server rm` instead, and the reset makes its copies read-only and deletes its mirrors.
 
 A mirror that Ployz v0.3.0-beta.2 or earlier refreshed last stays on the server after the reset.
-To have the reset delete it, run `ployz volume sync <volume>` before `ployz server rm`: the mirror
-then pulls the writer's newest data, and the reset deletes it. Sync pulls only what the volume
-wrote since the mirror's last refresh, so the mirror of a volume that wrote nothing since stays.
-
-A mirror that stays is the dataset `<pool>/ployz-mirror/<name>` in the server's pool, where
-`<name>` is the volume's Docker name, like `shop-production_vol-…`. The same place holds copies
-the reset keeps on purpose because one may be the only copy of its volume: the server's own
-volumes, and copies a move, restore or seed left partway. Never delete `ployz-mirror` itself. On
-the removed server, check each name first:
-
-```sh
-zfs list -H -t snapshot -o name <pool>/ployz-mirror/<name>/fs | grep '@dep-'
-zfs get -H -s local -o property ployz:cut,ployz:epoch,ployz:promote,ployz:seed <pool>/ployz-mirror/<name>/fs
-```
-
-Keep it if either command prints anything. Otherwise delete it only once another server holds the
-volume: `ployz ps` shows the server its service runs on, and `docker volume ls --filter
-driver=ployz` there lists the same `<name>`. Then, on the removed server:
-
-```sh
-zfs destroy -r <pool>/ployz-mirror/<name>
-```
+To have the reset delete it, the mirror must finish a pull from the writer before you run
+`ployz server rm`. `ployz volume sync <volume> --full --wait` copies the whole volume to the
+mirror again and returns only once the mirror holds the writer's newest data. Plain `ployz volume
+sync <volume>` hands the mirror its pull and returns before the download ends, and removing the
+server during the download stops the pull and keeps the mirror. It also pulls only what the
+volume wrote since the mirror's last refresh, so the mirror of a volume that wrote nothing since
+pulls nothing and stays.
 
 A forgotten server doesn't know it was removed. If it comes back, its services may still be
 running on its copy of a volume. When you've restored that volume on another server, the next
