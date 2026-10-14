@@ -64,12 +64,12 @@ function haltedAt(legs: readonly ServiceActLeg[]) {
  * A Service-wide act never ends done while a Server didn't answer: its copies there may not have moved.
  * A restart that stopped rolling leaves later copies untouched, and those never read as moved.
  */
-export function endOf(before: ServiceActBefore, legs: readonly ServiceActLeg[], only: ServerRef | null): ServiceActEnd {
+export function endOf(verb: ServiceVerb, before: ServiceActBefore, legs: readonly ServiceActLeg[], only: ServerRef | null): ServiceActEnd {
   const unanswered = only === null ? before.unanswered : before.unanswered.filter(({ machine }) => machine === only.machine);
   const silent = unanswered.length > 0 ? `${unanswered.map(({ name }) => name).join(", ")} didn't answer.` : null;
   if (legs.length === 0) return silent !== null ? { state: "unknown", reason: silent } : { state: "failed", reason: "No containers to move." };
   const untouched = legs.some((leg) => leg.stop === null && leg.start === null);
-  const halted = haltedAt(legs);
+  const halted = verb === "restart" ? haltedAt(legs) : null;
   const steps = legs.flatMap((leg) => [leg.stop, leg.start]);
   const reason = halted !== null
     ? [`Container ${halted.number} on ${halted.leg.server} didn't come back.`, halted.leg.reason, halted.untouched ? "The rest are untouched." : null]

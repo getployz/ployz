@@ -212,7 +212,7 @@ export const recordServiceAct = Effect.fn("ServiceAct.record")(function* (reques
   const { drizzle } = yield* Database;
   const row = yield* readAct(request.actId);
   if (row.state !== "running" || row.inngestRunId !== runId || row.before === null) return { actId: row.id, state: row.state };
-  const end = endOf(row.before, row.legs, row.only);
+  const end = endOf(row.verb, row.before, row.legs, row.only);
   const [written] = yield* drizzle.update(serviceAct).set({ ...end, endedAt: new Date() })
     .where(and(owned(request, runId), eq(serviceAct.state, "running"))).returning({ state: serviceAct.state });
   return { actId: row.id, state: written?.state ?? (yield* readAct(request.actId)).state };
