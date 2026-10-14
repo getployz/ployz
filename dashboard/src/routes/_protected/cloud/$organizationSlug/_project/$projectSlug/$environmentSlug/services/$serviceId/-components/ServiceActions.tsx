@@ -22,11 +22,7 @@ const PENDING_MS = 60_000;
 
 type Subject = { readonly organizationSlug: string; readonly environmentId: string; readonly service: string };
 
-/**
- * Restart, stop or start a Service on every Server it runs on. A click reads as started at once and asks Cloud in the
- * background under a request id this tab minted; the run's row then says how far it got, as the change stream brings
- * each container's move. Cloud refusing toasts its words.
- */
+/** The request id is minted here so a retried POST admits the same run instead of a second one. */
 export function useServiceAct(subject: Subject) {
   const queryClient = useQueryClient();
   const latest = useLatestServiceAct(subject);
@@ -63,7 +59,6 @@ export function useServiceAct(subject: Subject) {
 
 export type ServiceAct = ReturnType<typeof useServiceAct>;
 
-/** The header's run badge, Start button while stopped, and ⋮ menu. Nothing until the Service has containers to move. */
 export function ServiceActions({ state, namespace, act }: { state: StoreService; namespace: string | null; act: ServiceAct }) {
   const [confirming, setConfirming] = useState(false);
   const containers = useServiceRuntime(state, namespace)?.containers ?? [];
@@ -111,7 +106,6 @@ export function ServiceActions({ state, namespace, act }: { state: StoreService;
   );
 }
 
-/** Why the Service's latest run ended short of done, with Retry. */
 export function ServiceActAlert({ act }: { act: ServiceAct }) {
   if (act.alert === null) return null;
   const { title, description, verb } = act.alert;

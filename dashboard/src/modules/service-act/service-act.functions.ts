@@ -31,7 +31,6 @@ const ActServiceInput = Schema.Struct({
   requestId: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]{8,64}$/)),
 });
 
-/** Restart, start or stop a Service on every Server it runs on, through the same operation the agent and CLI ask for. */
 export const actServiceServerFn = createServerFn({ method: "POST" })
   .middleware([publicErrorMiddleware, actorMiddleware])
   .validator(strictValidator(ActServiceInput))

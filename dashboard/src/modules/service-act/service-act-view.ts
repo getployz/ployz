@@ -17,7 +17,6 @@ export function actBadge(latest: ServiceActProgress | null | undefined, requeste
   return latest.verb === "restart" && latest.total > 0 ? `Restarting ${latest.done}/${latest.total}` : `${MOVING[latest.verb]}…`;
 }
 
-/** Why the Service's latest run ended short of done, with the verb Retry runs again; null while it runs or once it ended done. */
 export function actAlert(latest: ServiceActProgress | null | undefined) {
   if (!latest || running(latest) || latest.state === "done") return null;
   return { title: HALTED[latest.verb], description: latest.reason ?? "A server didn't answer.", verb: latest.verb };

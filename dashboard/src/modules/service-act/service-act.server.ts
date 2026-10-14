@@ -280,7 +280,6 @@ export const serviceOperations = Effect.fn("ServiceAct.operations")(function* (
   return (yield* actsOf(organizationId, subject, attempt, limit)).map(operationOf);
 });
 
-/** How far a Service's latest restart, start or stop got, or null when it never had one. */
 export const latestServiceAct = Effect.fn("ServiceAct.latest")(function* (
   organizationId: string,
   subject: { readonly environment: string; readonly service: string },

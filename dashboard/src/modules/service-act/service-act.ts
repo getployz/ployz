@@ -52,7 +52,6 @@ export const cameBack = (legs: readonly ServiceActLeg[], copy: Pick<ServiceActLe
  */
 export const rollOrder = (legs: readonly ServiceActLeg[]) => [...legs.filter((leg) => leg.hook), ...legs.filter((leg) => !leg.hook)];
 
-/** The copy a restart stopped rolling at, and its place among the copies it starts (from 1). */
 function haltedAt(legs: readonly ServiceActLeg[]) {
   const started = legs.filter((leg) => takes(leg, "start"));
   const index = started.findIndex((leg) => leg.stop !== null && !confirmed(leg.start));
@@ -81,11 +80,7 @@ export function endOf(before: ServiceActBefore, legs: readonly ServiceActLeg[], 
   return silent !== null ? { state: "unknown", reason: silent } : { state: "done", reason: null };
 }
 
-/**
- * How far a run got, as the Service's header shows it: of the copies its verb moves, how many it confirmed. A
- * restart and a start count the copies they start, a stop every copy it stops. `reason` says why a run that ended
- * short of done did.
- */
+/** A restart counts the copies it starts again, since stopping one is only half of moving it. */
 export type ServiceActProgress = {
   readonly id: string;
   readonly verb: ServiceVerb;
