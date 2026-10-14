@@ -1374,6 +1374,61 @@ mod set_volume_copy {
         server.abort();
         std::fs::remove_dir_all(data_dir).unwrap();
     }
+
+    /// The fault point reads `PLOYZD_FAULT` from the process environment, which a test
+    /// cannot set in-process without `unsafe`, so the child re-runs this binary with it.
+    #[cfg(feature = "verify-faults")]
+    mod fault_lines {
+        use super::*;
+
+        const CHILD: &str =
+            "machine_api::local::tests::set_volume_copy::fault_lines::a_cut_under_a_switch_delay";
+
+        #[test]
+        fn a_switch_fault_line_names_the_volume_and_the_want() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", CHILD, "--ignored", "--nocapture"])
+                .env("PLOYZD_FAULT", "delay-rpc:SetVolumeCopy.WriterToMirror:0")
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success() && stdout.contains("1 passed"),
+                "{CHILD}:\n{stdout}\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                stdout
+                    .lines()
+                    .filter(|line| line.contains("fault:"))
+                    .collect::<Vec<_>>(),
+                vec![
+                    r#" WARN fault: delaying switch verb verb="SetVolumeCopy.WriterToMirror" secs=0 volume=app_data target=f-1"#
+                ]
+            );
+        }
+
+        #[tokio::test]
+        #[ignore = "a child of a_switch_fault_line_names_the_volume_and_the_want"]
+        async fn a_cut_under_a_switch_delay() {
+            let (data_dir, _store, service, _fake) = fake_docker_service("ployzd-copy-fault").await;
+            let plugin = FakePlugin::default();
+            plugin.reply(INSPECT_ROUTE, writer_root(0, None));
+            plugin.reply(CUT_ROUTE, slot(Some(snapshot("f-1", 7))));
+            let (socket, server) = plugin.serve(&data_dir);
+            let service = service.with_volume_plugin(socket);
+
+            let (capture, _logging) = crate::diag::test_support::capture();
+            reply(&set_copy(&service, cut(json!({"kind":"writer", "epoch":0}))).await);
+            print!("{}", capture.text());
+            assert_eq!(
+                plugin.routes_called(),
+                vec![INSPECT_ROUTE, CUT_ROUTE, INSPECT_ROUTE]
+            );
+            server.abort();
+            std::fs::remove_dir_all(data_dir).unwrap();
+        }
+    }
 }
 
 mod ensure_container {
