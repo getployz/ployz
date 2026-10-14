@@ -290,7 +290,6 @@ const hint = (name: ServiceSettingName, setting: SettingSchema) => HINTS.has(nam
 /** What an unset limit means, shown in its empty field. */
 const UNSET = new Map<ServiceSettingName, string>([["cpuLimit", "No limit"], ["memLimit", "No limit"]]);
 
-/** Suffixes after a number, as before the Store: "3 replicas". */
 const SUFFIXES = new Map<ServiceSettingName, string>([["replicas", "replicas"], ["memLimit", "GB"], ["cpuLimit", "vCPUs"]]);
 
 /** What each restart policy does, shown under its choice. */

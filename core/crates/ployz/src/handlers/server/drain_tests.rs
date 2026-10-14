@@ -1,6 +1,3 @@
-//! The CLI's lines for a Drain report. The fixtures are the lines the handler printed
-//! before the report was typed, so every outcome that existed then prints the same now.
-
 use ployz_core::{Machine, MachineId, MachineName, QualifiedService, WireGuardPublicKey};
 
 use super::{line, remaining};
