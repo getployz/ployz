@@ -311,7 +311,11 @@ fn a_credential_arrives_only_as_a_secret_and_is_never_echoed() {
     for (path, bad) in [
         (PATH, json!("plain-token")),
         (PATH, json!({ "secret": "" })),
-        (PATH, json!(r#"{"secret":""}"#)),
+        (PATH, json!(r#"{"secret":"plain-token"}"#)),
+        (
+            PATH,
+            json!(r#"{"username":"octocat","secret":"plain-token"}"#),
+        ),
         (PATH, json!({ "secret": false })),
         (PATH, json!({ "password": "plain-token" })),
         (PATH, json!({ "username": "octocat", "secret": true })),
