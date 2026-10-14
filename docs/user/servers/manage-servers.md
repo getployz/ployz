@@ -323,7 +323,9 @@ ployz server forget web-2 --confirm dead
 ```
 
 Ployz refuses to forget a server that answers and holds a copy of any volume. Remove it with
-`ployz server rm` instead, and the reset makes its copies read-only.
+`ployz server rm` instead, and the reset makes its copies read-only and deletes its mirrors. A
+mirror that Ployz v0.3.0-beta.2 or earlier refreshed last stays under `ployz-mirror` in the
+server's pool until you delete it with `zfs destroy -r`.
 
 A forgotten server doesn't know it was removed. If it comes back, its services may still be
 running on its copy of a volume. When you've restored that volume on another server, the next

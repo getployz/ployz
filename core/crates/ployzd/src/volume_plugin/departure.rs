@@ -2,16 +2,19 @@
 //! holds becomes a sealed slot, so nothing left behind is taken for the writer and a later
 //! restore starts from an ordinary slot. Every receive stops before the slots are read, so
 //! each slot is judged as it will stay. A Volume whose receive will not stop is left as it
-//! is and named in the answer; the daemon fails the departure on it once Docker has
-//! forgotten the rest, and a retry judges it after its receive has stopped.
+//! is and named stuck; a Volume whose demote fails is named with its reason. The daemon
+//! forgets every Volume the departure changed before it fails on the rest, as a retry
+//! answers nothing for those.
 //!
-//! A slot is kept when it may hold the only copy of its point. A departure snapshot, a
-//! completed seed or a promote that has not renamed keeps it whatever else it holds: the
-//! seed's source root may since have pruned that point. A Move's cut or a restore's epoch keeps it only while no pull has
-//! landed over the point it marks, which the slot's parent records by naming the pulled
-//! snapshot. Only this Machine sets these marks and a send carries none, so every other
-//! slot is a received copy, a mirror or a partial seed, and is destroyed: the writer or
-//! the seed's source root keeps that data.
+//! A slot is destroyed only on positive evidence that a writer elsewhere held its newest
+//! point: a mirror pull that received that point marks the slot pulled with its guid. A
+//! departure snapshot, a seed, a promote, a cut or an epoch keeps a slot even so, and each
+//! writer path clears the pulled mark before it sets its own. Every other slot is kept, so
+//! a state the departure cannot tell apart leaks rather than loses data. That leak is paid
+//! by every mirror v0.3.0-beta.2 or earlier refreshed last: it carries no pulled mark, and
+//! sync pulls only when the writer has a newer point, so a mirror of an idle Volume
+//! survives the departure. A slot with no snapshot holds only a resumable receive that
+//! never completed, so it holds no point and is destroyed.
 
 use std::collections::BTreeSet;
 
