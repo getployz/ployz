@@ -266,7 +266,7 @@ pub(crate) enum Protection {
     /// The row names it in `containers`; it leaves only through `Rotation::leaving`.
     Pointed(ServingPointer),
     /// The row names it in `retiring`; ployzd stops it after every Machine acknowledges.
-    Retiring,
+    Retiring(ServingPointer),
 }
 
 pub(crate) async fn protection<C: PointerClient>(
@@ -276,7 +276,7 @@ pub(crate) async fn protection<C: PointerClient>(
 ) -> Result<Protection, RpcError> {
     Ok(match client.read_pointer(service).await? {
         Some(pointer) if pointer.containers.contains(copy) => Protection::Pointed(pointer),
-        Some(pointer) if pointer.retiring.contains(copy) => Protection::Retiring,
+        Some(pointer) if pointer.retiring.contains(copy) => Protection::Retiring(pointer),
         _ => Protection::Unnamed,
     })
 }

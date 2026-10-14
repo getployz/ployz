@@ -297,6 +297,37 @@ async fn a_newer_deploys_pointer_during_the_wait_ends_the_retirement_unretired()
     )
     .await
     .unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::Conflict, "{error:?}");
+    assert!(error.message.contains("newer deploy"), "{error:?}");
+    assert_eq!(
+        *row.row.lock().unwrap(),
+        Some(newer),
+        "the newer deploy's copy is not amended into retiring"
+    );
+    assert_eq!(
+        server.copies,
+        [container('2'), container('5')],
+        "the newer deploy's copy is not removed"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_newer_deploys_pointer_ends_a_retirement_that_began_on_a_retiring_copy() {
+    let row = FakeRow::default();
+    *row.row.lock().unwrap() = Some(pointer('a', &['1'], &['2']));
+    let mut server = pointed_server(&row, None);
+    let newer = pointer('b', &['5'], &['2']);
+    server.later = Some((newer.clone(), container('5')));
+    let error = retire_copies(
+        &mut server,
+        &MachineId::parse("b".repeat(32)).unwrap(),
+        &QualifiedService::parse("app/api").unwrap(),
+        Duration::from_secs(30),
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::Conflict, "{error:?}");
     assert!(error.message.contains("newer deploy"), "{error:?}");
     assert_eq!(
         *row.row.lock().unwrap(),

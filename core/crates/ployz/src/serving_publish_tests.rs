@@ -384,13 +384,13 @@ async fn a_read_immediately_before_removal_says_what_names_the_copy() {
         protection(&mut fake, &service(), &container('1'))
             .await
             .unwrap(),
-        Protection::Pointed(row)
+        Protection::Pointed(row.clone())
     );
     assert_eq!(
         protection(&mut fake, &service(), &container('2'))
             .await
             .unwrap(),
-        Protection::Retiring
+        Protection::Retiring(row)
     );
     assert_eq!(
         protection(&mut fake, &service(), &container('3'))
