@@ -157,6 +157,30 @@ async fn departure_keeps_a_mirror_root_a_slot_appeared_in() {
     server.abort();
 }
 
+/// The empty mirror root holds no data, so failing to destroy it fails nothing: ZFS words
+/// "has children" in the Machine's locale, and a busy or vanished root errs otherwise.
+#[tokio::test]
+async fn departure_answers_what_it_demoted_when_the_empty_mirror_root_stays() {
+    let test = TestDir::new();
+    let (socket, server) = start(&test, USABLE_POOL, &["root", "mirror-root", "mirror"]);
+    fs::create_dir_all(test.0.join("props")).unwrap();
+    fs::write(
+        test.0.join("props/fail-command"),
+        "destroy tank/ployz-mirror",
+    )
+    .unwrap();
+
+    let response = post(&socket, "/Storage.Demote", json!(null)).await;
+    assert_eq!(response, json!({"Ok": ["data"]}));
+    assert!(
+        !test.0.join("props/fail-command").exists(),
+        "the root destroy never ran"
+    );
+    assert!(!test.0.join("mirror").exists());
+    assert!(test.0.join("mirror-root").exists());
+    server.abort();
+}
+
 #[tokio::test]
 async fn departure_keeps_a_copy_this_machine_wrote() {
     for (property, value) in [
