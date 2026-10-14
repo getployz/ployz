@@ -104,7 +104,7 @@ class RawFault {
 }
 
 const at = 1_790_000_000;
-const snap = (guid: string, name = `ployz-${guid}`): Snapshot => ({ name, guid, created_unix_seconds: at });
+const snap = (guid: string, name = `dep-${guid}`): Snapshot => ({ name, guid, created_unix_seconds: at });
 const base = snap("10");
 const seedCopy: VolumeCopy = { kind: "root", readonly: false, newest: null, epoch: 0, seed: true };
 const writerCopy = (newest: Snapshot | null = base, epoch = 0, readonly = false): VolumeCopy =>
@@ -916,7 +916,7 @@ describe("volume runs", () => {
 
       expect(late).toMatchObject({ ok: false, reason: "stale" });
       expect(output.error).toBeUndefined();
-      expect(verbs).toEqual(["floor@fsn-1", "floor@fsn-2", "snapshot@fsn-1(w-1-0)", "pull@fsn-2(w-0-1)", "pull@fsn-2(ployz-10)", "pull@fsn-2(ployz-10)", "snapshot@fsn-1(w-1-1)"]);
+      expect(verbs).toEqual(["floor@fsn-1", "floor@fsn-2", "snapshot@fsn-1(w-1-0)", "pull@fsn-2(w-0-1)", "pull@fsn-2(dep-10)", "pull@fsn-2(dep-10)", "snapshot@fsn-1(w-1-1)"]);
       expect(sent[4]).toMatchObject({ expect: { kind: "none" }, want: { kind: "mirror", target: base.name } });
       expect(named("fsn-2").copy).toMatchObject({ kind: "slot", newest: base, pull: null });
       expect(await lanes()).toMatchObject([{ kind: "move", state: "yielded" }, { id: staged.run.id, state: "done" }]);
@@ -1565,8 +1565,8 @@ describe("volume runs", () => {
       const output = await execute(run.id);
 
       expect(output.result).toEqual({ runId: run.id, rounds: 1 });
-      expect(verbs).toEqual(["snapshot@fsn-1(w-1-0)", "pull@fsn-2(ployz-10)", "pull@fsn-2(ployz-10)", "snapshot@fsn-1(w-1-1)"]);
-      expect(sent[1]).toEqual({ name: dockerVolume, expect: { kind: "none" }, want: { kind: "mirror", from: expect.any(String), target: "ployz-10", drain: 3_000 }, gen: expect.any(Number) });
+      expect(verbs).toEqual(["snapshot@fsn-1(w-1-0)", "pull@fsn-2(dep-10)", "pull@fsn-2(dep-10)", "snapshot@fsn-1(w-1-1)"]);
+      expect(sent[1]).toEqual({ name: dockerVolume, expect: { kind: "none" }, want: { kind: "mirror", from: expect.any(String), target: "dep-10", drain: 3_000 }, gen: expect.any(Number) });
       expect(machines[1]?.copy).toMatchObject({ kind: "slot", newest: base, pull: null });
     });
 
@@ -1587,28 +1587,28 @@ describe("volume runs", () => {
     });
 
     it("mirror: a pull that fails on the Machine fails the run with its reason", async () => {
-      machines[1] = { name: "fsn-2", pool: true, copy: null, pullFault: { target: "ployz-10", kind: "fail" } };
+      machines[1] = { name: "fsn-2", pool: true, copy: null, pullFault: { target: "dep-10", kind: "fail" } };
       const run = await requested({ kind: "mirror", args: { to: "fsn-2" } });
 
       await execute(run.id);
 
-      expect(await rows()).toMatchObject([{ state: "failed", message: "data-fsn-2 could not receive ployz-10: disk full" }]);
+      expect(await rows()).toMatchObject([{ state: "failed", message: "data-fsn-2 could not receive dep-10: disk full" }]);
     });
 
     it("mirror: a pull that never lands gives up after six hours of checks backing off to five minutes", async () => {
-      machines[1] = { name: "fsn-2", pool: true, copy: null, pullFault: { target: "ployz-10", kind: "stall" } };
+      machines[1] = { name: "fsn-2", pool: true, copy: null, pullFault: { target: "dep-10", kind: "stall" } };
       const run = await requested({ kind: "mirror", args: { to: "fsn-2" } });
       const waits = PATIENCE_WAITS.map((_, check) => ({ id: `03-r0-backoff-${check}`, handler: () => undefined }));
 
       await execute(run.id, "run-1", waits);
 
-      expect(verbs.filter((verb) => verb === "pull@fsn-2(ployz-10)")).toHaveLength(PATIENCE_WAITS.length + 1);
-      expect(await rows()).toMatchObject([{ state: "failed", message: "data-fsn-2 has not finished ployz-10 after 6h" }]);
+      expect(verbs.filter((verb) => verb === "pull@fsn-2(dep-10)")).toHaveLength(PATIENCE_WAITS.length + 1);
+      expect(await rows()).toMatchObject([{ state: "failed", message: "data-fsn-2 has not finished dep-10 after 6h" }]);
     });
 
     it("mirror: a pull the 5 s checks started replays none of its checks into the new schedule, so it lands instead of giving up", async () => {
       const run = await requested({ kind: "mirror", args: { to: "fsn-2" } });
-      const pulling = { ok: true, copy: slotCopy(null, { target: "ployz-10", failure: null }) };
+      const pulling = { ok: true, copy: slotCopy(null, { target: "dep-10", failure: null }) };
       const old = Array.from({ length: 100 }, (_, poll) => [
         { id: `03-r0-wait-${poll}`, handler: () => undefined },
         { id: `03-r0-repull-${poll}`, handler: () => pulling },
@@ -1626,7 +1626,7 @@ describe("volume runs", () => {
       const output = await execute(run.id);
 
       expect(output.result).toEqual({ runId: run.id, rounds: 1 });
-      expect(verbs).toEqual(["snapshot@fsn-1(w-1-0)", "pull@fsn-2(ployz-10)", "pull@fsn-2(ployz-10)", "snapshot@fsn-1(w-1-1)"]);
+      expect(verbs).toEqual(["snapshot@fsn-1(w-1-0)", "pull@fsn-2(dep-10)", "pull@fsn-2(dep-10)", "snapshot@fsn-1(w-1-1)"]);
       expect(await rows()).toMatchObject([{ state: "done", message: null }]);
     });
 
@@ -1648,7 +1648,7 @@ describe("volume runs", () => {
       const output = await execute(run.id);
 
       expect(output.result).toEqual({ runId: run.id, rounds: 1 });
-      expect(verbs).toEqual(["forget@fsn-2", "forget@fsn-1", "snapshot@fsn-1(w-1-0)", "pull@fsn-2(ployz-10)", "pull@fsn-2(ployz-10)", "snapshot@fsn-1(w-1-1)"]);
+      expect(verbs).toEqual(["forget@fsn-2", "forget@fsn-1", "snapshot@fsn-1(w-1-0)", "pull@fsn-2(dep-10)", "pull@fsn-2(dep-10)", "snapshot@fsn-1(w-1-1)"]);
       expect(sent[0]?.expect).toEqual({ kind: "mirror", newest: "10", slot: "1" });
       expect(sent[1]?.expect).toEqual({ kind: "writer", epoch: 0 });
     });

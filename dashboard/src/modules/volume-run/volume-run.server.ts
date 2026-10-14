@@ -11,7 +11,6 @@ import type {
   SnapshotGuid,
   SwitchError,
   VolumeCopy,
-  VolumeSwitchReply,
   VolumeSwitchRequest,
   WantedCopy,
 } from "@ployz/sdk";
@@ -30,7 +29,7 @@ import { loadOrganizationConnections } from "#/modules/machines/connections.serv
 import { organizationMachine } from "#/modules/machines/tables";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { type Requirement, requirementFor, requirements, serverSupports } from "#/modules/runtime/daemon-compat";
-import { observeVolumeCopies, type PloyzSdkError, sdkFailureMessage } from "#/modules/runtime/ployz.server";
+import { observeVolumeCopies, type PloyzSdkError, sdkFailureMessage, setVolumeCopyRefusal } from "#/modules/runtime/ployz.server";
 import { alreadyOn, newestGuid, type PlanInput, type Planned, planFromCopies, type Refusal, type RefusalCode, type ReleaseFrom } from "#/modules/volume-run/plan";
 import { isBehind, isCurrent, releaseLine } from "#/modules/server-upgrade/server-upgrade";
 import { channelRelease, organizationReleaseChannel } from "#/modules/server-upgrade/server-upgrade.server";
@@ -714,14 +713,6 @@ export function switchErrorOf(error: PloyzSdkError): SwitchReason | null {
   return Option.isSome(decoded) ? decoded.value.details.reason : null;
 }
 
-const CopyRefusedDetails = Schema.Struct({
-  details: Schema.Struct({
-    reason: Schema.Literals(["mismatch", "no_transition", "busy", "no_capacity", "behind", "written", "no_source", "stale"]),
-    copy: Schema.NullOr(Schema.Unknown),
-  }),
-});
-const decodeCopyRefused = Schema.decodeUnknownOption(CopyRefusedDetails);
-
 export function switchFailureMessage(reason: SwitchReason, ctx: Pick<RunContext, "volumeName">, machine: MachineRef): string | undefined {
   const name = ctx.volumeName;
   switch (reason) {
@@ -763,7 +754,6 @@ type SwitchRequest = Extract<VolumeSwitchRequest, { command: "seed_volume" | "in
 
 /** A refusal with a message ends the run; Busy and transport failures fail only the attempt, so the step retries. */
 export const sendSwitch = <R extends SwitchRequest>(ctx: RunContext, inngestRunId: string, machine: MachineRef, request: R) => {
-  // SAFETY: a Machine answers each Volume Switch verb with that verb's reply; the session types the pair loosely.
   return Effect.gen(function* () {
     yield* requireOwner(ctx.id, inngestRunId);
     const session = yield* openSession(ctx.organizationId);
@@ -775,7 +765,7 @@ export const sendSwitch = <R extends SwitchRequest>(ctx: RunContext, inngestRunI
         return Effect.fail(new SwitchAttemptError(reason, `${request.command} on ${machine.name}: ${sdkFailureMessage(error, [machine])}`));
       }),
     );
-  }).pipe(Effect.scoped) as Effect.Effect<VolumeSwitchReply<R["command"]>, Error, Database | OrganizationRuntime>;
+  }).pipe(Effect.scoped);
 };
 
 /** Plain JSON, since a step returns it: the copy the Machine holds now, after the step or after its refusal. */
@@ -798,13 +788,11 @@ export const askCopy = Effect.fn("VolumeRun.askCopy")(function* (asker: CopyAske
   return yield* session.volumeSwitch(machine.id, { command: "set_volume_copy", payload: { name: asker.dockerVolume, expect, want, gen: asker.gen } }).pipe(
     Effect.map((reply): CopyAnswer => ({ ok: true, copy: reply.copy })),
     Effect.catch((error) => {
-      const refused = decodeCopyRefused("cause" in error ? error.cause : undefined);
-      if (Option.isNone(refused)) {
+      const refused = setVolumeCopyRefusal("cause" in error ? error.cause : undefined);
+      if (refused === null) {
         return Effect.fail(new SwitchAttemptError(null, `set_volume_copy on ${machine.name}: ${sdkFailureMessage(error, [machine])}`));
       }
-      const { reason } = refused.value.details;
-      // SAFETY: the Machine sends the copy it holds, as the SDK's VolumeCopy.
-      const copy = refused.value.details.copy as VolumeCopy | null;
+      const { reason, copy } = refused;
       const message = switchFailureMessage(reason, asker, machine) ?? `${machine.name} is busy with ${asker.volumeName}`;
       return Effect.succeed<CopyAnswer>({ ok: false, reason, copy, message });
     }),

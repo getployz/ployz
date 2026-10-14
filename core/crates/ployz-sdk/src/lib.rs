@@ -946,6 +946,15 @@ pub fn allocate_enrollment(
     to_json(&assignment)
 }
 
+/// The refusal a `SetVolumeCopy` error carries in `details`, or null for any other error.
+#[napi]
+pub fn set_volume_copy_refusal(details: serde_json::Value) -> Result<Option<serde_json::Value>> {
+    from_js::<ployz_core::SetVolumeCopyRefused>(details)
+        .ok()
+        .map(|refused| to_json(&refused))
+        .transpose()
+}
+
 /// The ployz version fingerprints cover; a GitHub runner installs exactly this one.
 #[napi]
 #[must_use]
