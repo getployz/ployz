@@ -724,7 +724,7 @@ class VolumeMove:
         if lines[0] == target or lines[second] != lines[0] or not re.fullmatch(rf"w-{epoch}-\d+", target):
             return None
         lived = [line for line in before if line in after and re.fullmatch(r"proc \d+ \d+", line)]
-        if not lived or len(before) != len(after):
+        if not lived:
             return None
         return dict(machine=machine, kind="receiving", line=f"ployz:pull={target} {lived[0]}", cursor=None,
                     boot_id=None, identity=dict(volume=self.physical, target=target), poll_end_mono=time.monotonic())
