@@ -18,7 +18,7 @@ it("names the push, the Service and the Environment, and links the failed build'
   const failed = mail({ builds: [{ service: "web", commit: "8a7ed6e", status: "failed", message: "npm ci exited 1" }] });
   expect(failed).toMatchObject({
     subject: "web failed to deploy to shop / pr 7",
-    preview: "8a7ed6e on feature/login didn't deploy. The logs show why.",
+    preview: "8a7ed6e on feature/login didn't deploy.",
     title: "web failed to deploy to pr 7",
     paragraphs: ["GitHub started this deploy from feature/login. The logs show what went wrong."],
     action: { label: "View logs", url: "https://ployz.dev/cloud/shop%20co/shop/pr%207/deployments/dep%201?logs=build" },
@@ -67,6 +67,6 @@ it("counts several Services, names no source when no build failed, and falls bac
   });
   expect(mail({}, [source("web"), source("api")]).facts?.map((fact) => fact.label)).toEqual(["Services", "Environment", "Error"]);
   const bare = mail({}, []);
-  expect(bare).toMatchObject({ subject: "A deploy to shop / pr 7 failed", title: "A deploy to pr 7 failed", preview: "The logs show why." });
+  expect(bare).toMatchObject({ subject: "A deploy to shop / pr 7 failed", title: "A deploy to pr 7 failed", preview: "The logs show what went wrong." });
   expect(bare.facts?.map((fact) => fact.label)).toEqual(["Environment", "Error"]);
 });
