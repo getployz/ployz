@@ -13,6 +13,7 @@ import type { PolarService } from "#/modules/billing/polar-provider.server";
 import { startFakeHostedDns } from "#/modules/cluster-domain/hosted-dns.test-fixture";
 import { callStoreAsMember } from "#/modules/config-store/config-store.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
+import * as ids from "#/test/ids";
 import { enrollStoreServer, storeTestCloud } from "#/test/store-cloud";
 import { handleConfigRequest } from "#/routes/api/config/-config.handler";
 import { runStoreDeployment } from "#/modules/config-store/store-deployment.server";
@@ -317,8 +318,8 @@ it.live(
         const VOLUME = "00000000-0000-4000-8000-000000000004";
         yield* request("write", alice, { command: "create_volume", id: VOLUME, environment: here, name: "data", storage: { kind: "docker" }, mounts: [] });
         const { drizzle } = yield* Database;
-        const web1 = "1".repeat(32) as MachineId;
-        const web2 = "2".repeat(32) as MachineId;
+        const web1 = ids.machineId("1");
+        const web2 = ids.machineId("2");
         yield* drizzle.insert(volumePlacement).values({
           volumeId: VOLUME, organizationId, environmentId: ENVIRONMENT, mirrors: [web2], staged: { primary: web1, mirrors: [], deletes: [] },
         });
@@ -347,14 +348,14 @@ it.live(
         yield* request("write", alice, web);
         // Cloud's Cluster has this Server and `other`, which leaves first without a reset. It resets this one when
         // asked; the first reset doesn't finish.
-        const machineId = "0".repeat(32);
-        const other = "1".repeat(32);
+        const machineId = ids.machineId("0");
+        const other = ids.machineId("1");
         const { drizzle } = yield* Database;
         const encryption = yield* SecretEncryption;
         const [enrolled] = yield* drizzle.select().from(organizationMachine);
         if (!enrolled) return assert.fail("no Server enrolled");
         yield* drizzle.insert(organizationMachine).values({
-          ...enrolled, machineId: other as MachineId, isDialEntry: false, encryptedCapability: encryption.encrypt("ployz1:other"),
+          ...enrolled, machineId: other, isDialEntry: false, encryptedCapability: encryption.encrypt("ployz1:other"),
         });
         const warnings: Array<string | null> = ["Docker reset failed: busy volume", null];
         // No Server answers the runtime watch, so their capabilities are unknown and every removal still goes out.
@@ -369,7 +370,7 @@ it.live(
         };
         const userId = (yield* resolveCaller(new Headers({ cookie: alice }))).userId;
         let runs = 0;
-        const removeServer = (server: string, noReset: boolean) => Effect.gen(function* () {
+        const removeServer = (server: MachineId, noReset: boolean) => Effect.gen(function* () {
           const removal = { organizationId, machineId: server, confirmDataLoss: [], noReset };
           const attempt = yield* requestMachineRemoveAttempt({ ...removal, requestedByUserId: userId });
           const inngestRunId = `run-${++runs}`;
@@ -414,7 +415,7 @@ it.live(
         // A replay of that release after a new Cluster was paired, even through a Server of the same ID, touches nothing.
         yield* drizzle.insert(organizationPairing).values({
           organizationId, encryptedPairingSecret: encryption.encrypt("ppair_replacement"),
-          founderPublicKey: "founder-key", founderClaimMachineId: "1".repeat(32) as MachineId,
+          founderPublicKey: "founder-key", founderClaimMachineId: ids.machineId("1"),
         });
         yield* drizzle.insert(organizationMachine).values({
           ...enrolled, clusterKey: createHash("sha256").update("ppair_replacement").digest("hex"),
@@ -438,7 +439,7 @@ it.live(
         const caller = yield* resolveCaller(new Headers({ cookie: alice }));
         const organizationId = caller.organization.id;
         yield* enrollStoreServer(organizationId);
-        const machineId = "0".repeat(32);
+        const machineId = ids.machineId("0");
         const { drizzle } = yield* Database;
         const sent: Array<{ machine: string; confirmed: readonly unknown[] }> = [];
         const replies = [
@@ -498,7 +499,7 @@ it.live(
         const caller = yield* resolveCaller(new Headers({ cookie: alice }));
         const organizationId = caller.organization.id;
         yield* enrollStoreServer(organizationId);
-        const machineId = "0".repeat(32);
+        const machineId = ids.machineId("0");
         const resetWarning = "Docker reset failed";
         const sent: string[] = [];
         const forgets = [

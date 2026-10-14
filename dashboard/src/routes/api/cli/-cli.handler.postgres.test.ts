@@ -38,6 +38,7 @@ import { AppConfig } from "#/server/config.server";
 import { Database, DatabaseLive } from "#/server/database.server";
 import { encodePublicError, statusForPublicError } from "#/server/public-error";
 import { fakeGithubApi } from "#/test/fake-github";
+import * as ids from "#/test/ids";
 import { postgresTestDatabase } from "#/test/postgres";
 
 const origin = "http://localhost:3000";
@@ -90,7 +91,7 @@ function fakeServers() {
 const pairingSecret = "ppair_fixture_server_access";
 
 /** Pair the Organization with Cloud and enroll one Server. */
-const enroll = Effect.fn(function* (organizationId: string, machineId: string, first: boolean) {
+const enroll = Effect.fn(function* (organizationId: string, machineId: MachineId, first: boolean) {
   const database = yield* Database;
   if (first) {
     yield* database.drizzle.insert(organizationPairing).values({
@@ -414,8 +415,8 @@ it.live(
       const layer = yield* cliLayer(fake.layer);
       yield* Effect.gen(function* () {
         const database = yield* Database;
-        const first = "00000000000000000000000000001239";
-        const later = "00000000000000000000000000001240";
+        const first = ids.machineId("00000000000000000000000000001239");
+        const later = ids.machineId("00000000000000000000000000001240");
         const alice = yield* signUp("alice");
         const device = (yield* cli("GET", "tokens", alice)).json.devices?.[0]?.id ?? assert.fail("no device");
         const token = (yield* cli("POST", "tokens", alice, { name: "ci", expires_in_days: 30 })).json.token
@@ -581,7 +582,7 @@ it.live(
       const layer = yield* cliLayer(fake.layer);
       yield* Effect.gen(function* () {
         const database = yield* Database;
-        const machine = "00000000000000000000000000001260";
+        const machine = ids.machineId("00000000000000000000000000001260");
         const alice = yield* signUp("alice");
         const slug = alice.organization.slug;
         const [owner] = yield* database.drizzle.select({ userId: member.userId }).from(member)
@@ -759,8 +760,8 @@ it.live(
   60_000,
 );
 
-const fra1 = "f".repeat(32);
-const leftBehind = { kind: "docker_volume" as const, id: { machine_id: fra1 as MachineId, name: "left-behind_data" as DockerVolumeName } };
+const fra1 = ids.machineId("f");
+const leftBehind = { kind: "docker_volume" as const, id: { machine_id: fra1, name: "left-behind_data" as DockerVolumeName } };
 
 type LeftBehind = { observesFra1: boolean; sessionsOpened: number };
 

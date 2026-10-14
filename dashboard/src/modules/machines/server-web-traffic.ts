@@ -1,6 +1,6 @@
 import type { IngressCheck } from "@ployz/sdk";
 import { Schema } from "effect";
-import { machineIdStringSchema } from "#/modules/machines/enrollment";
+import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 
 /** Which way the switch was flipped: on starts the web server on the Server, off stops it. */
 export const WEB_TRAFFIC_WANTS = ["on", "off"] as const;
@@ -20,7 +20,7 @@ export const WEB_TRAFFIC_RUNNING_LIMIT_MS = 3 * 60_000;
 
 export const RequestServerWebTrafficInput = Schema.Struct({
   organizationSlug: Schema.String.check(Schema.isNonEmpty()),
-  machineId: machineIdStringSchema,
+  machineId: rustMachineIdSchema,
   /** Minted by the flipping tab: the row's id, so sending the same request again returns the same change. */
   requestId: Schema.String.check(Schema.isUUID()),
   want: Schema.Literals(WEB_TRAFFIC_WANTS),

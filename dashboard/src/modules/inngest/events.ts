@@ -1,3 +1,4 @@
+import type { MachineId } from "@ployz/sdk";
 import type { webhooks } from "#/modules/billing/polar-api";
 import { Schema } from "effect";
 import type { MailMessage } from "#/modules/mail/mailer.server";
@@ -123,7 +124,7 @@ export type OrganizationBillingSyncRequestedEventData = {
 
 export type ServerPolicyChangeRequestedEventData = {
   organizationId: string;
-  machineId: string;
+  machineId: MachineId;
   change: ServerPolicyChange;
 };
 
@@ -131,7 +132,7 @@ export type ServerPolicyChangeRequestedEventData = {
 export type ServerUpgradeRequestedEventData = {
   organizationId: string;
   /** The Server to Upgrade; null upgrades every Server behind. */
-  machineId: string | null;
+  machineId: MachineId | null;
   trigger: UpgradeTrigger;
   userId: string | null;
   /** The attempt ID the CLI polls, minted by its request; only with `machineId`. Absent, the run mints one. */
@@ -146,14 +147,14 @@ export type MachineRemoveRequestedEventData = {
 export type ServerDrainRequestedEventData = {
   attemptId: string;
   organizationId: string;
-  machineId: string;
+  machineId: MachineId;
 };
 
 /** A web traffic change was requested: its row is written. `organizationId` keys the Organization's one-at-a-time changes. */
 export type ServerWebTrafficRequestedEventData = {
   attemptId: string;
   organizationId: string;
-  machineId: string;
+  machineId: MachineId;
 };
 
 /** A clean of a Namespace no Environment owns was requested: its row is written. */

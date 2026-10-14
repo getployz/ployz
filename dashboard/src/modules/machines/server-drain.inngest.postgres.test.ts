@@ -18,14 +18,15 @@ import { PloyzProviderError, type PloyzSdkError, type PloyzSession } from "#/mod
 import type { Database } from "#/server/database.server";
 import { serverDrainAttempt } from "#/modules/machines/tables";
 import { makeInngestEffectRunner, type runInngestEffect } from "#/server/run.server";
+import * as ids from "#/test/ids";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
 
 const organizationId = "00000000-0000-4000-8000-000000000d01";
 const userId = "00000000-0000-4000-8000-000000000d02";
 const actor = { userId };
 const caller = { userId, organization: { id: organizationId, slug: "acme" }, credential: { kind: "session" as const, id: "session-1" }, role: "owner" as const, support: null, via: "dashboard" as const };
-const machineId = "a".repeat(32);
-const otherMachineId = "b".repeat(32);
+const machineId = ids.machineId("a");
+const otherMachineId = ids.machineId("b");
 const requestId = "00000000-0000-4000-8000-0000000000a1";
 const secondTab = "00000000-0000-4000-8000-0000000000a2";
 const web1 = { id: "1".repeat(32), name: "web-1" };

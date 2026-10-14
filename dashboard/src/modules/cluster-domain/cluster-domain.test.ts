@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { type ClusterDomainRow, clusterDomainStatus } from "#/modules/cluster-domain/cluster-domain";
+import { machineId } from "#/test/ids";
 
 const now = new Date("2026-09-25T12:00:00Z");
 const ready: Pick<ClusterDomainRow, "recordsSyncedAt" | "traffic" | "certificateNotAfter"> = {
@@ -7,11 +8,11 @@ const ready: Pick<ClusterDomainRow, "recordsSyncedAt" | "traffic" | "certificate
   traffic: { kind: "probed", reachable: [], unreachable: [] },
   certificateNotAfter: new Date("2026-12-25T00:00:00Z"),
 };
-const blocked = [{ machineId: "a", address: "203.0.113.1" }, { machineId: "b", address: "2001:db8::1" }] as
-  Extract<NonNullable<ClusterDomainRow["traffic"]>, { kind: "probed" }>["unreachable"];
-const serving = [{ machineId: "c", address: "198.51.100.7" }] as typeof blocked;
+const blocked: Extract<NonNullable<ClusterDomainRow["traffic"]>, { kind: "probed" }>["unreachable"] =
+  [{ machineId: machineId("a"), address: "203.0.113.1" }, { machineId: machineId("b"), address: "2001:db8::1" }];
+const serving: typeof blocked = [{ machineId: machineId("c"), address: "198.51.100.7" }];
 const none = [] as const;
-const down = [{ machineId: "a", address: "203.0.113.1", name: "web-1" }];
+const down = [{ machineId: machineId("a"), address: "203.0.113.1", name: "web-1" }];
 
 describe("clusterDomainStatus", () => {
   it.each([

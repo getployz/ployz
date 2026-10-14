@@ -1,20 +1,19 @@
-import type { ContainerId, HostPoint, MachineId, MetricHistory, MetricHistoryReply, MetricMarker, ServiceId, ServicePoint } from "@ployz/sdk";
+import type { HostPoint, MachineId, MetricHistory, MetricHistoryReply, MetricMarker, ServicePoint } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
 import type { MetricRead } from "./metrics";
+import { containerId, machineId, serviceId } from "#/test/ids";
 import { serverMetrics, serviceMetrics } from "./metrics-model";
 
 type RpcError = MetricHistory["unanswered"][number]["error"];
 
-const A = "a".repeat(32);
-const B = "b".repeat(32);
-const C = "c".repeat(32);
-const D = "d".repeat(32);
+const A = machineId("a");
+const B = machineId("b");
+const C = machineId("c");
+const D = machineId("d");
 const names = new Map([[A, "web-10"], [B, "web-2"], [C, "db-1"]]);
 const window = { from: 0, to: 10_000 };
 const ms = (value: number) => value * 1e6;
 
-// SAFETY: test ids only need to be distinct strings.
-const id = (value: string) => value as MachineId;
 const refusal: RpcError = { code: "unsupported", message: "old", details: { capability: "ployz.metrics.history.v1", target: "x" } };
 const down: RpcError = { code: "unavailable", message: "the Server is not up, so it was not asked", details: null };
 
@@ -29,15 +28,14 @@ const read = (history: Partial<MetricHistory>): MetricRead => ({
   at: window.to,
   history: { step_nanos: ms(1000), points: { service: [] }, machines: [], unanswered: [], ...history },
 });
-const answering = (machine: string, value: MetricHistoryReply) => ({ machine_id: id(machine), value });
-const failing = (machine: string, error: RpcError) => ({ machine_id: id(machine), error });
+const answering = (machine: MachineId, value: MetricHistoryReply) => ({ machine_id: machine, value });
+const failing = (machine: MachineId, error: RpcError) => ({ machine_id: machine, error });
 const servicePoint = (atMs: number, fields: Omit<ServicePoint, "ts"> = {}): ServicePoint => ({ ts: ms(atMs), ...fields });
 type MarkerFields = Pick<MetricMarker, "kind"> & { readonly exit_code?: number; readonly deployment_id?: string };
-const marker = (machine: string, atMs: number, fields: MarkerFields): MetricMarker => ({
-  machine_id: id(machine),
-  // SAFETY: as above.
-  container_id: "c" as ContainerId,
-  service_id: "s" as ServiceId,
+const marker = (machine: MachineId, atMs: number, fields: MarkerFields): MetricMarker => ({
+  machine_id: machine,
+  container_id: containerId("c"),
+  service_id: serviceId("s"),
   service: "ns/web",
   replica: "web-1",
   ts: ms(atMs),

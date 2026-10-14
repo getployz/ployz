@@ -67,7 +67,7 @@ export const drainServer = (caller: Caller, machineId: MachineId, call: Operatio
     }));
   });
 
-export const upgradeServer = (caller: Caller, input: { readonly machineId: string; readonly channel: string | undefined }, call: OperationCall) =>
+export const upgradeServer = (caller: Caller, input: { readonly machineId: MachineId; readonly channel: string | undefined }, call: OperationCall) =>
   admitOperation(caller.organization.id, { tool: OPERATIONS["server.upgrade"].idempotency, key: call.key, body: input }, planCliServerUpgrade(actor(caller), input));
 
 export const setServer = (caller: Caller, machineId: MachineId, change: ServerPolicyChange, call: OperationCall) =>
@@ -94,14 +94,14 @@ export const cleanNamespace = (caller: Caller, namespace: string, call: Operatio
   }));
 
 /** Resets Server `machineId`, deleting exactly the Data Loss the caller `confirmed`. Null when no Server has `machineId`. */
-export const removeServer = (caller: Caller, machineId: string, confirmed: readonly DataLossIdentity[], call: OperationCall) =>
+export const removeServer = (caller: Caller, machineId: MachineId, confirmed: readonly DataLossIdentity[], call: OperationCall) =>
   removal(caller, machineId, confirmed, call);
 
 /** Takes Server `machineId` out of the Cluster without a reset, for a Server that is gone. Null when no Server has `machineId`. */
-export const forgetServer = (caller: Caller, machineId: string, call: OperationCall) =>
+export const forgetServer = (caller: Caller, machineId: MachineId, call: OperationCall) =>
   removal(caller, machineId, null, call);
 
-const removal = (caller: Caller, machineId: string, confirmed: readonly DataLossIdentity[] | null, call: OperationCall) =>
+const removal = (caller: Caller, machineId: MachineId, confirmed: readonly DataLossIdentity[] | null, call: OperationCall) =>
   Effect.gen(function* () {
     const noReset = confirmed === null;
     const consumed = Schema.is(Uuid)(call.approvalId)
