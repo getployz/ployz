@@ -19,6 +19,7 @@ import type { Database } from "#/server/database.server";
 import { serverDrainAttempt } from "#/modules/machines/tables";
 import { makeInngestEffectRunner, type runInngestEffect } from "#/server/run.server";
 import * as ids from "#/test/ids";
+import { invokeOnFailure } from "#/test/inngest-failure";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
 
 const organizationId = "00000000-0000-4000-8000-000000000d01";
@@ -420,15 +421,13 @@ describe("drain-server", () => {
   });
 
   it("onFailure ends a pending row failed and a running one unknown, and leaves an ended row alone", async () => {
-    const onFailure = createDrainServer(new Inngest({ id: "test" }), runEffect).opts.onFailure;
-    if (onFailure === undefined) return expect.fail("a failed run closes its row");
+    const worker = createDrainServer(new Inngest({ id: "test" }), runEffect);
     await request();
     await harness.pool.query(`update server_drain_attempt set inngest_run_id = 'run-1' where id = $1`, [requestId]);
     await request(secondTab, otherMachineId);
     await claim(secondTab, "run-2");
 
-    // SAFETY: the failure handler reads only the failed run's ID.
-    const fail = (runId: string) => Promise.resolve(onFailure({ event: { data: { run_id: runId } } } as never));
+    const fail = (runId: string) => invokeOnFailure(worker, runId, { name: "server/drain.requested", data: request0 });
     await fail("run-1");
     await fail("run-2");
     await fail("run-2");
@@ -440,12 +439,12 @@ describe("drain-server", () => {
   });
 
   it("onFailure leaves alone a pending row its run never bound, even when the failed run's event names it", async () => {
-    const onFailure = createDrainServer(new Inngest({ id: "test" }), runEffect).opts.onFailure;
-    if (onFailure === undefined) return expect.fail("a failed run closes its row");
     await request();
 
-    // SAFETY: the failure handler reads only the failed run's ID and its event.
-    await onFailure({ event: { data: { run_id: "run-never-bound", event: { data: request0 } } } } as never);
+    await invokeOnFailure(createDrainServer(new Inngest({ id: "test" }), runEffect), "run-never-bound", {
+      name: "server/drain.requested",
+      data: request0,
+    });
 
     expect(await rows()).toMatchObject([{ state: "pending", end_code: null, inngest_run_id: null }]);
   });
