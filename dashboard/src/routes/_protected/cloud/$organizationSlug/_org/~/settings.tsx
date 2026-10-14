@@ -29,7 +29,6 @@ const settingsSearchSchema = Schema.Struct({
   section: Schema.optional(settingsSectionSchema.pipe(
     Schema.catchDecoding(() => Effect.succeed(Option.some("general" as const))),
   )),
-  // Where GitHub sends the person back after a connect; see `completeGithubConnect`.
   connect: Schema.optional(Schema.Literals(CONNECT_NOTICES).pipe(Schema.catchDecoding(() => Effect.succeedNone))),
   offer: Schema.optional(Schema.String.check(Schema.isMaxLength(8192)).pipe(Schema.catchDecoding(() => Effect.succeedNone))),
 });
@@ -59,7 +58,7 @@ function RouteComponent() {
           organizationSlug={organizationSlug}
           notice={connect}
           offer={offer}
-          onSettled={() => void navigate({ search: { section }, replace: true })}
+          clearConnectSearch={() => void navigate({ search: { section }, replace: true })}
         />
       ) : (
         <div className="flex flex-col gap-6">

@@ -18,7 +18,6 @@ import { sendInngestEvent } from "#/modules/inngest/client";
 import { AppConfig } from "#/server/config.server";
 import { Forbidden, Validation } from "#/server/public-error";
 
-/** How long a connect may sit on GitHub, or a picker in the browser, before it has to start over. */
 const TOKEN_TTL_MS = 15 * 60_000;
 
 const ConnectState = Schema.Struct({ organizationId: Schema.String, userId: Schema.String, expiresAt: Schema.Number });
@@ -41,7 +40,6 @@ const sign = Effect.fn("GithubConnect.sign")(function* <S extends Schema.Top>(ki
   return `${body}.${crypto.createHmac("sha256", keyFor(secret, kind.purpose)).update(body).digest("base64url")}`;
 });
 
-/** The signed value, or null for a token that is forged, for another purpose, or expired. */
 const verify = Effect.fn("GithubConnect.verify")(function* <S extends Schema.Top & { readonly Type: { readonly expiresAt: number } }>(
   kind: Signed<S>, token: string,
 ) {
@@ -60,11 +58,6 @@ const verify = Effect.fn("GithubConnect.verify")(function* <S extends Schema.Top
 const settingsPath = (organizationSlug: string, search: { connect: ConnectNotice } | { offer: string }) =>
   `/cloud/${organizationSlug}/~/settings?${new URLSearchParams({ section: "github", ...search }).toString()}`;
 
-/**
- * Where Connect GitHub sends a person who may manage the Organization: the App's install page, or with `existing` its
- * authorize page, for an installation they already have. The state names the Organization and the person, so the
- * callback links for no one else.
- */
 export const startGithubConnect = Effect.fn("GithubConnect.start")(function* (actor: Actor, organizationSlug: string, existing: boolean) {
   const config = yield* AppConfig;
   const { organization } = yield* requireAccess(actor, organizationSlug, "manage");
@@ -91,12 +84,6 @@ const linkChosen = Effect.fn("GithubConnect.linkChosen")(function* (input: {
   );
 });
 
-/**
- * GitHub sent the person back with an OAuth `code`. Cloud links only installations GitHub lists for that user, never
- * one the `installation_id` parameter merely names: the parameter picks among them. One new installation is linked; a
- * choice of several becomes a signed offer the settings page asks about. The user token never leaves `GithubApi`.
- * Answers the settings path to land on.
- */
 export const completeGithubConnect = Effect.fn("GithubConnect.complete")(function* (actor: Actor, params: URLSearchParams) {
   const state = yield* verify(STATE, params.get("state") ?? "");
   if (state === null || state.userId !== actor.userId) {
@@ -114,12 +101,12 @@ export const completeGithubConnect = Effect.fn("GithubConnect.complete")(functio
   );
   if (authorized === null) return land({ connect: "failed" });
   const reachable = authorized.installations.filter((installation) => installation.suspended_at === null);
-  const named = params.get("installation_id");
-  const chosen = named === null ? reachable : reachable.filter((installation) => String(installation.id) === named);
-  if (named !== null && chosen.length === 0) return land({ connect: "not-yours" });
+  const requestedInstallationId = params.get("installation_id");
+  const chosen = requestedInstallationId === null ? reachable : reachable.filter((installation) => String(installation.id) === requestedInstallationId);
+  if (requestedInstallationId !== null && chosen.length === 0) return land({ connect: "not-yours" });
 
   const linked = new Set((yield* listGithubInstallationsForOrganization(organization.id)).map((row) => row.installationId));
-  if (named !== null && linked.has(Number(named))) return land({ connect: "linked" });
+  if (requestedInstallationId !== null && linked.has(Number(requestedInstallationId))) return land({ connect: "linked" });
   const candidates = chosen.filter((installation) => !linked.has(installation.id));
   for (const installation of candidates) {
     yield* upsertGithubInstallation({
@@ -152,12 +139,10 @@ const readOffer = Effect.fn("GithubConnect.readOffer")(function* (actor: Actor, 
   return offer;
 });
 
-/** The GitHub accounts a signed offer lets this person choose from. */
 export const listGithubOffer = Effect.fn("GithubConnect.listOffer")(function* (actor: Actor, organizationSlug: string, token: string) {
   return (yield* readOffer(actor, organizationSlug, token)).accounts;
 });
 
-/** Link the installations the person picked, each one the offer named. */
 export const acceptGithubOffer = Effect.fn("GithubConnect.acceptOffer")(function* (
   actor: Actor, input: { organizationSlug: string; offer: string; installationIds: ReadonlyArray<number> },
 ) {
@@ -170,7 +155,6 @@ export const acceptGithubOffer = Effect.fn("GithubConnect.acceptOffer")(function
   return { linked: picked.length };
 });
 
-/** Organization › GitHub: each linked account, and whether this person may connect and disconnect them. */
 export const listOrganizationGithub = Effect.fn("GithubConnect.list")(function* (actor: Actor, organizationSlug: string) {
   const access = yield* requireAccess(actor, organizationSlug, "operate");
   const installations = yield* listGithubInstallationsForOrganization(access.organization.id);

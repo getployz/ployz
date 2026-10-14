@@ -188,7 +188,6 @@ const userInstallationsSchema = Schema.Struct({
     suspended_at: Schema.NullOr(Schema.String),
   })),
 });
-/** The GitHub user who authorized the App, and the installations of it they can reach. */
 export type GithubUserInstallations = {
   readonly login: string;
   readonly installations: ReadonlyArray<typeof userInstallationsSchema.Type["installations"][number]>;
@@ -225,10 +224,6 @@ export interface GithubApiService {
   readonly installationRepositories: (
     input: { installationId: number; page: number },
   ) => Effect.Effect<GithubInstallationRepositoriesResponse, GithubObservationError>;
-  /**
-   * Who authorized the App with this OAuth `code`, and which installations they can reach. The user token is used for
-   * these two reads and never leaves this call.
-   */
   readonly userInstallations: (code: string) => Effect.Effect<GithubUserInstallations, GithubObservationError>;
 }
 

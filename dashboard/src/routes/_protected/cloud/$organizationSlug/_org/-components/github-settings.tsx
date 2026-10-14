@@ -41,16 +41,11 @@ function connectHref(organizationSlug: string, existing: boolean) {
   return `/api/github/connect?${params.toString()}`;
 }
 
-/**
- * Organization › GitHub: the GitHub accounts this Organization builds from. Owners and admins connect and disconnect;
- * members read. A connect that came back with several new accounts arrives as `offer`, and asks which to link.
- */
-export function GithubSettings({ organizationSlug, notice, offer, onSettled }: {
+export function GithubSettings({ organizationSlug, notice, offer, clearConnectSearch }: {
   organizationSlug: string;
   notice: ConnectNotice | undefined;
   offer: string | undefined;
-  /** Clears the notice and offer from the address. */
-  onSettled: () => void;
+  clearConnectSearch: () => void;
 }) {
   const { data } = useSuspenseQuery(organizationGithubQueryOptions(organizationSlug));
   const shown = notice === undefined ? null : NOTICES[notice];
@@ -75,11 +70,11 @@ export function GithubSettings({ organizationSlug, notice, offer, onSettled }: {
         <Alert variant={shown.tone}>
           <AlertTitle>{shown.title}</AlertTitle>
           <AlertDescription>{shown.description}</AlertDescription>
-          <AlertAction><Button variant="ghost" size="sm" onClick={onSettled}>Dismiss</Button></AlertAction>
+          <AlertAction><Button variant="ghost" size="sm" onClick={clearConnectSearch}>Dismiss</Button></AlertAction>
         </Alert>
       ) : null}
       {offer !== undefined && data.canManage ? (
-        <OfferPicker organizationSlug={organizationSlug} offer={offer} onSettled={onSettled} />
+        <OfferPicker organizationSlug={organizationSlug} offer={offer} clearConnectSearch={clearConnectSearch} />
       ) : null}
       {data.accounts.length === 0 ? (
         <p className="text-sm text-muted-foreground">
@@ -165,7 +160,7 @@ function AccountRow({ organizationSlug, account, canManage }: { organizationSlug
   );
 }
 
-function OfferPicker({ organizationSlug, offer, onSettled }: { organizationSlug: string; offer: string; onSettled: () => void }) {
+function OfferPicker({ organizationSlug, offer, clearConnectSearch }: { organizationSlug: string; offer: string; clearConnectSearch: () => void }) {
   const queryClient = useQueryClient();
   const accept = useServerFn(acceptGithubOfferServerFn);
   const accounts = useQuery(githubOfferQueryOptions(organizationSlug, offer));
@@ -178,7 +173,7 @@ function OfferPicker({ organizationSlug, offer, onSettled }: { organizationSlug:
       <Alert variant="destructive">
         <AlertTitle>This link expired</AlertTitle>
         <AlertDescription>Connect GitHub again.</AlertDescription>
-        <AlertAction><Button variant="ghost" size="sm" onClick={onSettled}>Dismiss</Button></AlertAction>
+        <AlertAction><Button variant="ghost" size="sm" onClick={clearConnectSearch}>Dismiss</Button></AlertAction>
       </Alert>
     );
   }
@@ -189,7 +184,7 @@ function OfferPicker({ organizationSlug, offer, onSettled }: { organizationSlug:
     try {
       await accept({ data: { organizationSlug, offer, installationIds: picked.map((account) => account.installationId) } });
       await queryClient.invalidateQueries({ queryKey: githubKeys.all });
-      onSettled();
+      clearConnectSearch();
     } catch (error) {
       toast.error(toErrorMessage(error, "Couldn't connect."));
     } finally {
@@ -218,7 +213,7 @@ function OfferPicker({ organizationSlug, offer, onSettled }: { organizationSlug:
         </Field>
       ))}
       <div className="flex justify-end gap-2">
-        <Button variant="ghost" disabled={busy} onClick={onSettled}>Cancel</Button>
+        <Button variant="ghost" disabled={busy} onClick={clearConnectSearch}>Cancel</Button>
         <Button disabled={busy || picked.length === 0} onClick={() => void connect()}>
           {picked.length === 1 ? "Connect 1 account" : `Connect ${picked.length} accounts`}
         </Button>

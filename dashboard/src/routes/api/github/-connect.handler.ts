@@ -41,7 +41,6 @@ function respond(request: Request, effect: Program) {
   );
 }
 
-/** `GET /api/github/connect?organization=SLUG[&existing=1]`: off to GitHub to install or authorize the App. */
 export function handleGithubConnect(request: Request) {
   const params = new URL(request.url).searchParams;
   return respond(request, Effect.gen(function* () {
@@ -50,7 +49,6 @@ export function handleGithubConnect(request: Request) {
   }));
 }
 
-/** `GET /api/github/callback`: GitHub sends the person back here after installing or authorizing. */
 export function handleGithubCallback(request: Request) {
   const params = new URL(request.url).searchParams;
   return respond(request, Effect.gen(function* () {

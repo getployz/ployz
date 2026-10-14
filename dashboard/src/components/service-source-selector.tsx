@@ -185,7 +185,6 @@ function SelectorCommandDialog({
   );
 }
 
-/** Connect GitHub goes through Cloud, which sends the person to GitHub and back to Organization › GitHub. */
 const githubConnectHref = (organizationSlug: string) =>
   `/api/github/connect?${new URLSearchParams({ organization: organizationSlug }).toString()}`;
 
@@ -261,7 +260,6 @@ function GitRepoSelectorActions({ organizationSlug }: { organizationSlug: string
   );
 }
 
-/** Repositories under the GitHub account that owns them, each account first seen first. */
 function groupByAccount<R extends { full_name: string }>(repos: ReadonlyArray<R>) {
   const groups = new Map<string, R[]>();
   for (const repo of repos) {

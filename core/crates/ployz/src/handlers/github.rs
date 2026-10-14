@@ -1,7 +1,3 @@
-//! `ployz github`: connect GitHub accounts so Services can build private
-//! repositories, see what they grant, read a repository's files, and disconnect
-//! one. Acts in Cloud as this device's sign-in or `PLOYZ_TOKEN`; needs no Server.
-
 use super::catalog::{Approval::*, Runnable, cloud};
 use std::time::{Duration, Instant};
 
@@ -24,8 +20,7 @@ use crate::cloud_account::{self, Credential};
 use crate::cloud_login::LoginError;
 use crate::ui::{Cell, Hint, Table, Tone};
 
-/// How long `github connect` waits for a GitHub account to be connected.
-const INSTALL_TIMEOUT: Duration = Duration::from_secs(600);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(600);
 const POLL: Duration = Duration::from_secs(3);
 
 pub(crate) fn command() -> Command {
@@ -77,12 +72,9 @@ pub(super) fn handler(path: &str) -> Option<Runnable> {
     })
 }
 
-/// The Organization's GitHub connection, as Cloud reports it.
 #[derive(Debug, Deserialize, Serialize, PartialEq)]
 struct Connection {
-    /// Opens in a browser signed in to Cloud.
     connect_url: String,
-    /// Whether a connected account grants at least one repository.
     ready: bool,
     installations: Vec<Installation>,
     repositories: Vec<Repository>,
@@ -142,11 +134,10 @@ fn connect(root: &ArgMatches) -> Result<(), Error> {
             open_browser(&before.connect_url);
         }
         crate::ui::note_inline(format_args!("Waiting for GitHub... "));
-        let deadline = Instant::now() + INSTALL_TIMEOUT;
+        let deadline = Instant::now() + CONNECT_TIMEOUT;
         while Instant::now() < deadline {
             tokio::time::sleep(POLL).await;
             let now = connection(credential).await?;
-            // A new account, or new repositories granted to a connected one.
             if now.installations != before.installations || now.repositories != before.repositories
             {
                 return Ok((before, Some(now)));
@@ -335,7 +326,6 @@ fn disconnect(root: &ArgMatches) -> Result<(), Error> {
     Ok(())
 }
 
-/// The repositories the Organization reaches, after a note per GitHub account.
 fn repositories<T: serde::Serialize>(value: &T, connection: &Connection) -> Result<(), Error> {
     for installation in &connection.installations {
         let by = installation

@@ -17,7 +17,6 @@ const installation = (id: number, login: string, suspended = false) => ({
   id, account: { login, type: login === "acme" ? "Organization" : "User", avatar_url: null }, suspended_at: suspended ? "2026-10-01T00:00:00Z" : null,
 });
 
-/** GitHub as Ada sees it after authorizing: acme (7) and her own account (8). Bob's installation 10 is not hers. */
 const ADA: GithubUserInstallations = { login: "ada", installations: [installation(7, "acme"), installation(8, "ada")] };
 const github = {
   ...fakeGithubApi().service,
