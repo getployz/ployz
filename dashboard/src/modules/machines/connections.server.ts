@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import crypto from "node:crypto";
-import type { Connection, MachineId } from "@ployz/sdk";
+import type { Connection } from "@ployz/sdk";
 import { and, asc, count, desc, eq } from "drizzle-orm";
 import { Data, Effect } from "effect";
 import type { EncryptedSecretValue } from "#/db/tables";
@@ -75,8 +75,7 @@ export const loadOrganizationConnections = Effect.fn("MachineConnections.load")(
     )).orderBy(desc(organizationMachine.isDialEntry), asc(organizationMachine.createdAt), asc(organizationMachine.machineId));
     const connections: Connection[] = yield* Effect.forEach(candidates, (candidate) => Effect.gen(function* () {
       const management = yield* decryptPairingSecret(candidate.encryptedCapability);
-      // SAFETY: the table constraint enforces the SDK Machine ID representation.
-      return { management, machine_id: candidate.machineId as MachineId };
+      return { management, machine_id: candidate.machineId };
     }));
     return { kind: "ready" as const, generation, connections };
   },

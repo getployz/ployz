@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import { machineIdStringSchema } from "#/modules/machines/enrollment";
+import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import type { ServerStatus } from "#/modules/machines/server-status";
 
 /** How long Cloud waits for an Upgrade's outcome: longer than the upgrade worker's 15-minute cap. */
@@ -87,7 +87,7 @@ export function newMajorLine(line: string | null, newest: string | null) {
 export const RequestServerUpgradeInput = Schema.Struct({
   organizationSlug: Schema.String,
   /** Upgrade on a Server page names it; Upgrade on the Servers page upgrades every Server behind. */
-  machineId: Schema.NullOr(machineIdStringSchema),
+  machineId: Schema.NullOr(rustMachineIdSchema),
 });
 export type RequestServerUpgradeInput = typeof RequestServerUpgradeInput.Type;
 

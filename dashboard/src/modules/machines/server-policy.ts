@@ -1,5 +1,6 @@
 import type { MachineUpdate } from "@ployz/sdk";
 import { Schema } from "effect";
+import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 
 const NonEmptyString = Schema.String.check(Schema.isNonEmpty());
 
@@ -30,7 +31,7 @@ export type ServerPolicyChange = typeof ServerPolicyChangeSchema.Type;
 
 export const RequestServerPolicyChangeInput = Schema.Struct({
   organizationSlug: NonEmptyString,
-  machineId: NonEmptyString,
+  machineId: rustMachineIdSchema,
   change: ServerPolicyChangeSchema,
 });
 

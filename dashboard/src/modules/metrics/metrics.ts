@@ -1,5 +1,6 @@
 import type { MetricHistory } from "@ployz/sdk";
 import { Schema } from "effect";
+import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import { RangeEdge } from "#/modules/uptime/uptime-range";
 
 export const ReadServiceMetricsInput = Schema.Struct({
@@ -25,7 +26,7 @@ export type ReadRuntimeServiceMetricsInput = typeof ReadRuntimeServiceMetricsInp
 
 export const ReadServerMetricsInput = Schema.Struct({
   organizationSlug: Schema.NonEmptyString,
-  machineId: Schema.String.check(Schema.isPattern(/^[0-9a-f]{32}$/u)),
+  machineId: rustMachineIdSchema,
   from: RangeEdge,
   to: RangeEdge,
 });

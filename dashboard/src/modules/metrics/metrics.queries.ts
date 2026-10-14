@@ -15,7 +15,7 @@ export function serviceMetricsQueryOptions(input: ReadServiceMetricsInput) {
 }
 
 /** One Server's host metrics over `from`..`to`. */
-export function serverMetricsQueryOptions(input: ReadServerMetricsInput) {
+export function serverMetricsQueryOptions(input: typeof ReadServerMetricsInput.Encoded) {
   return queryOptions({
     queryKey: ["metrics", "server", input.machineId, input.from, input.to] as const,
     queryFn: () => readServerMetricsServerFn({ data: input }),

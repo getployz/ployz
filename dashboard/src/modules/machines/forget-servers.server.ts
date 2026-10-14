@@ -50,7 +50,7 @@ const knownServers = Effect.fn("ForgetServers.known")(function* (organizationId:
   const machines = yield* drizzle.select().from(organizationMachine).where(eq(organizationMachine.organizationId, organizationId));
   const allocations = yield* drizzle.select().from(enrollmentAllocation).where(eq(enrollmentAllocation.organizationId, organizationId));
   const names = new Map<string, string>(allocations.flatMap((allocation) => allocation.assignments.map((assignment) => [assignment.machine.id, assignment.machine.name])));
-  const servers = new Map<string, EncryptedSecretValue | null>(machines.map((machine) => [machine.machineId, machine.encryptedCapability]));
+  const servers = new Map<MachineId, EncryptedSecretValue | null>(machines.map((machine) => [machine.machineId, machine.encryptedCapability]));
   const endpoints = pairing?.removalEndpoints
     ? yield* Schema.decodeUnknownEffect(RemovalEndpoints)(pairing.removalEndpoints).pipe(Effect.orDie)
     : [];
@@ -68,13 +68,12 @@ const knownServers = Effect.fn("ForgetServers.known")(function* (organizationId:
 });
 
 /** One connection attempt to each known Server, all at once, each bounded by the timeout. */
-const reachServers = Effect.fn("ForgetServers.reach")(function* (known: ReadonlyArray<{ id: string; name: string; management: string | null }>) {
+const reachServers = Effect.fn("ForgetServers.reach")(function* (known: ReadonlyArray<{ id: MachineId; name: string; management: string | null }>) {
   const ployz = yield* Ployz;
   type Reach = "answered" | ObservedServer["reach"];
-  return yield* Effect.forEach(known, ({ id, name, management }): Effect.Effect<{ id: string; name: string; reach: Reach }> => {
+  return yield* Effect.forEach(known, ({ id, name, management }): Effect.Effect<{ id: MachineId; name: string; reach: Reach }> => {
     if (management === null) return Effect.succeed({ id, name, reach: "no_connection" as const });
-    // SAFETY: the table constraint and the removal schema enforce the SDK Machine ID representation.
-    const connection = { machine_id: id as MachineId, management };
+    const connection = { machine_id: id, management };
     return Effect.scoped(ployz.connect({ connections: [connection], timeoutMs: SERVER_REACH_TIMEOUT_MS })).pipe(
       Effect.as("answered" as const),
       Effect.orElseSucceed(() => "didnt_answer" as const),

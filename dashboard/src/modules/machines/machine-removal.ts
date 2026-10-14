@@ -1,9 +1,11 @@
+import type { MachineId } from "@ployz/sdk";
 import { Schema } from "effect";
 import {
   dataLossIdentitySchema,
   type DataLossIdentity,
 } from "#/modules/runtime/data-loss-identity";
 import { requirements, ServerLacks, serverSupports } from "#/modules/runtime/daemon-compat";
+import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 
 export const MACHINE_REMOVE_ATTEMPT_STATES = [
   "pending",
@@ -21,14 +23,14 @@ const NonEmptyString = Schema.String.check(Schema.isNonEmpty());
 
 export const LoadMachineDataLossInput = Schema.Struct({
   organizationSlug: NonEmptyString,
-  machineId: NonEmptyString,
+  machineId: rustMachineIdSchema,
 });
 
 export type LoadMachineDataLossInput = typeof LoadMachineDataLossInput.Type;
 
 export const EnqueueMachineRemoveInput = Schema.Struct({
   organizationSlug: NonEmptyString,
-  machineId: NonEmptyString,
+  machineId: rustMachineIdSchema,
   confirmDataLoss: Schema.Array(dataLossIdentitySchema),
 });
 
@@ -37,7 +39,7 @@ export type EnqueueMachineRemoveInput = typeof EnqueueMachineRemoveInput.Type;
 /** Forget one offline Server: no reset, so its Volumes are lost. `requestId` keys the request. */
 export const ForgetServerInput = Schema.Struct({
   organizationSlug: NonEmptyString,
-  machineId: NonEmptyString,
+  machineId: rustMachineIdSchema,
   requestId: Schema.String.check(Schema.isUUID()),
 });
 export type ForgetServerInput = typeof ForgetServerInput.Type;
@@ -147,7 +149,7 @@ export function toMachineRemoveAttemptView(attempt: {
 export type MachineRemoveAttemptContext = {
   id: string;
   organizationId: string;
-  machineId: string;
+  machineId: MachineId;
   state: MachineRemoveAttemptState;
   inngestRunId: string | null;
   confirmDataLoss: DataLossIdentity[];

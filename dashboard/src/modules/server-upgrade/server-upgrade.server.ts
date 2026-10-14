@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { randomUUID } from "node:crypto";
-import type { MachineUpgradeAttempt, MachineUpgradeAttemptId } from "@ployz/sdk";
+import type { MachineId, MachineUpgradeAttempt, MachineUpgradeAttemptId } from "@ployz/sdk";
 import { and, desc, eq, gte, inArray, isNotNull, lt, ne, sql, type SQL } from "drizzle-orm";
 import { Data, Effect } from "effect";
 import { PostHog } from "#/modules/analytics/posthog.server";
@@ -185,7 +185,7 @@ export const listServersBehind = Effect.fn("ServerUpgrade.listBehind")(function*
 ) {
   const online = yield* observeOnlineServers(organizationId);
   const halted = trigger === "automatic" ? yield* haltedReleases(organizationId) : new Set<string>();
-  const behind: Array<{ readonly id: string; readonly name: string; readonly status: "online" }> = [];
+  const behind: Array<{ readonly id: MachineId; readonly name: string; readonly status: "online" }> = [];
   for (const server of online) {
     const line = releaseLine(server.version);
     const release = line === null ? null : yield* channelRelease(channel, line);
@@ -195,7 +195,7 @@ export const listServersBehind = Effect.fn("ServerUpgrade.listBehind")(function*
 }, Effect.catchIf(
   (error) => error instanceof ServerUpgradeUnreachable || error instanceof ReleasePointerUnreadable,
   (error) => Effect.logInfo("The Cluster or a Release Channel pointer can't be read; no Server is upgraded.", error)
-    .pipe(Effect.as<string[]>([])),
+    .pipe(Effect.as<MachineId[]>([])),
 ));
 
 /**
@@ -204,7 +204,7 @@ export const listServersBehind = Effect.fn("ServerUpgrade.listBehind")(function*
  * the exact version it resolved.
  */
 export const recordUpgradeAttempt = Effect.fn("ServerUpgrade.record")(function* (input: {
-  readonly request: ServerUpgradeRequestedEventData & { readonly machineId: string };
+  readonly request: ServerUpgradeRequestedEventData & { readonly machineId: MachineId };
   readonly attemptId: MachineUpgradeAttemptId;
   readonly channel: ReleaseChannel;
   readonly fromVersion: string;
@@ -501,7 +501,7 @@ const UNCLAIMED = "";
  */
 export const planCliServerUpgrade = Effect.fn("ServerUpgrade.planCli")(function* (
   caller: { readonly organizationId: string; readonly userId: string },
-  input: { readonly machineId: string; readonly channel: string | undefined },
+  input: { readonly machineId: MachineId; readonly channel: string | undefined },
 ) {
   const channel = yield* organizationReleaseChannel(caller.organizationId);
   if (input.channel !== undefined && input.channel !== channel) {

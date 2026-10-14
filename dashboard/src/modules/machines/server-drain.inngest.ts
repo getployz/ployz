@@ -3,7 +3,7 @@ import { attemptLifecycle } from "#/modules/inngest/attempt-lifecycle";
 import type { PloyzStepTools } from "#/modules/inngest/client";
 import { DRAIN_SLOT } from "#/modules/inngest/drain-slot";
 import { serverDrainRequestedEventType } from "#/modules/inngest/events";
-import { machineIdStringSchema } from "#/modules/machines/enrollment";
+import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import {
   bindDrainRun,
   closeDrainRun,
@@ -18,7 +18,7 @@ type EffectRunner = typeof runInngestEffect;
 const ServerDrainRequestedData = Schema.Struct({
   attemptId: Schema.String.check(Schema.isUUID()),
   organizationId: Schema.String.check(Schema.isNonEmpty()),
-  machineId: machineIdStringSchema,
+  machineId: rustMachineIdSchema,
 });
 
 /**
