@@ -11,7 +11,7 @@ import { fetchInstallationPullRequest, githubLacksPermission, postInstallationCh
 import { githubRepositoryCache, organizationGithubInstallation } from "#/modules/github/tables";
 import type { GithubPullRequestReceivedEventData } from "#/modules/github/github-ingestion.contracts";
 import { listLinkedOrganizationIds } from "#/modules/github/github.repository";
-import type { ConfigDeploymentAdmittedEventData, ConfigPrCheckRequestedEventData } from "#/modules/inngest/events";
+import type { ConfigDeploymentAdmittedEventData, ConfigPrCheckRequestedEventData, DeploymentTrigger } from "#/modules/inngest/events";
 import { organization } from "#/modules/organization/tables";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
@@ -25,9 +25,11 @@ export type StoreOutcome = {
 };
 
 /** Gather what `written` left Cloud to do into `into`; an Environment the Store skipped is logged. */
-const collect = Effect.fn("StorePullRequest.collect")(function* (organizationId: string, written: ConfigWritten, into: StoreOutcome) {
+const collect = Effect.fn("StorePullRequest.collect")(function* (
+  organizationId: string, written: ConfigWritten, into: StoreOutcome, trigger: DeploymentTrigger,
+) {
   if (written.written !== "automated") return;
-  into.deployments.push(...admittedEvents(organizationId, written));
+  into.deployments.push(...admittedEvents(organizationId, written, trigger));
   into.closing.push(...written.closing.map((environment) => ({ organizationId, environment })));
   into.closing.push(...written.shutting_down.map((environment) => ({ organizationId, environment, shutDown: true as const })));
   into.check ||= written.checks.length > 0;
@@ -52,7 +54,7 @@ export const observeStorePullRequest = Effect.fn("StorePullRequest.observe")(fun
   const targetHead = yield* mergedInto(access, payload.repositoryId, live);
   const event: SystemEvent = pullRequestEvent(payload.repositoryId, payload.number, { ...live, updatedAt }, targetHead);
   for (const organizationId of organizations) {
-    yield* collect(organizationId, yield* storeSystem(organizationId, event), done);
+    yield* collect(organizationId, yield* storeSystem(organizationId, event), done, "github");
   }
   return done;
 });
@@ -79,7 +81,7 @@ export const sweepStore = Effect.fn("StorePullRequest.sweepOne")(function* (
   organizationId: string, now: Date, done: StoreOutcome = { deployments: [], closing: [], check: false },
 ) {
   const event: SystemEvent = { event: "sweep", now: Math.floor(now.getTime() / 1000) };
-  yield* collect(organizationId, yield* storeSystem(organizationId, event), done);
+  yield* collect(organizationId, yield* storeSystem(organizationId, event), done, "user");
   return done;
 });
 

@@ -218,6 +218,7 @@ fn the_catalog_has_the_agreed_tools() {
     assert_eq!(
         names,
         [
+            "docs",
             "environment_show",
             "project_create",
             "project_rename",
@@ -369,12 +370,16 @@ fn a_local_store_cannot_answer_for_github() {
 }
 
 /// Cloud's side of github_ls for `acme/api` at `main`: a tree query keeps the
-/// named path and everything under it, and a file query returns its text.
+/// named path and everything under it, then what a `*suffix` glob matches, and
+/// a file query returns its text.
 fn acme_api(cloud: Cloud) -> Result<Value, RpcError> {
     const FILES: [&str; 3] = ["Dockerfile", "Dockerfile.cloud", "src/main.rs"];
     match cloud {
         Cloud::Ask(CloudQuery::GithubTree(tree)) => {
             let path = tree.path.unwrap_or_default();
+            let suffix = tree
+                .glob
+                .map(|glob| glob.trim_start_matches('*').to_owned());
             let paths = FILES
                 .into_iter()
                 .filter(|file| {
@@ -383,6 +388,11 @@ fn acme_api(cloud: Cloud) -> Result<Value, RpcError> {
                         || file
                             .strip_prefix(path.as_str())
                             .is_some_and(|rest| rest.starts_with('/'))
+                })
+                .filter(|file| {
+                    suffix
+                        .as_ref()
+                        .is_none_or(|suffix| file.ends_with(suffix.as_str()))
                 })
                 .collect::<Vec<_>>();
             Ok(
@@ -2200,4 +2210,211 @@ fn server_logs_asks_for_one_servers_process_and_refuses_an_unknown_server() {
         "the daemon by default"
     );
     assert_eq!(every.server, None);
+}
+
+#[test]
+fn docs_answer_from_the_binary_on_any_store() {
+    let store = shop();
+    let run = drive(
+        &store,
+        StoreAt::Local,
+        "docs",
+        json!({ "query": "add a custom domain" }),
+        "docs-search",
+        &mut no_cloud,
+    );
+    assert_eq!((run.reads, run.writes), (0, 0));
+    let found = run.ok();
+    assert_eq!(found["query"], "add a custom domain");
+    assert_eq!(found["results"][0]["path"], "services/domains.md");
+    assert_eq!(found["results"][0]["anchor"], "add-a-custom-domain");
+
+    let page = call(
+        &store,
+        "docs",
+        json!({ "query": "services/domains.md#add-a-custom-domain" }),
+        "docs-page",
+    )
+    .ok();
+    assert_eq!(page["path"], "services/domains.md");
+    assert!(
+        page["content"]
+            .as_str()
+            .unwrap()
+            .contains("## Add a custom domain")
+    );
+
+    let refusal = call(
+        &store,
+        "docs",
+        json!({ "query": "services/domain.md" }),
+        "docs-missing",
+    )
+    .refused();
+    assert_eq!(refusal.code, RpcErrorCode::NotFound);
+    assert_eq!(refusal.did_you_mean.as_deref(), Some("services/domains.md"));
+    assert!(
+        refusal
+            .valid
+            .iter()
+            .any(|path| path == "services/domains.md")
+    );
+}
+
+/// Read tools with no input that names something which might not exist.
+const NO_MISSING_TARGET: &[&str] = &["github_connect"];
+
+/// Each read tool asked about a name or path that does not exist, one row per
+/// input that names one. A new read tool fails
+/// [`every_read_tool_explains_what_it_cannot_find`] until it has a row here or
+/// in [`NO_MISSING_TARGET`].
+fn missing_targets() -> Vec<(&'static str, Value)> {
+    vec![
+        ("environment_show", json!({ "project": "nope" })),
+        ("environment_show", json!({ "environment": "nope" })),
+        ("review", json!({ "environment": "nope" })),
+        ("environment_setup", json!({ "environment": "nope" })),
+        ("service_inspect", json!({ "service": "nope" })),
+        ("deployment_show", json!({ "deployment": 99 })),
+        ("docs", json!({ "query": "services/nope.md" })),
+        ("deployment_show", json!({ "environment": "nope" })),
+        ("deployment_list", json!({ "environment": "nope" })),
+        ("domain_check", json!({ "domain": "nope.example.com" })),
+        (
+            "domain_check",
+            json!({ "domain": "nope.example.com", "environment": "nope" }),
+        ),
+        (
+            "github_ls",
+            json!({ "repository": "acme/api", "path": "nope" }),
+        ),
+        (
+            "github_ls",
+            json!({ "repository": "acme/api", "path": "src/nope.rs" }),
+        ),
+        (
+            "github_ls",
+            json!({ "repository": "acme/api", "path": "nope", "match": "*.rs" }),
+        ),
+        (
+            "github_ls",
+            json!({ "repository": "acme/api", "match": "*.zig" }),
+        ),
+        ("server_show", json!({ "server": "web-9" })),
+        ("server_metrics", json!({ "server": "web-9" })),
+        ("server_logs", json!({ "server": "web-9" })),
+        ("service_status", json!({ "service": "nope" })),
+        ("service_status", json!({ "environment": "nope" })),
+        ("service_logs", json!({ "service": "nope" })),
+        (
+            "service_logs",
+            json!({ "service": "web", "deployment": 99 }),
+        ),
+        (
+            "service_logs",
+            json!({ "service": "web", "server": "web-9" }),
+        ),
+        ("service_metrics", json!({ "service": "nope" })),
+        (
+            "service_metrics",
+            json!({ "service": "web", "deployment": 99 }),
+        ),
+        ("volume_show", json!({ "volume": "nope" })),
+        ("volume_show", json!({ "environment": "nope" })),
+    ]
+}
+
+/// Cloud with one Server, `web-1`, and `acme/api` connected, answering every
+/// other read with nothing, so only the tool can explain an empty answer.
+fn empty_cloud(cloud: Cloud) -> Result<Value, RpcError> {
+    let seen = servers(&[])["seen"].clone();
+    match cloud {
+        Cloud::Ask(CloudQuery::Servers { .. }) => Ok(servers(&[("web-1", 'a')])),
+        Cloud::Ask(CloudQuery::GithubConnection) => Ok(json!({
+            "connected": true, "repositories": ["acme/api"], "connect_at": null,
+        })),
+        Cloud::Ask(query @ (CloudQuery::GithubTree(_) | CloudQuery::GithubFile(_))) => {
+            acme_api(Cloud::Ask(query))
+        }
+        Cloud::Ask(CloudQuery::Containers { .. }) => {
+            Ok(json!({ "containers": [], "servers": [], "seen": seen }))
+        }
+        Cloud::Ask(CloudQuery::Copies { .. }) => Ok(json!({ "volumes": [], "seen": seen })),
+        Cloud::Ask(CloudQuery::Operations(_)) => Ok(json!({ "operations": [] })),
+        Cloud::Ask(CloudQuery::Logs(_) | CloudQuery::ServerLogs(_)) => {
+            Ok(json!({ "servers": [], "seen": seen, "notes": [] }))
+        }
+        Cloud::Ask(CloudQuery::Metrics(_)) => Ok(json!({
+            "since": 0, "until": 0, "metrics": [], "oom_kills": 0, "exits": 0,
+            "restarts": 0, "events": [], "notes": [], "seen": seen,
+        })),
+        Cloud::Ask(query) => panic!("unexpected read: {query:?}"),
+        Cloud::Act(act) => panic!("a read acts on nothing: {act:?}"),
+    }
+}
+
+/// Why `result` is not a bare empty answer, or `None` when it is one: a
+/// not_found refusal with its message, or a value carrying a note.
+fn absence_explained(result: &ToolResult) -> Option<String> {
+    match result {
+        ToolResult::Refused(refusal) => (refusal.code == RpcErrorCode::NotFound
+            && !refusal.message.is_empty())
+        .then(|| refusal.message.clone()),
+        ToolResult::Ok(value) => {
+            let note = value["note"].as_str().filter(|note| !note.is_empty());
+            let notes = value["notes"].as_array().and_then(|notes| notes.first());
+            note.map(str::to_owned)
+                .or_else(|| notes.map(Value::to_string))
+        }
+    }
+}
+
+// Catches a read tool answering a name or path it cannot find with an empty
+// result and no word on why, which leaves the model to guess.
+#[test]
+fn every_read_tool_explains_what_it_cannot_find() {
+    let probes = missing_targets();
+    let read_tools = catalog()
+        .into_iter()
+        .filter(|tool| tool.read_only)
+        .map(|tool| tool.name)
+        .collect::<Vec<_>>();
+    for tool in &read_tools {
+        let probed = probes.iter().any(|(name, _)| name == tool);
+        let exempt = NO_MISSING_TARGET.contains(tool);
+        assert!(
+            probed != exempt,
+            "{tool} needs exactly one of a missing_targets row or a NO_MISSING_TARGET entry"
+        );
+    }
+    for name in probes
+        .iter()
+        .map(|(name, _)| *name)
+        .chain(NO_MISSING_TARGET.iter().copied())
+    {
+        assert!(read_tools.contains(&name), "{name} is not a read tool");
+    }
+
+    let (store, _) = deploying();
+    let bare = probes
+        .into_iter()
+        .filter_map(|(tool, input)| {
+            let run = drive(
+                &store,
+                in_org(),
+                tool,
+                input.clone(),
+                "probe-1",
+                &mut empty_cloud,
+            );
+            absence_explained(&run.result)
+                .is_none()
+                .then(|| format!("{tool} {input}: {:?}", run.result))
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        bare.is_empty(),
+        "answered without saying why:\n{}",
+        bare.join("\n")
+    );
 }

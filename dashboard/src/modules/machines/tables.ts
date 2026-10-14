@@ -12,6 +12,7 @@ import {
   type CleanupState,
 } from "#/modules/machines/namespace-cleanup";
 import { DRAIN_END_CODES, DRAIN_STATES, type DrainEndCode, type DrainState } from "#/modules/machines/server-drain";
+import { WEB_TRAFFIC_STATES, WEB_TRAFFIC_WANTS, type WebTrafficState, type WebTrafficWant } from "#/modules/machines/server-web-traffic";
 
 import { organization } from "#/modules/organization/tables";
 
@@ -211,6 +212,66 @@ export const serverDrainAttempt = pgTable(
         or (${table.state} = 'unknown' and ${table.inngestRunId} is not null
           and ${table.startedAt} is not null and ${table.endedAt} is not null and ${table.report} is null
           and ${table.endCode} is not null)
+      )`,
+    ),
+  ],
+);
+
+/**
+ * One web traffic change Cloud applied, or was asked to apply, to one Server: history, read server-side as the latest
+ * per Server, never into the Org Store. The flip writes the row (`pending`) under the id the tab minted, so the
+ * one-active guard answers the flip and every tab sees it through the change stream; the run binds itself to it,
+ * claims it (`running`) right before it asks the Engine, and ends it `finished` or `failed` with why.
+ */
+export const serverWebTrafficAttempt = pgTable(
+  "server_web_traffic_attempt",
+  {
+    /** The request id the flipping tab minted. */
+    id: uuid("id").primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    machineId: text("machine_id").notNull().$type<MachineId>(),
+    /** Who flipped the switch; kept when the user is deleted. */
+    requestedByUserId: uuid("requested_by_user_id").references(() => user.id, { onDelete: "set null" }),
+    want: text("want").notNull().$type<WebTrafficWant>(),
+    state: text("state").default("pending").notNull().$type<WebTrafficState>(),
+    /** The run that owns the row, bound while pending; only it may claim or end the row. */
+    inngestRunId: text("inngest_run_id"),
+    /** Why it failed, in the user's words: set exactly when `state` is `failed`. */
+    failure: text("failure"),
+    requestedAt: timestamp("requested_at", { mode: "date", withTimezone: true }).defaultNow().notNull(),
+    startedAt: timestamp("started_at", { mode: "date", withTimezone: true }),
+    endedAt: timestamp("ended_at", { mode: "date", withTimezone: true }),
+  },
+  (table) => [
+    // One change per Server at a time: a second flip returns the active one.
+    uniqueIndex("server_web_traffic_attempt_one_active_idx")
+      .on(table.organizationId, table.machineId)
+      .where(sql`${table.state} in ('pending', 'running')`),
+    uniqueIndex("server_web_traffic_attempt_run_uidx")
+      .on(table.inngestRunId)
+      .where(sql`${table.inngestRunId} is not null`),
+    index("server_web_traffic_attempt_latest_idx").on(table.organizationId, table.machineId, table.requestedAt),
+    check("server_web_traffic_attempt_machine_id_check", sql`${table.machineId} ~ '^[0-9a-f]{32}$'`),
+    check("server_web_traffic_attempt_want_check", sql`${table.want} in (${sqlStringLiterals(WEB_TRAFFIC_WANTS)})`),
+    check("server_web_traffic_attempt_state_check", sql`${table.state} in (${sqlStringLiterals(WEB_TRAFFIC_STATES)})`),
+    check(
+      "server_web_traffic_attempt_failure_check",
+      sql`(${table.state} = 'failed') = (${table.failure} is not null)
+        and (${table.failure} is null or length(${table.failure}) between 1 and 1024)`,
+    ),
+    check("server_web_traffic_attempt_run_check", sql`${table.inngestRunId} is null or length(${table.inngestRunId}) between 1 and 255`),
+    // Each state carries exactly its evidence. A bound pending row names its run; one never queued never had one.
+    check(
+      "server_web_traffic_attempt_state_shape_check",
+      sql`(
+        (${table.state} = 'pending' and ${table.startedAt} is null and ${table.endedAt} is null)
+        or (${table.state} = 'running' and ${table.inngestRunId} is not null
+          and ${table.startedAt} is not null and ${table.endedAt} is null)
+        or (${table.state} = 'finished' and ${table.inngestRunId} is not null
+          and ${table.startedAt} is not null and ${table.endedAt} is not null)
+        or (${table.state} = 'failed' and ${table.endedAt} is not null)
       )`,
     ),
   ],

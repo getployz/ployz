@@ -49,6 +49,14 @@ describe("send-mail", () => {
     expect(sends).toEqual([{ message, idempotencyKey: "mail-invite-1" }]);
   });
 
+  it("keeps the queued mail's headers", async () => {
+    const sends: Array<Send> = [];
+    const withHeaders = { ...message, headers: { "List-Unsubscribe-Post": "List-Unsubscribe=One-Click" } };
+    await run(sends, Effect.succeed({ status: "sent", messageId: "m-1@postshiba" }), withHeaders);
+
+    expect(sends).toEqual([{ message: withHeaders, idempotencyKey: "mail-invite-1" }]);
+  });
+
   it("stops retrying a mail PostShiba rejected", async () => {
     const output = await run(
       [],

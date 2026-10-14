@@ -20,6 +20,7 @@ import {
   createConfigSweepRequestedEvent,
   createGithubBuildRunCompletedEvent,
   type ConfigDeploymentAdmittedEventData,
+  type DeploymentTrigger,
 } from "#/modules/inngest/events";
 import { Database } from "#/server/database.server";
 import { PostHog } from "#/modules/analytics/posthog.server";
@@ -98,7 +99,7 @@ const dispatchAdmitted = Effect.fn("ConfigStore.dispatchAdmitted")(function* (
   written: ConfigWritten,
   started: boolean,
 ) {
-  for (const data of admittedEvents(organizationId, written)) {
+  for (const data of admittedEvents(organizationId, written, "user")) {
     const event = started ? createConfigDeploymentStartedEvent(data) : createConfigDeploymentAdmittedEvent(data);
     yield* sendInngestEvent(event).pipe(
       Effect.catchTag("InngestEventSendError", (error) =>
@@ -121,9 +122,9 @@ function admittedBy(written: ConfigWritten): DeploymentSummary[] {
  * The Deployments a write admitted, for Cloud's worker. A removal with nothing on a Server applied at admission: no
  * worker runs it.
  */
-export function admittedEvents(organizationId: string, written: ConfigWritten): ConfigDeploymentAdmittedEventData[] {
+export function admittedEvents(organizationId: string, written: ConfigWritten, trigger: DeploymentTrigger): ConfigDeploymentAdmittedEventData[] {
   return admittedBy(written).filter((summary) => summary.status !== "applied")
-    .map((summary) => ({ organizationId, environmentId: summary.environment_id, deploymentId: summary.id }));
+    .map((summary) => ({ organizationId, environmentId: summary.environment_id, deploymentId: summary.id, trigger }));
 }
 
 /**

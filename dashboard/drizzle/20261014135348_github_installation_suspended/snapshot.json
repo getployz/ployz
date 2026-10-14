@@ -1,11 +1,11 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "42075905-84c5-433b-af53-cbbb5799dfeb",
+  "id": "0987b6b7-09b9-4fd6-88cf-61f5b41fda2a",
   "prevIds": [
+    "386aa3d3-b8e1-44ad-841e-1cd14a1de216",
     "aecda1f0-5426-4c9d-9802-eb91a0fb1eb0",
-    "c084e388-0a68-4a36-83b7-cf7400bb503b",
-    "c41e45dc-b24e-4297-9d46-9e513e2f1952"
+    "d3f9a4c9-c5be-41af-a055-f99bb5c62863"
   ],
   "ddl": [
     {
@@ -113,6 +113,12 @@
     {
       "isRlsEnabled": false,
       "name": "server_drain_attempt",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "server_web_traffic_attempt",
       "entityType": "tables",
       "schema": "public"
     },
@@ -281,6 +287,12 @@
     {
       "isRlsEnabled": false,
       "name": "uptime_result_hourly",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "notification_preference",
       "entityType": "tables",
       "schema": "public"
     },
@@ -2450,6 +2462,149 @@
       "entityType": "columns",
       "schema": "public",
       "table": "server_drain_attempt"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "organization_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "machine_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "requested_by_user_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "want",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "'pending'",
+      "generated": null,
+      "identity": null,
+      "name": "state",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "inngest_run_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "failure",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "requested_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "started_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "ended_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
     },
     {
       "type": "integer",
@@ -6127,6 +6282,58 @@
       "table": "uptime_result_hourly"
     },
     {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "user_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "notification_preference"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "type",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "notification_preference"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "channel",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "notification_preference"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "updated_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "notification_preference"
+    },
+    {
       "nameExplicit": true,
       "columns": [
         {
@@ -6678,6 +6885,90 @@
       "entityType": "indexes",
       "schema": "public",
       "table": "server_drain_attempt"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "organization_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "machine_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": true,
+      "where": "\"state\" in ('pending', 'running')",
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "server_web_traffic_attempt_one_active_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "inngest_run_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": true,
+      "where": "\"inngest_run_id\" is not null",
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "server_web_traffic_attempt_run_uidx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "organization_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "machine_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "requested_at",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "server_web_traffic_attempt_latest_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
     },
     {
       "nameExplicit": true,
@@ -7923,6 +8214,40 @@
     {
       "nameExplicit": false,
       "columns": [
+        "organization_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "organization",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "server_web_traffic_attempt_organization_id_organization_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "requested_by_user_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "user",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "SET NULL",
+      "name": "server_web_traffic_attempt_requested_by_user_id_user_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
         "installation_id"
       ],
       "schemaTo": "public",
@@ -8556,6 +8881,23 @@
       "table": "uptime_result_hourly"
     },
     {
+      "nameExplicit": false,
+      "columns": [
+        "user_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "user",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "notification_preference_user_id_user_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "notification_preference"
+    },
+    {
       "columns": [
         "organization_id",
         "cluster_key"
@@ -8668,6 +9010,17 @@
       "entityType": "pks",
       "schema": "public",
       "table": "uptime_result_hourly"
+    },
+    {
+      "columns": [
+        "user_id",
+        "type"
+      ],
+      "nameExplicit": false,
+      "name": "notification_preference_pkey",
+      "entityType": "pks",
+      "schema": "public",
+      "table": "notification_preference"
     },
     {
       "columns": [
@@ -8817,6 +9170,16 @@
       "name": "server_drain_attempt_pkey",
       "schema": "public",
       "table": "server_drain_attempt",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "server_web_traffic_attempt_pkey",
+      "schema": "public",
+      "table": "server_web_traffic_attempt",
       "entityType": "pks"
     },
     {
@@ -9331,6 +9694,48 @@
       "table": "server_drain_attempt"
     },
     {
+      "value": "\"machine_id\" ~ '^[0-9a-f]{32}$'",
+      "name": "server_web_traffic_attempt_machine_id_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
+    },
+    {
+      "value": "\"want\" in ('on','off')",
+      "name": "server_web_traffic_attempt_want_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
+    },
+    {
+      "value": "\"state\" in ('pending','running','finished','failed')",
+      "name": "server_web_traffic_attempt_state_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
+    },
+    {
+      "value": "(\"state\" = 'failed') = (\"failure\" is not null)\n        and (\"failure\" is null or length(\"failure\") between 1 and 1024)",
+      "name": "server_web_traffic_attempt_failure_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
+    },
+    {
+      "value": "\"inngest_run_id\" is null or length(\"inngest_run_id\") between 1 and 255",
+      "name": "server_web_traffic_attempt_run_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
+    },
+    {
+      "value": "(\n        (\"state\" = 'pending' and \"started_at\" is null and \"ended_at\" is null)\n        or (\"state\" = 'running' and \"inngest_run_id\" is not null\n          and \"started_at\" is not null and \"ended_at\" is null)\n        or (\"state\" = 'finished' and \"inngest_run_id\" is not null\n          and \"started_at\" is not null and \"ended_at\" is not null)\n        or (\"state\" = 'failed' and \"ended_at\" is not null)\n      )",
+      "name": "server_web_traffic_attempt_state_shape_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
+    },
+    {
       "value": "(\n        \"has_active_subscription\" = false\n        OR (\n          \"active_subscription_id\" IS NOT NULL\n          AND \"current_period_end\" IS NOT NULL\n        )\n      )",
       "name": "organization_billing_state_active_fields_check",
       "entityType": "checks",
@@ -9637,6 +10042,20 @@
       "entityType": "checks",
       "schema": "public",
       "table": "uptime_result_hourly"
+    },
+    {
+      "value": "\"type\" in ('uptime','deploy-failed','upgrade-failed')",
+      "name": "notification_preference_type_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "notification_preference"
+    },
+    {
+      "value": "\"channel\" in ('email','none')",
+      "name": "notification_preference_channel_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "notification_preference"
     }
   ],
   "renames": []

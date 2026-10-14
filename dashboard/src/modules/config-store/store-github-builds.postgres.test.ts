@@ -68,7 +68,7 @@ it.live(
 
       // Auto tries GitHub first: GitHub gets the pinned build.
       yield* Effect.promise(() => store.pinSources(DEPLOYMENT, { web: HEAD }));
-      const data = { organizationId: ORGANIZATION, environmentId: ENVIRONMENT, deploymentId: DEPLOYMENT };
+      const data = { organizationId: ORGANIZATION, environmentId: ENVIRONMENT, deploymentId: DEPLOYMENT, trigger: "user" as const };
       const [target] = yield* provided(planStoreGithubBuilds(data));
       if (target === undefined) return expect.unreachable("GitHub gets the build");
       expect(target).toEqual({

@@ -25,6 +25,7 @@ const notOrganizationOwned = {
   organization_token: "A credential the dashboard never reads into the Org Store, so it needs no change log.",
   server_access: "A device's credential on one Server; never read into the Org Store, so it needs no change log.",
   session: "Belongs to a user; its active Organization doesn't make it organization-owned.",
+  notification_preference: "Belongs to a user; one choice applies in every Organization.",
   github_installation: "A GitHub App installation, shared by every Organization linked to it through organization_github_installation.",
   github_repository_cache: "The repositories GitHub reports for an installation, shared by every Organization linked to it.",
   organization_change: "It is the Organization change log, written by the triggers on organization-owned tables.",

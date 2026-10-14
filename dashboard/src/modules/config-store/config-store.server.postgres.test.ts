@@ -278,7 +278,7 @@ it.live(
         const event = {
           id: "config-deployment-admitted-00000000-0000-4000-8000-000000000101",
           name: "config/deployment.admitted",
-          data: { organizationId: expect.any(String), environmentId: ENVIRONMENT, deploymentId: admit.id },
+          data: { organizationId: expect.any(String), environmentId: ENVIRONMENT, deploymentId: admit.id, trigger: "user" },
         };
         expect(sent).toEqual([event, event]);
 
@@ -294,7 +294,7 @@ it.live(
         assert.strictEqual((yield* request("write", alice, start)).status, 200);
         expect(sent.at(-1)).toEqual({
           name: "config/deployment.admitted",
-          data: { organizationId: expect.any(String), environmentId: ENVIRONMENT, deploymentId: start.deployment },
+          data: { organizationId: expect.any(String), environmentId: ENVIRONMENT, deploymentId: start.deployment, trigger: "user" },
         });
         const superseded = yield* request("write", alice, { ...start, deployment: admit.id });
         assert.strictEqual(superseded.status, 409);
@@ -729,7 +729,7 @@ it.live(
         assert.strictEqual(yield* held(first), 1);
         // Its Server left: its upload was read, and nothing ran.
         yield* drizzle.delete(organizationMachine);
-        const ran = yield* runStoreDeployment({ organizationId, environmentId: ENVIRONMENT, deploymentId: first }, "cloud-test");
+        const ran = yield* runStoreDeployment({ organizationId, environmentId: ENVIRONMENT, deploymentId: first, trigger: "user" }, "cloud-test");
         expect(ran).toMatchObject({ ran: { id: first, status: "failed" } });
         assert.strictEqual(yield* held(first), 0);
         assert.strictEqual(yield* held(second), 1);

@@ -76,7 +76,7 @@ const observeMerged = Effect.fn("StoreGithub.observeMerged")(function* (
     if (!live?.mergeCommitSha || live.targetBranch !== payload.branch || !updatedAt) continue;
     const targetHead = yield* mergedInto(access, payload.repositoryId, live);
     const written = yield* storeSystem(organizationId, pullRequestEvent(payload.repositoryId, number, { ...live, updatedAt }, targetHead));
-    deployments.push(...admittedEvents(organizationId, written));
+    deployments.push(...admittedEvents(organizationId, written, "github"));
   }
   return deployments;
 });
@@ -108,7 +108,7 @@ const observeBranchFor = Effect.fn("StoreGithub.observeBranchFor")(function* (
       Effect.map((written) => ({ written })),
       Effect.catchIf(refusedWith("conflict"), () => Effect.succeed(null)),
     );
-    if (written !== null) return [...merged, ...admittedEvents(organizationId, written.written)];
+    if (written !== null) return [...merged, ...admittedEvents(organizationId, written.written, "github")];
   }
   return yield* new StoreGithubFailure({ message: "The branch's head kept moving while Cloud compared it." });
 });
@@ -161,7 +161,7 @@ export const observeStoreCheckSuite = Effect.fn("StoreGithub.observeCheckSuite")
   const deployments: ConfigDeploymentAdmittedEventData[] = [];
   for (const organizationId of organizations) {
     const written = yield* storeSystem(organizationId, event);
-    deployments.push(...admittedEvents(organizationId, written));
+    deployments.push(...admittedEvents(organizationId, written, "github"));
   }
   return deployments;
 });
