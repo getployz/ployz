@@ -543,7 +543,7 @@ class VolumeMove:
 
     def want(self, case, epoch):
         """The want fields a fault at case's step names for the first run's epoch, as field to pattern. A Forget
-        want carries no name, so it gives {} and the line is credited by Volume and verb alone. None without an
+        want carries no name, so it gives {} and the line is credited by Volume alone. None without an
         epoch when the want needs one."""
         verb = case["fault"].split(":")[1]
         patterns = {"Snapshot": {"snapshot": rf"w-{epoch}-\d+"},
@@ -555,12 +555,10 @@ class VolumeMove:
         return patterns[destination] if epoch is not None else None
 
     def its(self, case, epoch, line):
-        """The identity a fault line carries when it is the first run's: this Volume, the case's verb and the want
-        its step implies. None for any other line."""
+        """The identity a fault line carries when it is the first run's: this Volume and the want its step implies.
+        None for any other line. The verb needs no check: ployzd logs a fault line only for the armed verb."""
         fields, want = fault_fields(line), self.want(case, epoch)
         if fields is None or want is None or fields.get("volume") != self.physical:
-            return None
-        if fields.get("verb") != case["fault"].split(":")[1]:
             return None
         if not all(re.fullmatch(pattern, fields.get(key, "")) for key, pattern in want.items()):
             return None

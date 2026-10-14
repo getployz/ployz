@@ -1644,7 +1644,7 @@ class VolumeMoveTests(unittest.TestCase):
                       result.get("skipped") or "", result)
 
     def test_a_triggered_case_fails_when_no_inngest_run_claimed_its_first_run(self):
-        # A Forget want carries no epoch, so its fault line is credited by Volume and verb alone: a late RPC from a
+        # A Forget want carries no epoch, so its fault line is credited by Volume alone: a late RPC from a
         # run that ended before the case logs that line while the request waits unclaimed.
         kill = next(case for case in volume_move.KILLS if case["name"] == "kill-forget-writer")
         checks, model = self.checks()
