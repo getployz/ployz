@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { randomUUID } from "node:crypto";
 import type { MachineUpgradeAttempt, MachineUpgradeAttemptId } from "@ployz/sdk";
-import { and, desc, eq, isNotNull, lt, ne, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, lt, ne, sql, type SQL } from "drizzle-orm";
 import { Data, Effect } from "effect";
 import { PostHog } from "#/modules/analytics/posthog.server";
 import type { Actor } from "#/modules/identity/actor";
@@ -151,10 +151,11 @@ const observeOnlineServers = Effect.fn("ServerUpgrade.observeOnline")(function* 
       : []);
 }, Effect.scoped);
 
-/** The version an online, idle Server runs; null when it isn't observed online and idle (it can't take an Upgrade). */
+/** The name and version of an online, idle Server; null when it isn't observed online and idle (it can't take an Upgrade). */
 export const observeUpgradeableServer = Effect.fn("ServerUpgrade.observe")(function* (organizationId: string, machineId: string) {
   const online = yield* observeOnlineServers(organizationId);
-  return online.find(({ id }) => id === machineId)?.version ?? null;
+  const server = online.find(({ id }) => id === machineId);
+  return server === undefined ? null : { name: server.name, version: server.version };
 });
 
 /**
@@ -391,6 +392,36 @@ const closeRunningAttempts = Effect.fn("ServerUpgrade.closeRunning")(function* (
 export const closeRunUpgradeAttempts = (inngestRunId: string) =>
   closeRunningAttempts(eq(serverUpgradeAttempt.inngestRunId, inngestRunId));
 
+/** The Organization, and which of `attemptIds` ended other than `succeeded`, oldest first. */
+export const readUpgradeFailures = Effect.fn("ServerUpgrade.readFailures")(function* (
+  organizationId: string,
+  attemptIds: readonly string[],
+) {
+  const { drizzle } = yield* Database;
+  const [named] = yield* drizzle.select({ name: organization.name, slug: organization.slug }).from(organization)
+    .where(eq(organization.id, organizationId));
+  const failures = yield* drizzle.select({
+    attemptId: serverUpgradeAttempt.attemptId,
+    machineId: serverUpgradeAttempt.machineId,
+    fromVersion: serverUpgradeAttempt.fromVersion,
+    targetVersion: serverUpgradeAttempt.targetVersion,
+    outcome: serverUpgradeAttempt.outcome,
+    stage: serverUpgradeAttempt.stage,
+    error: serverUpgradeAttempt.error,
+  }).from(serverUpgradeAttempt)
+    .where(and(
+      eq(serverUpgradeAttempt.organizationId, organizationId),
+      inArray(serverUpgradeAttempt.attemptId, [...attemptIds]),
+      inArray(serverUpgradeAttempt.outcome, ["failed", "interrupted", "unknown"]),
+    ))
+    .orderBy(serverUpgradeAttempt.startedAt);
+  return {
+    organization: named ?? null,
+    failures: failures.flatMap(({ outcome, ...failure }) =>
+      outcome === "failed" || outcome === "interrupted" || outcome === "unknown" ? [{ ...failure, outcome }] : []),
+  };
+});
+
 /** The hourly sweep: an attempt still `running` after the observation limit lost its Rollout run, so it reads `unknown`. */
 export const closeStaleUpgradeAttempts = () =>
   closeRunningAttempts(lt(serverUpgradeAttempt.startedAt, new Date(Date.now() - UPGRADE_OBSERVATION_LIMIT_MS)));
@@ -470,10 +501,10 @@ export const planCliServerUpgrade = Effect.fn("ServerUpgrade.planCli")(function*
   }
   const unavailable = (message: string) =>
     ({ ok: false, refusal: { code: "unavailable", message, details: null } }) as const satisfies { ok: false; refusal: StoreRefusal };
-  const fromVersion = yield* observeUpgradeableServer(caller.organizationId, input.machineId).pipe(Effect.option);
-  if (fromVersion._tag === "None") return unavailable("Your servers aren't answering. Try again once they are.");
-  if (fromVersion.value === null) return unavailable("This Server isn't online and idle, so it can't take an Upgrade now.");
-  const from = fromVersion.value;
+  const observed = yield* observeUpgradeableServer(caller.organizationId, input.machineId).pipe(Effect.option);
+  if (observed._tag === "None") return unavailable("Your servers aren't answering. Try again once they are.");
+  if (observed.value === null) return unavailable("This Server isn't online and idle, so it can't take an Upgrade now.");
+  const from = observed.value.version;
   return (attempt: string) => Effect.gen(function* () {
     // SAFETY: an attempt is a UUID; without its dashes it is 32 lowercase hex digits, the daemon's attempt ID form.
     const attemptId = attempt.replaceAll("-", "") as MachineUpgradeAttemptId;
