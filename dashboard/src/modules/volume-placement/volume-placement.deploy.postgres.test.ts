@@ -157,7 +157,7 @@ describe("deploying a Volume placement", () => {
     const row = await placement();
     expect(row).toMatchObject({ mirrors: [], staged: null, deploymentId: null });
     if (row === undefined) throw new Error("expected the row");
-    expect(placementTargets({ id: volumeId, name: "data" }, members, row, [web("web-2")]).mirror.map((server) => server.name)).toEqual(["web-2"]);
+    expect(placementTargets({ id: volumeId, name: "data" }, members, row, [web("web-2")], false).mirror.map((server) => server.name)).toEqual(["web-2"]);
   });
 
   it("settles a landed mirror removal while another change stays staged", async () => {

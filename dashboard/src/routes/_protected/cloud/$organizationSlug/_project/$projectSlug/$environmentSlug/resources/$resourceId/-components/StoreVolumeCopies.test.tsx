@@ -28,7 +28,7 @@ const mirrorAsOf = (server: string, when: Date): Member => {
 const server = (name: string, storage: CopyServer["storage"] = "pool"): CopyServer => ({ id: id(name), name, storage });
 
 function panel(members: Member[], placement: PlacementRow | null, options: {
-  open?: string; upgrade?: string[]; servers?: CopyServer[]; matchedAt?: string; refreshing?: boolean; deploying?: boolean;
+  open?: string; upgrade?: string[]; servers?: CopyServer[]; matchedAt?: string; refreshing?: boolean; deploying?: boolean; owed?: boolean;
 } = {}) {
   const stage = vi.fn();
   const refresh = vi.fn();
@@ -37,7 +37,7 @@ function panel(members: Member[], placement: PlacementRow | null, options: {
   const onOpen = vi.fn();
   const copies = copiesFromPlacement({ volume, members, row: placement, active: null,
     statuses: options.matchedAt === undefined ? [] : [{ machine: id("web-2"), okAt: options.matchedAt, matchedAt: options.matchedAt, failedAt: null, failure: null }] });
-  render(<VolumeCopiesPanel volume={volume} members={members} rows={placement ? [placement] : []} running={null} copies={copies}
+  render(<VolumeCopiesPanel volume={volume} members={members} rows={placement ? [placement] : []} running={null} owed={options.owed ?? false} copies={copies}
     servers={options.servers ?? members.map((entry) => server(entry.machine.name))} accepting={members.map((entry) => entry.machine.id)}
     upgrade={options.upgrade ?? []} seeds disabled={false} deploying={options.deploying ?? false} stage={stage} restore={restore}
     deleteCopy={deleteCopy} refresh={refresh} refreshing={options.refreshing ?? false}
@@ -129,6 +129,17 @@ describe("VolumeCopiesPanel", () => {
     expect(screen.getByText("Upgrade web-2 to a newer Ployz")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Add copy" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Delete copy on web-3" })).toBeNull();
+  });
+
+  it("offers Use mirror when the Primary is silent, but not while a committed Move is owed", () => {
+    const silent = [member("web-1", "unanswered"), mirrorAsOf("web-2", new Date(NOW.getTime() - 5 * 60_000))];
+    const { stage } = panel(silent, row(["web-2"]));
+    fireEvent.click(screen.getByRole("button", { name: "Use mirror" }));
+    expect(stage).toHaveBeenCalledWith(expect.objectContaining({ primary: id("web-2") }), [id("web-2")]);
+    cleanup();
+    panel(silent, row(["web-2"]), { owed: true });
+    expect(screen.getByText("web-1 is not answering")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Use mirror" })).toBeNull();
   });
 });
 
