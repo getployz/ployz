@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { and, desc, eq, gt, notLike } from "drizzle-orm";
+import { and, desc, eq, gt, isNull, notLike, or } from "drizzle-orm";
 import { Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
 import { CLI_USER_AGENT_PREFIX } from "#/modules/identity/organization-token.server";
@@ -42,5 +42,10 @@ export const revokeAccountSession = Effect.fn("Account.revokeSession")(function*
   const { drizzle } = yield* Database;
   yield* drizzle
     .delete(session)
-    .where(and(eq(session.id, sessionId), eq(session.userId, actor.userId), notLike(session.userAgent, `${CLI_USER_AGENT_PREFIX}%`)));
+    .where(and(
+      eq(session.id, sessionId),
+      eq(session.userId, actor.userId),
+      // SQL's NOT LIKE is never true for NULL, so a session with no user agent is allowed outright.
+      or(isNull(session.userAgent), notLike(session.userAgent, `${CLI_USER_AGENT_PREFIX}%`)),
+    ));
 });
