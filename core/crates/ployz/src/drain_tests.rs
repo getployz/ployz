@@ -126,7 +126,7 @@ struct Scripted {
     pointer: Option<ServingPointer>,
     pointer_error: Option<RpcError>,
     kept: Vec<Option<Vec<ContainerId>>>,
-    repointed: Vec<(QualifiedService, Option<DeploymentLogId>, Vec<Replacement>)>,
+    repointed: Vec<(QualifiedService, DeploymentLogId, Vec<Replacement>)>,
     repoint_error: Option<RpcError>,
 }
 
@@ -164,7 +164,7 @@ impl DrainClient for Scripted {
     ) -> Converged {
         self.kept.push(match old {
             OldCopy::Remove => None,
-            OldCopy::Keep { retiring } => Some(retiring.to_vec()),
+            OldCopy::Keep { pointer } => Some(pointer.retiring.clone()),
         });
         if let Some(cancellation) = &self.cancel_after_converge {
             cancellation.cancel();
@@ -177,11 +177,11 @@ impl DrainClient for Scripted {
     async fn repoint(
         &mut self,
         service: &QualifiedService,
-        deploy: Option<&DeploymentLogId>,
+        deploy: &DeploymentLogId,
         replaced: &[Replacement],
     ) -> Result<Amendment, RpcError> {
         self.repointed
-            .push((service.clone(), deploy.cloned(), replaced.to_vec()));
+            .push((service.clone(), deploy.clone(), replaced.to_vec()));
         self.repoint_error
             .clone()
             .map_or(Ok(Amendment::Published { retries: 0 }), Err)
@@ -223,6 +223,7 @@ fn one_replaced() -> Vec<Replacement> {
     vec![Replacement {
         old: container('1'),
         new: container('9'),
+        deploy: DeploymentLogId::parse("dep-a").unwrap(),
     }]
 }
 
@@ -579,7 +580,7 @@ async fn a_moved_service_is_repointed_and_one_with_nothing_to_move_is_not() {
         client.repointed,
         [(
             qualified("web"),
-            Some(DeploymentLogId::parse("dep-a").unwrap()),
+            DeploymentLogId::parse("dep-a").unwrap(),
             one_replaced()
         )]
     );
@@ -642,7 +643,7 @@ async fn a_pointed_service_keeps_its_old_copies_and_an_unpointed_one_removes_the
         observations: [nothing_left()].into(),
         convergences: [Converged::Moved {
             moves: one_move(),
-            replaced: one_replaced(),
+            replaced: Vec::new(),
         }]
         .into(),
         ..Scripted::default()
@@ -664,7 +665,7 @@ async fn a_drain_publishes_its_replacements_by_id_and_retires_what_they_replaced
     let amended = publish_replacements(
         &mut fake.clone(),
         &qualified("web"),
-        Some(&deploy),
+        &deploy,
         &one_replaced(),
     )
     .await
@@ -689,7 +690,7 @@ async fn a_drain_publishes_nothing_once_a_newer_deploy_owns_the_pointer() {
     let amended = publish_replacements(
         &mut fake.clone(),
         &qualified("web"),
-        Some(&deploy),
+        &deploy,
         &one_replaced(),
     )
     .await
@@ -726,4 +727,57 @@ async fn a_service_whose_pointer_cannot_be_read_stays_and_nothing_moves() {
         )]
     );
     assert!(client.kept.is_empty() && client.repointed.is_empty());
+}
+
+#[tokio::test]
+async fn an_old_copy_a_first_pointer_named_before_removal_is_repointed_under_it() {
+    let mut client = Scripted {
+        observations: [nothing_left()].into(),
+        convergences: [Converged::Moved {
+            moves: one_move(),
+            replaced: one_replaced(),
+        }]
+        .into(),
+        ..Scripted::default()
+    };
+    run(&mut client, &[], &["web"], &CancellationToken::new()).await;
+    assert_eq!(client.kept, [None]);
+    assert_eq!(
+        client.repointed,
+        [(
+            qualified("web"),
+            DeploymentLogId::parse("dep-a").unwrap(),
+            one_replaced()
+        )]
+    );
+}
+
+#[tokio::test]
+async fn a_pointed_move_stays_pending_until_its_old_copy_leaves_the_listing() {
+    let still_listed = || Ok(vec![qualified("web")]);
+    let mut client = Scripted {
+        observations: [still_listed(), still_listed(), nothing_left()].into(),
+        convergences: [
+            Converged::Moved {
+                moves: one_move(),
+                replaced: one_replaced(),
+            },
+            Converged::NothingToMove,
+            Converged::NothingToMove,
+        ]
+        .into(),
+        pointer: Some(pointer('a', &['1'], &[])),
+        ..Scripted::default()
+    };
+    let first = run(&mut client, &[], &["web"], &CancellationToken::new()).await;
+    assert_eq!(outcomes(&first), [entry("web", moved())]);
+    assert!(!first.complete(), "the old copy still runs: {first:?}");
+    let retry = run(&mut client, &[], &["web"], &CancellationToken::new()).await;
+    assert_eq!(
+        outcomes(&retry),
+        [entry("web", DrainOutcome::NothingToMove)]
+    );
+    assert!(!retry.complete(), "the old copy still runs: {retry:?}");
+    let gone = run(&mut client, &[], &["web"], &CancellationToken::new()).await;
+    assert!(gone.complete(), "{gone:?}");
 }

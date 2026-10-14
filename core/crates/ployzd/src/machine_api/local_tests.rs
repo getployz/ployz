@@ -2336,6 +2336,10 @@ mod serving_pointer {
         rows: &[Machine],
         states: Vec<Value>,
     ) -> (MachineService, tokio::task::JoinHandle<()>) {
+        serve(dir, enrolled(dir), corrosion_db(), rows, states).await
+    }
+
+    fn enrolled(dir: &Path) -> LocalMachineStore {
         let mut local = LocalMachineStore::open(dir.join(MachineId::random().as_str())).unwrap();
         local
             .enroll(ployz_core::EnrollRequest {
@@ -2351,7 +2355,17 @@ mod serving_pointer {
                 wireguard_mtu: None,
             })
             .unwrap();
-        let (replicated, task): (ReplicatedStore, _) = identity_store(corrosion_db()).await;
+        local
+    }
+
+    async fn serve(
+        dir: &Path,
+        local: LocalMachineStore,
+        db: rusqlite::Connection,
+        rows: &[Machine],
+        states: Vec<Value>,
+    ) -> (MachineService, tokio::task::JoinHandle<()>) {
+        let (replicated, task): (ReplicatedStore, _) = identity_store(db).await;
         for row in rows {
             replicated
                 .machine_publication()
@@ -2468,6 +2482,64 @@ mod serving_pointer {
         );
         first.abort();
         second.abort();
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_machine_whose_lower_peer_has_an_unreadable_row_refuses_to_publish() {
+        let dir = std::env::temp_dir().join(format!("ployzd-pointer-{}", MachineId::random()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (mut low, mut high) = (enrolled(&dir), enrolled(&dir));
+        if low.record().id() > high.record().id() {
+            std::mem::swap(&mut low, &mut high);
+        }
+        let low_machine = low.record().machine().unwrap().clone();
+        let high_machine = high.record().machine().unwrap().clone();
+        let both_alive = || vec![alive(&low_machine), alive(&high_machine)];
+        let high_db = corrosion_db();
+        high_db
+            .execute(
+                "INSERT INTO machines (id, info) VALUES (?, '{}')",
+                [low_machine.id.as_str()],
+            )
+            .unwrap();
+        let (low, low_task) = serve(
+            &dir,
+            low,
+            corrosion_db(),
+            &[low_machine.clone(), high_machine.clone()],
+            both_alive(),
+        )
+        .await;
+        let (high, high_task) = serve(
+            &dir,
+            high,
+            high_db,
+            std::slice::from_ref(&high_machine),
+            both_alive(),
+        )
+        .await;
+
+        let outcomes = [
+            publish(&low, None, pointer("d1", "a")).await,
+            publish(&high, None, pointer("d2", "b")).await,
+        ];
+        assert_eq!(outcomes[0], Ok(ServingPointerPublication::Published));
+        let refused = outcomes[1].as_ref().unwrap_err();
+        assert_eq!(refused.code, RpcErrorCode::Unavailable, "{refused:?}");
+        assert!(
+            refused.message.contains(low_machine.id.as_str()),
+            "{refused:?}"
+        );
+        assert_eq!(read(&low).await.unwrap().pointer, Some(pointer("d1", "a")));
+        let unwritten = high.replicated().unwrap().serving_pointer(&api()).await;
+        assert_eq!(
+            unwritten.unwrap(),
+            None,
+            "the refused publish wrote nothing"
+        );
+        low_task.abort();
+        high_task.abort();
         std::fs::remove_dir_all(dir).ok();
     }
 }

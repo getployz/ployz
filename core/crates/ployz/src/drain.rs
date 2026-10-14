@@ -94,15 +94,18 @@ pub struct DrainReport {
 
 impl DrainReport {
     /// Every chosen Service left the Server, the Drain ran to its end, and what remains
-    /// was observed.
+    /// was observed without any of them. A moved Service whose old copy waits for its
+    /// pointer's retirement is still pending until it leaves the listing.
     #[must_use]
     pub fn complete(&self) -> bool {
+        let Remaining::Observed { services, .. } = &self.remaining else {
+            return false;
+        };
         self.stopped.is_none()
-            && matches!(self.remaining, Remaining::Observed { .. })
             && self
                 .services
                 .iter()
-                .all(|service| service.outcome.complete())
+                .all(|service| service.outcome.complete() && !services.contains(&service.service))
     }
 }
 
@@ -120,8 +123,8 @@ struct DrainReportWire {
     stopped: Option<DrainStop>,
     /// What still runs on the Server after the Drain.
     remaining: Remaining,
-    /// Every chosen Service left the Server, the Drain ran to its end, and what remains
-    /// was observed.
+    /// Every chosen Service left the Server, retiring old copies included, the Drain ran
+    /// to its end, and what remains was observed.
     complete: bool,
 }
 
@@ -193,7 +196,9 @@ pub enum DrainOutcome {
 }
 
 impl DrainOutcome {
-    /// Everything this Service had on the Server is gone from it.
+    /// The Drain has nothing left to do for this Service. A moved one may still have an
+    /// old copy on the Server that its Serving Pointer retires;
+    /// [`DrainReport::complete`] waits for that copy to leave the listing.
     fn complete(&self) -> bool {
         match self {
             Self::Moved { .. } | Self::NothingToMove | Self::Retired => true,
@@ -397,7 +402,7 @@ trait DrainClient {
     async fn repoint(
         &mut self,
         service: &QualifiedService,
-        deploy: Option<&DeploymentLogId>,
+        deploy: &DeploymentLogId,
         replaced: &[Replacement],
     ) -> Result<Amendment, RpcError>;
 }
@@ -444,24 +449,30 @@ impl DrainClient for Client {
     async fn repoint(
         &mut self,
         service: &QualifiedService,
-        deploy: Option<&DeploymentLogId>,
+        deploy: &DeploymentLogId,
         replaced: &[Replacement],
     ) -> Result<Amendment, RpcError> {
         publish_replacements(self, service, deploy, replaced).await
     }
 }
 
+/// Publishes moves already made, whose old copies serve until it lands, so it runs to
+/// its own bounded end even once the Drain is cancelled.
 async fn publish_replacements<C: PointerClient>(
     client: &mut C,
     service: &QualifiedService,
-    deploy: Option<&DeploymentLogId>,
+    deploy: &DeploymentLogId,
     replaced: &[Replacement],
 ) -> Result<Amendment, RpcError> {
     let joining = replaced.iter().map(|step| step.new).collect::<Vec<_>>();
     let leaving = replaced.iter().map(|step| step.old).collect::<Vec<_>>();
-    amend_pointer(client, service, deploy, |current| {
-        rotated(current, &joining, &leaving)
-    })
+    amend_pointer(
+        client,
+        service,
+        Some(deploy),
+        &CancellationToken::new(),
+        |current| rotated(current, &joining, &leaving, None),
+    )
     .await
 }
 
@@ -542,18 +553,13 @@ async fn execute<C: DrainClient>(
                     continue;
                 }
             };
-            let (old, deploy) = match &pointer {
-                None => (OldCopy::Remove, None),
-                Some(pointer) => (
-                    OldCopy::Keep {
-                        retiring: &pointer.retiring,
-                    },
-                    Some(&pointer.deploy),
-                ),
+            let old = match &pointer {
+                None => OldCopy::Remove,
+                Some(pointer) => OldCopy::Keep { pointer },
             };
             let outcome = match client.converge(service, old, cancellation).await {
                 Converged::Moved { moves, replaced } => {
-                    match repoint(client, service, old, deploy, &moves, &replaced).await {
+                    match repoint(client, service, &moves, &replaced).await {
                         Ok(()) => DrainOutcome::Moved { moves },
                         Err(failure) => DrainOutcome::Failed { moves, failure },
                     }
@@ -564,7 +570,7 @@ async fn execute<C: DrainClient>(
                     replaced,
                     failure,
                 } => {
-                    let failure = repoint(client, service, old, deploy, &moves, &replaced)
+                    let failure = repoint(client, service, &moves, &replaced)
                         .await
                         .err()
                         .unwrap_or(failure);
@@ -576,7 +582,7 @@ async fn execute<C: DrainClient>(
                     replaced,
                     stop,
                 } => {
-                    let _ = repoint(client, service, old, deploy, &moves, &replaced).await;
+                    let _ = repoint(client, service, &moves, &replaced).await;
                     record.push(service.clone(), DrainOutcome::Interrupted { moves });
                     record.stop(stop, after);
                     break 'work;
@@ -609,29 +615,40 @@ async fn execute<C: DrainClient>(
     }
 }
 
+/// Publishes each kept old copy's replacement under the deploy whose pointer named it.
 async fn repoint<C: DrainClient>(
     client: &mut C,
     service: &QualifiedService,
-    old: OldCopy<'_>,
-    deploy: Option<&DeploymentLogId>,
     moves: &[Move],
     replaced: &[Replacement],
 ) -> Result<(), MoveFailure> {
-    let (OldCopy::Keep { .. }, Some(last)) = (old, moves.last()) else {
-        return Ok(());
-    };
-    let detail = match client.repoint(service, deploy, replaced).await {
-        Ok(Amendment::Published { .. } | Amendment::Unchanged) => return Ok(()),
-        Ok(Amendment::Outdated) => "a newer deploy replaced it".to_owned(),
-        Ok(Amendment::NoPointer) => "it has none to retire the old copy".to_owned(),
-        Err(error) => crate::ui::row(&error),
-    };
-    Err(MoveFailure::NotServing {
-        from: last.from.clone(),
-        to: last.to.clone(),
-        detail: format!("publishing its Serving Pointer: {detail}"),
-        replacement_removed: false,
-    })
+    let mut deploys = Vec::new();
+    for step in replaced {
+        if !deploys.contains(&&step.deploy) {
+            deploys.push(&step.deploy);
+        }
+    }
+    for deploy in deploys {
+        let group = replaced
+            .iter()
+            .filter(|step| step.deploy == *deploy)
+            .cloned()
+            .collect::<Vec<_>>();
+        let detail = match client.repoint(service, deploy, &group).await {
+            Ok(Amendment::Published { .. } | Amendment::Unchanged) => continue,
+            Ok(Amendment::Outdated) => "a newer deploy replaced it".to_owned(),
+            Ok(Amendment::NoPointer) => "it has none to retire the old copy".to_owned(),
+            Err(error) => crate::ui::row(&error),
+        };
+        let last = moves.last().expect("every kept old copy is a move");
+        return Err(MoveFailure::NotServing {
+            from: last.from.clone(),
+            to: last.to.clone(),
+            detail: format!("publishing its Serving Pointer: {detail}"),
+            replacement_removed: false,
+        });
+    }
+    Ok(())
 }
 
 /// The report's Services as they land, each handed to `progress`.

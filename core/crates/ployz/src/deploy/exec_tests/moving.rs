@@ -12,7 +12,7 @@ async fn move_with(client: &Scripted) -> Result<ContainerId, MoveContainerError>
         &spec(Some(0), None, None),
         &machine(TO),
         (&machine(FROM), &container('a')),
-        true,
+        async || true,
         &CancellationToken::new(),
     )
     .await
@@ -46,7 +46,7 @@ async fn a_move_that_keeps_the_old_container_never_stops_or_removes_it() {
         &spec(Some(0), None, None),
         &machine(TO),
         (&machine(FROM), &container('a')),
-        false,
+        async || false,
         &CancellationToken::new(),
     )
     .await;
@@ -195,7 +195,7 @@ async fn a_cancelled_global_move_removes_its_replacement() {
         &global,
         &to,
         (&from, &old),
-        true,
+        async || true,
         &cancellation,
     );
     tokio::pin!(moving);
@@ -232,7 +232,7 @@ async fn a_cancelled_global_move_keeps_an_adopted_replica() {
         &global,
         &to,
         (&from, &old),
-        true,
+        async || true,
         &cancellation,
     );
     tokio::pin!(moving);
@@ -250,4 +250,101 @@ async fn a_cancelled_global_move_keeps_an_adopted_replica() {
     };
     assert!(!replacement_removed);
     client.assert_done();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_first_pointer_published_while_the_replacement_starts_keeps_the_old_container() {
+    use crate::deploy::convergence::{AtRemoval, removes_old};
+    use crate::serving_publish::tests::{FakeRow, pointer};
+
+    for published in [true, false] {
+        let mut steps = vec![Step(
+            Call::Run(machine(TO), ContainerKind::ServiceContainer),
+            Reply::CreatedAfter(container('b'), std::time::Duration::from_secs(10)),
+        )];
+        if !published {
+            steps.extend([
+                ok(Call::Stop(machine(FROM), container('a'))),
+                ok(Call::Discard(machine(FROM), container('a'))),
+            ]);
+        }
+        let client = Scripted::new(steps);
+        let row = FakeRow::default();
+        let service = QualifiedService::parse("app/web").unwrap();
+        let (namespace, spec, to, from, old) = (
+            test_namespace(),
+            spec(Some(0), None, None),
+            machine(TO),
+            machine(FROM),
+            container('a'),
+        );
+        let (mut reader, cancellation) = (row.clone(), CancellationToken::new());
+        let mut at_removal = AtRemoval::Remove;
+        let remove_old = async || removes_old(&mut at_removal, &mut reader, &service, &old).await;
+        let publish = async {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            if published {
+                *row.row.lock().unwrap() = Some(pointer('a', &['a'], &[]));
+            }
+        };
+        let (moved, ()) = tokio::join!(
+            move_container(
+                &client,
+                &namespace,
+                &spec,
+                &to,
+                (&from, &old),
+                remove_old,
+                &cancellation,
+            ),
+            publish,
+        );
+        assert_eq!(moved.unwrap(), container('b'));
+        client.assert_done();
+    }
+}
+
+#[tokio::test]
+async fn a_kept_old_copy_is_never_stopped_and_a_removed_one_is() {
+    use crate::deploy::convergence::{AtRemoval, OldCopy, removes_old};
+    use crate::serving_publish::tests::{FakeRow, pointer};
+
+    let kept = pointer('c', &['c'], &[]);
+    for old_copy in [OldCopy::Keep { pointer: &kept }, OldCopy::Remove] {
+        let mut steps = vec![created(
+            Call::Run(machine(TO), ContainerKind::ServiceContainer),
+            &container('b'),
+        )];
+        if old_copy == OldCopy::Remove {
+            steps.extend([
+                ok(Call::Stop(machine(FROM), container('a'))),
+                ok(Call::Discard(machine(FROM), container('a'))),
+            ]);
+        }
+        let client = Scripted::new(steps);
+        // No pointer names the old copy, so only `old_copy` keeps it.
+        let mut reader = FakeRow::default();
+        let service = QualifiedService::parse("app/web").unwrap();
+        let (namespace, spec, to, from, old) = (
+            test_namespace(),
+            spec(Some(0), None, None),
+            machine(TO),
+            machine(FROM),
+            container('a'),
+        );
+        let cancellation = CancellationToken::new();
+        let mut at_removal = AtRemoval::from(old_copy);
+        let moved = move_container(
+            &client,
+            &namespace,
+            &spec,
+            &to,
+            (&from, &old),
+            async || removes_old(&mut at_removal, &mut reader, &service, &old).await,
+            &cancellation,
+        )
+        .await;
+        assert_eq!(moved.unwrap(), container('b'), "{old_copy:?}");
+        client.assert_done();
+    }
 }

@@ -103,6 +103,8 @@ pub enum Error {
     ClusterUnavailable,
     #[error("Docker is not available")]
     DockerUnavailable,
+    #[error("the roster row of lower Machine {0} is unreadable")]
+    UnreadableLowerMachine(MachineId),
     #[error("at least one Machine update is required")]
     EmptyUpdate,
     #[error(transparent)]
@@ -522,18 +524,26 @@ impl LocalMachine {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::ClusterStoreUnavailable`] when the Cluster store is missing and
-    /// [`Error::Cluster`] when replicated or admin I/O fails.
+    /// Returns [`Error::ClusterStoreUnavailable`] when the Cluster store is missing,
+    /// [`Error::Cluster`] when replicated or admin I/O fails, and
+    /// [`Error::UnreadableLowerMachine`] when a Machine below the publisher has a row this
+    /// Machine cannot decode, since that Machine may be the publisher another Machine sees.
     pub async fn pointer_publisher(&self) -> Result<MachineId, Error> {
-        let machines = self.replicated()?.machines().await?.observations;
+        let machines = self.replicated()?.machines().await?;
         let states = self.membership_states().await?;
         let local_id = self.record().id();
-        Ok(synthesize_membership(machines, &local_id, &states)
+        let publisher = synthesize_membership(machines.observations, &local_id, &states)
             .iter()
             .filter(|observation| observation.invites_rpc())
             .map(|observation| observation.machine.id)
             .min()
-            .unwrap_or(local_id))
+            .unwrap_or(local_id);
+        match machines.incomplete_ids.into_iter().min() {
+            Some(unreadable) if unreadable < publisher => {
+                Err(Error::UnreadableLowerMachine(unreadable))
+            }
+            _ => Ok(publisher),
+        }
     }
 
     async fn membership_states(

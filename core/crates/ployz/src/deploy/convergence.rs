@@ -8,15 +8,17 @@
 use std::fmt;
 
 use ployz_core::{
-    ContainerId, ContainerKind, ContainerObservation, ExecutionError, InspectContainerRequest,
-    Machine, MachineId, MachineName, MachineTarget, PullPolicy, QualifiedService, RawVolumeSource,
-    ResolvedServiceSpec, ServiceMode, ServicePlacementEligibility, op,
+    ContainerId, ContainerKind, ContainerObservation, DeploymentLogId, ExecutionError,
+    InspectContainerRequest, Machine, MachineId, MachineName, MachineTarget, PullPolicy,
+    QualifiedService, RawVolumeSource, ResolvedServiceSpec, ServiceMode,
+    ServicePlacementEligibility, ServingPointer, op,
 };
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 use ts_rs::TS;
 
 use crate::connect::{Client, ConnectError, TARGET_RPC_TIMEOUT};
+use crate::serving_publish::PointerClient;
 
 use super::DeploySnapshot;
 use super::exec::MoveContainerError;
@@ -52,16 +54,20 @@ pub struct Move {
     pub to: MachineRef,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// A move whose old copy keeps serving until `deploy`'s Serving Pointer retires it.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Replacement {
     pub(crate) old: ContainerId,
     pub(crate) new: ContainerId,
+    pub(crate) deploy: DeploymentLogId,
 }
 
+/// What a move does with the copy it replaces: remove it, unless a Serving Pointer names
+/// it by then, or keep every one for `pointer` to retire.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum OldCopy<'a> {
     Remove,
-    Keep { retiring: &'a [ContainerId] },
+    Keep { pointer: &'a ServingPointer },
 }
 
 /// How converging one replicated Service ended.
@@ -230,7 +236,7 @@ pub(crate) trait ConvergenceClient {
         container: &ContainerObservation,
         old: OldCopy<'_>,
         cancellation: &CancellationToken,
-    ) -> Result<(Move, ContainerId), MoveFailure>;
+    ) -> Result<(Move, Option<Replacement>), MoveFailure>;
 }
 
 impl ConvergenceClient for Client {
@@ -245,7 +251,7 @@ impl ConvergenceClient for Client {
         container: &ContainerObservation,
         old: OldCopy<'_>,
         cancellation: &CancellationToken,
-    ) -> Result<(Move, ContainerId), MoveFailure> {
+    ) -> Result<(Move, Option<Replacement>), MoveFailure> {
         move_one(self, snapshot, container, old, cancellation).await
     }
 }
@@ -270,7 +276,7 @@ pub(crate) async fn converge<C: ConvergenceClient>(
     };
     let retiring = match old {
         OldCopy::Remove => &[][..],
-        OldCopy::Keep { retiring } => retiring,
+        OldCopy::Keep { pointer } => &pointer.retiring,
     };
     let snapshot = match client.observe().await {
         Ok(snapshot) => snapshot,
@@ -323,9 +329,9 @@ pub(crate) async fn converge<C: ConvergenceClient>(
             .move_one(&snapshot, container, old, cancellation)
             .await
         {
-            Ok((step, new)) => {
+            Ok((step, kept)) => {
                 moves.push(step);
-                replaced.push(Replacement { old: id, new });
+                replaced.extend(kept);
             }
             Err(failure) => return failed(moves, replaced, failure),
         }
@@ -475,7 +481,7 @@ async fn move_one(
     container: &ContainerObservation,
     old: OldCopy<'_>,
     cancellation: &CancellationToken,
-) -> Result<(Move, ContainerId), MoveFailure> {
+) -> Result<(Move, Option<Replacement>), MoveFailure> {
     let source = machine(snapshot, &container.machine_id);
     let from = MachineRef::from(source);
     let spec = &container.resolved_spec;
@@ -497,18 +503,48 @@ async fn move_one(
     // The image is on `dest` by now; a registry pull could fetch a different one.
     let mut spec = spec.clone();
     spec.container.pull_policy = PullPolicy::Never;
-    match super::exec::move_container(
+    let service = QualifiedService {
+        namespace: container.namespace.clone(),
+        name: spec.name.clone(),
+    };
+    let mut reader = client.clone();
+    let mut at_removal = AtRemoval::from(old);
+    let moved = super::exec::move_container(
         &*client,
         &container.namespace,
         &spec,
         &dest.id,
         (&source.id, &container.container_id),
-        old == OldCopy::Remove,
+        async || {
+            removes_old(
+                &mut at_removal,
+                &mut reader,
+                &service,
+                &container.container_id,
+            )
+            .await
+        },
         cancellation,
     )
-    .await
-    {
-        Ok(new) => Ok((Move { from, to }, new)),
+    .await;
+    match moved {
+        Ok(new) => match at_removal {
+            AtRemoval::Remove => Ok((Move { from, to }, None)),
+            AtRemoval::Pointed(deploy) => Ok((
+                Move { from, to },
+                Some(Replacement {
+                    old: container.container_id,
+                    new,
+                    deploy,
+                }),
+            )),
+            AtRemoval::Unread(detail) => Err(MoveFailure::OldNotRemoved {
+                from,
+                to,
+                detail: format!("reading its Serving Pointer before removing it: {detail}"),
+                old_stopped: false,
+            }),
+        },
         Err(MoveContainerError::NotServing {
             error: ExecutionError::Cancelled,
             replacement_removed,
@@ -534,6 +570,56 @@ async fn move_one(
                 old_stopped,
             })
         }
+    }
+}
+
+/// What the Serving Pointer says of a moved Container's old copy once its replacement
+/// serves.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(in crate::deploy) enum AtRemoval {
+    /// No pointer names it: it goes.
+    Remove,
+    /// `deploy`'s pointer names it, so that pointer retires it.
+    Pointed(DeploymentLogId),
+    /// The pointer could not be read, so it stays.
+    Unread(String),
+}
+
+impl From<OldCopy<'_>> for AtRemoval {
+    fn from(old: OldCopy<'_>) -> Self {
+        match old {
+            OldCopy::Remove => Self::Remove,
+            OldCopy::Keep { pointer } => Self::Pointed(pointer.deploy.clone()),
+        }
+    }
+}
+
+/// Whether `old` stops now its replacement serves. A copy already kept stays kept; one
+/// set to go is checked against the pointer once more.
+pub(in crate::deploy) async fn removes_old<C: PointerClient>(
+    at_removal: &mut AtRemoval,
+    reader: &mut C,
+    service: &QualifiedService,
+    old: &ContainerId,
+) -> bool {
+    if *at_removal == AtRemoval::Remove {
+        *at_removal = at_removal_of(reader, service, old).await;
+    }
+    *at_removal == AtRemoval::Remove
+}
+
+/// Read at the last moment before `old` would stop, so a first publish that names it
+/// since the move began keeps it. One landing after this read is lost to the stop; the
+/// next deploy's publish recovers it.
+async fn at_removal_of<C: PointerClient>(
+    reader: &mut C,
+    service: &QualifiedService,
+    old: &ContainerId,
+) -> AtRemoval {
+    match reader.read_pointer(service).await {
+        Ok(Some(pointer)) if pointer.containers.contains(old) => AtRemoval::Pointed(pointer.deploy),
+        Ok(_) => AtRemoval::Remove,
+        Err(error) => AtRemoval::Unread(crate::ui::row(&error)),
     }
 }
 
@@ -703,14 +789,22 @@ mod tests {
             container: &ContainerObservation,
             old: OldCopy<'_>,
             _cancellation: &CancellationToken,
-        ) -> Result<(Move, ContainerId), MoveFailure> {
+        ) -> Result<(Move, Option<Replacement>), MoveFailure> {
             self.kept.push(old != OldCopy::Remove);
+            let kept = match old {
+                OldCopy::Remove => None,
+                OldCopy::Keep { pointer } => Some(Replacement {
+                    old: container.container_id,
+                    new: id('f'),
+                    deploy: pointer.deploy.clone(),
+                }),
+            };
             Ok((
                 Move {
                     from: super::machine_ref(snapshot, &container.machine_id),
                     to: MachineRef::from(&machine('b', true).machine),
                 },
-                id('f'),
+                kept,
             ))
         }
     }
@@ -732,13 +826,6 @@ mod tests {
 
     fn id(hex: char) -> ContainerId {
         ContainerId::parse(hex.to_string().repeat(64)).unwrap()
-    }
-
-    fn first_replaced() -> Vec<Replacement> {
-        vec![Replacement {
-            old: id('1'),
-            new: id('f'),
-        }]
     }
 
     fn one_move() -> Vec<Move> {
@@ -765,7 +852,7 @@ mod tests {
             .await,
             Converged::Stopped {
                 moves: one_move(),
-                replaced: first_replaced(),
+                replaced: Vec::new(),
                 stop: DrainStop::EntryUnreachable {
                     detail: "connection attempt failed: entry went away".into(),
                 },
@@ -816,7 +903,7 @@ mod tests {
             panic!("{converged:?}");
         };
         assert_eq!(moves, &one_move());
-        assert_eq!(replaced, &first_replaced());
+        assert!(replaced.is_empty(), "a removed old copy needs no pointer");
         assert_eq!(failure.to_string(), "cannot observe machine-b");
     }
 
@@ -843,7 +930,7 @@ mod tests {
             .await,
             Converged::Moved {
                 moves: one_move(),
-                replaced: first_replaced(),
+                replaced: Vec::new(),
             }
         );
     }
@@ -852,13 +939,16 @@ mod tests {
     async fn a_kept_old_copy_already_retiring_stays_put() {
         let service = QualifiedService::parse("app/api").unwrap();
         let mut client = Scripted::new([Ok(two_on_a()), Ok(two_on_a())]);
-        let retiring = [id('1')];
+        let pointer = ployz_core::ServingPointer {
+            deploy: ployz_core::DeploymentLogId::parse("dep-a").unwrap(),
+            containers: vec![id('2')],
+            previous: None,
+            retiring: vec![id('1')],
+        };
         let converged = converge(
             &mut client,
             &service,
-            OldCopy::Keep {
-                retiring: &retiring,
-            },
+            OldCopy::Keep { pointer: &pointer },
             &CancellationToken::new(),
         )
         .await;
@@ -869,6 +959,7 @@ mod tests {
                 replaced: vec![Replacement {
                     old: id('2'),
                     new: id('f'),
+                    deploy: pointer.deploy.clone(),
                 }],
             }
         );

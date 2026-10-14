@@ -14,6 +14,8 @@ use ployz_core::{
     ServingPointer, ServingPointerPublication,
 };
 
+use tokio_util::sync::CancellationToken;
+
 use crate::connect::{Client, ConnectError};
 
 const PUBLISH_TIMEOUT: Duration = Duration::from_secs(10);
@@ -158,14 +160,36 @@ pub(crate) enum Amendment {
     Outdated,
 }
 
+/// Amends `service`'s pointer with `change`, retrying lost compare-and-sets. With
+/// `deploy`, a pointer under any other deploy is `Outdated` and left alone.
+///
+/// # Errors
+///
+/// Cancellation before the guarded write is sent is reported as such. Cancellation after
+/// it was sent is an uncertain outcome: the write may have landed.
 pub(crate) async fn amend_pointer<C: PointerClient>(
     client: &mut C,
     service: &QualifiedService,
     deploy: Option<&DeploymentLogId>,
+    cancellation: &CancellationToken,
     change: impl Fn(&ServingPointer) -> Option<ServingPointer>,
 ) -> Result<Amendment, RpcError> {
-    let mut at = client.pointer_publisher().await?;
-    let Some(mut current) = client.read_pointer_at(&mut at, service).await? else {
+    let before_write = || {
+        unavailable(format!(
+            "cancelled before the Serving Pointer of {service} was written"
+        ))
+    };
+    let mut at = tokio::select! {
+        biased;
+        () = cancellation.cancelled() => return Err(before_write()),
+        at = client.pointer_publisher() => at?,
+    };
+    let read = tokio::select! {
+        biased;
+        () = cancellation.cancelled() => return Err(before_write()),
+        read = client.read_pointer_at(&mut at, service) => read?,
+    };
+    let Some(mut current) = read else {
         return Ok(Amendment::NoPointer);
     };
     for retries in 0..=AMEND_RETRIES {
@@ -175,12 +199,22 @@ pub(crate) async fn amend_pointer<C: PointerClient>(
         let Some(pointer) = change(&current) else {
             return Ok(Amendment::Unchanged);
         };
+        if cancellation.is_cancelled() {
+            return Err(before_write());
+        }
         let request = PublishServingPointerRequest {
             service: service.clone(),
             read: Some(current),
             pointer,
         };
-        match client.publish_pointer_at(&mut at, request).await? {
+        let publication = tokio::select! {
+            biased;
+            () = cancellation.cancelled() => return Err(unavailable(format!(
+                "cancelled after sending the Serving Pointer of {service}; it may have been written"
+            ))),
+            publication = client.publish_pointer_at(&mut at, request) => publication?,
+        };
+        match publication {
             ServingPointerPublication::Published => return Ok(Amendment::Published { retries }),
             ServingPointerPublication::Superseded { current: None } => {
                 return Ok(Amendment::NoPointer);
@@ -199,6 +233,15 @@ pub(crate) async fn amend_pointer<C: PointerClient>(
         details: serde_json::Value::Null,
         cause: Vec::new(),
     })
+}
+
+fn unavailable(message: String) -> RpcError {
+    RpcError {
+        code: ployz_core::RpcErrorCode::Unavailable,
+        message,
+        details: serde_json::Value::Null,
+        cause: Vec::new(),
+    }
 }
 
 /// The Service's Containers in `live`, or `None` when some Machine did not answer, since a
@@ -225,13 +268,18 @@ pub(crate) fn complete_members<E>(
 }
 
 /// `pointer` with `joining` added to its Containers and `leaving` moved to `retiring`,
-/// or `None` when it already holds exactly that.
+/// or `None` when it already holds exactly that. With the complete Container listing in
+/// `listed`, a retiring id it no longer holds is gone and leaves `retiring`.
 pub(crate) fn rotated(
     pointer: &ServingPointer,
     joining: &[ployz_core::ContainerId],
     leaving: &[ployz_core::ContainerId],
+    listed: Option<&[ployz_core::ContainerId]>,
 ) -> Option<ServingPointer> {
     let mut next = pointer.clone();
+    if let Some(listed) = listed {
+        next.retiring.retain(|id| listed.contains(id));
+    }
     next.containers.retain(|id| !leaving.contains(id));
     for id in joining {
         if !next.containers.contains(id) {

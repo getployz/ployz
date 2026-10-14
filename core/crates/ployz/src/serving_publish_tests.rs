@@ -67,9 +67,13 @@ fn service() -> QualifiedService {
 #[tokio::test]
 async fn amending_a_service_with_no_pointer_writes_nothing() {
     let mut fake = FakeRow::default();
-    let amended = amend_pointer(&mut fake, &service(), None, |current| {
-        rotated(current, &[container('2')], &[])
-    })
+    let amended = amend_pointer(
+        &mut fake,
+        &service(),
+        None,
+        &CancellationToken::new(),
+        |current| rotated(current, &[container('2')], &[], None),
+    )
     .await
     .unwrap();
     assert_eq!(amended, Amendment::NoPointer);
@@ -85,9 +89,13 @@ async fn a_lost_amendment_retries_over_the_winner_and_keeps_both_changes() {
         .lock()
         .unwrap()
         .push(pointer('a', &['1', '4'], &[]));
-    let amended = amend_pointer(&mut fake, &service(), None, |current| {
-        rotated(current, &[container('2')], &[container('1')])
-    })
+    let amended = amend_pointer(
+        &mut fake,
+        &service(),
+        None,
+        &CancellationToken::new(),
+        |current| rotated(current, &[container('2')], &[container('1')], None),
+    )
     .await
     .unwrap();
     assert_eq!(amended, Amendment::Published { retries: 1 });
@@ -105,24 +113,110 @@ async fn an_amendment_gives_up_after_three_lost_retries() {
         .iter()
         .map(|id| pointer('a', &[*id], &[]))
         .collect();
-    let error = amend_pointer(&mut fake, &service(), None, |current| {
-        rotated(current, &[container('2')], &[])
-    })
+    let error = amend_pointer(
+        &mut fake,
+        &service(),
+        None,
+        &CancellationToken::new(),
+        |current| rotated(current, &[container('2')], &[], None),
+    )
     .await
     .unwrap_err();
     assert_eq!(error.code, ployz_core::RpcErrorCode::Conflict);
     assert_eq!(*fake.publishes.lock().unwrap(), AMEND_RETRIES + 1);
 }
 
+/// A pointer server that never answers `stalled`.
+struct Stalled {
+    row: FakeRow,
+    publisher: bool,
+}
+
+impl PointerClient for Stalled {
+    async fn pointer_publisher(&mut self) -> Result<MachineTarget, RpcError> {
+        if self.publisher {
+            std::future::pending::<()>().await;
+        }
+        self.row.pointer_publisher().await
+    }
+
+    async fn read_pointer_at(
+        &mut self,
+        _at: &mut MachineTarget,
+        _service: &QualifiedService,
+    ) -> Result<Option<ServingPointer>, RpcError> {
+        std::future::pending().await
+    }
+
+    async fn publish_pointer_at(
+        &mut self,
+        at: &mut MachineTarget,
+        request: PublishServingPointerRequest,
+    ) -> Result<ServingPointerPublication, RpcError> {
+        self.row.publish_pointer_at(at, request).await
+    }
+}
+
+#[tokio::test]
+async fn cancelling_a_pending_publisher_lookup_or_pointer_read_publishes_nothing() {
+    for publisher in [true, false] {
+        let row = FakeRow::default();
+        *row.row.lock().unwrap() = Some(pointer('a', &['1'], &[]));
+        let mut stalled = Stalled {
+            row: row.clone(),
+            publisher,
+        };
+        let (service, cancellation) = (service(), CancellationToken::new());
+        let amending = amend_pointer(&mut stalled, &service, None, &cancellation, |current| {
+            rotated(current, &[container('2')], &[], None)
+        });
+        tokio::pin!(amending);
+        tokio::select! {
+            amended = &mut amending => panic!("returned before cancel: {amended:?}"),
+            () = tokio::task::yield_now() => {}
+        }
+        cancellation.cancel();
+        let error = tokio::time::timeout(Duration::from_secs(1), amending)
+            .await
+            .expect("cancellation returns promptly")
+            .unwrap_err();
+        assert_eq!(error.code, ployz_core::RpcErrorCode::Unavailable);
+        assert!(error.message.contains("cancelled before"), "{error:?}");
+        assert_eq!(*row.publishes.lock().unwrap(), 0);
+        assert_eq!(*row.row.lock().unwrap(), Some(pointer('a', &['1'], &[])));
+    }
+}
+
+#[test]
+fn rotation_with_a_complete_listing_drops_retiring_ids_that_are_gone() {
+    let current = pointer('a', &['1'], &['8', '9']);
+    let listed = [container('1'), container('2'), container('9')];
+    assert_eq!(
+        rotated(
+            &current,
+            &[container('2')],
+            &[container('1')],
+            Some(&listed)
+        ),
+        Some(pointer('a', &['2'], &['9', '1'])),
+        "8 is gone from the listing; 9 still runs and keeps retiring"
+    );
+    assert_eq!(
+        rotated(&current, &[], &[], Some(&[container('1')])),
+        Some(pointer('a', &['1'], &[])),
+        "pruning alone is a change worth publishing"
+    );
+}
+
 #[test]
 fn rotation_joins_retires_and_reports_no_change() {
     let current = pointer('a', &['1', '2'], &['9']);
     assert_eq!(
-        rotated(&current, &[container('3')], &[container('1')]),
+        rotated(&current, &[container('3')], &[container('1')], None),
         Some(pointer('a', &['2', '3'], &['9', '1']))
     );
     assert_eq!(
-        rotated(&current, &[container('2')], &[container('9')]),
+        rotated(&current, &[container('2')], &[container('9')], None),
         None
     );
 }
@@ -271,9 +365,13 @@ mod rpc {
     async fn an_amendment_reads_the_existing_row_and_publishes_over_it() {
         let (mut client, fixture, server) =
             cluster(Some(pointer('a', &['1'], &[])), None, None).await;
-        let amended = amend_pointer(&mut client, &service(), None, |current| {
-            rotated(current, &[container('2')], &[container('1')])
-        })
+        let amended = amend_pointer(
+            &mut client,
+            &service(),
+            None,
+            &CancellationToken::new(),
+            |current| rotated(current, &[container('2')], &[container('1')], None),
+        )
         .await
         .unwrap();
         assert_eq!(amended, Amendment::Published { retries: 0 });
@@ -288,9 +386,13 @@ mod rpc {
     async fn an_amendment_follows_one_refusal_and_publishes_where_it_read() {
         let (mut client, fixture, server) =
             cluster(Some(pointer('a', &['1'], &[])), Some('1'), Some('2')).await;
-        let amended = amend_pointer(&mut client, &service(), None, |current| {
-            rotated(current, &[container('2')], &[])
-        })
+        let amended = amend_pointer(
+            &mut client,
+            &service(),
+            None,
+            &CancellationToken::new(),
+            |current| rotated(current, &[container('2')], &[], None),
+        )
         .await
         .unwrap();
         assert_eq!(amended, Amendment::Published { retries: 0 });

@@ -422,13 +422,18 @@ mod rpc {
 
     use super::*;
 
-    #[tokio::test]
-    async fn a_pointed_global_on_an_ineligible_server_retires_through_its_pointer() {
+    /// Retires `app/a` from an ineligible Server whose pointer row starts as `initial`
+    /// and becomes `published_after_first_read` once the first read has answered.
+    async fn retire_from_ineligible(
+        initial: Option<ServingPointer>,
+        published_after_first_read: Option<ServingPointer>,
+    ) -> (Result<(), RpcError>, Option<ServingPointer>, u32) {
         let mut drained = machine('1', "drained");
         drained.accepts_services = false;
         let service = global_on(&drained, "app", 'a');
         let copy = running_on(&drained, 'a');
-        let row = Arc::new(Mutex::new(Some(pointer('d', &['a'], &[]))));
+        let row = Arc::new(Mutex::new(initial));
+        let published = Arc::new(Mutex::new(published_after_first_read));
         let ensured = Arc::new(Mutex::new(0_u32));
         let observed = drained.clone();
         let shared = row.clone();
@@ -438,6 +443,7 @@ mod rpc {
                 let drained = observed.clone();
                 let copy = copy.clone();
                 let row = shared.clone();
+                let published = published.clone();
                 let removals = removals.clone();
                 async move {
                     #[expect(
@@ -489,9 +495,12 @@ mod rpc {
                             })
                         }
                         RpcRequestBody::ReadServingPointer(_) => {
-                            RpcResponse::from(ServingPointerRead {
-                                pointer: row.lock().unwrap().clone(),
-                            })
+                            let mut row = row.lock().unwrap();
+                            let read = row.clone();
+                            if let Some(first) = published.lock().unwrap().take() {
+                                *row = Some(first);
+                            }
+                            RpcResponse::from(ServingPointerRead { pointer: read })
                         }
                         RpcRequestBody::PublishServingPointer(request) => {
                             let mut row = row.lock().unwrap();
@@ -520,18 +529,30 @@ mod rpc {
             })
             .await;
         let slot = service.observed_global_slot().unwrap();
-        client
+        let retired = client
             .retire_slot(&drained.id, &slot, &CancellationToken::new())
-            .await
-            .unwrap();
-        assert_eq!(
-            *row.lock().unwrap(),
-            Some(ServingPointer {
-                containers: Vec::new(),
-                ..pointer('d', &[], &['a'])
-            })
-        );
-        assert_eq!(*ensured.lock().unwrap(), 0);
+            .await;
         server.abort();
+        let row = row.lock().unwrap().clone();
+        let ensured = *ensured.lock().unwrap();
+        (retired, row, ensured)
+    }
+
+    #[tokio::test]
+    async fn a_pointed_global_on_an_ineligible_server_retires_through_its_pointer() {
+        let (retired, row, ensured) =
+            retire_from_ineligible(Some(pointer('d', &['a'], &[])), None).await;
+        retired.unwrap();
+        assert_eq!(row, Some(pointer('d', &[], &['a'])));
+        assert_eq!(ensured, 0);
+    }
+
+    #[tokio::test]
+    async fn a_first_pointer_published_before_removal_retires_the_global_through_it() {
+        let (retired, row, ensured) =
+            retire_from_ineligible(None, Some(pointer('d', &['a'], &[]))).await;
+        retired.unwrap();
+        assert_eq!(row, Some(pointer('d', &[], &['a'])));
+        assert_eq!(ensured, 0, "the pointed copy is never removed directly");
     }
 }

@@ -74,9 +74,34 @@ impl RetireClient for Client {
                 )
                 .await?
                 {
+                    return Ok(());
+                }
+                // A first pointer published since that read keeps the copies for its
+                // retirement. One landing after this read is lost to the removal.
+                if cancellable(cancellation, self.read_pointer(identity))
+                    .await?
+                    .is_none()
+                {
+                    return remove_slot(self, machine_id, &identity.namespace, &identity.name)
+                        .await;
+                }
+                if retire_pointed(
+                    self,
+                    machine_id,
+                    identity,
+                    POINTED_RETIRE_WAIT,
+                    cancellation,
+                )
+                .await?
+                {
                     Ok(())
                 } else {
-                    remove_slot(self, machine_id, &identity.namespace, &identity.name).await
+                    Err(RpcError {
+                        code: RpcErrorCode::Conflict,
+                        message: "its Serving Pointer changed while it retired".into(),
+                        details: serde_json::Value::Null,
+                        cause: Vec::new(),
+                    })
                 }
             }
             ServicePlacementEligibility::Eligible => Err(RpcError {
@@ -139,8 +164,8 @@ pub(crate) async fn retire_pointed<C: CopyLister>(
     if cancellation.is_cancelled() {
         return Err(cancelled());
     }
-    if amend_pointer(client, service, None, |current| {
-        rotated(current, &[], &copies)
+    if amend_pointer(client, service, None, cancellation, |current| {
+        rotated(current, &[], &copies, None)
     })
     .await?
         == Amendment::NoPointer
