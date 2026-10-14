@@ -1224,6 +1224,24 @@ fn a_keyed_retry_of_the_latest_replays_after_it_becomes_the_latest() {
     let again = again.ok();
     assert_eq!(again["deployment"], 2, "{again}");
     assert_eq!(again["saved_revision"], retried["saved_revision"]);
+
+    store
+        .write(
+            &who(),
+            &CreateEnvironment {
+                id: EnvironmentId::parse("00000000-0000-4000-8000-000000000006").unwrap(),
+                project: None,
+                name: EnvironmentName::parse("preview").unwrap(),
+            },
+        )
+        .unwrap();
+    let elsewhere = json!({ "environment": "preview", "request_key": "retry-latest-1" });
+    let elsewhere = call(&store, "deployment_retry", elsewhere, "retry-3").refused();
+    assert_eq!(
+        elsewhere.code,
+        RpcErrorCode::NotFound,
+        "not production's retry"
+    );
 }
 
 #[test]

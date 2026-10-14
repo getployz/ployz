@@ -371,12 +371,21 @@ impl Tool for DeploymentRetry {
                 ];
                 let mut answers = cx.read(asks)?.into_iter();
                 let replay = answers.next();
-                if !matches!(&replay, Some(Err(error)) if error.code == RpcErrorCode::NotFound) {
-                    let recorded = cx.view::<DeploymentQuery>(replay)?;
-                    let environment = &recorded.environment;
-                    return Ok(retried(cx, environment, &recorded.deployment, None));
+                let page = cx.view::<DeploymentsQuery>(answers.next())?;
+                let recorded = match replay {
+                    Some(Err(error)) if error.code == RpcErrorCode::NotFound => None,
+                    answer => Some(cx.view::<DeploymentQuery>(answer)?.deployment),
+                };
+                // The reads run together, so the original can land between them
+                // and show up only as the latest.
+                let recorded = recorded
+                    .or_else(|| page.deployments.first().cloned())
+                    .filter(|recorded| recorded.id == id)
+                    .filter(|recorded| recorded.environment_id == page.environment.id);
+                if let Some(recorded) = recorded {
+                    return Ok(retried(cx, &page.environment, &recorded, None));
                 }
-                latest(cx.view::<DeploymentsQuery>(answers.next())?)?
+                latest(page)?
             }
         };
         let query = NumberedDeploymentQuery {
