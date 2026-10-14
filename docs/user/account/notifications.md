@@ -16,8 +16,8 @@ Each kind of email has a row, set to **Email** or **None**:
 Everything starts at **Email**. A change saves as you pick it.
 
 Ployz Cloud sends uptime incident emails today. Your choices for the other kinds apply once it
-sends them. An uptime email that couldn't go out within an hour of the incident is skipped,
-not sent late.
+sends them. An uptime email that couldn't go out within an hour of the check going down or
+recovering is skipped, not sent late.
 
 ## Turn an email off from the email
 
