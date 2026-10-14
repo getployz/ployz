@@ -117,6 +117,7 @@ class ClusterModel:
         self.holds = []
         self.tripped = None
         self.disarm_fails = False
+        self.arm_fails = set()
         self.just_ended = 0
         self.calls = 0
         self.unclaimed = set()
@@ -297,6 +298,8 @@ class ClusterModel:
         """The fault file write: the daemons read it on their next check, so arming or disarming needs no restart."""
         value = (found := re.search(r"printf '%s\\n' '?([^'\s]+)'? >", script)) and found[1]
         if value is None and self.disarm_fails:
+            return 255, ""
+        if value and machine in self.arm_fails:
             return 255, ""
         held = self.holder() if self.clock else None
         if value and held:
@@ -1302,6 +1305,17 @@ class VolumeMoveTests(unittest.TestCase):
             row = checks.wait_run(checks.start_op("move", "machine-2"))
         self.assertEqual(row["state"], "done")
         self.assertEqual([wait["holder"] for wait in checks.busy_waits], ["sync-a"])
+
+    def test_a_fault_write_that_fails_while_arming_fails_the_case_before_its_op(self):
+        # Arming writes the fault file and restarts nothing, so the write's exit is the whole arm.
+        checks, model = self.checks()
+        model.arm_fails = {"machine-1"}
+        with redirect_stdout(io.StringIO()):
+            summary = checks.run_all([volume_move.KILLS[0]])
+        result = summary["cases"][0]
+        self.assertFalse(result["passed"], result)
+        self.assertTrue(any("arming the fault failed on machine-1" in failure for failure in result["failures"]), result)
+        self.assertEqual([run for run in model.runs if run["kind"] == "move"], [])
 
     def test_a_failed_disarm_stops_the_run_and_still_writes_the_summary(self):
         checks, model = self.checks()
