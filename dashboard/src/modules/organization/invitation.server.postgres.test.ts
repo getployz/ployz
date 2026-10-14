@@ -9,7 +9,9 @@ import { invitation, member, user } from "#/modules/identity/tables";
 import { InngestClient } from "#/modules/inngest/client";
 import { acceptInvite, readInvite, revokeInvite } from "#/modules/organization/invitation.server";
 import { orgInviteLs, orgInviteRevoke, orgLeave, orgMemberInvite, orgMemberRm, orgMemberRole } from "#/modules/organization/members.commands.server";
+import { getOrganizationState } from "#/modules/organization/organization-state.server";
 import { organization } from "#/modules/organization/tables";
+import { Polar } from "#/modules/billing/polar-provider.server";
 import { Auth, type AuthService } from "#/server/auth.server";
 import { AppConfig } from "#/server/config.server";
 import type { Database } from "#/server/database.server";
@@ -174,10 +176,12 @@ describe("invite links", () => {
 });
 
 describe("member commands", () => {
-  it("refuses a member who invites, changes a role, or removes someone", async () => {
+  it("refuses a member who invites, lists pending invites, changes a role, or removes someone", async () => {
     const { link } = await invite("ada", {});
     await run(acceptInvite(tokenOf(link), ids.eve));
     expect(await roleOf(ids.eve)).toBe("member");
+    await invite("ada", { email: "frank@example.test" });
+    expect(await as("eve", "org_invite_ls", {})).toEqual({ ok: false, refusal: expect.objectContaining({ code: "forbidden" }) });
     expect(await as("eve", "org_member_invite", {})).toMatchObject({ ok: false, refusal: { code: "forbidden" } });
     expect(await as("eve", "org_member_role", { member: "carol@example.test", role: "member" })).toMatchObject({ ok: false, refusal: { code: "forbidden" } });
     expect(await as("eve", "org_member_rm", { member: "Carol" })).toMatchObject({ ok: false, refusal: { code: "forbidden" } });
@@ -218,5 +222,18 @@ describe("member commands", () => {
     await harness.db.update(user).set({ name: "dan@example.test" }).where(eq(user.id, ids.bob));
     expect(await as("carol", "org_member_rm", { member: "dan@example.test" })).toMatchObject({ ok: false, refusal: { code: "not_found" } });
     expect(await roleOf(ids.bob)).toBe("admin");
+  });
+});
+
+describe("a former member", () => {
+  const stateOf = (who: keyof typeof ids, slug: string) =>
+    run(getOrganizationState({ userId: ids[who] }, slug).pipe(Effect.provideService(Polar, { mode: "self_hosted" })));
+
+  it("learns they are no longer a member of an Organization they joined, while anyone else learns nothing", async () => {
+    expect(await roleOf(ids.eve)).toBeNull();
+    expect(await stateOf("eve", "acme")).toMatchObject({ formerOrganization: "Acme" });
+    expect(await stateOf("dan", "acme")).toMatchObject({ formerOrganization: null });
+    expect(await stateOf("eve", "nowhere")).toMatchObject({ formerOrganization: null });
+    expect(await stateOf("carol", "acme")).toMatchObject({ formerOrganization: null, activeOrganization: { slug: "acme" } });
   });
 });

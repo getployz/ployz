@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "revision": "6378bfbf4ebd",
+  "revision": "ea5f464b3819",
   "commands": [
     {
       "name": "server_upgrade_policy_show",
@@ -517,7 +517,7 @@
           "email": {
             "type": "string",
             "minLength": 1,
-            "description": "Who the link is for. Cloud emails it there when it has a mail server. Anyone with the link can use it"
+            "description": "Who the link is for. Cloud emails it there when email is on. Anyone with the link can use it"
           },
           "role": {
             "type": "string",

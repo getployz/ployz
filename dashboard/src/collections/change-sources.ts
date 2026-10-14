@@ -32,6 +32,7 @@ export const changeNameSources = {
   server_drain: ["server_drain_attempt"],
   volume_run: ["volume_run"],
   volume_placement: ["volume_placement"],
+  members: ["member", "invitation"],
   ...storeViewSources,
 } satisfies Record<ChangeName, readonly [ChangeSource, ...ChangeSource[]]>;
 

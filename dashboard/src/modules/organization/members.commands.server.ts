@@ -42,7 +42,7 @@ const Removed = Schema.Struct({ email: Schema.String });
 const Revoked = Schema.Struct({ id: Schema.String, email: Schema.NullOr(Schema.String) });
 const Left = Schema.Struct({ organization: Schema.String });
 
-const manages = (caller: Caller) => caller.role === "owner" || caller.role === "admin";
+export const manages = (caller: Caller) => caller.role === "owner" || caller.role === "admin";
 
 const conflictRefused = (conflict: Conflict) => Effect.succeed(refused("conflict", conflict.message));
 
@@ -93,7 +93,7 @@ export const orgMemberInvite = defineCommand({
   typed: null,
   positional: [],
   input: Schema.Struct({
-    email: Schema.optionalKey(Schema.NonEmptyString.annotate({ description: "Who the link is for. Cloud emails it there when it has a mail server. Anyone with the link can use it" })),
+    email: Schema.optionalKey(Schema.NonEmptyString.annotate({ description: "Who the link is for. Cloud emails it there when email is on. Anyone with the link can use it" })),
     role: Schema.optionalKey(InviteRole.annotate({ description: "The role it grants. member when left out" })),
   }),
   output: Invited,
@@ -108,8 +108,8 @@ export const orgMemberInvite = defineCommand({
       ok: true,
       output: { id: invite.id, email: invite.email, role: invite.role, link, expires_at: invite.expiresAt.toISOString(), emailed_to: emailedTo },
       message: emailedTo === null
-        ? "Send this link to the person you are inviting. It is shown only once."
-        : `Emailed to ${emailedTo}. The link is also shown here once.`,
+        ? "Send this link to the person you're inviting. It works once and lasts 7 days."
+        : `Emailed to ${emailedTo}. The link works once and lasts 7 days.`,
     } as const;
   }).pipe(Effect.catchTag("Conflict", conflictRefused)),
 });
@@ -174,7 +174,7 @@ export const orgInviteLs = defineCommand({
   input: Schema.Struct({}),
   output: Schema.Array(Invite),
   render: "table",
-  run: (caller) => listPendingInvites(caller.organization.id).pipe(Effect.map((invites) => ({
+  run: (caller) => !manages(caller) ? Effect.succeed(refused("forbidden", MANAGE)) : listPendingInvites(caller.organization.id).pipe(Effect.map((invites) => ({
     ok: true,
     output: invites.map((row) => ({
       id: row.id,

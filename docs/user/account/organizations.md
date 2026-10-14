@@ -21,7 +21,8 @@ In the sidebar, click **Organization** for its settings:
 - **General**: your organization's **Domain**, which your services' free addresses live under.
   It appears with your first deploy. Below it, **Allow support access**, and **Forget all
   servers** for when your servers were deleted.
-- **Members**: who's in the organization, their roles, and pending invites. See
+- **Members**: who's in the organization, their roles, and, for owners and admins, pending
+  invites. See
   [Invite people](#invite-people).
 - **Builds**: where builds run. See [Where builds run](../builds/where-builds-run.md).
 - **Billing**: your plan.
@@ -39,20 +40,22 @@ Everyone in an organization has one role:
   anyone, turn support access on or off, or forget servers.
 
 To invite someone, go to **Organization → Members** and click **Invite**. Pick **Member** or
-**Admin**, add their email, and click **Make link**. Ployz Cloud emails the link to that address,
-and the dialog tells you where it went. A self-hosted Cloud without a mail server, or an invite
-with no email, sends nothing, so copy the link from the dialog and send it to them yourself.
-Whoever opens the link, signs in and clicks **Join** joins with that role, so share it only with
-the person you mean. A link works once and expires after 7 days. Pending invites list who sent
-them and when they expire. Click **Revoke** to cancel one.
+**Admin**, add their email, and click **Make link**. When Ployz Cloud has email on, it emails the
+link to that address, and the dialog tells you where it went. A self-hosted Cloud without email,
+or an invite with no email, sends nothing, so copy the link from the dialog and send it to them
+yourself. Whoever opens the link, signs in and clicks **Join** joins with that role, so share it
+only with the person you mean. A link works once and expires after 7 days. Owners and admins see
+pending invites, who sent them and when they expire. Click **Revoke** to cancel one. The list
+updates as soon as someone joins.
 
 Owners and admins change a role with the select beside each person, and click **Remove** to take
 someone out. To leave an organization yourself, click **Leave** on your own row. An organization
 always keeps an owner, so its last owner can't leave or step down until they make someone else
 an owner.
 
-When someone leaves or is removed, they lose the organization at once. Their organization tokens
-stop working, and their signed-in CLIs lose access to its servers.
+When someone leaves or is removed, they lose the organization at once: its dashboard, their
+organization tokens, and their signed-in CLIs' access to its servers. If they joined by invite and
+open it again, it says they're no longer a member.
 
 ## Let Ployz support in
 

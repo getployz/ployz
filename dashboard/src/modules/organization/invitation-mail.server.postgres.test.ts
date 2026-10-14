@@ -80,7 +80,7 @@ describe("invite email", () => {
   it("queues one mail to the labelled address, keyed by the invitation, carrying the link", async () => {
     const invited = await invite({ email: "Bob@Example.test", role: "admin" }, true);
     expect(invited.emailed_to).toBe("bob@example.test");
-    expect(invited.message).toBe("Emailed to bob@example.test. The link is also shown here once.");
+    expect(invited.message).toBe("Emailed to bob@example.test. The link works once and lasts 7 days.");
     expect(send).toHaveBeenCalledTimes(1);
     const event = send.mock.calls[0]?.[0] as { id: string; name: string; data: { to: string; subject: string; text: string; html: string } };
     expect(event.id).toBe(`mail-invitation-${invited.id}`);
@@ -97,7 +97,7 @@ describe("invite email", () => {
   it("queues nothing when Cloud has no mail server, and says to send the link", async () => {
     const invited = await invite({ email: "carol@example.test" }, false);
     expect(invited.emailed_to).toBeNull();
-    expect(invited.message).toBe("Send this link to the person you are inviting. It is shown only once.");
+    expect(invited.message).toBe("Send this link to the person you're inviting. It works once and lasts 7 days.");
     expect(send).not.toHaveBeenCalled();
   });
 

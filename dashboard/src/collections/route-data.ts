@@ -22,8 +22,8 @@ function scopeOf(context: RouteDataContext): CollectionScope {
 }
 
 export async function requireOrganization(context: RouteDataContext, organizationSlug: string) {
-  const { activeOrganization } = await context.queryClient.ensureQueryData(organizationStateQueryOptions(organizationSlug));
-  if (activeOrganization?.slug !== organizationSlug) throw notFound();
+  const { activeOrganization, formerOrganization } = await context.queryClient.ensureQueryData(organizationStateQueryOptions(organizationSlug));
+  if (activeOrganization?.slug !== organizationSlug) throw notFound(formerOrganization === null ? undefined : { data: { formerOrganization } });
   return activeOrganization;
 }
 
