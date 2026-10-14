@@ -105,14 +105,12 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
     : refuse("server_lacks", member.lack);
   const midRun = () => refuse("volume_switching", `${name} is mid-run; ployz volume release ${name} stops it`);
   const unfinishedCuts = () => {
-    // As `oldCopy` reads roots, the cut at the highest epoch began last. Restore needs it to hold a snapshot.
+    // As `oldCopy` reads roots, the cut at the highest epoch began last. A release resumes one cut, mirrors or not, from its snapshot.
     const [newest, next] = [...cutting].sort((a, b) => epochOf(b) - epochOf(a));
     const keep = newest !== undefined && next !== undefined && epochOf(newest) > epochOf(next) && newestGuid(newest.view.copy) !== null ? newest : undefined;
     const servers = (each: readonly AnsweredMember[]) => each.map((member) => member.machine.name).join(" and ");
-    const remedy = keep === undefined
-      ? `server rm all but one, then ployz volume restore ${name} --from the one left`
-      : `server rm ${servers(cutting.filter((member) => member !== keep))}, then ployz volume restore ${name} --from ${keep.machine.name}`;
-    return refuse("volume_switching", `${name} has unfinished cuts on ${servers(cutting)}, so release cannot pick a writer; ${remedy}`);
+    const remove = keep === undefined ? "all but one" : servers(cutting.filter((member) => member !== keep));
+    return refuse("volume_switching", `${name} has unfinished cuts on ${servers(cutting)}, so release cannot pick a writer; server rm ${remove}, then ployz volume release ${name}`);
   };
 
   if (input.kind === "delete_mirror") {
