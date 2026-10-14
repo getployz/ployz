@@ -184,12 +184,14 @@ newest cut and names a `ployz server rm` line for each server whose copy it can'
 release or move to run.
 
 A move that stopped after `web-2` was told to start your service is finished on `web-2`, and the
-old server's container goes. Until that finish, a move, a mirror, a sync, a seed, and removing the
-mirror on `web-2` or every mirror of the volume are refused:
+old server's container goes. Until that finish, a move, a mirror, a full sync, a seed, and
+removing the mirror on `web-2` or every mirror of the volume are refused:
 
 ```
 data finishes on web-2; ployz volume release data finishes it now
 ```
+
+A plain `volume sync` starts no run, so it isn't refused this way. It prints what it did, as above.
 
 Renaming `web-2` changes only the name in that message. Its mirror stays protected under the new name.
 While Cloud cannot read your servers, `mirror rm` on the volume is refused until it can.
