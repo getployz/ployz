@@ -280,7 +280,7 @@ class Registry(unittest.TestCase):
                  contextlib.redirect_stderr(io.StringIO()):
                 self.assertEqual(cluster.host_runs(), [dict(id="incus-run", provider="incus")])
 
-    def test_prepare_spares_a_bake_a_live_run_uses(self):
+    def test_prepare_spares_a_bake_a_live_run_uses_and_forgets_the_pruned_ones_fingerprint(self):
         bakes = [f"{boat.BAKED}{day}" + "0" * 8 for day in ["10", "11", "12", "13"]]
         ledger = boat.REGISTRY / "bakes.ledger"
         boat.write(ledger, [*bakes, bakes[2]])
@@ -298,6 +298,8 @@ class Registry(unittest.TestCase):
                 return result(0, {})
             raise RuntimeError("stop before baking")
         self.provider.boat = fake
+        for bake in bakes[:2]:
+            boat.write(boat.fingerprints(bake), {"containers": []})
         with unittest.mock.patch.object(boat, "BAKES", ledger), \
              unittest.mock.patch.object(boat, "boat_json", return_value=dict(named=named)), \
              unittest.mock.patch.object(boat, "bootstrap", return_value="key"), \
@@ -308,6 +310,7 @@ class Registry(unittest.TestCase):
             self.provider.prepare()
         self.assertEqual(removed, [bakes[1]])
         self.assertEqual(boat.read(ledger), [bakes[0], bakes[2], bakes[3], self.run["image"]])
+        self.assertEqual([boat.fingerprints(bake).exists() for bake in bakes[:2]], [True, False])
 
     def test_a_failed_delete_still_deletes_the_rest_then_fails(self):
         self.registered(**{"machine-1": dict(id="bx_a", state="running"), "machine-2": dict(id="bx_b", state="running")})
@@ -546,6 +549,52 @@ class Pool(unittest.TestCase):
             rows = boat.reap_pool(True, True)
         self.assertEqual([(row["id"], row["action"]) for row in rows], [("bx_a", "failed"), ("bx_b", "removed")])
         self.assertEqual([entry["id"] for entry in boat.read(boat.POOL)], ["bx_a"])
+
+    def test_the_first_fresh_clone_saves_its_fingerprint_and_drops_the_bakes_older_ones(self):
+        boat.write(boat.BAKES, ["bake-a"])
+        old = [boat.REGISTRY / "bake-a.fingerprint", boat.REGISTRY / "bake-a.0123456789.fingerprint"]
+        kept = [boat.REGISTRY / name for name in ["bake-ab.0123456789.fingerprint", "bake-a.notes", "bake-a.manual.fingerprint"]]
+        for path in old + kept:
+            path.write_text("{}")
+        provider = self.provider("machine-1")
+        boat.write(provider.registry, dict(run="run1", sandboxes={}))
+        provider.run["corrosion"] = "corrosion"
+        provider.launch = lambda node: provider.mark(node["name"], id="bx_a", state="running") or "bx_a"
+        info = dict(sandbox=dict(ip="2001:db8:0:1::1", sshEndpoint="203.0.113.1:22"))
+        provider.boat = lambda *args, **kwargs: subprocess.CompletedProcess([], 0, json.dumps(info).encode(), b"")
+        provider.wait_agent = provider.exec = lambda *args, **kwargs: None
+        provider.fingerprint = lambda node: {"containers": []}
+        provider.start(dict(name="machine-1"))
+        self.assertEqual(boat.read(boat.fingerprints("bake-a")), {"containers": []})
+        self.assertEqual([path.exists() for path in old + kept], [False, False, True, True, True])
+
+    def test_the_ledger_keeps_what_one_lock_saves_and_is_no_run_record(self):
+        with boat.pool() as entries:
+            entries.append(parked("bx_a", 1, at=5))
+        with boat.pool() as entries:
+            self.assertEqual(entries, [parked("bx_a", 1, at=5)])
+            entries.clear()
+        self.assertEqual(boat.read(boat.POOL), [])
+        with boat.pool() as entries:
+            entries.append(parked("bx_b", 2))
+        self.assertEqual(list(boat.REGISTRY.glob("*.json")), [])
+        self.assertEqual(boat.pooled(), {"bake-a": 1})
+        self.assertEqual(boat.images_in_use(), {"bake-a"})
+
+    def test_preflight_budgets_only_the_machines_the_pool_cannot_cover(self):
+        boat.write(boat.BAKES, ["bake-a", "bake-b"])
+        boat.write(boat.POOL, [parked("bx_a", 1), parked("bx_b", 2), parked("bx_c", 2), parked("bx_d", 3, image="bake-b")])
+        answers = dict(list=dict(sandboxes=[dict(id=sandbox, state="ready") for sandbox in ["bx_a", "bx_b", "bx_c", "bx_d"]]),
+                       limits=dict(maxActiveSandboxes=100, activeSandboxes=0, starts=dict(
+                           minute=dict(remaining=1), hour=dict(remaining=60), day=dict(remaining=200), unlimited=False)))
+        with unittest.mock.patch.object(boat, "boat_json", lambda *args: answers[args[0]]), \
+                unittest.mock.patch.object(boat, "corrosion_image", lambda core: "corrosion"), \
+                unittest.mock.patch.object(boat, "bake_name", lambda corrosion: "bake-a"):
+            boat.preflight(3, Path("."))
+            with self.assertRaisesRegex(RuntimeError, "Starts this minute: need up to 2, 1 left"):
+                boat.preflight(4, Path("."))
+            with unittest.mock.patch.object(boat, "POOL_SIZE", 0), self.assertRaisesRegex(RuntimeError, "need up to 3, 1 left"):
+                boat.preflight(3, Path("."))
 
     def test_reap_takes_stopped_gone_and_retired_bakes_and_all_under_force(self):
         entries = [parked("bx_up", 1), parked("bx_stopped", 2), parked("bx_gone", 3), parked("bx_old", 4, image="bake-c"),

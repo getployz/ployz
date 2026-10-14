@@ -414,6 +414,14 @@ def retire(dead, delete):
     return results
 
 
+def forget_fingerprints(image, keep=None):
+    """Remove every fingerprint of `image` that fingerprints() named under any key, except `keep`."""
+    saved = re.compile(re.escape(image) + r"(\.[0-9a-f]{10})?\.fingerprint")
+    for path in REGISTRY.glob(f"{image}.*fingerprint"):
+        if path != keep and saved.fullmatch(path.name):
+            path.unlink(missing_ok=True)
+
+
 def fingerprint(text):
     """FINGERPRINT's output by section, without hold container names, ephemeral ports, or pids."""
     fields, current = {}, None
@@ -717,6 +725,7 @@ if [ -n "$(ss -Hlun 'sport = :51820')" ]; then echo "UDP port 51820 is taken" >&
             captured = self.fingerprint(node)
             if "ssh" not in captured:
                 write(fingerprints(self.run["image"]), captured)
+                forget_fingerprints(self.run["image"], keep=fingerprints(self.run["image"]))
 
     def install_key(self, node, sandbox):
         key = (self.private / "id_ed25519.pub").read_text().strip()
@@ -971,6 +980,7 @@ systemctl enable --now {PLOYZ_UNITS} $observe
             for name in stale_bakes(named, self.run["image"], ours, images_in_use()):
                 if not self.boat("snapshot", "rm", name, check=False).returncode:
                     ours.remove(name)
+                    forget_fingerprints(name)
             # The name hashes this host's bootstrap key, so it is ours even if the save outlives a timeout here.
             write(BAKES, list(dict.fromkeys([*ours, self.run["image"]])))
             print(f"Baking Boat snapshot {self.run['image']} (first run of this recipe only).", file=sys.stderr)
