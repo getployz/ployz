@@ -33,8 +33,8 @@ pub use status::{ServiceStatus, service_status};
 pub use step::{
     AcceptedLoss, Act, Action, Answer, Ask, AttemptId, BodyDigest, CloudQuery, DashboardPage, Fix,
     Freshness, Gate, LogsQuery, MetricsQuery, MetricsSince, MetricsSubject, OperationsQuery,
-    RequestKey, ServerName, ServerRef, ServiceVerb, Source, Step, Subject, Timestamp, VolumeRun,
-    Write, WriteSlot,
+    RequestKey, ServerLogsQuery, ServerName, ServerRef, ServiceVerb, Source, Step, Subject,
+    Timestamp, VolumeRun, Write, WriteSlot,
 };
 
 use machine::{Entry, entry};
@@ -49,6 +49,7 @@ pub(crate) const TOOLS: &[Entry] = &[
     entry::<service::ServiceUpdate>(),
     entry::<service::ServiceRename>(),
     entry::<service::ServiceRemove>(),
+    entry::<domain::DomainCheck>(),
     entry::<domain::DomainAdd>(),
     entry::<domain::DomainUpdate>(),
     entry::<domain::DomainRemove>(),
@@ -73,6 +74,7 @@ pub(crate) const TOOLS: &[Entry] = &[
     entry::<github::GithubLs>(),
     entry::<github::GithubConnect>(),
     entry::<server::ServerShow>(),
+    entry::<server::ServerLogs>(),
     entry::<metrics::ServerMetrics>(),
     entry::<runtime::ServiceState>(),
     entry::<runtime::ServiceLogs>(),

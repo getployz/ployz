@@ -1,5 +1,5 @@
-//! Tools on a Service's public domains: add one, change its prefix or port,
-//! remove it.
+//! Tools on a Service's public domains: check one, add one, change its prefix
+//! or port, remove it.
 
 use ployz_core::{DomainPrefix, ServiceName};
 use schemars::JsonSchema;
@@ -10,8 +10,9 @@ use super::machine::{Cx, Stop, Tool, at, stale};
 use super::refusal::Refusal;
 use crate::catalog::NODE_NAME;
 use crate::{
-    AddDomain, Domain, DomainAction, DomainName, DomainRow, DomainStatus, DomainsQuery,
-    DomainsView, EnvironmentName, Hostname, ProjectName, RemoveDomain, SetGeneratedDomain,
+    AddDomain, Domain, DomainAction, DomainName, DomainQuery, DomainRow, DomainStatus,
+    DomainsQuery, DomainsView, EnvironmentName, Hostname, ProjectName, RemoveDomain,
+    SetGeneratedDomain,
 };
 
 const HOSTNAME: &str = "^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\\.)+[A-Za-z]{2,63}$";
@@ -165,6 +166,44 @@ impl Tool for DomainAdd {
             "domain": domain(written),
             "dns": dns,
             "free_prefix": added.free_prefix,
+        }))
+    }
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DomainCheck {
+    /// The domain, by hostname or a generated domain's prefix.
+    #[schemars(length(min = 1), example = &"app.example.com")]
+    domain: String,
+    #[serde(default)]
+    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
+    project: Option<ProjectName>,
+    #[serde(default)]
+    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
+    environment: Option<EnvironmentName>,
+}
+
+impl Tool for DomainCheck {
+    const NAME: &'static str = "domain_check";
+    const DESCRIPTION: &'static str =
+        "Check a domain now: its status, why, and DNS records still to create.";
+    const READ_ONLY: bool = true;
+
+    fn example() -> Value {
+        json!({ "domain": "app.example.com" })
+    }
+
+    fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
+        let environment = cx.scope(self.project.as_ref(), self.environment.as_ref());
+        let view = cx.one(&DomainQuery {
+            environment,
+            domain: self.domain,
+        })?;
+        Ok(json!({
+            "at": at(&view.environment),
+            "service": view.domain.domain.service,
+            "domain": row(&view.domain),
         }))
     }
 }

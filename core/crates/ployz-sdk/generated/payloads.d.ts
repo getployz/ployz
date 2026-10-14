@@ -449,7 +449,7 @@ conclusion: CheckConclusion | null,
  */
 updated: GithubTimestamp, };
 
-export type CloudQuery = { "query": "github_tree" } & GithubTreeQuery | { "query": "github_file" } & GithubFileQuery | { "query": "github_connection" } | { "query": "github_branches", repository: string, } | { "query": "servers", only: MachineName | null, } | { "query": "containers", namespace: Namespace, service: ServiceName | null, } | { "query": "logs" } & LogsQuery | { "query": "metrics" } & MetricsQuery | { "query": "copies", namespace: Namespace, volume: VolumeName | null, } | { "query": "operations" } & OperationsQuery;
+export type CloudQuery = { "query": "github_tree" } & GithubTreeQuery | { "query": "github_file" } & GithubFileQuery | { "query": "github_connection" } | { "query": "github_branches", repository: string, } | { "query": "servers", only: MachineName | null, } | { "query": "containers", namespace: Namespace, service: ServiceName | null, } | { "query": "logs" } & LogsQuery | { "query": "server_logs" } & ServerLogsQuery | { "query": "metrics" } & MetricsQuery | { "query": "copies", namespace: Namespace, volume: VolumeName | null, } | { "query": "operations" } & OperationsQuery;
 
 export type ClusterDomain = { name: Hostname, status: ClusterDomainStatus, };
 
@@ -3686,6 +3686,8 @@ export type SeedVolumeRequest = { name: DockerVolumeName, into: DockerVolumeName
 export type SelectedEndpoint = string;
 
 export type ServerLog = { server: MachineName, text: LogText, };
+
+export type ServerLogsQuery = { process: MachineLogService, server: ServerRef | null, lines: LineCap, since: { secs: number, nanos: number } | null, };
 
 export type ServerRef = { machine: MachineId, name: MachineName, };
 

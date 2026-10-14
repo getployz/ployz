@@ -133,6 +133,12 @@ const ask = Effect.fn("CallCloud.ask")(function* (caller: Caller, query: CloudQu
         return refusal("forbidden", "This Organization doesn't show its container logs to Ployz support.");
       }
       return yield* runtimeAsk(organizationId, query);
+    case "server_logs":
+      // The support logs switch promises only Container output, so it never opens a Server's own logs.
+      if (caller.support !== null) {
+        return refusal("forbidden", "Ployz support can't read an Organization's Server logs.");
+      }
+      return yield* runtimeAsk(organizationId, query);
   }
 });
 
