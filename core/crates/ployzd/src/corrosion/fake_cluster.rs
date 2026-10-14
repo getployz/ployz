@@ -340,6 +340,11 @@ fn execute(kv: &Mutex<ClusterKv>, statements: Vec<Statement>) -> Bytes {
                 );
                 let _ = kv.machine_changes.send(());
             }
+            query
+                if query.starts_with("INSERT INTO cluster (key, value) VALUES ('network', ?)") =>
+            {
+                text_param(&statement.params, 0).clone_into(&mut kv.network);
+            }
             query if query.starts_with("INSERT INTO volumes (machine_id, name, volume)") => {
                 kv.volumes.insert(
                     (

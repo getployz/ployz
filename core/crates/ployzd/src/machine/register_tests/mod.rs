@@ -197,7 +197,7 @@ async fn replayed_enroll_republishes_runtime_over_a_register_row() {
     };
     let (entry_dir, entry_store, founder) = open_store("ployzd-register-republish");
     replicated.publish_local_machine(&founder).await.unwrap();
-    let entry = LocalMachine::new(entry_store).with_cluster(cluster());
+    let entry = LocalMachine::new(entry_store.clone()).with_cluster(cluster());
 
     let target_dir = std::env::temp_dir().join(format!(
         "ployzd-register-republish-target-{}",
@@ -221,12 +221,29 @@ async fn replayed_enroll_republishes_runtime_over_a_register_row() {
     let shutdown = tokio_util::sync::CancellationToken::new();
     let view = MachineView::start(replicated.clone(), shutdown.clone());
     let publisher = tokio::spawn(run_machine_publisher(
-        Some(replicated.clone()),
-        Some(view.clone()),
+        Some((replicated.clone(), view.clone())),
         target_store,
         tokio::sync::watch::channel(0).1,
         shutdown.clone(),
     ));
+    // The founder publishes the Cluster network; a Machines view change for
+    // another Machine's row must not make it write again.
+    let entry_publisher = tokio::spawn(run_machine_publisher(
+        Some((replicated.clone(), view.clone())),
+        entry_store,
+        tokio::sync::watch::channel(0).1,
+        shutdown.clone(),
+    ));
+    let network: ipnet::Ipv4Net = "10.210.0.0/16".parse().unwrap();
+    let marker: ipnet::Ipv4Net = "10.0.0.0/8".parse().unwrap();
+    replicated.publish_cluster_network(marker).await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while replicated.cluster_network().await.unwrap() != network {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("the founder publishes the Cluster network");
     let served = ployz_core::served_capabilities();
     assert!(!served.is_empty());
     let capabilities = || async {
@@ -263,6 +280,7 @@ async fn replayed_enroll_republishes_runtime_over_a_register_row() {
     .expect("the Machines view sees the served row")
     .unwrap();
     assert_eq!(target.record().phase(), LocalMachinePhase::Participating);
+    replicated.publish_cluster_network(marker).await.unwrap();
 
     // `ployz server add` registers through the entry with an empty runtime,
     // then resends Enroll to a Machine that already participates.
@@ -281,9 +299,17 @@ async fn replayed_enroll_republishes_runtime_over_a_register_row() {
         "the row kept the Register runtime: {:?}",
         capabilities().await
     );
+    // The founder saw the Register and restore as Machines view changes too.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    assert_eq!(
+        replicated.cluster_network().await.unwrap(),
+        marker,
+        "a Machines view change rewrote the Cluster network"
+    );
 
     shutdown.cancel();
     publisher.await.unwrap().unwrap();
+    entry_publisher.await.unwrap().unwrap();
     server.abort();
     drop(entry);
     drop(target);

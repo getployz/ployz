@@ -318,8 +318,7 @@ impl Daemon {
             shutdown.clone().cancelled_owned(),
         );
         let publisher = run_machine_publisher(
-            replicated_store.clone(),
-            machine_view.clone(),
+            replicated_store.clone().zip(machine_view.clone()),
             local.clone(),
             running_builds,
             shutdown.clone(),
