@@ -1,7 +1,10 @@
 //! Departure: when a Machine leaves its cluster or is installed afresh, every root it
-//! holds becomes a slot, so nothing left behind is taken for the writer and a later restore
-//! starts from an ordinary slot. Every mirror it received of a Volume written elsewhere is
-//! destroyed: nothing refreshes it once the Machine is gone, and the writer keeps the data.
+//! holds becomes a sealed slot, so nothing left behind is taken for the writer and a later
+//! restore starts from an ordinary slot. Every receive stops before the slots are read, so
+//! each slot is judged as it will stay. A slot is kept only on a mark this Machine sets
+//! before it can hold the only copy and no send carries: a departure snapshot, a Move's
+//! cut, or a restore's epoch. Every other slot is a received copy, a mirror or an unlanded
+//! seed, and is destroyed: the writer or the seed's source root keeps that data.
 
 use std::collections::BTreeSet;
 
