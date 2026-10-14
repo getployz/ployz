@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { createHash, randomBytes } from "node:crypto";
-import { and, asc, eq, gt, sql } from "drizzle-orm";
+import { and, asc, eq, gt, ne, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { invitation, member, user } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
@@ -78,8 +78,11 @@ export const revokeInvite = Effect.fn("Invitation.revoke")(function* (organizati
   const byId = rows.find((row) => row.id === selector.trim());
   const found = byId ?? rows.find((row) => row.email === wanted && stateOf(row, now) === "pending");
   if (found === undefined) return yield* new NotFound({ message: `No pending invite matches ${selector}.` });
-  if (found.status === "accepted") return yield* new Conflict({ message: "That invite was used already. Remove the member instead.", userFacing: true });
-  yield* drizzle.update(invitation).set({ status: "revoked" }).where(eq(invitation.id, found.id));
+  const used = new Conflict({ message: "That invite was used already. Remove the member instead.", userFacing: true });
+  if (found.status === "accepted") return yield* used;
+  const revoked = yield* drizzle.update(invitation).set({ status: "revoked" })
+    .where(and(eq(invitation.id, found.id), ne(invitation.status, "accepted"))).returning({ id: invitation.id });
+  if (revoked.length === 0) return yield* used;
   return { id: found.id, email: found.email };
 });
 

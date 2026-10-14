@@ -220,7 +220,7 @@ function InviteDialog({ organizationSlug, onInvited, onOpenChange }: {
         </DialogHeader>
         {invite.data ? (
           <div className="flex items-center gap-2">
-            <Input readOnly aria-label="Invite link" className="font-mono text-xs" value={invite.data.link} onFocus={(event) => event.target.select()} />
+            <Input readOnly aria-label="Invite link" className="ph-no-capture font-mono text-xs" value={invite.data.link} onFocus={(event) => event.target.select()} />
             <CopyButton value={invite.data.link} label="Copy link" />
           </div>
         ) : (

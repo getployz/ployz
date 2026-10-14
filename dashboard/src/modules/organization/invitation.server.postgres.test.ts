@@ -7,7 +7,7 @@ import { asTestDouble } from "#/lib/test-double";
 import type { Caller } from "#/modules/identity/actor";
 import { invitation, member, user } from "#/modules/identity/tables";
 import { InngestClient } from "#/modules/inngest/client";
-import { acceptInvite, readInvite } from "#/modules/organization/invitation.server";
+import { acceptInvite, readInvite, revokeInvite } from "#/modules/organization/invitation.server";
 import { orgInviteLs, orgInviteRevoke, orgLeave, orgMemberInvite, orgMemberRm, orgMemberRole } from "#/modules/organization/members.commands.server";
 import { organization } from "#/modules/organization/tables";
 import { Auth, type AuthService } from "#/server/auth.server";
@@ -132,6 +132,19 @@ describe("invite links", () => {
     expect(await outcome(acceptInvite(tokenOf(revoked.link), ids.dan))).toBe("Conflict");
     expect(await roleOf(ids.dan)).toBeNull();
     expect(await pendingIds()).not.toContain(revoked.id);
+  });
+
+  it("refuses to revoke a link someone joins through while the revoke runs", async () => {
+    const { id, link } = await invite("ada", {});
+    const { revoke } = await harness.db.transaction(async (tx) => {
+      await tx.select({ id: invitation.id }).from(invitation).where(eq(invitation.id, id)).for("update");
+      const revoke = outcome(revokeInvite(ACME, id));
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      await tx.update(invitation).set({ status: "accepted", acceptedByUserId: ids.bob }).where(eq(invitation.id, id));
+      return { revoke };
+    });
+    expect(await revoke).toBe("Conflict");
+    expect((await run(readInvite(tokenOf(link))))?.state).toBe("accepted");
   });
 });
 
