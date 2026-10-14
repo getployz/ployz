@@ -85,9 +85,9 @@ export function uptimeAlertMail(alert: UptimeAlert, origin: string, now: Date): 
     return {
       ...shared,
       subject: `Down: ${name} in ${where}`,
-      preview: `The health check fails since ${since}.`,
+      preview: `The health check has failed since ${since}.`,
       title: `${name} is down`,
-      paragraphs: [`The health check on ${name} fails since ${since}. We'll email again when it recovers.`],
+      paragraphs: [`The health check on ${name} has failed since ${since}. We'll email again when it recovers.`],
       facts: [...facts, { label: "Failed with", value: failedWith(alert.observations) }],
     };
   }
