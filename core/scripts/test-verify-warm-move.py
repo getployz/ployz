@@ -123,7 +123,7 @@ class Cluster:
     def __init__(self, manifest):
         self.manifest = Path(manifest)
         self.run = json.loads(self.manifest.read_text())
-        self.address = {node["name"]: node["address"] for node in self.run["machines"]}
+        self.nodes = {node["name"]: node for node in self.run["machines"]}
         self.machines = [node["name"] for node in self.run["machines"]]
         self.out = self.manifest.parent / "evidence" / f"warm-move-{time.strftime('%Y%m%dT%H%M%S')}"
         self.out.mkdir(parents=True, exist_ok=True)
@@ -521,9 +521,9 @@ class Cluster:
             return "still a member"
         started = time.time()
         key = self.manifest.parent / "private" / "id_ed25519"
-        code, data = self.cli("server", "add", "root@" + self.address[machine], "--no-install", "--storage", "none",
+        code, data = self.cli("server", "add", self.nodes[machine]["ssh"], "--no-install", "--storage", "none",
                               "--yes", "--name", machine, "--ssh-key", key, "--public-ip", "none",
-                              "--wg-endpoint", self.address[machine] + ":51820", "--wg-mtu", "1420", timeout=900)
+                              "--wg-endpoint", self.nodes[machine]["endpoint"], "--wg-mtu", "1420", timeout=900)
         joined_partly = code and "Server joined" in say(data)
         if code and not joined_partly:
             raise CheckError(f"server add {machine} after its removal failed: {say(data)[:800]}")
