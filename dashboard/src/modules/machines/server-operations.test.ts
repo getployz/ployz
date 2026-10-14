@@ -1,7 +1,9 @@
 import type { MachineId, RuntimeWatchView } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
-import { cleanPlan, drainPlan, removePlan, volumeLabels } from "#/modules/machines/server-operations.server";
+import { operationDigest } from "#/modules/approvals/approvals.server";
+import { cleanPlan, drainPlan, ingressOffPlan, removePlan, volumeLabels } from "#/modules/machines/server-operations.server";
+import type { ServerPolicyChange } from "#/modules/machines/server-policy";
 
 const here = "a".repeat(32);
 const there = "b".repeat(32);
@@ -135,5 +137,70 @@ describe("cleanPlan and removePlan", () => {
       owner("c", "shop", "staging", "uploads"),
       owner("d", "blog", "staging", "uploads"),
     ])).toEqual(new Map([["a", "cache-data"], ["b", "production/uploads"], ["c", "shop/staging/uploads"], ["d", "blog/staging/uploads"]]));
+  });
+});
+
+describe("ingressOffPlan", () => {
+  const off = { acceptsIngress: false } as const;
+  const web = (
+    ingress: { here: readonly [boolean, string | null]; there: readonly [boolean, string | null] },
+    thereMembership = "up",
+  ) => asTestDouble<RuntimeWatchView>()({
+    machines: [
+      { membership: "up", machine: { id: here, name: "fra-1", accepts_ingress: ingress.here[0], public_ip: ingress.here[1], runtime: { running_builds: 0 } } },
+      { membership: thereMembership, machine: { id: there, name: "fra-2", accepts_ingress: ingress.there[0], public_ip: ingress.there[1], runtime: { running_builds: 0 } } },
+    ],
+    certificates: [{ hostname: "shop.example.com" }, { hostname: "api.example.com" }, { hostname: "shop.example.com" }],
+  });
+
+  it("turning web traffic off on the last Server that takes it removes every domain, once each, in a stable order", () => {
+    for (const there of [[false, "203.0.113.2"], [true, null]] as const) {
+      expect(ingressOffPlan(web({ here: [true, "203.0.113.1"], there }), here, off)).toEqual({
+        subject: `server:${here}`,
+        verb: "set",
+        name: "fra-1",
+        preview: { server: here, accepts_ingress: false },
+        effects: [
+          { kind: "removes_domain", name: "api.example.com", node: "api.example.com", path: "domains/api.example.com" },
+          { kind: "removes_domain", name: "shop.example.com", node: "shop.example.com", path: "domains/shop.example.com" },
+        ],
+      });
+    }
+  });
+
+  it("removes every domain when the only other Server that takes web traffic is offline or unknown", () => {
+    for (const membership of ["down", "left", "unknown"]) {
+      expect(ingressOffPlan(web({ here: [true, "203.0.113.1"], there: [true, "203.0.113.2"] }, membership), here, off)?.effects.map(({ name }) => name))
+        .toEqual(["api.example.com", "shop.example.com"]);
+    }
+  });
+
+  it("removes nothing while another online Server with a public IP takes web traffic, or when this one serves none", () => {
+    for (const membership of ["up", "suspect"]) {
+      expect(ingressOffPlan(web({ here: [true, "203.0.113.1"], there: [true, "203.0.113.2"] }, membership), here, off)?.effects).toEqual([]);
+    }
+    expect(ingressOffPlan(web({ here: [false, "203.0.113.1"], there: [false, null] }), here, off)?.effects).toEqual([]);
+    expect(ingressOffPlan(web({ here: [true, null], there: [false, null] }), here, off)?.effects).toEqual([]);
+  });
+
+  it("previews the whole change, so web off approves nothing else the change carries", () => {
+    const frame = web({ here: [true, "203.0.113.1"], there: [false, null] });
+    const digest = (change: ServerPolicyChange) => {
+      const plan = ingressOffPlan(frame, here, change);
+      return plan === null ? expect.fail("no plan") : operationDigest(plan);
+    };
+    expect(ingressOffPlan(frame, here, { ...off, acceptsBuilds: false, buildConcurrency: 2 })?.preview)
+      .toEqual({ server: here, accepts_ingress: false, accepts_builds: false, build_concurrency: { action: "set", value: 2 } });
+    const others: ReadonlyArray<ServerPolicyChange> = [
+      { ...off, acceptsBuilds: false },
+      { ...off, acceptsServices: false },
+      { ...off, buildConcurrency: 2 },
+      { ...off, buildConcurrency: "automatic" },
+    ];
+    expect(new Set([off, ...others].map(digest)).size).toBe(others.length + 1);
+  });
+
+  it("is null for a Server the frame doesn't hold", () => {
+    expect(ingressOffPlan(web({ here: [true, "203.0.113.1"], there: [false, null] }), "c".repeat(32), off)).toBeNull();
   });
 });

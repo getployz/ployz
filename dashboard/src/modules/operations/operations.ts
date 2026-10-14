@@ -3,6 +3,7 @@ import { EnqueueMachineRemoveInput, ForgetServerInput } from "#/modules/machines
 import { ForgetServersInput } from "#/modules/machines/forget-servers";
 import { RemoveNamespaceInput } from "#/modules/machines/namespace-cleanup";
 import { RequestServerDrainInput } from "#/modules/machines/server-drain";
+import { BuildConcurrencyChangeSchema, RequestServerPolicyChangeInput } from "#/modules/machines/server-policy";
 import { ForgetServer, ForgetServers, RemoveServer, UpgradeServer, VOLUME_RUN_BODIES } from "#/modules/operations/cli-wire";
 import { RequestServerUpgradeInput } from "#/modules/server-upgrade/server-upgrade";
 import { RefreshMirrorInput } from "#/modules/volume-copies/volume-copies";
@@ -12,6 +13,7 @@ import type { VolumeRunRequestKind } from "#/modules/volume-run/volume-run";
 /** The tool name a request key is scoped to: the same key under another tool is another request. */
 export const OPERATION_TOOLS = [
   "server_drain",
+  "server_set",
   "server_upgrade",
   "server_clean",
   "server_remove",
@@ -66,6 +68,22 @@ const AGENT_ENVIRONMENT = { via: ["project", "environment"] } as const;
 const AGENT_LOSS = { via: ["accept_volume_loss", "version"] } as const;
 const STAGED = { absent: "The dashboard stages it in the Volume's placement, and the deploy runs it." } as const;
 const VOLUME_RUNS = "POST volumes/:id/runs";
+
+/** Restart, start or stop a Service's containers, on one Server or all. */
+const serviceAct = <const T extends Extract<OperationTool, `service_${string}`>>(tool: T) =>
+  operation({
+    options: Schema.Struct({ service: Name, environment: Name, only: Name, wait: Seconds }),
+    gate: "none",
+    idempotency: tool,
+    surfaces: {
+      cli: { absent: "`ployz service` reaches the Servers through Server Access, not a Cloud run." },
+      agent: {
+        tool,
+        options: { service: { via: "service" }, environment: AGENT_ENVIRONMENT, only: { via: "server" }, wait: { via: "wait_seconds" } },
+      },
+      ui: { absent: "The dashboard has no control to restart, start or stop a Service." },
+    },
+  });
 
 /** Every Cloud operation, and how each surface (CLI, agent, dashboard) carries each of its options. */
 export const OPERATIONS = {
@@ -154,6 +172,39 @@ export const OPERATIONS = {
           channel: { omitted: "The dashboard upgrades along the Organization's Release Channel." },
           ingressImage: { omitted: "Only an upgrade with --context pins the ingress image." },
           wait: UI_FOLLOWS,
+        },
+      },
+    },
+  }),
+  "server.set": operation({
+    options: Schema.Struct({
+      server: Name, acceptsBuilds: Schema.Boolean, acceptsServices: Schema.Boolean, acceptsIngress: Schema.Boolean,
+      buildConcurrency: BuildConcurrencyChangeSchema,
+    }),
+    gate: "approval",
+    idempotency: "server_set",
+    surfaces: {
+      cli: { absent: "`ployz server set` updates the Server through its own connection, not Cloud." },
+      agent: {
+        tool: "server_set",
+        options: {
+          server: { via: "server" },
+          acceptsBuilds: { via: "accepts_builds" },
+          acceptsServices: { via: "accepts_services" },
+          acceptsIngress: { via: "accepts_ingress" },
+          buildConcurrency: { via: "build_concurrency" },
+        },
+      },
+      ui: {
+        fn: "requestServerPolicyChangeServerFn",
+        input: RequestServerPolicyChangeInput,
+        ungated: "The human is the one changing the Server.",
+        options: {
+          server: { via: "machineId" },
+          acceptsBuilds: { via: "change" },
+          acceptsServices: { via: "change" },
+          acceptsIngress: { via: "change" },
+          buildConcurrency: { via: "change" },
         },
       },
     },
@@ -285,12 +336,19 @@ export const OPERATIONS = {
     },
   }),
   "volume.restore": operation({
-    options: Schema.Struct({ volume: Name, environment: Name, from: Name }),
+    options: Schema.Struct({ volume: Name, environment: Name, from: Name, wait: Seconds }),
     gate: "approval",
     idempotency: "volume_restore",
     surfaces: {
-      cli: { route: VOLUME_RUNS, body: VOLUME_RUN_BODIES.restore, options: { volume: { via: ":id" }, environment: { via: "environment" }, from: { via: "from" } } },
-      agent: { absent: "No agent tool restores from a Server's copy." },
+      cli: {
+        route: VOLUME_RUNS,
+        body: VOLUME_RUN_BODIES.restore,
+        options: { volume: { via: ":id" }, environment: { via: "environment" }, from: { via: "from" }, wait: CLI_FOLLOWS },
+      },
+      agent: {
+        tool: "volume_restore",
+        options: { volume: { via: "volume" }, environment: AGENT_ENVIRONMENT, from: { via: "from" }, wait: { via: "wait_seconds" } },
+      },
       ui: STAGED,
     },
   }),
@@ -308,6 +366,9 @@ export const OPERATIONS = {
       },
     },
   }),
+  "service.restart": serviceAct("service_restart"),
+  "service.start": serviceAct("service_start"),
+  "service.stop": serviceAct("service_stop"),
   "servers.forget_all": operation({
     options: Schema.Struct({ organization: Name }),
     gate: "none",

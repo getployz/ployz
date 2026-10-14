@@ -92,7 +92,7 @@ The one exception is something the dashboard can't do yet. Then show the command
 plainly, and keep it short:
 
 ```sh
-# Server roles other than builds are CLI-only for now
+# Turning web traffic off is CLI-only for now
 ployz server set db-1 --accepts-ingress=false
 ```
 
