@@ -94,7 +94,6 @@ const SERVICE_ROUTE_TO = "/cloud/$organizationSlug/$projectSlug/$environmentSlug
 const taken = (service: ServiceListing, services: readonly ServiceListing[], name: string) =>
   services.some((other) => other.id !== service.id && (other.name === name || other.private_dns === name));
 
-/** A DNS label no other Service here has as its name or Private DNS. */
 function nameSchema(service: ServiceListing, services: readonly ServiceListing[]) {
   return Schema.String.check(Schema.makeFilter<string>((name) =>
     dnsLabelError(name) ?? (taken(service, services, name) ? `A service here is already named ${name}.` : undefined)));
@@ -591,7 +590,6 @@ function StoreReplicasCapped({ params, volume }: {
         <FieldDescription>
           Limited to 1 while <strong>{volume.name}</strong> is attached.{" "}
           <span className="inline-flex align-middle"><InfoHint>{SHARED_VOLUME_WHY}</InfoHint></span>{" "}
-          {/* Never broken across lines. */}
           <Link className="whitespace-nowrap" to={ENVIRONMENT_RESOURCE_ROUTE_TO} params={{ ...params, resourceId: volume.id }}>Allow shared writes</Link>
         </FieldDescription>
       </FieldContent>

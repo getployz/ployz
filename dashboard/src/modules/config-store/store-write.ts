@@ -154,6 +154,10 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
   };
 });
 
+/**
+ * Writes are optimistic: each shows at once and saves in the background. A refusal toasts and rolls the views back,
+ * so a caller needs no failure handling unless it must restore state of its own.
+ */
 export function useStoreWriter(organizationSlug: string) {
   return getStoreWriter(organizationSlug, useCollectionScope());
 }

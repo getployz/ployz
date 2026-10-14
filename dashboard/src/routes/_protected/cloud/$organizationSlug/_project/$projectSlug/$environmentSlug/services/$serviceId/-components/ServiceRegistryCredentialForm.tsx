@@ -57,7 +57,6 @@ export function ServiceRegistryCredentialForm({
       username: initialUsername,
       secret: "",
     },
-    // Optimistic: saving rolls back and toasts on failure.
     onSubmit: ({ schemaOutputs }) => onSubmit(schemaOutputs[0]),
   });
 

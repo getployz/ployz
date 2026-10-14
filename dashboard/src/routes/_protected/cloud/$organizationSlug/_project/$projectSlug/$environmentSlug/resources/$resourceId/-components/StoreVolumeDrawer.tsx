@@ -84,7 +84,6 @@ function VolumeDrawer({ params, environment, volume, volumes, services, settings
   const removing = volume.change === "delete";
   const renamed = diff.changes.find((change) => change.type === "volume" && change.id === volume.id)
     ?.settings.find((row) => row.path === "name" || row.path.endsWith(".name"));
-  // A DNS label no other Volume here has.
   const nameSchema = Schema.String.check(Schema.makeFilter<string>((name) => dnsLabelError(name)
     ?? (volumes.some((other) => other.id !== volume.id && other.name === name) ? `A volume here is already named ${name}.` : undefined)));
   const managed = volume.deployed && volume.storage.kind === "provisioned" && !removing;
@@ -157,7 +156,6 @@ function StoreVolumeStorage({ state, removing }: { state: StoreVolume; removing:
   const { storage, storage_locked } = state.volume;
   const managed = storage.kind === "provisioned";
   const sizeGB = managed ? gigabytes(storage.maximumBytes) : DEFAULT_VOLUME_GB;
-  // Autosaved like a service's fields: each edit is one staged command.
   const save = (next: NonNullable<ReturnType<typeof volumeStorage>>) =>
     writer.commit({ command: "set_volume_storage", environment: state.environment, volume: state.volume.name, storage: next });
 
