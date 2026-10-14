@@ -3083,6 +3083,15 @@ describe("volume runs", () => {
         expect(await place()).toMatchObject([{ kind: "follow", to: "fsn-2", ended: true }]);
       });
 
+      it("a release requested after the Deploy placed it inherits the same commitment, and the follow still starts B", async () => {
+        await failedCommit();
+        const placed = await place();
+        await requested({ kind: "release", args: {} });
+
+        expect(await fence(placed[0])).toEqual({ on: "fsn-2" });
+        expect(verbs).toEqual(["writer@fsn-2(create)"]);
+      });
+
       it("a silent B fails the follow with what to do", async () => {
         await failedCommit();
         const placed = await place();
