@@ -91,7 +91,7 @@ type FakeMachine = {
   pullFault?: PullFault;
   /** A restart stopped the running receive; the next Mirror set resumes it. */
   stopped?: boolean;
-  /** The gen floor a Floor set raised; a set with a lower gen is stale. */
+  /** The gen floor every admitted set raises, as the daemon does; a set with a lower gen is stale. */
   floor?: number;
 };
 
@@ -373,7 +373,7 @@ describe("volume runs", () => {
         if (fault !== undefined) return fail(fault);
         const gen = request.payload.gen ?? 0;
         if (gen < (fake.floor ?? 0)) return fail("stale");
-        if (want.kind === "floor") fake.floor = gen;
+        fake.floor = Math.max(fake.floor ?? 0, gen);
         if (want.kind === "mirror") {
           receive(fake);
           fake.stopped = false;
@@ -3192,6 +3192,44 @@ describe("volume runs", () => {
 
         await expect(fence(placed[0])).rejects.toThrow("data changed since this Deploy placed it; Deploy again");
         expect(verbs).toEqual([]);
+      });
+
+      describe("once a release took the commitment over and floored B at its newer gen", () => {
+        const successor = async (state: "running" | "done") => {
+          await failedCommit();
+          deployNodes = [{ type: "service", id: "svc-api", name: "api", outcome: "pending", rows: [] }];
+          const placed = await place();
+          const release = await requested({ kind: "release", args: {} });
+          const { rows: [floor] } = await harness.pool.query<{ gen: string }>(
+            "update volume_run set state = $2, phase = 'committed', current = $3, epoch = 1 where id = $1 returning gen", [release.id, state, idOf("fsn-2")]);
+          for (const fake of machines) fake.floor = Number(floor?.gen);
+          return placed;
+        };
+
+        it("a release that finished leaves B the writer with no app running, and the Deploy starts on B with no request", async () => {
+          const placed = await successor("done");
+          named("fsn-2").copy = writerCopy(machines[1]?.copy?.newest ?? null, 1, false);
+
+          expect(await fence(placed[0])).toEqual({ on: "fsn-2" });
+          expect(verbs).toEqual([]);
+          expect(containers.filter((container) => container.running)).toEqual([]);
+        });
+
+        it("a release that makes B the writer while the Deploy asks is read again, and the Deploy starts on B", async () => {
+          const placed = await successor("running");
+          beforeSet.set("writer@fsn-2", () => { named("fsn-2").copy = writerCopy(machines[1]?.copy?.newest ?? null, 1, false); });
+
+          expect(await fence(placed[0])).toEqual({ on: "fsn-2" });
+          expect(verbs).toEqual(["writer@fsn-2(create)"]);
+        });
+
+        it("a release still running fails the Deploy with what to do", async () => {
+          const placed = await successor("running");
+
+          await expect(fence(placed[0])).rejects.toThrow(new NonRetriableError("data is finishing its move on fsn-2; Deploy again"));
+          expect(verbs).toEqual(["writer@fsn-2(create)"]);
+          expect(named("fsn-2").copy).toMatchObject({ kind: "slot" });
+        });
       });
 
       it("a silent B fails the follow with what to do", async () => {
