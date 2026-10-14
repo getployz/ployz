@@ -504,8 +504,9 @@ class Provider:
         """Give Machines parked sandboxes of this bake, each proven clean again; start() launches the rest."""
         names = [node["name"] for node in self.run.get("machines", [])]
         up = {sandbox["id"] for sandbox in boat_json("list")["sandboxes"] if sandbox["state"] in UP_STATES}
-        owned = registered()
         with pool() as entries:
+            # A park marks its run's entry parked under this lock, so ownership read here cannot go stale.
+            owned = registered()
             picked, dead = pick(entries, self.run["image"], up, owned, len(names))
             entries[:] = [entry for entry in entries if entry not in picked and entry not in dead and entry["id"] not in owned]
             # The registry takes them before the pool lets go, so no other run or reap can.

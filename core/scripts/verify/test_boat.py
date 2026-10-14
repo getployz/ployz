@@ -2,6 +2,7 @@
 """Boat provider logic that needs no sandbox: endpoints, errors, limits, placement, and which sandboxes down removes."""
 
 import contextlib
+import fcntl
 import importlib.machinery
 import importlib.util
 import io
@@ -349,6 +350,33 @@ class Pool(unittest.TestCase):
         for name, value in [("REGISTRY", Path(directory.name)), ("POOL", Path(directory.name) / boat.POOL.name)]:
             self.addCleanup(setattr, boat, name, getattr(boat, name))
             setattr(boat, name, value)
+
+    def provider(self, *machines):
+        self.calls = []
+
+        def fake(args, check=True, **kwargs):
+            self.calls.append(args[2:-1])
+            return result(0, {})
+        run = dict(id="run1", manifest=str(boat.REGISTRY / "cluster.json"), image="bake-a",
+                   machines=[dict(name=name) for name in machines])
+        return boat.Provider(run, fake, Path("."))
+
+    def locked(self):
+        """Whether some open file holds pool.lock now."""
+        with (boat.REGISTRY / "pool.lock").open("a") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return True
+            fcntl.flock(lock, fcntl.LOCK_UN)
+            return False
+
+    def test_a_claim_reads_who_owns_a_sandbox_under_the_pool_lock(self):
+        held = []
+        with unittest.mock.patch.object(boat, "registered", lambda: held.append(self.locked()) or set()), \
+                unittest.mock.patch.object(boat, "boat_json", lambda *args: dict(sandboxes=[])):
+            self.provider().create()
+        self.assertEqual(held, [True])
 
     def test_fingerprint_ignores_hold_names_and_order_but_not_a_leftover(self):
         fresh = boat.fingerprint("== containers\nhold-1|alpine:3.20|running|1\nzed|redis|running|\n== volumes\n== zpools\n")
