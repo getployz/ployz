@@ -45,11 +45,11 @@ describe("an applied Deployment's orphan mirror scan", () => {
 });
 
 describe("a Deployment's failure email", () => {
-  it("is sent once it ended failed or unknown, before the checks follow it", async () => {
+  it("is sent once it ended failed or unknown, after the run is wrapped up", async () => {
     for (const status of ["failed", "unknown"] as const) {
       const order = await stepsOf(false, status);
-      expect(order.slice(order.indexOf("run-deployment"), order.indexOf("sync-uptime")))
-        .toEqual(["run-deployment", "finish-volumes", "mail-failure"]);
+      expect(order.slice(order.indexOf("run-deployment")))
+        .toEqual(["run-deployment", "finish-volumes", "sync-uptime", "forget-run", "mail-failure"]);
     }
   });
 

@@ -74,9 +74,6 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Store
       const ran = await step.run("run-deployment", () => runEffect(runStoreDeployment(event.data, storeDeploymentRunner(runId))));
       await step.run("finish-volumes", () => runEffect(finishDeployVolumes(runId, "done")));
       const applied = "ran" in ran && ran.ran.status === "applied";
-      if ("ran" in ran && (ran.ran.status === "failed" || ran.ran.status === "unknown")) {
-        await step.run("mail-failure", () => runEffect(mailFailedGithubDeploy(event.data)));
-      }
       // A failed Deployment can still have advanced Applied State, so the checks follow it either way. Only an applied
       // one is probed: a failed one may have stopped partway, and the schedule still checks what it reached.
       await step.run("sync-uptime", () =>
@@ -93,6 +90,9 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Store
       // holds its Volumes' names until the sweep deletes it, so the scan comes after.
       if (applied) {
         await step.run("delete-orphan-mirrors", () => runEffect(cleanOrphans(event.data.organizationId)));
+      }
+      if ("ran" in ran && (ran.ran.status === "failed" || ran.ran.status === "unknown")) {
+        await step.run("mail-failure", () => runEffect(mailFailedGithubDeploy(event.data)));
       }
       return ran;
     },
