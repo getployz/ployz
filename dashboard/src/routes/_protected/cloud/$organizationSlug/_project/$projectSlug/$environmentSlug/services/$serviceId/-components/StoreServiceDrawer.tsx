@@ -49,6 +49,7 @@ import { SERVICE_PAGES, servicePageSchema } from "./service-pages";
 import { DEFAULT_RANGE } from "#/modules/uptime/uptime-range";
 import { usePrefetchServiceUptime, useUptimeEnabled } from "#/modules/uptime/uptime.queries";
 import { MonitoringTab } from "./monitoring/MonitoringTab";
+import { useGithubWebOrigin } from "#/modules/github/github.queries";
 
 /** One Service in the Config Store, as the drawer shows and edits it. */
 export type StoreService = {
@@ -449,6 +450,7 @@ function StoreListField({ state, name, setting, row }: { state: StoreService; na
 /** Where the image comes from: a container image, or a repository with its branch and root directory. */
 function StoreSourceSection({ state }: { state: StoreService }) {
   const [picking, setPicking] = useState<"image" | "repository" | null>(null);
+  const githubWeb = useGithubWebOrigin();
   const set = (name: "image" | "repository" | "branch", value: string) => state.set(name, value);
   const close = (open: boolean) => { if (!open) setPicking(null); };
   const kind = state.source === "git" ? "repository" : "image";
@@ -511,7 +513,7 @@ function StoreSourceSection({ state }: { state: StoreService }) {
             title={change ? deployed : undefined}>
             {kind === "repository" ? <GitHubMarkIcon className="size-4 shrink-0" /> : <PackageIcon className="size-4 shrink-0 text-muted-foreground" />}
             {kind === "repository"
-              ? <a className="truncate hover:underline" href={`https://github.com/${value}`} target="_blank" rel="noreferrer">{value}</a>
+              ? <a className="truncate hover:underline" href={`${githubWeb}/${value}`} target="_blank" rel="noreferrer">{value}</a>
               : <span className="truncate font-mono">{value}</span>}
           </span>
           <Button type="button" variant="ghost" size="icon-sm" aria-label={`Change ${setting.title.toLowerCase()}`} onClick={() => setPicking(kind)}>

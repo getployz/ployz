@@ -192,7 +192,7 @@ Restore needs `web-2` to hold the only copy of the volume. If other servers hold
 refused and names them; remove them with `ployz volume mirror rm` first. A mirror holds the data as of
 its last sync, so restoring one loses the writes after it, and the run says when that was:
 `data restored on web-2 from <time>; writes after that time are lost`. Restore doesn't start your service.
-Deploy it next.
+Deploy it next. The [agent](../account/agent-sidebar.md) can run the same restore from a server's copy.
 
 ## Good to know
 

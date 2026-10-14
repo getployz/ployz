@@ -75,8 +75,7 @@ const NETWORK_FILES = {
 /** Remote Reads a loader cannot prefetch, and what warms them instead. */
 const ON_DEMAND_READS = {
   githubFileSearchQueryOptions: "searches as the user types",
-  githubRepoAccessQueryOptions: "read together with the install URL when a repository picker opens",
-  githubInstallUrlQueryOptions: "read together with repository access when a repository picker opens",
+  githubRepoAccessQueryOptions: "read when a repository picker opens; installation access changes in GitHub, so each picker rechecks it",
   githubBranchesQueryOptions: "depends on the repository the user just picked",
   githubBuildRepositoriesQueryOptions: "calls GitHub per repository; Organization Settings › Builds fills it in after hydration",
   volumeMembersQueryOptions: "asks every Server for its copy live, so a slow Server would hold the drawer open; the Placement section waits on it instead",

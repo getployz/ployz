@@ -27,7 +27,7 @@ import type { Actor } from "#/modules/identity/actor";
 import { GithubApi, resolveGithubRepository } from "./github-observation.api";
 import { githubIdSchema, githubRepositoryFullNameSchema } from "./github-ingestion.contracts";
 import { normalizePublicGithubRepository } from "./public-repository";
-import { AppConfig } from "#/server/config.server";
+import { AppConfig, type GithubOrigins } from "#/server/config.server";
 import { Validation, NotFound } from "#/server/public-error";
 
 export class GithubAccountNotLinked extends Data.TaggedError(
@@ -37,8 +37,8 @@ export class GithubAccountNotLinked extends Data.TaggedError(
   readonly retriable = false as const;
 }
 
-export function getGithubAppInstallUrl(input: { readonly slug: string }) {
-  return `https://github.com/apps/${input.slug}/installations/new`;
+export function getGithubAppInstallUrl(github: { readonly appSlug: string; readonly origins: GithubOrigins }) {
+  return `${github.origins.web}/apps/${github.appSlug}/installations/new`;
 }
 
 function isUsableInstallationAction(
@@ -163,12 +163,11 @@ export const getGithubRepoAccessState = Effect.fn(
   return { hasInstallations: installations.length > 0 };
 });
 
-export const getGithubInstallUrl = Effect.fn("Github.getInstallUrl")(
-  function* () {
-    const config = yield* AppConfig;
-    return { url: getGithubAppInstallUrl({ slug: config.github.appSlug }) };
-  },
-);
+/** Where browser links to GitHub go: github.com, or a verify lab's fake. */
+export const getGithubWeb = Effect.fn("Github.getWeb")(function* () {
+  const config = yield* AppConfig;
+  return { origin: config.github.origins.web, installUrl: getGithubAppInstallUrl(config.github) };
+});
 
 export const requestGithubRepoSync = Effect.fn("Github.requestRepoSync")(
   function* (actor: Actor) {
@@ -248,7 +247,7 @@ export const resolvePublicGithubRepository = Effect.fn("Github.resolvePublicRepo
   const name = normalizePublicGithubRepository(input);
   if (!name) return yield* new Validation({ message: "Enter owner/repo or a GitHub repository URL. Select the branch separately." });
   const api = yield* GithubApi;
-  const repo = yield* api.json({ installationId: null, url: `https://api.github.com/repos/${name}`, operation: "resolve_repository",
+  const repo = yield* api.json({ installationId: null, path: `/repos/${name}`, operation: "resolve_repository",
     schema: Schema.Struct({ id: githubIdSchema, full_name: githubRepositoryFullNameSchema, private: Schema.Literal(false), default_branch: Schema.NonEmptyString }) });
   return { fullName: repo.full_name, repositoryId: repo.id, access: { type: "public" as const }, defaultBranch: repo.default_branch };
 });

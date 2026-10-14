@@ -9,6 +9,8 @@ mod storage;
 mod test_support;
 pub mod upgrade;
 
+pub use self::host::write_units;
+
 use std::{
     io,
     os::unix::fs::PermissionsExt,
@@ -23,8 +25,8 @@ use crate::mutation;
 
 use self::{
     host::{
-        create_user_and_directories, install_docker, install_prerequisites, install_systemd,
-        verify_docker, verify_running_daemon, verify_software_prerequisites,
+        activate_units, create_user_and_directories, install_docker, install_prerequisites,
+        install_units, verify_docker, verify_running_daemon, verify_software_prerequisites,
     },
     release::{ReleaseSource, install_binaries, installed_release, resolve_release},
     storage::prepare_storage,
@@ -256,7 +258,10 @@ async fn install_locked(
     let mut restart_required = !paths.systemd_dir.join("ployz.service").is_file();
     restart_required |=
         install_binaries(source, paths, installed.as_ref(), &target, &mut progress).await?;
-    install_systemd(paths, installation_only)?;
+    install_units(paths).await?;
+    if !installation_only {
+        activate_units()?;
+    }
     if matches!(request.mode, InstallMode::PrepareHost { .. }) {
         install_docker(paths).await?;
     }
@@ -483,6 +488,8 @@ mod tests {
         for case in [
             "success",
             "install-only",
+            "installed-units",
+            "failed-units",
             "same-target",
             "missing",
             "missing-tar",
@@ -578,7 +585,7 @@ mod tests {
         let paths = InstallPaths::at(&root);
         fs::create_dir_all(&paths.bin_dir).unwrap();
         let existing = match case {
-            "success" | "install-only" => None,
+            "success" | "install-only" | "installed-units" | "failed-units" => None,
             "same-target" => Some(write_existing_daemon(&paths, "1.2.3")),
             _ => Some(write_existing_daemon(&paths, "1.2.2")),
         };
@@ -587,6 +594,9 @@ mod tests {
         }
         if case == "missing-tar" {
             fs::remove_file(root.join("commands/tar")).unwrap();
+        }
+        if matches!(case, "installed-units" | "failed-units") {
+            fs::create_dir_all(&paths.systemd_dir).unwrap();
         }
 
         let request = InstallRequest {
@@ -610,10 +620,41 @@ mod tests {
                 assert!(paths.bin_dir.join("ployzd").is_file());
                 assert!(paths.systemd_dir.join("ployz.service").is_file());
                 assert!(paths.systemd_dir.join("ployz.socket").is_file());
+                let service = fs::read_to_string(paths.systemd_dir.join("ployz.service")).unwrap();
+                assert!(
+                    service.contains(&format!("ExecStart={}/ployzd\n", paths.bin_dir.display())),
+                    "a daemon that rejects install-units leaves this release's units: {service}"
+                );
                 if case == "install-only" {
                     assert!(!root.join("forbidden-invocation").exists());
                     assert!(!paths.data_dir.exists());
                 }
+            }
+            "installed-units" => {
+                result.unwrap();
+                let written = format!(
+                    "written by installed 1.2.3 for {} {}\n",
+                    paths.bin_dir.display(),
+                    paths.run_dir.display()
+                );
+                for unit in ["ployz.service", "ployz-volume-plugin.service"] {
+                    assert_eq!(
+                        fs::read_to_string(paths.systemd_dir.join(unit)).unwrap(),
+                        written,
+                        "{unit} was not written by the installed daemon"
+                    );
+                }
+            }
+            "failed-units" => {
+                let error = result.unwrap_err().to_string();
+                assert!(
+                    error.contains("units: permission denied"),
+                    "a failing install-units surfaces its stderr: {error}"
+                );
+                assert!(
+                    !paths.systemd_dir.join("ployz.service").exists(),
+                    "a failing install-units does not fall back to this release's units"
+                );
             }
             "same-target" => {
                 let outcome = result.unwrap();
@@ -673,7 +714,11 @@ mod tests {
         let daemon = match case {
             "rejected-executable" => "case \"$1\" in version) echo 9.9.9 ;; esac",
             "hung-executable" => "case \"$1\" in version) sleep 1; echo 1.2.3 ;; esac",
-            _ => "case \"$1\" in version) echo 1.2.3 ;; esac",
+            "installed-units" => INSTALLED_UNITS_DAEMON,
+            "failed-units" => {
+                "case \"$1\" in version) echo 1.2.3 ;; install-units) echo 'units: permission denied' >&2; exit 1 ;; *) exit 2 ;; esac"
+            }
+            _ => "case \"$1\" in version) echo 1.2.3 ;; *) exit 2 ;; esac",
         };
         write_script(&payload.join("ployzd"), daemon);
         write_script(&payload.join("ployz-uninstall"), "exit 0");
@@ -746,9 +791,24 @@ mod tests {
         }
     }
 
+    const INSTALLED_UNITS_DAEMON: &str = r#"case "$1" in
+  version) echo 1.2.3 ;;
+  install-units)
+    while [ $# -gt 1 ]; do
+      case "$1" in --bin-dir) bin=$2 ;; --run-dir) run=$2 ;; --systemd-dir) dir=$2 ;; esac
+      shift
+    done
+    for unit in ployz.service ployz.socket ployz-volume-plugin.socket ployz-volume-plugin.service; do
+      echo "written by installed 1.2.3 for $bin $run" > "$dir/$unit"
+    done ;;
+  *) exit 2 ;;
+esac"#;
+
     pub(super) fn write_existing_daemon(paths: &InstallPaths, version: &str) -> Vec<u8> {
         fs::create_dir_all(&paths.bin_dir).unwrap();
-        let existing = format!("#!/bin/sh\n[ \"$1\" = version ] && echo {version}\n").into_bytes();
+        let existing =
+            format!("#!/bin/sh\ncase \"$1\" in version) echo {version} ;; *) exit 2 ;; esac\n")
+                .into_bytes();
         fs::write(paths.bin_dir.join("ployzd"), &existing).unwrap();
         fs::set_permissions(
             paths.bin_dir.join("ployzd"),

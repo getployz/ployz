@@ -172,6 +172,64 @@ it.live("a store tool the agent mints ids for creates a Service where the member
     expect(JSON.stringify(listed)).toContain('"api"');
   }));
 
+it.live("a store tool acts in the page's Environment by id after its Project was renamed under the page", () =>
+  Effect.gen(function* () {
+    const { say, store, write } = yield* sidebar({ removeWeb: false });
+    const docs = "00000000-0000-4000-8000-00000000a607";
+    const production = "00000000-0000-4000-8000-00000000a608";
+    yield* write({ command: "create_project", id: docs, name: "docs", default_environment: production });
+    yield* write({ command: "rename_project", project: "docs", name: "guides" });
+    const model = fakeText();
+    model.setResponses([{ toolCalls: [{ name: "service_add", input: { name: "api", image: "nginx" } }] }, { text: "Done." }]);
+    const page = { page: "architecture", project: "docs", environment: "production", environment_id: production };
+    const answered = yield* say("add an nginx service called api", { page }, model);
+    expect(answered.results).toMatchObject([{ ok: true }]);
+    const listed = yield* Effect.promise(() => store.read(ORGANIZATION, { query: "services", environment: { project: "guides", environment: "production" } }));
+    expect(JSON.stringify(listed)).toContain('"api"');
+  }));
+
+it.live("a store tool never acts in a Project that took the page's old name when the page's Environment is gone", () =>
+  Effect.gen(function* () {
+    const { say, store, write } = yield* sidebar({ removeWeb: false });
+    yield* write({ command: "create_project", id: "00000000-0000-4000-8000-00000000a609", name: "docs", default_environment: "00000000-0000-4000-8000-00000000a60a" });
+    const model = fakeText();
+    model.setResponses([{ toolCalls: [{ name: "service_add", input: { name: "api", image: "nginx" } }] }, { text: "Done." }]);
+    const page = { page: "architecture", project: "docs", environment: "production", environment_id: "00000000-0000-4000-8000-00000000a60b" };
+    const answered = yield* say("add an nginx service called api", { page }, model);
+    expect(answered.results).toMatchObject([{ ok: false, refusal: { code: "not_found" } }]);
+    const listed = yield* Effect.promise(() => store.read(ORGANIZATION, { query: "services", environment: { project: "docs", environment: "production" } }));
+    expect(JSON.stringify(listed)).not.toContain('"api"');
+  }));
+
+/** Shop has only production; the page still shows a staging Environment no longer there. */
+const goneStaging = { page: "architecture", project: "shop", environment: "staging", environment_id: "00000000-0000-4000-8000-00000000a60c" };
+
+it.live("a store tool refuses on a page whose Environment is gone instead of defaulting to the only Project's", () =>
+  Effect.gen(function* () {
+    const { say, store } = yield* sidebar({ removeWeb: false });
+    const model = fakeText();
+    model.setResponses([{ toolCalls: [{ name: "service_add", input: { name: "api", image: "nginx" } }] }, { text: "Done." }]);
+    const answered = yield* say("add an nginx service called api", { page: goneStaging }, model);
+    expect(answered.results).toMatchObject([{ ok: false, refusal: { code: "not_found" } }]);
+    expect(answered.heard.join("")).toContain("shop/staging");
+    const listed = yield* Effect.promise(() => store.read(ORGANIZATION, { query: "services", environment: { project: "shop", environment: "production" } }));
+    expect(JSON.stringify(listed)).not.toContain('"api"');
+  }));
+
+it.live("a store tool acts where the model names it, even on a page whose Environment is gone", () =>
+  Effect.gen(function* () {
+    const { say, store } = yield* sidebar({ removeWeb: false });
+    const model = fakeText();
+    model.setResponses([
+      { toolCalls: [{ name: "service_add", input: { name: "api", image: "nginx", project: "shop", environment: "production" } }] },
+      { text: "Done." },
+    ]);
+    const answered = yield* say("add an nginx service called api to shop production", { page: goneStaging }, model);
+    expect(answered.results).toMatchObject([{ ok: true }]);
+    const listed = yield* Effect.promise(() => store.read(ORGANIZATION, { query: "services", environment: { project: "shop", environment: "production" } }));
+    expect(JSON.stringify(listed)).toContain('"api"');
+  }));
+
 it.live("a turn Claude fails tells the member what happened in plain words, never the provider's JSON", () =>
   Effect.gen(function* () {
     const { say } = yield* sidebar({ removeWeb: false });
@@ -1229,6 +1287,7 @@ it.live("each model call tells PostHog its tokens once, cache reads and writes a
       capture: (event) => Effect.sync(() => void captured.push(event)),
       identify: () => Effect.void,
       identifyOrganization: () => Effect.void,
+      toolCall: () => Effect.void,
     };
     const model = fakeText({ cache: true });
     const reported: TokenUsage[] = [];
@@ -1285,6 +1344,7 @@ it.live("a turn's trace in PostHog nests each tool call under the model call tha
       capture: (event) => Effect.sync(() => void captured.push(event)),
       identify: () => Effect.void,
       identifyOrganization: () => Effect.void,
+      toolCall: () => Effect.void,
     };
     const model = fakeText();
     model.setResponses([{ toolCalls: [{ name: "environment_show", input: { environment: "secretname" } }] }, { text: "All quiet." }]);
@@ -1329,17 +1389,23 @@ it.live("a turn's trace in PostHog nests each tool call under the model call tha
 
 it.live("a refused tool call shows in PostHog as an error", () =>
   Effect.gen(function* () {
-    const { say } = yield* sidebar({ removeWeb: true });
+    const { caller, say } = yield* sidebar({ removeWeb: true });
     const captured: Array<Parameters<PostHogService["capture"]>[0]> = [];
+    const toolCalls: Array<Parameters<PostHogService["toolCall"]>[0]> = [];
     const sink: PostHogService = {
       capture: (event) => Effect.sync(() => void captured.push(event)),
       identify: () => Effect.void,
       identifyOrganization: () => Effect.void,
+      toolCall: (call) => Effect.sync(() => void toolCalls.push(call)),
     };
     yield* say("list services and deploy").pipe(Effect.provideService(PostHog, sink));
 
     expect(captured.filter(({ event }) => event === "$ai_span").map(({ properties }) => [properties?.["$ai_span_name"], properties?.["$ai_is_error"]]))
       .toEqual(expect.arrayContaining([["environment_show", false], ["deploy", true]]));
+    expect(toolCalls).toEqual(expect.arrayContaining([
+      { userId: caller.userId, organizationId: ORGANIZATION, threadId: THREAD, tool: "environment_show", durationMs: expect.any(Number), failed: false },
+      { userId: caller.userId, organizationId: ORGANIZATION, threadId: THREAD, tool: "deploy", durationMs: expect.any(Number), failed: true },
+    ]));
     expect(captured.at(-1)).toMatchObject({ event: "$ai_trace", properties: { $ai_is_error: true } });
   }));
 
@@ -1353,6 +1419,7 @@ it.live("an approved call finished by a resumed run hangs under that run's trace
       capture: (event) => Effect.sync(() => void captured.push(event)),
       identify: () => Effect.void,
       identifyOrganization: () => Effect.void,
+      toolCall: () => Effect.void,
     };
     yield* resume("resolved").pipe(Effect.provideService(PostHog, sink));
 
@@ -1372,6 +1439,7 @@ it.live("a tool name the catalog does not have reaches PostHog as unknown_tool, 
       capture: (event) => Effect.sync(() => void captured.push(event)),
       identify: () => Effect.void,
       identifyOrganization: () => Effect.void,
+      toolCall: () => Effect.void,
     };
     const model = fakeText();
     model.setResponses([{ toolCalls: [{ name: "my_password_is_hunter2", input: {} }] }, { text: "Done." }]);
@@ -1390,6 +1458,7 @@ it.live("a reply stopped mid-stream still closes its trace in PostHog", () =>
       capture: (event) => Effect.sync(() => void captured.push(event)),
       identify: () => Effect.void,
       identifyOrganization: () => Effect.void,
+      toolCall: () => Effect.void,
     };
     const model = fakeText({ tokensPerSecond: 200 });
     model.setResponses([{ text: "Here is a long answer. ".repeat(40) }]);
