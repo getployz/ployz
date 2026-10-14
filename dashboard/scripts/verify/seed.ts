@@ -44,6 +44,13 @@ const env = (name: string) => {
   return value;
 };
 
+const linkFakeGithubAccount = (signedIn: { id: string; email: string }) => Effect.gen(function* () {
+  const { drizzle } = yield* Database;
+  const fixture = JSON.parse(readFileSync(".verify/run/github.json", "utf8")) as { users: Array<{ id: number; email: string }> };
+  const github = fixture.users.find((u) => u.email === signedIn.email);
+  if (github) yield* drizzle.insert(account).values({ userId: signedIn.id, providerId: "github", accountId: String(github.id) });
+});
+
 const seed = Effect.gen(function* () {
   const { drizzle } = yield* Database;
 
@@ -53,12 +60,7 @@ const seed = Effect.gen(function* () {
   const organizationId = yield* ensurePersonalOrganizationForUser(ada);
   const [org] = yield* drizzle.select({ slug: organization.slug }).from(organization).where(eq(organization.id, organizationId));
   const organizationSlug = org?.slug ?? "";
-  // With the fake GitHub, Ada signed in with her fixture GitHub account, so webhooks she sends find her.
-  if (process.env["PLOYZ_GITHUB_ORIGIN"]) {
-    const fixture = JSON.parse(readFileSync(".verify/run/github.json", "utf8")) as { users: Array<{ id: number; email: string }> };
-    const github = fixture.users.find((u) => u.email === ada.email);
-    if (github) yield* drizzle.insert(account).values({ userId: ada.id, providerId: "github", accountId: String(github.id) });
-  }
+  if (process.env["PLOYZ_GITHUB_ORIGIN"]) yield* linkFakeGithubAccount(ada);
 
   // A session better-auth accepts: its row plus the HMAC-signed `better-auth.session_token` cookie.
   const token = env("VERIFY_SESSION_TOKEN");

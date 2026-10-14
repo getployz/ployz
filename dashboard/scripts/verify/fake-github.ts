@@ -1,8 +1,3 @@
-// The fake GitHub that FAKE_GITHUB=1 up.sh points Cloud at through PLOYZ_GITHUB_ORIGIN: API, web pages and codeload on
-// one origin. Users, installations and repositories come from .verify/run/github.json, written with two users and three
-// installations when missing. Prints `VERIFY_FAKE_GITHUB <url>` once listening, then one line per request.
-// POST /_fake/webhook {"event", "action", "installation", "sender"?, "repositories"?} changes what GitHub holds, as that
-// webhook says it did, then signs the webhook and posts it to Cloud, answering with Cloud's status.
 import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -12,14 +7,12 @@ import { gzipSync } from "node:zlib";
 type User = { id: number; login: string; name: string; email: string };
 type Repository = {
   id: number; name: string; private: boolean; default_branch: string; branches: string[];
-  /** False keeps it out of the installation until an `installation_repositories` `added` webhook. */
-  installed?: boolean;
+  awaitsGrant?: true;
   files: Record<string, string>;
 };
 type Installation = { id: number; account: { login: string; type: "User" | "Organization" }; users: string[]; repositories: Repository[] };
 type Fixture = {
-  /** `callbackUrl` gets `code`, `state` and `installation_id` after an install; null closes the window instead. */
-  app: { slug: string; callbackUrl: string | null };
+  app: { slug: string; afterInstall: { closeWindow: true } | { callbackUrl: string } };
   users: User[];
   installations: Installation[];
 };
@@ -32,14 +25,14 @@ const site = {
 const repository = (id: number, name: string, extra: Partial<Repository> = {}): Repository =>
   ({ id, name, private: true, default_branch: "main", branches: ["main", "dev"], files: site, ...extra });
 const DEFAULT_FIXTURE: Fixture = {
-  app: { slug: "ployz-verify", callbackUrl: null },
+  app: { slug: "ployz-verify", afterInstall: { closeWindow: true } },
   users: [
     { id: 9001, login: "ada", name: "Ada Lovelace", email: "ada@example.com" },
     { id: 9002, login: "grace", name: "Grace Hopper", email: "grace@example.com" },
   ],
   installations: [
     { id: 7, account: { login: "acme", type: "Organization" }, users: ["ada", "grace"], repositories: [
-      repository(4242, "blog", { private: false }), repository(4243, "web"), repository(4244, "docs", { installed: false }),
+      repository(4242, "blog", { private: false }), repository(4243, "web"), repository(4244, "docs", { awaitsGrant: true }),
     ] },
     { id: 8, account: { login: "ada", type: "User" }, users: ["ada"], repositories: [repository(4250, "notes")] },
     { id: 9, account: { login: "hopper-labs", type: "Organization" }, users: ["grace"], repositories: [repository(4260, "compiler")] },
@@ -62,7 +55,7 @@ export async function run() {
   const cloud = process.env["FAKE_GITHUB_CLOUD_URL"] ?? "";
   const webhookSecret = process.env["GITHUB_APP_WEBHOOK_SECRET"] ?? "";
   const removedInstallations = new Set<number>();
-  const hidden = new Set(fixture.installations.flatMap((i) => i.repositories.filter((r) => r.installed === false).map((r) => r.id)));
+  const hidden = new Set(fixture.installations.flatMap((i) => i.repositories.filter((r) => r.awaitsGrant).map((r) => r.id)));
   const installationTokens = new Map<string, number>();
   const userTokens = new Map<string, User>();
   const codes = new Map<string, User>();
@@ -77,8 +70,7 @@ export async function run() {
   const located = fixture.installations.flatMap((i) => i.repositories.map((r) => ({ installation: i, repository: r })));
   const commitSha = (i: Installation, r: Repository, branch: string) => sha1("commit", fullName(i, r), branch, JSON.stringify(r.files));
   const treeSha = (commit: string) => sha1("tree", commit);
-  // Every commit holds the repository's files, so a seeded pull request's made-up head sha resolves too.
-  const resolveRef = (i: Installation, r: Repository, ref: string) => {
+  const shaOrBranchHead = (i: Installation, r: Repository, ref: string) => {
     if (/^[0-9a-f]{40}$/.test(ref)) return ref;
     const branch = r.branches.find((b) => b === ref);
     return branch === undefined ? undefined : commitSha(i, r, branch);
@@ -218,7 +210,7 @@ export async function run() {
       const back = (u: User) => {
         const code = token("code");
         codes.set(code, u);
-        const target = new URL(url.searchParams.get("redirect_uri") ?? fixture.app.callbackUrl ?? `${cloud}/`);
+        const target = new URL(url.searchParams.get("redirect_uri") ?? `${cloud}/`);
         target.searchParams.set("code", code);
         const state = url.searchParams.get("state");
         if (state !== null) target.searchParams.set("state", state);
@@ -276,12 +268,13 @@ export async function run() {
       const from = user(url.searchParams.get("login") ?? target?.users[0]);
       if (!target || !from) return notFound;
       const delivered = await sendWebhook({ event: "installation", action: "created", installation: id, sender: from.login });
-      if (fixture.app.callbackUrl === null) {
+      const after = fixture.app.afterInstall;
+      if ("closeWindow" in after) {
         return { status: 200, html: page(`Installed on ${target.account.login} (Cloud answered ${delivered.status})`, [], "setTimeout(() => window.close(), 800)") };
       }
       const code = token("code");
       codes.set(code, from);
-      const back = new URL(fixture.app.callbackUrl);
+      const back = new URL(after.callbackUrl);
       back.searchParams.set("code", code);
       back.searchParams.set("installation_id", String(id));
       back.searchParams.set("setup_action", "install");
@@ -316,7 +309,7 @@ export async function run() {
         return { status: 200, json: { ref: `refs/heads/${branch}`, object: { type: "commit", sha: commitSha(i, r, branch) } } };
       }
       if ((n = /^\/commits\/(.+)$/.exec(rest))) {
-        const sha = resolveRef(i, r, n[1] ?? "");
+        const sha = shaOrBranchHead(i, r, n[1] ?? "");
         if (!sha) return notFound;
         return { status: 200, json: { sha, commit: { tree: { sha: treeSha(sha) }, message: "Fake commit" } } };
       }
@@ -330,7 +323,7 @@ export async function run() {
       }
       if ((n = /^\/contents(?:\/(.*))?$/.exec(rest))) {
         const want = n[1] ?? "";
-        if (!resolveRef(i, r, url.searchParams.get("ref") ?? r.default_branch)) return notFound;
+        if (!shaOrBranchHead(i, r, url.searchParams.get("ref") ?? r.default_branch)) return notFound;
         const content = r.files[want];
         if (content !== undefined) {
           return { status: 200, json: { type: "file", path: want, name: want.split("/").at(-1), size: content.length, encoding: "base64", content: Buffer.from(content).toString("base64") } };
@@ -345,7 +338,7 @@ export async function run() {
         return { status: 200, json: { status: identical ? "identical" : "ahead", base_commit: { sha: n[1] }, files: identical ? [] : Object.keys(r.files).map((filename) => ({ filename })) } };
       }
       if ((n = /^\/tarball\/([0-9a-f]{40})$/.exec(rest))) {
-        if (!resolveRef(i, r, n[1] ?? "")) return notFound;
+        if (!shaOrBranchHead(i, r, n[1] ?? "")) return notFound;
         return { status: 302, location: `${origin}/${fullName(i, r)}/legacy.tar.gz/${n[1]}` };
       }
       return notFound;
@@ -353,7 +346,7 @@ export async function run() {
     if ((m = /^\/([^/]+)\/([^/]+)\/legacy\.tar\.gz\/([0-9a-f]{40})$/.exec(path))) {
       const sha = m[3] ?? "";
       const found = located.find(({ installation: i, repository: r }) =>
-        i.account.login === m?.[1] && r.name === m[2] && installation(i.id) && resolveRef(i, r, sha));
+        i.account.login === m?.[1] && r.name === m[2] && installation(i.id) && shaOrBranchHead(i, r, sha));
       if (!found) return notFound;
       const prefix = `${found.installation.account.login}-${found.repository.name}-${sha.slice(0, 7)}`;
       return { status: 200, body: tarball(prefix, found.repository.files), type: "application/x-gzip" };

@@ -15,7 +15,6 @@ import {
 const Uuid = Schema.String.check(Schema.isUUID());
 const DEFAULT_HOSTED_DNS_URL = new URL("https://dns.ployz.app/");
 const DEFAULT_POSTHOG_HOST = new URL("https://us.i.posthog.com");
-/** Where Cloud reaches GitHub. Every GitHub URL starts at one of these, so `PLOYZ_GITHUB_ORIGIN` moves them all. */
 export type GithubOrigins = { readonly api: string; readonly web: string; readonly codeload: string };
 export const GITHUB_ORIGINS: GithubOrigins = {
   api: "https://api.github.com",
@@ -74,8 +73,7 @@ const rawFields = {
     NonEmptySecret,
     "GITHUB_APP_WEBHOOK_SECRET",
   ),
-  // The verify lab's fake GitHub, which answers for all three origins.
-  githubOrigin: optional(Config.url("PLOYZ_GITHUB_ORIGIN")),
+  githubOriginForEveryHost: optional(Config.url("PLOYZ_GITHUB_ORIGIN")),
   polarAccessToken: optional(
     Config.schema(NonEmptySecret, "POLAR_ACCESS_TOKEN"),
   ),
@@ -213,9 +211,9 @@ const makeAppConfig = Effect.gen(function* () {
       appPrivateKey: raw.githubAppPrivateKey,
       appSlug: raw.githubAppSlug,
       appWebhookSecret: raw.githubAppWebhookSecret,
-      origins: raw.githubOrigin === undefined
+      origins: raw.githubOriginForEveryHost === undefined
         ? GITHUB_ORIGINS
-        : { api: raw.githubOrigin.origin, web: raw.githubOrigin.origin, codeload: raw.githubOrigin.origin },
+        : { api: raw.githubOriginForEveryHost.origin, web: raw.githubOriginForEveryHost.origin, codeload: raw.githubOriginForEveryHost.origin },
     },
     polar,
     // Unset (Self-hosted Cloud): no product analytics. The project key is public; browsers send it too.

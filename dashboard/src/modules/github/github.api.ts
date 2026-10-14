@@ -116,7 +116,7 @@ export const listGithubRepositoryFiles = Effect.fn("Github.listGithubRepositoryF
   function* (installationId: number | null, repositoryFullName: string, ref: string) {
     const api = yield* GithubApi;
     const repositoryPath = repositoryFullName.split("/").map(encodeURIComponent).join("/");
-    const base = `/repos/${repositoryPath}`;
+    const base: `/${string}` = `/repos/${repositoryPath}`;
     const commit = yield* api.json({
       installationId,
       path: `${base}/commits/${encodeURIComponent(ref)}`,

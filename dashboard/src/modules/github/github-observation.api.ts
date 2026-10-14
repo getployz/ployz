@@ -165,8 +165,7 @@ const installationTokenResponseSchema = Schema.Struct({
 
 export type GithubJsonRequest<S extends Schema.ConstraintDecoder<unknown>> = {
   installationId: number | null;
-  /** From `/`, with any query; the GitHub API origin comes from config. */
-  path: string;
+  path: `/${string}`;
   operation: GithubObservationOperation;
   schema: S;
   /** `app` calls as the GitHub App itself (`/app/...` endpoints), not as an installation; `installationId` is ignored. */
@@ -461,7 +460,7 @@ export const postInstallationCheckRun = Effect.fn(
     return yield* githubObservationError({ code: "invalid_input", operation: "create_check_run", retriable: false });
   }
   const api = yield* GithubApi;
-  const repository = `/repositories/${repositoryId}`;
+  const repository: `/${string}` = `/repositories/${repositoryId}`;
   // Every run of that name, not only the latest one GitHub shows by default, page by page until it's found.
   let existing: { id: number } | undefined;
   for (let page = 1; !existing; page++) {
