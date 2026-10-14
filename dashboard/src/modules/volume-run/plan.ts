@@ -235,9 +235,10 @@ function planRestore(name: string, { from, machine }: VolumeRunArgs["restore"], 
 }
 
 export function restoreSource(members: readonly Member[]): MachineName | undefined {
-  if (members.some((member) => !member.answered)) return undefined;
-  const stopped = members.flatMap((member) => {
-    const newest = member.answered ? member.view.copy?.newest ?? null : null;
+  const answered = members.filter((member): member is AnsweredMember => member.answered);
+  if (answered.length < members.length) return undefined;
+  const stopped = answered.flatMap((member) => {
+    const newest = member.view.copy?.newest ?? null;
     return newest === null || roleOf(member) === "writer" ? [] : [{ name: member.machine.name, newest }];
   });
   const second = Math.max(...stopped.map(({ newest }) => newest.created_unix_seconds));
