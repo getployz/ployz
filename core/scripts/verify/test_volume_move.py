@@ -31,7 +31,6 @@ CALL_LIMIT = 6000
 DAEMON, PLUGIN = "ployz.service", "ployz-volume-plugin.service"
 FAULTED_RUN = 10.0
 
-# The cancel undos the table ran before release replaced them: the cancel and runner checks still hold to them.
 CANCEL_UNDOS = {
     "undo-before-cut": dict(name="undo-before-cut", cell="Writer>Writer", step="3-cut", op="move", machine="writer",
                             fault_on="writer", fault="kill-daemon:SetVolumeCopy.WriterToMirror", trigger="fault",
@@ -2101,7 +2100,7 @@ class VolumeMoveTests(unittest.TestCase):
         self.assertIn("the trigger never fired before the run ended", result["failures"], result)
 
     def test_a_receive_that_ends_between_the_probe_reads_is_not_credited_to_the_new_pull(self):
-        # Codex r10 finding 3: an older receive is running when the probe looks for one, then ends, and the first
+        # An older receive is running when the probe looks for one, then ends, and the first
         # run's admission writes its own target before the probe reads `ployz:pull`.
         # The same shape with the first run's own target already admitted: its receive ends between the reads and
         # the plugin keeps `ployz:pull`, so both reads name the first run while no receive is running.
@@ -2270,7 +2269,7 @@ class VolumeMoveTests(unittest.TestCase):
         return self.run_with(name, before, ends, cut)
 
     def test_the_action_runs_right_after_the_trigger_is_credited(self):
-        # Codex r8 E: a kill meant for the 6 s MirrorToMirror hold that starts at +14 must land before +20, so
+        # A kill meant for the 6 s MirrorToMirror hold that starts at +14 must land before +20, so
         # nothing slow may run between the trigger and the kill, not even with 1 s execs.
         begun = []
 
@@ -2338,7 +2337,7 @@ class VolumeMoveTests(unittest.TestCase):
                 self.assertEqual(volume_move.arming(case, side), expect)
 
     def test_a_cut_is_credited_only_from_this_runs_cut_line(self):
-        # Codex r8 A: a fault line that names no Volume or want is not this run's, whatever lands after since.
+        # A fault line that names no Volume or want is not this run's, whatever lands after since.
         with self.subTest("a fault line without identity"):
             result, _ = self.run_with("soak-4-final-runner-kill", lambda model: model.log_fault(
                 "machine-2", model.clock() + 35, "fault: delaying switch verb"))
@@ -2363,7 +2362,7 @@ class VolumeMoveTests(unittest.TestCase):
                       result.get("skipped") or "", result)
 
     def test_a_clean_start_restart_that_does_not_prove_fresh_processes_skips_the_case(self):
-        # Codex r8 C: `|| true` hid a plugin stop that failed, and nothing checked the daemon and plugin were new.
+        # `|| true` hid a plugin stop that failed, and nothing checked the daemon and plugin were new.
         for name, plant, machine in (
                 ("plugin stop fails", lambda model: model.plugin_stop_fails.add("machine-2"), "machine-2"),
                 ("old plugin outlives its stop", lambda model: (
@@ -2431,7 +2430,7 @@ class VolumeMoveTests(unittest.TestCase):
                 self.assertFalse(summary["passed"])
 
     def test_a_vm_clock_stepped_ahead_and_back_across_a_warm_round_fault_does_not_credit_it(self):
-        # Codex r6 1: machine-2 runs 20 s ahead only while its warm-round pull logs its fault, so the stamp lands
+        # Machine-2 runs 20 s ahead only while its warm-round pull logs its fault, so the stamp lands
         # after the cut line's and no later reading shows any movement. The line names a round target, not f-<epoch>.
         def effect(begun):
             model = self.model
@@ -2443,7 +2442,7 @@ class VolumeMoveTests(unittest.TestCase):
         self.assert_not_credited(result)
 
     def test_a_host_clock_jump_that_stamped_the_row_ahead_does_not_credit_a_fault_after_it_ended(self):
-        # Codex r6 1: the worker stamped finished_at during a +20 s host jump between two samples, so the first run
+        # The worker stamped finished_at during a +20 s host jump between two samples, so the first run
         # looks open when its own fault point fires 0.2 s after the row closed.
         def effect(begun):
             model = self.model
@@ -2471,7 +2470,7 @@ class VolumeMoveTests(unittest.TestCase):
                                 result)
 
     def test_a_persistent_vm_clock_change_cannot_replace_the_credited_fault_with_a_later_one(self):
-        # Codex r6 2, Opus r7 1: machine-2 moves 20 s ahead and stays there. The warm-round fault then stamps after
+        # Machine-2 moves 20 s ahead and stays there. The warm-round fault then stamps after
         # the cut, the kill lands on it, and the case-end recheck finds the genuine final-pull fault instead.
         begun = []
 
@@ -2490,7 +2489,7 @@ class VolumeMoveTests(unittest.TestCase):
         self.assertGreaterEqual(model.kills[0], begun[0] + 12, (model.kills, begun))
 
     def test_no_clock_read_runs_in_a_case(self):
-        # Codex r6 3 asked that a failed `date +%s.%N` never decide credit; now no case reads a Machine clock at all.
+        # No case reads a Machine clock, so a failed `date +%s.%N` never decides credit.
         reads = []
 
         def plant(model):
@@ -2543,7 +2542,7 @@ finally:
         self.assertIn(name, summary["error"] or "", summary)
 
     def test_a_sigterm_or_sighup_mid_run_leaves_a_summary(self):
-        # Codex r6 4, Opus r7 3: the signal arrives one second into the first run, through main.
+        # The signal arrives one second into the first run, through main.
         for name in ("SIGTERM", "SIGHUP"):
             with self.subTest(name):
                 self.signalled(name, mid_run=True, in_summary=False)
@@ -2586,7 +2585,7 @@ finally:
         self.assertIn("the probe log is gone", summary["error"] or "", summary)
 
     def test_a_d_state_receive_that_outlives_the_plugin_stop_skips_the_case(self):
-        # Opus r7 2: the old plugin's MainPID is gone, but its zfs receive sits in D state and stays in the unit's
+        # The old plugin's MainPID is gone, but its zfs receive sits in D state and stays in the unit's
         # control group after the stop.
         result, _ = self.run_cut(plant=lambda model: model.stuck_receive.add("machine-2"))
         self.assertFalse(result["passed"], result)
@@ -2814,7 +2813,7 @@ finally:
         model.cli = unread
 
     def test_an_unread_row_after_the_action_never_reads_as_live(self):
-        # Codex r10 1: the late-action scenario, with the read after the kill failed, malformed or missing the first
+        # The late-action scenario, with the read after the kill failed, malformed or missing the first
         # run. The admission row's `running` must not stand in for it.
         for shape, reply in self.UNREAD_LISTS.items():
             with self.subTest(shape):
@@ -3147,7 +3146,7 @@ finally:
         self.assertEqual(clock_escapes(Path(spec.origin).read_text()), [])
 
     def test_the_clock_guard_refuses_every_other_path_to_a_clock(self):
-        # Codex r12: an aliased import read the real clock, and both the source test and the property test passed.
+        # An aliased import read the real clock, and both the source test and the property test passed.
         # Each spelling below reads a clock the model does not perturb, or one the harness is not sanctioned to read.
         source = Path(spec.origin).read_text()
         anchor = "        event = result[\"triggered\"]\n        if case[\"action\"] == \"cancel\":\n"
@@ -3184,7 +3183,7 @@ finally:
                 self.assertNotEqual(clock_escapes(mutated), [], name)
 
     def test_a_host_wall_clock_step_moves_no_deadline(self):
-        # Opus N1: deadlines read the monotonic clock, so stepping the host's realtime clock an hour either way while
+        # Deadlines read the monotonic clock, so stepping the host's realtime clock an hour either way while
         # the case waits neither cuts a wait short nor stretches it.
         clean = volume_move.CASES[0]
         for delta in (3600.0, -3600.0):
