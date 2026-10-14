@@ -723,7 +723,9 @@ pub(crate) fn record(
     }
     match evidence {
         RunEvidence::Alive => {
-            running(&stored)?;
+            if stored.summary.status != DeploymentStatus::Unknown {
+                running(&stored)?;
+            }
             save(tx, &mut stored)?;
             Ok(stored.summary)
         }

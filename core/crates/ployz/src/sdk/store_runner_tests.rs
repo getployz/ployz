@@ -51,6 +51,31 @@ fn run() -> (Run, ployz_store::Actor) {
     )
 }
 
+/// Another runner claims a new Deploy in `run`'s environment, which marks `run`'s
+/// Deployment Unknown.
+fn take_over(run: &Run, actor: &ployz_store::Actor) {
+    use ployz_store::{Admit, Deploy, EnvironmentRef};
+    let deployment = DeploymentId::parse("00000000-0000-4000-8000-000000000004").unwrap();
+    run.store
+        .write_trusted(
+            actor,
+            &Admit::Deploy(Deploy {
+                id: deployment.clone(),
+                environment: EnvironmentRef::default(),
+                services: Vec::new(),
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+            }),
+            &ployz_store::Trusted::default(),
+        )
+        .unwrap();
+    run.store
+        .claim(&deployment, &RunnerId::parse("other").unwrap())
+        .unwrap();
+}
+
 fn cancel(run: &Run, actor: &ployz_store::Actor) {
     run.store
         .write(
@@ -108,6 +133,49 @@ async fn renewing_aborts_but_keeps_owned_work_driven_until_cleanup_finishes() {
     let result = run.renewing(work, || token.cancel()).await;
     assert_eq!(result, "actual outcome");
     assert!(cleaned.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn renewing_aborts_once_the_store_hands_the_environment_to_another_runner() {
+    let (run, actor) = run();
+    take_over(&run, &actor);
+    assert_eq!(run.status().await.unwrap(), DeploymentStatus::Unknown);
+    let token = CancellationToken::new();
+    let work = async {
+        token.cancelled().await;
+        "aborted"
+    };
+    let result = tokio::time::timeout(
+        Duration::from_secs(10),
+        run.renewing(work, || token.cancel()),
+    )
+    .await
+    .expect("a lost runner stops at its next poll");
+    assert_eq!(result, "aborted");
+}
+
+#[test]
+fn a_taken_over_run_reports_what_it_completed_and_leaves_the_stopped_operation_unexecuted() {
+    let operation = |id: char| DeployOperation::RemoveContainer {
+        machine_id: ployz_core::MachineId::parse("a".repeat(32)).unwrap(),
+        container_id: ployz_core::ContainerId::parse(id.to_string().repeat(64)).unwrap(),
+        purpose: ployz_core::RemoveContainerPurpose::Rollout,
+    };
+    let outcome = DeployOutcome::Failed {
+        completed: vec![operation('a')],
+        failed: FailedOperation::Operation {
+            operation: operation('b'),
+            error: ExecutionError::Cancelled,
+        },
+        unexecuted: vec![operation('c')],
+    };
+    assert_eq!(
+        interrupted(outcome),
+        DeployOutcome::Interrupted {
+            completed: vec![operation('a')],
+            unexecuted: vec![operation('b'), operation('c')],
+        }
+    );
 }
 
 #[tokio::test]

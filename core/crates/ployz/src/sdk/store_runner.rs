@@ -8,7 +8,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use ployz_core::{DeployOutcome, RpcError, RpcErrorCode, ServiceName};
+use ployz_core::{
+    DeployOperation, DeployOutcome, ExecutionError, FailedOperation, RpcError, RpcErrorCode,
+    ServiceName,
+};
 use ployz_store::tools::SecretSet;
 use ployz_store::{
     BuildReport, BuildStatus, Builder, Claimed, CommitSha, ConfigStore, DeploymentId,
@@ -302,6 +305,11 @@ impl Run {
             .await;
         match outcome {
             Ok((outcome, progress)) => {
+                let outcome = if self.lost_to_another_runner().await {
+                    interrupted(outcome)
+                } else {
+                    outcome
+                };
                 let removed = if matches!(outcome, DeployOutcome::Success { .. }) {
                     // Deleting is never interrupted: a half-deleted set stays accepted.
                     self.renewing(remove_volumes(session, deletes), || ()).await
@@ -515,7 +523,7 @@ impl Run {
         scrub: &Scrub,
     ) -> Result<
         (
-            DeployOutcome<ployz_core::ExecutionError>,
+            DeployOutcome<ExecutionError>,
             Vec<ployz_store::ServerProgress>,
         ),
         RpcError,
@@ -592,8 +600,8 @@ impl Run {
         }
     }
 
-    /// Await `work` while renewing this runner's lease on the Deployment; a cancel
-    /// calls `abort`.
+    /// Await `work` while renewing this runner's lease on the Deployment; a cancel, or
+    /// the store handing the environment to another runner, calls `abort`.
     async fn renewing<T>(&self, work: impl std::future::Future<Output = T>, abort: impl Fn()) -> T {
         tokio::pin!(work);
         let mut poll = tokio::time::interval(CANCEL_POLL);
@@ -602,7 +610,10 @@ impl Run {
                 done = &mut work => return done,
                 _ = poll.tick() => {
                     // ponytail: a failed read skips one check; the next tick reads again.
-                    if self.status().await.ok() == Some(DeploymentStatus::Cancelling) {
+                    if matches!(
+                        self.status().await.ok(),
+                        Some(DeploymentStatus::Cancelling | DeploymentStatus::Unknown)
+                    ) {
                         abort();
                     }
                 }
@@ -647,12 +658,58 @@ impl Run {
         .await
     }
 
+    /// One bounded read after execution: the store may have handed the environment
+    /// to another runner meanwhile, and then takes no outcome from this run.
+    async fn lost_to_another_runner(&self) -> bool {
+        self.status().await.ok() == Some(DeploymentStatus::Unknown)
+    }
+
     /// Renew this runner's lease on the Deployment and read its status back, which
-    /// says whether it was cancelled.
+    /// says whether it was cancelled or handed to another runner.
     async fn status(&self) -> Result<DeploymentStatus, RpcError> {
         self.record(RunEvidence::Alive)
             .await
             .map(|summary| summary.status)
+    }
+}
+
+/// `outcome` as the store's takeover left it: what completed stays completed, and
+/// everything else, including the operation the abort stopped, was not executed.
+fn interrupted(outcome: DeployOutcome<ExecutionError>) -> DeployOutcome<ExecutionError> {
+    match outcome {
+        DeployOutcome::Success { completed } => DeployOutcome::Interrupted {
+            completed,
+            unexecuted: Vec::new(),
+        },
+        DeployOutcome::Failed {
+            completed,
+            failed,
+            mut unexecuted,
+        } => {
+            let stopped = match failed {
+                FailedOperation::Operation { operation, .. } => operation,
+                FailedOperation::Replacement { operation, .. } => {
+                    DeployOperation::ReplaceContainer(operation)
+                }
+            };
+            unexecuted.insert(0, stopped);
+            DeployOutcome::Interrupted {
+                completed,
+                unexecuted,
+            }
+        }
+        DeployOutcome::Superseded {
+            completed,
+            unexecuted,
+            ..
+        }
+        | DeployOutcome::Interrupted {
+            completed,
+            unexecuted,
+        } => DeployOutcome::Interrupted {
+            completed,
+            unexecuted,
+        },
     }
 }
 
