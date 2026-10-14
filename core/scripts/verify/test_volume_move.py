@@ -8,6 +8,7 @@ import io
 import json
 import re
 from pathlib import Path
+import random
 import shutil
 import subprocess
 import sys
@@ -99,6 +100,8 @@ class ClusterModel:
         self.latency = {"machine-1": 0.0, "machine-2": 0.0}
         # A clock that slews gains rate seconds per host second from the model's start, on top of its offset.
         self.rate = {"machine-1": 0.0, "machine-2": 0.0}
+        # Cloud's clock stamps its rows the same way.
+        self.cloud = dict(offset=0.0, rate=0.0)
         # Each journal line keeps the stamp its Machine's clock gave it when it happened.
         self.kills = []
         # A Machine whose db is mid-stop answers pg_isready with "rejecting connections".
@@ -318,7 +321,9 @@ class ClusterModel:
         self.holds.append(dict(id=run_id, start=start, until=start + seconds, listed=listed))
 
     def now(self):
-        return iso(self.clock() if self.clock else 1000.0)
+        """What Cloud's clock reads now."""
+        at = self.clock() if self.clock else 1000.0
+        return iso(at + self.cloud["offset"] + self.cloud["rate"] * (at - 1000.0))
 
     def finish(self, row, state, after=0.0):
         """Cloud closes row as state, after seconds from now when given: a faulted run stays open while its daemon
@@ -525,20 +530,26 @@ class FakeProbe:
 
 
 class Clock:
-    """The host's realtime clock. A step moves it; advance is time passing."""
+    """Time as the fake cluster shares it: advance is time passing for everyone. The host reads it through wall(),
+    its realtime clock, which a step moves and a slew stretches."""
 
     def __init__(self):
         self.now = 1000.0
         self.probe = None
+        self.offset = 0.0
+        self.rate = 0.0
 
     def __call__(self):
         return self.now
+
+    def wall(self):
+        return self.now + self.offset + self.rate * (self.now - 1000.0)
 
     def advance(self, seconds):
         self.now += seconds
 
     def step(self, delta):
-        self.now += delta
+        self.offset += delta
 
     def sleep(self, seconds):
         self.advance(seconds)
@@ -575,13 +586,13 @@ class VolumeMoveTests(unittest.TestCase):
 
         def spawn(command, stdout, stderr):
             logs = len(list((self.root / "evidence").iterdir()))
-            probe = FakeProbe(self.root / "evidence" / f"ackprobe-db-{logs}.jsonl", model, clock)
+            probe = FakeProbe(self.root / "evidence" / f"ackprobe-db-{logs}.jsonl", model, clock.wall)
             probe.stdout = stdout
             probe.ack()
             clock.probe = probe
             return probe
-        checks = volume_move.VolumeMove(self.manifest, runner=model, spawn=spawn, sleep=clock.sleep, clock=clock,
-                                        out=self.root / "out")
+        checks = volume_move.VolumeMove(self.manifest, runner=model, spawn=spawn, sleep=clock.sleep,
+                                        clock=clock.wall, out=self.root / "out")
         return checks, model
 
     def run_cases(self, cases, mutation=None):
@@ -2119,6 +2130,217 @@ finally:
         self.assertFalse(result["passed"], result)
         self.assertTrue(any(failure.startswith("the kill-ployz landed after the first run")
                             for failure in result["failures"]), result["failures"])
+
+    CLOCKS = ("machine-1", "machine-2", "cloud", "host")
+
+    def perturb(self, model, label, number, seen):
+        """Every clock the harness could read starts off, slews, and keeps stepping 20 s either way while the run
+        goes on, as seed `label number` draws it. Only the host's drift is bounded, to 60 s: it feeds deadlines, and
+        a deadline that crossed would change what the case does, not what it credits. Slews alternate sign with the
+        number so two seeds cover both."""
+        rng, clock, drift = random.Random(f"{label} {number}"), model.clock, dict.fromkeys(self.CLOCKS, 0.0)
+
+        def move(name, delta):
+            if name == "host":
+                clock.step(delta)
+            elif name == "cloud":
+                model.cloud["offset"] += delta
+            else:
+                model.offset[name] += delta
+
+        def slew(name, rate):
+            if name == "host":
+                clock.rate = rate
+            elif name == "cloud":
+                model.cloud["rate"] = rate
+            else:
+                model.rate[name] = rate
+
+        def arm(name):
+            delta = rng.choice((-20.0, 20.0))
+            if name == "host" and abs(drift[name] + delta) > 60:
+                delta = -delta
+
+            def step():
+                drift[name] += delta
+                move(name, delta)
+                seen[name].add("stepped ahead" if delta > 0 else "stepped behind")
+                arm(name)
+            model.at(model.clock() + rng.uniform(0.5, 30), step)
+        for index, name in enumerate(self.CLOCKS):
+            move(name, rng.uniform(-30, 30))
+            rate = rng.uniform(0.01, 0.1) * (1 if (number + index) % 2 else -1)
+            slew(name, rate)
+            seen[name].add("slewed fast" if rate > 0 else "slewed slow")
+            arm(name)
+
+    def clock_corpus(self):
+        """Every case clean, each planted defect, and the credit scenarios the tests above settle, each with the
+        verdict its own test asserts. (label, passes, cases, driver kwargs)"""
+        every = volume_move.CASES + volume_move.soak_cases()
+        cases = {case["name"]: case for case in every}
+        # The undos cancel through Inngest, which only their own tests fake; the fake fires no trigger on its own
+        # for the 1-rounds, 3-cut and 4-final soak steps.
+        unfired = [case for case in every if case["step"] in ("1-rounds", "3-cut", "4-final") and "soak" in case["name"]]
+        corpus = [("every clean and kill case", True,
+                   [case for case in every if "undo" not in case["name"] and case not in unfired], {}),
+                  ("every soak case whose trigger never fires", False, unfired, {})]
+        corpus += [(f"planted {mutation}", False, [cases["clean"]], dict(mutation=mutation))
+                   for mutation in ("two-writers", "stopped", "snapshots", "lost")]
+
+        def trip(model, begun, case, trips):
+            def fire():
+                if case["trigger"] == "receiving":
+                    model.receiving = True
+                else:
+                    model.fired = True
+            model.at(begun + trips, fire)
+        for name, state, ends, trips, passes in (
+                ("kill-snapshot", "failed", 0.5, 1.0, False), ("kill-pull", "failed", 0.5, 1.0, False),
+                ("kill-snapshot", "lost", 0.5, 1.0, False), ("soak-1-rounds-kill-ployz-writer", "failed", 0.25, 0.5, False),
+                ("kill-snapshot", "failed", 1.5, 1.0, True), ("kill-pull", "failed", 1.5, 1.0, True),
+                ("kill-snapshot", "done", 1.5, 1.0, True), ("soak-1-rounds-kill-ployz-writer", "failed", 0.75, 0.5, True)):
+            corpus.append((f"{name} ends {state} at {ends}, trips at {trips}", passes, [cases[name]],
+                           dict(ends=ends, state=state, claimed=state != "lost",
+                                effect=lambda model, begun, case=cases[name], trips=trips: trip(model, begun, case, trips))))
+
+        def sync_left_a_receive(model, receive_ends):
+            model.hold(4, "sync-1")
+            model.receiving = {"machine-2"}
+            if receive_ends:
+                model.at(model.clock() + receive_ends, lambda: setattr(model, "receiving", False))
+        for name, state, ends, receive_ends in (
+                ("soak-1-rounds-runner-kill", "failed", 1, 30), ("soak-1-rounds-runner-kill", "lost", 600, 30),
+                ("soak-1-rounds-runner-kill", "failed", 1, None)):
+            corpus.append((f"{name} after a sync left a receive ending {receive_ends}", False, [cases[name]],
+                           dict(before=lambda model, receive_ends=receive_ends: sync_left_a_receive(model, receive_ends),
+                                ends=ends, state=state, claimed=state != "lost")))
+
+        def old_fault_line(model):
+            model.offset["machine-2"] = 20.0
+            model.log_fault("machine-2", model.clock() - 15)
+        corpus.append(("fault line from before the barrier", False, [volume_move.KILLS[0]],
+                       dict(before=old_fault_line, ends=1)))
+        for name in ("soak-3-cut-kill-ployz-writer", "soak-4-final-kill-ployz-writer"):
+            for ends, trips, passes in ((0.75, 1.0, False), (1.5, 1.0, True)):
+                def late(model, begun, case=cases[name], trips=trips):
+                    if case["trigger"] == "stopped":
+                        model.cut("machine-1", begun + trips - 0.1)
+                    else:
+                        model.cut("machine-1", begun + trips - 0.5)
+                        model.log_fault("machine-2", begun + trips)
+                corpus.append((f"{name} ends at {ends}, trigger at {trips}", passes, [cases[name]],
+                               dict(ends=ends, effect=late)))
+
+        def inside_a_receive(model, begun):
+            model.at(begun + 0.5, lambda: setattr(model, "receiving", {"machine-2"}))
+            model.at(begun + 2, lambda: setattr(model, "receiving", False))
+        corpus.append(("killed inside its own receive", True, [cases["soak-1-rounds-runner-kill"]],
+                       dict(ends=2, effect=inside_a_receive)))
+        corpus.append(("pull admitted before its receive exists", False, [cases["soak-1-rounds-runner-kill"]],
+                       dict(before=lambda model: self.admit_pull(model, "machine-2", 30, 40))))
+        corpus.append(("cut an earlier move left waiting", False, [cases["soak-3-cut-runner-kill"]],
+                       dict(before=lambda model: model.task("machine-1", model.clock() + 20, "cut",
+                                                            lambda: model.cut("machine-1", model.clock())))))
+        cut = cases["soak-3-cut-runner-kill"]
+        corpus.append(("this run's cut", True, [cut], dict(ends=10, effect=lambda m, b: m.cut("machine-1", b + 2))))
+        corpus.append(("late step of a closed run", False, [cut],
+                       dict(before=self.close_an_earlier_run, ends=10,
+                            effect=lambda m, b: m.cut("machine-1", b + 2, target="f-1"))))
+        corpus.append(("cut line for another volume", False, [cut],
+                       dict(ends=10, effect=lambda m, b: m.cut("machine-1", b + 2, volume="verify-production_vol-2"))))
+        corpus.append(("cut line for another target", False, [cut],
+                       dict(ends=10, effect=lambda m, b: m.cut("machine-1", b + 2, target="f-7"))))
+
+        final = cases["soak-4-final-runner-kill"]
+
+        def stepped_across_a_round_fault(model, begun):
+            model.at(begun + 1, lambda: model.offset.update({"machine-2": 20.0}))
+            model.log_fault("machine-2", begun + 2)
+            model.at(begun + 9, lambda: model.offset.update({"machine-2": 0.0}))
+            model.cut("machine-1", begun + 10)
+        corpus.append(("vm clock stepped across a warm round fault", False, [final],
+                       dict(ends=60, effect=stepped_across_a_round_fault)))
+
+        def row_stamped_ahead(model, begun):
+            model.at(begun + 0.1, lambda: model.runs[0].update(finished_at=iso(begun + 20.1)))
+            model.log_fault("machine-1", begun + 0.3)
+        corpus.append(("host jump stamped the row ahead", False, [cases["kill-snapshot"]],
+                       dict(ends=0.1, effect=row_stamped_ahead)))
+
+        def persistent_change(model, begun):
+            model.at(begun + 1, lambda: model.offset.update({"machine-2": 20.0}))
+            model.log_fault("machine-2", begun + 2)
+            model.cut("machine-1", begun + 10)
+            model.log_fault("machine-2", begun + 12)
+        corpus.append(("persistent vm clock change", True, [final], dict(ends=60, effect=persistent_change)))
+        corpus.append(("fault line from an older epoch", False, [cases["kill-snapshot"]],
+                       dict(before=self.close_an_earlier_run, ends=3,
+                            effect=lambda m, b: m.log_fault("machine-1", b + 1, epoch=1))))
+        corpus.append(("fault line for another volume", False, [cases["kill-snapshot"]],
+                       dict(ends=3, effect=lambda m, b: m.log_fault("machine-1", b + 1, volume="other_vol"))))
+
+        def round_pull_after_the_cut(model, begun):
+            model.cut("machine-1", begun + 10)
+            model.log_fault("machine-2", begun + 12, target=f"w-{model.epoch(model.runs[-1]['id'])}-1")
+        corpus.append(("round pull fault line after the cut", False, [final],
+                       dict(ends=60, effect=round_pull_after_the_cut)))
+
+        def cut_then_fault(model, begun):
+            model.cut("machine-1", begun + 10)
+            model.log_fault("machine-2", begun + 14)
+        corpus.append(("action lands after the row is terminal", False, [cases["soak-4-final-kill-ployz-other"]],
+                       dict(before=lambda model: model.latency.update({"machine-2": 1.0}), ends=15.5,
+                            effect=cut_then_fault)))
+        corpus.append(("action right after the trigger with slow execs", True, [final],
+                       dict(before=lambda model: model.latency.update({"machine-1": 1.0, "machine-2": 1.0}), ends=30,
+                            effect=cut_then_fault)))
+        return corpus
+
+    def verdict(self, cases, perturb=None, mutation=None, before=None, ends=None, state="failed", claimed=True,
+                effect=None):
+        """Run cases on a fresh model and keep what decides the run: the summary minus the host-timed gap, and each
+        credited event minus its monotonic poll time. With ends the first op is scripted as first_move does."""
+        shutil.rmtree(self.root / "out", ignore_errors=True)
+        checks, model = self.checks(mutation)
+        self.model = model
+        if perturb:
+            perturb(model)
+        prepare = checks.prepare
+
+        def prepared(case, other):
+            prepare(case, other)
+            if before:
+                before(model)
+        checks.prepare = prepared
+        if ends is not None:
+            self.first_move(model, ends, state, effect and (lambda begun: effect(model, begun)), claimed)
+        with redirect_stdout(io.StringIO()):
+            summary = checks.run_all(cases)
+        decided = []
+        for case in summary["cases"]:
+            out = self.root / "out" / f"{case['name']}.json"
+            credited = json.loads(out.read_text()).get("triggered") if out.exists() else None
+            if credited:
+                credited = {key: value for key, value in credited.items() if key != "poll_end_mono"}
+            decided.append(dict({key: value for key, value in case.items() if key != "gap"}, triggered=credited))
+        return dict(passed=summary["passed"], error=summary["error"], cases=decided)
+
+    def test_no_clock_step_or_slew_anywhere_changes_any_verdict(self):
+        # The four facts never read a clock, so every Machine, Cloud and the host may step and slew at random while
+        # each case the tests above settle runs, and the verdict and the credited event stay the same.
+        seeds = range(4)
+        seen = {name: set() for name in self.CLOCKS}
+        for label, passes, cases, kwargs in self.clock_corpus():
+            with self.subTest(label):
+                plain = self.verdict(cases, **kwargs)
+                self.assertEqual(plain["passed"], passes, plain)
+                for number in seeds:
+                    perturbed = self.verdict(cases, lambda model, number=number: self.perturb(model, label, number, seen),
+                                             **kwargs)
+                    self.assertEqual(perturbed, plain, f"seed `{label} {number}`")
+        for name in self.CLOCKS:
+            self.assertEqual(seen[name], {"stepped ahead", "stepped behind", "slewed fast", "slewed slow"}, name)
 
 
 if __name__ == "__main__":
