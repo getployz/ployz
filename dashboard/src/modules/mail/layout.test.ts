@@ -24,7 +24,7 @@ describe("renderMail", () => {
         "",
         "--",
         "You're getting this because you're a member of Acme on Ployz.",
-        `Unsubscribe from uptime emails: ${ORIGIN}/api/unsubscribe?token=sample`,
+        `Unsubscribe from uptime emails: ${ORIGIN}/unsubscribe?token=sample`,
         `Notification settings: ${ORIGIN}/cloud/account`,
       ].join("\n"),
     );
@@ -34,7 +34,7 @@ describe("renderMail", () => {
     const { html } = await renderMail(sampleMail(ORIGIN), ORIGIN);
 
     expect(html).toContain(`href="${ORIGIN}/cloud/acme/shop/production/uptime"`);
-    expect(html).toContain(`href="${ORIGIN}/api/unsubscribe?token=sample"`);
+    expect(html).toContain(`href="${ORIGIN}/unsubscribe?token=sample"`);
     expect(html).toContain(`href="${ORIGIN}/cloud/account"`);
     expect(html).toContain(`src="${ORIGIN}/assets/logo-mark.png"`);
     expect(html).toContain("The health check fails since 14:02 AEDT.");
