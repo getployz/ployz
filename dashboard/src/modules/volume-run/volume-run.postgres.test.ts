@@ -3058,10 +3058,11 @@ describe("volume runs", () => {
       expect(verbs).toEqual(["writer@fsn-2(create)"]);
     });
 
-    it("on a committed Move whose run failed: it follows the commitment to B without waiting, and refuses to start B once a later run settled the Volume", async () => {
+    it("on a committed Move whose run failed: a Deploy that does not hold the Volume follows the commitment to B without waiting, and refuses to start B once a later run settled the Volume", async () => {
       const cut = afterCut();
       const taken = await moving("committed");
       await harness.pool.query("update volume_run set state = 'failed', finished_at = now() where id = $1", [taken.id]);
+      deployNodes = [{ type: "service", id: "svc-api", name: "api", outcome: "pending", rows: [] }];
 
       const placed = await place();
 
@@ -3092,6 +3093,7 @@ describe("volume runs", () => {
 
         expect(await runEffect(isVolumeOwed(organizationId, volumeId))).toBe(false);
         expect(await place()).toEqual([]);
+        await finish();
         expect(await requested({ kind: "move", args: { to: "fsn-3" } })).toMatchObject({ kind: "move", state: "requested" });
       });
 
@@ -3102,8 +3104,44 @@ describe("volume runs", () => {
         expect(await place()).toMatchObject([{ kind: "follow", to: "fsn-2", ended: true }]);
       });
 
-      it("a release requested after the Deploy placed it inherits the same commitment, and the follow still starts B", async () => {
+      it("a Deploy targeting the Volume holds it beside the follow: a Move is refused as deploying, then as owed once the Deploy ends", async () => {
         await failedCommit();
+        const owes = "data finishes on fsn-2; ployz volume release data finishes it now";
+
+        const placed = await place();
+
+        expect(placed).toMatchObject([{ kind: "follow", to: "fsn-2", ended: true }]);
+        expect((await lanes()).filter((lane) => lane.kind === "deploy")).toMatchObject([{ state: "running", inngest_run_id: DEPLOY, args: { hold: true } }]);
+        expect(await request({ kind: "move", args: { to: "fsn-3" } })).toMatchObject({ ok: false, refusal: { message: "data is deploying; the Deploy ends its run" } });
+        expect(await runEffect(isVolumeOwed(organizationId, volumeId))).toBe(true);
+        expect(await fence(placed[0])).toEqual({ on: "fsn-2" });
+        expect(verbs).toEqual(["writer@fsn-2(create)"]);
+
+        await finish();
+
+        expect((await lanes()).filter((lane) => lane.kind === "deploy")).toEqual([]);
+        expect(await runEffect(isVolumeOwed(organizationId, volumeId))).toBe(true);
+        expect(await request({ kind: "move", args: { to: "fsn-3" } })).toMatchObject({ ok: false, refusal: { message: owes } });
+      });
+
+      it("a retried placement that finds its own hold still follows the commitment", async () => {
+        await failedCommit();
+        await place();
+
+        expect(await place()).toMatchObject([{ kind: "follow", to: "fsn-2", ended: true }]);
+        expect((await lanes()).filter((lane) => lane.kind === "deploy")).toHaveLength(1);
+      });
+
+      it("a Deploy that takes over another Deploy's hold still follows the commitment", async () => {
+        await failedCommit();
+        await place();
+
+        expect(await runEffect(placeDeployVolumes(organizationId, "env-1", "d-2", "deploy-2"))).toMatchObject([{ kind: "follow", to: "fsn-2", ended: true }]);
+      });
+
+      it("a release requested after a Deploy that does not hold the Volume placed it inherits the same commitment, and the follow still starts B", async () => {
+        await failedCommit();
+        deployNodes = [{ type: "service", id: "svc-api", name: "api", outcome: "pending", rows: [] }];
         const placed = await place();
         await requested({ kind: "release", args: {} });
 
@@ -3137,6 +3175,7 @@ describe("volume runs", () => {
         const taken = await moving("committed");
         await harness.pool.query("update volume_run set state = 'failed', finished_at = now() where id = $1", [taken.id]);
         await fence((await place())[0]);
+        await finish();
         containers = containers.filter((container) => container.machine !== "fsn-1");
         for (const container of containers) container.running = false;
         verbs = [];
@@ -3194,6 +3233,7 @@ describe("volume runs", () => {
       expect(output.result).toMatchObject({ moved: "fsn-2" });
       expect((await rows()).at(-1)).toMatchObject({ kind: "release", state: "done" });
       expect(await place()).toEqual([]);
+      await finish();
       expect(await requested({ kind: "move", args: { to: "fsn-1" } })).toMatchObject({ kind: "move", state: "requested" });
     });
 
