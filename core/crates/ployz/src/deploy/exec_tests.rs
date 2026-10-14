@@ -106,6 +106,8 @@ struct Scripted {
     superseded: Option<ServiceName>,
     /// The row lands but the reply never arrives.
     lost_reply: bool,
+    /// The write fails in transit and never lands.
+    dropped_publish: bool,
     pointers: Mutex<BTreeMap<QualifiedService, ServingPointer>>,
     publications: Mutex<Vec<PublishServingPointerRequest>>,
     /// Each drained removal with the number of pointer writes before it.
@@ -127,6 +129,7 @@ impl Scripted {
             unrouted_machine: None,
             superseded: None,
             lost_reply: false,
+            dropped_publish: false,
             pointers: Mutex::new(BTreeMap::new()),
             publications: Mutex::new(Vec::new()),
             removed_after: Mutex::new(Vec::new()),
@@ -376,6 +379,9 @@ impl MachineOperations for Scripted {
         request: PublishServingPointerRequest,
     ) -> Result<ServingPointerPublication, RpcError> {
         self.publications.lock().unwrap().push(request.clone());
+        if self.dropped_publish {
+            return Err(error("connection reset"));
+        }
         let mut pointers = self.pointers.lock().unwrap();
         let current = pointers.get(&request.service).cloned();
         if self.superseded.as_ref() == Some(&request.service.name) || current != request.read {

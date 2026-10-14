@@ -453,6 +453,28 @@ async fn a_lost_publish_reply_keeps_the_copies_the_row_points_at() {
 }
 
 #[tokio::test]
+async fn a_publish_with_no_reply_keeps_its_copies_while_the_row_reads_unchanged() {
+    let machine = machine('1');
+    let plan = vec![run(&machine, spec(None, None, None), true)];
+    let client = Scripted {
+        dropped_publish: true,
+        ..Scripted::new(vec![created(
+            Call::Run(machine, ContainerKind::ServiceContainer),
+            &container('a'),
+        )])
+    };
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Failed { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(client.publications().len(), 1);
+    client.assert_done();
+}
+
+#[tokio::test]
 async fn a_first_flip_keeps_the_replicas_the_plan_left_running() {
     let machine = machine('1');
     let kept = container('a');

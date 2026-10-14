@@ -729,17 +729,13 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                 let new = started.entry(group).or_default();
                 let result = match result {
                     Ok(publication) => Ok(publication),
-                    Err(error) => match lost_reply(client, &service, run).await {
-                        LostReply::Landed => Ok(ServingPointerPublication::Published),
-                        LostReply::Lost(pointer) => {
-                            retain_unpointed(new, pointer.as_ref());
-                            Err(error)
-                        }
-                        LostReply::Unread => {
-                            unread.insert(group);
-                            Err(error)
-                        }
-                    },
+                    Err(_) if publish_landed(client, &service, run).await => {
+                        Ok(ServingPointerPublication::Published)
+                    }
+                    Err(error) => {
+                        unread.insert(group);
+                        Err(error)
+                    }
                 };
                 match result {
                     Ok(ServingPointerPublication::Published) => {
@@ -889,26 +885,18 @@ async fn ack_tick(cancellation: &CancellationToken, since: Option<Instant>) {
     }
 }
 
-/// What one read of the pointer row says about a publish whose reply was lost.
-enum LostReply {
-    /// The row names this run: the publish landed.
-    Landed,
-    /// Another row, or none, is current; it is what cleanup must not touch.
-    Lost(Option<ServingPointer>),
-    /// The row could not be read, so nothing of this group is removed.
-    Unread,
-}
-
-async fn lost_reply<C: MachineOperations>(
+/// Whether a publish whose reply was lost wrote this run's row. Any other
+/// answer leaves the write pending, so the group keeps every started copy a
+/// late commit may still point at.
+async fn publish_landed<C: MachineOperations>(
     client: &C,
     service: &QualifiedService,
     run: &DeploymentLogId,
-) -> LostReply {
-    match client.read_pointer(service).await {
-        Ok(read) if read.pointer.as_ref().is_some_and(|p| &p.deploy == run) => LostReply::Landed,
-        Ok(read) => LostReply::Lost(read.pointer),
-        Err(_) => LostReply::Unread,
-    }
+) -> bool {
+    client
+        .read_pointer(service)
+        .await
+        .is_ok_and(|read| read.pointer.is_some_and(|pointer| &pointer.deploy == run))
 }
 
 /// Keeps only the started Containers `pointer` does not name, so cleanup never

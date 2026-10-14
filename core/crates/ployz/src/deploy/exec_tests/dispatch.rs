@@ -332,26 +332,6 @@ async fn global_start_failure_leaves_nothing_of_the_keyed_container() {
     client.assert_done();
 }
 
-fn new_want(kind: ContainerKind, spec: &ResolvedServiceSpec, key: &str) -> ContainerWant {
-    ContainerWant::Running {
-        container: RunTarget::New(NewContainer {
-            slot: slot_key(&test_namespace(), kind, key.to_owned()),
-            resolved_spec: spec.clone(),
-            deployment_id: None,
-            registry_auth: None,
-            image_prepared: true,
-            answer: ployz_core::AnswerWhen::Started,
-        }),
-    }
-}
-
-fn ensured(machine_id: &MachineId, id: &ContainerId) -> ployz_core::RpcResponse {
-    ployz_core::RpcResponse::from(ployz_core::EnsuredContainer::Ensured {
-        health: None,
-        now: ContainerNow::Present(observation(machine_id, id, running())),
-    })
-}
-
 #[tokio::test]
 async fn a_private_image_is_pulled_with_its_services_credentials_only() {
     use ployz_core::{OpaquePayload, PullImageRequest, RegistryAuth, RpcRequestBody};
