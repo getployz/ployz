@@ -174,12 +174,26 @@ class Registry(unittest.TestCase):
 
     def test_the_ssh_control_socket_fits_a_unix_socket_path(self):
         def path(run):
-            with unittest.mock.patch.object(boat, "REGISTRY", self.saved):
-                return boat.Provider(dict(id=run, manifest=self.run["manifest"]), self.fake, Path(".")).control_path()
+            return boat.Provider(dict(id=run, manifest=self.run["manifest"]), self.fake, Path(".")).control_path()
         for run in ["bake-" + "f" * 10, "20261014T034406-9a4821d75f"]:
             # %C expands to 40 hex characters and ssh adds a 17-character suffix while it binds.
             self.assertLessEqual(len(path(run).replace("%C", "0" * 40)) + 17, 107)
         self.assertNotEqual(path("a"), path("b"))
+
+    def test_a_control_directory_others_can_open_is_refused(self):
+        self.provider.control = boat.REGISTRY / "control"
+        self.provider.control.mkdir(mode=0o777)
+        self.provider.control.chmod(0o777)
+        with self.assertRaisesRegex(RuntimeError, "only you can open"):
+            self.provider.options()
+        self.provider.control.chmod(0o700)
+        self.assertIn("ControlMaster=auto", self.provider.options())
+
+    def test_a_corrupt_run_record_hides_only_itself(self):
+        self.registered(**{"machine-1": dict(id="bx_a", state="running")})
+        (boat.REGISTRY / "broken.json").write_text("{")
+        with unittest.mock.patch("sys.stderr", new_callable=io.StringIO):
+            self.assertEqual([record["run"] for record in boat.records()], ["run1"])
 
     def test_a_failed_stop_still_cleans_the_rest_then_fails(self):
         self.registered(**{"machine-1": dict(id="bx_a", state="running"), "machine-2": dict(id="bx_b", state="running")})

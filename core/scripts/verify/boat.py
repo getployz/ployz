@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import threading
@@ -127,6 +128,18 @@ def read(path):
         return None
 
 
+def records():
+    """Every run record in REGISTRY; a corrupt one is skipped with a warning so it never hides the others."""
+    for path in sorted(REGISTRY.glob("*.json")):
+        try:
+            record = read(path)
+        except ValueError:
+            print(f"Skipping unreadable Boat run record {path}", file=sys.stderr)
+            continue
+        if record:
+            yield record
+
+
 def write(path, record):
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
@@ -172,7 +185,7 @@ def stale_bakes(named, current, ours, in_use):
 
 
 def images_in_use():
-    return {record["image"] for path in REGISTRY.glob("*.json") if (record := read(path)) and record.get("image")}
+    return {record["image"] for record in records() if record.get("image")}
 
 
 def boat_json(*args):
@@ -189,7 +202,7 @@ def status(state):
 
 def runs():
     """Every Boat verify run this user's registry holds, from any checkout."""
-    records = [record for path in sorted(REGISTRY.glob("*.json")) if (record := read(path))]
+    records = list(records())
     if not records:
         return []
     states = {sandbox["id"]: sandbox["state"] for sandbox in boat_json("list", "--all")["sandboxes"]}
@@ -275,7 +288,7 @@ class Provider:
                 continue
             if failure and failure.get("code") == "boat_direct_failed" and not created:
                 # The create may have run without telling us its id; never retry it blind.
-                known = {entry["id"] for path in REGISTRY.glob("*.json") for entry in (read(path) or {}).get("sandboxes", {}).values()}
+                known = {entry["id"] for record in records() for entry in record.get("sandboxes", {}).values()}
                 unknown = [sandbox["id"] for sandbox in boat_json("list", "--all")["sandboxes"]
                            if sandbox["id"] not in known and sandbox["createdAt"] >= time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(before - 5))]
                 raise RuntimeError(f"{node['name']}: boat new failed with boat_direct_failed; sandboxes created since then "
@@ -386,6 +399,10 @@ systemctl enable --now {PLOYZ_UNITS} $observe
 
     def options(self):
         self.control.mkdir(parents=True, exist_ok=True, mode=0o700)
+        # /tmp is shared; a directory someone else planted could hand our ssh to their fake control master.
+        found = os.lstat(self.control)
+        if not stat.S_ISDIR(found.st_mode) or found.st_uid != os.getuid() or found.st_mode & 0o077:
+            raise RuntimeError(f"{self.control} must be a directory only you can open; remove it")
         # The endpoint comes from the authenticated Boat API, and up regenerates host keys after the first connection.
         return ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
                 "-o", "LogLevel=ERROR", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15",
@@ -477,7 +494,7 @@ systemctl enable --now {PLOYZ_UNITS} $observe
                 if not self.boat("snapshot", "rm", name, check=False).returncode:
                     ours.remove(name)
             # The name hashes this host's bootstrap key, so it is ours even if the save outlives a timeout here.
-            write(BAKES, [*(name for name in ours if name != self.run["image"]), self.run["image"]])
+            write(BAKES, list(dict.fromkeys([*ours, self.run["image"]])))
             print(f"Baking Boat snapshot {self.run['image']} (first run of this recipe only).", file=sys.stderr)
             bake = Provider(dict(id="bake-" + uuid.uuid4().hex[:10], manifest=str(BOOTSTRAP / "bake" / "cluster.json"),
                                  owner=self.run.get("owner", {}), image=SNAPSHOT, corrosion=self.run["corrosion"]),
