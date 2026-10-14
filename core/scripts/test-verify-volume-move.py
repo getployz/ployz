@@ -243,6 +243,9 @@ class Interrupted(BaseException):
 
 
 def interrupt(signum, frame):
+    # One raise per process. A second signal would land inside the summary write and lose it.
+    for each in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(each, signal.SIG_IGN)
     raise Interrupted(signal.Signals(signum).name)
 
 
@@ -1101,7 +1104,11 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
                 # An error from the cases outranks one from the cleanup, and the one in flight keeps propagating.
                 cleanup = None if escaped else error
                 escaped = escaped or f"{type(error).__name__}: {error}"[:2000]
-            summary = self.summarize(results, report, escaped)
+            try:
+                summary = self.summarize(results, report, escaped)
+            except Interrupted as error:
+                # The first signal of the run landed here; the handler is disarmed now, so this write completes.
+                summary = self.summarize(results, report, escaped or f"{type(error).__name__}: {error}")
             if cleanup:
                 raise cleanup
         return summary

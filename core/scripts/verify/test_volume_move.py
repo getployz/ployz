@@ -2044,15 +2044,21 @@ class VolumeMoveTests(unittest.TestCase):
         self.assertTrue(result["passed"], result)
         self.assertEqual(reads, [])
 
-    def test_a_sigterm_or_sighup_mid_run_leaves_a_summary(self):
-        # Codex r6 4, Opus r7 3: the signal arrives one second into the first run, through main.
-        script = """
+    SIGNALLED = """
 import os, shutil, signal, sys
 from verify import test_volume_move as T
 tests = T.VolumeMoveTests("setUp")
 tests.setUp()
 checks, model = tests.checks()
-tests.first_move(model, 30, effect=lambda begun: model.at(begun + 1, lambda: os.kill(os.getpid(), signal.SIG)))
+send = lambda: os.kill(os.getpid(), signal.SIG)
+if MID_RUN:
+    tests.first_move(model, 30, effect=lambda begun: model.at(begun + 1, send))
+if IN_SUMMARY:
+    read_acks, summarize = T.volume_move.read_acks, checks.summarize
+    def armed(*args):
+        T.volume_move.read_acks = lambda path: (send(), read_acks(path))[1]
+        return summarize(*args)
+    checks.summarize = armed
 T.volume_move.VolumeMove = lambda *args, **kwargs: checks
 sys.argv = ["volume-move", "run", str(tests.manifest), "--case", "kill-snapshot"]
 try:
@@ -2061,16 +2067,32 @@ finally:
     if (checks.out / "summary.json").exists():
         shutil.copy(checks.out / "summary.json", sys.OUT)
 """
+
+    def signalled(self, name, mid_run, in_summary):
+        """Run main() in a child that signals itself one second into the first run, inside summarize, or both,
+        and return the summary it left."""
+        out = self.root / f"{name}-{mid_run}-{in_summary}.json"
+        script = self.SIGNALLED.replace("signal.SIG", f"signal.{name}").replace("sys.OUT", repr(str(out))) \
+            .replace("MID_RUN", repr(mid_run)).replace("IN_SUMMARY", repr(in_summary))
+        run = subprocess.run([sys.executable, "-c", script], cwd=Path(volume_move.__file__).parent,
+                             capture_output=True, text=True, timeout=120)
+        self.assertTrue(out.exists(), f"no summary.json after {name}: {run.stderr[-2000:]}")
+        summary = json.loads(out.read_text())
+        self.assertFalse(summary["passed"], summary)
+        self.assertIn(name, summary["error"] or "", summary)
+
+    def test_a_sigterm_or_sighup_mid_run_leaves_a_summary(self):
+        # Codex r6 4, Opus r7 3: the signal arrives one second into the first run, through main.
         for name in ("SIGTERM", "SIGHUP"):
             with self.subTest(name):
-                out = self.root / f"{name}.json"
-                run = subprocess.run([sys.executable, "-c", script.replace("signal.SIG", f"signal.{name}")
-                                      .replace("sys.OUT", repr(str(out)))],
-                                     cwd=Path(volume_move.__file__).parent, capture_output=True, text=True, timeout=120)
-                self.assertTrue(out.exists(), f"no summary.json after {name}: {run.stderr[-2000:]}")
-                summary = json.loads(out.read_text())
-                self.assertFalse(summary["passed"], summary)
-                self.assertIn(name, summary["error"] or "", summary)
+                self.signalled(name, mid_run=True, in_summary=False)
+
+    def test_a_signal_during_summarize_leaves_a_summary(self):
+        # Builder 1 left a second signal inside summarize as an open window; the first signal may land there too.
+        for name in ("SIGTERM", "SIGHUP"):
+            for mid_run in (True, False):
+                with self.subTest(name, second=mid_run):
+                    self.signalled(name, mid_run=mid_run, in_summary=True)
 
     def test_a_cleanup_step_that_raises_writes_a_failing_summary(self):
         checks, model = self.checks()
