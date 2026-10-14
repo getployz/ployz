@@ -130,7 +130,8 @@ export const placeDeployVolumes = Effect.fn("VolumeRun.placeDeploy")(function* (
       }, inngestRunId);
     }
     for (const row of yield* owedCommitments(organizationId, environmentId)) {
-      if (lanes.some((lane) => lane.volumeId === row.volumeId && !BESIDE_WRITER.has(lane.kind))) continue;
+      // A hold, its own or one it took over, takes nothing, so the commitment still has no run.
+      if (lanes.some((lane) => lane.volumeId === row.volumeId && !BESIDE_WRITER.has(lane.kind) && !isHold(lane))) continue;
       const to = yield* laneTarget(row);
       if (to === null) return yield* Effect.fail(new NonRetriableError(`${row.volumeName} is moving to a Server its run never named`));
       placed.push({ kind: "follow", run: contextOf(row), to, machine: row.current, epoch: row.epoch, ended: true });
@@ -138,6 +139,11 @@ export const placeDeployVolumes = Effect.fn("VolumeRun.placeDeploy")(function* (
     return placed;
   }));
 });
+
+const isHold = (lane: Pick<typeof volumeRun.$inferSelect, "kind" | "args">) => {
+  const input = laneInputOf(lane);
+  return input.kind === "deploy" && input.args.hold === true;
+};
 
 const pinned = (lane: Pick<typeof volumeRun.$inferSelect, "kind" | "args">) => {
   const input = laneInputOf(lane);
