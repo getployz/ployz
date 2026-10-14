@@ -1,14 +1,9 @@
 import "@tanstack/react-start/server-only";
-import { createRequire } from "node:module";
-import type * as PloyzSdk from "@ployz/sdk";
-import type { VolumeObservation } from "@ployz/sdk";
+import { observeVolumes, type VolumeObservation } from "@ployz/sdk";
 import { Effect, Option, Schema } from "effect";
 import { loadOrganizationConnections } from "#/modules/machines/connections.server";
 import { storeTry } from "#/modules/config-store/store-sdk.server";
 import { EnvironmentRef, environmentOf, type StoreCall, type StoreRead } from "./store.contract";
-
-// SAFETY: the package exports this named CommonJS SDK surface at runtime.
-const { observeVolumes } = createRequire(import.meta.url)("@ployz/sdk") as Pick<typeof PloyzSdk, "observeVolumes">;
 
 /** The fields used to gather evidence; native Store decoding still validates the original command. */
 const AdmitCommand = Schema.Struct({

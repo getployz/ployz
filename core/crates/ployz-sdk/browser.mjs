@@ -18,3 +18,6 @@ export const agentTools = fail;
 export const agentStart = fail;
 export const agentResume = fail;
 export const agentCloudCall = fail;
+export const openConfigStore = fail;
+export const observeVolumes = fail;
+export const observeCopies = fail;

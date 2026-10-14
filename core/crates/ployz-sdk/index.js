@@ -396,24 +396,50 @@ async function openConfigStore(url, sealingSecret) {
   };
 }
 
+function observeVolumes(connections, sought) {
+  return withRpcError(native.observeVolumes(connections, sought));
+}
+
+function observeCopies(connections) {
+  return withRpcError(native.observeCopies(connections));
+}
+
+function allocateEnrollment(...args) {
+  try { return native.allocateEnrollment(...args); } catch (error) { throwRpcError(error); }
+}
+
+function ployzVersion() {
+  return native.ployzVersion();
+}
+
+function agentTools() {
+  return native.agentTools();
+}
+
+function agentStart(tool, input, place, callKey) {
+  try { return native.agentStart(tool, input, place, callKey); } catch (error) { throwRpcError(error); }
+}
+
+function agentResume(state, answers) {
+  try { return native.agentResume(state, answers); } catch (error) { throwRpcError(error); }
+}
+
+function agentCloudCall(call) {
+  try { return native.agentCloudCall(call); } catch (error) { throwRpcError(error); }
+}
+
+// Shorthand entries only: Node's CommonJS export lexer stops at the first non-identifier value, and every name it
+// misses is unavailable to `import { name } from "@ployz/sdk"`.
 module.exports = {
   openConfigStore,
-  observeVolumes: (connections, sought) => withRpcError(native.observeVolumes(connections, sought)),
-  observeCopies: (connections) => withRpcError(native.observeCopies(connections)),
-  allocateEnrollment: (...args) => {
-    try { return native.allocateEnrollment(...args); } catch (error) { throwRpcError(error); }
-  },
-  ployzVersion: () => native.ployzVersion(),
-  agentTools: () => native.agentTools(),
-  agentStart: (tool, input, place, callKey) => {
-    try { return native.agentStart(tool, input, place, callKey); } catch (error) { throwRpcError(error); }
-  },
-  agentResume: (state, answers) => {
-    try { return native.agentResume(state, answers); } catch (error) { throwRpcError(error); }
-  },
-  agentCloudCall: (call) => {
-    try { return native.agentCloudCall(call); } catch (error) { throwRpcError(error); }
-  },
+  observeVolumes,
+  observeCopies,
+  allocateEnrollment,
+  ployzVersion,
+  agentTools,
+  agentStart,
+  agentResume,
+  agentCloudCall,
   connect,
   Client,
   RpcError,
