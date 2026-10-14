@@ -79,7 +79,7 @@ describe("act-service", () => {
     `);
   });
 
-  it("restarts Server by Server, and a second delivery of the event moves nothing again", async () => {
+  it("restarts container by container, and a second delivery of the event moves nothing again", async () => {
     const admitted = await request("restart");
     if (!admitted.ok) throw new Error("refused");
     expect(send.mock.calls).toEqual([[expect.objectContaining({ id: `service-act-${admitted.id}` })]]);
@@ -166,7 +166,7 @@ describe("act-service", () => {
     expect(calls).toEqual(["stop web-a", "start web-a"]);
     expect(await operation(admitted.id)).toMatchObject({
       state: "unknown",
-      reason: "alpha didn't come back, so Cloud left beta alone.",
+      reason: "Container 1 on alpha didn't come back. alpha didn't answer. The rest are untouched.",
       servers: [
         { server: "alpha", stopped: "yes", started: "unknown", reason: "alpha didn't answer." },
         { server: "beta", stopped: null, started: null, reason: null },
@@ -182,7 +182,7 @@ describe("act-service", () => {
     expect((await act(admitted.id)).result).toEqual({ actId: admitted.id, state: "unknown" });
     expect(calls).toEqual(["stop web-a", "start web-a"]);
     expect(await operation(admitted.id)).toMatchObject({
-      reason: "alpha didn't come back, so Cloud left beta alone.",
+      reason: "Container 1 on alpha didn't come back. alpha started it, but it isn't serving. The rest are untouched.",
       servers: [
         { server: "alpha", stopped: "yes", started: "unknown", reason: "alpha started it, but it isn't serving." },
         { server: "beta", stopped: null, started: null, reason: null },
@@ -190,7 +190,7 @@ describe("act-service", () => {
     });
   });
 
-  it("gives each Container its own step, and stops rolling when one fails its healthcheck", async () => {
+  it("gives each Container its own step, and stops rolling at the first that fails its healthcheck, even on the same Server", async () => {
     copies.copies.splice(1, 0, { server: "alpha", machine: "m-alpha", container: "web-a2", state: "running", hook: false });
     answer = (call) => Effect.succeed(call === "start web-a" ? "unhealthy" : "serving");
     const admitted = await request("restart");
@@ -202,17 +202,15 @@ describe("act-service", () => {
       "normalize-request",
       "claim",
       "stop:m-alpha:web-a",
-      "stop:m-alpha:web-a2",
       "start:m-alpha:web-a",
-      "start:m-alpha:web-a2",
       "record",
     ]);
-    expect(calls).toEqual(["stop web-a", "stop web-a2", "start web-a", "start web-a2"]);
+    expect(calls).toEqual(["stop web-a", "start web-a"]);
     expect(await operation(admitted.id)).toMatchObject({
-      reason: "alpha didn't come back, so Cloud left beta alone.",
+      reason: "Container 1 on alpha didn't come back. alpha started it, but it isn't healthy. The rest are untouched.",
       servers: [
         { server: "alpha", stopped: "yes", started: "no", reason: "alpha started it, but it isn't healthy." },
-        { server: "alpha", stopped: "yes", started: "yes", reason: null },
+        { server: "alpha", stopped: null, started: null, reason: null },
         { server: "beta", stopped: null, started: null, reason: null },
       ],
     });
@@ -224,7 +222,7 @@ describe("act-service", () => {
     if (!restarted.ok) throw new Error("refused");
 
     expect((await act(restarted.id)).result).toEqual({ actId: restarted.id, state: "done" });
-    expect(calls).toEqual(["stop web-a", "stop hook-a", "start web-a", "stop web-b", "start web-b"]);
+    expect(calls).toEqual(["stop hook-a", "stop web-a", "start web-a", "stop web-b", "start web-b"]);
 
     calls = [];
     copies.copies = copies.copies.map((copy) => ({ ...copy, state: "exited" }));

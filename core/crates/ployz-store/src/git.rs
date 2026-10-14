@@ -274,30 +274,24 @@ impl GitSetting {
                 validate_build(config, self)
             }
             Self::Repository => {
-                // An empty Service starts building the repository's default branch.
-                if let ServiceSource::Empty { root_dir, .. } = &config.source {
-                    let found = authorized(trusted, &text)?;
-                    config.source = ServiceSource::Git {
-                        version: 2,
-                        repository: found.repository.to_string(),
-                        repository_id: found.repository_id.get(),
-                        access: found.access.clone(),
-                        root_dir: root_dir.clone(),
-                        branch: ServiceGitBranch::Connected {
-                            name: found.default_branch.to_string(),
-                        },
-                    };
-                    return Ok(());
-                }
-                let ServiceSource::Git {
-                    repository,
-                    repository_id,
-                    access,
-                    branch,
-                    ..
-                } = &mut config.source
-                else {
-                    return Err(setting.invalid("this Service runs an image; unset it first"));
+                let (repository, repository_id, access, branch) = match &mut config.source {
+                    ServiceSource::Git {
+                        repository,
+                        repository_id,
+                        access,
+                        branch,
+                        ..
+                    } => (repository, repository_id, access, branch),
+                    // An empty or image Service starts building the repository's default branch.
+                    ServiceSource::Empty { root_dir, .. } => {
+                        let root_dir = root_dir.clone();
+                        config.source = connected(authorized(trusted, &text)?, root_dir);
+                        return Ok(());
+                    }
+                    ServiceSource::Image { .. } => {
+                        config.source = connected(authorized(trusted, &text)?, "/".to_owned());
+                        return Ok(());
+                    }
                 };
                 if repository.eq_ignore_ascii_case(text.trim()) {
                     return Ok(());
@@ -475,6 +469,20 @@ fn authorized<'a>(
             json!({ "setting": "repository", "next": "ployz github connect" }),
         )
     })
+}
+
+/// A source building `found`'s default branch from `root_dir`.
+fn connected(found: &AuthorizedRepository, root_dir: String) -> ServiceSource {
+    ServiceSource::Git {
+        version: 2,
+        repository: found.repository.to_string(),
+        repository_id: found.repository_id.get(),
+        access: found.access.clone(),
+        root_dir,
+        branch: ServiceGitBranch::Connected {
+            name: found.default_branch.to_string(),
+        },
+    }
 }
 
 /// The branch `text` names, trimmed, or why it names none.

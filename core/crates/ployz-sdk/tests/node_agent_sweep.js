@@ -141,6 +141,8 @@ async function call(store, tool, input, key) {
 
 const FIXTURES = [
   ["environment_show", {}],
+  ["docs", { query: "add a custom domain" }],
+  ["docs", { query: "services/domain.md" }, "not_found"],
   ["project_create", { name: "docs", request_key: "project-docs-0001" }],
   ["project_rename", { project: "docs", to: "handbook" }],
   ["service_add", { name: "web", image: "nginx:1.27" }],
