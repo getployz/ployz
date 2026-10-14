@@ -10,6 +10,7 @@ import re
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -22,7 +23,6 @@ spec.loader.exec_module(volume_move)
 
 PHYSICAL = "verify-production_vol-1"
 CALL_LIMIT = 6000
-WITNESS_LINE = 'fault: delaying switch verb verb="SetVolumeCopy.WriterToMirror" secs=0'
 WITNESS = "delay-rpc:SetVolumeCopy.WriterToMirror:0"
 DAEMON, PLUGIN = "ployz.service", "ployz-volume-plugin.service"
 SYNC_UNITS = ("systemd-timesyncd", "chrony", "chronyd", "ntp", "ntpsec", "openntpd")
@@ -120,6 +120,13 @@ class ClusterModel:
         # A clean-start read that exits 0 with this reply, and trigger polls that exit nonzero with valid output.
         self.quiet_reply = {}
         self.poll_fails = False
+        # journald on each Machine: one boot id, and a cursor is a position in the journal within that boot.
+        self.boot = {"machine-1": "boot-1a", "machine-2": "boot-2a"}
+        # The `ployz:pull` target a Machine's slot parent names while its receive runs, when not the first run's own
+        # first round; and a Machine whose receive sits in D state and stays in the plugin's cgroup after the stop.
+        self.pull_targets = {}
+        self.stuck_receive = set()
+        self.clock_reads_fail = False
 
     def process(self):
         self.ids += 1
@@ -140,9 +147,103 @@ class ClusterModel:
             for machine in self.offset:
                 self.log_fault(machine)
 
-    def log_fault(self, machine, at=None, text="fault: killing daemon inside the effect"):
-        """The daemon on machine logs a fault line at host time at, stamped then by machine's own clock."""
-        self.when(at, lambda at: self.journal.append((machine, self.stamp(machine, at), text)))
+    def log_fault(self, machine, at=None, text=None, **identity):
+        """The daemon on machine logs a fault line at host time at, stamped then by machine's own clock. Without text
+        it is the armed fault's own line, naming the Volume and the want it fired inside, or whatever identity names
+        instead."""
+        def log(at):
+            line = self.fault_text(machine, **identity) if text is None else text
+            self.journal.append((machine, self.stamp(machine, at), line))
+        self.when(at, log)
+
+    def fault_text(self, machine, **identity):
+        """What ployzd logs when the fault armed on machine fires inside the first run's step: the message and verb from the
+        arming, then the Volume and the want's identity as Cloud sends it for that step (volume-run.inngest.ts: rounds
+        pull w-<epoch>-<n>, the cut and the final pull f-<epoch>, the writer want its epoch, forget nothing)."""
+        armed = (self.fault[machine] or "").split(":")
+        if armed[0] not in ("kill-daemon", "delay-rpc"):
+            return "fault: killing daemon inside the effect"
+        verb = armed[1]
+        head = (f'fault: killing daemon inside the effect verb="{verb}"' if armed[0] == "kill-daemon"
+                else f'fault: delaying switch verb verb="{verb}" secs={armed[2]}')
+        epoch = identity.pop("epoch", self.epoch(self.runs[-1]["id"]) if self.runs else 1)
+        fields = dict(volume=PHYSICAL)
+        if verb.endswith("ToMirror"):
+            final = verb == "SetVolumeCopy.WriterToMirror" or self.cut_done(epoch)
+            fields["target"] = f"f-{epoch}" if final else f"w-{epoch}-0"
+        elif verb.endswith("ToSnapshot"):
+            fields["snapshot"] = f"w-{epoch}-0"
+        elif verb.endswith("ToWriter"):
+            fields.update(at=f"guid-{epoch}", epoch=epoch)
+        fields.update(identity)
+        return head + "".join(f" {key}={value}" for key, value in fields.items())
+
+    def cut_done(self, epoch):
+        """Whether a cut line for this Volume and epoch is in any journal, so a pull now is the final one."""
+        return any(f"cut: holders stopped volume={PHYSICAL} target=f-{epoch}" in text for _, _, text in self.journal)
+
+    def cursor(self, machine, index):
+        return f"s={machine};i={index};b={self.boot[machine]}"
+
+    def journal_json(self, machine, script):
+        """journalctl -o json after a cursor: every later line of this Machine, each with its own cursor and boot."""
+        if f"-u {PLUGIN}" not in script:
+            return 0, ""
+        self.clock.advance(self.latency[machine])
+        after = re.search(r"--after-cursor=(\S+)", script)[1].strip("'\"")
+        found = re.fullmatch(rf"s={machine};i=(-?\d+);b=(\S+)", after)
+        if not found or found[2] != self.boot[machine]:
+            return 1, ""
+        lines = [dict(__CURSOR=self.cursor(machine, index), _BOOT_ID=self.boot[machine], _SYSTEMD_UNIT=DAEMON,
+                      __REALTIME_TIMESTAMP=str(int(at * 1e6)), MESSAGE=text)
+                 for index, (where, at, text) in enumerate(self.journal) if where == machine and index > int(found[1])]
+        return (1 if self.poll_fails else 0), "".join(json.dumps(line) + "\n" for line in lines)
+
+    def tail_cursor(self, machine):
+        return f"-- cursor: {self.cursor(machine, len(self.journal) - 1)}\n"
+
+    def proven_restart(self, machine, script):
+        """The barrier that stops both units, reads each unit's cgroup.procs, starts the daemon, arms what the script
+        arms and ends with the journal's tail cursor when asked: a pid listed is one that outlived its stop."""
+        old_plugin = self.units[machine][PLUGIN]["pid"]
+        code, out = self.restart(machine, script)
+        if code:
+            return code, out
+        if "PLOYZD_FAULT" in script and (armed := self.arm(machine, script))[0]:
+            return armed
+        plugin = [str(old_plugin)] if old_plugin in self.alive else []
+        if machine in self.stuck_receive:
+            plugin.append("4242")
+        lines = [f"procs {DAEMON}", f"procs {PLUGIN} " + " ".join(plugin)]
+        if "--show-cursor" in script:
+            lines.append(self.tail_cursor(machine).rstrip("\n"))
+        return 0, "\n".join(lines + ["end"]) + "\n"
+
+    def arm(self, machine, script):
+        value = (found := re.search(r"echo '?PLOYZD_FAULT=([^'\s]+)", script)) and found[1]
+        if value is None and self.disarm_fails:
+            return 255, ""
+        held = self.holder() if self.clock else None
+        if value and value != WITNESS and held:
+            # The holder crosses the armed point, so the fault fires inside it and not in the case's run.
+            self.tripped = held["id"]
+            self.fired = True
+        self.fault[machine] = value
+        return 0, ""
+
+    def pull_probe(self, machine):
+        """The receiving read: the receive process, then the slot parent's `ployz:pull` with zfs's exit code."""
+        unreadable = self.unreadable.get(machine)
+        if unreadable == "exec":
+            return 255, ""
+        pgrep = 2 if unreadable == "pgrep" else 0 if self.receiving_on(machine) else 1
+        lines = [f"pgrep {pgrep}"]
+        if unreadable == "pull":
+            lines.append("zfs 1")
+        else:
+            own = f"w-{self.epoch(self.runs[-1]['id'])}-0" if self.runs and pgrep == 0 else "-"
+            lines += [self.pull_targets.get(machine, own), "zfs 0"]
+        return (1 if self.poll_fails else 0), "\n".join(lines + ["end"]) + "\n"
 
     def stop(self, machine, at=None):
         """The db Container on machine exits at host time at, and Docker stamps it then in machine's clock."""
@@ -162,7 +263,7 @@ class ClusterModel:
 
         def delayed():
             if (self.fault[machine] or "").startswith("delay-rpc:SetVolumeCopy.WriterToMirror:"):
-                self.log_fault(machine, begins, WITNESS_LINE)
+                self.log_fault(machine, begins, volume=volume, target=target)
         self.at(begins, delayed)
         if stops:
             self.stop(machine, at)
@@ -336,10 +437,18 @@ class ClusterModel:
         return 0, "{}"
 
     def guest(self, machine, script):
+        if "cgroup.procs" in script:
+            return self.proven_restart(machine, script)
+        if "--show-cursor" in script:
+            return 0, self.tail_cursor(machine)
+        if "--after-cursor" in script:
+            return self.journal_json(machine, script)
         if "systemctl restart ployz.service" in script:
             restarted = self.restart(machine, script)
             if "PLOYZD_FAULT" not in script or restarted[0]:
                 return restarted
+        if "zfs get" in script and "ployz:pull" in script:
+            return self.pull_probe(machine)
         if "ployz:pull" in script:
             if machine in self.quiet_reply:
                 return 0, self.quiet_reply[machine]
@@ -352,21 +461,12 @@ class ClusterModel:
         if "MainPID" in script and "alive" in script:
             return self.unit_report(machine, script)
         if "PLOYZD_FAULT" in script:
-            value = (found := re.search(r"echo '?PLOYZD_FAULT=([^'\s]+)", script)) and found[1]
-            if value is None and self.disarm_fails:
-                return 255, ""
-            held = self.holder() if self.clock else None
-            if value and value != WITNESS and held:
-                # The holder crosses the armed point, so the fault fires inside it and not in the case's run.
-                self.tripped = held["id"]
-                self.fired = True
-            self.fault[machine] = value
-            return 0, ""
+            return self.arm(machine, script)
         if script == "date +%s.%N":
             self.clock.advance(self.latency[machine] / 2)
             reading = self.stamp(machine, self.clock())
             self.clock.advance(self.latency[machine] / 2)
-            return 0, f"{reading:.9f}\n"
+            return (255 if self.clock_reads_fail else 0), f"{reading:.9f}\n"
         polled = 1 if self.poll_fails else 0
         if "FinishedAt" in script:
             self.clock.advance(self.latency[machine])
@@ -407,6 +507,8 @@ class ClusterModel:
                 return 1, "/var/run/postgresql:5432 - rejecting connections\n"
             return 0, "/var/run/postgresql:5432 - accepting connections\n"
         if "systemctl kill" in script:
+            self.clock.advance(self.latency[machine])
+            self.kills.append(self.clock())
             after, invocation = ("2", "b") if self.kill_lands else ("1", "a")
             return 0, f"rc=0\nout=\nbefore=1\ninvocation=a\nafter={after}\ninvocation_after={invocation}\n"
         if "SELECT id FROM ackprobe" in script:
@@ -2119,6 +2221,139 @@ class VolumeMoveTests(unittest.TestCase):
             with self.subTest(mutation):
                 summary, _ = self.run_cases([volume_move.CASES[0]], mutation)
                 self.assertFalse(summary["passed"])
+
+    def test_a_vm_clock_stepped_ahead_and_back_across_a_warm_round_fault_does_not_credit_it(self):
+        # Codex r6 1: machine-2 runs 20 s ahead only while its warm-round pull logs its fault, so the stamp lands
+        # after the cut line's and no later reading shows any movement. The line names a round target, not f-<epoch>.
+        def effect(begun):
+            model = self.model
+            model.at(begun + 1, lambda: model.offset.update({"machine-2": 20.0}))
+            model.log_fault("machine-2", begun + 2)
+            model.at(begun + 9, lambda: model.offset.update({"machine-2": 0.0}))
+            model.cut("machine-1", begun + 10)
+        result, _ = self.run_with("soak-4-final-runner-kill", lambda model: setattr(self, "model", model), 60, effect)
+        self.assert_not_credited(result)
+
+    def test_a_host_clock_jump_that_stamped_the_row_ahead_does_not_credit_a_fault_after_it_ended(self):
+        # Codex r6 1: the worker stamped finished_at during a +20 s host jump between two samples, so the first run
+        # looks open when its own fault point fires 0.2 s after the row closed.
+        def effect(begun):
+            model = self.model
+            model.at(begun + 0.1, lambda: model.runs[0].update(finished_at=iso(begun + 20.1)))
+            model.log_fault("machine-1", begun + 0.3)
+        result, _ = self.run_with("kill-snapshot", lambda model: setattr(self, "model", model), 0.1, effect)
+        self.assert_not_credited(result)
+
+    def test_a_persistent_vm_clock_change_cannot_replace_the_credited_fault_with_a_later_one(self):
+        # Codex r6 2, Opus r7 1: machine-2 moves 20 s ahead and stays there. The warm-round fault then stamps after
+        # the cut, the kill lands on it, and the case-end recheck finds the genuine final-pull fault instead.
+        begun = []
+
+        def effect(at):
+            model = self.model
+            begun.append(at)
+            model.at(at + 1, lambda: model.offset.update({"machine-2": 20.0}))
+            model.log_fault("machine-2", at + 2)
+            model.cut("machine-1", at + 10)
+            model.log_fault("machine-2", at + 12)
+        result, model = self.run_with("soak-4-final-runner-kill", lambda model: setattr(self, "model", model), 60,
+                                      effect)
+        self.assertTrue(result["passed"], result)
+        credited = json.loads((self.root / "out" / "soak-4-final-runner-kill.json").read_text())["triggered"]
+        self.assertIn(f"target=f-{model.epoch(model.runs[0]['id'])}", json.dumps(credited), credited)
+        self.assertGreaterEqual(model.kills[0], begun[0] + 12, (model.kills, begun))
+
+    def test_a_failed_clock_read_never_decides_credit(self):
+        # Codex r6 3: every `date +%s.%N` exits 255 with a plausible reading.
+        result, _ = self.run_cut(plant=lambda model: setattr(model, "clock_reads_fail", True))
+        self.assertFalse(result["passed"], result)
+
+    def test_a_sigterm_or_sighup_mid_run_leaves_a_summary(self):
+        # Codex r6 4, Opus r7 3: the signal arrives one second into the first run, through main.
+        script = """
+import os, shutil, signal, sys
+from verify import test_volume_move as T
+tests = T.VolumeMoveTests("setUp")
+tests.setUp()
+checks, model = tests.checks()
+tests.first_move(model, 30, effect=lambda begun: model.at(begun + 1, lambda: os.kill(os.getpid(), signal.SIG)))
+T.volume_move.VolumeMove = lambda *args, **kwargs: checks
+sys.argv = ["volume-move", "run", str(tests.manifest), "--case", "kill-snapshot"]
+try:
+    T.volume_move.main()
+finally:
+    if (checks.out / "summary.json").exists():
+        shutil.copy(checks.out / "summary.json", sys.OUT)
+"""
+        for name in ("SIGTERM", "SIGHUP"):
+            with self.subTest(name):
+                out = self.root / f"{name}.json"
+                run = subprocess.run([sys.executable, "-c", script.replace("signal.SIG", f"signal.{name}")
+                                      .replace("sys.OUT", repr(str(out)))],
+                                     cwd=Path(volume_move.__file__).parent, capture_output=True, text=True, timeout=120)
+                self.assertTrue(out.exists(), f"no summary.json after {name}: {run.stderr[-2000:]}")
+                summary = json.loads(out.read_text())
+                self.assertFalse(summary["passed"], summary)
+                self.assertIn(name, summary["error"] or "", summary)
+
+    def test_a_cleanup_step_that_raises_writes_a_failing_summary(self):
+        checks, model = self.checks()
+
+        def raising():
+            raise RuntimeError("the probe log is gone")
+        checks.stop_probe = raising
+        with redirect_stdout(io.StringIO()), self.assertRaises(RuntimeError):
+            checks.run_all([volume_move.CASES[0]])
+        self.assertTrue((self.root / "out" / "summary.json").exists(), "no summary.json after the cleanup error")
+        summary = json.loads((self.root / "out" / "summary.json").read_text())
+        self.assertFalse(summary["passed"], summary)
+        self.assertIn("the probe log is gone", summary["error"] or "", summary)
+
+    def test_a_d_state_receive_that_outlives_the_plugin_stop_skips_the_case(self):
+        # Opus r7 2: the old plugin's MainPID is gone, but its zfs receive sits in D state and stays in the unit's
+        # control group after the stop.
+        result, _ = self.run_cut(plant=lambda model: model.stuck_receive.add("machine-2"))
+        self.assertFalse(result["passed"], result)
+        self.assertIn("the clean-start restart is unproven on machine-2 before move", result.get("skipped") or "",
+                      result)
+
+    def test_a_fault_line_from_an_older_epoch_is_not_credited(self):
+        # A late step of the closed epoch-1 run reaches its fault point after the clean start, naming snapshot w-1-0.
+        result, _ = self.run_with("kill-snapshot", self.close_an_earlier_run, 3,
+                                  lambda begun: self.model.log_fault("machine-1", begun + 1, epoch=1))
+        self.assert_not_credited(result)
+
+    def test_a_fault_line_for_another_volume_is_not_credited(self):
+        result, _ = self.run_with("kill-snapshot", lambda model: setattr(self, "model", model), 3,
+                                  lambda begun: self.model.log_fault("machine-1", begun + 1, volume="other_vol"))
+        self.assert_not_credited(result)
+
+    def test_a_round_pull_fault_line_after_the_cut_is_not_credited_as_the_final_pull(self):
+        # The line is a MirrorToMirror delay on the other Machine after the cut line, but it names a round target.
+        def effect(begun):
+            model = self.model
+            model.cut("machine-1", begun + 10)
+            model.log_fault("machine-2", begun + 12, target=f"w-{model.epoch(model.runs[-1]['id'])}-1")
+        result, _ = self.run_with("soak-4-final-runner-kill", lambda model: setattr(self, "model", model), 60, effect)
+        self.assert_not_credited(result)
+
+    def test_an_action_that_lands_after_the_first_runs_row_is_terminal_is_not_credited(self):
+        # Every exec on machine-2 takes 1 s, so the kill sent on the fault seen at +15 lands after the run ends at +15.5.
+        begun = []
+
+        def before(model):
+            self.model = model
+            model.latency["machine-2"] = 1.0
+
+        def effect(at):
+            begun.append(at)
+            self.model.cut("machine-1", at + 10)
+            self.model.log_fault("machine-2", at + 14)
+        result, model = self.run_with("soak-4-final-kill-ployz-other", before, 15.5, effect)
+        self.assertGreater(model.kills[0], begun[0] + 15.5, (model.kills, begun))
+        self.assertFalse(result["passed"], result)
+        self.assertTrue(any(failure.startswith("the kill-ployz landed after the first run")
+                            for failure in result["failures"]), result["failures"])
 
 
 if __name__ == "__main__":
