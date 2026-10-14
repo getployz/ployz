@@ -72,7 +72,7 @@ class Commands:
 
 
 def provider(run, commands):
-    # A backend implements prepare/create/start/exec/push/address/destroy.
+    # A backend implements prepare/create/start/exec/push/address/ssh/destroy.
     # The manifest binds subsequent operations to the provider that created it.
     if run["provider"] != "incus":
         raise RuntimeError(f"Unknown provider: {run['provider']}")
@@ -205,28 +205,42 @@ def cli(run, commands, args, **kwargs):
 
 
 PARTITION = """
-iptables -N PLOYZ-VERIFY-PARTITION 2>/dev/null || iptables -F PLOYZ-VERIFY-PARTITION
+tables=
 for peer in "$@"; do
-    iptables -A PLOYZ-VERIFY-PARTITION -s "$peer" -j DROP
-    iptables -A PLOYZ-VERIFY-PARTITION -d "$peer" -j DROP
+    case $peer in *:*) table=ip6tables ;; *) table=iptables ;; esac
+    case " $tables " in
+        *" $table "*) ;;
+        *) tables="$tables $table"; $table -N PLOYZ-VERIFY-PARTITION 2>/dev/null || $table -F PLOYZ-VERIFY-PARTITION ;;
+    esac
+    $table -A PLOYZ-VERIFY-PARTITION -s "$peer" -j DROP
+    $table -A PLOYZ-VERIFY-PARTITION -d "$peer" -j DROP
 done
-for hook in INPUT OUTPUT FORWARD; do
-    iptables -C "$hook" -j PLOYZ-VERIFY-PARTITION 2>/dev/null || iptables -I "$hook" 1 -j PLOYZ-VERIFY-PARTITION
+for table in $tables; do
+    for hook in INPUT OUTPUT FORWARD; do
+        $table -C "$hook" -j PLOYZ-VERIFY-PARTITION 2>/dev/null || $table -I "$hook" 1 -j PLOYZ-VERIFY-PARTITION
+    done
 done
 """
 
 UNPARTITION = """
-for hook in INPUT OUTPUT FORWARD; do
-    while iptables -D "$hook" -j PLOYZ-VERIFY-PARTITION 2>/dev/null; do :; done
+for table in iptables ip6tables; do
+    for hook in INPUT OUTPUT FORWARD; do
+        while $table -D "$hook" -j PLOYZ-VERIFY-PARTITION 2>/dev/null; do :; done
+    done
+    $table -F PLOYZ-VERIFY-PARTITION 2>/dev/null || true
+    $table -X PLOYZ-VERIFY-PARTITION 2>/dev/null || true
 done
-iptables -F PLOYZ-VERIFY-PARTITION 2>/dev/null || true
-iptables -X PLOYZ-VERIFY-PARTITION 2>/dev/null || true
 """
 
 
+def endpoint(address):
+    """The WireGuard endpoint on a Machine's underlay address."""
+    return f"[{address}]:51820" if ":" in address else address + ":51820"
+
+
 def partition(run, backend, node, cut):
-    """Drop the Machine's traffic with each peer's underlay address, which carries WireGuard. The host bridge
-    address stays reachable, so SSH, the guest agent and Cloud still answer. The rules do not survive a reboot."""
+    """Drop the Machine's traffic with each peer's underlay address, which carries WireGuard. The path SSH
+    takes stays reachable, so SSH, the guest agent and Cloud still answer. The rules do not survive a reboot."""
     peers = [peer["address"] for peer in run["machines"] if peer is not node]
     backend.exec(node, ["bash", "-ec", PARTITION if cut else UNPARTITION, "partition", *peers])
 
@@ -355,7 +369,7 @@ zfs version
             raise RuntimeError(f"{node['name']}: running binaries differ from its {label}")
         if lines[1 + len(names)].strip() != daemon["version"]:
             raise RuntimeError(f"{node['name']}: running daemon reports {lines[1 + len(names)].strip()}, not its {label}")
-        result = cli(run, commands, ["--json", "--connect", "ssh://root@" + node["address"], "server", "ls"])
+        result = cli(run, commands, ["--json", "--connect", "ssh://" + node["ssh"], "server", "ls"])
         servers = json.loads(result.stdout)["servers"]
         expected_ids = {item["machine_id"] for item in run["machines"]}
         if {item["machine"]["id"] for item in servers} != expected_ids or any(item["membership"] != "up" for item in servers):
@@ -613,6 +627,7 @@ if [ -e /etc/systemd/system/ployz-observe.service ]; then observe=ployz-observe.
 systemctl enable --now ployz.socket ployz-volume-plugin.socket ployz.service $observe
 """])
                 node["address"] = backend.address(node)
+                node["ssh"], node["endpoint"] = backend.ssh(node), endpoint(node["address"])
             parallel(start, run["machines"])
             binaries.result()
             if paired:
@@ -624,10 +639,10 @@ systemctl enable --now ployz.socket ployz-volume-plugin.socket ployz.service $ob
             # Cloud enrollment currently ignores --public-ip and --wg-endpoint; the Machine advertises the endpoints it discovers.
             # --no-install requires --storage none, yet managed Volumes work: the image ran `ployzd install --storage zfs`,
             # and the daemon creates the Machine Pool on the first Volume, as on a real Server.
-            result = cli(run, commands, ["--json", "server", "add", "root@" + node["address"],
+            result = cli(run, commands, ["--json", "server", "add", node["ssh"],
                                *([] if "cloud" in run else ["--standalone"]), "--no-install", "--storage", "none", "--yes",
                                "--name", node["name"], "--ssh-key", str(private / "id_ed25519"),
-                               "--public-ip", "none", "--wg-endpoint", node["address"] + ":51820", "--wg-mtu", "1420"], check=False)
+                               "--public-ip", "none", "--wg-endpoint", node["endpoint"], "--wg-mtu", "1420"], check=False)
             response = json.loads(result.stdout) if result.stdout else {}
             follow_up = response.get("follow_up_error", {})
             if result.returncode and not (result.returncode == 3 and response.get("server") and follow_up.get("code") == "unavailable"):
@@ -641,7 +656,7 @@ systemctl enable --now ployz.socket ployz-volume-plugin.socket ployz.service $ob
                 print(f"{node['name']}: enrollment committed with a follow-up failure; checking readiness. Evidence: {commands.evidence}", file=sys.stderr)
                 deadline = time.monotonic() + 30
                 while True:
-                    observed = cli(run, commands, ["--json", "--connect", "ssh://root@" + node["address"], "server", "ls"], check=False, timeout=5)
+                    observed = cli(run, commands, ["--json", "--connect", "ssh://" + node["ssh"], "server", "ls"], check=False, timeout=5)
                     if not observed.returncode and any(server["machine"]["id"] == node["machine_id"] and server["membership"] == "up"
                             for server in json.loads(observed.stdout)["servers"]):
                         break
@@ -747,6 +762,11 @@ def main():
         reap(args)
         return 0
     run = json.loads(args.manifest.read_text())
+    for node in run["machines"]:
+        # Manifests written before ssh and endpoint were split out record only the address.
+        if "address" in node:
+            node.setdefault("ssh", "root@" + node["address"])
+            node.setdefault("endpoint", endpoint(node["address"]))
     if run["root"] != str(CORE) or Path(run["manifest"]).resolve() != args.manifest.resolve():
         raise RuntimeError("Use this run's originating checkout and manifest path")
     if run["state"] == "removed":
