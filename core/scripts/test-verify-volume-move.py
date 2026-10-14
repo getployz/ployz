@@ -23,7 +23,6 @@ import signal
 import statistics
 import subprocess
 import sys
-import threading
 import time
 import urllib.error
 import urllib.request
@@ -139,13 +138,6 @@ RESTART = (f"test -d {CGROUP} || {{ echo 'no cgroup v2 system.slice'; exit 1; }}
 # WriterToMirror logs this under the exclusive turn once every holder of the Volume stopped, naming the Volume and
 # the want's target snapshot (local_volume_copy.rs).
 CUT_LINE = "cut: holders stopped"
-# Every unit that could step or slew a lab VM's clock. setup turns NTP off, and each clean start and case end checks
-# that none of these is active.
-SYNC_UNITS = ("systemd-timesyncd", "chrony", "chronyd", "ntp", "ntpsec", "openntpd")
-# The host's realtime clock against CLOCK_MONOTONIC_RAW: a slew moves the difference at most chrony's 83333 ppm, and
-# two reads around a sample cost at most HOST_JITTER. Anything faster is a step, and every host conversion is void.
-HOST_SLEW = 0.084
-HOST_JITTER = 0.005
 SNAPSHOT_BOUND = 8
 SERVICE = "db"
 VOLUME = "data"
@@ -172,57 +164,6 @@ def arming(case, side):
         return {}
     targets = [side[case["fault_on"]]] if case.get("fault_on") else [side["writer"], side["other"]]
     return {machine: case["fault"] for machine in targets}
-
-
-class HostWatch:
-    """Samples the host's realtime clock against CLOCK_MONOTONIC_RAW, which no time sync moves.
-
-    The excursion of their difference over a case is the host's part of every movement margin, and a jump between
-    two samples voids every host conversion in the case.
-    """
-
-    def __init__(self, realtime=time.time, monotonic=lambda: time.clock_gettime(time.CLOCK_MONOTONIC_RAW),
-                 thread=True, every=0.5):
-        self.realtime, self.monotonic, self.every = realtime, monotonic, every
-        self.lock = threading.Lock()
-        self.done = threading.Event()
-        self.thread = threading.Thread(target=self.loop, daemon=True) if thread else None
-        self.last, self.low, self.high, self.jumps = None, None, None, []
-
-    def loop(self):
-        while not self.done.wait(self.every):
-            self.sample()
-
-    def start(self):
-        if self.thread:
-            self.thread.start()
-
-    def stop(self):
-        self.done.set()
-        if self.thread and self.thread.is_alive():
-            self.thread.join(timeout=5)
-
-    def sample(self):
-        with self.lock:
-            mono = self.monotonic()
-            diff = self.realtime() - mono
-            if self.last:
-                then, before = self.last
-                if abs(diff - before) > HOST_SLEW * (mono - then) + HOST_JITTER:
-                    self.jumps.append(diff - before)
-            self.last = (mono, diff)
-            self.low = diff if self.low is None else min(self.low, diff)
-            self.high = diff if self.high is None else max(self.high, diff)
-
-    def mark(self):
-        with self.lock:
-            self.last, self.low, self.high, self.jumps = None, None, None, []
-        self.sample()
-
-    def excursion(self):
-        self.sample()
-        with self.lock:
-            return self.high - self.low, list(self.jumps)
 
 
 def catalog_diff(text):
@@ -267,10 +208,6 @@ def parse_json(text):
         except json.JSONDecodeError:
             continue
     return None
-
-
-def clock_report(clocks):
-    return {machine: dict(offset=round(offset, 6), uncertainty=round(error, 6)) for machine, (offset, error) in clocks.items()}
 
 
 def run_rows(data):
@@ -406,7 +343,7 @@ def downtime(results):
 
 class VolumeMove:
     def __init__(self, manifest, *, pool="ployz", runner=subprocess.run, spawn=subprocess.Popen,
-                 sleep=time.sleep, clock=time.time, size_gb=None, out=None, host=None):
+                 sleep=time.sleep, clock=time.time, size_gb=None, out=None):
         self.manifest = Path(manifest)
         self.run = json.loads(self.manifest.read_text())
         self.pool = pool
@@ -423,12 +360,6 @@ class VolumeMove:
         # Run id to the epoch Cloud recorded for it, and Machine name to the journal cursor its barrier read.
         self.epochs = {}
         self.cursor = {}
-        # Machine name to (offset, uncertainty) in seconds: its clock reads offset ahead of the host's.
-        self.clocks = {}
-        # Machine name to the most its offset has measurably moved since the clean start, uncertainty included.
-        self.moved = {}
-        self.host = host or HostWatch()
-        self.ntp_restored = None
 
     def command(self, *args, check=True, timeout=600):
         command = [str(HELPER), *map(str, args)]
@@ -524,76 +455,6 @@ class VolumeMove:
             scale = max(1, round(self.size_gb * 1024 / 15))
             self.sh(machine, f"/usr/bin/docker exec {container} pgbench -i -q -s {scale} -U postgres postgres",
                     timeout=7200)
-        for machine in self.machines:
-            self.sh(machine, "timedatectl set-ntp false")
-        self.measure_clocks()
-
-    def measure_clocks(self):
-        self.clocks = self.read_clocks()
-        self.moved = {}
-        return clock_report(self.clocks)
-
-    def read_clocks(self, samples=3):
-        """Read each Machine's clock against the host's, keeping the sample with the shortest round trip.
-
-        The reading was taken somewhere between the host times before and after the exec, so the offset is
-        exact to within half the round trip.
-        """
-        clocks = {}
-        for machine in self.machines:
-            best = None
-            for _ in range(samples):
-                before = self.clock()
-                reading = self.sh(machine, "date +%s.%N", check=False).stdout.strip()
-                after = self.clock()
-                try:
-                    sample = (float(reading) - (before + after) / 2, (after - before) / 2)
-                except ValueError:
-                    raise RuntimeError(f"could not read the clock on {machine}: {reading[:200]!r}") from None
-                best = sample if best is None or sample[1] < best[1] else best
-            clocks[machine] = best
-        return clocks
-
-    def margins(self):
-        """How far a stamp converted with the clean start's offsets may sit from its host time.
-
-        Lab VMs run with time sync off, so a VM's offset to host realtime moves smoothly between two readings, and
-        its measured movement bounds it. That movement is measured again at the trigger and at the case end, which
-        can come long after the 900 s trigger wait: wait_run allows 1800 s, a recovery another 1800 s, and healthy
-        300 s. Both calibration uncertainties and the host's own excursion add to it.
-        """
-        span = self.host.excursion()[0]
-        return {machine: 2 * self.clocks[machine][1] + self.moved.get(machine, 0.0) + span
-                for machine in self.machines}
-
-    def sync_problems(self, machine):
-        """Why time sync is not proven off on machine: an active sync unit, NTP on, or a reply cut short."""
-        script = ("set +e; for u in " + " ".join(SYNC_UNITS) + "; do echo \"unit $u $(systemctl is-active $u)\"; done; "
-                  "echo \"ntp $(timedatectl show -p NTP --value)\"; echo end")
-        result = self.sh(machine, script, check=False)
-        lines = result.stdout.splitlines()
-        if result.returncode or lines[-1:] != ["end"]:
-            return [f"exit {result.returncode}, {result.stdout[:200]!r}"]
-        problems, seen = [], set()
-        for line in lines[:-1]:
-            kind, _, rest = line.partition(" ")
-            if kind == "unit" and len(rest.split(" ")) == 2 and rest.split(" ")[0] in SYNC_UNITS:
-                unit, state = rest.split(" ")
-                seen.add(unit)
-                if state not in ("inactive", "failed"):
-                    problems.append(f"{unit} is {state}")
-            elif kind == "ntp" and "NTP" not in seen:
-                seen.add("NTP")
-                if rest != "no":
-                    problems.append(f"NTP is {rest or 'unread'}")
-            else:
-                problems.append(f"unknown line {line[:100]!r}")
-        missing = sorted((set(SYNC_UNITS) | {"NTP"}) - seen)
-        return problems + ([f"no reply for {', '.join(missing)}"] if missing else [])
-
-    def window(self, machine, since):
-        """journalctl's --since for a host time, in machine's clock, with slack the host-side filter discards."""
-        return int(since + self.clocks[machine][0]) - 2
 
     def start_probe(self):
         evidence = self.manifest.parent / "evidence"
@@ -800,9 +661,6 @@ class VolumeMove:
         for machine in self.machines:
             self.cursor[machine] = self.proven_restart(machine, op)
         self.sleep(STOP_HOLD)
-        for machine in self.machines:
-            if problems := self.sync_problems(machine):
-                raise Skipped(f"time sync is not proven off on {machine} before {op}: {'; '.join(problems)}")
         writer = self.writer()
         ready = self.sh(writer, f"c=$(/usr/bin/docker ps -q --filter volume={shlex.quote(self.physical)} "
                                 "--filter status=running); test -n \"$c\" && /usr/bin/docker exec $c pg_isready -U postgres",
@@ -825,7 +683,7 @@ class VolumeMove:
         """Request op once the Volume is idle.
 
         A clean start also waits out every admitted pull and zfs receive on every Machine, then restarts every
-        Machine so no earlier work survives in a process, checks quiet again and measures the clocks into since.
+        Machine so no earlier work survives in a process, checks quiet again and marks since.
         It skips the case when a run appears after that check."""
         args = dict(move=["volume", "move", VOLUME, "--to", destination],
                     mirror=["volume", "mirror", VOLUME, "--to", destination],
@@ -870,7 +728,6 @@ class VolumeMove:
                     restarted = True
                     continue
                 settled = {row["id"] for row in listed}
-                self.calibration = self.measure_clocks()
                 self.since = self.clock()
                 checked = True
                 if arm:
@@ -1097,9 +954,11 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
         if case.get("mirror") == "absent" and self.has_mirror(other):
             self.wait_run(self.start_op("mirror-rm", other))
 
-    def evidence(self, name, since):
+    def evidence(self, name):
         for machine in self.machines:
-            journal = self.sh(machine, f"journalctl -u ployz.service -u ployz-volume-plugin.service --since @{self.window(machine, since)} --no-pager -o short-iso",
+            # A clean case runs no barrier, so its journal is this boot's.
+            after = f"--after-cursor={shlex.quote(cursor)}" if (cursor := self.cursor.get(machine)) else "-b"
+            journal = self.sh(machine, f"journalctl -u ployz.service -u ployz-volume-plugin.service {after} --no-pager -o short-iso",
                               check=False, timeout=120).stdout
             (self.out / f"{name}-{machine}.journal").write_text(journal)
             listing = self.sh(machine, f"zfs list -t all -H -o name,used,refer,readonly -r {self.pool}",
@@ -1113,18 +972,15 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
         side = dict(writer=writer, other=other)
         destination = other
         self.prepare(case, other)
-        clocks = self.measure_clocks()
         started = self.clock()
         # Arm only once the Volume is idle: a cron sync crosses the same SetVolumeCopy points and would trip it.
         plan = arming(case, side)
         arm = (lambda: [self.fault(value, machine) for machine, value in plan.items()]) if plan else None
-        self.host.mark()
         # A trigger must be the first run's, so it starts behind the clean-start barrier on every Machine.
         row = self.start_op(case["op"], destination, arm, clean=bool(case["trigger"]))
         if case["trigger"]:
-            started, clocks = self.since, self.calibration
-        readings = [dict(at="the clean start", clocks=clocks)]
-        result = dict(case, writer_before=writer, destination=destination, started=started, clocks=readings)
+            started = self.since
+        result = dict(case, writer_before=writer, destination=destination, started=started)
         if row.get("state") == "refused":
             # Busy refusals are skips and approvals are answered, so this is a defect; a rerun would pass it.
             raise RuntimeError(f"{case['op']} was refused: {json.dumps(row.get('reply'))[:1500]}")
@@ -1148,9 +1004,6 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
         lost = self.lost()
         result["probe"] = dict(lost=lost)
         result["failures"] = assess(states, lost)
-        if case["trigger"]:
-            result["failures"] += [f"time sync is not proven off on {machine} at the case end: {'; '.join(problems)}"
-                                   for machine in self.machines if (problems := self.sync_problems(machine))]
         if case["trigger"] and not result.get("triggered"):
             result["failures"].append("the trigger never fired before the run ended")
         if result.get("triggered") and (unowned := self.outside_run(case, result) or self.unclaimed(result["run"])):
@@ -1179,7 +1032,7 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
         if not result["passed"]:
             result["heal"] = self.heal(destination)
         result["settled"] = self.clock()
-        self.evidence(case["name"], started)
+        self.evidence(case["name"])
         (self.out / f"{case['name']}.json").write_text(json.dumps(result, indent=2) + "\n")
         print(json.dumps(dict(case=case["name"], passed=result["passed"], final_writer=result["final_writer"],
                               failures=result["failures"])), flush=True)
@@ -1204,7 +1057,6 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
         self.out.mkdir(parents=True, exist_ok=True)
         results, escaped = [], None
         try:
-            self.host.start()
             self.setup()
             self.start_probe()
             for case in cases:
@@ -1234,10 +1086,6 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
             escaped = f"{type(error).__name__}: {error}"[:2000]
             raise
         finally:
-            self.host.stop()
-            # Lab VMs need their clocks synced again once the cases no longer read them.
-            self.ntp_restored = {machine: not self.sh(machine, "timedatectl set-ntp true", check=False).returncode
-                                 for machine in self.machines}
             report = self.stop_probe()
             summary = self.summarize(results, report, escaped)
         return summary
@@ -1263,7 +1111,7 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
                         recovery=[row.get("state") for row in result.get("recovery", [])],
                         gap=result.get("probe", {}).get("longest_gap_seconds"), failures=result["failures"])
                    for result in results],
-            volume_busy_waits=self.busy_waits, ntp_restored=self.ntp_restored)
+            volume_busy_waits=self.busy_waits)
         (self.out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
         return summary
 
