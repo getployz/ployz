@@ -2,7 +2,7 @@ import { useEffect, useEffectEvent, useState } from "react";
 import { queryOptions, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { EnvironmentRef } from "@ployz/sdk";
 import { ACTIVE_VOLUME_RUN_STATES, type VolumeRunView } from "./volume-run";
-import { getVolumeRunServerFn, inspectVolumeCopiesServerFn, listActiveVolumeRunsServerFn } from "./volume-run.functions";
+import { getVolumeRunServerFn, inspectVolumeCopiesServerFn, isVolumeOwedServerFn, listActiveVolumeRunsServerFn } from "./volume-run.functions";
 
 /** A Volume's runs, and the copies they change; the change stream's `volume_run` invalidates this root. */
 export const volumeRunKeys = { all: ["volume-run"] as const };
@@ -22,6 +22,15 @@ export function volumeMembersQueryOptions(organizationSlug: string, environment:
 
 export function useVolumeMembers(organizationSlug: string, environment: EnvironmentRef, volumeId: string) {
   return useQuery(volumeMembersQueryOptions(organizationSlug, environment, volumeId));
+}
+
+/** Whether the Volume's committed Move is still owed its finish; a run changing refreshes it. */
+export function useVolumeOwed(organizationSlug: string, volumeId: string) {
+  return useQuery({
+    queryKey: [...volumeRunKeys.all, organizationSlug, volumeId, "owed"] as const,
+    queryFn: () => isVolumeOwedServerFn({ data: { organizationSlug, volumeId } }),
+    staleTime: 60_000,
+  });
 }
 
 /** The organization's runs in progress, for the canvas trays. */

@@ -35,7 +35,7 @@ import { dropRemovedServer, forgetEmptiedPairing } from "#/modules/machines/pair
 import { loadOrganizationConnections } from "#/modules/machines/connections.server";
 import { planRemove } from "#/modules/machines/server-operations.server";
 import { storeSystem } from "#/modules/config-store/config-store.server";
-import { namedMachines, observeOrganization, releaseLanesOff } from "#/modules/volume-run/volume-run.server";
+import { observeOrganization, releaseLanesOff } from "#/modules/volume-run/volume-run.server";
 
 export class MachineRemovalProviderFailure extends Data.TaggedError(
   "MachineRemovalProviderFailure",
@@ -154,16 +154,33 @@ export const removeMachineActivity = Effect.fn("MachineRemoval.remove")(
   },
 );
 
+export class LeavingServerUnanswered extends Data.TaggedError("LeavingServerUnanswered")<{ readonly machineId: MachineId }> {}
+
+/**
+ * A Server that reads suspect, down or unknown counts as gone, so removing a dying Server is not blocked. One that reads
+ * up but does not answer fails the step, and on the step's last try writes nothing, as a Server whose pool is unusable
+ * holds no writer. The last try counts the step's attempts, so earlier tries may have failed for another reason.
+ */
 export const observeLeavingServerActivity = Effect.fn("MachineRemoval.observeLeaving")(function* (input: {
-  organizationId: string; machineId: MachineId;
-}) {
+  organizationId: string; machineId: MachineId; lastTry: boolean;
+}, observe: typeof observeOrganization = observeOrganization) {
   const id = input.machineId;
-  const servers = yield* namedMachines(input.organizationId);
-  const machine = { id, name: servers.find((server) => server.id === id)?.name ?? null };
-  const observed = yield* observeOrganization(input.organizationId).pipe(Effect.orElseSucceed(() => ({ copies: [], unanswered: [] })));
+  const runtime = yield* OrganizationRuntime;
+  const session = yield* runtime.open(input.organizationId);
+  if (session.status !== "connected") {
+    return yield* new MachineRemovalProviderFailure({ operation: "open organization runtime", cause: session });
+  }
+  const { machines } = yield* session.connected.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS);
+  const leaving = machines.find(({ machine }) => machine.id === id);
+  const observed = yield* observe(input.organizationId);
+  const mayStillWrite = leaving?.membership === "up" && observed.unanswered.includes(id);
+  if (mayStillWrite) {
+    if (!input.lastTry) return yield* new LeavingServerUnanswered({ machineId: id });
+    yield* Effect.logWarning("Taking the leaving Server as writing no Volumes on the step's last try: it reads up, but its copies did not answer.", { machineId: id });
+  }
   const writes = observed.copies.flatMap((copy) => copy.machine_id === id && copy.role === "writer" ? [copy.name] : []);
-  return { machine, writes };
-});
+  return { machine: { id, name: leaving?.machine.name ?? null }, writes };
+}, Effect.scoped);
 
 export const releaseLeavingLanesActivity = (input: {
   organizationId: string; machineId: MachineId; name: string | null; writes: readonly string[];

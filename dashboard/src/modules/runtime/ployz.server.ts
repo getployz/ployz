@@ -29,7 +29,7 @@ import type {
   VolumeSwitchRequest,
   WatchOptions,
 } from "@ployz/sdk";
-import { connect as connectSdk, observeCopies, ployzVersion, setVolumeCopyRefusal } from "@ployz/sdk";
+import { connect as connectSdk, machineUpgradeAttemptId, observeCopies, ployzVersion, setVolumeCopyRefusal } from "@ployz/sdk";
 import { Context, Data, Effect, Layer, Option, Schema, type Scope } from "effect";
 import type { JsonValue } from "#/db/tables";
 import { describeFailureCause } from "#/lib/error-message";
@@ -42,7 +42,7 @@ import { RuntimeConnectionFailure } from "#/modules/runtime/runtime-connection-e
 /** The release this SDK speaks; it needs no Machine. */
 export { ployzVersion };
 
-export { setVolumeCopyRefusal };
+export { machineUpgradeAttemptId, setVolumeCopyRefusal };
 
 export const observeVolumeCopies = (connections: Parameters<typeof observeCopies>[0]) =>
   sdkPromise("observe copies", () => observeCopies(connections));
@@ -223,7 +223,11 @@ export function asSdkFailure(operation: string, cause: unknown): PloyzSdkError {
 
 /** The code of the runtime's RPC error a failure carries, such as "not_found"; undefined for any other failure. */
 export function rpcErrorCode(error: PloyzSdkError) {
-  const rpc = Schema.decodeUnknownOption(Schema.Struct({ code: Schema.String }))("cause" in error ? error.cause : undefined);
+  return rpcCode("cause" in error ? error.cause : undefined);
+}
+
+function rpcCode(cause: unknown) {
+  const rpc = Schema.decodeUnknownOption(Schema.Struct({ code: Schema.String }))(cause);
   return Option.isSome(rpc) ? rpc.value.code : undefined;
 }
 
@@ -315,26 +319,30 @@ function wrapClient(client: Client): PloyzSession {
     publishCertificateMaterial: (request) =>
       sdkPromise("publish certificate material", () => client.publishCertificateMaterial(request).then(() => undefined)),
     watch,
-    watchFirstFrame: (timeoutMs) =>
-      Effect.tryPromise({
-        try: async (signal) => {
-          const frames = client.runtime.watch({ signal });
-          for await (const frame of frames) return frame;
-          throw new Error("Runtime watch ended before the first frame");
-        },
-        catch: (cause) => new RuntimeConnectionFailure({ cause }),
-      }).pipe(
-        Effect.timeoutOrElse({
-          duration: timeoutMs,
-          orElse: () =>
-            Effect.fail(
-              new RuntimeConnectionFailure({
-                cause: new Error("Runtime watch timed out"),
-              }),
-            ),
-        }),
-      ),
+    watchFirstFrame: (timeoutMs) => firstFrame((options) => client.runtime.watch(options), timeoutMs),
   };
+}
+
+/**
+ * The first frame a runtime watch yields, failing when none comes within `timeoutMs`. Only that timeout and an
+ * unavailable transport are waitable; an error the Cluster answered with, or a watch it ended, is not.
+ */
+export function firstFrame(
+  watch: (options: { readonly signal: AbortSignal }) => AsyncIterable<RuntimeWatchView>,
+  timeoutMs: number,
+) {
+  return Effect.tryPromise({
+    try: async (signal) => {
+      for await (const frame of watch({ signal })) return frame;
+      throw new Error("Runtime watch ended before the first frame");
+    },
+    catch: (cause) => new RuntimeConnectionFailure({ cause, waitable: rpcCode(cause) === "unavailable" }),
+  }).pipe(
+    Effect.timeoutOrElse({
+      duration: timeoutMs,
+      orElse: () => Effect.fail(new RuntimeConnectionFailure({ cause: new Error("Runtime watch timed out"), waitable: true })),
+    }),
+  );
 }
 
 function closeSession(session: Client) {

@@ -356,8 +356,19 @@ impl MachineUpgradeAttemptId {
     /// Random 32-character lowercase hexadecimal attempt ID.
     #[must_use]
     pub fn random() -> Self {
+        Self::of(uuid::Uuid::new_v4())
+    }
+
+    /// The attempt ID of a UUID written in any of its text forms.
+    pub fn from_uuid(value: &str) -> Result<Self, ValueError> {
+        uuid::Uuid::parse_str(value)
+            .map(Self::of)
+            .map_err(|_| ValueError::new("Machine upgrade attempt ID", value, "a UUID"))
+    }
+
+    fn of(uuid: uuid::Uuid) -> Self {
         let mut hex = [0_u8; 32];
-        uuid::Uuid::new_v4().simple().encode_lower(&mut hex);
+        uuid.simple().encode_lower(&mut hex);
         Self(hex)
     }
 }
@@ -996,6 +1007,14 @@ impl From<CloudEnrollToken> for String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_upgrade_attempt_id_is_its_uuid_in_lowercase_hex() {
+        let id = super::MachineUpgradeAttemptId::from_uuid("0F8FAD5B-D9CB-469F-A165-70867728950E")
+            .unwrap();
+        assert_eq!(id.as_str(), "0f8fad5bd9cb469fa16570867728950e");
+        assert!(super::MachineUpgradeAttemptId::from_uuid("not-a-uuid").is_err());
+    }
+
     #[test]
     fn unix_paths_refuse_nul_in_construction_and_json() {
         for valid in ["/", "/var/lib/café"] {

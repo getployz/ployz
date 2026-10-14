@@ -28,7 +28,7 @@ import {
 import { useDeleteCopy, useStagePlacement, useStageRestore } from "#/modules/volume-placement/volume-placement.hooks";
 import { useVolumePlacements } from "#/modules/volume-placement/volume-placement.queries";
 import type { Member, VolumeRunView } from "#/modules/volume-run/volume-run";
-import { useActiveVolumeRuns, useVolumeMembers } from "#/modules/volume-run/volume-run.queries";
+import { useActiveVolumeRuns, useVolumeMembers, useVolumeOwed } from "#/modules/volume-run/volume-run.queries";
 
 /** A Volume as the Copies tab shows it: who mounts it names who its Primary runs. */
 export type CopiesVolume = PlacementVolume & { readonly mounts: readonly { readonly service: string }[] };
@@ -43,6 +43,7 @@ export function useVolumeCopies(organizationSlug: string, environment: Environme
   const members = useVolumeMembers(organizationSlug, environment, volume.id).data;
   const rows = useVolumePlacements(organizationSlug).data ?? [];
   const running = useActiveVolumeRuns(organizationSlug).data?.find((run) => run.volume_id === volume.id) ?? null;
+  const owed = useVolumeOwed(organizationSlug, volume.id).data ?? true;
   const placement = useStagePlacement(organizationSlug, environment, volume);
   const restore = useStageRestore(organizationSlug, environment, volume);
   const deleteCopy = useDeleteCopy(organizationSlug, environment, volume);
@@ -57,6 +58,7 @@ export function useVolumeCopies(organizationSlug: string, environment: Environme
     members,
     rows,
     running,
+    owed,
     copies,
     servers: lens.machines.filter((machine) => machine.acceptsServices),
     accepting: members?.filter((member) => accepting.has(member.machine.id)).map((member) => member.machine.id) ?? [],
@@ -79,6 +81,8 @@ export type CopiesPanelProps = {
   members: readonly Member[] | undefined;
   rows: readonly PlacementRow[];
   running: VolumeRunView | null;
+  /** A committed Move owed its finish, or not known yet: no move or mirror is offered until a release finishes it. */
+  owed: boolean;
   copies: VolumeCopies | null;
   servers: readonly CopyServer[];
   /** Servers that accept Services and run the volume verbs: the only ones a move or a mirror may name. */
@@ -114,7 +118,7 @@ export function VolumeCopiesPanel(props: CopiesPanelProps) {
 
 type Resolved = CopiesPanelProps & { members: readonly Member[]; row: PlacementRow | null; copies: VolumeCopies };
 
-function CopiesView({ volume, members, row, rows, copies, target, servers, accepting, upgrade, seeds, disabled, deploying, stage, restore, deleteCopy, onOpen, now = new Date() }:
+function CopiesView({ volume, members, row, rows, owed, copies, target, servers, accepting, upgrade, seeds, disabled, deploying, stage, restore, deleteCopy, onOpen, now = new Date() }:
   Resolved & { target: Placement }) {
   const [adding, setAdding] = useState(false);
   const [deleting, setDeleting] = useState<OldCopy | null>(null);
@@ -124,7 +128,7 @@ function CopiesView({ volume, members, row, rows, copies, target, servers, accep
   const locked = disabled || deploying || blocked;
   const edit = (change: PlacementEdit) => stage(editPlacement(target, change), applied);
   const offer = failover(observed, row);
-  const mirrorOn = placementTargets(volume, members, row, accepting).mirror.filter((server) => server.id !== target.primary);
+  const mirrorOn = placementTargets(volume, members, row, accepting, owed).mirror.filter((server) => server.id !== target.primary);
   const canAdd = !blocked && mirrorOn.length > 0 && addableCopies(copies, ["mirror"]).length > 0;
   const { live } = copies;
   const liveName = live.server?.name ?? "its server";
@@ -133,7 +137,7 @@ function CopiesView({ volume, members, row, rows, copies, target, servers, accep
     {offer ? <Alert variant="destructive">
       <AlertTitle>{offer.down.name} is not answering</AlertTitle>
       <AlertDescription>{offer.lostAfter ? `Changes after ${lossTime(offer.lostAfter)} lost` : "Recent changes lost"}</AlertDescription>
-      {accepting.includes(offer.mirror.id) ? <AlertAction>
+      {!owed && accepting.includes(offer.mirror.id) ? <AlertAction>
         <Button variant="outline" size="sm" disabled={locked} onClick={() => edit({ kind: "move", to: offer.mirror.id })}>Use mirror</Button>
       </AlertAction> : null}
     </Alert> : null}
@@ -299,7 +303,7 @@ function AddCopyDialog({ open, onOpenChange, volume, live, servers, mirrorOn, on
 }
 
 /** Its staged actions build the same placement the list would; only Details discards them. */
-function CopyView({ volume, members, row, rows, copies, copy, accepting, upgrade, seeds, disabled, deploying, stage, restore, refresh, refreshing,
+function CopyView({ volume, members, row, rows, owed, copies, copy, accepting, upgrade, seeds, disabled, deploying, stage, restore, refresh, refreshing,
   onBack, now = new Date() }:
   Resolved & { copy: MirrorCopy; onBack: () => void }) {
   const blocked = upgrade.length > 0;
@@ -308,7 +312,7 @@ function CopyView({ volume, members, row, rows, copies, copy, accepting, upgrade
   const applied = appliedMirrors(observed, row);
   // A staged mirror is Details' to discard, and a Deploy running the placement holds it.
   const offered = !blocked && copy.staged === null && !deploying ? target : null;
-  const movable = placementTargets(volume, members, row, accepting).move.some((machine) => machine.id === copy.server.id);
+  const movable = placementTargets(volume, members, row, accepting, owed).move.some((machine) => machine.id === copy.server.id);
   const promote = offered !== null && movable ? editPlacement(offered, { kind: "move", to: copy.server.id }) : null;
   const remove = offered === null ? null : editPlacement(offered, { kind: "remove_mirror", server: copy.server.id });
   const locked = disabled || deploying;
