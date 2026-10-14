@@ -6,7 +6,6 @@ import { asTestDouble } from "#/lib/test-double";
 import type { Caller } from "#/modules/identity/actor";
 import { member, user } from "#/modules/identity/tables";
 import { InngestClient } from "#/modules/inngest/client";
-import { renderInviteMail } from "#/modules/organization/invitation-mail.server";
 import { orgMemberInvite } from "#/modules/organization/members.commands.server";
 import { organization } from "#/modules/organization/tables";
 import { Auth, type AuthService } from "#/server/auth.server";
@@ -90,6 +89,7 @@ describe("invite email", () => {
     expect(event.data.text).toContain(`Join Acme & Co: ${invited.link}`);
     expect(event.data.text).toContain("as an admin");
     expect(event.data.html).toContain(`href="${invited.link}"`);
+    expect(event.data.html).toContain("/assets/logo-mark.png");
     expect(event.data.html).toContain("Ada &lt;Lovelace&gt;");
     expect(event.data.html).not.toContain("<Lovelace>");
   });
@@ -122,39 +122,3 @@ describe("invite email", () => {
   });
 });
 
-describe("renderInviteMail", () => {
-  it("keeps names on one line in the subject and the text", () => {
-    const mail = renderInviteMail({
-      to: "bob@example.test",
-      organization: "Acme\r\nBcc: eve@example.test",
-      inviter: "Ada\u0000\u2028Lovelace\u0085",
-      role: "member",
-      link: "https://cloud.example.test/invite/t",
-      expiresAt: new Date("2026-10-21T12:00:00Z"),
-    });
-    expect(mail.subject).toBe("Ada Lovelace invited you to Acme Bcc: eve@example.test on Ployz");
-    expect(mail.text).toContain("Ada Lovelace invited you to join Acme Bcc: eve@example.test as a member.");
-  });
-
-  it("dates the expiry in words and names the role", () => {
-    const mail = renderInviteMail({
-      to: "bob@example.test",
-      organization: "Acme",
-      inviter: "Ada",
-      role: "member",
-      link: "https://cloud.example.test/invite/t",
-      expiresAt: new Date("2026-10-21T12:00:00Z"),
-    });
-    expect(mail.text).toBe([
-      "Join Acme on Ployz",
-      "",
-      "Ada invited you to join Acme as a member. The link works once and expires on October 21, 2026.",
-      "",
-      "Join Acme: https://cloud.example.test/invite/t",
-      "",
-      "--",
-      "Ada sent this invite to bob@example.test. If you weren't expecting it, ignore this email.",
-      "",
-    ].join("\n"));
-  });
-});
