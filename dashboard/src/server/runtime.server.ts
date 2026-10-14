@@ -11,6 +11,7 @@ import { SupportStaffLive } from "#/modules/organization/access.server";
 import { GithubRepositoriesLive } from "#/modules/github/github-cli.server";
 import { GithubApiLive } from "#/modules/github/github-observation.api";
 import { GithubOidcKeysLive } from "#/modules/github/github-oidc.server";
+import { GithubTokensLive } from "#/modules/github/github-token.server";
 import { InngestLive } from "#/modules/inngest/client";
 import { AuthLive } from "#/server/auth.server";
 import { AppConfig } from "#/server/config.server";
@@ -31,6 +32,7 @@ const InfrastructureLive = Layer.mergeAll(
   CloudStoreLive,
 ).pipe(
   Layer.provideMerge(GithubApiLive),
+  Layer.provideMerge(GithubTokensLive),
   Layer.provideMerge(DatabaseLive),
   Layer.provideMerge(PloyzLive),
   Layer.provideMerge(AppConfig.layer),

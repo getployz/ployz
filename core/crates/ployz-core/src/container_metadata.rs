@@ -43,7 +43,7 @@ impl ContainerLabels {
         Ok(Self(labels))
     }
 
-    /// Borrow the validated label map.
+    /// The labels by key; none is in the reserved `ployz.*` namespace.
     #[must_use]
     pub fn as_map(&self) -> &BTreeMap<String, String> {
         &self.0
@@ -103,7 +103,7 @@ impl ContainerHostname {
         }
     }
 
-    /// Borrow the validated hostname.
+    /// The hostname text: RFC 1123, 1 to 64 characters.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0

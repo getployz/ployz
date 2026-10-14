@@ -20,7 +20,7 @@ import { uploadChunk } from "#/modules/config-store/tables";
 import { receiveUpload, releaseUpload } from "#/modules/config-store/upload.server";
 import { resolveCaller } from "#/modules/identity/caller.server";
 import { Auth, AuthLive } from "#/server/auth.server";
-import { githubInstallation, githubRepositoryCache } from "#/modules/github/tables";
+import { githubInstallation, githubRepositoryCache, organizationGithubInstallation } from "#/modules/github/tables";
 import { member, user } from "#/modules/identity/tables";
 import { machineRemoveAttempt, organizationMachine } from "#/modules/machines/tables";
 import {
@@ -558,10 +558,14 @@ it.live(
         const database = yield* Database;
         const [row] = yield* database.drizzle.select({ id: user.id, organization: member.organizationId }).from(user)
           .innerJoin(member, eq(member.userId, user.id)).where(eq(user.email, "alice@example.test"));
-        const userId = row?.id ?? assert.fail("no user");
-        yield* database.drizzle.insert(githubInstallation).values({ userId, installationId: 7, accountLogin: "acme", accountType: "Organization" });
+        if (!row) assert.fail("no user");
+        const userId = row.id;
+        yield* database.drizzle.insert(githubInstallation).values({ installationId: 7, accountLogin: "acme", accountType: "Organization" });
+        yield* database.drizzle.insert(organizationGithubInstallation).values({
+          organizationId: row.organization, installationId: 7, connectedByUserId: userId, connectedGithubLogin: "alice",
+        });
         yield* database.drizzle.insert(githubRepositoryCache).values({
-          userId, installationId: 7, repositoryId: 11, name: "web", fullName: "acme/web", defaultBranch: "main",
+          installationId: 7, repositoryId: 11, name: "web", fullName: "acme/web", defaultBranch: "main",
           private: true, htmlUrl: "https://github.com/acme/web", repoUpdatedAt: new Date(),
         });
         let services = 10;
@@ -573,7 +577,7 @@ it.live(
         const created = yield* request("write", alice, git("web", "Acme/Web", "dev"));
         assert.strictEqual(created.status, 200);
         assert.include(created.json.staged ?? [], "web.branch");
-        assert.deepInclude(github.calls, { path: "/repos/acme/web/git/ref/heads%2Fdev", installationId: 7 });
+        assert.deepInclude(github.calls, { path: "/repos/acme/web/git/ref/heads%2Fdev", access: { type: "organization", organizationId: row.organization, installationId: 7 } });
         const web = yield* request("read", alice, get("web"));
         assert.deepInclude(web.json.values, { repository: "acme/web", branch: "dev" });
 

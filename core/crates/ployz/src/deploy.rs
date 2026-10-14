@@ -677,7 +677,6 @@ pub enum PlanError {
         "Volume {name} on Server '{machine}' already uses Docker storage. Automatic conversion to managed storage is unavailable"
     )]
     ExistingPlainVolume {
-        /// Existing machine-local Docker Volume name.
         name: DockerVolumeName,
         /// Machine holding the existing Volume.
         machine: MachineName,
@@ -687,7 +686,6 @@ pub enum PlanError {
         "Managed volume {name} on Server '{machine}' has a different size limit; a Volume's size is fixed once deployed, so its data is neither resized nor replaced (requested {maximum_bytes})"
     )]
     ExistingProvisionedVolumeMismatch {
-        /// Existing machine-local Docker Volume name.
         name: DockerVolumeName,
         /// Machine holding the existing Volume.
         machine: MachineName,

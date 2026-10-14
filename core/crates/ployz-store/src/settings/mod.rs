@@ -398,6 +398,31 @@ impl ServiceSetting {
         }
     }
 
+    /// Refuse this Setting for `service`, whose source it does not [apply](Self::applies) to.
+    pub(crate) fn not_for(self, service: &ServiceName, source: &ServiceSource) -> RpcError {
+        let needs = match self {
+            Self::Image | Self::RegistryCredential => "an image source",
+            Self::Git(_)
+            | Self::Policy(_)
+            | Self::CpuLimit
+            | Self::Healthcheck
+            | Self::MaxRetries
+            | Self::MemLimit
+            | Self::PreDeployCommand
+            | Self::PrivateDns
+            | Self::Replicas
+            | Self::RestartPolicy
+            | Self::StartCommand
+            | Self::Template => "a repository source",
+        };
+        let has = match source {
+            ServiceSource::Image { .. } => "runs an image",
+            ServiceSource::Git { .. } => "builds a repository",
+            ServiceSource::Empty { .. } => "has no source",
+        };
+        self.invalid(&format!("needs {needs}, and {service} {has}"))
+    }
+
     /// Its value for a Service with `config` and Deployment Policy `policy`.
     pub(crate) fn value(self, config: &AuthoredServiceConfig, policy: &Policy) -> Value {
         if let Self::Git(git) = self {
@@ -590,12 +615,12 @@ impl ServiceSetting {
                 };
                 Ok(())
             }
-            (Self::Image, _) => Err(self.invalid("this Service runs no image")),
             (Self::RegistryCredential, ServiceSource::Image { credentials, .. }) => {
                 *credentials = ServiceImageCredentials::None;
                 Ok(())
             }
-            (Self::RegistryCredential, _) => Err(self.invalid("only an image Service has one")),
+            // A Setting the source does not have is already unset.
+            (Self::Image | Self::RegistryCredential, _) => Ok(()),
             (Self::Healthcheck, _) => {
                 config.healthcheck = ServiceHealthcheck::None;
                 Ok(())

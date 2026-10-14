@@ -1,1 +1,8 @@
 dashboard/drizzle/**/snapshot.json linguist-generated=true
+# Derived from Rust; regenerate, never hand-merge:
+#   cd core && PLOYZ_WRITE_SDK_PAYLOADS=1 cargo test -p ployz --test sdk_payloads
+# merge=ours keeps this branch's copy instead of writing conflict markers, and the sdk_payloads
+# test then fails until the file is regenerated. It needs `git config merge.ours.driver true`,
+# which `pnpm install` in dashboard/ sets. GitHub ignores merge drivers, so its PR page still
+# reports these conflicts.
+core/crates/ployz-sdk/generated/** linguist-generated=true merge=ours

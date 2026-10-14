@@ -532,7 +532,6 @@ fn actor(organization: String, principal: Option<String>) -> Result<Actor> {
     })
 }
 
-/// A GitHub repository's ID and one of its branches, as JavaScript hands them over.
 fn github_branch(
     repository_id: i64,
     branch: &str,

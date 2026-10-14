@@ -273,8 +273,8 @@ pub(crate) fn store(
     Ok(())
 }
 
-/// Set (or with `None`, unset) one Setting of Git Service `service`'s policy.
-/// Returns whether it changed.
+/// Set (or with `None`, unset) one Setting of `service`'s policy. The edit has already
+/// refused a value for a Service that does not build a repository. Returns whether it changed.
 pub(crate) fn set(
     tx: &mut dyn Tx,
     who: &Actor,
@@ -283,10 +283,6 @@ pub(crate) fn set(
     setting: PolicySetting,
     value: Option<Value>,
 ) -> Result<bool, RpcError> {
-    if !PolicySetting::applies(&service.config) {
-        return Err(ServiceSetting::Policy(setting)
-            .invalid("this Setting requires a Service connected to a repository"));
-    }
     let before = load(tx, environment, &service.id)?;
     let mut policy = before.clone();
     setting.write(&mut policy, value)?;

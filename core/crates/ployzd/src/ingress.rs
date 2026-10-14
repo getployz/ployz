@@ -141,7 +141,6 @@ impl PublicationTrace {
 /// One Serving Container address and container port.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub(crate) struct IngressEndpoint {
-    /// Serving Container address.
     pub(super) address: ContainerAddress,
     /// Published container port.
     pub(super) port: NonZeroU16,
@@ -150,7 +149,6 @@ pub(crate) struct IngressEndpoint {
 /// Certificate state that can affect ingress behavior or generated output.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
 pub(crate) struct ProjectedCertificate {
-    /// Pending HTTP-01 challenge.
     pub(super) challenge: Option<CertificateChallenge>,
     /// Certificate and private key served as given.
     pub(super) material: Option<CertificateMaterial>,
@@ -169,7 +167,6 @@ impl IngressSite {
         }
     }
 
-    /// Pending HTTP-01 challenge, when present.
     #[must_use]
     pub(super) fn challenge(&self) -> Option<&CertificateChallenge> {
         self.certificate
@@ -177,7 +174,6 @@ impl IngressSite {
             .and_then(|certificate| certificate.challenge.as_ref())
     }
 
-    /// Ployz-owned certificate material, when present.
     #[must_use]
     pub(super) fn material(&self) -> Option<&CertificateMaterial> {
         self.certificate

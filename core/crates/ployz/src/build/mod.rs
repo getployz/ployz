@@ -92,13 +92,11 @@ pub enum Error {
 /// A Service whose image this preparation built, bound to the content produced.
 #[derive(Clone, Debug)]
 pub struct BuiltService {
-    /// Service this image was built for.
     pub name: ServiceName,
     /// Machine whose image store holds the completed image.
     pub machine_id: MachineId,
     /// Reference the Service requested, used when the image is delivered.
     pub image: String,
-    /// Runtime destination constraints.
     pub placement: Placement,
     /// The completed image, identified by content.
     pub built: BuiltImage,

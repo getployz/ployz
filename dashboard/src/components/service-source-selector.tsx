@@ -44,6 +44,7 @@ export type GitRepoSelection = {
 };
 
 type GitRepoSelectorProps = {
+  organizationSlug: string;
   query: string;
   disabled?: boolean;
   onSelectRepo: (repo: GitRepoSelection) => void | Promise<void>;
@@ -58,6 +59,7 @@ type ImageSelectorProps = {
 type GitRepoSelectorDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  organizationSlug: string;
   onSelectRepo: (repo: GitRepoSelection) => void | Promise<void>;
 };
 
@@ -68,6 +70,7 @@ type ImageSelectorDialogProps = {
 };
 
 type GitBranchSelectorProps = {
+  organizationSlug: string;
   repositoryId: number;
   installationId: number | null;
   query: string;
@@ -79,6 +82,7 @@ type GitBranchSelectorProps = {
 type GitBranchSelectorDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  organizationSlug: string;
   repositoryFullName: string;
   repositoryId: number;
   installationId: number | null;
@@ -181,18 +185,18 @@ function SelectorCommandDialog({
   );
 }
 
-function GitRepoSelectorActions() {
+function GitRepoSelectorActions({ organizationSlug }: { organizationSlug: string }) {
   const queryClient = useQueryClient();
   // Read together: sequential suspense would fetch these in series.
   const [{ data: github }, { data: accessState }] = useSuspenseQueries({
-    queries: [githubWebQueryOptions(), githubRepoAccessQueryOptions()],
+    queries: [githubWebQueryOptions(), githubRepoAccessQueryOptions(organizationSlug)],
   });
   const { mutate: requestRepoSync, isPending: isRefreshing } = useMutation(
     {
       mutationKey: [...githubKeys.repos(), "refresh"],
-      mutationFn: () => requestGithubRepoSyncServerFn(),
+      mutationFn: () => requestGithubRepoSyncServerFn({ data: { organizationSlug } }),
       onSuccess: async () => {
-        await queryClient.invalidateQueries({ queryKey: githubKeys.access() });
+        await queryClient.invalidateQueries({ queryKey: githubKeys.access(organizationSlug) });
       },
       onError: (error) => {
         toast.error(toErrorMessage(error, "Could not refresh GitHub repositories."));
@@ -261,17 +265,19 @@ function GitRepoSelectorActions() {
 }
 
 function GitRepoSelectorResults({
+  organizationSlug,
   query,
   disabled = false,
   onSelectRepo,
 }: GitRepoSelectorProps) {
-  const scope = useCollectionScope();
+  const { queryClient, sessionId } = useCollectionScope();
+  const scope = { queryClient, sessionId, organizationSlug };
   const githubRepos = getGithubReposCollection(scope);
   // Query errors must repaint even when the collection retains identical rows.
   const { isError, dataUpdatedAt } = useGithubReposReadState(scope);
   const { isReady: reposReady } = useLiveQuery(githubRepos);
   const { data: accessState } = useSuspenseQuery(
-    githubRepoAccessQueryOptions()
+    githubRepoAccessQueryOptions(organizationSlug)
   );
   const deferredQuery = useDeferredValue(query);
   const normalizedQuery = deferredQuery.trim();
@@ -368,11 +374,12 @@ function GitRepoSelectorResults({
 }
 
 export function GitRepoSelector(props: GitRepoSelectorProps) {
-  const { queryClient, sessionId, userId } = useCollectionScope();
+  const { queryClient, sessionId } = useCollectionScope();
+  const { organizationSlug } = props;
   // The results below suspend on access before subscribing to repositories; start both together.
   useEffect(() => {
-    preloadGithubRepos({ queryClient, sessionId, userId });
-  }, [queryClient, sessionId, userId]);
+    preloadGithubRepos({ queryClient, sessionId, organizationSlug });
+  }, [queryClient, sessionId, organizationSlug]);
   const publicName = normalizePublicGithubRepository(props.query);
   const connectPublic = useMutation({
     mutationFn: async () => {
@@ -389,7 +396,7 @@ export function GitRepoSelector(props: GitRepoSelectorProps) {
       </CommandGroup> : props.query.includes("/") ? <SelectorEmpty>Enter owner/repo or a GitHub repository URL. Choose the branch separately.</SelectorEmpty> : null}
       {connectPublic.isError ? <Alert variant="destructive"><AlertDescription>Could not read this public repository. Check its address and visibility, then try again.</AlertDescription></Alert> : null}
       <Suspense>
-        <GitRepoSelectorActions />
+        <GitRepoSelectorActions organizationSlug={organizationSlug} />
       </Suspense>
       <Suspense fallback={<SelectorLoading />}>
         <GitRepoSelectorResults {...props} />
@@ -399,6 +406,7 @@ export function GitRepoSelector(props: GitRepoSelectorProps) {
 }
 
 function GitBranchSelectorResults({
+  organizationSlug,
   repositoryId,
   installationId,
   query,
@@ -408,6 +416,7 @@ function GitBranchSelectorResults({
 }: GitBranchSelectorProps) {
   const { data: branchesData } = useSuspenseQuery(
     githubBranchesQueryOptions({
+      organizationSlug,
       repositoryId,
       installationId,
     })
@@ -459,6 +468,7 @@ export function GitBranchSelector(props: GitBranchSelectorProps) {
 export function GitBranchSelectorDialog({
   open,
   onOpenChange,
+  organizationSlug,
   repositoryFullName,
   repositoryId,
   installationId,
@@ -472,6 +482,7 @@ export function GitBranchSelectorDialog({
     <OpenGitBranchSelectorDialog
       open={open}
       onOpenChange={onOpenChange}
+      organizationSlug={organizationSlug}
       repositoryFullName={repositoryFullName}
       repositoryId={repositoryId}
       installationId={installationId}
@@ -483,6 +494,7 @@ export function GitBranchSelectorDialog({
 function OpenGitBranchSelectorDialog({
   open,
   onOpenChange,
+  organizationSlug,
   repositoryFullName,
   repositoryId,
   installationId,
@@ -512,6 +524,7 @@ function OpenGitBranchSelectorDialog({
         </SourcePickerInput>
         <CommandList>
           <GitBranchSelector
+            organizationSlug={organizationSlug}
             repositoryId={repositoryId}
             installationId={installationId}
             query={dialog.query}
@@ -604,6 +617,7 @@ export function ImageSelector({
 export function GitRepoSelectorDialog({
   open,
   onOpenChange,
+  organizationSlug,
   onSelectRepo,
 }: GitRepoSelectorDialogProps) {
   if (!open) {
@@ -614,6 +628,7 @@ export function GitRepoSelectorDialog({
     <OpenGitRepoSelectorDialog
       open={open}
       onOpenChange={onOpenChange}
+      organizationSlug={organizationSlug}
       onSelectRepo={onSelectRepo}
     />
   );
@@ -622,6 +637,7 @@ export function GitRepoSelectorDialog({
 function OpenGitRepoSelectorDialog({
   open,
   onOpenChange,
+  organizationSlug,
   onSelectRepo,
 }: GitRepoSelectorDialogProps) {
   const dialog = useSelectorDialogState<GitRepoSelection>({
@@ -652,6 +668,7 @@ function OpenGitRepoSelectorDialog({
         </SourcePickerInput>
         <CommandList>
           <GitRepoSelector
+            organizationSlug={organizationSlug}
             query={dialog.query}
             disabled={dialog.isPending}
             onSelectRepo={dialog.runSelect}
