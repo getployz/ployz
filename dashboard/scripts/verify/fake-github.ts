@@ -97,8 +97,8 @@ export async function run() {
     return { installationId: installationTokens.get(bearer), user: userTokens.get(bearer) };
   };
   const readable = (who: Caller, i: Installation, r: Repository) =>
-    installation(i.id) !== undefined && !hidden.has(r.id)
-    && (!r.private || who.installationId === i.id || (who.user !== undefined && i.users.includes(who.user.login)));
+    !r.private || (installation(i.id) !== undefined && !hidden.has(r.id)
+      && (who.installationId === i.id || (who.user !== undefined && i.users.includes(who.user.login))));
   const byName = (who: Caller, owner: string, name: string) =>
     located.find(({ installation: i, repository: r }) => i.account.login === owner && r.name === name && readable(who, i, r));
 
@@ -346,7 +346,7 @@ export async function run() {
     if ((m = /^\/([^/]+)\/([^/]+)\/legacy\.tar\.gz\/([0-9a-f]{40})$/.exec(path))) {
       const sha = m[3] ?? "";
       const found = located.find(({ installation: i, repository: r }) =>
-        i.account.login === m?.[1] && r.name === m[2] && installation(i.id) && shaOrBranchHead(i, r, sha));
+        i.account.login === m?.[1] && r.name === m[2] && (!r.private || installation(i.id)) && shaOrBranchHead(i, r, sha));
       if (!found) return notFound;
       const prefix = `${found.installation.account.login}-${found.repository.name}-${sha.slice(0, 7)}`;
       return { status: 200, body: tarball(prefix, found.repository.files), type: "application/x-gzip" };
