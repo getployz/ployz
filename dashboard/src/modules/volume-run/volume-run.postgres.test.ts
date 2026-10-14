@@ -1630,12 +1630,20 @@ describe("volume runs", () => {
         { machine: { id: B, name: "fsn-2" }, address: "fdcc::2", answered: true, view: { copy: slotCopy(G, null, "2") }, floorless: false },
       ];
 
-      it("refuses a move, a mirror, a full sync and a seed, returning the release that failed as busy, and admits a plain sync", async () => {
+      it("refuses a move, a mirror, any sync, a seed and a removal of B's mirror or of every mirror, returning the release that failed as busy, and admits removing another mirror", async () => {
         const release = await pending();
         const before = (await rows()).length;
         const seed: VolumeRunInput = { kind: "seed", args: { into: { volumeId: "vol2", dockerVolume: "shop-production_vol-vol2", name: "data-copy" }, guid: G.guid, name: G.name } };
 
-        for (const input of [{ kind: "move", args: { to: "fsn-1" } }, { kind: "mirror", args: { to: "fsn-3" } }, { kind: "sync", args: { full: true } }, seed] satisfies VolumeRunInput[]) {
+        for (const input of [
+          { kind: "move", args: { to: "fsn-1" } },
+          { kind: "mirror", args: { to: "fsn-3" } },
+          { kind: "sync", args: { full: true } },
+          { kind: "sync", args: { full: false } },
+          { kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null } },
+          { kind: "delete_mirror", args: { slot: null, confirmed_name: null } },
+          seed,
+        ] satisfies VolumeRunInput[]) {
           expect(await insert(input)).toEqual({
             ok: false,
             refusal: { code: "conflict", message: finishes, details: { run: expect.objectContaining({ id: release.id }) } },
@@ -1647,7 +1655,7 @@ describe("volume runs", () => {
         expect(await plan({ kind: "move", args: { to: "fsn-1" } })).toEqual({
           ok: false, refusal: { code: "conflict", message: finishes, details: { run: expect.objectContaining({ id: release.id }) } },
         });
-        expect(await insert({ kind: "sync", args: { full: false } })).toMatchObject({ ok: true });
+        expect(await insert({ kind: "delete_mirror", args: { slot: "fsn-3", confirmed_name: null } })).toMatchObject({ ok: true });
       });
 
       it("previews a release as going forward to B, removing A's stopped Container, and pins both", async () => {
@@ -3066,6 +3074,13 @@ describe("volume runs", () => {
         expect(await runEffect(isVolumeOwed(organizationId, volumeId))).toBe(false);
         expect(await place()).toEqual([]);
         expect(await requested({ kind: "move", args: { to: "fsn-3" } })).toMatchObject({ kind: "move", state: "requested" });
+      });
+
+      it("a mirror removal running on another Server does not stop a Deploy from following it", async () => {
+        await failedCommit();
+        await requested({ kind: "delete_mirror", args: { slot: "fsn-3", confirmed_name: null } });
+
+        expect(await place()).toMatchObject([{ kind: "follow", to: "fsn-2", ended: true }]);
       });
 
       it("a silent B fails the follow with what to do", async () => {
