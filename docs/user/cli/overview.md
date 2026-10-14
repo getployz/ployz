@@ -125,6 +125,8 @@ ployz org invite revoke bob@example.com
 
 `invite` prints `Invite link (expires in 7 days)` and the link. Send it to the person yourself.
 Roles are `owner`, `admin` and `member`. Only an owner can make, change or remove an owner.
+Any member can run `ployz org member ls`. Pending invites name who was invited, so
+`ployz org invite ls` refuses anyone but an owner or admin.
 
 Pick a member by email or by name. When two members share a name, the command refuses with
 `ambiguous`, lists both emails and exits 2, so name the one you mean by email.
