@@ -91,7 +91,7 @@ export const FILE_BYTES = 64 * 1024;
 
 const directoryOf = (path: string | undefined) => (path ?? "").replace(/^(\.?\/)+|\/+$/g, "");
 
-/** The files of `repository` that `query` selects, at most `TREE_PATHS`. */
+/** The files of `repository` that `query` selects, at most `TREE_PATHS`: the named file itself, or those under the named directory. */
 export const repositoryTree = Effect.fn("GithubCli.repositoryTree")(function* (
   repository: ReadableRepository, query: Omit<GithubTreeQuery, "repository">,
 ) {
@@ -99,7 +99,7 @@ export const repositoryTree = Effect.fn("GithubCli.repositoryTree")(function* (
   const listed = yield* listGithubRepositoryFiles(repository.installationId, repository.fullName, at).pipe(
     Effect.catchIf(isGithubObservationNotFound, () => new NotFound({ message: `No ref ${at} in ${repository.fullName}.` })));
   const directory = directoryOf(query.path);
-  const under = directory === "" ? listed.paths : listed.paths.filter((file) => file.startsWith(`${directory}/`));
+  const under = directory === "" ? listed.paths : listed.paths.filter((file) => file === directory || file.startsWith(`${directory}/`));
   const matcher = query.match === undefined ? null : basicGlob(query.match);
   const matching = matcher === null ? under : under.filter((file) => matcher.match(file));
   return {
