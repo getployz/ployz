@@ -73,6 +73,8 @@ export type Member =
       readonly address: string;
       readonly answered: true;
       readonly view: VolumeCopyView;
+      /** A Server without the generation floor; it holds no copy and is not the run's destination. */
+      readonly floorless?: boolean;
     }
   | {
       readonly machine: { readonly id: MachineId; readonly name: MachineName };

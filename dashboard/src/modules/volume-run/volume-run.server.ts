@@ -1016,6 +1016,7 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
           address: managementAddress(machine.public_key),
           answered: true,
           view,
+          floorless,
         })),
       Effect.timeout(OBSERVE_TIMEOUT),
       Effect.catchTag("ServerLacks", (lack) => lacks(lack.capability)),
