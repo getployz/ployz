@@ -162,6 +162,7 @@ class ClusterModel:
         # The `ployz:pull` target a Machine's slot parent names while its receive runs, when not the first run's own
         # first round; and a Machine whose receive sits in D state and stays in the plugin's cgroup after the stop.
         self.pull_targets = {}
+        self.probe_hooks = []
         self.stuck_receive = set()
         # A Machine whose plugin cgroup.procs cannot be read, and a restart reply cut short: "exit 1", "no end",
         # "no cursor", "no daemon procs" or "no plugin procs".
@@ -322,6 +323,8 @@ class ClusterModel:
             return 255, ""
         pgrep = 2 if unreadable == "pgrep" else 0 if self.receiving_on(machine) else 1
         lines = [f"pgrep {pgrep}"]
+        if self.probe_hooks:
+            self.probe_hooks.pop(0)()
         if unreadable == "pull":
             lines.append("zfs 1")
         else:
@@ -2006,6 +2009,21 @@ class VolumeMoveTests(unittest.TestCase):
                                          setattr(model, "receiving", {"machine-2"})))
         result, _ = self.run_with("soak-1-rounds-runner-kill", self.close_an_earlier_run, 5, late_pull)
         self.assertIn("the trigger never fired before the run ended", result["failures"], result)
+
+    def test_a_receive_that_ends_between_the_probe_reads_is_not_credited_to_the_new_pull(self):
+        # Codex r10 finding 3: an older receive is running when the probe looks for one, then ends, and the first
+        # run's admission writes its own target before the probe reads `ployz:pull`.
+        def late_pull(begun):
+            model = self.model
+
+            def ends_and_admits():
+                model.receiving = False
+                model.pull_targets["machine-2"] = "w-2-0"
+            model.at(begun + 1, lambda: (model.pull_targets.update({"machine-2": "w-1-0"}),
+                                         setattr(model, "receiving", {"machine-2"}),
+                                         model.probe_hooks.append(ends_and_admits)))
+        result, _ = self.run_with("soak-1-rounds-kill-ployz-other", self.close_an_earlier_run, 5, late_pull)
+        self.assert_not_credited(result)
 
     def test_a_pull_the_first_run_admitted_with_no_receive_running_is_not_credited(self):
         # The plugin sets `ployz:pull` when it admits the round pull, before the receive spawns, and keeps it after
