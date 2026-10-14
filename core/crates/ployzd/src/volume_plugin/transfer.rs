@@ -28,15 +28,31 @@ pub(super) const RECEIVE_STALL: Duration = Duration::from_secs(60);
 /// One deadline for all of a departure's stops, well inside Demote's 120 s timeout.
 pub(super) const STOP_DEADLINE: Duration = Duration::from_secs(30);
 
-/// The receive tasks this process started, by Volume name; a finished task keeps its
-/// outcome until the next one replaces it.
+/// The receive tasks this process started, by Volume name. An entry lasts while any of
+/// its tasks has a `zfs` child alive, whatever was forgotten or spawned since: that
+/// child can still write the slot or hold it busy, and only the entry lets the departure
+/// wait for it or name it.
 #[derive(Clone, Default)]
 pub(super) struct Receives(Arc<Mutex<BTreeMap<String, ReceiveTask>>>);
 
+#[derive(Default)]
 struct ReceiveTask {
+    /// The latest task's outcome, until it is forgotten or replaced.
     outcome: Arc<Mutex<Option<Result<(), String>>>>,
+    lives: Vec<Life>,
+}
+
+/// One task's stop signal and its finish, which fires once the task returned and every
+/// child it dropped has exited.
+struct Life {
     stop: CancellationToken,
     finished: CancellationToken,
+}
+
+impl ReceiveTask {
+    fn running(&self) -> bool {
+        self.lives.iter().any(|life| !life.finished.is_cancelled())
+    }
 }
 
 /// A receive task's stop signal and a share of its finish. The task has finished once
@@ -63,12 +79,14 @@ impl Stop {
 }
 
 impl Receives {
+    /// Whether a task of `name` has not finished, including one that answered but still
+    /// waits for a child it dropped to exit.
     pub(super) fn running(&self, name: &DockerVolumeName) -> bool {
         self.0
             .lock()
             .expect("receive registry is not poisoned")
             .get(&name.0)
-            .is_some_and(|task| task.outcome.lock().expect("outcome lock").is_none())
+            .is_some_and(ReceiveTask::running)
     }
 
     pub(super) fn failure(&self, name: &DockerVolumeName) -> Option<String> {
@@ -80,11 +98,17 @@ impl Receives {
             .and_then(Result::err)
     }
 
+    /// Drops `name`'s outcome, and its entry once no task of it has a child alive.
     pub(super) fn forget(&self, name: &DockerVolumeName) {
-        self.0
-            .lock()
-            .expect("receive registry is not poisoned")
-            .remove(&name.0);
+        let mut tasks = self.0.lock().expect("receive registry is not poisoned");
+        let Some(task) = tasks.get_mut(&name.0) else {
+            return;
+        };
+        if task.running() {
+            task.outcome = Arc::default();
+        } else {
+            tasks.remove(&name.0);
+        }
     }
 
     /// Runs `work` as the receive task of `name`. `work` gets the [`Stop`]
@@ -94,22 +118,24 @@ impl Receives {
     where
         F: Future<Output = Result<(), String>> + Send + 'static,
     {
-        let task = ReceiveTask {
-            outcome: Arc::default(),
+        let life = Life {
             stop: CancellationToken::new(),
             finished: CancellationToken::new(),
         };
-        let outcome = Arc::clone(&task.outcome);
         let stop = Stop {
-            token: task.stop.clone(),
-            finish: Arc::new(task.finished.clone().drop_guard()),
+            token: life.stop.clone(),
+            finish: Arc::new(life.finished.clone().drop_guard()),
         };
         let held = stop.clone();
         let work = work(stop);
-        self.0
-            .lock()
-            .expect("receive registry is not poisoned")
-            .insert(name.0.clone(), task);
+        let outcome = {
+            let mut tasks = self.0.lock().expect("receive registry is not poisoned");
+            let task = tasks.entry(name.0.clone()).or_default();
+            task.lives.retain(|life| !life.finished.is_cancelled());
+            task.lives.push(life);
+            task.outcome = Arc::default();
+            Arc::clone(&task.outcome)
+        };
         tokio::spawn(async move {
             let _held = held;
             let result = std::panic::AssertUnwindSafe(work)
@@ -121,27 +147,37 @@ impl Receives {
     }
 
     /// Stops every receive task and waits until each ended and its `zfs` children
-    /// exited, so ZFS holds no slot busy and no receive changes a slot afterwards. Answers the names still running once
-    /// `deadline` passes.
+    /// exited, so ZFS holds no slot busy and no receive changes a slot afterwards. Answers
+    /// the names with a task still running once `deadline` passes.
     pub(super) async fn stop_all(&self, deadline: Duration) -> Vec<String> {
-        let finished: Vec<(String, CancellationToken)> = self
+        let finished: Vec<(String, Vec<CancellationToken>)> = self
             .0
             .lock()
             .expect("receive registry is not poisoned")
             .iter()
             .map(|(name, task)| {
-                task.stop.cancel();
-                (name.clone(), task.finished.clone())
+                let finished = task
+                    .lives
+                    .iter()
+                    .map(|life| {
+                        life.stop.cancel();
+                        life.finished.clone()
+                    })
+                    .collect();
+                (name.clone(), finished)
             })
             .collect();
         let deadline = tokio::time::Instant::now() + deadline;
         let mut stuck = Vec::new();
         for (name, finished) in finished {
-            if tokio::time::timeout_at(deadline, finished.cancelled())
-                .await
-                .is_err()
-            {
-                stuck.push(name);
+            for finished in finished {
+                if tokio::time::timeout_at(deadline, finished.cancelled())
+                    .await
+                    .is_err()
+                {
+                    stuck.push(name);
+                    break;
+                }
             }
         }
         stuck
