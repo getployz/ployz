@@ -1884,6 +1884,20 @@ mod set_volume_copy {
             );
         }
 
+        /// A Floor only raises the gen floor, outside the switch lock, so an armed switch
+        /// fault never holds it.
+        #[test]
+        fn a_floor_passes_an_armed_switch_fault_without_a_line() {
+            let (output, child) = run("a_floor_under_a_switch_delay", "delay-rpc:SetVolumeCopy:30");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success() && stdout.contains("1 passed"),
+                "{child}:\n{stdout}\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(fault_lines(&stdout), Vec::<&str>::new());
+        }
+
         /// The kill aborts the child, so its line is read from the child's stderr.
         #[test]
         fn a_promote_kill_line_names_the_volume_and_the_want() {
@@ -1922,6 +1936,23 @@ mod set_volume_copy {
 
             let answered = set_copy(&service, promote).await;
             panic!("the promote outlived its kill: {answered:?}");
+        }
+
+        #[tokio::test]
+        #[ignore = "a child of a_floor_passes_an_armed_switch_fault_without_a_line"]
+        async fn a_floor_under_a_switch_delay() {
+            let (data_dir, _store, service, _fake) =
+                fake_docker_service("ployzd-floor-fault").await;
+            let plugin = FakePlugin::default();
+            plugin.reply(INSPECT_ROUTE, writer_root(0, None));
+            let (socket, server) = plugin.serve(&data_dir);
+            let service = service.with_volume_plugin(socket);
+
+            let (capture, _logging) = crate::diag::test_support::capture();
+            reply(&set_copy(&service, floor(6)).await);
+            print!("{}", capture.text());
+            server.abort();
+            std::fs::remove_dir_all(data_dir).unwrap();
         }
 
         #[tokio::test]

@@ -542,6 +542,12 @@ mod tests {
                 r#" WARN fault: releasing switch verb verb="SetVolumeCopy" by=limit volume=app_data gen=4"#,
             ),
             (
+                Act::Unanswered,
+                "SetVolumeCopy",
+                Some(Want::Floor),
+                r#" WARN fault: leaving switch verb unanswered verb="SetVolumeCopy" volume=app_data gen=4"#,
+            ),
+            (
                 Act::KillInside,
                 "Create",
                 None,
