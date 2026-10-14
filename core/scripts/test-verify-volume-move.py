@@ -169,6 +169,7 @@ def soak_cases():
 
 
 TERMINAL = {"done", "failed", "cancelled", "yielded", "lost", "not_started"}
+LIVE = {"requested", "running"}
 AUXILIARY = "Failed to send signal SIGKILL to auxiliary processes"
 BUSY_LIMIT = 180
 # The trigger window opens this long after the barrier restart returns. It is a hold, not a bound: Moby's
@@ -812,15 +813,19 @@ class VolumeMove:
             raise Skipped(f"the db on {writer} is not accepting connections after the clean-start hold before {op}")
 
     def runs(self):
-        _, data = self.cli("volume", "runs", VOLUME, check=False)
+        """Cloud's runs list, or None when the list failed or its reply holds no runs list. An unread list never
+        stands in for what Cloud holds."""
+        code, data = self.cli("volume", "runs", VOLUME, check=False)
+        if code or not isinstance(data, dict) or not isinstance(data.get("runs"), list):
+            return None
         return run_rows(data)
 
     def listed_runs(self, op):
-        code, data = self.cli("volume", "runs", VOLUME, check=False)
-        if code:
-            # An unread list would hide a run that crossed the clean start or the armed fault.
+        rows = self.runs()
+        if rows is None:
+            # An unread list would hide a run that crossed the clean start, the armed fault or the action.
             raise Skipped(f"could not list the Volume's runs before {op}")
-        return run_rows(data)
+        return rows
 
     def start_op(self, op, destination, arm=None, clean=False, wait=True):
         """Request op once the Volume is idle, or at once when wait is False.
@@ -927,8 +932,9 @@ class VolumeMove:
     def wait_idle(self, deadline):
         """A cron sync or a run left from an earlier case holds the Volume; wait it out until the deadline."""
         holder = None
-        while self.clock() < deadline and (active := [row for row in self.runs() if row.get("state") not in TERMINAL]):
-            holder = holder or active[0]
+        while self.clock() < deadline and (
+                (rows := self.runs()) is None or (active := [row for row in rows if row.get("state") not in TERMINAL])):
+            holder = holder or (active[0] if rows is not None else None)
             self.sleep(4)
         return holder
 
@@ -958,24 +964,26 @@ class VolumeMove:
         deadline = self.clock() + limit
         last = row
         while self.clock() < deadline:
-            last = next((dict(row, **found) for found in self.runs() if found["id"] == row["id"]), last)
+            last = next((dict(row, **found) for found in self.runs() or [] if found["id"] == row["id"]), last)
             if last.get("state") in TERMINAL:
                 return last
             self.sleep(4)
         return dict(last, state=f"still {last.get('state')} after {limit}s")
 
     def row(self, row):
-        """row as Cloud lists it now, or row itself when the list does not hold it."""
-        return next((found for found in self.runs() if found["id"] == row.get("id")), row)
+        """row as Cloud lists it now, or None when the list is unread, lacks it, or gives it a state Cloud has no
+        name for."""
+        found = next((found for found in self.runs() or [] if found["id"] == row.get("id")), None)
+        return found if found and found.get("state") in LIVE | TERMINAL else None
 
     def settle(self, known):
         """Wait out every row Cloud started since the case began: requeues, and releases onFailure started."""
         known, ended = set(known), []
         while True:
-            rows = [row for row in self.runs() if row["id"] not in known]
+            rows = [row for row in self.listed_runs("the settle") if row["id"] not in known]
             if not rows:
                 self.sleep(4)
-                rows = [row for row in self.runs() if row["id"] not in known]
+                rows = [row for row in self.listed_runs("the settle") if row["id"] not in known]
                 if not rows:
                     return ended[::-1]
             for row in rows:
@@ -988,7 +996,7 @@ class VolumeMove:
         while self.clock() < deadline:
             if credited := self.trigger(case, side, row):
                 return credited
-            if self.row(row).get("state") in TERMINAL | {"refused"}:
+            if (now := self.row(row)) and now["state"] in TERMINAL:
                 return None
             self.sleep(1 if case["trigger"] == "fault" else 0.5)
         return None
@@ -1090,9 +1098,9 @@ class VolumeMove:
                     mount_errors=[error for error in MOUNT_ERRORS if error in output], output=output[-1500:])
 
     def release(self, move):
-        before = self.runs()
+        before = self.listed_runs("the release")
         row = self.start_op("release", None, wait=False)
-        after = self.runs()
+        after = self.listed_runs("the release's changes")
         seen = {found["id"]: found["state"] for found in before}
         changed = [f"{found['id']} {seen.get(found['id'], 'new')} -> {found['state']}" for found in after
                    if seen.get(found["id"]) != found["state"]
@@ -1143,12 +1151,18 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
         """The row read after the action must still be live, or hold the state the action itself gives it: a Deploy
         yields a warm move and a release cancels one, and either follows a committed move to its end, since Cloud
         waits on a lane past its return. Any other terminal row leaves the credited event and the action to a later
-        run."""
-        after = result.get("row_after_action")
+        run. A cancel proves itself through Cloud's accepted cancel and the run's end instead, and an unread row proves
+        nothing."""
         event = result["triggered"]
+        if case["action"] == "cancel":
+            return None
+        after = result.get("row_after_action")
+        if after is None:
+            what = "the trigger" if case["action"] == "none" else f"the {case['action']}"
+            return (f"the first run's row could not be read after {what}, so nothing places it inside the credited "
+                    f"{event['kind']} on {event['machine']}: {event['line']}")
         own = case.get("expect", {}).get("move") if case["action"] in ("deploy", "release") else None
-        if after is None or after.get("state") not in TERMINAL or (
-                after.get("state") == own and (own in TAKEN or event["kind"] == "committed")):
+        if after["state"] in LIVE or (after["state"] == own and (own in TAKEN or event["kind"] == "committed")):
             return None
         if case["action"] == "none":
             return (f"the first run {after.get('id')} ended {after.get('state')} before the {event['kind']} on "
@@ -1203,7 +1217,7 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
         destination = other
         self.prepare(case, other)
         started = self.clock()
-        known = {row["id"] for row in self.runs()}
+        known = {row["id"] for row in self.listed_runs(case["name"])}
         # Arm only once the Volume is idle: a cron sync crosses the same SetVolumeCopy points and would trip it.
         plan = arming(case, side)
         arm = (lambda: [self.fault(value, machine) for machine, value in plan.items()]) if plan else None
@@ -1247,7 +1261,7 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
                 result["recovery"].append(self.wait_run(self.start_op(op, destination)))
         self.healthy()
         states = self.states()
-        result.update(ended=self.clock(), states=states, final_writer=final_writer(states), runs=self.runs()[:6],
+        result.update(ended=self.clock(), states=states, final_writer=final_writer(states), runs=(self.runs() or [])[:6],
                       version=self.version())
         lost = self.lost()
         result["probe"] = dict(lost=lost)
