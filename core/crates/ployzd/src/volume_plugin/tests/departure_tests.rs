@@ -389,24 +389,85 @@ async fn departure_moves_a_root_into_the_empty_slot_beside_it() {
     server.abort();
 }
 
+/// No ployz step makes a root beside a slot that holds a copy: Create refuses a slot, and
+/// a pull or a seed refuses a root. Which of the two is newer is unknown, so the departure
+/// leaves both and fails that Volume alone.
 #[tokio::test]
-async fn departure_refuses_a_root_beside_a_slot_that_holds_a_copy() {
+async fn departure_leaves_a_root_beside_a_slot_that_holds_a_copy_and_demotes_the_rest() {
     let test = TestDir::new();
     let (socket, server) = start(
         &test,
         USABLE_POOL,
-        &["root", "volume", "mirror", "mirror-fs"],
+        &["root", "volume", "mirror", "mirror-fs", "seed-volume"],
     );
 
     let response = post(&socket, "/Storage.Demote", json!(null)).await;
+    let reason = response
+        .pointer("/Ok/failed/0/reason")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     assert!(
-        error_message(&response).contains("both a writer and a mirror"),
+        reason.contains("both a writer root and a slot"),
+        "{response}"
+    );
+    assert_eq!(
+        response.pointer("/Ok/failed/0/name"),
+        Some(&json!("data")),
+        "{response}"
+    );
+    assert_eq!(
+        response.pointer("/Ok/demoted"),
+        Some(&json!(["seed"])),
         "{response}"
     );
     let log = commands(&test);
-    assert!(!log.contains("zfs rename"), "{log}");
-    assert!(!log.contains("zfs snapshot"), "{log}");
+    assert!(!log.contains("zfs rename tank/ployz/data "), "{log}");
+    assert!(!log.contains("zfs snapshot tank/ployz/data@"), "{log}");
     assert!(test.0.join("volume").exists());
+    assert!(test.0.join("seed-fs").exists());
+    server.abort();
+}
+
+/// A Volume whose demote fails after another was demoted still answers that one, so the
+/// daemon forgets it: a retry judges it departed and answers nothing for it.
+#[tokio::test]
+async fn departure_answers_what_it_demoted_before_a_volume_failed() {
+    let test = TestDir::new();
+    let (socket, server) = start(&test, USABLE_POOL, &["root", "volume", "seed-volume"]);
+    fs::create_dir_all(test.0.join("props")).unwrap();
+    fs::write(
+        test.0.join("props/fail-command"),
+        "rename tank/ployz/seed tank/ployz-mirror/seed/fs",
+    )
+    .unwrap();
+
+    let response = post(&socket, "/Storage.Demote", json!(null)).await;
+    assert_eq!(
+        response.pointer("/Ok/demoted"),
+        Some(&json!(["data"])),
+        "{response}"
+    );
+    assert_eq!(
+        response.pointer("/Ok/stuck"),
+        Some(&json!([])),
+        "{response}"
+    );
+    assert_eq!(
+        response.pointer("/Ok/failed/0/name"),
+        Some(&json!("seed")),
+        "{response}"
+    );
+    let reason = response
+        .pointer("/Ok/failed/0/reason")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(reason.contains("injected failure"), "{response}");
+
+    let retried = post(&socket, "/Storage.Demote", json!(null)).await;
+    assert_eq!(
+        retried,
+        json!({"Ok": {"demoted": ["seed"], "stuck": [], "failed": []}})
+    );
     server.abort();
 }
 

@@ -200,6 +200,34 @@ async fn a_departure_with_a_stuck_copy_forgets_the_demoted_and_fails_naming_it()
     );
 }
 
+#[tokio::test]
+async fn a_departure_with_a_failed_volume_forgets_the_demoted_and_fails_with_its_reason() {
+    let test = harness(true).await;
+    test.plugin.reply(
+        "Storage.Demote",
+        json!({"Ok": {
+            "demoted": ["data"],
+            "stuck": ["web"],
+            "failed": [{"name": "seed", "reason": "zfs rename failed: dataset is busy"}],
+        }}),
+    );
+    let error = test.local.leave(LeaveRequest::default()).await.unwrap_err();
+    let Error::Cleanup(message) = &error else {
+        panic!("{error}");
+    };
+    assert!(message.contains("web did not stop"), "{message}");
+    assert!(
+        message.contains("seed did not depart: zfs rename failed: dataset is busy"),
+        "{message}"
+    );
+    assert!(!message.contains("seed did not stop"), "{message}");
+    assert!(forgot_data(&test.docker));
+    assert_eq!(
+        test.local.record().phase(),
+        LocalMachinePhase::Participating
+    );
+}
+
 fn held(machine_id: MachineId, role: &str) -> DockerVolume {
     serde_json::from_value(json!({
         "id": {"machine_id": machine_id, "name": "app_data"},
