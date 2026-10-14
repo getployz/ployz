@@ -47,9 +47,15 @@ impl PointerClient for FakeRow {
     }
 }
 
+pub(crate) fn deploy(deploy: char) -> DeploymentLogId {
+    DeploymentLogId::parse(format!("dep-{deploy}")).unwrap()
+}
+
+const UNNAMED_SOURCE: char = '0';
+
 pub(crate) fn pointer(deploy: char, containers: &[char], retiring: &[char]) -> ServingPointer {
     ServingPointer {
-        deploy: DeploymentLogId::parse(format!("dep-{deploy}")).unwrap(),
+        deploy: self::deploy(deploy),
         containers: containers.iter().map(|id| container(*id)).collect(),
         previous: None,
         retiring: retiring.iter().map(|id| container(*id)).collect(),
@@ -64,7 +70,6 @@ fn service() -> QualifiedService {
     QualifiedService::parse("app/api").unwrap()
 }
 
-/// `new` joins carrying the spec of `old`, which leaves.
 pub(crate) fn replacing(new: char, old: char) -> Rotation {
     Rotation {
         joining: vec![Join {
@@ -79,14 +84,13 @@ pub(crate) fn replacing(new: char, old: char) -> Rotation {
     }
 }
 
-/// `new` joins carrying the spec of an unnamed copy labelled with `deploy`.
 pub(crate) fn labelled(new: char, deploy: char) -> Rotation {
     Rotation {
         joining: vec![Join {
             copy: container(new),
             provenance: Provenance {
-                source: container('0'),
-                source_deploy: Some(DeploymentLogId::parse(format!("dep-{deploy}")).unwrap()),
+                source: container(UNNAMED_SOURCE),
+                source_deploy: Some(self::deploy(deploy)),
             },
         }],
         leaving: Vec::new(),
@@ -100,7 +104,7 @@ async fn amending_a_service_with_no_pointer_writes_nothing() {
     let amended = amend_pointer(
         &mut fake,
         &service(),
-        None,
+        &deploy('a'),
         &CancellationToken::new(),
         &replacing('2', '1'),
     )
@@ -122,7 +126,7 @@ async fn a_lost_amendment_retries_over_the_winner_and_keeps_both_changes() {
     let amended = amend_pointer(
         &mut fake,
         &service(),
-        None,
+        &deploy('a'),
         &CancellationToken::new(),
         &replacing('2', '1'),
     )
@@ -146,7 +150,7 @@ async fn an_amendment_gives_up_after_three_lost_retries() {
     let error = amend_pointer(
         &mut fake,
         &service(),
-        None,
+        &deploy('a'),
         &CancellationToken::new(),
         &labelled('2', 'a'),
     )
@@ -163,7 +167,6 @@ enum Stall {
     Publish,
 }
 
-/// Never answers the call `stall` names.
 struct Stalled {
     row: FakeRow,
     stall: Stall,
@@ -208,8 +211,8 @@ async fn cancelled_amendment(stall: Stall) -> (RpcError, FakeRow) {
         stall,
     };
     let (service, cancellation) = (service(), CancellationToken::new());
-    let rotation = replacing('2', '1');
-    let amending = amend_pointer(&mut stalled, &service, None, &cancellation, &rotation);
+    let (bound, rotation) = (deploy('a'), replacing('2', '1'));
+    let amending = amend_pointer(&mut stalled, &service, &bound, &cancellation, &rotation);
     tokio::pin!(amending);
     tokio::select! {
         amended = &mut amending => panic!("returned before cancel: {amended:?}"),
@@ -261,13 +264,13 @@ fn a_rotation_prunes_only_retiring_ids_the_listing_lacked_before_the_read() {
     assert_eq!(rotation.pruning, [container('8')]);
     assert_eq!(
         rotation.apply(&read),
-        Ok(Some(pointer('a', &['2'], &['9', '1']))),
+        Applied::Next(pointer('a', &['2'], &['9', '1'])),
         "8 is gone from the listing; 9 still runs and keeps retiring"
     );
     let later = pointer('a', &['1'], &['8', '9', '7']);
     assert_eq!(
         rotation.apply(&later),
-        Ok(Some(pointer('a', &['2'], &['9', '7', '1']))),
+        Applied::Next(pointer('a', &['2'], &['9', '7', '1'])),
         "7 retired after the listing; the listing proves nothing about it"
     );
     let prune_only = Rotation {
@@ -276,7 +279,7 @@ fn a_rotation_prunes_only_retiring_ids_the_listing_lacked_before_the_read() {
     };
     assert_eq!(
         prune_only.apply(&read),
-        Ok(Some(pointer('a', &['1'], &[]))),
+        Applied::Next(pointer('a', &['1'], &[])),
         "pruning alone is a change worth publishing"
     );
 }
@@ -286,25 +289,25 @@ fn a_rotation_joins_with_evidence_retires_named_ids_and_reports_no_change() {
     let current = pointer('a', &['1', '2'], &['9']);
     assert_eq!(
         replacing('3', '1').apply(&current),
-        Ok(Some(pointer('a', &['2', '3'], &['9', '1'])))
+        Applied::Next(pointer('a', &['2', '3'], &['9', '1']))
     );
     assert_eq!(
         labelled('3', 'a').apply(&current),
-        Ok(Some(pointer('a', &['1', '2', '3'], &['9']))),
+        Applied::Next(pointer('a', &['1', '2', '3'], &['9'])),
         "a source labelled with the row's deploy is evidence without being named"
     );
     assert_eq!(
         Rotation::leaving([container('9')]).apply(&current),
-        Ok(None)
+        Applied::Unchanged
     );
     assert_eq!(
         Rotation::leaving([container('7')]).apply(&current),
-        Ok(None),
+        Applied::Unchanged,
         "an id the row does not name never enters retiring"
     );
     assert_eq!(
         replacing('2', '1').apply(&current),
-        Ok(Some(pointer('a', &['2'], &['9', '1']))),
+        Applied::Next(pointer('a', &['2'], &['9', '1'])),
         "a copy already pointed joins without evidence"
     );
 }
@@ -314,10 +317,10 @@ fn a_join_without_evidence_is_refused() {
     let current = pointer('b', &['1'], &[]);
     assert_eq!(
         replacing('3', '7').apply(&current),
-        Err(container('3')),
+        Applied::Unproven,
         "7 is neither named nor labelled with dep-b"
     );
-    assert_eq!(labelled('3', 'a').apply(&current), Err(container('3')));
+    assert_eq!(labelled('3', 'a').apply(&current), Applied::Unproven);
 }
 
 #[tokio::test]
@@ -327,7 +330,7 @@ async fn an_amendment_joining_without_evidence_is_outdated_and_writes_nothing() 
     let amended = amend_pointer(
         &mut fake,
         &service(),
-        Some(&DeploymentLogId::parse("dep-b").unwrap()),
+        &deploy('b'),
         &CancellationToken::new(),
         &labelled('3', 'a'),
     )
@@ -349,7 +352,7 @@ async fn an_amendment_losing_its_evidence_to_a_newer_row_is_outdated() {
     let amended = amend_pointer(
         &mut fake,
         &service(),
-        None,
+        &deploy('a'),
         &CancellationToken::new(),
         &replacing('2', '1'),
     )
@@ -544,7 +547,7 @@ mod rpc {
         let amended = amend_pointer(
             &mut client,
             &service(),
-            None,
+            &deploy('a'),
             &CancellationToken::new(),
             &replacing('2', '1'),
         )
@@ -565,7 +568,7 @@ mod rpc {
         let amended = amend_pointer(
             &mut client,
             &service(),
-            None,
+            &deploy('a'),
             &CancellationToken::new(),
             &labelled('2', 'a'),
         )

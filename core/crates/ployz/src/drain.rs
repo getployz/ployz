@@ -477,7 +477,7 @@ async fn publish_replacements_past_cancel<C: PointerClient>(
     amend_pointer(
         client,
         service,
-        Some(deploy),
+        deploy,
         &CancellationToken::new(),
         &rotation,
     )

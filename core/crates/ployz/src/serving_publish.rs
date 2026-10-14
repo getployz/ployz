@@ -158,13 +158,13 @@ impl Client {
 /// | retiring | names it in `retiring`: Machines stop routing, then ployzd stops it |
 /// | gone     | names it or not; no listing shows it                              |
 ///
-/// | transition          | evidence, read in the same step as the write                      | who |
+/// | transition          | evidence, read immediately before the step                        | who |
 /// |---------------------|-------------------------------------------------------------------|-----|
 /// | unnamed -> pointed  | the writer is bound to the row's deploy, and the copy's spec came from a source copy the row names in `containers` or whose deploy label is the row's deploy | catch-up, drain |
-/// | pointed -> retiring | the row names the id in `containers`; other leaving ids are ignored | catch-up, drain, Global retirement |
+/// | pointed -> retiring | the row names the id in `containers`; other leaving ids are ignored | catch-up, drain, retirement |
 /// | retiring -> unnamed | the row read before a complete listing named it in `retiring` and that listing lacks it | catch-up |
 /// | retiring -> gone    | every up Machine acknowledged the row                             | ployzd retire |
-/// | unnamed -> gone     | a read immediately before each stop or removal shows no row naming it | drain, Global retirement, catch-up |
+/// | unnamed -> gone     | a read immediately before each stop or removal shows no row naming it | drain, retirement, catch-up |
 /// | pointed -> gone     | never directly: pointed -> retiring first                         |     |
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct Rotation {
@@ -211,9 +211,7 @@ impl Rotation {
         }
     }
 
-    /// The row this rotation makes of `current`, `None` when it already holds it, or
-    /// `Err` with the first joining copy `current` carries no evidence for.
-    fn apply(&self, current: &ServingPointer) -> Result<Option<ServingPointer>, ContainerId> {
+    fn apply(&self, current: &ServingPointer) -> Applied {
         let mut next = current.clone();
         next.retiring.retain(|id| !self.pruning.contains(id));
         for join in &self.joining {
@@ -221,7 +219,7 @@ impl Rotation {
                 continue;
             }
             if !join.proven_by(current) {
-                return Err(join.copy);
+                return Applied::Unproven;
             }
             next.containers.push(join.copy);
         }
@@ -234,8 +232,20 @@ impl Rotation {
                 next.retiring.push(*id);
             }
         }
-        Ok((next != *current).then_some(next))
+        if next == *current {
+            Applied::Unchanged
+        } else {
+            Applied::Next(next)
+        }
     }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum Applied {
+    Unchanged,
+    Next(ServingPointer),
+    /// `current` carries no evidence for a joining copy.
+    Unproven,
 }
 
 /// The ids `read.retiring` names that `listed`, a complete listing taken after `read`,
@@ -288,7 +298,7 @@ pub(crate) enum Amendment {
 pub(crate) async fn amend_pointer<C: PointerClient>(
     client: &mut C,
     service: &QualifiedService,
-    deploy: Option<&DeploymentLogId>,
+    deploy: &DeploymentLogId,
     cancellation: &CancellationToken,
     rotation: &Rotation,
 ) -> Result<Amendment, RpcError> {
@@ -311,13 +321,13 @@ pub(crate) async fn amend_pointer<C: PointerClient>(
         return Ok(Amendment::NoPointer);
     };
     for retries in 0..=AMEND_RETRIES {
-        if deploy.is_some_and(|deploy| *deploy != current.deploy) {
+        if *deploy != current.deploy {
             return Ok(Amendment::Outdated);
         }
         let pointer = match rotation.apply(&current) {
-            Ok(Some(pointer)) => pointer,
-            Ok(None) => return Ok(Amendment::Unchanged),
-            Err(_unproven) => return Ok(Amendment::Outdated),
+            Applied::Next(pointer) => pointer,
+            Applied::Unchanged => return Ok(Amendment::Unchanged),
+            Applied::Unproven => return Ok(Amendment::Outdated),
         };
         if cancellation.is_cancelled() {
             return Err(before_write());

@@ -551,17 +551,10 @@ async fn point_at<C: CatchUpClient>(
         .iter()
         .map(|member| member.container_id)
         .collect::<Vec<_>>();
-    // A pointed id this Machine listed is the copy being replaced; a pointed id no
-    // Machine lists was removed out of band and would otherwise pin the pointer.
     let leaving = read
         .containers
         .iter()
-        .filter(|id| {
-            **id != *running
-                && members.iter().all(|member| {
-                    member.container_id != **id || member.machine_id == this_machine.id
-                })
-        })
+        .filter(|id| **id != *running && leaves_pointer(id, &members, this_machine))
         .copied()
         .collect::<Vec<_>>();
     let rotation = Rotation {
@@ -572,9 +565,22 @@ async fn point_at<C: CatchUpClient>(
         leaving,
         pruning: absent_retiring(&read, &listed),
     };
-    amend_pointer(client, service, Some(started_under), cancel, &rotation)
+    amend_pointer(client, service, started_under, cancel, &rotation)
         .await
         .map_err(Failure::from)
+}
+
+/// A pointed id leaves when this Machine's listing replaced it, or when no Machine lists
+/// it, so a copy removed out of band stops pinning the pointer.
+fn leaves_pointer(
+    id: &ContainerId,
+    members: &[ContainerObservation],
+    this_machine: &Machine,
+) -> bool {
+    let listed_elsewhere = members
+        .iter()
+        .any(|member| member.container_id == *id && member.machine_id != this_machine.id);
+    !listed_elsewhere
 }
 
 async fn read_settling_cancelled_copy<C: CatchUpClient>(

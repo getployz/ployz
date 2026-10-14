@@ -86,7 +86,6 @@ impl RetireClient for Client {
     }
 }
 
-/// The Containers a Server runs for one Service, and their removal.
 pub(crate) trait CopyLister: PointerClient {
     async fn copies_on(
         &mut self,
@@ -147,10 +146,8 @@ impl CopyLister for Client {
 }
 
 /// Retire every copy of `service` on `machine_id` under the pointer-membership contract:
-/// a read immediately before each step decides it. A pointed copy leaves into `retiring`
-/// through the row's own deploy and is stopped by ployzd once every Machine acknowledges;
-/// a retiring copy is waited for; a copy no row names is removed here. Fails once `wait`
-/// passes with a copy still listed.
+/// a read immediately before each step decides it. Fails once `wait` passes with a copy
+/// still listed.
 pub(crate) async fn retire_copies<C: CopyLister>(
     client: &mut C,
     machine_id: &MachineId,
@@ -171,7 +168,7 @@ pub(crate) async fn retire_copies<C: CopyLister>(
                     amend_pointer(
                         client,
                         service,
-                        Some(&pointer.deploy),
+                        &pointer.deploy,
                         cancellation,
                         &Rotation::leaving([copy]),
                     )

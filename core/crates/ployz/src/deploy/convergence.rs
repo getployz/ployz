@@ -597,7 +597,7 @@ impl AtRemoval {
     }
 
     /// The Deploy a kept copy's replacement is labelled with, so it joins the same Serving
-    /// Pointer. Callers label an unpointed copy's replacement with the copy's own label.
+    /// Pointer; `None` when the replacement keeps the copy's own label.
     pub(in crate::deploy) fn replacement_deploy(&self) -> Option<DeploymentLogId> {
         match self {
             Self::Pointed(deploy) => Some(deploy.clone()),
@@ -843,15 +843,13 @@ mod tests {
         vec![a_to_b()]
     }
 
-    /// Moves `two_on_a`'s first copy through the real `Client` against a Machine fixture
-    /// whose Serving Pointer read answers `pointer`. Returns the move and the destructive
-    /// wants the fixture received for the old copy, in order.
-    async fn moved_through_client(
-        pointer: Option<ployz_core::ServingPointer>,
-    ) -> (
-        Result<(Move, Option<Replacement>), MoveFailure>,
-        Vec<&'static str>,
-    ) {
+    struct ClientMove {
+        result: Result<(Move, Option<Replacement>), MoveFailure>,
+        /// The destructive wants the fixture received for the old copy, in order.
+        old_copy_wants: Vec<&'static str>,
+    }
+
+    async fn moved_through_client(pointer: Option<ployz_core::ServingPointer>) -> ClientMove {
         use ployz_core::{
             ContainerDetails, ContainerLocator, ContainerNow, ContainerWant, EnsuredContainer,
             ImageSummary, MachineImages, MachineList, OpaquePayload, RpcRequestBody, RpcResponse,
@@ -961,14 +959,17 @@ mod tests {
         .await;
         server.abort();
         let destructive = destructive.lock().unwrap().clone();
-        (moved, destructive)
+        ClientMove {
+            result: moved,
+            old_copy_wants: destructive,
+        }
     }
 
     #[tokio::test]
     async fn a_client_move_keeps_a_copy_its_pointer_names_and_reports_the_replacement() {
         let pointer = crate::serving_publish::tests::pointer('a', &['1'], &[]);
-        let (moved, destructive) = moved_through_client(Some(pointer.clone())).await;
-        let (step, replacement) = moved.unwrap();
+        let moved = moved_through_client(Some(pointer.clone())).await;
+        let (step, replacement) = moved.result.unwrap();
         assert_eq!(step, a_to_b());
         assert_eq!(
             replacement,
@@ -979,7 +980,7 @@ mod tests {
             })
         );
         assert_eq!(
-            destructive,
+            moved.old_copy_wants,
             Vec::<&str>::new(),
             "a pointed copy leaves only through its pointer's retire path"
         );
@@ -987,9 +988,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_client_move_of_an_unpointed_copy_stops_then_removes_it() {
-        let (moved, destructive) = moved_through_client(None).await;
-        assert_eq!(moved.unwrap(), (a_to_b(), None));
-        assert_eq!(destructive, ["stop", "gone"]);
+        let moved = moved_through_client(None).await;
+        assert_eq!(moved.result.unwrap(), (a_to_b(), None));
+        assert_eq!(moved.old_copy_wants, ["stop", "gone"]);
     }
 
     #[tokio::test]

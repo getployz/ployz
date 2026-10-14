@@ -1,5 +1,4 @@
-//! A Global's slot on one Machine: its fresh eligibility there. Global catch-up and
-//! Drain's retirement both read it this way.
+//! A Global's slot on one Machine: its fresh eligibility there.
 
 use ployz_core::{
     InspectRequest, MachineId, MachineTarget, Namespace, ResolvedServiceSpec, RpcError,
