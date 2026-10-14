@@ -256,7 +256,6 @@ const syncOnce = Effect.fn("MirrorSync.sync")(function* (organizationId: string,
       if (status?.okSnapshot !== copy.newest.name) yield* recordSuccess(organizationId, volume.volumeId, member.machine.id, copy.newest, false);
     }
     const handed = yield* pull(member, copy, target.name);
-    // A concurrent sync's hand-off moves the copy past this one's expect, so this one is refused as a mismatch.
     const pulling = handed.copy?.kind === "slot" ? pullingTo(handed.copy) : null;
     if (handed.ok) {
       steps.push({ kind: "handed_off", mirror: named(member), target: target.name });
@@ -264,7 +263,7 @@ const syncOnce = Effect.fn("MirrorSync.sync")(function* (organizationId: string,
       steps.push({ kind: "pulling", mirror: named(member), target: pulling ?? target.name });
     } else {
       // A refused hand-off starts no pull, so no pull failure would ever say why this mirror skipped. A stale or mismatch
-      // refusal is a newer run or another sync moving the copy since this one observed it, not the mirror skipping.
+      // refusal is a newer run moving the copy since this one observed it, not the mirror skipping.
       if (handed.reason !== "stale" && handed.reason !== "mismatch") {
         yield* recordFailure(organizationId, volume.volumeId, member.machine.id, target.name, handed.message);
       }
