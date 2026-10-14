@@ -9,7 +9,7 @@ use super::*;
 use crate::global_fixtures::{
     global_service, grouped, machine, qualified, requested, running_on, service_id,
 };
-use crate::serving_publish::tests::{FakeRow, container, pointer};
+use crate::serving_publish::tests::{FakeRow, container, pointer, retired_from};
 
 struct FakeRetireClient {
     machine_id: MachineId,
@@ -268,7 +268,10 @@ async fn a_pointed_global_retires_through_the_pointer_and_waits_for_its_copies_t
     .await
     .unwrap();
     assert!(pointed);
-    assert_eq!(*row.row.lock().unwrap(), Some(pointer('a', &['1'], &['2'])));
+    assert_eq!(
+        *row.row.lock().unwrap(),
+        Some(retired_from(pointer('a', &['1'], &['2']), 'a'))
+    );
     assert!(server.copies.is_empty());
 }
 

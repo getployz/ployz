@@ -17,7 +17,7 @@ use super::{
 use crate::deploy::Converged;
 use crate::drain::retirement::Retirement;
 use crate::serving_publish::Amendment;
-use crate::serving_publish::tests::{container, pointer};
+use crate::serving_publish::tests::{container, pointer, retired_from};
 
 fn namespace(value: &str) -> Namespace {
     Namespace::parse(value).unwrap()
@@ -585,13 +585,13 @@ fn a_drained_pointer_adds_replacements_and_retires_the_drained_copies() {
     ];
     assert_eq!(
         drained_pointer(&read, &read, &server, &members),
-        Some(pointer('a', &['2', '4'], &['1', '3'])),
+        Some(retired_from(pointer('a', &['2', '4'], &['1', '3']), 'a')),
         "the replacement joins, the drained copy and the vanished one retire, another deploy's copy is left out"
     );
     let newer = pointer('b', &['6'], &[]);
     assert_eq!(
         drained_pointer(&newer, &read, &server, &members),
-        Some(pointer('b', &['6'], &['1', '3'])),
+        Some(retired_from(pointer('b', &['6'], &['1', '3']), 'b')),
         "a newer deploy keeps its copies and only the drained ones retire"
     );
 }
