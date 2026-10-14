@@ -43,7 +43,7 @@ const Removed = Schema.Struct({ email: Schema.String });
 const Revoked = Schema.Struct({ id: Schema.String, email: Schema.NullOr(Schema.String) });
 const Left = Schema.Struct({ organization: Schema.String });
 
-const manages = (caller: Caller) => caller.role === "owner" || caller.role === "admin";
+export const manages = (caller: Caller) => caller.role === "owner" || caller.role === "admin";
 
 const conflictRefused = (conflict: Conflict) => Effect.succeed(refused("conflict", conflict.message));
 
@@ -206,7 +206,7 @@ export const orgInviteLs = defineCommand({
   input: Schema.Struct({}),
   output: Schema.Array(Invite),
   render: "table",
-  run: (caller) => listPendingInvites(caller.organization.id).pipe(Effect.map((invites) => ({
+  run: (caller) => !manages(caller) ? Effect.succeed(refused("forbidden", MANAGE)) : listPendingInvites(caller.organization.id).pipe(Effect.map((invites) => ({
     ok: true,
     output: invites.map((row) => ({
       id: row.id,

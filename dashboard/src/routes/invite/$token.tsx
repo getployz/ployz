@@ -1,7 +1,9 @@
 import { useMutation, useSuspenseQuery } from "@tanstack/react-query";
-import { createFileRoute, useLocation, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link, useLocation, useNavigate } from "@tanstack/react-router";
 import { useAuth } from "#/auth/auth.hooks";
+import { PloyzMark } from "#/components/icons/ployz-logo";
 import { Button } from "#/components/ui/button";
+import { buttonVariants } from "#/components/ui/button-variants";
 import { Spinner } from "#/components/ui/spinner";
 import { toErrorMessage } from "#/lib/error-message";
 import { prefetchRemote } from "#/collections/route-data";
@@ -29,9 +31,9 @@ function InvitePage() {
     <main className="flex min-h-screen items-center justify-center px-4 py-12">
       <div className="w-full max-w-md">
         {invite === null ? (
-          <Notice title="This invite doesn't exist" detail="Check the link, or ask for a new one." />
+          <Notice title="This invite doesn't exist" detail="Check the link, or ask for a new one." signedIn={session !== null} />
         ) : invite.state !== "pending" ? (
-          <Notice title={UNUSABLE[invite.state]} detail={`Ask someone in ${invite.organization} for a new one.`} />
+          <Notice title={UNUSABLE[invite.state]} detail={`Ask someone in ${invite.organization} for a new one.`} signedIn={session !== null} />
         ) : session ? (
           <Join invite={invite} email={session.user.email} />
         ) : (
@@ -42,11 +44,17 @@ function InvitePage() {
   );
 }
 
-function Notice({ title, detail }: { title: string; detail: string }) {
+function Notice({ title, detail, signedIn }: { title: string; detail: string; signedIn: boolean }) {
   return (
-    <div className="flex flex-col items-center gap-2 text-center">
-      <h1 className="text-xl font-semibold">{title}</h1>
-      <p className="text-sm text-muted-foreground">{detail}</p>
+    <div className="flex flex-col items-center gap-6 text-center">
+      <PloyzMark className="size-11" decorative />
+      <div className="flex flex-col gap-2">
+        <h1 className="text-xl font-semibold">{title}</h1>
+        <p className="text-sm text-muted-foreground">{detail}</p>
+      </div>
+      <Link to={signedIn ? "/cloud" : "/auth"} className={buttonVariants({ variant: "outline" })}>
+        {signedIn ? "Go to Cloud" : "Sign in"}
+      </Link>
     </div>
   );
 }
@@ -73,6 +81,7 @@ function Join({ invite, email }: { invite: Invite; email: string }) {
   });
   return (
     <div className="flex flex-col items-center gap-6 text-center">
+      <PloyzMark className="size-11" decorative />
       <div className="flex flex-col gap-1">
         <h1 className="text-xl font-semibold">Join {invite.organization}</h1>
         <p className="text-sm text-muted-foreground">

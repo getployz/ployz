@@ -2,7 +2,8 @@ import {
   Link,
   useMatch,
 } from "@tanstack/react-router";
-import { SearchXIcon } from "lucide-react";
+import { Option, Schema } from "effect";
+import { SearchXIcon, UserXIcon } from "lucide-react";
 import { buttonVariants } from "#/components/ui/button-variants";
 import {
   Empty,
@@ -17,7 +18,37 @@ import { Route as CloudRoute } from "#/routes/_protected/cloud/index";
 import { Route as ProtectedRoute } from "#/routes/_protected/route";
 import { Route as OrganizationHomeRoute } from "#/routes/_protected/cloud/$organizationSlug/_org/~/index";
 
-export function NotFoundPage() {
+const decodeFormerMember = Schema.decodeUnknownOption(Schema.Struct({ formerOrganization: Schema.String }));
+
+export function NotFoundPage({ data }: { data?: unknown }) {
+  return Option.match(decodeFormerMember(data), {
+    onNone: () => <MissingPage />,
+    onSome: ({ formerOrganization }) => <NoLongerMember organization={formerOrganization} />,
+  });
+}
+
+function NoLongerMember({ organization }: { organization: string }) {
+  return (
+    <main className="flex min-h-screen items-center justify-center px-4 py-16">
+      <Empty className="max-w-xl">
+        <EmptyHeader>
+          <EmptyMedia variant="icon">
+            <UserXIcon />
+          </EmptyMedia>
+          <EmptyTitle>No longer a member</EmptyTitle>
+          <EmptyDescription>You are no longer a member of {organization}.</EmptyDescription>
+        </EmptyHeader>
+        <EmptyContent className="sm:flex-row sm:justify-center">
+          <Link to={CloudRoute.to} className={buttonVariants()}>
+            Go to Cloud
+          </Link>
+        </EmptyContent>
+      </Empty>
+    </main>
+  );
+}
+
+function MissingPage() {
   const protectedMatch = useMatch({
     from: ProtectedRoute.id,
     shouldThrow: false,
