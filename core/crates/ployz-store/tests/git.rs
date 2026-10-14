@@ -240,19 +240,14 @@ fn a_git_service_round_trips_get_edit_publish() {
             .write_trusted(&who, &edit(vec![unset]), &evidence())
             .unwrap();
     }
-    for (path, code) in [
-        ("web.repository", RpcErrorCode::InvalidArgument),
-        ("web.image", RpcErrorCode::InvalidArgument),
-    ] {
-        let error = store
-            .write_trusted(
-                &who,
-                &edit(vec![set(path, json!("acme/web:1"))]),
-                &evidence(),
-            )
-            .unwrap_err();
-        assert_eq!(error.code, code, "{path}");
-    }
+    let error = store
+        .write_trusted(
+            &who,
+            &edit(vec![set("web.repository", json!("acme/web:1"))]),
+            &evidence(),
+        )
+        .unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::InvalidArgument);
 
     let diff = store.read(&who, &DiffQuery::default()).unwrap();
     let rows = &diff.changes[0].settings;
@@ -888,4 +883,78 @@ fn a_source_disconnects_to_empty_and_an_empty_service_connects_a_repository() {
         .write(&who, &edit(vec![set("web.image", json!("nginx:2"))]))
         .unwrap();
     assert_eq!(source(&store, &who), SourceKind::Image);
+}
+
+#[test]
+fn setting_a_repository_or_an_image_switches_the_source_in_one_write() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse(SERVICE).unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("web").unwrap(),
+                image: Some("nginx:1".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+
+    // An image Service builds a repository's default branch from its root.
+    store
+        .write_trusted(
+            &who,
+            &edit(vec![set("web.repository", json!("acme/web"))]),
+            &evidence(),
+        )
+        .unwrap();
+    assert_eq!(source(&store, &who), SourceKind::Git);
+    let switched = values(&store, &who);
+    assert_eq!(
+        (
+            &switched["repository"],
+            &switched["branch"],
+            &switched["rootDir"]
+        ),
+        (&json!("acme/web"), &json!("main"), &Value::Null)
+    );
+
+    // Build settings written in the same edit as the switch survive it.
+    store
+        .write_trusted(
+            &who,
+            &edit(vec![
+                set("web.rootDir", json!("/apps/web")),
+                set("web.buildMethod", json!("dockerfile")),
+                set("web.dockerfilePath", json!("web.Dockerfile")),
+            ]),
+            &evidence(),
+        )
+        .unwrap();
+
+    // A repository Service runs an image, and its build settings return to their defaults.
+    store
+        .write(&who, &edit(vec![set("web.image", json!("nginx:2"))]))
+        .unwrap();
+    assert_eq!(source(&store, &who), SourceKind::Image);
+    assert_eq!(values(&store, &who)["image"], json!("nginx:2"));
+
+    store
+        .write_trusted(
+            &who,
+            &edit(vec![set("web.repository", json!("acme/web"))]),
+            &evidence(),
+        )
+        .unwrap();
+    let back = values(&store, &who);
+    assert_eq!(
+        (
+            &back["rootDir"],
+            &back["buildMethod"],
+            &back["dockerfilePath"]
+        ),
+        (&Value::Null, &json!("railpack"), &Value::Null),
+        "{back}"
+    );
 }
