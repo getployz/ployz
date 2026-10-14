@@ -59,9 +59,11 @@ up() {
   (cd "$DASH" || exit 1; scripts/verify/up.sh) >"$WORK/up.log" 2>&1 || { cat "$WORK/up.log"; exit 1; }
   U=$(sed -n 's/^Ployz Cloud verify: \([^ ]*\).*/\1/p' "$DASH/.verify/run/info")
   cookie=$(jq -r .cookie "$DASH/.verify/run/seed.json")
+  pg=$(sed -n 's/^  session \([^,]*\),.*/\1/p' "$DASH/.verify/run/info")
   export PLOYZ_CLOUD_URL=$U
   echo "Cloud at $U"
 }
+sql() { docker exec "$pg" psql -q -v ON_ERROR_STOP=1 -U postgres -d ployz_cloud -c "$1"; }
 api() { curl -sf -b "better-auth.session_token=$cookie" -H "Origin: $U" -H 'content-type: application/json' "$@"; }
 approve() {
   api "$U/api/auth/device?user_code=$1" >/dev/null || { echo "approve: device lookup failed for $1" >&2; exit 1; }
@@ -167,8 +169,11 @@ PLOYZ_TOKEN=$revoked c token "status with a revoked PLOYZ_TOKEN" $P status
 PLOYZ_TOKEN=$revoked c token "token ls with a revoked PLOYZ_TOKEN --json" $P token ls --json
 
 # ---------- org ----------
-api -d '{"name":"Babbage Labs","slug":"babbage","keepCurrentActiveOrganization":true}' "$U/api/auth/organization/create" >/dev/null || { echo "creating the Babbage Labs Organization failed" >&2; exit 1; }
-note org "## org ls / use (second Organization babbage created through the auth API)"
+# Inserted directly so Ada's sessions keep acting in ada; the switcher would move them all to babbage.
+sql "WITH o AS (INSERT INTO organization (name, slug) VALUES ('Babbage Labs', 'babbage') RETURNING id)
+  INSERT INTO member (user_id, organization_id, role) SELECT u.id, o.id, 'owner' FROM o, \"user\" u WHERE u.email = 'ada@example.com'" >/dev/null \
+  || { echo "creating the Babbage Labs Organization failed" >&2; exit 1; }
+note org "## org ls / use (second Organization babbage, owned by Ada)"
 c org "org ls" $P org ls
 c org "org ls --json" $P org ls --json
 c org "org (bare)" $P org
