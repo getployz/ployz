@@ -28,7 +28,6 @@ use crate::variables::{self, VariableKey};
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct OnMergeQuery {
-    /// The PR Environment.
     #[serde(default)]
     pub environment: EnvironmentRef,
 }
@@ -36,9 +35,7 @@ pub struct OnMergeQuery {
 /// What a PR Environment's pull request lands when it merges.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct OnMerge {
-    /// The PR Environment.
     pub environment: EnvironmentSummary,
-    /// Its pull request.
     pub pull_request: PullRequestRef,
     /// One list per Destination: each Environment that deploys the target branch.
     pub destinations: Vec<OnMergeInto>,
@@ -58,7 +55,6 @@ pub struct OnMergeInto {
 /// none.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct MergeRow {
-    /// The row.
     #[serde(flatten)]
     #[ts(flatten)]
     pub at: NamedRow,

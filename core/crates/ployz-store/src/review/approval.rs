@@ -18,7 +18,6 @@ use crate::{Actor, Approval};
 /// One thing a publication destroys, by the node it changes and the row.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize, TS)]
 pub struct DestructiveEffect {
-    /// What it destroys.
     pub kind: DestructiveKind,
     /// What a human calls the thing destroyed: the Service, the Volume, or the
     /// domain's hostname.

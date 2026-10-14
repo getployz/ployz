@@ -31,7 +31,6 @@ pub fn key() -> SealingKey {
     SealingKey::new(b"test-encryption-secret").unwrap()
 }
 
-/// GitHub's ID for repository `n`.
 pub fn repo_id(n: u64) -> ployz_store::RepositoryId {
     ployz_store::RepositoryId::parse(n).unwrap()
 }
@@ -41,7 +40,6 @@ pub fn repo_name(name: &str) -> ployz_store::RepositoryName {
     ployz_store::RepositoryName::parse(name).unwrap()
 }
 
-/// A Git branch.
 pub fn git_branch(name: &str) -> ployz_store::BranchName {
     ployz_store::BranchName::parse(name).unwrap()
 }
@@ -67,7 +65,6 @@ pub fn sha(commit: &str) -> ployz_store::CommitSha {
     ployz_store::CommitSha::parse(commit).unwrap()
 }
 
-/// Pull request number `n`.
 pub fn pr_number(n: u64) -> ployz_store::PullRequestNumber {
     ployz_store::PullRequestNumber::parse(n).unwrap()
 }

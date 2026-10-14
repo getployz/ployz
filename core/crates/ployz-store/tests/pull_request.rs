@@ -44,7 +44,6 @@ fn shop() -> (ConfigStore, Actor) {
     shop_on(backend::open())
 }
 
-/// `shop` on `store`.
 fn shop_on(store: ConfigStore) -> (ConfigStore, Actor) {
     let who = Actor::system(OrganizationId::parse("org").unwrap());
     store

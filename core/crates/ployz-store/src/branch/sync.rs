@@ -63,9 +63,7 @@ pub struct SyncQuery {
 /// The rows a Sync would carry, and the version that guards them.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct SyncView {
-    /// Where the changes come from.
     pub from: EnvironmentSummary,
-    /// Where they land.
     pub into: EnvironmentSummary,
     /// Pass to [`SyncChanges::version`] to sync exactly these rows.
     pub version: String,
@@ -81,7 +79,6 @@ pub struct SyncView {
 /// A row a Sync would carry but for Never sync.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct NeverSyncedRow {
-    /// The row.
     #[serde(flatten)]
     #[ts(flatten)]
     pub at: NamedRow,
@@ -102,7 +99,6 @@ pub struct Mark {
 /// One row a Sync can carry.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct SyncRow {
-    /// The row.
     #[serde(flatten)]
     #[ts(flatten)]
     pub at: NamedRow,
@@ -146,9 +142,7 @@ pub struct SecretRow {}
 pub struct Synced {
     /// Pass to [`UndoSync::sync`] to undo it.
     pub sync: SyncId,
-    /// Where the changes came from.
     pub from: EnvironmentSummary,
-    /// Where they landed.
     pub into: EnvironmentSummary,
     /// Nodes staged in `into`'s Working State.
     pub staged: Vec<NodeName>,

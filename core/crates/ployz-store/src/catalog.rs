@@ -50,7 +50,6 @@ pub fn schema(path: Option<&str>) -> Result<Value, RpcError> {
 pub struct Explained {
     /// The Setting's canonical path.
     pub path: SettingPath,
-    /// Its JSON Schema.
     pub schema: Value,
 }
 

@@ -75,7 +75,8 @@ pub fn lookup(query: &str) -> Lookup {
     }
 }
 
-/// Every page's path.
+/// Every embedded page's path from `docs/user`, sorted: what [`lookup`] accepts as
+/// a page name.
 pub fn pages() -> impl Iterator<Item = &'static str> {
     PAGES.iter().map(|(path, _)| *path)
 }

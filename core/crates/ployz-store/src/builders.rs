@@ -59,7 +59,7 @@ pub struct SetBuildOrder {
     pub build_order: Option<BuildOrder>,
 }
 
-/// The Organization's Build Order.
+/// Ask for the Build Order of the caller's Organization, and the Builders it tries.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct BuildOrderQuery {}
