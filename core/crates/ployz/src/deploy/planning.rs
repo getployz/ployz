@@ -266,6 +266,9 @@ pub enum SlotAction {
     /// Only dead Ingress Proxy containers are there, the newest given. Docker starts
     /// none, so the Server's repair fails until they are removed.
     Dead(ContainerId),
+    /// Its Ingress Proxy keeps restarting, the newest given. Starting or recreating it
+    /// would crash the same way, so the Server's repair fails with no work.
+    Restarting(ContainerId),
     /// The Server's containers went unobserved, so it was not checked.
     Unchecked(String),
 }
@@ -300,6 +303,9 @@ pub fn plan_ingress_repairs(intent: &DeployIntent, snapshot: &DeploySnapshot) ->
             action: match empty.held {
                 HeldIngress::Stopped(stopped) => SlotAction::Start(stopped.container_id),
                 HeldIngress::Dead(dead) => SlotAction::Dead(dead.container_id),
+                HeldIngress::Restarting(restarting) => {
+                    SlotAction::Restarting(restarting.container_id)
+                }
                 HeldIngress::None => SlotAction::Create(plan_create(
                     intent,
                     &snapshot.only(empty.machine),
