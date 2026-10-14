@@ -2750,6 +2750,7 @@ enum Writing {
     Restore,
     PromoteAPulledSlot,
     Seed,
+    LandAPulledSeed,
     FirstPull,
     IncrementalPull,
     Resend,
@@ -2775,7 +2776,7 @@ impl Writing {
                 "/Volume.Copy.Writer",
                 json!({"name": "data", "at": "13", "epoch": 2}),
             ),
-            Self::Seed => (
+            Self::Seed | Self::LandAPulledSeed => (
                 "seed",
                 "/Volume.Seed",
                 json!({"name": "data", "into": "seed", "guid": "77"}),
@@ -2793,7 +2794,9 @@ impl Writing {
             Self::Restore | Self::PromoteAPulledSlot => {
                 reply.pointer("/Ok/kind") == Some(&json!("root"))
             }
-            Self::Seed => reply.pointer("/Ok/copy/kind") == Some(&json!("root")),
+            Self::Seed | Self::LandAPulledSeed => {
+                reply.pointer("/Ok/copy/kind") == Some(&json!("root"))
+            }
             Self::FirstPull | Self::IncrementalPull | Self::Resend | Self::SameNewestPull => {
                 reply.pointer("/Ok/pull") == Some(&Value::Null)
             }
@@ -2825,6 +2828,21 @@ impl Writing {
                     "snapshots",
                     "tank/ployz/data@w-1-1\t77\t1700000000",
                 );
+                started
+            }
+            // A mirror of a Volume whose writer elsewhere was seeded from this point holds
+            // its guid, so a seed of that point lands the mirror in place.
+            Self::LandAPulledSeed => {
+                let started = Self::Seed.fixture(test, port);
+                fs::write(test.0.join("seed-slot"), "").unwrap();
+                fs::write(test.0.join("seed-fs"), "").unwrap();
+                set_property(
+                    test,
+                    "tank/ployz-mirror/seed/fs",
+                    "snapshots",
+                    "tank/ployz-mirror/seed/fs@w-1-1\t77\t1700000000",
+                );
+                set_property(test, "tank/ployz-mirror/seed/fs", "ployz:pulled", "77");
                 started
             }
             Self::FirstPull => puller(test, &["root"], port),
@@ -2862,7 +2880,7 @@ impl Writing {
 
     /// Whether the fixture is such a slot before the path changes anything.
     fn starts_received(self) -> bool {
-        matches!(self, Self::PromoteAPulledSlot)
+        matches!(self, Self::PromoteAPulledSlot | Self::LandAPulledSeed)
     }
 }
 
@@ -2921,6 +2939,7 @@ async fn every_stop_of_a_writer_path_leaves_a_slot_the_departure_keeps_until_a_p
         Writing::Restore,
         Writing::PromoteAPulledSlot,
         Writing::Seed,
+        Writing::LandAPulledSeed,
         Writing::FirstPull,
         Writing::IncrementalPull,
         Writing::Resend,

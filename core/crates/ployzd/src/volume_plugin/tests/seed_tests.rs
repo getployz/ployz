@@ -94,6 +94,30 @@ async fn seed_copies_the_point_into_a_slot_then_lands_it_as_a_root() {
     );
 }
 
+/// A Move cuts a root without clearing the pulled mark, as no root holds one, so a mirror
+/// a seed lands in place must lose its mark before it becomes the root.
+#[tokio::test]
+async fn a_seed_landed_over_a_pulled_mirror_leaves_its_root_unmarked() {
+    let test = TestDir::new();
+    let (socket, _server) = start(
+        &test,
+        USABLE_POOL,
+        &["root", "volume", "seed-slot", "seed-fs"],
+    );
+    set_property(&test, "tank/ployz/data", "snapshots", POINT);
+    set_property(
+        &test,
+        "tank/ployz-mirror/seed/fs",
+        "snapshots",
+        "tank/ployz-mirror/seed/fs@w-1-1\t77\t1700000000",
+    );
+    set_property(&test, "tank/ployz-mirror/seed/fs", "ployz:pulled", "77");
+
+    let landed = settled(&socket).await;
+    assert_eq!(landed.pointer("/Ok/copy/kind").unwrap(), "root", "{landed}");
+    assert_eq!(property(&test, "tank/ployz/seed", "ployz:pulled"), None);
+}
+
 #[tokio::test]
 async fn destroy_drops_a_landed_seed_docker_never_adopted() {
     let test = TestDir::new();
