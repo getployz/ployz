@@ -1,10 +1,11 @@
 import type { ChangeKind, MachineId, MachineName } from "@ployz/sdk";
-import { Schema } from "effect";
+import { Option, Schema } from "effect";
 import type { DeletionItem } from "#/components/deletion-dialog";
 import type { ChangeGroup } from "#/modules/config-store/store-deployments";
 import { STALE_AFTER_MS } from "#/modules/volume-copies/volume-copies";
 import { epochOf, planFromCopies } from "#/modules/volume-run/plan";
 import { runWords } from "#/modules/volume-run/volume-copies";
+import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import type { RuntimeVolumeCopy } from "#/modules/runtime/runtime.collection";
 import { type AnsweredMember, type Member, parseDockerVolumeName, type VolumeRunInput, type VolumeRunView } from "#/modules/volume-run/volume-run";
 
@@ -414,10 +415,10 @@ export function placementForm(volume: PlacementVolume, members: readonly Member[
 export const mirrorResourceId = (volumeId: string, server: MachineId) => `${volumeId}~${server}`;
 
 export function parseMirrorResourceId(resourceId: string): { readonly volumeId: string; readonly server: MachineId } | null {
-  const [volumeId, server, ...rest] = resourceId.split("~");
-  if (!volumeId || !server || rest.length > 0) return null;
-  // SAFETY: the address carries a Server id the canvas wrote; a stale one finds no mirror.
-  return { volumeId, server: server as MachineId };
+  const [volumeId, address, ...rest] = resourceId.split("~");
+  const server = Option.getOrNull(Schema.decodeUnknownOption(rustMachineIdSchema)(address));
+  if (!volumeId || server === null || rest.length > 0) return null;
+  return { volumeId, server };
 }
 
 /**

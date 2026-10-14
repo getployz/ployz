@@ -9,7 +9,6 @@ import {
   type chatParamsFromRequest,
   defineChatMiddleware,
   EventType,
-  type Interrupt,
   isTerminalRunStatus,
   type JSONSchema,
   maxIterations,
@@ -423,6 +422,18 @@ const added = (request: ChatRequest) => {
 
 type Persistence = Effect.Success<ReturnType<typeof agentPersistence>>;
 
+const StoredInterrupt = Schema.Struct({
+  subagentRunId: Schema.optionalKey(Schema.String),
+  id: Schema.String,
+  reason: Schema.String,
+  message: Schema.optionalKey(Schema.String),
+  toolCallId: Schema.optionalKey(Schema.String),
+  responseSchema: Schema.optionalKey(Schema.Record(Schema.String, Schema.Any)),
+  expiresAt: Schema.optionalKey(Schema.String),
+  metadata: Schema.optionalKey(Schema.Record(Schema.String, Schema.Any)),
+});
+const storedInterrupt = Schema.decodeUnknownSync(StoredInterrupt, { onExcessProperty: "preserve" });
+
 /**
  * The turn another request already took for this answer, replayed instead of run again: the thread as it now stands,
  * and the approvals that turn left waiting.
@@ -437,8 +448,7 @@ async function* replayed(persistence: Persistence, request: ChatRequest): AsyncG
     messages: uiMessagesToWire(modelMessagesToUIMessages(withIds), { includeSnapshotStructuredOutput: true, includeActivity: true }),
   };
   const waiting = await persistence.stores.interrupts.listPending(threadId);
-  // SAFETY: the interrupt store keeps each interrupt exactly as the run that raised it published it.
-  const interrupts = waiting.map((record) => record.payload as Interrupt);
+  const interrupts = waiting.map((record) => storedInterrupt(record.payload));
   yield interrupts.length === 0
     ? { type: EventType.RUN_FINISHED, threadId, runId, finishReason: "stop", timestamp: Date.now() }
     : { type: EventType.RUN_FINISHED, threadId, runId, outcome: { type: "interrupt", interrupts }, timestamp: Date.now() };

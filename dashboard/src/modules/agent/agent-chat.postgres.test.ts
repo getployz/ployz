@@ -530,6 +530,19 @@ for (const status of ["completed", "aborted", "failed"] as const) {
     }), 15_000);
 }
 
+it.live("a request repeating the id of a run waiting on approval replays the approval it waits on", () =>
+  Effect.gen(function* () {
+    const harness = yield* sidebar({ removeWeb: true });
+    const asked = yield* sendAs(harness, "run-asks");
+    yield* waitingApproval(asked, harness.pending);
+    const writes = harness.watchWrites();
+
+    const again = yield* sendAs(harness, "run-asks");
+    expect(again.errors).toEqual([]);
+    expect(again.interrupts).toEqual(asked.interrupts);
+    expect(writes).not.toHaveBeenCalled();
+  }), 15_000);
+
 it.live("a request repeating the id of a run that waits on a human shows the same approval and asks nothing new", () =>
   Effect.gen(function* () {
     const harness = yield* sidebar({ removeWeb: true });
