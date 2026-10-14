@@ -994,6 +994,7 @@ const isDestination = (run: VolumeLaneInput, machine: MachineRef) =>
 
 /**
  * Each managed Server's copy of `dockerVolume`; a Server that doesn't answer in time is a member that didn't answer.
+ * So is one the frame lists only by id: it is still in the cluster, so a mirror on it is not gone.
  * For a run, a Server that holds a copy or receives one and lacks the generation floor is a member that lacks it.
  */
 export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(function* (organizationId: string, dockerVolume: string, run?: VolumeLaneInput) {
@@ -1001,7 +1002,8 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
   const frame = yield* session.watchFirstFrame(5_000);
   // A Docker-only Machine holds no copy and may not serve the verb, so it must not block the run.
   const managed = frame.machines.filter((observed) => observed.storage?.state !== "stateless");
-  return yield* Effect.forEach(managed, ({ machine }) => {
+  const unlisted = frame.incomplete_ids.machines.map((id): Member => ({ machine: { id, name: id }, answered: false }));
+  const listed = yield* Effect.forEach(managed, ({ machine }) => {
     const ref: MachineRef = { id: machine.id, name: machine.name };
     const server = { name: machine.name, daemonVersion: machine.runtime.daemon_version };
     const lacks = (capability: string) => lackSentence(organizationId, capability, server, run?.kind).pipe(
@@ -1023,6 +1025,7 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
       Effect.orElseSucceed((): Member => ({ machine: ref, answered: false })),
     );
   }, { concurrency: "unbounded" });
+  return [...listed, ...unlisted];
 }, Effect.scoped);
 
 /** What a run of each kind is called when a Server can't run it. */

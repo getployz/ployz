@@ -310,6 +310,7 @@ describe("volume runs", () => {
         runtime: { state: container.running ? "running" : "exited" },
         created_at_unix_nanos: container.created ?? 0,
       })),
+      incomplete_ids: { machines: [] },
     }),
     inspectContainer: (target: string, container: string) => Effect.promise(async () => {
       await beforeStart?.();
