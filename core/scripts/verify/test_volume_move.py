@@ -333,9 +333,7 @@ class ClusterModel:
             own = f"w-{self.epoch(self.runs[-1]['id'])}-0" if self.runs and self.receiving_on(machine) else "-"
             return f"pull 0 {self.pull_targets.get(machine, own)}"
         lines = [pull()]
-        pgrep = 2 if unreadable == "pgrep" else 0 if self.receiving_on(machine) else 1
-        lines.append(f"pgrep {pgrep}")
-        pids = ["4242"] if pgrep == 0 else []
+        pids = ["4242"] if unreadable != "pgrep" and self.receiving_on(machine) else []
         lines += [f"proc {pid} 777" for pid in pids]
         if self.probe_hooks:
             self.probe_hooks.pop(0)()

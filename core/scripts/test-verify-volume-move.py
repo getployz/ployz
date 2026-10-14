@@ -707,15 +707,15 @@ class VolumeMove:
         parent = shlex.quote(f"{self.pool}/ployz-mirror/{self.physical}")
         starts = "for pid in $pids; do echo \"proc $pid $(awk '{print $22}' /proc/$pid/stat 2>/dev/null)\"; done"
         pull = f"v=$(zfs get -H -o value ployz:pull {parent}); echo \"pull $? $v\""
-        result = self.sh(machine, f"set +e; {pull}; pids=$(pgrep -f {pattern}); echo \"pgrep $?\"; {starts}; "
+        result = self.sh(machine, f"set +e; {pull}; pids=$(pgrep -f {pattern}); {starts}; "
                                   f"{pull}; {starts}; echo end", check=False)
         lines = result.stdout.splitlines()
-        if result.returncode or len(lines) < 4 or lines[1] != "pgrep 0" or lines[-1] != "end":
+        if result.returncode or len(lines) < 3 or lines[-1] != "end":
             return None
-        second = next((at for at, line in enumerate(lines) if at > 1 and line.startswith("pull ")), None)
+        second = next((at for at, line in enumerate(lines) if at > 0 and line.startswith("pull ")), None)
         if second is None:
             return None
-        before, after = lines[2:second], lines[second + 1:-1]
+        before, after = lines[1:second], lines[second + 1:-1]
         target = lines[0].removeprefix("pull 0 ")
         if lines[0] == target or lines[second] != lines[0] or not re.fullmatch(rf"w-{epoch}-\d+", target):
             return None
