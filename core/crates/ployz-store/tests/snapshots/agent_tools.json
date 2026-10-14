@@ -2168,8 +2168,8 @@
       "read_only": false
     },
     {
-      "description": "Set what a server takes: builds, services, web traffic. Never asks a human to approve.",
-      "gate": "never",
+      "description": "Set what a server takes: builds, services, web traffic. Turning web traffic off on the last server that serves your domains waits for a human to approve. It may stop to ask a human to approve; call it alone, never alongside another tool.",
+      "gate": "cloud",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
@@ -2185,6 +2185,10 @@
           },
           "build_concurrency": {
             "pattern": "^(auto|[0-9]+)$",
+            "type": "string"
+          },
+          "request_key": {
+            "pattern": "^[A-Za-z0-9_-]{8,64}$",
             "type": "string"
           },
           "server": {

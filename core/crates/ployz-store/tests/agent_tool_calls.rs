@@ -286,6 +286,7 @@ fn the_store_and_cloud_decide_who_asks_a_human() {
             ("server_drain", Gate::Cloud),
             ("server_forget", Gate::Cloud),
             ("server_remove", Gate::Cloud),
+            ("server_set", Gate::Cloud),
             ("volume_mirror", Gate::Cloud),
             ("volume_mirror_remove", Gate::Cloud),
             ("volume_move", Gate::Cloud),
@@ -973,50 +974,54 @@ fn an_undeployed_project_is_removed_in_one_call() {
 
 #[test]
 fn a_lost_reply_retries_with_the_key_that_names_the_same_attempt() {
-    let store = shop();
-    let mut attempts = Vec::new();
-    let mut lost = true;
-    let mut cloud = |cloud: Cloud| match cloud {
-        Cloud::Ask(CloudQuery::Servers { .. }) => Ok(servers(&[("web-2", 'b')])),
-        Cloud::Ask(query) => panic!("unexpected read: {query:?}"),
-        Cloud::Act(act) => {
-            attempts.push(act.attempt);
-            match std::mem::replace(&mut lost, false) {
-                true => Err(rpc_error("unavailable", json!({ "writes": "unknown" }))),
-                false => Ok(operation(&act, "done")),
+    for (tool, input) in [
+        ("server_drain", json!({ "server": "web-2" })),
+        ("server_upgrade", json!({ "server": "web-2" })),
+        (
+            "server_set",
+            json!({ "server": "web-2", "accepts_ingress": false }),
+        ),
+    ] {
+        let store = shop();
+        let mut attempts = Vec::new();
+        let mut lost = true;
+        let mut cloud = |cloud: Cloud| match cloud {
+            Cloud::Ask(CloudQuery::Servers { .. }) => Ok(servers(&[("web-2", 'b')])),
+            Cloud::Ask(query) => panic!("unexpected read: {query:?}"),
+            Cloud::Act(act) => {
+                attempts.push(act.attempt);
+                match std::mem::replace(&mut lost, false) {
+                    true => Err(rpc_error("unavailable", json!({ "writes": "unknown" }))),
+                    false => Ok(operation(&act, "done")),
+                }
             }
-        }
-    };
+        };
 
-    let refusal = drive(
-        &store,
-        in_org(),
-        "server_drain",
-        json!({ "server": "web-2" }),
-        "drain-1",
-        &mut cloud,
-    )
-    .refused();
-    assert_eq!(refusal.writes, Writes::Unknown);
-    assert_eq!(refusal.retry.tool, "server_drain");
-    assert!(
-        refusal.retry.input["request_key"].is_string(),
-        "{refusal:?}"
-    );
+        let refusal = drive(&store, in_org(), tool, input, "act-1", &mut cloud).refused();
+        assert_eq!(refusal.writes, Writes::Unknown, "{tool}");
+        assert_eq!(refusal.retry.tool, tool);
+        assert!(
+            refusal.retry.input["request_key"].is_string(),
+            "{tool}: {refusal:?}"
+        );
 
-    let drained = drive(
-        &store,
-        in_org(),
-        "server_drain",
-        refusal.retry.input,
-        "drain-2",
-        &mut cloud,
-    )
-    .ok();
-    assert_eq!(drained["state"], "done");
-    assert_eq!(drained["at"], "web-2");
-    assert_eq!(attempts.len(), 2);
-    assert_eq!(attempts[0], attempts[1], "the retry is the same attempt");
+        let done = drive(
+            &store,
+            in_org(),
+            tool,
+            refusal.retry.input,
+            "act-2",
+            &mut cloud,
+        )
+        .ok();
+        assert_eq!(done["state"], "done", "{tool}");
+        assert_eq!(done["at"], "web-2", "{tool}");
+        assert_eq!(attempts.len(), 2, "{tool}");
+        assert_eq!(
+            attempts[0], attempts[1],
+            "{tool}: the retry is the same attempt"
+        );
+    }
 }
 
 #[test]
@@ -1124,18 +1129,36 @@ fn server_set_leaves_turning_web_traffic_on_to_the_terminal() {
     for (input, field) in [
         (
             json!({ "server": "db-1", "accepts_ingress": true }),
-            "accepts_ingress",
+            Some("accepts_ingress"),
         ),
-        (json!({ "server": "db-1" }), "accepts_builds"),
+        (json!({ "server": "db-1" }), Some("")),
         (
             json!({ "server": "db-1", "build_concurrency": "300" }),
-            "build_concurrency",
+            Some("build_concurrency"),
         ),
     ] {
         let refusal = drive(&store, in_org(), "server_set", input, "set-1", &mut cloud).refused();
         assert_eq!(refusal.code.as_str(), "invalid_argument");
-        assert_eq!(refusal.field.as_deref(), Some(field));
+        assert_eq!(refusal.field.as_deref(), field);
     }
+    let empty = drive(
+        &store,
+        in_org(),
+        "server_set",
+        json!({ "server": "db-1" }),
+        "set-2",
+        &mut cloud,
+    )
+    .refused();
+    assert_eq!(
+        empty.valid,
+        [
+            "accepts_builds",
+            "accepts_services",
+            "accepts_ingress",
+            "build_concurrency"
+        ]
+    );
 }
 
 #[test]

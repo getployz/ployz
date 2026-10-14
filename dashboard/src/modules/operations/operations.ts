@@ -181,7 +181,7 @@ export const OPERATIONS = {
       server: Name, acceptsBuilds: Schema.Boolean, acceptsServices: Schema.Boolean, acceptsIngress: Schema.Boolean,
       buildConcurrency: BuildConcurrencyChangeSchema,
     }),
-    gate: "none",
+    gate: "approval",
     idempotency: "server_set",
     surfaces: {
       cli: { absent: "`ployz server set` updates the Server through its own connection, not Cloud." },
@@ -198,6 +198,7 @@ export const OPERATIONS = {
       ui: {
         fn: "requestServerPolicyChangeServerFn",
         input: RequestServerPolicyChangeInput,
+        ungated: "The human is the one changing the Server.",
         options: {
           server: { via: "machineId" },
           acceptsBuilds: { via: "change" },

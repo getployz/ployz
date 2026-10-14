@@ -1,10 +1,11 @@
 import { it } from "@effect/vitest";
-import type { Act, CloudQuery, LogsAnswer, MachineId } from "@ployz/sdk";
-import { Effect, Layer } from "effect";
+import type { Act, CloudQuery, LogsAnswer, MachineId, RuntimeWatchView } from "@ployz/sdk";
+import { Effect, Layer, Schema } from "effect";
 import { Inngest } from "inngest";
 import { describe, expect, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { callCloud } from "#/modules/agent/call-cloud.server";
+import { decideApproval } from "#/modules/approvals/approvals.server";
 import type { Caller } from "#/modules/identity/actor";
 import { UNREACHABLE_MESSAGE } from "#/modules/machines/server-operations.server";
 import { serverDrainAttempt } from "#/modules/machines/tables";
@@ -17,6 +18,8 @@ import { seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
 const ORGANIZATION = "00000000-0000-4000-8000-00000000c101";
 const DRAIN = "00000000-0000-4000-8000-00000000c102";
 const MACHINE = "a".repeat(32) as MachineId;
+const OTHER_MACHINE = "e".repeat(32) as MachineId;
+const Asked = Schema.Struct({ approval: Schema.String, approval_id: Schema.String });
 
 describe("callCloud", () => {
   it.live("answers an operations query as OperationsAnswer, the shape the agent tools decode", () =>
@@ -69,6 +72,19 @@ describe("callCloud", () => {
         asked.push(query);
         return TAIL;
       }),
+    }),
+  });
+
+  const observing = (otherServesWeb: boolean): ScopedRuntimeClientSession => ({
+    status: "connected",
+    connected: asTestDouble<PloyzSession>()({
+      watchFirstFrame: () => Effect.succeed(asTestDouble<RuntimeWatchView>()({
+        machines: [
+          { machine: { id: MACHINE, name: "web-2", accepts_ingress: true, public_ip: "203.0.113.2" } },
+          { machine: { id: OTHER_MACHINE, name: "web-3", accepts_ingress: otherServesWeb, public_ip: "203.0.113.3" } },
+        ],
+        certificates: [{ hostname: "shop.example.com" }],
+      })),
     }),
   });
 
@@ -167,7 +183,7 @@ describe("callCloud", () => {
       const attempt = attemptIdOf(ORGANIZATION, "server_set", act.attempt);
       // Catches an attempt another Organization's same request key would share.
       expect(attemptIdOf(DRAIN, "server_set", act.attempt)).not.toBe(attempt);
-      const heard = yield* callCloud(caller, { act }).pipe(Effect.provide(services));
+      const heard = yield* callCloud(caller, { act }).pipe(runtime(observing(true), []), Effect.provide(services));
       expect(heard).toEqual({ ok: true, value: expect.objectContaining({ attempt, run: "set web-2", state: "accepted" }) });
       const id = `server-policy-${attempt}`;
       expect(send.mock.calls).toEqual([[expect.objectContaining({
@@ -176,12 +192,52 @@ describe("callCloud", () => {
       })]]);
       // Catches a replayed act queuing the change again, or answering a different time, however long after the first.
       yield* Effect.sleep("1100 millis");
-      const replayed = yield* callCloud(caller, { act }).pipe(Effect.provide(services));
+      const replayed = yield* callCloud(caller, { act }).pipe(runtime(observing(true), []), Effect.provide(services));
       expect(replayed).toEqual(heard);
       expect(send).toHaveBeenCalledTimes(1);
       // Catches the same attempt reused for another change, which would answer as the first one ran.
-      const reused = yield* callCloud(caller, { act: { ...act, action: { ...set, accepts_services: true } } }).pipe(Effect.provide(services));
+      const reused = yield* callCloud(caller, { act: { ...act, action: { ...set, accepts_services: true } } })
+        .pipe(runtime(observing(true), []), Effect.provide(services));
       expect(reused).toEqual({ ok: false, refusal: expect.objectContaining({ code: "conflict" }) });
+      expect(send).toHaveBeenCalledTimes(1);
+    }));
+
+  // Catches the last Server taking web traffic turned off without asking, or the change queued before a human approves.
+  it.live("asks a human before turning web traffic off on the last Server that takes it, and queues the change once approved", () =>
+    Effect.gen(function* () {
+      const inngest = new Inngest({ id: "call-cloud-test" });
+      const send = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
+      const services = yield* Layer.build(yield* storeTestCloud({ inngest }));
+      const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
+      const caller: Caller = { ...member, userId };
+      const act: Act = {
+        attempt: "f".repeat(32),
+        digest: "d".repeat(64),
+        action: {
+          action: "set_server",
+          server: { machine: MACHINE, name: "web-2" },
+          accepts_builds: null,
+          accepts_services: null,
+          accepts_ingress: false,
+          build_concurrency: { action: "keep" },
+        },
+      };
+
+      const asked = yield* callCloud(caller, { act }).pipe(runtime(observing(false), []), Effect.provide(services));
+      expect(asked).toEqual({ ok: false, refusal: expect.objectContaining({
+        code: "approval_required",
+        details: expect.objectContaining({
+          effects: [{ kind: "removes_domain", name: "shop.example.com", node: "shop.example.com", path: "domains/shop.example.com" }],
+          operation: { verb: "set", name: "web-2" },
+        }),
+      }) });
+      expect(send).not.toHaveBeenCalled();
+
+      const { approval, approval_id } = Schema.decodeUnknownSync(Asked)(asked.ok ? null : asked.refusal.details);
+      const decided = yield* decideApproval(caller, approval_id, { approve: { digest: approval } }).pipe(Effect.provide(services));
+      expect(decided).toMatchObject({ ok: true });
+      const approved = yield* callCloud(caller, { act }, approval_id).pipe(runtime(observing(false), []), Effect.provide(services));
+      expect(approved).toEqual({ ok: true, value: expect.objectContaining({ run: "set web-2", state: "accepted" }) });
       expect(send).toHaveBeenCalledTimes(1);
     }));
 });

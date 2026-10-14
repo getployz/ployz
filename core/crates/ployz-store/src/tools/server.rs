@@ -4,7 +4,9 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use ployz_core::{BuildConcurrency, BuildConcurrencyUpdate, MachineLogService, Namespace};
+use ployz_core::{
+    BuildConcurrency, BuildConcurrencyUpdate, MachineLogService, Namespace, RpcErrorCode,
+};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -23,6 +25,12 @@ use crate::{NamespacesQuery, NamespacesView, OwnedNamespace};
 
 const REQUEST_KEY: &str = "^[A-Za-z0-9_-]{8,64}$";
 const BUILDS: &str = "^(auto|[0-9]+)$";
+const SETTABLE: [&str; 4] = [
+    "accepts_builds",
+    "accepts_services",
+    "accepts_ingress",
+    "build_concurrency",
+];
 
 /// Every Namespace the Servers run with the Environment that owns it, if one does.
 fn owners(view: &NamespacesView) -> BTreeMap<&Namespace, &OwnedNamespace> {
@@ -257,11 +265,15 @@ pub(crate) struct ServerSet {
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(BUILDS))]
     build_concurrency: Option<String>,
+    #[serde(default)]
+    #[schemars(with = "Option<String>", pattern(REQUEST_KEY))]
+    request_key: Option<RequestKey>,
 }
 
 impl Tool for ServerSet {
     const NAME: &'static str = "server_set";
-    const DESCRIPTION: &'static str = "Set what a server takes: builds, services, web traffic.";
+    const DESCRIPTION: &'static str = "Set what a server takes: builds, services, web traffic. Turning web traffic off on the last server that serves your domains waits for a human to approve.";
+    const GATE: Gate = Gate::Cloud;
     const READ_ONLY: bool = false;
 
     fn example() -> Value {
@@ -293,7 +305,11 @@ impl Tool for ServerSet {
             && self.accepts_ingress.is_none()
             && build_concurrency == BuildConcurrencyUpdate::Keep
         {
-            return Err(Refusal::invalid("Set at least one value", "accepts_builds").into());
+            return Err(
+                Refusal::new(RpcErrorCode::InvalidArgument, "Set at least one value")
+                    .with_valid(SETTABLE)
+                    .into(),
+            );
         }
         let set = |server| Action::SetServer {
             server,
@@ -302,7 +318,7 @@ impl Tool for ServerSet {
             accepts_ingress: self.accepts_ingress,
             build_concurrency,
         };
-        on_server(cx, &self.server, set, None, 0)
+        on_server(cx, &self.server, set, self.request_key, 0)
     }
 }
 

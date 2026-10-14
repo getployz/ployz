@@ -1,7 +1,7 @@
 import type { MachineId, RuntimeWatchView } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
-import { cleanPlan, drainPlan, removePlan, volumeLabels } from "#/modules/machines/server-operations.server";
+import { cleanPlan, drainPlan, ingressOffPlan, removePlan, volumeLabels } from "#/modules/machines/server-operations.server";
 
 const here = "a".repeat(32);
 const there = "b".repeat(32);
@@ -135,5 +135,40 @@ describe("cleanPlan and removePlan", () => {
       owner("c", "shop", "staging", "uploads"),
       owner("d", "blog", "staging", "uploads"),
     ])).toEqual(new Map([["a", "cache-data"], ["b", "production/uploads"], ["c", "shop/staging/uploads"], ["d", "blog/staging/uploads"]]));
+  });
+});
+
+describe("ingressOffPlan", () => {
+  const web = (ingress: { here: readonly [boolean, string | null]; there: readonly [boolean, string | null] }) => asTestDouble<RuntimeWatchView>()({
+    machines: [
+      { machine: { id: here, name: "fra-1", accepts_ingress: ingress.here[0], public_ip: ingress.here[1] } },
+      { machine: { id: there, name: "fra-2", accepts_ingress: ingress.there[0], public_ip: ingress.there[1] } },
+    ],
+    certificates: [{ hostname: "shop.example.com" }, { hostname: "api.example.com" }, { hostname: "shop.example.com" }],
+  });
+
+  it("turning web traffic off on the last Server that takes it removes every domain, once each, in a stable order", () => {
+    for (const there of [[false, "203.0.113.2"], [true, null]] as const) {
+      expect(ingressOffPlan(web({ here: [true, "203.0.113.1"], there }), here)).toEqual({
+        subject: `server:${here}`,
+        verb: "set",
+        name: "fra-1",
+        preview: { server: here, accepts_ingress: false },
+        effects: [
+          { kind: "removes_domain", name: "api.example.com", node: "api.example.com", path: "domains/api.example.com" },
+          { kind: "removes_domain", name: "shop.example.com", node: "shop.example.com", path: "domains/shop.example.com" },
+        ],
+      });
+    }
+  });
+
+  it("removes nothing while another Server with a public IP takes web traffic, or when this one serves none", () => {
+    expect(ingressOffPlan(web({ here: [true, "203.0.113.1"], there: [true, "203.0.113.2"] }), here)?.effects).toEqual([]);
+    expect(ingressOffPlan(web({ here: [false, "203.0.113.1"], there: [false, null] }), here)?.effects).toEqual([]);
+    expect(ingressOffPlan(web({ here: [true, null], there: [false, null] }), here)?.effects).toEqual([]);
+  });
+
+  it("is null for a Server the frame doesn't hold", () => {
+    expect(ingressOffPlan(web({ here: [true, "203.0.113.1"], there: [false, null] }), "c".repeat(32))).toBeNull();
   });
 });

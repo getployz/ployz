@@ -94,6 +94,27 @@ export function drainPlan(frame: RuntimeWatchView, owned: ReadonlySet<string>, m
   };
 }
 
+const servesWeb = ({ machine }: RuntimeWatchView["machines"][number]) => machine.accepts_ingress && machine.public_ip !== null;
+
+/**
+ * What turning web traffic off on `machineId` loses: every domain the Cluster serves, when no other Server with a
+ * public IP takes web traffic. Null when the frame has no such Server.
+ */
+export function ingressOffPlan(frame: RuntimeWatchView, machineId: string): OperationAsked | null {
+  const name = serverName(frame, machineId);
+  if (name === undefined) return null;
+  const last = frame.machines.some((observed) => observed.machine.id === machineId && servesWeb(observed))
+    && !frame.machines.some((observed) => observed.machine.id !== machineId && servesWeb(observed));
+  const domains = last ? [...new Set(frame.certificates.map(({ hostname }) => hostname))].sort(byName) : [];
+  return {
+    subject: `server:${machineId}`,
+    verb: "set",
+    name,
+    preview: { server: machineId, accepts_ingress: false },
+    effects: domains.map((hostname) => ({ kind: "removes_domain", name: hostname, node: hostname, path: `domains/${hostname}` })),
+  };
+}
+
 /** What cleaning `namespace` deletes: its Services' containers and the Volumes it holds on each Server. */
 export function cleanPlan(
   frame: RuntimeWatchView,
@@ -169,6 +190,10 @@ export const planDrain = Effect.fn("ServerOperations.planDrain")(function* (orga
   return drainPlan(frame, new Set(yield* ownedNamespaces(organizationId)), machineId);
 });
 
+export const planIngressOff = Effect.fn("ServerOperations.planIngressOff")(function* (organizationId: string, machineId: string) {
+  return ingressOffPlan(yield* observe(organizationId), machineId);
+});
+
 const ownedOrSystem = (organizationId: string, namespace: string) => namespace === SYSTEM_NAMESPACE
   ? Effect.succeed(true)
   : ownedNamespaces(organizationId).pipe(Effect.map((owned) => owned.includes(namespace)));
@@ -241,6 +266,10 @@ export const freshOperationDigest: OperationDigest<Effect.Services<ReturnType<ty
       case "clean":
         if (yield* ownedOrSystem(organizationId, key)) return null;
         return operationDigest(yield* planClean(organizationId, key));
+      case "set": {
+        const plan = ingressOffPlan(yield* observe(organizationId), key);
+        return plan === null || plan.effects.length === 0 ? null : operationDigest(plan);
+      }
       case "remove":
       case "forget": {
         const frame = yield* observe(organizationId);
