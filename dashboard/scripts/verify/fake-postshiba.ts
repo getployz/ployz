@@ -1,7 +1,3 @@
-// The fake PostShiba a MAIL=1 verify lab points the Mailer at. It answers PostShiba's send route and relays each mail
-// into Mailpit (MAILPIT_URL), so a lab reads Cloud's mail in Mailpit's inbox and nothing leaves the machine. A repeated
-// idempotency-key returns the first message id and relays nothing, as PostShiba does. up.sh runs it with runner.mjs
-// until down.sh stops it. Prints `VERIFY_FAKE_POSTSHIBA <url>` once listening, then one line per send.
 import { createServer, type IncomingMessage } from "node:http";
 
 type Send = { from: string; to: string[]; subject: string; text: string; html?: string };

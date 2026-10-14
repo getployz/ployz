@@ -27,7 +27,6 @@ const article = (role: InviteMail["role"]) => (role === "admin" ? "an admin" : "
 const longDate = (date: Date) =>
   date.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric", timeZone: "UTC" });
 
-/** Plain look: text first, no card, no color but the black button. */
 export const renderInviteMail = (mail: InviteMail): MailMessage => {
   const title = `Join ${mail.organization} on Ployz`;
   const body = `${mail.inviter} invited you to join ${mail.organization} as ${article(mail.role)}. The link works once and expires on ${longDate(mail.expiresAt)}.`;
@@ -48,13 +47,8 @@ export const renderInviteMail = (mail: InviteMail): MailMessage => {
   return { to: mail.to, subject: `${mail.inviter} invited you to ${mail.organization} on Ployz`, text, html };
 };
 
-/** One invitation queues one mail: the key is the invitation id, so a resend of the same invite is a no-op. */
 export const inviteMailKey = (invitationId: string) => `invitation-${invitationId}`;
 
-/**
- * Mails the invite link to the address it was labelled with, when Cloud has a mail server. Returns the address it
- * queued for, or null when nothing was queued. A failed queue only costs the mail: the link is still shown.
- */
 export const emailInvite = Effect.fn("Invitation.email")(function* (
   invite: { readonly id: string; readonly email: string | null; readonly role: InviteMail["role"]; readonly expiresAt: Date },
   organizationId: string,

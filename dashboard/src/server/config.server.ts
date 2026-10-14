@@ -189,7 +189,6 @@ const resolveMailConfiguration = Effect.fn("Config.resolveMail")(function* (
   return { origin: origin ?? POSTSHIBA_ORIGIN, apiKey, teamId, clusterId, from } satisfies MailConfiguration;
 });
 
-/** A verify lab's fake stands in for a real service and receives every credential Cloud sends it. */
 const resolveVerifyOrigin = Effect.fn("Config.resolveVerifyOrigin")(function* (
   nodeEnv: Effect.Success<typeof loadRawConfig>["nodeEnv"],
   name: string,
