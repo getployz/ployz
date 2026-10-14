@@ -287,7 +287,7 @@ fn newest(containers: Vec<&ContainerObservation>) -> Option<&ContainerObservatio
     })
 }
 
-/// An ingress Server with no active Ingress Proxy.
+/// An ingress Server with no running Ingress Proxy.
 #[derive(Clone, Copy, Debug)]
 pub struct EmptyIngress<'snapshot> {
     pub machine: &'snapshot MachineObservation,
