@@ -6,7 +6,7 @@
 # SERVERS=N [DAEMON=...] also enrolls N real Machines through it (core/scripts/verify-cluster);
 # DAEMON is space-separated [machine-N=]stable|beta|checkout|<version>, e.g. DAEMON="checkout machine-2=0.2.3";
 # down.sh tears that cluster down too. Real Servers also get a per-checkout Inngest dev server and worker.
-# FAKE_GITHUB=1 points Cloud at a fake GitHub (fake-github.ts, fixtures .verify/run/github.json) and starts Inngest too.
+# FAKE_GITHUB=1 points Cloud at a fake GitHub (fake-github.ts, fixtures .verify/github.json) and starts Inngest too.
 # Stops itself after 15 idle minutes with no connection to vite (idle.sh; VERIFY_IDLE_TIMEOUT=<seconds>, 0 keeps it up).
 set -euo pipefail
 # A verify session takes main's SDK build while the SDK's interface is unchanged; SDK=exact builds this checkout's.
@@ -236,7 +236,7 @@ if [ "$with_inngest" = 1 ]; then
 fi
 if [ "${FAKE_GITHUB:-0}" = 1 ]; then
   cat <<EOF | tee -a "$run/info"
-fake github on $fake_github (requests $run/fake-github.log, fixtures $run/github.json)
+fake github on $fake_github (requests $run/fake-github.log, fixtures $dash/.verify/github.json)
   webhook: curl -X POST $fake_github/_fake/webhook -d '{"event":"installation_repositories","action":"added","installation":7,"repositories":["acme/docs"]}'
 EOF
 fi

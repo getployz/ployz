@@ -46,7 +46,7 @@ const env = (name: string) => {
 
 const linkFakeGithubAccount = (signedIn: { id: string; email: string }) => Effect.gen(function* () {
   const { drizzle } = yield* Database;
-  const fixture = JSON.parse(readFileSync(".verify/run/github.json", "utf8")) as { users: Array<{ id: number; email: string }> };
+  const fixture = JSON.parse(readFileSync(".verify/github.json", "utf8")) as { users: Array<{ id: number; email: string }> };
   const github = fixture.users.find((u) => u.email === signedIn.email);
   if (github) yield* drizzle.insert(account).values({ userId: signedIn.id, providerId: "github", accountId: String(github.id) });
 });

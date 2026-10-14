@@ -17,7 +17,7 @@ type Fixture = {
   installations: Installation[];
 };
 
-const FIXTURE_PATH = ".verify/run/github.json";
+const FIXTURE_PATH = ".verify/github.json";
 const site = {
   "Dockerfile": "FROM nginx:1.27-alpine\nCOPY index.html /usr/share/nginx/html/index.html\n",
   "index.html": "<!doctype html><title>fake</title><h1>Hello from the fake GitHub</h1>\n",
