@@ -13,6 +13,7 @@ export const Client = fail;
 export const RpcError = fail;
 
 export const allocateEnrollment = fail;
+export const setVolumeCopyRefusal = fail;
 export const ployzVersion = fail;
 export const agentTools = fail;
 export const agentStart = fail;
