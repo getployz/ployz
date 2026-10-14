@@ -120,17 +120,17 @@ fn pointed_or_fallback<'serving>(
     if all_visible && any_pointed_routable {
         return pointed;
     }
-    // The previous deploy is its labelled copies plus the retiring ids, which also
-    // name old copies that carry no deploy label.
+    // The previous deploy is its labelled copies plus the retiring ids that
+    // carry no deploy label; a retiring copy labelled with an older deploy is
+    // never revived.
     let previous = pointer.previous.as_ref().map(DeploymentLogId::as_str);
     let fallback = others.into_iter().filter(|container| {
         previous.is_some_and(|previous| {
             let observation = container.as_observation();
-            pointer.retiring.contains(&observation.container_id)
-                || observation
-                    .labels
-                    .get(DEPLOYMENT_ID_LABEL)
-                    .is_some_and(|deploy| deploy == previous)
+            match observation.labels.get(DEPLOYMENT_ID_LABEL) {
+                Some(deploy) => deploy == previous,
+                None => pointer.retiring.contains(&observation.container_id),
+            }
         })
     });
     pointed.into_iter().chain(fallback).collect()
