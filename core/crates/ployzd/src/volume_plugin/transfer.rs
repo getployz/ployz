@@ -464,7 +464,7 @@ impl ZfsChild {
         self.spared = true;
     }
 
-    /// Makes [`Self::reap`]'s kill fail, as one refused by the kernel does.
+    /// Makes the kill on a reap or a drop fail, as one refused by the kernel does.
     #[cfg(test)]
     pub(super) fn fail_kill(&mut self) {
         self.kill_fails = true;
@@ -521,7 +521,7 @@ impl Drop for ZfsChild {
         let spared = self.spared;
         #[cfg(not(test))]
         let spared = false;
-        if !spared && let Err(error) = exit.child.start_kill() {
+        if !spared && let Err(error) = self.start_kill(&mut exit.child) {
             tracing::warn!(%error, "could not kill a zfs process");
         }
         tokio::spawn(exit.held());

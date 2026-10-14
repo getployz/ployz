@@ -1570,17 +1570,22 @@ async fn a_receive_task_that_panics_with_a_live_child_finishes_once_it_exits() {
 /// A child the kill leaves running until the test removes `gate`, as a `zfs` blocked in
 /// the kernel is until the kernel lets it go.
 fn held_child(stop: &Stop, gate: &Path) -> ZfsChild {
+    let mut child = gated_child(stop, gate);
+    child.spare_from_kill();
+    child
+}
+
+/// A child that runs until the test removes `gate` or a kill ends it.
+fn gated_child(stop: &Stop, gate: &Path) -> ZfsChild {
     fs::write(gate, "").unwrap();
-    let mut child = ZfsChild::spawn(
+    ZfsChild::spawn(
         Command::new("sh").args([
             "-c",
             &format!("while [ -e '{}' ]; do sleep 0.01; done", gate.display()),
         ]),
         stop,
     )
-    .unwrap();
-    child.spare_from_kill();
-    child
+    .unwrap()
 }
 
 /// A kill the kernel refuses leaves the child running, so the reap must still wait for it:
@@ -1658,6 +1663,66 @@ async fn a_dropped_child_whose_wait_fails_holds_its_task_until_it_exits() {
     fs::remove_file(&gate).unwrap();
     assert!(receives.stop_all(Duration::from_secs(5)).await.is_empty());
     assert!(!receives.running(&name));
+}
+
+/// A drop kills through the same kill as a reap, so a refused kill is logged and the
+/// task's finish waits for the child's own exit.
+#[tokio::test]
+async fn a_dropped_child_whose_kill_fails_holds_its_task_until_it_exits() {
+    let test = TestDir::new();
+    let gate = test.0.join("gate");
+    let receives = Receives::default();
+    let name: DockerVolumeName = "data".parse().unwrap();
+    let capture = Capture::default();
+    let _logs = tracing::subscriber::set_default(
+        tracing_subscriber::fmt()
+            .with_writer(capture.clone())
+            .with_ansi(false)
+            .finish(),
+    );
+    receives.spawn(&name, |stop| {
+        let mut child = gated_child(&stop, &gate);
+        child.fail_kill();
+        async move {
+            let _child = child;
+            Err("the receive task returned early".to_owned())
+        }
+    });
+    assert_eq!(
+        receives.stop_all(Duration::from_millis(200)).await,
+        ["data"],
+        "the departure lost a dropped child whose kill failed"
+    );
+    let journal = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
+    assert!(
+        journal.contains("could not kill a zfs process"),
+        "the refused kill went unlogged: {journal}"
+    );
+    fs::remove_file(&gate).unwrap();
+    assert!(receives.stop_all(Duration::from_secs(5)).await.is_empty());
+    assert!(!receives.running(&name));
+}
+
+#[derive(Clone, Default)]
+struct Capture(Arc<StdMutex<Vec<u8>>>);
+
+impl std::io::Write for Capture {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Capture {
+    type Writer = Self;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
 }
 
 /// A task of `name` that panics while `gate` holds its child, answered once its failure
