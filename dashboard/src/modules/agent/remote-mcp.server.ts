@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { createResourceServerChallenge } from "@better-auth/oauth-provider";
 import { type CallToolResult, createMcpHandler, fromJsonSchema, McpServer } from "@modelcontextprotocol/server";
 import { APIError } from "better-auth/api";
-import { Effect } from "effect";
+import { Effect, Option, Schema } from "effect";
 import { AGENT_TOOLS, type AgentCaller, type AgentResult, type AgentTool, runAgentCall, shownOutcome } from "#/modules/agent/agent-runner.server";
 import { CATALOG } from "#/modules/agent/agent-tools";
 import { asRecord, asString, projectJsonObject, projectJsonValue } from "#/lib/json";
@@ -150,11 +150,43 @@ export const serveMcpMetadata = Effect.fn("RemoteMcp.metadata")(function* (reque
   return withHeaders(yield* auth.handler(new Request(url, request)), CORS);
 });
 
+const REGISTER = "/api/auth/oauth2/register";
+
+const Registration = Schema.Struct({
+  application_type: Schema.optional(Schema.String),
+  redirect_uris: Schema.optional(Schema.Array(Schema.String)),
+});
+const decodeRegistration = Schema.decodeUnknownOption(Registration);
+
+const isNativeRedirect = (redirect: string) => {
+  if (!URL.canParse(redirect)) return false;
+  const url = new URL(redirect);
+  if (url.protocol !== "http:" && url.protocol !== "https:") return true;
+  return url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "[::1]";
+};
+
+/**
+ * Agents written before SEP-837 register a loopback redirect without `application_type`, and better-auth then judges
+ * them as web clients and refuses the redirect. Infer the type from the redirects the way current MCP SDKs do.
+ */
+const withApplicationType = async (request: Request) => {
+  const body = await request.clone().json().catch(() => null);
+  const metadata = decodeRegistration(body, { onExcessProperty: "preserve" });
+  if (Option.isNone(metadata) || metadata.value.application_type !== undefined) return request;
+  const applicationType = (metadata.value.redirect_uris ?? []).some(isNativeRedirect) ? "native" : "web";
+  const headers = new Headers(request.headers);
+  headers.delete("Content-Length");
+  return new Request(request, { headers, body: JSON.stringify({ ...metadata.value, application_type: applicationType }) });
+};
+
 /** `/api/auth/*`; on a hosted Cloud, the token, registration and key endpoints also answer browser-based agents. */
 export const serveAuth = Effect.fn("RemoteMcp.auth")(function* (request: Request) {
   const auth = yield* Auth;
-  const cors = auth.mcp !== null && CORS_AUTH_PATHS.has(new URL(request.url).pathname);
+  const pathname = new URL(request.url).pathname;
+  const cors = auth.mcp !== null && CORS_AUTH_PATHS.has(pathname);
   if (request.method === "OPTIONS") return cors ? preflight() : notFound();
-  const response = yield* auth.handler(request);
+  const registering = auth.mcp !== null && request.method === "POST" && pathname === REGISTER;
+  const sent = registering ? yield* Effect.promise(() => withApplicationType(request)) : request;
+  const response = yield* auth.handler(sent);
   return cors ? withHeaders(response, CORS) : response;
 });

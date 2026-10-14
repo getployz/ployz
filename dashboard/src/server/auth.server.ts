@@ -321,7 +321,12 @@ const makeAuth = Effect.gen(function* () {
         catch: (cause) => new AuthenticationUnavailable({ cause }),
       }),
       consent: (headers, { oauthQuery, accept }, choice) => Effect.tryPromise({
-        try: () => withConsentChoice(choice, () => instance.api.oauth2Consent({ headers, body: { accept, oauth_query: oauthQuery } })),
+        try: () => withConsentChoice(choice, () => instance.api.oauth2Consent({
+          headers,
+          request: new Request(`${endpoints.issuer}/oauth2/consent`, { method: "POST", headers }),
+          asResponse: false,
+          body: { accept, oauth_query: oauthQuery },
+        })),
         catch: (cause) => new AuthenticationUnavailable({ cause }),
       }),
     }
