@@ -141,8 +141,10 @@ export const finishesThere = (volumeName: string, server: string) => `${volumeNa
 /** A lane past its point of no return: a Move that committed, or a restore, which commits from its first step. */
 export const pastReturn = (lane: Pick<VolumeRunRow, "phase" | "kind">) => lane.phase === "committed" || lane.kind === "restore";
 type LaneEnd = "cancelled" | "yielded";
-// A seed's copy into the new Volume runs on without its row, so a release could only stop watching it.
-const keepsLane = (lane: VolumeRunRow, end: LaneEnd) => pastReturn(lane) || ((lane.kind === "deploy" || lane.kind === "seed") && end === "cancelled");
+// A seed's copy into the new Volume runs on without its row, and a Machine destroying a mirror's copy runs on without
+// its removal's, so a release could only stop watching them.
+const keepsLane = (lane: VolumeRunRow, end: LaneEnd) =>
+  pastReturn(lane) || ((lane.kind === "deploy" || lane.kind === "seed" || lane.kind === "delete_mirror") && end === "cancelled");
 
 // SAFETY: the row's kind and args were written together from one VolumeRunInput.
 const laneInput = (lane: Pick<VolumeRunRow, "kind" | "args">) => ({ kind: lane.kind, args: lane.args }) as VolumeRunInput;
