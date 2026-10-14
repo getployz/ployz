@@ -405,10 +405,9 @@ class Pool(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
-        for name, value in [("REGISTRY", Path(directory.name)), ("POOL", Path(directory.name) / boat.POOL.name),
-                            ("BAKES", Path(directory.name) / boat.BAKES.name)]:
+        for name in ["REGISTRY", "POOL", "RETIRING", "BAKES"]:
             self.addCleanup(setattr, boat, name, getattr(boat, name))
-            setattr(boat, name, value)
+            setattr(boat, name, Path(directory.name) / getattr(boat, name).name if name != "REGISTRY" else Path(directory.name))
 
     def provider(self, *machines, answers=None):
         self.calls = []
@@ -537,14 +536,16 @@ class Pool(unittest.TestCase):
                    ("delete", "bx_missing"): result(1, {"event": "error", "code": "not_found", "status": 404})}
         with unittest.mock.patch.object(boat, "boat_json", self.listing()):
             self.provider(answers=answers).create()
-        self.assertEqual([(entry["id"], entry.get("retiring")) for entry in boat.read(boat.POOL)], [("bx_failed", True)])
-        self.assertEqual(boat.pick(boat.read(boat.POOL), "bake-a", 1), [])
+        self.assertEqual(boat.read(boat.POOL), [])
+        self.assertEqual([(entry["id"], entry.get("retiring")) for entry in boat.read(boat.RETIRING)], [("bx_failed", True)])
+        with boat.pool() as entries:
+            self.assertEqual(boat.pick(entries, "bake-a", 1), [])
         boat.registry("run1").unlink()
         # Up again and of a kept bake, it is still retried because it is retiring.
         with unittest.mock.patch.object(boat, "boat_json", self.listing(bx_failed="ready")):
             self.provider().create()
         self.assertEqual(self.calls, [["delete", "bx_failed", "--yes"]])
-        self.assertEqual(boat.read(boat.POOL), [])
+        self.assertEqual((boat.read(boat.POOL), boat.read(boat.RETIRING)), ([], []))
 
     def test_reap_keeps_a_sandbox_it_failed_to_delete_in_the_pool(self):
         boat.write(boat.BAKES, ["bake-a"])
@@ -554,13 +555,31 @@ class Pool(unittest.TestCase):
                 unittest.mock.patch.object(boat.subprocess, "run", lambda args, **kwargs: failed if "bx_a" in args else result(0, {})):
             rows = boat.reap_pool(True, True)
         self.assertEqual([(row["id"], row["action"]) for row in rows], [("bx_a", "failed"), ("bx_b", "removed")])
-        self.assertEqual([entry["id"] for entry in boat.read(boat.POOL)], ["bx_a"])
+        self.assertEqual(boat.read(boat.POOL), [])
+        self.assertEqual([entry["id"] for entry in boat.read(boat.RETIRING)], ["bx_a"])
 
-    def test_the_first_fresh_clone_saves_its_fingerprint_and_drops_the_bakes_older_ones(self):
+    def test_a_retiring_sandbox_never_shows_in_the_ledger_a_checkout_without_retiring_claims_from(self):
         boat.write(boat.BAKES, ["bake-a"])
-        old = [boat.REGISTRY / "bake-a.fingerprint", boat.REGISTRY / "bake-a.0123456789.fingerprint"]
-        kept = [boat.REGISTRY / name for name in ["bake-ab.0123456789.fingerprint", "bake-a.notes", "bake-a.manual.fingerprint"]]
-        for path in old + kept:
+        # A ledger an earlier version of this branch wrote, with the flag inline.
+        boat.write(boat.POOL, [parked("bx_a", 1), dict(parked("bx_old", 2), retiring=True)])
+        seen = []
+
+        def delete(args, **kwargs):
+            # A checkout that reads only POOL, as main's claim does, while the delete is in flight.
+            seen.append([entry["id"] for entry in boat.read(boat.POOL)])
+            return result(1, {"event": "error", "code": "internal", "status": 500})
+        with unittest.mock.patch.object(boat, "boat_json", self.listing(bx_a="ready", bx_old="ready")), \
+                unittest.mock.patch.object(boat.subprocess, "run", delete):
+            boat.reap_pool(True, True)
+        self.assertEqual(seen, [[], []])
+        self.assertEqual(boat.read(boat.POOL), [])
+        self.assertEqual(sorted(entry["id"] for entry in boat.read(boat.RETIRING)), ["bx_a", "bx_old"])
+
+    def test_the_first_fresh_clone_saves_its_fingerprint_and_keeps_the_bakes_other_keys(self):
+        boat.write(boat.BAKES, ["bake-a"])
+        # A sibling checkout with another FINGERPRINT or NORMALIZE shares the bake and keeps its own key.
+        kept = [boat.REGISTRY / name for name in ["bake-a.fingerprint", "bake-a.0123456789.fingerprint", "bake-a.notes"]]
+        for path in kept:
             path.write_text("{}")
         provider = self.provider("machine-1")
         boat.write(provider.registry, dict(run="run1", sandboxes={}))

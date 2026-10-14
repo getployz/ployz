@@ -72,6 +72,8 @@ PLOYZ_UNITS = "ployz.socket ployz.service ployz-volume-plugin.socket"
 DOCKER_UNITS = "docker.service docker.socket containerd.service"
 # `down` parks a sandbox it proved clean here, and the next `up` of the same bake claims it instead of spending a start.
 POOL = REGISTRY / "pool.ledger"
+# Pool entries being deleted. Checkouts before it existed read only POOL, so none of them claims a sandbox this one retires.
+RETIRING = REGISTRY / "retiring.ledger"
 POOL_SIZE = int(os.environ.get("PLOYZ_VERIFY_BOAT_POOL", 6))
 # The bake's own ployz install, relative to /; a run's install overwrites it, so reset restores it from STASH.
 INSTALLED = ("usr/local/bin/ployz* etc/systemd/system/ployz* etc/systemd/system/*.wants/ployz* etc/docker/daemon.json "
@@ -341,11 +343,15 @@ def locked(name):
 
 @contextmanager
 def pool():
-    """The parked sandboxes, locked against every other run on this host; changes to the list are saved on exit."""
+    """The parked and retiring sandboxes, locked against every other run on this host; changes to the list are saved on exit."""
     with locked("pool.lock"):
-        entries = read(POOL) or []
+        retiring = [dict(entry, retiring=True) for entry in read(RETIRING) or []]
+        doomed = {entry["id"] for entry in retiring}
+        entries = [entry for entry in read(POOL) or [] if entry["id"] not in doomed] + retiring
         yield entries
-        write(POOL, entries)
+        # RETIRING first: a crash between the writes leaves an entry in both, and retiring wins.
+        write(RETIRING, [entry for entry in entries if entry.get("retiring")])
+        write(POOL, [entry for entry in entries if not entry.get("retiring")])
 
 
 def pick(entries, image, want):
@@ -680,7 +686,7 @@ class Provider:
             if failure and failure.get("code") == "boat_direct_failed" and not created:
                 # The create may have run without telling us its id; never retry it blind.
                 known = ({entry["id"] for record in records() for entry in record.get("sandboxes", {}).values()}
-                         | {entry["id"] for entry in read(POOL) or []})
+                         | {entry["id"] for entry in (read(POOL) or []) + (read(RETIRING) or [])})
                 unknown = [sandbox["id"] for sandbox in boat_json("list", "--all")["sandboxes"]
                            if sandbox["id"] not in known and sandbox["createdAt"] >= time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(before - 5))]
                 raise RuntimeError(f"{node['name']}: boat new failed with boat_direct_failed; sandboxes created since then "
