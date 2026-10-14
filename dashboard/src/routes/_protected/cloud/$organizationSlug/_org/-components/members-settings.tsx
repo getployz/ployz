@@ -177,10 +177,10 @@ export function MembersSettings({ organizationSlug }: { organizationSlug: string
             <TableBody>
               {data.invites.map((invite) => (
                 <TableRow key={invite.id}>
-                  <TableCell className="whitespace-normal wrap-anywhere">
-                    <div className="flex flex-col">
-                      <span>{invite.email ?? <span className="text-muted-foreground">Anyone with the link</span>}</span>
-                      <span className="text-xs text-muted-foreground">
+                  <TableCell>
+                    <div className="flex min-w-0 flex-col">
+                      <span className="truncate" title={invite.email ?? undefined}>{invite.email ?? <span className="text-muted-foreground">Anyone with the link</span>}</span>
+                      <span className="truncate text-xs text-muted-foreground" title={`From ${invite.invited_by}`}>
                         From {invite.invited_by}<span className="sm:hidden"> · expires {formatDate(invite.expires_at)}</span>
                       </span>
                     </div>
