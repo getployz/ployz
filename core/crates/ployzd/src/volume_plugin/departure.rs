@@ -15,6 +15,7 @@ use ployzd::machine_pool::MachinePool;
 use super::{
     Dataset, DockerVolumeName, MIRROR_ROOT, Place, VolumeStorage,
     inspect::internal,
+    seed::SEED_PROPERTY,
     storage::{CUT_PROPERTY, EPOCH_PROPERTY, PULL_PROPERTY, slot_fs, slot_parent},
 };
 
@@ -175,8 +176,9 @@ impl VolumeStorage {
     }
 
     /// Whether the slot's copy may be the only one: a departure or a Move's cut left a
-    /// root there, or a restore marked it before landing it. Only this Machine sets these
-    /// marks and a send carries no properties, so a received copy has none of its own. A
+    /// root there, a restore marked it before landing it, or a seed received its point
+    /// whole, which its source may since have pruned. Only this Machine sets these marks
+    /// and a send carries no properties, so a received copy has none of its own. A
     /// cut or an epoch describes the point it was set at, so it stops counting once the
     /// slot's parent records that its newest snapshot was pulled: a writer elsewhere made
     /// that snapshot after it.
@@ -190,6 +192,7 @@ impl VolumeStorage {
         if points
             .iter()
             .any(|point| point.starts_with(DEPARTURE_SNAPSHOT_PREFIX))
+            || self.property(fs, SEED_PROPERTY).await?.is_some()
         {
             return Ok(true);
         }

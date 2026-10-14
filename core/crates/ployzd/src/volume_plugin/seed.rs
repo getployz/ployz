@@ -6,7 +6,7 @@
 use std::process::Stdio;
 
 use axum::{Json, extract::State};
-use ployz_core::{RpcError, SeedVolumeRequest, SwitchError, VolumeCopyView};
+use ployz_core::{RpcError, SeedVolumeRequest, SnapshotGuid, SwitchError, VolumeCopyView};
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
@@ -18,7 +18,8 @@ use super::{
     transfer::{ZfsChild, exited},
 };
 
-/// On a seeded root: the guid of the restore point it holds.
+/// On a seed's copy once its receive completed, and on the root it lands as: the guid of
+/// the restore point it holds.
 pub(super) const SEED_PROPERTY: &str = "ployz:seed";
 
 impl VolumeStorage {
@@ -112,7 +113,9 @@ impl VolumeStorage {
         let storage = self.clone();
         let snapshot = format!("{source}@{}", point.name);
         self.receives.spawn(&into, |stop| async move {
-            storage.copy_snapshot(&snapshot, &fs, bound, &stop).await
+            storage
+                .copy_snapshot(&snapshot, guid, &fs, bound, &stop)
+                .await
         });
         self.seeded(&pool, &into).await
     }
@@ -172,11 +175,13 @@ impl VolumeStorage {
         Ok(())
     }
 
-    /// `zfs send` of one local snapshot piped into a bounded, read-only receive of `fs`.
-    /// Once `stop` fires, both are killed and reaped before this returns.
+    /// `zfs send` of one local snapshot piped into a bounded, read-only receive of `fs`,
+    /// marked with the point's `guid` once the receive has it all. Once `stop` fires, both
+    /// are killed and reaped before this returns.
     async fn copy_snapshot(
         &self,
         snapshot: &str,
+        guid: SnapshotGuid,
         fs: &str,
         bound: u64,
         stop: &CancellationToken,
@@ -236,6 +241,11 @@ impl VolumeStorage {
         if !sent.success() {
             return Err(format!("zfs send of {snapshot} failed: {}", stderr.trim()));
         }
+        // Not a receive -o: that lands before any data, and the departure keeps a marked
+        // slot because its source may since have pruned the point.
+        self.zfs(&["set", &format!("{SEED_PROPERTY}={guid}"), fs])
+            .await
+            .map_err(|error| format!("could not mark the seed of {fs}: {error}"))?;
         self.finish_copy(fs, bound).await
     }
 }
