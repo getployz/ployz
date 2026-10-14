@@ -101,6 +101,13 @@ describe("invite email", () => {
     expect(send).not.toHaveBeenCalled();
   });
 
+  it("refuses more than one address, so a mailed invite has one recipient", async () => {
+    for (const email of ["a@example.test, b@example.test", "a@example.test;b@example.test", "Bob <b@example.test>", "a@example.test b@example.test", "bob@example.test bob", "bob@example", "bob"]) {
+      await expect(invite({ email }, true), email).rejects.toThrow("Enter one email address");
+    }
+    expect(send).not.toHaveBeenCalled();
+  });
+
   it("queues nothing for an invite with no address", async () => {
     const invited = await invite({}, true);
     expect(invited.emailed_to).toBeNull();

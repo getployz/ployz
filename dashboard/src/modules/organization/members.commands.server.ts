@@ -37,6 +37,11 @@ const Invited = Schema.Struct({
   emailed_to: Schema.NullOr(Schema.String),
 });
 
+/** One address, so a mailed invite has exactly one recipient. */
+const InviteEmail = Schema.String.check(Schema.isPattern(/^[^\s@]+@[^\s@]+\.[^\s@]+$/u, {
+  message: "Enter one email address, like bob@example.com",
+}));
+
 const Changed = Schema.Struct({ email: Schema.String, role: MemberRole });
 const Removed = Schema.Struct({ email: Schema.String });
 const Revoked = Schema.Struct({ id: Schema.String, email: Schema.NullOr(Schema.String) });
@@ -93,7 +98,7 @@ export const orgMemberInvite = defineCommand({
   typed: null,
   positional: [],
   input: Schema.Struct({
-    email: Schema.optionalKey(Schema.NonEmptyString.annotate({ description: "Who the link is for. Cloud emails it there when email is on. Anyone with the link can use it" })),
+    email: Schema.optionalKey(InviteEmail.annotate({ description: "Who the link is for. Cloud emails it there when email is on. Anyone with the link can use it" })),
     role: Schema.optionalKey(InviteRole.annotate({ description: "The role it grants. member when left out" })),
   }),
   output: Invited,
