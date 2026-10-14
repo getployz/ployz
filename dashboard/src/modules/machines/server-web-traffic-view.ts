@@ -1,4 +1,5 @@
 import type { LatestWebTrafficChanges, WebTrafficWant } from "#/modules/machines/server-web-traffic";
+import { needsAttention, type ServerStatus } from "#/modules/machines/server-status";
 
 /** What the Web traffic row shows: the switch's position, and the line under it. */
 export type WebTrafficView =
@@ -18,6 +19,17 @@ export const webTrafficBusy = (view: WebTrafficView) => view.kind === "starting"
 /** Where the switch sits: on while it's on or on its way off, so it only moves when the Server does. */
 export const webTrafficChecked = (view: WebTrafficView) =>
   view.kind === "on" || view.kind === "stopping" || (view.kind === "failed" && view.on);
+
+type IngressServer = { readonly id: string; readonly acceptsIngress: boolean; readonly publicIp: string | null };
+
+/** Turning `server` off stops every domain: it serves them now, and no other online Server would. */
+export const lastWebTrafficServer = (
+  server: IngressServer,
+  servers: ReadonlyArray<{ readonly machine: IngressServer; readonly status: ServerStatus }>,
+) =>
+  server.publicIp !== null &&
+  !servers.some((other) =>
+    other.machine.id !== server.id && other.machine.acceptsIngress && other.machine.publicIp !== null && !needsAttention(other.status));
 
 /** How long a finished change may take to show on the Server before the row trusts what the Server says instead. */
 export const WEB_TRAFFIC_SETTLE_MS = 30_000;

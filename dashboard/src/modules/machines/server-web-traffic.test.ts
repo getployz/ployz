@@ -1,6 +1,6 @@
 import type { IngressCheck, MachineId } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
-import { webTrafficChecked, webTrafficView } from "./server-web-traffic-view";
+import { lastWebTrafficServer, webTrafficChecked, webTrafficView } from "./server-web-traffic-view";
 import { type LatestWebTraffic, startFailure } from "./server-web-traffic";
 
 const server = { id: "m1", acceptsIngress: false, publicIp: "203.0.113.10" };
@@ -82,5 +82,26 @@ describe("startFailure", () => {
     expect(startFailure(repair(null), "m1")).toBeNull();
     expect(startFailure({ repairs: [], unchecked: ["web-1 didn't answer"] }, "m1")).toBe("Couldn't check whether the web server started. Try again.");
     expect(startFailure({ repairs: [], unchecked: [] }, "m1")).toBeNull();
+  });
+});
+
+describe("lastWebTrafficServer", () => {
+  const here = { id: "m1", acceptsIngress: true, publicIp: "203.0.113.10" };
+  const other = (over: { readonly publicIp?: string | null; readonly status?: "online" | "offline" } = {}) => ({
+    machine: { id: "m2", acceptsIngress: true, publicIp: over.publicIp === undefined ? "203.0.113.11" : over.publicIp },
+    status: over.status ?? ("online" as const),
+  });
+
+  it("is last when no other online Server with an address takes web traffic", () => {
+    expect(lastWebTrafficServer(here, [{ machine: here, status: "online" }, other({ status: "offline" })])).toBe(true);
+    expect(lastWebTrafficServer(here, [other({ publicIp: null })])).toBe(true);
+  });
+
+  it("is not last while another online Server serves", () => {
+    expect(lastWebTrafficServer(here, [other()])).toBe(false);
+  });
+
+  it("is never last without a public IP, since no domain points here", () => {
+    expect(lastWebTrafficServer({ ...here, publicIp: null }, [])).toBe(false);
   });
 });

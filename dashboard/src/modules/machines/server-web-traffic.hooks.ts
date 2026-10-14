@@ -5,8 +5,8 @@ import { toErrorMessage } from "#/lib/error-message";
 import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
 import { useRuntimeStatus } from "#/providers/runtime-provider";
 import type { WebTrafficWant } from "./server-web-traffic";
-import { needsAttention, type ServerStatus } from "./server-status";
-import { WEB_TRAFFIC_SETTLE_MS, webTrafficView, type WebTrafficView } from "./server-web-traffic-view";
+import type { ServerStatus } from "./server-status";
+import { lastWebTrafficServer, WEB_TRAFFIC_SETTLE_MS, webTrafficView, type WebTrafficView } from "./server-web-traffic-view";
 import { requestServerWebTrafficServerFn } from "./server-web-traffic.functions";
 import { serverWebTrafficKeys, useServerWebTrafficChanges } from "./server-web-traffic.queries";
 
@@ -94,8 +94,7 @@ export function useServerWebTraffic(
     }),
     domains: [...new Set(certificates.map((certificate) => certificate.hostname))],
     partial: incompleteIds.certificates.length > 0,
-    last: !servers.some((other) =>
-      other.machine.id !== server.id && other.machine.acceptsIngress && other.machine.publicIp !== null && !needsAttention(other.status)),
+    last: lastWebTrafficServer({ id: server.id, acceptsIngress: machine.acceptsIngress, publicIp: machine.publicIp }, servers),
     turnOn: () => send("on"),
     ask: () => setOpen(true),
     dialog: {
