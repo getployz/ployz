@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 
-import type { LocalMachineRemoved, MachineId, MachineName } from "@ployz/sdk";
+import type { LocalMachineRemoved, MachineId, MachineIdentity, MachineName, ObservedCopy } from "@ployz/sdk";
 import { Data, Effect, Option } from "effect";
 import { createMachineRemoveRequestedEvent } from "#/modules/inngest/events";
 import type { Actor } from "#/modules/identity/actor";
@@ -167,15 +167,22 @@ export const observeLeavingServerActivity = Effect.fn("MachineRemoval.observeLea
   const machine = { id, name: servers.find((server) => server.id === id)?.name ?? null };
   const copies = yield* observeOrganizationCopies(input.organizationId).pipe(Effect.orElseSucceed(() => []));
   const writes = copies.flatMap((copy) => copy.machine_id === id && copy.role === "writer" ? [copy.name] : []);
-  // A copy on another Server, by Docker Volume: what a lane committed to the leaving Server names to restore from. A
-  // restore refuses a writer as its source, and a copy's snapshots are not observed here, so a slot may still lack one.
+  return { machine, writes, held: heldOff(copies, servers, id) };
+});
+
+/**
+ * A copy on another Server, by Docker Volume: what a lane committed to the leaving Server names to restore from. A
+ * writer counts: a lane commits only after its source's cut, so a writer seen before the commit is a slot by the time
+ * the lane ends. A copy's snapshots are not observed here, so a slot may still lack one.
+ */
+export function heldOff(copies: readonly ObservedCopy[], servers: readonly MachineIdentity[], leaving: MachineId) {
   const held: Record<string, MachineName> = {};
   for (const copy of copies) {
-    const holder = copy.machine_id === id || copy.role === "writer" ? undefined : servers.find((server) => server.id === copy.machine_id);
+    const holder = copy.machine_id === leaving ? undefined : servers.find((server) => server.id === copy.machine_id);
     if (holder !== undefined) held[copy.name] ??= holder.name;
   }
-  return { machine, writes, held };
-});
+  return held;
+}
 
 export const releaseLeavingLanesActivity = (input: {
   organizationId: string; machineId: string; name: string | null; writes: readonly string[]; held?: Readonly<Record<string, MachineName>>;

@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import type { MachineId } from "@ployz/sdk";
+import type { MachineId, ObservedCopy } from "@ployz/sdk";
 import { Effect } from "effect";
 import { MissingDataLossIdentities } from "#/modules/runtime/data-loss-confirm";
 import { ServerLacks } from "#/modules/runtime/daemon-compat";
 import { asSdkFailure, PloyzProviderError } from "#/modules/runtime/ployz.server";
-import { asRemoveMachineOutcome } from "./machine-removal.server";
+import { asRemoveMachineOutcome, heldOff } from "./machine-removal.server";
 
 const identities = [
   {
@@ -67,5 +67,19 @@ describe("asRemoveMachineOutcome", () => {
       ),
     );
     expect(exit._tag).toBe("Failure");
+  });
+});
+
+describe("heldOff", () => {
+  const id = (server: string) => server.padEnd(32, "0") as MachineId;
+  const servers = ["a", "b", "c"].map((server) => ({ id: id(server), name: `fsn-${server}` }));
+
+  it("names the source writer of a Move whose lane commits to the leaving Server after the observation", () => {
+    const copies: ObservedCopy[] = [{ machine_id: id("a"), name: "data", role: "writer" }, { machine_id: id("b"), name: "data", role: "slot" }];
+    expect(heldOff(copies, servers, id("b"))).toEqual({ data: "fsn-a" });
+  });
+
+  it("names no copy on the leaving Server", () => {
+    expect(heldOff([{ machine_id: id("b"), name: "data", role: "writer" }], servers, id("b"))).toEqual({});
   });
 });
