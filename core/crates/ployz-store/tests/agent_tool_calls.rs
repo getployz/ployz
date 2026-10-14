@@ -21,7 +21,7 @@ use ployz_store::{
     Actor, Admit, ConfigStore, ConfigsQuery, CreateEnvironment, CreateProject, CreateService,
     CreateVolume, Deploy, DeploymentId, EnvironmentId, EnvironmentName, EnvironmentRef,
     EnvironmentsQuery, NamespacesQuery, OrganizationId, ProjectId, ProjectName, RowTracker,
-    RunEvidence, RunnerId, SealingKey, ServiceLineageId, VolumeId, VolumeName,
+    RunEvidence, RunnerId, SealingKey, ServiceLineageId, Trusted, VolumeId, VolumeName,
 };
 use serde_json::{Value, json};
 
@@ -124,12 +124,21 @@ fn drive(
     call_key: &str,
     cloud: &mut dyn FnMut(Cloud) -> Result<Value, RpcError>,
 ) -> Run {
-    drive_as(store, &who(), at, tool, input, call_key, cloud)
+    drive_as(
+        store,
+        (&who(), &Trusted::default()),
+        at,
+        tool,
+        input,
+        call_key,
+        cloud,
+    )
 }
 
+/// [`drive`] as `who`, the Store writing with Cloud's `trusted` evidence.
 fn drive_as(
     store: &ConfigStore,
-    who: &Actor,
+    (who, trusted): (&Actor, &Trusted),
     at: StoreAt,
     tool: &str,
     input: Value,
@@ -157,7 +166,7 @@ fn drive_as(
                 match *write {
                     Write::Store(command) => vec![
                         store
-                            .write(who, &command)
+                            .write_trusted(who, &command, trusted)
                             .map(|written| serde_json::to_value(written).unwrap()),
                     ],
                     Write::Act(act) => vec![cloud(Cloud::Act(act))],
@@ -500,6 +509,43 @@ fn a_service_goes_from_staged_to_deployed() {
     assert_eq!(ended.code, RpcErrorCode::Conflict);
 }
 
+// Catches a Deploy with no Server reading as queued, or as anything but the sentence Cloud's reads use.
+#[test]
+fn a_deploy_with_no_servers_says_nothing_deployed_and_leaves_the_change_staged() {
+    let store = shop();
+    call(
+        &store,
+        "service_add",
+        json!({ "name": "web", "image": "traefik/whoami" }),
+        "add-1",
+    )
+    .ok();
+    let none = Trusted {
+        servers: Some(0),
+        ..Trusted::default()
+    };
+    let refused = drive_as(
+        &store,
+        (&who(), &none),
+        in_org(),
+        "deploy",
+        json!({ "request_key": "deploy-0001" }),
+        "deploy-1",
+        &mut no_cloud,
+    )
+    .refused();
+    assert_eq!(refused.code, RpcErrorCode::Conflict);
+    assert_eq!(refused.writes, Writes::None);
+    assert_eq!(refused.fix(), Some(Fix::ConnectServers));
+    assert_eq!(
+        refused.message,
+        "This Organization has no servers yet, so nothing deployed. Add one from a terminal, then deploy again."
+    );
+    let review = call(&store, "review", json!({}), "review-1").ok();
+    assert_eq!(review["saved_revision"], Value::Null, "nothing was saved");
+    assert_eq!(review["staged"], 1, "the change stays Staged");
+}
+
 #[test]
 fn a_stale_revision_is_refused_with_a_fresh_read() {
     let store = shop();
@@ -774,7 +820,7 @@ fn two_organizations_create_with_the_same_key() {
         let at = StoreAt::Cloud { organization };
         drive_as(
             &store,
-            &who,
+            (&who, &Trusted::default()),
             at,
             "project_create",
             input.clone(),
