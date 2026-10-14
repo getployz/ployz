@@ -821,6 +821,50 @@ async fn a_stop_first_replacement_publishes_its_new_container() {
     client.assert_done();
 }
 
+#[tokio::test]
+async fn a_stop_first_replacement_that_cannot_inspect_its_old_copy_leaves_the_row_pointing_at_it()
+{
+    let machine = machine('1');
+    let old = container('a');
+    let plan = vec![global_replacement(&machine, &old, UpdateOrder::StopFirst)];
+    let client = Scripted::new(vec![failed(
+        Call::Inspect(machine, old),
+        "the machine is away",
+    )]);
+    let row = ServingPointer {
+        deploy: DeploymentLogId::parse("d1").unwrap(),
+        containers: vec![old],
+        previous: Some(DeploymentLogId::parse("d0").unwrap()),
+        retiring: Vec::new(),
+    };
+    client.pointers.lock().unwrap().insert(api(), row.clone());
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert!(
+        matches!(
+            &outcome,
+            DeployOutcome::Failed {
+                failed: FailedOperation::Operation {
+                    error: ExecutionError::Machine {
+                        action: MachineAction::InspectContainer,
+                        error,
+                    },
+                    ..
+                },
+                ..
+            } if error.message == "the machine is away"
+        ),
+        "{outcome:?}"
+    );
+    assert!(
+        client.publications.lock().unwrap().is_empty(),
+        "the old copy is not retired before the stop can run"
+    );
+    assert_eq!(client.pointers.lock().unwrap().get(&api()), Some(&row));
+    client.assert_done();
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_stop_first_replacement_waits_for_its_dependency_like_any_start() {
     let machine = machine('1');
