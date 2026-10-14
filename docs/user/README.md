@@ -67,6 +67,7 @@ New to Ployz? Follow these steps from a first deploy to real users.
 
 ## Account
 
+- [Your account](account/account.md): your profile, where you're signed in, signing a browser out
 - [Organizations and billing](account/organizations.md): your organization, deleting it, Pro
 - [Notifications](account/notifications.md): choose which emails you get, and unsubscribe from one
 
