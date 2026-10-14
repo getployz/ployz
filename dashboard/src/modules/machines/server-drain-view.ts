@@ -249,7 +249,13 @@ export function endWords(code: Exclude<DrainEndCode, "cancelled">): string {
 }
 
 /** A Service running here as the page lists it. */
-type RunningService = { readonly identity: string; readonly name: string; readonly namespace: string | null };
+type RunningService = {
+  readonly identity: string;
+  readonly name: string;
+  readonly namespace: string | null;
+  /** The one Server running this Global Service, when only one does (`servicesOnServers`). */
+  readonly soleGlobalOn?: string | null;
+};
 
 /**
  * What runs here split by whether a Drain acts on it: a Drain leaves Namespaces no Project owns (`strays`) alone. The
@@ -271,18 +277,27 @@ export type DrainDialogRow = {
   readonly key: string;
   readonly name: string;
   readonly namespace: string | null;
-  /** `data`: the latest Drain left it for its volume or folder here. `unowned`: no Project owns it. */
-  readonly stays: "data" | "unowned" | null;
+  /**
+   * `stops`: a Global Service whose only running copy is here; a Drain stops it. `data`: the latest Drain left it for
+   * its volume or folder here. `unowned`: no Project owns it.
+   */
+  readonly stays: "stops" | "data" | "unowned" | null;
 };
 
 /** The confirm dialog's rows: what runs here, the ones a Drain won't move last. */
-export function drainDialogRows(view: DrainView, services: readonly RunningService[], strays: ReadonlySet<string>): DrainDialogRow[] {
+export function drainDialogRows(
+  view: DrainView,
+  machineId: string,
+  services: readonly RunningService[],
+  strays: ReadonlySet<string>,
+): DrainDialogRow[] {
   const pinned = new Set(view.kind === "finished" ? view.rows.filter((row) => row.pinned).map((row) => row.key) : []);
   const split = drainableServices(services, strays);
   const row = (service: RunningService, stays: DrainDialogRow["stays"]): DrainDialogRow =>
     ({ key: service.identity, name: service.name, namespace: service.namespace, stays });
   const rows = [
-    ...split.drainable.map((service) => row(service, pinned.has(service.identity) ? "data" : null)),
+    ...split.drainable.map((service) => row(service,
+      service.soleGlobalOn === machineId ? "stops" : pinned.has(service.identity) ? "data" : null)),
     ...split.unowned.map((service) => row(service, "unowned")),
   ];
   return [...rows.filter((entry) => entry.stays === null), ...rows.filter((entry) => entry.stays !== null)];

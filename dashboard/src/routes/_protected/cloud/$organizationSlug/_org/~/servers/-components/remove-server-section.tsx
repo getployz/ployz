@@ -167,7 +167,7 @@ function ForgetLastServerRow({ machine, organizationSlug }: { machine: RuntimeMa
 
 /**
  * Forgetting takes a Server that is gone for good out of the cluster without resetting it, then waits on the removal.
- * The cluster lists its volumes from what it last saw; when it can't, the Server still goes with none listed.
+ * A Server that doesn't answer can't list its volumes, so the list is often empty; the sentence still says they're lost.
  */
 function ForgetServerRow({ machine, organizationSlug }: { machine: RuntimeMachineRecord; organizationSlug: string }) {
   const navigate = useNavigate();

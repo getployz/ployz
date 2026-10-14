@@ -72,12 +72,12 @@ the server. What already runs there stays until you drain it. Your next deploy a
 
 To move everything off now, click **Drain** and confirm. The dialog lists what runs on the server and
 badges what won't move: **Skipped** when no project owns it, which draining leaves where it is,
-and **Stays** when the last drain left it because its data is on the server. Draining turns services off for the server and stops its global services there. Then it moves
+**Stays** when the last drain left it because its data is on the server, and **Stops** for a global
+service that runs on no other server, which the drain removes. Draining turns services off for the server and stops its global services there. Then it moves
 each replicated service's containers to your other servers one at a time. Each new container runs
 the same image, and each one starts and is healthy before the old container is removed.
-Pre-deploy commands don't run again, and nothing is deployed. If a global service runs on no other
-server, the drain would remove it, so it waits for your approval in the
-[Ployz agent](../account/agent-sidebar.md) panel first and starts once you approve. Drains in one organization run one
+Pre-deploy commands don't run again, and nothing is deployed. The drain starts once you confirm:
+the dialog is the approval. Drains in one organization run one
 at a time: a second one reads **Queued · Waiting on web-1**. While a drain runs, the
 **Drain** row counts the services left to move and lists them as **Pending**; each one leaves the
 list as it leaves the server. You can leave the page while one runs.
@@ -308,7 +308,7 @@ If a server is gone or can't be reset, forget it instead. Forgetting takes it ou
 without reaching it, and its volumes can't be recovered.
 
 When the server is offline, its page shows **Forget web-2** under **Danger**. Click **Forget
-server**, then **Forget**. It waits for an approval in the sidebar first.
+server**, type its name, then click **Forget**.
 
 From the CLI, type the server's name to confirm. When the server doesn't answer within 10 seconds,
 even if it still shows as up, type `dead` instead:
