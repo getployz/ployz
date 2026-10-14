@@ -174,6 +174,13 @@ impl ConfigOperation<'_> {
     }
 }
 
+#[cfg(test)]
+impl MachineSpecStore {
+    pub(crate) fn path_for_test(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
 impl FloorTurn<'_> {
     /// Refuse a `gen` below the floor of `name` with that floor; otherwise raise the
     /// floor to `gen`. A Volume with no floor yet has floor 0.

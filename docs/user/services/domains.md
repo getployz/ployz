@@ -44,8 +44,10 @@ A domain sends traffic to one port inside your service. Left blank, it uses `POR
 
 If your app listens on a fixed port, like 3000, do one of these and deploy:
 
-- add a `PORT` [variable](variables.md) set to `3000`, which the health check follows too, or
+- add a `PORT` [variable](variables.md) set to `3000`, or
 - click the pencil on the domain, set **Target port** to `3000`, and click **Save domain**.
+
+Either way the health check follows, since it checks the port your domains send traffic to.
 
 The domain's row shows where traffic goes: **→ Uses PORT** or **→ Port 3000**. The dashboard
 ignores `EXPOSE` in your Dockerfile.

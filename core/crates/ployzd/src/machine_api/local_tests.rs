@@ -1491,6 +1491,55 @@ mod set_volume_copy {
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 
+    #[tokio::test]
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    async fn a_floor_read_failing_after_the_drain_stops_nothing_and_leaves_its_holder_serving() {
+        let (data_dir, _store, service, fake) =
+            fake_docker_service("ployzd-copy-fence-fails").await;
+        let plugin = cutting_plugin();
+        let (socket, server) = plugin.serve(&data_dir);
+        let service = service.with_volume_plugin(socket);
+        let holder = running_holder(&service, &fake).await;
+        let seen = fake.requests.lock().unwrap().len();
+        let local = service.local();
+        let containers = local.containers().unwrap();
+        let specs = containers.spec_store_path_for_test().to_owned();
+
+        let (failed, ()) = tokio::join!(set_copy(&service, at_gen(draining_cut(300), 1)), async {
+            drain_started(&fake, &holder, seen).await;
+            rusqlite::Connection::open(&specs)
+                .unwrap()
+                .execute("DROP TABLE volume_floors", [])
+                .unwrap();
+        });
+        let error = refusal(&failed);
+        assert_ne!(error.details["reason"], json!("stale"), "{error:?}");
+        assert_eq!(holder_status(&fake), vec![json!("running")]);
+        let stop = format!("/containers/{holder}/stop");
+        assert!(
+            !fake
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(_, path)| *path == stop)
+        );
+        assert!(containers.stopping_ids_for_test().is_empty());
+        let observed = containers
+            .inspect_managed(&holder, &local.record().id())
+            .await
+            .unwrap();
+        assert!(observed.runtime.may_serve(), "{:?}", observed.runtime);
+        assert!(
+            !plugin
+                .routes_called()
+                .iter()
+                .any(|route| route == CUT_ROUTE)
+        );
+        server.abort();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
     /// A Deploy floors the writer and then starts its Container. A cut that was already
     /// draining an older holder must not stop that Container on its way to Stale.
     #[tokio::test]

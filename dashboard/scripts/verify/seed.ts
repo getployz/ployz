@@ -26,6 +26,7 @@ import type { Change, ConfigCommand, PullRequest } from "@ployz/sdk";
 import { callStore, storeSystem } from "#/modules/config-store/config-store.server";
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import { createOrganizationToken } from "#/modules/identity/organization-token.server";
+import { InngestClient, type PloyzInngest } from "#/modules/inngest/client";
 import { session, user } from "#/modules/identity/tables";
 import { organizationMachine } from "#/modules/machines/tables";
 import { ensurePersonalOrganizationForUser } from "#/modules/organization/organization-state.server";
@@ -245,8 +246,13 @@ const seed = Effect.gen(function* () {
   return { organizationSlug, cookie, cliToken, writes, skipped };
 });
 
+// Without real Servers no Inngest answers, and the SDK retries each refused send for about 1.8 s. Refuse it at once.
+const refuseSends = (inngest: PloyzInngest): PloyzInngest =>
+  Object.assign(Object.create(inngest), { send: () => Promise.reject(new Error("no Inngest runs without real Servers")) });
+
 export async function run() {
-  const result = await AppRuntime.runPromise(seed);
+  const program = process.env["VERIFY_REAL_SERVERS"] === "1" ? seed : seed.pipe(Effect.updateService(InngestClient, refuseSends));
+  const result = await AppRuntime.runPromise(program);
   console.log(`VERIFY_SEED ${JSON.stringify(result)}`);
   const refused = Object.entries(result.writes).filter(([, outcome]) => outcome !== "ok");
   if (refused.length) throw new Error(`seed writes refused: ${JSON.stringify(Object.fromEntries(refused))}`);
