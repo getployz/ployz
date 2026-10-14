@@ -54,7 +54,6 @@ describe("sync-cluster-domain", () => {
   let offline: boolean;
   /** Probe answers by address; an absent address refuses the connection. */
   const verify = new Map<string, string>();
-  /** Certificate Material the stubbed session was asked to publish. */
   const publishedMaterial: PublishCertificateMaterialRequest[] = [];
 
   const runEffect = makeInngestEffectRunner(<A, E>(
