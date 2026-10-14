@@ -85,7 +85,7 @@ describe("clean-namespace", () => {
 
   beforeEach(async () => {
     destroyCalls = [];
-    destroyAnswer = () => Effect.succeed({ type: "success", completed: [] });
+    destroyAnswer = () => Effect.succeed({ type: "success", completed: [], services: [] });
     connected = true;
     owned = [];
     send.mockReset();
