@@ -5,6 +5,7 @@ import type {
   EnvironmentView, MergeRow, NodeChange, OnMerge, PrPlansView, ProjectsView, RowId, ServiceListing, ServicesView, SyncView,
   VolumeListing, VolumesView,
 } from "@ployz/sdk";
+import { nodeRowId } from "#/lib/ids";
 import type { StoreResult } from "./store.contract";
 import { environmentKey, queryOf, storeViewPrefix } from "./store-view.queries";
 
@@ -62,9 +63,8 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
       return;
     case "create_service":
     case "create_git_service": {
-      // SAFETY: a new Service's id is its lineage, and a node's RowId is `{lineage}:node`.
       const service: ServiceListing = {
-        id: command.id, row: `${command.id}:node` as RowId, name: command.name, private_dns: command.name, change: "create",
+        id: command.id, row: nodeRowId(command.id), name: command.name, private_dns: command.name, change: "create",
         source: command.command === "create_git_service" ? "git" : command.image === null ? "empty" : "image",
         template: command.command === "create_service" ? command.template ?? null : null,
       };

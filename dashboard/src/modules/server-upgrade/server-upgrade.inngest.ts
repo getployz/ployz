@@ -1,5 +1,6 @@
 import type { MachineId, MachineUpgradeAttemptId } from "@ployz/sdk";
 import { Effect, Option, Schema } from "effect";
+import { newMachineUpgradeAttemptId } from "#/lib/ids";
 import { attemptLifecycle } from "#/modules/inngest/attempt-lifecycle";
 import type { PloyzStepTools } from "#/modules/inngest/client";
 import { createServerUpgradeRequestedEvent, serverUpgradeRequestedEventType } from "#/modules/inngest/events";
@@ -16,7 +17,6 @@ import {
   listAutomaticUpgradeOrganizationIds,
   listServersBehind,
   listUnknownAutomaticRollouts,
-  mintAttemptId,
   observeUpgradeableServer,
   organizationReleaseChannel,
   pollUpgradeOnServer,
@@ -153,7 +153,7 @@ async function upgradeServer(
       return null;
     }
     // Minted here so every retry of a later step reuses it.
-    return { name: server.name, fromVersion: server.version, attemptId: requested ?? mintAttemptId() };
+    return { name: server.name, fromVersion: server.version, attemptId: requested ?? newMachineUpgradeAttemptId() };
   });
   if (observed === null) return { kind: "skipped", reason: "not-online" };
   const { name, fromVersion, attemptId } = observed;

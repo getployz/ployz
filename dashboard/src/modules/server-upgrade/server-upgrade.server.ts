@@ -1,8 +1,8 @@
 import "@tanstack/react-start/server-only";
-import { randomUUID } from "node:crypto";
 import type { MachineId, MachineUpgradeAttempt, MachineUpgradeAttemptId } from "@ployz/sdk";
 import { and, desc, eq, gte, inArray, isNotNull, lt, ne, sql, type SQL } from "drizzle-orm";
 import { Data, Effect } from "effect";
+import { machineUpgradeAttemptIdOf } from "#/lib/ids";
 import { PostHog } from "#/modules/analytics/posthog.server";
 import type { Actor } from "#/modules/identity/actor";
 import { organization } from "#/modules/organization/tables";
@@ -488,11 +488,6 @@ export const setServerUpgradeSettings = Effect.fn("ServerUpgrade.setSettings")(f
   return row ?? { id: organizationId, ...DEFAULT_SERVER_UPGRADE_SETTINGS, ...settings };
 });
 
-/** Cloud mints attempt IDs in the daemon's 32-hex form. */
-export const mintAttemptId = () =>
-  // SAFETY: a UUID without its dashes is 32 lowercase hex digits, the daemon's attempt ID form.
-  randomUUID().replaceAll("-", "") as MachineUpgradeAttemptId;
-
 const UNCLAIMED = "";
 
 /**
@@ -534,8 +529,7 @@ export const planCliServerUpgrade = Effect.fn("ServerUpgrade.planCli")(function*
   if (observed.value === null) return unavailable("This Server isn't online and idle, so it can't take an Upgrade now.");
   const from = observed.value.version;
   return (attempt: string) => Effect.gen(function* () {
-    // SAFETY: an attempt is a UUID; without its dashes it is 32 lowercase hex digits, the daemon's attempt ID form.
-    const attemptId = attempt.replaceAll("-", "") as MachineUpgradeAttemptId;
+    const attemptId = machineUpgradeAttemptIdOf(attempt);
     const request = { organizationId: caller.organizationId, machineId: input.machineId, trigger: "manual", userId: caller.userId, attemptId } as const;
     yield* recordUpgradeAttempt({ request, attemptId, channel, fromVersion: from, inngestRunId: UNCLAIMED });
     yield* enqueueEvent(createCliServerUpgradeRequestedEvent(request));
