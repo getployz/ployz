@@ -129,7 +129,7 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
   }
 
   if (unanswered !== undefined) return unknown(unanswered);
-  if (input.kind === "restore") return planRestore(name, input.args.from, answered);
+  if (input.kind === "restore") return planRestore(name, input.args, answered);
   if (roots.length > 1) {
     const old = oldCopy(roots);
     if (old === null && withRole("writer").length < 2) return midRun();
@@ -215,8 +215,8 @@ function planMove(name: string, args: VolumeRunArgs["move"], answered: readonly 
 export const alreadyOn = (name: string, server: string): Refusal => ({ code: "invalid", message: `${name}'s writer is already on ${server}` });
 
 /** Restore makes the one copy left the writer, so any copy elsewhere, answering or not, would become a second writer. */
-function planRestore(name: string, from: string, answered: readonly AnsweredMember[]): Planned {
-  const source = answered.find((member) => member.machine.name === from);
+function planRestore(name: string, { from, machine }: VolumeRunArgs["restore"], answered: readonly AnsweredMember[]): Planned {
+  const source = answered.find((member) => (machine === undefined ? member.machine.name === from : member.machine.id === machine));
   if (source === undefined) return refuse("invalid", `${from} is not a Server of this cluster`);
   const copy = source.view.copy;
   if (copy === null) return refuse("no_copy", `${from} holds no copy of ${name}`);

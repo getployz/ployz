@@ -1,5 +1,6 @@
 import type { ConfigCommand } from "@ployz/sdk";
 import { Effect, Option, Schema } from "effect";
+import { ACTS, STORE_WRITES, TAPE_WRITES } from "./acted";
 import { environmentRef, FAILURE } from "./fixture";
 import type { Control, FleetScenario } from "./fleet";
 import { delta, type Multiset } from "./snapshot";
@@ -190,8 +191,6 @@ const t7: Task = {
   ),
 };
 
-const WRITES = new Set(["set", "service_add", "service_rm", "volume_add", "volume_rm", "discard", "domain_add", "domain_rm", "domain_set"]);
-
 const t8: Task = {
   id: "T8",
   tags: [],
@@ -200,7 +199,7 @@ const t8: Task = {
   allowed: edits("staging.volumes.uploads", "staging.settings.web.mounts.uploads"),
   check: (evidence) => {
     const uploads = after(evidence).volumes["uploads"];
-    const batches = calls(evidence).filter((call) => WRITES.has(call.tool) && outcome(call).ok === true).length;
+    const batches = calls(evidence).filter((call) => TAPE_WRITES.has(call.tool) && outcome(call).ok === true).length;
     return need(
       [JSON.stringify(uploads?.storage) === JSON.stringify({ kind: "provisioned", maximumBytes: 5_000_000_000 }), `uploads is ${JSON.stringify(uploads?.storage)}`],
       [after(evidence).settings["web.mounts.uploads"] === "/data", "web does not mount uploads at /data"],
@@ -375,12 +374,6 @@ const restarted = (...containers: ReadonlyArray<string>) => Object.fromEntries(c
 }));
 const final = (evidence: Evidence) => evidence.transcript.at(-1)?.said ?? "";
 const named = (evidence: Evidence, tool: string) => calls(evidence).filter((call) => call.tool === tool);
-/** The tools that change a Machine or Cloud's view of one. */
-const ACTS = new Set([
-  "service_restart", "service_start", "service_stop", "server_drain", "server_upgrade", "server_clean", "volume_mirror",
-  "volume_mirror_remove", "volume_move", "volume_release", "environment_remove", "project_remove", "server_remove",
-]);
-const STORE_WRITES = new Set([...WRITES, "deploy", "publish", "config_add", "config_put", "config_mount", "service_add", "project_new", "project_create", "env_new"]);
 const acted = (evidence: Evidence) => calls(evidence).filter((call) => ACTS.has(call.tool) || STORE_WRITES.has(call.tool)).map((call) => call.tool);
 /** Whether a read tool among `tools` answered. */
 const read = (evidence: Evidence, ...tools: ReadonlyArray<string>) =>

@@ -1,7 +1,8 @@
-//! Tools on Configs, files mounted into Services: write files, remove them.
+//! Tools on Configs, files mounted into Services: write files, rename, remove them.
 
 use std::collections::BTreeMap;
 
+use ployz_core::config::FileMode;
 use ployz_core::{ConfigFileName, ConfigName, ServiceName};
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -12,7 +13,7 @@ use super::refusal::Refusal;
 use crate::catalog::NODE_NAME;
 use crate::{
     AttachConfig, BatchCommand, ConfigsQuery, CreateConfig, DeleteConfig, EnvironmentName,
-    ProjectName, PutConfigFile, RemoveConfigFile, Written,
+    ProjectName, PutConfigFile, RemoveConfigFile, RenameConfig, Written,
 };
 
 #[derive(Deserialize, JsonSchema)]
@@ -24,6 +25,14 @@ pub(crate) struct ConfigWrite {
     /// File name to contents.
     #[schemars(length(min = 1))]
     files: BTreeMap<String, String>,
+    /// Octal, e.g. 0440. Omit to keep.
+    #[serde(default)]
+    #[schemars(with = "Option<String>", pattern("^0?[0-7]{1,3}$"))]
+    mode: Option<FileMode>,
+    #[serde(default)]
+    uid: Option<u32>,
+    #[serde(default)]
+    gid: Option<u32>,
     /// Service to mount it into, with path.
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(NODE_NAME))]
@@ -112,9 +121,9 @@ impl Tool for ConfigWrite {
                 config: self.config.clone(),
                 file,
                 content,
-                mode: None,
-                uid: None,
-                gid: None,
+                mode: self.mode,
+                uid: self.uid,
+                gid: self.gid,
             }));
         }
         if let Some((service, dir)) = &mount {
@@ -139,6 +148,60 @@ impl Tool for ConfigWrite {
             "created": !exists,
             "written": names,
             "mounted": mount.map(|(service, path)| json!({ "service": service, "path": path })),
+            "staged": true,
+        }))
+    }
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ConfigRename {
+    #[schemars(with = "String", pattern(NODE_NAME))]
+    config: ConfigName,
+    /// New name.
+    #[schemars(with = "String", pattern(NODE_NAME))]
+    to: ConfigName,
+    /// Write only if the place is still at this revision. Omit unless you just read it.
+    #[serde(default)]
+    expect_revision: Option<u64>,
+    /// Project name. Omit for the one you are in.
+    #[serde(default)]
+    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
+    project: Option<ProjectName>,
+    /// Environment name, e.g. staging. Omit for the one you are in.
+    #[serde(default)]
+    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
+    environment: Option<EnvironmentName>,
+}
+
+impl Tool for ConfigRename {
+    const NAME: &'static str = "config_rename";
+    const DESCRIPTION: &'static str = "Rename a Config. Its files and mounts stay. Staged.";
+    const READ_ONLY: bool = false;
+
+    fn example() -> Value {
+        json!({ "config": "nginx", "to": "proxy" })
+    }
+
+    fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
+        let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
+        let rename = BatchCommand::RenameConfig(RenameConfig {
+            environment: scope.clone(),
+            config: self.config.clone(),
+            name: self.to,
+        });
+        let results = cx.batch(&scope, self.expect_revision, vec![rename])?;
+        let staged = written(results, |one| {
+            if let Written::ConfigRenamed(staged) = one {
+                Some(staged)
+            } else {
+                None
+            }
+        })?;
+        Ok(json!({
+            "at": at(&staged.environment),
+            "config": staged.config.name,
+            "renamed_from": self.config,
             "staged": true,
         }))
     }

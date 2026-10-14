@@ -9,6 +9,7 @@ mod deployment;
 mod domain;
 mod environment;
 mod github;
+mod history;
 pub mod logs;
 mod machine;
 mod metrics;
@@ -32,8 +33,8 @@ pub use status::{ServiceStatus, service_status};
 pub use step::{
     AcceptedLoss, Act, Action, Answer, Ask, AttemptId, BodyDigest, CloudQuery, DashboardPage, Fix,
     Freshness, Gate, LogsQuery, MetricsQuery, MetricsSince, MetricsSubject, OperationsQuery,
-    RequestKey, ServerName, ServerRef, ServiceVerb, Source, Step, Subject, Timestamp, VolumeRun,
-    Write, WriteSlot,
+    RequestKey, ServerLogsQuery, ServerName, ServerRef, ServiceVerb, Source, Step, Subject,
+    Timestamp, VolumeRun, Write, WriteSlot,
 };
 
 use machine::{Entry, entry};
@@ -42,11 +43,13 @@ use machine::{Entry, entry};
 pub(crate) const TOOLS: &[Entry] = &[
     entry::<environment::EnvironmentShow>(),
     entry::<project::ProjectCreate>(),
+    entry::<project::ProjectRename>(),
     entry::<service::ServiceInspect>(),
     entry::<service::ServiceAdd>(),
     entry::<service::ServiceUpdate>(),
     entry::<service::ServiceRename>(),
     entry::<service::ServiceRemove>(),
+    entry::<domain::DomainCheck>(),
     entry::<domain::DomainAdd>(),
     entry::<domain::DomainUpdate>(),
     entry::<domain::DomainRemove>(),
@@ -54,18 +57,24 @@ pub(crate) const TOOLS: &[Entry] = &[
     entry::<volume::VolumeUpdate>(),
     entry::<volume::VolumeRemove>(),
     entry::<config::ConfigWrite>(),
+    entry::<config::ConfigRename>(),
     entry::<config::ConfigRemove>(),
     entry::<release::Review>(),
     entry::<release::DiscardInput>(),
+    entry::<history::History>(),
     entry::<release::PublishInput>(),
     entry::<release::DeployInput>(),
+    entry::<deployment::DeploymentList>(),
     entry::<deployment::DeploymentShow>(),
+    entry::<deployment::DeploymentRetry>(),
+    entry::<deployment::DeploymentStart>(),
     entry::<deployment::DeploymentCancel>(),
     entry::<environment::EnvironmentPr>(),
     entry::<environment::EnvironmentSetup>(),
     entry::<github::GithubLs>(),
     entry::<github::GithubConnect>(),
     entry::<server::ServerShow>(),
+    entry::<server::ServerLogs>(),
     entry::<metrics::ServerMetrics>(),
     entry::<runtime::ServiceState>(),
     entry::<runtime::ServiceLogs>(),
@@ -74,6 +83,7 @@ pub(crate) const TOOLS: &[Entry] = &[
     entry::<runtime::ServiceRestart>(),
     entry::<runtime::ServiceStart>(),
     entry::<runtime::ServiceStop>(),
+    entry::<server::ServerSet>(),
     entry::<server::ServerDrain>(),
     entry::<server::ServerUpgrade>(),
     entry::<server::ServerClean>(),
@@ -81,6 +91,7 @@ pub(crate) const TOOLS: &[Entry] = &[
     entry::<copies::VolumeMirrorRemove>(),
     entry::<copies::VolumeMove>(),
     entry::<copies::VolumeRelease>(),
+    entry::<copies::VolumeRestore>(),
     entry::<removal::EnvironmentRemove>(),
     entry::<removal::ProjectRemove>(),
     entry::<server::ServerRemove>(),

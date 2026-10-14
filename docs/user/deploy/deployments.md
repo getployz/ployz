@@ -90,7 +90,8 @@ An accepted deployment and its retries keep their original snapshot while you ed
 From the CLI, `ployz history` lists versions. `ployz history restore 2 --preview` reviews a
 Restore without writing. `ployz history undo 2` stages an Undo; use `--accept-overwrite` only
 after reviewing the named draft fields. Both list each variable that came back Not set, and
-`--json` carries them as `not_set`.
+`--json` carries them as `not_set`. The agent's `history` tool does the same by revision
+number; one that would overwrite draft changes refuses and names them first.
 
 ## When another deployment is running
 
@@ -150,6 +151,9 @@ their recorded outcomes.
   until your next deploy.
 - On a queued deployment, **Deploy now** starts it if nothing is running ahead of it, and **⋮ →
   Cancel deployment…** takes it out of the queue.
+
+The CLI does the same with `ployz deployment retry`, `start` and `cancel`, and
+[the agent](../account/agent-sidebar.md) can too, without asking you first.
 
 ## Deploy without downtime
 

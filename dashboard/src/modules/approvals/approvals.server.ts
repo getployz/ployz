@@ -107,6 +107,7 @@ export type OperationDigest<R> = (
   subject: string,
   verb: OperationVerb,
   stored: string,
+  preview: JsonValue,
 ) => Effect.Effect<string | null, never, R>;
 
 const freshen = <R>(row: ApprovalRow, operationDigest?: OperationDigest<R>) => Effect.gen(function* () {
@@ -115,7 +116,7 @@ const freshen = <R>(row: ApprovalRow, operationDigest?: OperationDigest<R>) => E
   if ("diff" in review) {
     yield* recordAndSweep(row.organizationId, row.subject, Effect.void, staleEnvironment(row.organizationId, review.diff.environment));
   } else if (operationDigest !== undefined) {
-    const fresh = yield* operationDigest(row.organizationId, row.subject, review.operation.verb, row.digest);
+    const fresh = yield* operationDigest(row.organizationId, row.subject, review.operation.verb, row.digest, review.operation.preview);
     yield* recordAndSweep(row.organizationId, row.subject, Effect.void, staleOperation(review.operation.verb, fresh));
   }
   return (yield* readRow(row.organizationId, row.id)) ?? row;

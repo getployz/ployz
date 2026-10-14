@@ -15,6 +15,9 @@ describe("Server Policy", () => {
     expect(machineUpdateForPolicyChange({ acceptsServices: false })).toEqual({
       accepts_services: false,
     });
+    expect(machineUpdateForPolicyChange({ acceptsIngress: false })).toEqual({
+      accepts_ingress: false,
+    });
     expect(machineUpdateForPolicyChange({ buildConcurrency: "automatic" })).toEqual({
       build_concurrency: { action: "automatic" },
     });
@@ -28,10 +31,12 @@ describe("Server Policy", () => {
     expect(isEmptyPolicyChange({})).toBe(true);
     expect(isEmptyPolicyChange({ acceptsServices: false })).toBe(false);
     expect(isEmptyPolicyChange({ acceptsBuilds: true })).toBe(false);
+    expect(isEmptyPolicyChange({ acceptsIngress: false })).toBe(false);
+    expect(Schema.decodeUnknownOption(ServerPolicyChangeSchema)({ acceptsIngress: true })._tag).toBe("None");
   });
 
   it("settles a requested change only once observation shows all of it", () => {
-    const observed = { acceptsBuilds: true, acceptsServices: true, buildConcurrency: null };
+    const observed = { acceptsBuilds: true, acceptsServices: true, acceptsIngress: true, buildConcurrency: null };
     expect(policyChangeObserved(observed, { buildConcurrency: "automatic" })).toBe(true);
     expect(policyChangeObserved(observed, { buildConcurrency: 2 })).toBe(false);
     expect(
@@ -39,9 +44,11 @@ describe("Server Policy", () => {
     ).toBe(false);
     expect(policyChangeObserved(observed, { acceptsServices: true })).toBe(true);
     expect(policyChangeObserved(observed, { acceptsServices: false })).toBe(false);
+    expect(policyChangeObserved(observed, { acceptsIngress: false })).toBe(false);
+    expect(policyChangeObserved({ ...observed, acceptsIngress: false }, { acceptsIngress: false })).toBe(true);
     expect(
       policyChangeObserved(
-        { acceptsBuilds: false, acceptsServices: false, buildConcurrency: 2 },
+        { acceptsBuilds: false, acceptsServices: false, acceptsIngress: true, buildConcurrency: 2 },
         { acceptsBuilds: false, acceptsServices: false, buildConcurrency: 2 },
       ),
     ).toBe(true);

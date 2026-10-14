@@ -8,7 +8,8 @@ import { githubBranches, githubConnection, GithubRepositories } from "#/modules/
 import type { Caller } from "#/modules/identity/actor";
 import { loadOrganizationConnections } from "#/modules/machines/connections.server";
 import { UNREACHABLE_MESSAGE } from "#/modules/machines/server-operations.server";
-import type { Admission } from "#/modules/operations/keyed.server";
+import type { ServerPolicyChange } from "#/modules/machines/server-policy";
+import { admittedAt, type Admission } from "#/modules/operations/keyed.server";
 import { dashedAttempt, operationsOn, serverNames } from "#/modules/operations/operation-history.server";
 import {
   actService,
@@ -18,6 +19,7 @@ import {
   type OperationCall,
   removeServer,
   runVolume,
+  setServer,
   upgradeServer,
 } from "#/modules/operations/operations.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
@@ -133,6 +135,12 @@ const ask = Effect.fn("CallCloud.ask")(function* (caller: Caller, query: CloudQu
         return refusal("forbidden", "This Organization doesn't show its container logs to Ployz support.");
       }
       return yield* runtimeAsk(organizationId, query);
+    case "server_logs":
+      // The support logs switch promises only Container output, so it never opens a Server's own logs.
+      if (caller.support !== null) {
+        return refusal("forbidden", "Ployz support can't read an Organization's Server logs.");
+      }
+      return yield* runtimeAsk(organizationId, query);
   }
 });
 
@@ -148,11 +156,21 @@ const volumeRunInput = (run: VolumeRun, name: string): VolumeRunInput => {
       return { kind: "release", args: {} };
     case "remove_mirror":
       return { kind: "delete_mirror", args: { slot: null, confirmed_name: name } };
+    case "restore":
+      return { kind: "restore", args: { from: run.from.name, machine: run.from.machine } };
   }
 };
 
 const lossOf = (action: Act["action"]): AcceptedLoss | null | undefined =>
   "loss" in action ? action.loss : action.action === "volume" && "loss" in action.run ? action.run.loss : undefined;
+
+const policyChangeOf = (set: Extract<Act["action"], { action: "set_server" }>): ServerPolicyChange => ({
+  ...(set.accepts_builds !== null && { acceptsBuilds: set.accepts_builds }),
+  ...(set.accepts_services !== null && { acceptsServices: set.accepts_services }),
+  ...(set.accepts_ingress === false && { acceptsIngress: false }),
+  ...(set.build_concurrency.action === "automatic" && { buildConcurrency: "automatic" }),
+  ...(set.build_concurrency.action === "set" && { buildConcurrency: set.build_concurrency.value }),
+});
 
 const act = Effect.fn("CallCloud.act")(function* (caller: Caller, { attempt, digest, action }: Act, approvalId: string | null) {
   const organizationId = caller.organization.id;
@@ -162,8 +180,9 @@ const act = Effect.fn("CallCloud.act")(function* (caller: Caller, { attempt, dig
     if (!admission.ok) return { ok: false, refusal: admission.refusal } as const;
     const id = dashedAttempt(admission.id);
     const [run] = yield* operationsOn(organizationId, subject, id, 1);
+    const requested = run === undefined ? yield* admittedAt(organizationId, attempt) : null;
     return answer<Operation>(run ?? {
-      attempt: id, run: what, state: "accepted", requested_at: Math.floor(Date.now() / 1000), ended_at: null, reason: null, servers: [], kept: [], unanswered: [],
+      attempt: id, run: what, state: "accepted", requested_at: Math.floor((requested ?? new Date()).getTime() / 1000), ended_at: null, reason: null, servers: [], kept: [], unanswered: [],
     });
   });
   switch (action.action) {
@@ -181,6 +200,14 @@ const act = Effect.fn("CallCloud.act")(function* (caller: Caller, { attempt, dig
         { kind: "server", machine: action.server.machine },
         "Server",
       );
+    case "set_server": {
+      if (action.accepts_ingress === true) return refusal("invalid_argument", "Only the terminal turns web traffic on.");
+      return yield* admitted(
+        yield* setServer(caller, action.server.machine, policyChangeOf(action), call),
+        { kind: "server", machine: action.server.machine },
+        `set ${action.server.name}`,
+      );
+    }
     case "clean":
       return yield* admitted(yield* cleanNamespace(caller, action.leftover, call), { kind: "leftover", namespace: action.leftover }, "leftover");
     case "remove_server": {
