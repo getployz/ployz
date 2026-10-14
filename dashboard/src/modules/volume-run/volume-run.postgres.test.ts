@@ -56,7 +56,7 @@ import {
 import { PATIENCE_WAITS } from "#/modules/volume-run/patience";
 import type { Member, VolumeRunInput } from "#/modules/volume-run/volume-run";
 import { member } from "#/modules/volume-run/volume-run.test-fixture";
-import { type DeployLane, fenceDeployVolume, finishDeployVolumes, placeDeployVolumes } from "#/modules/volume-run/volume-run.deploy.server";
+import { type DeployLane, fenceDeployVolume, finishDeployVolumes, placeDeployVolumes, releaseFollowed } from "#/modules/volume-run/volume-run.deploy.server";
 import type { Caller } from "#/modules/identity/actor";
 import { runVolume } from "#/modules/operations/operations.server";
 import { decideApproval } from "#/modules/approvals/approvals.server";
@@ -3192,6 +3192,21 @@ describe("volume runs", () => {
 
         await expect(fence(placed[0])).rejects.toThrow("data changed since this Deploy placed it; Deploy again");
         expect(verbs).toEqual([]);
+      });
+
+      it("a retried release step whose release already ended, beside a newer owed release, requests nothing new", async () => {
+        await failedCommit();
+        const placed = await place();
+        await finish();
+        const release = () => runEffect(releaseFollowed("env-1", DEPLOY, placed));
+        const ended = "update volume_run set state = 'failed', finished_at = now(), phase = 'committed', current = $2 where id = $1";
+        const [first] = await release();
+        await harness.pool.query(ended, [first, idOf("fsn-2")]);
+        const newer = await requested({ kind: "release", args: {} });
+        await harness.pool.query(ended, [newer.id, idOf("fsn-2")]);
+
+        expect(await release()).toEqual([first]);
+        expect((await lanes()).filter((lane) => lane.kind === "release")).toMatchObject([{ id: first, state: "failed" }, { id: newer.id, state: "failed" }]);
       });
 
       describe("once a release took the commitment over and floored B at its newer gen", () => {
