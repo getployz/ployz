@@ -1,6 +1,6 @@
 import { Suspense, useState, type ReactNode } from "react";
 import { useQueryErrorResetBoundary } from "@tanstack/react-query";
-import { CatchBoundary, Link, type ErrorComponentProps } from "@tanstack/react-router";
+import { CatchBoundary, Link, useSearch, type ErrorComponentProps } from "@tanstack/react-router";
 import { useOrgStoreGate } from "#/collections/org-store";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { AgentDock } from "./agent-sidebar/agent-dock";
@@ -15,6 +15,7 @@ import { RouteContentSkeleton } from "./route-content-skeleton";
 import { RouteErrorAlert } from "./route-error-alert";
 import { useCanvasShowing, useDashboardNavigation, useDashboardSection, useRouteCrumb } from "./use-dashboard-section";
 import DashboardAccountMenu from "#/routes/_protected/cloud/$organizationSlug/_org/-components/DashboardAccountMenu";
+import { DashboardOrganizationMenu } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/DashboardOrganizationMenu";
 
 export function DashboardShell({
   scope,
@@ -38,18 +39,22 @@ export function DashboardShell({
   const canvas = useCanvasShowing();
   const page = useAgentPage(scope);
   const [dock, setDock] = useState<HTMLElement | null>(null);
+  // Prototype F puts the organization behind its name: atop the rail, and on phones beside the logo.
+  const organizationMenu = useSearch({ strict: false }).variant === "f";
   // The top bar names the place, so Billing, a section of Organization, reads Organization like its siblings.
   const placeLabel = places.find((place) => place.current)?.label ?? getDashboardSectionLabel(section);
   return (
     <AgentDock.Provider value={dock}>
     <div className="flex h-dvh min-h-0 overflow-hidden">
       <Rail organizationSlug={scope.organizationSlug} places={places} organization={organization} narrow={canvas}
-        account={<DashboardAccountMenu scope={scope} side="right" variant={canvas ? "avatar" : "row"} />} />
+        account={<DashboardAccountMenu scope={scope} side="right" variant={canvas ? "avatar" : "row"} />}
+        top={organizationMenu ? <DashboardOrganizationMenu scope={scope} narrow={canvas} /> : null} />
       <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background">
         {banner}
         {/* The one top bar, over the agent too, so its Agent button never moves. On phones it also carries the logo and the avatar, which live in the rail on desktop. */}
         <header className="flex h-12 shrink-0 items-center gap-2 border-b bg-background px-3 min-wf-nav:px-4">
           <HomeLink organizationSlug={scope.organizationSlug} className="min-wf-nav:hidden" />
+          {organizationMenu ? <DashboardOrganizationMenu scope={scope} narrow className="size-9 min-wf-nav:hidden" /> : null}
           {scope.kind === "environment"
             ? <EnvironmentCrumbs scope={scope} />
             : Crumb

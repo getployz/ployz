@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
-import { Link, useNavigate, useSearch } from "@tanstack/react-router";
+import { Link, useSearch } from "@tanstack/react-router";
 import { Building2Icon, ChevronsUpDownIcon, HouseIcon, LogOutIcon, PlusIcon, UserIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
 import {
@@ -24,14 +24,12 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "#/components/ui/dropdown-menu";
-import {
-  getDashboardDestination,
-  type DashboardScope,
-} from "#/components/dashboard-navigation-model";
+import type { DashboardScope } from "#/components/dashboard-navigation-model";
 import { useDashboardSection } from "#/components/use-dashboard-section";
 import { organizationStateQueryOptions } from "#/modules/organization/organization-state.queries";
 import { toast } from "sonner";
 import { NewOrganizationDialog } from "./new-organization-dialog";
+import { OrganizationSwitchItems } from "./organization-switch-items";
 import { Result } from "effect";
 
 function getInitials(name: string) {
@@ -65,23 +63,14 @@ export default function DashboardAccountMenu({
 }) {
   const auth = useAuth();
   const signOut = useSignOut();
-  const navigate = useNavigate();
   const { userTheme, setTheme } = useTheme();
   const section = useDashboardSection();
-  // Prototype: on the Account page in the shell, Account keeps its layout variant; E makes this row the current place.
-  const accountVariant = useSearch({ strict: false }).variant;
-  const shellVariant = section === "account" && accountVariant !== undefined && accountVariant !== "b" ? accountVariant : undefined;
-  const current = shellVariant === "e";
+  // Prototype: every shell variant opens Account in the shell, in its layout; from E on, this row is Account's place.
+  const layout = useSearch({ strict: false }).variant;
+  const shellVariant = layout !== undefined && layout !== "b" ? layout : undefined;
+  const current = section === "account" && (layout === "e" || layout === "f" || layout === "g");
   const [creating, setCreating] = useState(false);
   const organizations = useQuery(organizationStateQueryOptions(scope.organizationSlug)).data?.organizations ?? [];
-
-  const own = organizations.filter((candidate) => candidate.access === "member");
-  const supported = organizations.filter((candidate) => candidate.access === "support");
-
-  function switchTo(slug: string) {
-    // The open agent thread belongs to this Organization, so it stays behind.
-    void navigate({ ...getDashboardDestination({ kind: "all", organizationSlug: slug }, section), search: { chat: undefined } });
-  }
 
   async function handleSignOut() {
     const result = await signOut();
@@ -109,8 +98,8 @@ export default function DashboardAccountMenu({
         aria-current={current ? "page" : undefined}
         render={variant === "row"
           // The narrow rail's 40px avatar slot, widened: the avatar and the links above it hold still as the rail changes width.
-          ? <button type="button" className="flex h-10 w-full min-w-0 items-center gap-2.5 rounded-md px-1 text-left outline-none hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 aria-expanded:bg-muted aria-[current=page]:bg-muted" />
-          : <Button variant="ghost" size="icon-lg" className="aria-[current=page]:bg-muted" />}
+          ? <button type="button" className="flex h-9 w-full min-w-0 items-center gap-2.5 rounded-md px-1 text-left outline-none hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 aria-expanded:bg-muted aria-[current=page]:bg-muted" />
+          : <Button variant="ghost" size="icon-lg" className="h-9 aria-[current=page]:bg-muted" />}
       >
         <Avatar>
           <AvatarImage src={userImage} alt={userName} />
@@ -146,41 +135,23 @@ export default function DashboardAccountMenu({
             <UserIcon />
             Account
           </DropdownMenuItem>
-          <DropdownMenuSub>
-            <DropdownMenuSubTrigger>
-              <Building2Icon />
-              Switch organization
-            </DropdownMenuSubTrigger>
-            <DropdownMenuSubContent>
-              <DropdownMenuRadioGroup value={scope.organizationSlug} onValueChange={switchTo}>
-                {own.map((candidate) => (
-                  <DropdownMenuRadioItem key={candidate.id} value={candidate.slug}>
-                    {candidate.name}
-                  </DropdownMenuRadioItem>
-                ))}
-              </DropdownMenuRadioGroup>
-              {supported.length > 0 ? (
-                <>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuGroup>
-                    <DropdownMenuLabel>Support</DropdownMenuLabel>
-                    <DropdownMenuRadioGroup value={scope.organizationSlug} onValueChange={switchTo}>
-                      {supported.map((candidate) => (
-                        <DropdownMenuRadioItem key={candidate.id} value={candidate.slug}>
-                          {candidate.name}
-                        </DropdownMenuRadioItem>
-                      ))}
-                    </DropdownMenuRadioGroup>
-                  </DropdownMenuGroup>
-                </>
-              ) : null}
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={() => setCreating(true)}>
-                <PlusIcon />
-                New organization
-              </DropdownMenuItem>
-            </DropdownMenuSubContent>
-          </DropdownMenuSub>
+          {/* F: the organization's name atop the rail owns switching. */}
+          {layout === "f" ? null : (
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger>
+                <Building2Icon />
+                Switch organization
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent>
+                <OrganizationSwitchItems scope={scope} />
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={() => setCreating(true)}>
+                  <PlusIcon />
+                  New organization
+                </DropdownMenuItem>
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+          )}
         </DropdownMenuGroup>
 
         <DropdownMenuSeparator />

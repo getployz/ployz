@@ -7,7 +7,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "#/components/ui/avatar";
 import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
 import { Field, FieldContent, FieldDescription, FieldTitle } from "#/components/ui/field";
-import type { AccountSection } from "#/components/dashboard-navigation-model";
+import type { AccountSection, PrototypeVariant } from "#/components/dashboard-navigation-model";
 import { cn } from "#/lib/utils";
 import { getAccountSessionsCollection, getLinkedAccountsCollection, revokeAccountSession, type AccountSessionRow } from "#/modules/account/account.collection";
 import { notificationSettingsQueryOptions, useSetNotificationChannel } from "#/modules/notifications/notifications.queries";
@@ -106,10 +106,10 @@ export function AccountSectionView({ section }: { section: AccountSection }) {
 }
 
 /** Prototype only: flips between the layout variants. All but B live in an Organization's shell, so they need one. */
-export function VariantSwitcher({ current }: { current: "a" | "b" | "c" | "d" | "e" }) {
+export function VariantSwitcher({ current }: { current: PrototypeVariant }) {
   const { session } = useRouteContext({ from: "/_protected" });
   const slug = session.session.activeOrganizationSlug;
-  const pill = (variant: "a" | "b" | "c" | "d" | "e") => cn(
+  const pill = (variant: PrototypeVariant) => cn(
     "rounded-full px-2.5 py-1 font-medium uppercase",
     variant === current ? "bg-foreground text-background" : "text-muted-foreground hover:text-foreground",
   );
@@ -121,6 +121,10 @@ export function VariantSwitcher({ current }: { current: "a" | "b" | "c" | "d" | 
       <Link to="/cloud/account" search={{ variant: "b" }} className={pill("b")}>b</Link>
       {slug ? (["c", "d", "e"] as const).map((variant) => (
         <Link key={variant} to="/cloud/$organizationSlug/~/account" params={{ organizationSlug: slug }} search={{ variant }} className={pill(variant)}>{variant}</Link>
+      )) : null}
+      {/* F and G reshape Organization, so they open its Settings. */}
+      {slug ? (["f", "g"] as const).map((variant) => (
+        <Link key={variant} to="/cloud/$organizationSlug/~/settings" params={{ organizationSlug: slug }} search={{ variant }} className={pill(variant)}>{variant}</Link>
       )) : null}
     </nav>
   );

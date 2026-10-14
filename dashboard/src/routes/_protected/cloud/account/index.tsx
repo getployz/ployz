@@ -11,7 +11,7 @@ import { AccountSectionView, VariantSwitcher } from "./-components/account-secti
 
 // Prototype: no variant is B, this page. A and C live in the active Organization's shell; without one they fall back here.
 const accountSearchSchema = Schema.Struct({
-  variant: Schema.optional(Schema.Literals(["a", "b", "c", "d", "e"]).pipe(
+  variant: Schema.optional(Schema.Literals(["a", "b", "c", "d", "e", "f", "g"]).pipe(
     Schema.catchDecoding(() => Effect.succeed(Option.some("b" as const))),
   )),
   section: Schema.optional(Schema.Literals(accountSectionOrder).pipe(

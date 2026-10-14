@@ -10,7 +10,7 @@ import { AccountSectionView, VariantSwitcher } from "#/routes/_protected/cloud/a
 // Prototype: A is one section at a time behind the rail; C, D and E are every section on one scrolling page, and
 // differ only in how the rail reaches it.
 const accountSearchSchema = Schema.Struct({
-  variant: Schema.optional(Schema.Literals(["a", "c", "d", "e"]).pipe(
+  variant: Schema.optional(Schema.Literals(["a", "c", "d", "e", "f", "g"]).pipe(
     Schema.catchDecoding(() => Effect.succeed(Option.some("a" as const))),
   )),
   section: Schema.optional(Schema.Literals(accountSectionOrder).pipe(

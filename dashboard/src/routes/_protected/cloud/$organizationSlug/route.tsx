@@ -1,21 +1,25 @@
 import { useEffect } from "react";
 import { createFileRoute, Outlet, retainSearchParams, useNavigate, useParams } from "@tanstack/react-router";
-import { Schema } from "effect";
+import { Effect, Option, Schema } from "effect";
 import { useOrganizationChanges } from "#/collections/org-changes.stream";
 import { prefetchOrgStore, prefetchRemote, requireOrganization } from "#/collections/route-data";
 import { githubWebQueryOptions } from "#/modules/github/github.queries";
 import { DashboardShell } from "#/components/dashboard-shell";
-import type { DashboardScope } from "#/components/dashboard-navigation-model";
+import { prototypeVariants, type DashboardScope } from "#/components/dashboard-navigation-model";
 import { rememberSelectedOrganization } from "#/modules/organization/organization-state.queries";
 import { RuntimeProvider } from "#/providers/runtime-provider";
 import { setPostHogOrganization } from "#/modules/analytics/posthog";
 
 /** `chat` names the open agent thread; it rides along every Organization page so the sidebar stays put. */
-const OrganizationSearch = Schema.Struct({ chat: Schema.optional(Schema.String) });
+const OrganizationSearch = Schema.Struct({
+  chat: Schema.optional(Schema.String),
+  // Prototype: the open layout rides along every Organization page too, so the whole shell stays in one variant.
+  variant: Schema.optional(Schema.Literals(prototypeVariants).pipe(Schema.catchDecoding(() => Effect.succeed(Option.none())))),
+});
 
 export const Route = createFileRoute("/_protected/cloud/$organizationSlug")({
   validateSearch: Schema.toStandardSchemaV1(OrganizationSearch),
-  search: { middlewares: [retainSearchParams(["chat"])] },
+  search: { middlewares: [retainSearchParams(["chat", "variant"])] },
   loader: async ({ params, context }) => {
     const organization = await requireOrganization(context, params.organizationSlug);
     await prefetchOrgStore(context, params.organizationSlug);

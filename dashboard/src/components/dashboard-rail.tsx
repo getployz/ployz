@@ -25,12 +25,14 @@ const rowLink = "text-muted-foreground outline-none hover:bg-muted hover:text-fo
  * account row names you and the organization beside your avatar. `narrow` (wherever the canvas shows) leaves only the
  * icons and the avatar, each naming itself on hover, so the canvas gets the room.
  */
-export function Rail({ organizationSlug, places, organization, narrow, account }: {
+export function Rail({ organizationSlug, places, organization, narrow, account, top }: {
   organizationSlug: string;
   places: DashboardNavItem[];
   organization: DashboardNavItem[];
   narrow: boolean;
   account: React.ReactNode;
+  /** Prototype F: the organization's name, above the places. */
+  top?: React.ReactNode;
 }) {
   const railPlace = (place: DashboardNavItem) => <RailPlace key={place.section} place={place} narrow={narrow} />;
   return (
@@ -40,12 +42,13 @@ export function Rail({ organizationSlug, places, organization, narrow, account }
         narrow ? "w-14" : "w-56",
       )}>
       <HomeLink organizationSlug={organizationSlug} className="mb-3 size-10 shrink-0" />
+      {top ? <div className="mb-3 flex shrink-0 flex-col">{top}</div> : null}
       <TooltipProvider>
         {places.map(railPlace)}
         {organization.length ? <div role="separator" className="mx-2 mt-auto mb-1 h-px shrink-0 bg-border" /> : null}
         {organization.map(railPlace)}
       </TooltipProvider>
-      <div className={cn("flex shrink-0", narrow ? "size-10 items-center justify-center" : "w-full", !organization.length && "mt-auto")}>{account}</div>
+      <div className={cn("flex shrink-0", narrow ? "h-9 w-full items-center justify-center" : "w-full", !organization.length && "mt-auto")}>{account}</div>
     </nav>
   );
 }
