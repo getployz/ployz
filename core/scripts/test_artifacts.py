@@ -57,6 +57,9 @@ class Keys(unittest.TestCase):
         self.assertEqual(self.changed_by("crates/ployz-config-wasm/src/zz_probe.rs"), {"sdk", "config-wasm"})
         self.assertEqual(self.changed_by("crates/ployz-core/src/zz_probe.rs"), set(KINDS))
 
+    def test_a_docs_page_moves_every_artifact_that_embeds_it(self):
+        self.assertEqual(self.changed_by("../docs/user/zz_probe.md", "probe\n"), {"ployz", "sdk"})
+
     def test_workspace_files_move_every_key(self):
         self.assertEqual(self.changed_by("Cargo.toml", "\n"), set(KINDS))
 
@@ -267,7 +270,9 @@ class Main(Scratch):
                        "".join(f'{dependency} = {{ path = "../{dependency}" }}\n' for dependency in dependencies))
             self.write(f"crates/{name}/src/lib.rs", "// one\n")
         self.write("crates/ployz-sdk/index.d.ts", "export {};\n")
-        artifacts.git("init", "-q", "-b", "main")
+        self.write("../docs/user/page.md", "page\n")
+        # The repository holds core/ and the docs ployz-store embeds, as the real one does.
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=self.root, check=True)
         self.built = self.commit("built on main")
         self.store_build(b"main")
         self.write("crates/ployz-store/src/lib.rs", "// two\n")

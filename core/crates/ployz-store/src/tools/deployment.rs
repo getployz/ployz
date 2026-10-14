@@ -236,11 +236,11 @@ pub(crate) struct DeploymentShow {
     #[serde(default)]
     #[schemars(range(min = 0, max = 300))]
     wait_seconds: u32,
-    /// Project name. Omit for the one you are in.
+    /// Project name.
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(NODE_NAME))]
     project: Option<ProjectName>,
-    /// Environment name, e.g. staging. Omit for the one you are in.
+    /// Environment name, e.g. staging.
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(NODE_NAME))]
     environment: Option<EnvironmentName>,
@@ -291,11 +291,11 @@ pub(crate) struct DeploymentCancel {
     #[serde(default)]
     #[schemars(range(min = 1))]
     deployment: Option<u64>,
-    /// Project name. Omit for the one you are in.
+    /// Project name.
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(NODE_NAME))]
     project: Option<ProjectName>,
-    /// Environment name, e.g. staging. Omit for the one you are in.
+    /// Environment name, e.g. staging.
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(NODE_NAME))]
     environment: Option<EnvironmentName>,
