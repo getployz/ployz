@@ -111,7 +111,7 @@ describe("removeMembership", () => {
   });
 
   it("refuses someone who is not a member", async () => {
-    expect(await remove(ACME, carol)).toBe("not_found");
+    expect(await remove(OTHER, carol)).toBe("not_found");
     expect(send).not.toHaveBeenCalled();
   });
 });
