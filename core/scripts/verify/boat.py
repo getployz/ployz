@@ -1,6 +1,7 @@
 """Boat sandbox backend for verify-cluster's disposable-Machine contract."""
 
 import host
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -59,6 +60,11 @@ def endpoint(text):
     """Host and port from a sandbox's sshEndpoint, such as 213.32.24.158:19040."""
     address, _, port = text.rpartition(":")
     return address.strip("[]"), int(port)
+
+
+def boat_node(address):
+    """The Boat node a sandbox runs on: each node hands out one IPv6 /80."""
+    return str(ipaddress.IPv6Network(f"{address}/80", strict=False))
 
 
 def registry(run_id):
@@ -180,10 +186,29 @@ class Provider:
             raise RuntimeError(f"{node['name']}: boat new failed: {failure or result.stderr.decode(errors='replace')}")
         raise RuntimeError(f"{node['name']}: boat new kept answering boat_starting")
 
+    def place(self, name, info):
+        """Record a sandbox's address unless a peer in this run already holds its node; True when recorded."""
+        placed = []
+
+        def claim(record):
+            taken = {boat_node(entry["ip"]) for other, entry in record["sandboxes"].items()
+                     if other != name and entry.get("ip") and entry.get("state") != "deleted"}
+            if boat_node(info["ip"]) not in taken:
+                record["sandboxes"][name].update(ssh=info["sshEndpoint"], ip=info["ip"])
+                placed.append(True)
+        self.record(claim)
+        return bool(placed)
+
     def start(self, node):
-        sandbox = self.launch(node)
-        info = json.loads(self.boat("info", sandbox).stdout)["sandbox"]
-        self.mark(node["name"], ssh=info["sshEndpoint"], ip=info["ip"])
+        for attempt in range(3):
+            sandbox = self.launch(node)
+            info = json.loads(self.boat("info", sandbox).stdout)["sandbox"]
+            if self.place(node["name"], info):
+                break
+            # Peers on one node share an on-link /80 and their WireGuard over IPv6 never handshakes.
+            self.boat("delete", sandbox, "--yes")
+        else:
+            raise RuntimeError(f"{node['name']}: Boat kept placing the sandbox on a node another Machine uses")
         key = (self.private / "id_ed25519.pub").read_text().strip()
         # A clone can carry an sshd listener that systemd no longer tracks, so restarting ssh later fails with
         # port 22 in use. Kill only listeners: Boat's own sessions run through sshd and must survive.

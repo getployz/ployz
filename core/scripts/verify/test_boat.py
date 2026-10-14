@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Boat provider logic that needs no sandbox: endpoints, errors, limits, and which sandboxes down removes."""
+"""Boat provider logic that needs no sandbox: endpoints, errors, limits, placement, and which sandboxes down removes."""
 
 import contextlib
 import importlib.machinery
@@ -70,7 +70,7 @@ class Images(unittest.TestCase):
         self.assertEqual(sorted(image for image in baked if not image.startswith('"')), sorted(boat.IMAGES))
 
 
-class Destroy(unittest.TestCase):
+class Registry(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -112,6 +112,21 @@ class Destroy(unittest.TestCase):
         self.provider.destroy()
         self.assertEqual(self.calls, [])
         self.assertTrue(boat.registry("other").exists())
+
+    def test_a_sandbox_on_a_peers_node_is_refused(self):
+        self.registered(**{"machine-1": dict(id="bx_a", state="running", ip="2001:41d0:1004:4161:100::33"),
+                           "machine-2": dict(id="bx_b", state="running")})
+        crowded = dict(ip="2001:41d0:1004:4161:100::23", sshEndpoint="213.32.27.97:19035")
+        self.assertFalse(self.provider.place("machine-2", crowded))
+        self.assertNotIn("ip", self.provider.record()["sandboxes"]["machine-2"])
+
+    def test_a_sandbox_on_its_own_node_is_recorded(self):
+        self.registered(**{"machine-1": dict(id="bx_a", state="running", ip="2001:41d0:1004:4161:100::33"),
+                           "machine-2": dict(id="bx_b", state="running"),
+                           "machine-3": dict(id="bx_c", state="deleted", ip="2001:41d0:1004:389e:100::28")})
+        apart = dict(ip="2001:41d0:1004:389e:100::40", sshEndpoint="213.32.24.158:19040")
+        self.assertTrue(self.provider.place("machine-2", apart))
+        self.assertEqual(self.provider.record()["sandboxes"]["machine-2"]["ssh"], "213.32.24.158:19040")
 
 
 if __name__ == "__main__":
