@@ -2,6 +2,7 @@
 """Exercise the volume move checks with a command model, without Incus, Cloud or ZFS."""
 
 import ast
+import contextlib
 from contextlib import redirect_stdout
 from datetime import datetime, timezone
 import importlib.util
@@ -2762,12 +2763,10 @@ finally:
         verdict its own test asserts. (label, passes, cases, driver kwargs)"""
         every = volume_move.CASES + volume_move.soak_cases()
         cases = {case["name"]: case for case in every}
-        # The undos cancel through Inngest, which only their own tests fake; the fake fires no trigger on its own
-        # for the 1-rounds, 3-cut and 4-final soak steps.
+        # The fake fires no trigger on its own for the 1-rounds, 3-cut and 4-final soak steps.
         unfired = [case for case in every if case["step"] in ("1-rounds", "3-cut", "4-final") and "soak" in case["name"]]
-        corpus = [("every clean and kill case", True,
-                   [case for case in every if "undo" not in case["name"] and case not in unfired
-                    and case["name"] != "deploy-committed"], {}),
+        corpus = [("every clean, kill and undo case", True,
+                   [case for case in every if case not in unfired and case["name"] != "deploy-committed"], {}),
                   ("every soak case whose trigger never fires", False, unfired, {}),
                   ("a Deploy that follows a committed lane", False, [cases["deploy-committed"]], {})]
         corpus += [(f"planted {mutation}", False, [cases["clean"]], dict(mutation=mutation))
@@ -2885,10 +2884,64 @@ finally:
         corpus.append(("action right after the trigger with slow execs", True, [final],
                        dict(before=lambda model: model.latency.update({"machine-1": 1.0, "machine-2": 1.0}), ends=30,
                             effect=cut_then_fault)))
+        corpus += [(f"release undos planted {mutation}", passes, [cases["undo-before-cut"], cases["undo-after-cut"]],
+                    dict(mutation=mutation)) for mutation, passes in
+                   (("release-ends-move", True), ("refusal-other-run", False))]
+        for name, ended, passes in (("undo-before-cut", "cancelled", True), ("undo-before-cut", "lost", True),
+                                    ("undo-before-cut", "done", False), ("undo-before-cut", "failed", False),
+                                    ("undo-after-cut", "cancelled", True), ("undo-after-cut", "done", False)):
+            corpus.append((f"cancel {name} ends {ended}", passes, [CANCEL_UNDOS[name]],
+                           dict(setup=lambda checks, model, ended=ended: self.cancel_ends(checks, model, ended))))
+        for label, replies, passes in (
+                ("Cloud accepts the cancel", [(404, "not found"), (200, '{"data":{}}')], True),
+                ("Cloud refuses the cancel", [(404, "not found"), (200, '{"errors":[{}]}'), (200, '{"errors":[{}]}')],
+                 False)):
+            corpus.append((f"cancel undo-before-cut where {label}", passes, [CANCEL_UNDOS["undo-before-cut"]],
+                           dict(setup=lambda checks, model, replies=replies, passes=passes:
+                                self.cancel_through_inngest(model, replies, passes))))
         return corpus
 
+    def cancel_starts_running(self, model):
+        """The move the cancel undo starts is admitted running and trips its fault at once."""
+        cli = model.cli
+
+        def running(args):
+            if args[:2] == ["volume", "move"]:
+                row = dict(id=f"run-{len(model.runs)}", kind="move", state="running")
+                model.runs.append(row)
+                model.fired = True
+                return 0, json.dumps(row)
+            return cli(args)
+        model.cli = running
+
+    def cancel_ends(self, checks, model, ended):
+        """The cancel lands and Cloud ends the first run ended."""
+        self.cancel_starts_running(model)
+
+        def cancel(row):
+            found = next(run for run in model.runs if run["id"] == row["id"])
+            found["state"], found["finished_at"] = ended, model.now()
+            if ended == "done":
+                model.mirror, model.writer = model.writer, model.other(model.writer)
+            return [dict(kill="cancel", attempts=[f"DELETE {row['id']} 200 "], landed=True)]
+        checks.cancel = cancel
+
+    def cancel_through_inngest(self, model, replies, accepted):
+        """The cancel goes to Inngest, which answers replies; reconciliation closes a refused run lost. The patch is
+        live only while the case runs."""
+        self.cancel_starts_running(model)
+        asked = []
+
+        def inngest(method, url, body=None, token=None):
+            asked.append((method, url))
+            if len(asked) == len(replies):
+                model.runs[0]["state"] = "cancelled" if accepted else "lost"
+                model.runs[0]["finished_at"] = model.now()
+            return replies[len(asked) - 1]
+        return mock.patch.object(volume_move, "http", inngest)
+
     def verdict(self, cases, perturb=None, mutation=None, before=None, ends=None, state="failed", claimed=True,
-                effect=None):
+                effect=None, setup=None):
         """Run cases on a fresh model and keep what decides the run: the summary minus the host-timed gap, and each
         credited event minus its monotonic poll time. With ends the first op is scripted as first_move does."""
         shutil.rmtree(self.root / "out", ignore_errors=True)
@@ -2896,6 +2949,7 @@ finally:
         self.model = model
         if perturb:
             perturb(model)
+        patch = (setup(checks, model) if setup else None) or contextlib.nullcontext()
         prepare = checks.prepare
 
         def prepared(case, other):
@@ -2905,7 +2959,7 @@ finally:
         checks.prepare = prepared
         if ends is not None:
             self.first_move(model, ends, state, effect and (lambda begun: effect(model, begun)), claimed)
-        with redirect_stdout(io.StringIO()):
+        with patch, redirect_stdout(io.StringIO()):
             summary = checks.run_all(cases)
         decided = []
         for case in summary["cases"]:
