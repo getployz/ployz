@@ -134,7 +134,10 @@ CASES = [
                           version=True))),
     held(dict(name="deploy-committed", cell="Mirror>Writer", step="5-writer", op="move", machine="other",
               trigger="committed", action="deploy", recover="rerun",
-              expect=dict(move="done", requeues=0, writer="other", version=True))),
+              expect=dict(move="done", requeues=0, writer="other", version=True),
+              opt_in=("Cloud follows a committed lane without writing the followed run to any row, so this case can "
+                      "only skip until https://github.com/getployz/ployz/issues/1934 records it; run it with "
+                      "--case deploy-committed"))),
     held(dict(name="undo-before-cut", cell="Mirror>Mirror", step="1-rounds", op="move", machine="other",
               mirror="present", trigger="fault", action="release", recover="release",
               expect=dict(move="cancelled", release="done", writer="writer"))),
@@ -289,7 +292,7 @@ def select_cases(cases, names):
     unknown = sorted(set(names) - {case["name"] for case in cases})
     if unknown:
         raise RuntimeError(f"Unknown cases: {unknown}")
-    return [case for case in cases if not names or case["name"] in names]
+    return [case for case in cases if case["name"] in names or not (names or "opt_in" in case)]
 
 
 class Skipped(RuntimeError):
