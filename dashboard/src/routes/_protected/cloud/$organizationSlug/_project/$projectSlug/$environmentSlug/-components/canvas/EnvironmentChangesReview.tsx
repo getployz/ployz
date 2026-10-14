@@ -14,7 +14,6 @@ import type { ChangeGroup, ChangeRow } from "#/modules/config-store/store-deploy
 export type ChangeOrigin = { title: string; description: string };
 
 export type EnvironmentChangesReviewProps = {
-  /** The Environment's name, for the header's line. */
   environment: string;
   groups: ChangeGroup[];
   totalChanges: number;
@@ -130,9 +129,10 @@ export function ChangeGroups({ groups, onDiscardNode, onDiscardRow, noteFor, nev
               const kind = nodeKinds[group.lifecycle];
               return (
                 <ChangeLine key={group.discardPath} kind={kind} label={group.nodeName}
+                  value={group.comesBack ? <span className="text-xs text-muted-foreground">Comes back</span> : undefined}
                   onDiscard={firstConfig ? undefined : discardNode}
                   discardNode={firstConfig && discardNode ? { name: group.nodeName, run: discardNode } : undefined}>
-                  <p className={cn("truncate", kindText[kind])}>{group.nodeName} · {nodeWords[group.lifecycle]}</p>
+                  <p className={cn("truncate", kindText[kind])}>{group.comesBack ? group.nodeName : `${group.nodeName} · ${nodeWords[group.lifecycle]}`}</p>
                   {restarts}
                 </ChangeLine>
               );
@@ -212,7 +212,7 @@ function IncludedItem({ item, onRemove, onIncludeNewer }: {
 
 const nodeKinds = { create: "add", update: "update", delete: "remove" } as const;
 const nodeWords = { create: "will be added", update: "will be updated", delete: "will be removed" } as const;
-const kindText = { add: "text-success", update: "text-changed-deep", remove: "text-destructive" } satisfies Record<ChangeKind, string>;
+export const kindText = { add: "text-success", update: "text-changed-deep", remove: "text-destructive" } satisfies Record<ChangeKind, string>;
 const kindMarks = {
   add: { icon: <PlusIcon />, badge: "success", word: "Added" },
   update: { icon: <PencilIcon />, badge: "changed", word: "Changed" },
@@ -273,7 +273,7 @@ function ConfigFileValue({ before, after }: NonNullable<ChangeRow["configFile"]>
 }
 
 /** The value, right-aligned: `old → new` with new in the kind's colour; a removed one struck through. */
-function Value({ kind, before, after }: { kind: ChangeKind; before: string; after: string }) {
+export function Value({ kind, before, after }: { kind: ChangeKind; before: string; after: string }) {
   const shown = kind === "remove" ? before : after;
   return (
     <span className="ph-no-capture flex max-w-60 min-w-0 items-center justify-end gap-1.5 font-mono text-xs" title={shown}>

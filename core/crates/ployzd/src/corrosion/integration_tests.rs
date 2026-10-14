@@ -15,7 +15,7 @@ use serde_json::json;
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    ApiClient, CertificateMaterial, CorrosionConfig, ReplicatedStore, Statement,
+    ApiClient, CertificateMaterial, CorrosionConfig, MachineView, ReplicatedStore, Statement,
     run_machine_publisher, wait_for_catch_up,
 };
 use crate::machine::{LocalMachineBody, LocalMachineRecord, LocalMachineStore, RecordOwner};
@@ -169,8 +169,9 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
     let local = RecordOwner::spawn(LocalMachineStore::open(&local_dir).unwrap()).unwrap();
     let published = local.record().machine().cloned().unwrap();
     let shutdown = CancellationToken::new();
+    let view = MachineView::start(store.clone(), shutdown.clone());
     let publisher = tokio::spawn(run_machine_publisher(
-        Some(store.clone()),
+        Some((store.clone(), view)),
         local.clone(),
         tokio::sync::watch::channel(0).1,
         shutdown.clone(),
@@ -212,8 +213,9 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
     let unavailable =
         ReplicatedStore::new(ApiClient::new(unused_address(), &"a".repeat(64)).unwrap());
     let shutdown = CancellationToken::new();
+    let view = MachineView::start(unavailable.clone(), shutdown.clone());
     let publisher = tokio::spawn(run_machine_publisher(
-        Some(unavailable),
+        Some((unavailable, view)),
         interrupted.clone(),
         tokio::sync::watch::channel(0).1,
         shutdown.clone(),

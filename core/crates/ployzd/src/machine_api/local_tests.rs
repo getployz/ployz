@@ -272,6 +272,42 @@ async fn tail_logs_reads_each_target_from_its_live_source_without_the_observer()
 }
 
 #[tokio::test]
+async fn a_pulled_image_answers_only_after_docker_holds_it() {
+    use axum::http::Method;
+    let (data_dir, _store, service, fake) = fake_docker_service("ployzd-pull-image").await;
+    let image = "example.test/api:1";
+    service
+        .pull_image(Request::new(
+            op::PullImage::into_request(ployz_core::PullImageRequest {
+                image: image.into(),
+                policy: ployz_core::PullPolicy::Always,
+                registry_auth: None,
+            })
+            .encode()
+            .unwrap(),
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+        .decode_response()
+        .unwrap()
+        .decode::<op::PullImage>()
+        .unwrap();
+    let requests = fake.requests.lock().unwrap().clone();
+    let pulled = requests
+        .iter()
+        .position(|(method, path)| *method == Method::POST && path.ends_with("/images/create"));
+    let inspected = requests.iter().rposition(|(method, path)| {
+        *method == Method::GET && path.ends_with(&format!("/images/{image}/json"))
+    });
+    assert!(
+        matches!((pulled, inspected), (Some(pulled), Some(inspected)) if pulled < inspected),
+        "{requests:?}"
+    );
+    std::fs::remove_dir_all(data_dir).unwrap();
+}
+
+#[tokio::test]
 async fn keyed_creation_replays_conflicts_and_obeys_new_work_admission() {
     use serde_json::json;
     #[derive(Clone)]
@@ -705,7 +741,7 @@ mod set_volume_copy {
 
     fn writer_root(epoch: u32, newest: Option<Value>) -> Value {
         json!({"Ok": {"kind":"root", "readonly":false,
-            "newest":newest, "epoch":epoch}})
+            "newest":newest, "epoch":epoch, "seed":false}})
     }
 
     fn slot(newest: Option<Value>) -> Value {
@@ -746,11 +782,42 @@ mod set_volume_copy {
             .unwrap_or_else(|error| panic!("{error}: {response:?}"))
     }
 
+    async fn inspect(service: &MachineService) -> ployz_core::VolumeCopyView {
+        let request = ployz_core::InspectVolumeCopyRequest {
+            name: VOLUME.parse().unwrap(),
+        };
+        let response = service
+            .inspect_volume_copy(Request::new(
+                op::InspectVolumeCopy::into_request(request)
+                    .encode()
+                    .unwrap(),
+            ))
+            .await
+            .unwrap()
+            .into_inner()
+            .decode_response()
+            .unwrap();
+        response
+            .clone()
+            .decode::<op::InspectVolumeCopy>()
+            .unwrap_or_else(|error| panic!("{error}: {response:?}"))
+    }
+
     fn refusal(response: &RpcResponse) -> RpcError {
         let RpcResponseBody::Error(error) = &response.body else {
             panic!("expected a refusal, got {response:?}");
         };
         error.clone()
+    }
+
+    /// The lines the cut logged once every holder stopped, as the journal shows them.
+    fn cut_lines(capture: &crate::diag::test_support::Capture) -> Vec<String> {
+        capture
+            .text()
+            .lines()
+            .filter(|line| line.contains("cut: holders stopped"))
+            .map(str::to_owned)
+            .collect()
     }
 
     fn cut(expect: Value) -> Value {
@@ -761,8 +828,44 @@ mod set_volume_copy {
     /// A running Container that mounts the Volume, as Docker lists it for the cut,
     /// beside any holder already there.
     async fn running_holder(service: &MachineService, fake: &FakeDocker) -> ContainerId {
+        let created = kept_holder(service, fake).await;
+        start_holder(fake, &created);
+        created
+    }
+
+    /// A stopped Container that mounts the Volume: Docker lists it for the cut too.
+    async fn kept_holder(service: &MachineService, fake: &FakeDocker) -> ContainerId {
         let created = stopped_container(service).await;
-        let id = created.to_string();
+        fake.volume_users
+            .lock()
+            .unwrap()
+            .entry(VOLUME.into())
+            .or_default()
+            .push(json!({"Id": created.to_string()}));
+        created
+    }
+
+    /// The cut inspects a holder, then drains it. Waiting for that inspect rather than a
+    /// fixed time keeps a slow test host from fencing the cut before its drain.
+    async fn drain_started(fake: &FakeDocker, holder: &ContainerId, seen: usize) {
+        let inspect = format!("/containers/{holder}/json");
+        loop {
+            let inspected = fake
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .skip(seen)
+                .any(|(method, path)| *method == http::Method::GET && path.ends_with(&inspect));
+            if inspected {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
+    fn start_holder(fake: &FakeDocker, id: &ContainerId) {
+        let id = id.to_string();
         for container in fake
             .named_containers
             .as_ref()
@@ -774,13 +877,6 @@ mod set_volume_copy {
         {
             container["State"] = json!({"Status":"running", "Running":true});
         }
-        fake.volume_users
-            .lock()
-            .unwrap()
-            .entry(VOLUME.into())
-            .or_default()
-            .push(json!({"Id": id}));
-        created
     }
 
     async fn stopped_container(service: &MachineService) -> ContainerId {
@@ -1002,6 +1098,7 @@ mod set_volume_copy {
         let service = service.with_volume_plugin(socket);
         running_holder(&service, &fake).await;
 
+        let (capture, _logging) = crate::diag::test_support::capture();
         let first = reply(&set_copy(&service, cut(json!({"kind":"writer", "epoch":0}))).await);
         assert_eq!(
             serde_json::to_value(&first).unwrap(),
@@ -1018,6 +1115,10 @@ mod set_volume_copy {
         assert_eq!(
             plugin.routes_called(),
             vec![INSPECT_ROUTE, CUT_ROUTE, INSPECT_ROUTE, INSPECT_ROUTE]
+        );
+        assert_eq!(
+            cut_lines(&capture),
+            vec![" INFO cut: holders stopped volume=app_data target=f-1 gen=0"]
         );
         server.abort();
         std::fs::remove_dir_all(data_dir).unwrap();
@@ -1122,6 +1223,7 @@ mod set_volume_copy {
         let service = service.with_volume_plugin(socket);
         running_holder(&service, &fake).await;
 
+        let (capture, _logging) = crate::diag::test_support::capture();
         let error = refusal(&set_copy(&service, cut(json!({"kind":"writer", "epoch":0}))).await);
         assert_eq!(error.code, RpcErrorCode::Internal, "{error:?}");
         assert!(
@@ -1133,6 +1235,7 @@ mod set_volume_copy {
         );
         assert_eq!(holder_status(&fake), vec![json!("running")]);
         assert_eq!(plugin.routes_called(), vec![INSPECT_ROUTE]);
+        assert_eq!(cut_lines(&capture), Vec::<String>::new());
         server.abort();
         std::fs::remove_dir_all(data_dir).unwrap();
     }
@@ -1149,12 +1252,14 @@ mod set_volume_copy {
         let service = service.with_volume_plugin(socket);
         running_holder(&service, &fake).await;
 
+        let (capture, _logging) = crate::diag::test_support::capture();
         let error = refusal(&set_copy(&service, cut(json!({"kind":"writer", "epoch":0}))).await);
         assert_eq!(error.code, RpcErrorCode::Conflict, "{error:?}");
         assert_eq!(error.details["reason"], json!("busy"));
         assert_eq!(error.details["copy"], writer_root(0, None)["Ok"]);
         assert_eq!(holder_status(&fake), vec![json!("running")]);
         assert_eq!(plugin.routes_called(), vec![INSPECT_ROUTE, INSPECT_ROUTE]);
+        assert_eq!(cut_lines(&capture), Vec::<String>::new());
         server.abort();
         std::fs::remove_dir_all(data_dir).unwrap();
     }
@@ -1218,6 +1323,536 @@ mod set_volume_copy {
             plugin.routes_called(),
             vec![INSPECT_ROUTE, WRITER_ROUTE, INSPECT_ROUTE, INSPECT_ROUTE]
         );
+        server.abort();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    fn at_gen(mut request: Value, r#gen: u64) -> Value {
+        request
+            .as_object_mut()
+            .unwrap()
+            .insert("gen".into(), json!(r#gen));
+        request
+    }
+
+    fn floor(r#gen: u64) -> Value {
+        at_gen(
+            json!({"name":VOLUME, "expect":{"kind":"none"}, "want":{"kind":"floor"}}),
+            r#gen,
+        )
+    }
+
+    fn forget(expect: Value) -> Value {
+        json!({"name":VOLUME, "expect":expect, "want":{"kind":"forget"}})
+    }
+
+    fn draining_cut(drain: u64) -> Value {
+        json!({"name":VOLUME, "expect":{"kind":"writer", "epoch":0},
+            "want":{"kind":"mirror", "from":null, "target":"f-1", "drain":drain}})
+    }
+
+    /// A Writer root whose cut parks it in a slot holding `f-1`.
+    fn cutting_plugin() -> FakePlugin {
+        let plugin = FakePlugin::default();
+        plugin.reply(INSPECT_ROUTE, writer_root(0, None));
+        plugin.reply(CUT_ROUTE, slot(Some(snapshot("f-1", 7))));
+        let replies = plugin.replies.clone();
+        plugin.on(CUT_ROUTE, move || {
+            replies
+                .lock()
+                .unwrap()
+                .insert(INSPECT_ROUTE.into(), slot(Some(snapshot("f-1", 7))));
+        });
+        plugin
+    }
+
+    #[tokio::test]
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    async fn a_request_below_the_floor_refuses_stale_before_any_effect() {
+        let (data_dir, _store, service, fake) = fake_docker_service("ployzd-copy-stale").await;
+        let plugin = cutting_plugin();
+        let (socket, server) = plugin.serve(&data_dir);
+        let service = service.with_volume_plugin(socket);
+        running_holder(&service, &fake).await;
+
+        let raised = reply(&set_copy(&service, floor(5)).await);
+        assert_eq!(
+            serde_json::to_value(&raised).unwrap(),
+            json!({"copy": writer_root(0, None)["Ok"]})
+        );
+        let error = refusal(
+            &set_copy(
+                &service,
+                at_gen(cut(json!({"kind":"writer", "epoch":0})), 4),
+            )
+            .await,
+        );
+        assert_eq!(error.code, RpcErrorCode::Conflict, "{error:?}");
+        assert_eq!(error.details["reason"], json!("stale"));
+        assert_eq!(error.details["floor"], json!(5));
+        assert_eq!(error.details["copy"], writer_root(0, None)["Ok"]);
+        assert_eq!(holder_status(&fake), vec![json!("running")]);
+        assert_eq!(plugin.routes_called(), vec![INSPECT_ROUTE, INSPECT_ROUTE]);
+        server.abort();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    async fn a_gen_at_or_above_the_floor_raises_it_and_a_lower_one_is_stale() {
+        let (data_dir, _store, service, _fake) = fake_docker_service("ployzd-copy-gen").await;
+        let plugin = FakePlugin::default();
+        plugin.reply(INSPECT_ROUTE, writer_root(0, None));
+        let (socket, server) = plugin.serve(&data_dir);
+        let service = service.with_volume_plugin(socket);
+        let request = forget(json!({"kind":"writer", "epoch":0}));
+
+        let first = reply(&set_copy(&service, at_gen(request.clone(), 3)).await);
+        assert_eq!(
+            serde_json::to_value(&first).unwrap(),
+            json!({"copy": writer_root(0, None)["Ok"]})
+        );
+        assert_eq!(
+            reply(&set_copy(&service, at_gen(request.clone(), 3)).await),
+            first
+        );
+        let error = refusal(&set_copy(&service, at_gen(request.clone(), 2)).await);
+        assert_eq!(error.details["reason"], json!("stale"), "{error:?}");
+        assert_eq!(error.details["floor"], json!(3));
+        let unnumbered = refusal(&set_copy(&service, request).await);
+        assert_eq!(
+            unnumbered.details["reason"],
+            json!("stale"),
+            "{unnumbered:?}"
+        );
+        server.abort();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_machine_outside_the_cluster_refuses_a_cut_forget_or_floor_and_raises_no_floor() {
+        let data_dir =
+            std::env::temp_dir().join(format!("ployzd-copy-outside-{}", MachineId::random()));
+        let store = RecordOwner::spawn(LocalMachineStore::open(&data_dir).unwrap()).unwrap();
+        let (runtime, _fake) =
+            crate::docker::test_support::fake_runtime_with(FakeDocker::default()).await;
+        let service =
+            MachineService::with_cluster(store, None).with_optional_containers(Some(runtime));
+
+        for request in [
+            at_gen(draining_cut(0), 5),
+            at_gen(forget(json!({"kind":"writer", "epoch":0})), 5),
+            floor(5),
+        ] {
+            let error = refusal(&set_copy(&service, request).await);
+            assert_eq!(error.message, "Machine is not participating", "{error:?}");
+        }
+        let lower = service
+            .containers()
+            .unwrap()
+            .floor_turn()
+            .await
+            .admit(&VOLUME.parse().unwrap(), ployz_core::VolumeGen::new(0))
+            .await
+            .unwrap();
+        assert_eq!(lower, Ok(()), "a refused request left a floor behind");
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_machine_outside_the_cluster_without_docker_says_it_is_not_participating() {
+        let data_dir =
+            std::env::temp_dir().join(format!("ployzd-copy-bare-{}", MachineId::random()));
+        let store = RecordOwner::spawn(LocalMachineStore::open(&data_dir).unwrap()).unwrap();
+        let service = MachineService::with_cluster(store, None);
+
+        for request in [
+            at_gen(draining_cut(0), 5),
+            at_gen(forget(json!({"kind":"writer", "epoch":0})), 5),
+            floor(5),
+        ] {
+            let error = refusal(&set_copy(&service, request).await);
+            assert_eq!(error.message, "Machine is not participating", "{error:?}");
+        }
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_floor_queued_on_the_floor_lock_across_a_reset_refuses_and_raises_no_floor() {
+        let (data_dir, store, service, _fake) = fake_docker_service("ployzd-copy-reset").await;
+        let turn = service.containers().unwrap().floor_turn().await;
+        let mut queued = std::pin::pin!(set_copy(&service, floor(5)));
+        assert!(
+            futures_util::poll!(queued.as_mut()).is_pending(),
+            "the Floor did not queue on the floor lock"
+        );
+        store
+            .mutate(LocalMachineStore::begin_reset)
+            .await
+            .unwrap()
+            .unwrap();
+        drop(turn);
+
+        let response = queued.await;
+        let lower = service
+            .containers()
+            .unwrap()
+            .floor_turn()
+            .await
+            .admit(&VOLUME.parse().unwrap(), ployz_core::VolumeGen::new(0))
+            .await
+            .unwrap();
+        assert_eq!(lower, Ok(()), "the Floor raised a floor after the reset");
+        let error = refusal(&response);
+        assert_eq!(error.message, "Machine is not participating", "{error:?}");
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    async fn a_floor_want_answers_the_root_while_a_cut_drains_then_the_slot() {
+        let (data_dir, _store, service, fake) = fake_docker_service("ployzd-copy-floor").await;
+        let plugin = cutting_plugin();
+        let (socket, server) = plugin.serve(&data_dir);
+        let service = service.with_volume_plugin(socket);
+        running_holder(&service, &fake).await;
+
+        let (cut, during) = tokio::join!(set_copy(&service, at_gen(draining_cut(400), 1)), async {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            tokio::time::timeout(
+                std::time::Duration::from_millis(200),
+                set_copy(&service, floor(1)),
+            )
+            .await
+            .expect("the floor want waited on the draining cut")
+        });
+        assert_eq!(
+            serde_json::to_value(reply(&during)).unwrap(),
+            json!({"copy": writer_root(0, None)["Ok"]})
+        );
+        assert_eq!(
+            serde_json::to_value(reply(&cut)).unwrap(),
+            json!({"copy": slot(Some(snapshot("f-1", 7)))["Ok"]})
+        );
+        assert_eq!(
+            serde_json::to_value(reply(&set_copy(&service, floor(1)).await)).unwrap(),
+            json!({"copy": slot(Some(snapshot("f-1", 7)))["Ok"]})
+        );
+        server.abort();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    /// A Deploy that floors the Volume during the drain sees the holder running and
+    /// keeps it, so the cut must neither stop it nor leave it out of ingress.
+    #[tokio::test]
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    async fn a_floor_raised_during_the_drain_refuses_the_cut_stale_and_leaves_its_holder_serving() {
+        let (data_dir, _store, service, fake) = fake_docker_service("ployzd-copy-fenced").await;
+        let plugin = cutting_plugin();
+        let (socket, server) = plugin.serve(&data_dir);
+        let service = service.with_volume_plugin(socket);
+        let holder = running_holder(&service, &fake).await;
+        let seen = fake.requests.lock().unwrap().len();
+
+        let (refused, _) = tokio::join!(set_copy(&service, at_gen(draining_cut(300), 1)), async {
+            drain_started(&fake, &holder, seen).await;
+            set_copy(&service, floor(2)).await
+        });
+        let error = refusal(&refused);
+        assert_eq!(error.details["reason"], json!("stale"), "{error:?}");
+        assert_eq!(error.details["floor"], json!(2));
+        assert_eq!(error.details["copy"], writer_root(0, None)["Ok"]);
+        assert_eq!(holder_status(&fake), vec![json!("running")]);
+        let local = service.local();
+        let observed = local
+            .containers()
+            .unwrap()
+            .inspect_managed(&holder, &local.record().id())
+            .await
+            .unwrap();
+        assert!(observed.runtime.may_serve(), "{:?}", observed.runtime);
+        assert!(
+            !plugin
+                .routes_called()
+                .iter()
+                .any(|route| route == CUT_ROUTE)
+        );
+        server.abort();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    /// A Deploy that floors the Volume while the cut stops its holder reads the holder
+    /// next and keeps a running one, so the floor must wait for the stop to land.
+    #[tokio::test]
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    async fn a_floor_raised_during_the_holder_stop_waits_for_it_and_sees_the_holder_stopped() {
+        let (data_dir, _store, service, fake) =
+            fake_docker_service("ployzd-copy-fenced-stop").await;
+        let plugin = cutting_plugin();
+        let (socket, server) = plugin.serve(&data_dir);
+        let service = service.with_volume_plugin(socket);
+        let holder = running_holder(&service, &fake).await;
+        let stop = format!("/containers/{holder}/stop");
+        let held = fake.stop_gate.write().await;
+
+        let (refused, seen_by_floor) =
+            tokio::join!(set_copy(&service, at_gen(draining_cut(0), 1)), async {
+                while !fake
+                    .requests
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|(method, path)| *method == http::Method::POST && path.ends_with(&stop))
+                {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                let floored = async {
+                    reply(&set_copy(&service, floor(2)).await);
+                    holder_status(&fake)
+                };
+                let release = async {
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    drop(held);
+                };
+                tokio::join!(floored, release).0
+            });
+        assert_eq!(seen_by_floor, vec![json!("exited")]);
+        let error = refusal(&refused);
+        assert_eq!(error.details["reason"], json!("stale"), "{error:?}");
+        assert_eq!(error.details["floor"], json!(2));
+        assert_eq!(error.details["copy"], writer_root(0, None)["Ok"]);
+        server.abort();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    async fn a_floor_read_failing_after_the_drain_stops_nothing_and_leaves_its_holder_serving() {
+        let (data_dir, _store, service, fake) =
+            fake_docker_service("ployzd-copy-fence-fails").await;
+        let plugin = cutting_plugin();
+        let (socket, server) = plugin.serve(&data_dir);
+        let service = service.with_volume_plugin(socket);
+        let holder = running_holder(&service, &fake).await;
+        let seen = fake.requests.lock().unwrap().len();
+        let local = service.local();
+        let containers = local.containers().unwrap();
+        let specs = containers.spec_store_path_for_test().to_owned();
+
+        let (failed, ()) = tokio::join!(set_copy(&service, at_gen(draining_cut(300), 1)), async {
+            drain_started(&fake, &holder, seen).await;
+            rusqlite::Connection::open(&specs)
+                .unwrap()
+                .execute("DROP TABLE volume_floors", [])
+                .unwrap();
+        });
+        let error = refusal(&failed);
+        assert_ne!(error.details["reason"], json!("stale"), "{error:?}");
+        assert_eq!(holder_status(&fake), vec![json!("running")]);
+        let stop = format!("/containers/{holder}/stop");
+        assert!(
+            !fake
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(_, path)| *path == stop)
+        );
+        assert!(containers.stopping_ids_for_test().is_empty());
+        let observed = containers
+            .inspect_managed(&holder, &local.record().id())
+            .await
+            .unwrap();
+        assert!(observed.runtime.may_serve(), "{:?}", observed.runtime);
+        assert!(
+            !plugin
+                .routes_called()
+                .iter()
+                .any(|route| route == CUT_ROUTE)
+        );
+        server.abort();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    /// A Deploy floors the writer and then starts its Container. A cut that was already
+    /// draining an older holder must not stop that Container on its way to Stale.
+    #[tokio::test]
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    async fn a_cut_fenced_during_its_drain_leaves_a_holder_started_after_the_floor_running() {
+        let (data_dir, _store, service, fake) =
+            fake_docker_service("ployzd-copy-fenced-late").await;
+        let plugin = cutting_plugin();
+        let (socket, server) = plugin.serve(&data_dir);
+        let service = service.with_volume_plugin(socket);
+        let older = running_holder(&service, &fake).await;
+        let deployed = kept_holder(&service, &fake).await;
+        let seen = fake.requests.lock().unwrap().len();
+
+        let (refused, _) = tokio::join!(set_copy(&service, at_gen(draining_cut(300), 1)), async {
+            drain_started(&fake, &older, seen).await;
+            let floored = set_copy(&service, floor(2)).await;
+            start_holder(&fake, &deployed);
+            floored
+        });
+        let error = refusal(&refused);
+        assert_eq!(error.details["reason"], json!("stale"), "{error:?}");
+        assert_eq!(error.details["floor"], json!(2));
+        assert_eq!(running(&fake), 2, "{:?}", holder_status(&fake));
+        assert!(
+            !plugin
+                .routes_called()
+                .iter()
+                .any(|route| route == CUT_ROUTE)
+        );
+        server.abort();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    /// A Deploy that floors the Volume while a Writer raise runs its route starts its
+    /// own Container next, so the raise must not start an older one beside it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    async fn a_floor_raised_during_a_raise_refuses_its_start_stale() {
+        let (data_dir, _store, service, fake) =
+            fake_docker_service("ployzd-copy-raise-fenced").await;
+        let plugin = FakePlugin::default();
+        plugin.reply(INSPECT_ROUTE, writer_root(1, Some(snapshot("f-1", 7))));
+        plugin.reply(WRITER_ROUTE, writer_root(2, Some(snapshot("f-1", 7))));
+        let replies = plugin.replies.clone();
+        let raising = std::sync::Arc::new(tokio::sync::Notify::new());
+        let raised = raising.clone();
+        plugin.on(WRITER_ROUTE, move || {
+            replies.lock().unwrap().insert(
+                INSPECT_ROUTE.into(),
+                writer_root(2, Some(snapshot("f-1", 7))),
+            );
+            raised.notify_one();
+            tokio::task::block_in_place(|| {
+                std::thread::sleep(std::time::Duration::from_millis(300));
+            });
+        });
+        let (socket, server) = plugin.serve(&data_dir);
+        let service = service.with_volume_plugin(socket);
+        let kept = stopped_container(&service).await;
+        let raise = at_gen(
+            json!({"name":VOLUME, "expect":{"kind":"writer", "epoch":1},
+                "want":{"kind":"writer", "at":"7", "epoch":2,
+                    "start":{"kind":"kept", "container_id":kept.to_string()}}}),
+            1,
+        );
+
+        let (refused, _) = tokio::join!(set_copy(&service, raise), async {
+            raising.notified().await;
+            set_copy(&service, floor(2)).await
+        });
+        let error = refusal(&refused);
+        assert_eq!(error.details["reason"], json!("stale"), "{error:?}");
+        assert_eq!(error.details["floor"], json!(2));
+        assert_eq!(running(&fake), 0, "{:?}", holder_status(&fake));
+        server.abort();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    async fn a_request_queued_behind_a_cut_refuses_stale_once_a_floor_fenced_it() {
+        let (data_dir, _store, service, fake) = fake_docker_service("ployzd-copy-queued").await;
+        let plugin = cutting_plugin();
+        let (socket, server) = plugin.serve(&data_dir);
+        let service = service.with_volume_plugin(socket);
+        running_holder(&service, &fake).await;
+        let queued = at_gen(forget(json!({"kind":"writer", "epoch":0})), 1);
+
+        let (_, queued, _) = tokio::join!(
+            set_copy(&service, at_gen(draining_cut(300), 1)),
+            async {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                set_copy(&service, queued).await
+            },
+            async {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                set_copy(&service, floor(2)).await
+            }
+        );
+        let error = refusal(&queued);
+        assert_eq!(error.details["reason"], json!("stale"), "{error:?}");
+        assert_eq!(error.details["floor"], json!(2));
+        server.abort();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    async fn a_floor_want_sent_during_the_flip_waits_for_it_and_answers_the_slot() {
+        let (data_dir, _store, service, fake) = fake_docker_service("ployzd-copy-flip").await;
+        let plugin = FakePlugin::default();
+        plugin.reply(INSPECT_ROUTE, writer_root(0, None));
+        plugin.reply(CUT_ROUTE, slot(Some(snapshot("f-1", 7))));
+        let replies = plugin.replies.clone();
+        let flipping = std::sync::Arc::new(tokio::sync::Notify::new());
+        let flip = flipping.clone();
+        plugin.on(CUT_ROUTE, move || {
+            replies
+                .lock()
+                .unwrap()
+                .insert(INSPECT_ROUTE.into(), json!({"Ok": null}));
+            flip.notify_one();
+            tokio::task::block_in_place(|| {
+                std::thread::sleep(std::time::Duration::from_millis(300));
+            });
+            replies
+                .lock()
+                .unwrap()
+                .insert(INSPECT_ROUTE.into(), slot(Some(snapshot("f-1", 7))));
+        });
+        let (socket, server) = plugin.serve(&data_dir);
+        let service = service.with_volume_plugin(socket);
+        running_holder(&service, &fake).await;
+
+        let (cut, during) = tokio::join!(set_copy(&service, at_gen(draining_cut(0), 1)), async {
+            flipping.notified().await;
+            set_copy(&service, floor(1)).await
+        });
+        assert_eq!(
+            serde_json::to_value(reply(&during)).unwrap(),
+            json!({"copy": slot(Some(snapshot("f-1", 7)))["Ok"]})
+        );
+        assert_eq!(reply(&cut), reply(&during));
+        server.abort();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    /// A Deploy, a release and a requeued move observe the Volume first, so an inspect
+    /// that waited on a cut's drain would time out and fail them.
+    #[tokio::test]
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    async fn an_inspect_answers_the_root_while_a_cut_drains() {
+        let (data_dir, _store, service, fake) =
+            fake_docker_service("ployzd-copy-inspect-drain").await;
+        let plugin = cutting_plugin();
+        plugin.reply(
+            "Volume.Inspect",
+            json!({"Ok": {"copy": writer_root(0, None)["Ok"]}}),
+        );
+        let (socket, server) = plugin.serve(&data_dir);
+        let service = service.with_volume_plugin(socket);
+        running_holder(&service, &fake).await;
+
+        let (cut, during) = tokio::join!(set_copy(&service, at_gen(draining_cut(400), 1)), async {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            tokio::time::timeout(std::time::Duration::from_millis(200), inspect(&service))
+                .await
+                .expect("the inspect waited on the draining cut")
+        });
+        assert_eq!(
+            serde_json::to_value(during).unwrap(),
+            json!({"copy": writer_root(0, None)["Ok"]})
+        );
+        assert_eq!(
+            serde_json::to_value(reply(&cut)).unwrap(),
+            json!({"copy": slot(Some(snapshot("f-1", 7)))["Ok"]})
+        );
+        assert_eq!(holder_status(&fake), vec![json!("exited")]);
         server.abort();
         std::fs::remove_dir_all(data_dir).unwrap();
     }
@@ -1355,6 +1990,170 @@ mod set_volume_copy {
         server.abort();
         std::fs::remove_dir_all(data_dir).unwrap();
     }
+
+    /// Each child re-runs this binary armed through its own fault file, since a kill aborts
+    /// the whole process.
+    #[cfg(feature = "verify-faults")]
+    mod fault_lines {
+        use std::os::unix::process::ExitStatusExt;
+
+        use super::*;
+
+        const SIGABRT: i32 = 6;
+
+        /// Runs the ignored test `child` of this module alone, under `fault`.
+        fn run(child: &str, fault: &str) -> (std::process::Output, String) {
+            let child = format!("machine_api::local::tests::set_volume_copy::fault_lines::{child}");
+            let armed = tempfile::tempdir().unwrap();
+            let path = armed.path().join("fault");
+            std::fs::write(&path, fault).unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &child, "--ignored", "--nocapture"])
+                .env(crate::faults::PATH_ENV, &path)
+                .env_remove(crate::diag::ENV)
+                .output()
+                .unwrap();
+            (output, child)
+        }
+
+        fn fault_lines(text: &str) -> Vec<&str> {
+            text.lines()
+                .filter(|line| line.contains("fault:"))
+                .collect()
+        }
+
+        #[test]
+        fn a_switch_fault_line_names_the_volume_and_the_want() {
+            let (output, child) = run(
+                "a_cut_under_a_switch_delay",
+                "delay-rpc:SetVolumeCopy.WriterToMirror:0",
+            );
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success() && stdout.contains("1 passed"),
+                "{child}:\n{stdout}\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                fault_lines(&stdout),
+                vec![
+                    r#" WARN fault: delaying switch verb verb="SetVolumeCopy.WriterToMirror" secs=0 volume=app_data target=f-1 gen=6"#,
+                    r#" WARN fault: releasing switch verb verb="SetVolumeCopy.WriterToMirror" by=limit volume=app_data target=f-1 gen=6"#,
+                ]
+            );
+        }
+
+        #[test]
+        fn an_admission_fault_line_names_the_volume_and_the_want() {
+            let (output, child) = run("a_cut_under_a_switch_delay", "delay-rpc:SetVolumeCopy:0");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success() && stdout.contains("1 passed"),
+                "{child}:\n{stdout}\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                fault_lines(&stdout),
+                vec![
+                    r#" WARN fault: delaying switch verb verb="SetVolumeCopy" secs=0 volume=app_data target=f-1 gen=6"#,
+                    r#" WARN fault: releasing switch verb verb="SetVolumeCopy" by=limit volume=app_data target=f-1 gen=6"#,
+                ]
+            );
+        }
+
+        /// A Floor only raises the gen floor, outside the switch lock, so an armed switch
+        /// fault never holds it.
+        #[test]
+        fn a_floor_passes_an_armed_switch_fault_without_a_line() {
+            let (output, child) = run("a_floor_under_a_switch_delay", "delay-rpc:SetVolumeCopy:30");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success() && stdout.contains("1 passed"),
+                "{child}:\n{stdout}\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(fault_lines(&stdout), Vec::<&str>::new());
+        }
+
+        /// The kill aborts the child, so its line is read from the child's stderr.
+        #[test]
+        fn a_promote_kill_line_names_the_volume_and_the_want() {
+            let (output, child) = run(
+                "a_promote_under_a_kill",
+                "kill-daemon:SetVolumeCopy.MirrorToWriter",
+            );
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert_eq!(
+                output.status.signal(),
+                Some(SIGABRT),
+                "{child} was not aborted:\n{}\n{stderr}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+            assert_eq!(
+                fault_lines(&stderr),
+                vec![
+                    r#" WARN fault: killing daemon inside the effect verb="SetVolumeCopy.MirrorToWriter" volume=app_data at=900 epoch=1 gen=6"#
+                ]
+            );
+        }
+
+        #[tokio::test]
+        #[ignore = "a child of a_promote_kill_line_names_the_volume_and_the_want"]
+        async fn a_promote_under_a_kill() {
+            crate::diag::init(None).unwrap();
+            let (data_dir, _store, service, _fake) = fake_docker_service("ployzd-copy-kill").await;
+            let plugin = FakePlugin::default();
+            plugin.reply(INSPECT_ROUTE, slot(Some(snapshot("f-1", 900))));
+            plugin.reply(WRITER_ROUTE, writer_root(1, Some(snapshot("f-1", 900))));
+            let (socket, _server) = plugin.serve(&data_dir);
+            let service = service.with_volume_plugin(socket);
+            let promote = json!({"name":VOLUME,
+                "expect":{"kind":"mirror", "newest":"900", "slot":"1"},
+                "want":{"kind":"writer", "at":"900", "epoch":1, "start":null}, "gen":6});
+
+            let answered = set_copy(&service, promote).await;
+            panic!("the promote outlived its kill: {answered:?}");
+        }
+
+        #[tokio::test]
+        #[ignore = "a child of a_floor_passes_an_armed_switch_fault_without_a_line"]
+        async fn a_floor_under_a_switch_delay() {
+            let (data_dir, _store, service, _fake) =
+                fake_docker_service("ployzd-floor-fault").await;
+            let plugin = FakePlugin::default();
+            plugin.reply(INSPECT_ROUTE, writer_root(0, None));
+            let (socket, server) = plugin.serve(&data_dir);
+            let service = service.with_volume_plugin(socket);
+
+            let (capture, _logging) = crate::diag::test_support::capture();
+            reply(&set_copy(&service, floor(6)).await);
+            print!("{}", capture.text());
+            server.abort();
+            std::fs::remove_dir_all(data_dir).unwrap();
+        }
+
+        #[tokio::test]
+        #[ignore = "a child of a_switch_fault_line_names_the_volume_and_the_want"]
+        async fn a_cut_under_a_switch_delay() {
+            let (data_dir, _store, service, _fake) = fake_docker_service("ployzd-copy-fault").await;
+            let plugin = FakePlugin::default();
+            plugin.reply(INSPECT_ROUTE, writer_root(0, None));
+            plugin.reply(CUT_ROUTE, slot(Some(snapshot("f-1", 7))));
+            let (socket, server) = plugin.serve(&data_dir);
+            let service = service.with_volume_plugin(socket);
+
+            let request = at_gen(cut(json!({"kind":"writer", "epoch":0})), 6);
+            let (capture, _logging) = crate::diag::test_support::capture();
+            reply(&set_copy(&service, request).await);
+            print!("{}", capture.text());
+            assert_eq!(
+                plugin.routes_called(),
+                vec![INSPECT_ROUTE, CUT_ROUTE, INSPECT_ROUTE]
+            );
+            server.abort();
+            std::fs::remove_dir_all(data_dir).unwrap();
+        }
+    }
 }
 
 mod ensure_container {
@@ -1482,6 +2281,29 @@ mod ensure_container {
         assert!(
             later.iter().all(|(method, _)| *method == Method::GET),
             "a resend only observes: {later:?}"
+        );
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture edits")]
+    async fn a_prepared_image_is_never_pulled_again_at_creation() {
+        let (data_dir, _store, service, fake) = fake_docker_service("ployzd-ensure-prepared").await;
+        let mut spec = spec("example.test/api:1");
+        spec["container"]["pull_policy"] = json!("always");
+        let pulls =
+            |fake: &FakeDocker| ends_with(&requests(fake), Method::POST, "/images/create").count();
+
+        let mut prepared = run_new("k1", spec.clone());
+        prepared["want"]["container"]["new"]["image_prepared"] = json!(true);
+        present(&ensure(&service, prepared).await);
+        assert_eq!(pulls(&fake), 0);
+
+        present(&ensure(&service, run_new("k2", spec)).await);
+        assert_eq!(
+            pulls(&fake),
+            1,
+            "an unprepared image pulls under its policy"
         );
         std::fs::remove_dir_all(data_dir).unwrap();
     }
@@ -1812,167 +2634,388 @@ mod ensure_container {
     }
 }
 
-#[tokio::test]
-async fn serving_pointer_publish_answers_published_then_superseded_with_the_current_row() {
+mod serving_pointer {
+    use std::collections::BTreeMap;
+    use std::path::{Path, PathBuf};
+
+    use futures_util::{SinkExt, StreamExt};
+    use ployz_core::{
+        ContainerId, DeploymentLogId, Machine, NotPointerPublisher, OpaquePayload,
+        PublishServingPointerRequest, QualifiedService, ReadServingPointerRequest, Rpc, RpcError,
+        ServingPointer, ServingPointerPublication, ServingPointerRead,
+    };
+    use serde_json::{Value, json};
+    use tokio::net::UnixListener;
+    use tokio_util::codec::LengthDelimitedCodec;
+
+    use super::*;
     use crate::corrosion::{
-        AdminClient,
+        AdminClient, ReplicatedStore,
         store_tests::{corrosion_db, identity_store},
     };
-    use ployz_core::{
-        DeploymentLogId, PublishServingPointerRequest, QualifiedService, ReadServingPointerRequest,
-        ServingPointer, ServingPointerPublication,
-    };
 
-    let data_dir =
-        std::env::temp_dir().join(format!("ployzd-serving-publish-{}", MachineId::random()));
-    let mut local = LocalMachineStore::open(&data_dir).unwrap();
-    local
-        .enroll(ployz_core::EnrollRequest {
-            role: ployz_core::EnrollAs::Founder {
-                initial_policy: Default::default(),
-                name: ployz_core::MachineName::parse("local").unwrap(),
-                cluster_network: "10.210.0.0/16".parse().unwrap(),
-                public_ip: None,
-                advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(
-                    "192.0.2.1:51820".parse().unwrap(),
-                )],
-            },
-            wireguard_mtu: None,
-        })
-        .unwrap();
-    let (replicated, task) = identity_store(corrosion_db()).await;
-    let service = MachineService::with_cluster(
-        RecordOwner::spawn(local).unwrap(),
-        Some((replicated, AdminClient::new("/no/such/admin.sock"))),
-    );
-    let api = QualifiedService::parse("app/api").unwrap();
-    let pointer = |deploy: &str, container: &str| ServingPointer {
-        deploy: DeploymentLogId::parse(deploy).unwrap(),
-        containers: vec![ContainerId::parse(container.repeat(64)).unwrap()],
-        previous: None,
-        retiring: Vec::new(),
-    };
-    let publish = |read: Option<ServingPointer>, pointer: ServingPointer| {
+    fn admin_socket(dir: &Path, states: Vec<Value>) -> PathBuf {
+        let path = dir.join(format!("admin-{}.sock", MachineId::random()));
+        let listener = UnixListener::bind(&path).unwrap();
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let mut framed = LengthDelimitedCodec::builder()
+                    .big_endian()
+                    .length_field_length(4)
+                    .new_framed(stream);
+                framed.next().await;
+                for state in &states {
+                    let frame = serde_json::to_vec(&json!({ "Json": state })).unwrap();
+                    framed.send(frame.into()).await.unwrap();
+                }
+                framed
+                    .send(serde_json::to_vec(&json!("Success")).unwrap().into())
+                    .await
+                    .unwrap();
+            }
+        });
+        path
+    }
+
+    fn machine_one() -> Machine {
+        serde_json::from_value(json!({
+            "id": "0".repeat(32),
+            "name": "machine-1",
+            "subnet": "10.210.1.0/24",
+            "labels": {}, "accepts_builds": true, "accepts_services": true, "accepts_ingress": true,
+            "public_key": crate::network::WireGuardPrivateKey::from_bytes([7; 32]).public_key(),
+            "advertised_endpoints": ["192.0.2.7:51820"],
+        }))
+        .unwrap()
+    }
+
+    fn alive(machine: &Machine) -> Value {
+        let address = std::net::SocketAddr::new(
+            machine.management_address().0.into(),
+            ployz_core::CORROSION_GOSSIP_PORT,
+        );
+        json!({ "id": { "addr": address }, "state": "Alive" })
+    }
+
+    async fn machine(
+        dir: &Path,
+        rows: &[Machine],
+        states: Vec<Value>,
+    ) -> (MachineService, tokio::task::JoinHandle<()>) {
+        serve(dir, enrolled(dir), corrosion_db(), rows, states).await
+    }
+
+    fn enrolled(dir: &Path) -> LocalMachineStore {
+        let mut local = LocalMachineStore::open(dir.join(MachineId::random().as_str())).unwrap();
+        local
+            .enroll(ployz_core::EnrollRequest {
+                role: ployz_core::EnrollAs::Founder {
+                    initial_policy: Default::default(),
+                    name: ployz_core::MachineName::parse("local").unwrap(),
+                    cluster_network: "10.210.0.0/16".parse().unwrap(),
+                    public_ip: None,
+                    advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(
+                        "192.0.2.1:51820".parse().unwrap(),
+                    )],
+                },
+                wireguard_mtu: None,
+            })
+            .unwrap();
+        local
+    }
+
+    async fn serve(
+        dir: &Path,
+        local: LocalMachineStore,
+        db: rusqlite::Connection,
+        rows: &[Machine],
+        states: Vec<Value>,
+    ) -> (MachineService, tokio::task::JoinHandle<()>) {
+        let (replicated, task): (ReplicatedStore, _) = identity_store(db).await;
+        for row in rows {
+            replicated
+                .machine_publication()
+                .await
+                .publish(row)
+                .await
+                .unwrap();
+        }
+        let service = MachineService::with_cluster(
+            RecordOwner::spawn(local).unwrap(),
+            Some((replicated, AdminClient::new(admin_socket(dir, states)))),
+        );
+        (service, task)
+    }
+
+    fn api() -> QualifiedService {
+        QualifiedService::parse("app/api").unwrap()
+    }
+
+    fn pointer(deploy: &str, container: &str) -> ServingPointer {
+        ServingPointer {
+            deploy: DeploymentLogId::parse(deploy).unwrap(),
+            containers: vec![ContainerId::parse(container.repeat(64)).unwrap()],
+            previous: None,
+            retiring: Vec::new(),
+        }
+    }
+
+    fn answer<T: Rpc>(response: tonic::Response<OpaquePayload>) -> Result<T::Response, RpcError> {
+        let response = response.into_inner().decode_response().unwrap();
+        if let ployz_core::RpcResponseBody::Error(error) = &response.body {
+            return Err(error.clone());
+        }
+        Ok(response.decode::<T>().unwrap())
+    }
+
+    async fn publish(
+        service: &MachineService,
+        read: Option<ServingPointer>,
+        pointer: ServingPointer,
+    ) -> Result<ServingPointerPublication, RpcError> {
         let request = op::PublishServingPointer::into_request(PublishServingPointerRequest {
-            service: api.clone(),
+            service: api(),
             read,
             pointer,
         });
-        let service = &service;
-        async move {
+        answer::<op::PublishServingPointer>(
             service
                 .publish_serving_pointer(Request::new(request.encode().unwrap()))
                 .await
-                .unwrap()
-                .into_inner()
-                .decode_response()
-                .unwrap()
-                .decode::<op::PublishServingPointer>()
-                .unwrap()
-        }
-    };
-
-    assert_eq!(
-        publish(None, pointer("d1", "a")).await,
-        ServingPointerPublication::Published
-    );
-    assert_eq!(
-        publish(None, pointer("d2", "b")).await,
-        ServingPointerPublication::Superseded {
-            current: Some(pointer("d1", "a"))
-        }
-    );
-    let read = service
-        .read_serving_pointer(Request::new(
-            op::ReadServingPointer::into_request(ReadServingPointerRequest {
-                service: api.clone(),
-            })
-            .encode()
-            .unwrap(),
-        ))
-        .await
-        .unwrap()
-        .into_inner()
-        .decode_response()
-        .unwrap()
-        .decode::<op::ReadServingPointer>()
-        .unwrap();
-    assert_eq!(read.pointer, Some(pointer("d1", "a")));
-    task.abort();
-    std::fs::remove_dir_all(data_dir).ok();
-}
-
-#[tokio::test]
-async fn serving_pointer_read_returns_only_the_requested_services_acks() {
-    use crate::corrosion::{
-        AdminClient, IngressRouteAck, IngressRouteChange,
-        store_tests::{corrosion_db, identity_store},
-    };
-    use ployz_core::{DeploymentLogId, QualifiedService, ReadServingPointerRequest};
-    use std::collections::BTreeMap;
-
-    let data_dir =
-        std::env::temp_dir().join(format!("ployzd-serving-acks-{}", MachineId::random()));
-    let mut local = LocalMachineStore::open(&data_dir).unwrap();
-    local
-        .enroll(ployz_core::EnrollRequest {
-            role: ployz_core::EnrollAs::Founder {
-                initial_policy: Default::default(),
-                name: ployz_core::MachineName::parse("local").unwrap(),
-                cluster_network: "10.210.0.0/16".parse().unwrap(),
-                public_ip: None,
-                advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(
-                    "192.0.2.1:51820".parse().unwrap(),
-                )],
-            },
-            wireguard_mtu: None,
-        })
-        .unwrap();
-    let (replicated, task) = identity_store(corrosion_db()).await;
-    let api = QualifiedService::parse("app/api").unwrap();
-    let web = QualifiedService::parse("app/web").unwrap();
-    let first = MachineId::random();
-    let second = MachineId::random();
-    let ack = |deploy: &str| {
-        IngressRouteChange::Upsert(IngressRouteAck {
-            deploy: DeploymentLogId::parse(deploy).unwrap(),
-            containers: Default::default(),
-        })
-    };
-    replicated
-        .publish_ingress_routes(
-            &first,
-            &BTreeMap::from([(api.clone(), ack("d1")), (web.clone(), ack("w1"))]),
-        )
-        .await
-        .unwrap();
-    replicated
-        .publish_ingress_routes(&second, &BTreeMap::from([(web, ack("w2"))]))
-        .await
-        .unwrap();
-    let service = MachineService::with_cluster(
-        RecordOwner::spawn(local).unwrap(),
-        Some((replicated, AdminClient::new("/no/such/admin.sock"))),
-    );
-
-    let read = service
-        .read_serving_pointer(Request::new(
-            op::ReadServingPointer::into_request(ReadServingPointerRequest { service: api })
-                .encode()
                 .unwrap(),
-        ))
-        .await
-        .unwrap()
-        .into_inner()
-        .decode_response()
-        .unwrap()
-        .decode::<op::ReadServingPointer>()
-        .unwrap();
-    assert_eq!(read.pointer, None);
-    assert_eq!(
-        read.acks,
-        BTreeMap::from([(first, DeploymentLogId::parse("d1").unwrap())])
-    );
-    task.abort();
-    std::fs::remove_dir_all(data_dir).ok();
+        )
+    }
+
+    async fn read(service: &MachineService) -> Result<ServingPointerRead, RpcError> {
+        let request =
+            op::ReadServingPointer::into_request(ReadServingPointerRequest { service: api() });
+        answer::<op::ReadServingPointer>(
+            service
+                .read_serving_pointer(Request::new(request.encode().unwrap()))
+                .await
+                .unwrap(),
+        )
+    }
+
+    #[tokio::test]
+    async fn publish_answers_published_then_superseded_with_the_current_row() {
+        let dir = std::env::temp_dir().join(format!("ployzd-pointer-{}", MachineId::random()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (service, task) = machine(&dir, &[], Vec::new()).await;
+
+        assert_eq!(
+            publish(&service, None, pointer("d1", "a")).await,
+            Ok(ServingPointerPublication::Published)
+        );
+        assert_eq!(
+            publish(&service, None, pointer("d2", "b")).await,
+            Ok(ServingPointerPublication::Superseded {
+                current: Some(pointer("d1", "a"))
+            })
+        );
+        assert_eq!(
+            read(&service).await.unwrap().pointer,
+            Some(pointer("d1", "a"))
+        );
+        task.abort();
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn machines_that_disagree_on_machine_one_never_both_publish() {
+        let dir = std::env::temp_dir().join(format!("ployzd-pointer-{}", MachineId::random()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let one = machine_one();
+        let (sees_one_down, first) = machine(&dir, std::slice::from_ref(&one), Vec::new()).await;
+        let (sees_one_up, second) =
+            machine(&dir, std::slice::from_ref(&one), vec![alive(&one)]).await;
+
+        let outcomes = [
+            publish(&sees_one_down, None, pointer("d1", "a")).await,
+            publish(&sees_one_up, None, pointer("d2", "b")).await,
+        ];
+        let refusal = NotPointerPublisher { publisher: one.id };
+        assert_eq!(outcomes[0], Ok(ServingPointerPublication::Published));
+        let refused = outcomes[1].as_ref().unwrap_err();
+        assert_eq!(
+            NotPointerPublisher::from_error(refused),
+            Some(refusal.clone())
+        );
+        let read_refused = read(&sees_one_up).await.unwrap_err();
+        assert_eq!(
+            NotPointerPublisher::from_error(&read_refused),
+            Some(refusal)
+        );
+        first.abort();
+        second.abort();
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_machine_whose_active_peer_has_no_roster_row_refuses_to_publish() {
+        let dir = std::env::temp_dir().join(format!("ployzd-pointer-{}", MachineId::random()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (mut low, mut high) = (enrolled(&dir), enrolled(&dir));
+        if low.record().id() > high.record().id() {
+            std::mem::swap(&mut low, &mut high);
+        }
+        let low_machine = low.record().machine().unwrap().clone();
+        let high_machine = high.record().machine().unwrap().clone();
+        let both_alive = || vec![alive(&low_machine), alive(&high_machine)];
+        let (low, low_task) = serve(
+            &dir,
+            low,
+            corrosion_db(),
+            &[low_machine.clone(), high_machine.clone()],
+            both_alive(),
+        )
+        .await;
+        let (high, high_task) = serve(
+            &dir,
+            high,
+            corrosion_db(),
+            std::slice::from_ref(&high_machine),
+            both_alive(),
+        )
+        .await;
+
+        let outcomes = [
+            publish(&low, None, pointer("d1", "a")).await,
+            publish(&high, None, pointer("d2", "b")).await,
+        ];
+        assert_eq!(outcomes[0], Ok(ServingPointerPublication::Published));
+        let refused = outcomes[1].as_ref().unwrap_err();
+        assert_eq!(refused.code, RpcErrorCode::Unavailable, "{refused:?}");
+        assert!(
+            refused
+                .message
+                .contains(&low_machine.management_address().0.to_string()),
+            "{refused:?}"
+        );
+        assert_eq!(read(&low).await.unwrap().pointer, Some(pointer("d1", "a")));
+        let unwritten = high.replicated().unwrap().serving_pointer(&api()).await;
+        assert_eq!(
+            unwritten.unwrap(),
+            None,
+            "a Machine that cannot see its active peer's row never elects itself"
+        );
+        low_task.abort();
+        high_task.abort();
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_machine_whose_lower_peer_has_an_unreadable_row_refuses_to_publish() {
+        let dir = std::env::temp_dir().join(format!("ployzd-pointer-{}", MachineId::random()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (mut low, mut high) = (enrolled(&dir), enrolled(&dir));
+        if low.record().id() > high.record().id() {
+            std::mem::swap(&mut low, &mut high);
+        }
+        let low_machine = low.record().machine().unwrap().clone();
+        let high_machine = high.record().machine().unwrap().clone();
+        let both_alive = || vec![alive(&low_machine), alive(&high_machine)];
+        let high_db = corrosion_db();
+        high_db
+            .execute(
+                "INSERT INTO machines (id, info) VALUES (?, '{}')",
+                [low_machine.id.as_str()],
+            )
+            .unwrap();
+        let (low, low_task) = serve(
+            &dir,
+            low,
+            corrosion_db(),
+            &[low_machine.clone(), high_machine.clone()],
+            both_alive(),
+        )
+        .await;
+        let (high, high_task) = serve(
+            &dir,
+            high,
+            high_db,
+            std::slice::from_ref(&high_machine),
+            both_alive(),
+        )
+        .await;
+
+        let outcomes = [
+            publish(&low, None, pointer("d1", "a")).await,
+            publish(&high, None, pointer("d2", "b")).await,
+        ];
+        assert_eq!(outcomes[0], Ok(ServingPointerPublication::Published));
+        let refused = outcomes[1].as_ref().unwrap_err();
+        assert_eq!(refused.code, RpcErrorCode::Unavailable, "{refused:?}");
+        assert!(
+            refused.message.contains(low_machine.id.as_str()),
+            "{refused:?}"
+        );
+        assert_eq!(read(&low).await.unwrap().pointer, Some(pointer("d1", "a")));
+        let unwritten = high.replicated().unwrap().serving_pointer(&api()).await;
+        assert_eq!(
+            unwritten.unwrap(),
+            None,
+            "the refused publish wrote nothing"
+        );
+        low_task.abort();
+        high_task.abort();
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn read_acks_only_machines_routing_every_pointed_container() {
+        use crate::corrosion::{IngressRouteAck, IngressRouteChange};
+
+        let dir = std::env::temp_dir().join(format!("ployzd-pointer-{}", MachineId::random()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (service, task) = machine(&dir, &[], Vec::new()).await;
+        let local = service.local();
+        let replicated = local.replicated().unwrap();
+        let web = QualifiedService::parse("app/web").unwrap();
+        let first = MachineId::random();
+        let second = MachineId::random();
+        let third = MachineId::random();
+        let pointed = ContainerId::parse("a".repeat(64)).unwrap();
+        replicated
+            .compare_and_set_serving_pointer(&api(), None, &pointer("d1", "a"))
+            .await
+            .unwrap();
+        let ack = |deploy: &str, containers: &[ContainerId]| {
+            IngressRouteChange::Upsert(IngressRouteAck {
+                deploy: DeploymentLogId::parse(deploy).unwrap(),
+                containers: containers.iter().copied().collect(),
+            })
+        };
+        replicated
+            .publish_ingress_routes(
+                &first,
+                &BTreeMap::from([
+                    (api(), ack("d1", &[pointed])),
+                    (web.clone(), ack("w1", &[pointed])),
+                ]),
+            )
+            .await
+            .unwrap();
+        replicated
+            .publish_ingress_routes(
+                &second,
+                &BTreeMap::from([(api(), ack("d1", &[])), (web, ack("w2", &[pointed]))]),
+            )
+            .await
+            .unwrap();
+        replicated
+            .publish_ingress_routes(&third, &BTreeMap::from([(api(), ack("d0", &[pointed]))]))
+            .await
+            .unwrap();
+
+        let read = read(&service).await.unwrap();
+        assert_eq!(read.pointer, Some(pointer("d1", "a")));
+        assert_eq!(
+            read.acks,
+            BTreeMap::from([(first, DeploymentLogId::parse("d1").unwrap())]),
+            "second routes none of the pointed copies, third routes the fallback"
+        );
+        task.abort();
+        std::fs::remove_dir_all(dir).ok();
+    }
 }

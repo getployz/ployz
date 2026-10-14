@@ -8,11 +8,11 @@ use ployz_core::{
     LIST_VOLUMES_CAPABILITY, LOG_HISTORY_CAPABILITY, MACHINE_STORAGE_OBSERVATION_CAPABILITY,
     METRIC_HISTORY_CAPABILITY, MINT_BUILD_GRANT_CAPABILITY, PREPARE_VOLUMES_CAPABILITY,
     PRUNE_IMAGES_CAPABILITY, PUBLISH_CERTIFICATE_MATERIAL_CAPABILITY,
-    PUBLISH_SERVING_POINTER_CAPABILITY, PULL_IMAGE_FROM_MACHINE_CAPABILITY,
+    PUBLISH_SERVING_POINTER_CAPABILITY, PULL_IMAGE_CAPABILITY, PULL_IMAGE_FROM_MACHINE_CAPABILITY,
     READ_SERVING_POINTER_CAPABILITY, REGISTER_MACHINE_CAPABILITY, REMOVE_VOLUME_CAPABILITY,
     REQUEST_MACHINE_UPGRADE_CAPABILITY, RUNTIME_WATCH_CAPABILITY, Rpc, SEED_VOLUME_CAPABILITY,
     SET_MANAGEMENT_CLIENT_CAPABILITY, SET_VOLUME_COPY_CAPABILITY, TAIL_LOGS_CAPABILITY,
-    UPDATE_MACHINE_CAPABILITY, op,
+    UPDATE_MACHINE_CAPABILITY, VOLUME_FLOOR_CAPABILITY, op,
 };
 
 /// Capability constants are generated from the catalog, so a typo would stay
@@ -59,6 +59,7 @@ fn catalogued_capabilities_keep_stable_spellings() {
             ENSURE_IMAGE_INGEST_CAPABILITY,
             "ployz.image.ingest.ensure.v1",
         ),
+        (PULL_IMAGE_CAPABILITY, "ployz.image.pull.v1"),
         (
             PULL_IMAGE_FROM_MACHINE_CAPABILITY,
             "ployz.image.pull-from-machine.v1",
@@ -89,6 +90,7 @@ fn catalogued_capabilities_keep_stable_spellings() {
         (TAIL_LOGS_CAPABILITY, "ployz.logs.tail.v1"),
         (RUNTIME_WATCH_CAPABILITY, "ployz.runtime.watch.v1"),
         (EXEC_CONTAINER_CAPABILITY, "ployz.container.exec.v1"),
+        (VOLUME_FLOOR_CAPABILITY, "ployz.volume.copy.floor.v1"),
     ];
     for (capability, spelling) in frozen {
         assert_eq!(capability, spelling);
@@ -131,6 +133,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.image.list.v1",
             "ployz.image.prune.v1",
             "ployz.image.ingest.ensure.v1",
+            "ployz.image.pull.v1",
             "ployz.image.pull-from-machine.v1",
             "ployz.build.grant.mint.v1",
             "ployz.build.grant.inspect.v1",
@@ -139,6 +142,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.logs.tail.v1",
             "ployz.container.exec.v1",
             "ployz.build.v1",
+            "ployz.volume.copy.floor.v1",
         ]
     );
     assert_eq!(
@@ -170,6 +174,7 @@ fn unary_grpc_paths_stay_on_the_machine_rpc_service() {
         op::EnsureImageIngest::PATH,
         "/ployz.rpc.v1.MachineRpc/EnsureImageIngest"
     );
+    assert_eq!(op::PullImage::PATH, "/ployz.rpc.v1.MachineRpc/PullImage");
     assert_eq!(
         op::PullImageFromMachine::PATH,
         "/ployz.rpc.v1.MachineRpc/PullImageFromMachine"

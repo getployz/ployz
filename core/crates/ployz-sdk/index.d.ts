@@ -42,6 +42,7 @@ import type {
   LocalMachineRemoved,
   DataLossConfirmation,
   DrainReport,
+  IngressCheck,
   DrainScope,
   ClusterTeardown,
   PlanOptions,
@@ -237,6 +238,8 @@ export type RunningDeploy = AsyncIterable<DeployEvent> & {
 };
 
 export declare function connect(options: ConnectOptions): Promise<Client>;
+/** The `SetVolumeCopyRefused` a `volumeSwitch` rejection carries in its `details`, or null for any other error. */
+export declare function setVolumeCopyRefusal(error: unknown): import("./generated/payloads").SetVolumeCopyRefused | null;
 /** The ployz version every fingerprint covers; a GitHub runner installs exactly this one. */
 export declare function ployzVersion(): string;
 /** A call's state between steps. Keep it and hand it back unchanged; only the step machine reads it. */
@@ -309,6 +312,14 @@ export declare class Client {
    * when it is partial or the session closes mid-drain; rejects only before anything moved.
    */
   drainMachine(machine: MachineTarget, scope: DrainScope): Promise<DrainReport>;
+  /**
+   * Start the Ingress Proxy on `machine` once its ingress role is on: waits until the entry
+   * observes the role, then creates or starts the proxy on every Server holding it, never
+   * replacing one that runs. The repair for `machine` says why it didn't start.
+   */
+  startIngress(machine: MachineTarget): Promise<IngressCheck>;
+  /** Stop and remove the Ingress Proxy on `machine` once its ingress role is off. */
+  stopIngress(machine: MachineTarget): Promise<void>;
   /** Take a Machine out of the Cluster without resetting it: it keeps its state and keys. */
   removeMachineMembership(machine: MachineTarget): Promise<void>;
   /** One Machine policy edit (Machine Roles and build concurrency); omitted fields keep their values. */

@@ -77,7 +77,7 @@ const drive = Effect.gen(function* () {
   });
   const open = Effect.gen(function* () {
     const opened = yield* storeSystem(org.id, { event: "pull_request", ...pullRequest({}) });
-    const previews = admittedEvents(org.id, opened).map((event) => event.deploymentId);
+    const previews = admittedEvents(org.id, opened, "github").map((event) => event.deploymentId);
     for (const deployment of previews) yield* write({ command: "cancel", deployment });
     return { cancelled: previews };
   });
@@ -88,7 +88,7 @@ const drive = Effect.gen(function* () {
     const pushed = yield* storeSystem(org.id, {
       event: "branch_head", repository_id: REPOSITORY_ID, branch: "main", base: null, head: MERGE, changed: [],
     });
-    const admitted = [...admittedEvents(org.id, merged), ...admittedEvents(org.id, pushed)]
+    const admitted = [...admittedEvents(org.id, merged, "github"), ...admittedEvents(org.id, pushed, "github")]
       .filter((event, index, all) => all.findIndex((other) => other.deploymentId === event.deploymentId) === index);
     if (admitted.length) yield* sendInngestEvent(admitted.map(createConfigDeploymentAdmittedEvent));
     return { admitted: admitted.map((event) => event.deploymentId) };

@@ -268,7 +268,7 @@ fn cat(root: &ArgMatches) -> Result<(), Error> {
     let file: GithubFileView = read_repository(root, "file", &query)?;
     crate::ui::finish(&file, || match &file.body {
         GithubFileBody::Text { content } => {
-            let _ = std::io::Write::write_all(&mut anstream::stdout(), content.as_bytes());
+            let _ = std::io::Write::write_all(&mut crate::ui::stdout(), content.as_bytes());
         }
         GithubFileBody::Withheld { note } => crate::ui::note(note),
     })?;

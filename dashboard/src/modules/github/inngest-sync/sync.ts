@@ -2,7 +2,6 @@ import { Effect, Schema } from "effect";
 import { listInstallationReposPage } from "#/modules/github/github.api";
 import type { GithubApi } from "#/modules/github/github-observation.api";
 import {
-  listGithubInstallationUserIds,
   pruneCachedGithubRepositories,
   upsertCachedGithubRepositories,
 } from "#/modules/github/github.repository";
@@ -54,10 +53,6 @@ export async function executeSyncGithubRepositories(
   let currentPage = 1;
   let processedPageCount = 0;
   let processedRepoCount = 0;
-  const userIds = await step.run("list-installation-users", () =>
-    runEffect(listGithubInstallationUserIds(installationId)),
-  );
-
   while (true) {
     const pageNumber = currentPage;
     const repositoryPage = await step.run(`sync-page-${pageNumber}`, () =>
@@ -68,7 +63,6 @@ export async function executeSyncGithubRepositories(
             pageNumber,
           );
           yield* upsertCachedGithubRepositories({
-            userIds,
             installationId,
             repositories: page.repositories,
             syncedAt,

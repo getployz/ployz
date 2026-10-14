@@ -125,9 +125,19 @@ reports the Machine's copy as it is now. A Writer reports its epoch, and the
 Machine never checks it. No Machine keeps a record of the run, claims the
 Cluster's view of the Volume, or reads another Machine's copy.
 
-**Red flags:** fencing tokens, leases, leader election, quorum reads, any API or
-message claiming a complete or canonical Cluster view. A request that names the
-copy it expects on one Machine is none of these.
+**One lease, one fence.** Fencing and leases are allowed in one shape. The
+operator's lease is a Volume's open run, numbered in Postgres as its `gen`. A
+Machine keeps a floor for its own copy, raised and checked only by the
+operator's `SetVolumeCopy` calls to it, and refuses a `gen` below the newest it
+accepted. The floor lets a newer run stop an older run's late cut, which the
+expected copy alone cannot do until the newer run has already changed the copy.
+Neither number goes in Corrosion, and no Machine sends, asks for or checks
+another Machine's number. The lease never has to reach a Machine the run does
+not touch (bet 6).
+
+**Red flags:** any other fencing token, lease, leader election or quorum read,
+and any API or message claiming a complete or canonical Cluster view. A request
+that names the copy it expects on one Machine is none of these.
 
 ## 2. AP over C — inside the Cluster
 
@@ -152,7 +162,9 @@ Catch-up rejects partial Live Observations before planning, reads fresh target
 storage evidence, reports unknown eligibility or
 incomplete placement, and stops; it does not leave work for a background loop.
 Deleted slots, later eligibility changes, and transient failures require an
-explicit redeploy.
+explicit redeploy. A Deploy of any Project also fills the Ingress Proxy's
+missing or stopped slots on every ingress Server. It creates or starts them, and
+never replaces, upgrades or removes one.
 
 **Why.** Imperative errors surface predictably at the caller that can act on them.
 Declarative reconciliation decouples components but multiplies edge cases and
@@ -484,8 +496,9 @@ Like a pull, this is behavior that continues after its command returns, which
 bet 3 flags. It is bounded: the task ends when Docker answers, it never retries
 or starts other work, and the Volume Run that asked keeps asking until it does.
 
-**Serving outlives the daemon.** Corrosion and Internal DNS are daemon-owned but
-not daemon-hosted: a daemon stop, restart, crash or upgrade never stops them. The
+**Serving outlives the daemon.** Corrosion, Internal DNS and the Observe Store
+are daemon-owned but not daemon-hosted: a daemon stop, restart, crash or upgrade
+never stops them. The
 daemon derives what they run from the Machine record and converges them on every
 start. Corrosion is a Docker container carrying a digest of everything it was
 created from, replaced only when that digest changes. Internal DNS is `ployzd
@@ -494,6 +507,11 @@ spec the daemon publishes in `/run/ployz/dns.json` and parking its port-53
 sockets in systemd's fd store, so its own restarts queue queries rather than
 refuse them. The daemon restarts it onto new software only after its own
 Corrosion is ready. Reset and uninstall are the only paths that stop either one.
+The Observe Store is `ployzd observe` under a second runtime unit, which the
+daemon starts on every start and restarts when it runs other software. Only
+uninstall stops it, since it holds no Membership state. The daemon owns it
+because an Upgrade runs the previous release's installer, so a Machine upgraded
+from a release that never installed the Observe Store would otherwise run none.
 If the installed binary cannot serve DNS (`ployzd dns --probe` fails), the
 running DNS process hands port 53 back and stops. This is a process that
 continues after the command that started it returns, which bet 3 flags. It is
@@ -528,6 +546,26 @@ it.
 a client could compute from the observations it already gathers, a daemon stop
 path that stops serving infrastructure, a second writer of `dns.json` or the DNS
 unit, DNS answering before its first load.
+
+## Open questions
+
+Each entry is current behavior kept on purpose until a product decision changes
+it. Make that decision here before changing the code.
+
+- **Corrosion bootstrap.** A joining Machine bootstraps Corrosion from every peer
+  visible when it joined, and a founder from none. Choosing a subset waits on a
+  product reason to prefer some peers over others.
+- **Corrosion configuration.** The daemon writes Corrosion's `config.toml`, but
+  the fields stay Corrosion's. Whether Ployz owns that format is undecided.
+- **Internal DNS record types.** Internal DNS answers A queries only. Every other
+  type gets an authoritative empty NOERROR. A new record type waits on a product
+  need.
+- **Internal DNS caching.** An Internal DNS Answer carries TTL zero and Ployz
+  keeps no cache. A cache waits on a decision that stale answers are acceptable.
+- **Membership in ingress.** The Ingress Proxy routes to Serving Containers
+  without consulting Membership Observations, while Internal DNS filters on them
+  once it has loaded them. Aligning the two changes the membership model for every
+  replicated projection, not ingress alone.
 
 ## Boundaries
 

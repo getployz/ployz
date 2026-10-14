@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Check that a readonly slot stays hidden from Docker on an existing Incus vc.
+"""Check that a readonly slot stays hidden from Docker on an existing Incus or Boat vc.
 
 Build vc with PLOYZ_VERIFY_CARGO_ARGS='--features ployz/verify-faults,ployzd/verify-faults'.
-Run under the same /tmp/ployz-warm-move-vc.lock held for vc up and down:
+For an Incus vc, run under the same /tmp/ployz-warm-move-vc.lock held for vc up and down; a Boat vc skips it:
   python3 scripts/test-verify-volume-fences.py <manifest> [--scenario slot|all]
 """
 
@@ -104,8 +104,8 @@ def main():
     parser.add_argument("--pool", default="ployz")
     args = parser.parse_args()
     run = json.loads(args.manifest.read_text())
-    if run["provider"] != "incus" or run["state"] != "ready" or not run["machines"]:
-        raise RuntimeError("Use a ready Incus vc")
+    if run["provider"] not in ["incus", "boat"] or run["state"] != "ready" or not run["machines"]:
+        raise RuntimeError("Use a ready Incus or Boat vc")
     checks = VolumeFences(args.manifest, pool=args.pool)
     results = dict(slot=checks.slot_scenario())
     print(json.dumps(dict(manifest=str(args.manifest), results=results)), flush=True)

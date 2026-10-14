@@ -1,3 +1,8 @@
 disallowed-methods = [
     { path = "ployz_core::error_chain::inline", reason = "keep the cause chain: Failure::caused or .context, or a crate::ui one-line sink" },
+    { path = "std::io::stdout", reason = "write through crate::ui::stdout or stdout_bytes, which die of SIGPIPE when the reader is gone" },
+    { path = "anstream::stdout", reason = "write through crate::ui::stdout, which dies of SIGPIPE when the reader is gone" },
+    { path = "tokio::io::stdout", reason = "write through crate::ui::async_stdout, which reports a reader that is gone" },
+    { path = "clap::Command::print_help", reason = "print clap's render_help through crate::ui so a closed stdout dies of SIGPIPE" },
+    { path = "clap::Command::print_long_help", reason = "print clap's render_long_help through crate::ui so a closed stdout dies of SIGPIPE" },
 ]

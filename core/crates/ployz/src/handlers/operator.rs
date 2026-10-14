@@ -162,7 +162,7 @@ pub fn exec(root: &ArgMatches) -> Result<(), Error> {
         ExecMode::resolve(
             leaf.get_flag("detach"),
             leaf.get_flag("no-tty"),
-            std::io::stdout().is_terminal(),
+            crate::ui::stdout_is_terminal(),
             std::io::stdin().is_terminal(),
         )?,
     );
@@ -188,7 +188,7 @@ pub fn exec(root: &ArgMatches) -> Result<(), Error> {
                         }
                     }
                     ExecResponseFrame::Stdout(bytes) => {
-                        write_stdout_frame(&mut std::io::stdout(), &bytes)?
+                        write_stdout_frame(&mut crate::ui::stdout_bytes(), &bytes)?
                     }
                     ExecResponseFrame::Stderr(bytes) => std::io::stderr().write_all(&bytes)?,
                     ExecResponseFrame::Exit(code) => {
@@ -652,7 +652,7 @@ fn print_history(record: &HistoryRecord, utc: bool) -> Result<(), Error> {
             let output: &mut dyn Write = if *stream == HistoryStream::Stderr {
                 &mut std::io::stderr()
             } else {
-                &mut std::io::stdout()
+                &mut crate::ui::stdout_bytes()
             };
             output.write_all(prefix.as_bytes())?;
             output.write_all(text)?;
@@ -815,7 +815,7 @@ async fn print_logs(
         let output: &mut dyn Write = if stderr {
             &mut std::io::stderr()
         } else {
-            &mut std::io::stdout()
+            &mut crate::ui::stdout_bytes()
         };
         output
             .write_all(prefix.as_bytes())

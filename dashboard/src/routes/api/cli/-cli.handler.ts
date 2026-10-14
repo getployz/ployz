@@ -26,52 +26,27 @@ import { readCliServerDrain } from "#/modules/machines/server-drain.server";
 import { freshApproval, freshOperationDigest, planClean } from "#/modules/machines/server-operations.server";
 import { readCliServerUpgrade } from "#/modules/server-upgrade/server-upgrade.server";
 import { type Admission, REQUEST_KEY_HEADER, requestKeyOf } from "#/modules/operations/keyed.server";
-import { cleanNamespace, drainServer, removeServer, runVolume, upgradeServer } from "#/modules/operations/operations.server";
-import { dataLossIdentitySchema } from "#/modules/runtime/data-loss-identity";
+import { ForgetServer, ForgetServers, NewVolumeRun, RemoveServer, SyncVolume, UpgradeServer } from "#/modules/operations/cli-wire";
+import { cleanNamespace, drainServer, forgetServer, removeServer, runVolume, upgradeServer } from "#/modules/operations/operations.server";
 import { removeOrganization } from "#/modules/organization/organization-removal.server";
 import { NotFound, Validation } from "#/server/public-error";
 import type { VolumeRunInput } from "#/modules/volume-run/volume-run";
 import { getVolumeRun, listVolumeRuns } from "#/modules/volume-run/volume-run.server";
+import { refreshMirror } from "#/modules/volume-copies/volume-copies.refresh.server";
 
 const NewToken = Schema.Struct({
   name: Schema.Trim.check(Schema.isMinLength(1), Schema.isMaxLength(64)),
   expires_in_days: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 365 })),
 });
 
-/** `server rm`: reset, with its DataLossConfirmation (the Volumes the user accepted losing), or `--no-reset`. */
-const RemoveServer = Schema.Union([
-  Schema.Struct({ confirm_data_loss: Schema.Struct({ confirmed: Schema.Array(dataLossIdentitySchema) }) }),
-  Schema.Struct({ no_reset: Schema.Literal(true) }),
-]);
-
-const UpgradeServer = Schema.Struct({ channel: Schema.optional(Schema.String) });
-
 const isUpgradeAttemptId = (id: string | undefined): id is string => id !== undefined && /^[0-9a-f]{32}$/.test(id);
-
-/** `server forget`: the Organization's slug, as the user typed it. */
-const ForgetServers = Schema.Struct({ organization: Schema.String });
-
-const RunEnvironment = Schema.Struct({ project: Schema.String, environment: Schema.String });
-const NewVolumeRun = Schema.Union([
-  Schema.Struct({ environment: RunEnvironment, kind: Schema.Literal("mirror"), to: Schema.String.check(Schema.isNonEmpty()) }),
-  Schema.Struct({ environment: RunEnvironment, kind: Schema.Literal("sync"), full: Schema.optional(Schema.Boolean) }),
-  Schema.Struct({
-    environment: RunEnvironment,
-    kind: Schema.Literal("delete_mirror"),
-    slot: Schema.optional(Schema.String.check(Schema.isNonEmpty())),
-    confirm: Schema.optional(Schema.String),
-  }),
-  Schema.Struct({ environment: RunEnvironment, kind: Schema.Literal("move"), to: Schema.String.check(Schema.isNonEmpty()) }),
-  Schema.Struct({ environment: RunEnvironment, kind: Schema.Literal("release") }),
-  Schema.Struct({ environment: RunEnvironment, kind: Schema.Literal("restore"), from: Schema.String.check(Schema.isNonEmpty()) }),
-]);
 
 function volumeRunInput(body: typeof NewVolumeRun.Type): VolumeRunInput {
   switch (body.kind) {
     case "mirror":
       return { kind: "mirror", args: { to: body.to } };
     case "sync":
-      return { kind: "sync", args: { full: body.full ?? false } };
+      return { kind: "sync", args: { full: true } };
     case "delete_mirror":
       return { kind: "delete_mirror", args: { slot: body.slot ?? null, confirmed_name: body.confirm ?? null } };
     case "move":
@@ -163,8 +138,15 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       const input = yield* decodeBody(RemoveServer, request, "Removing a Server takes the Data Loss it confirms.");
       const call = yield* operationCall(request);
       if (!call.ok) return refusal(call.refused.refusal);
-      const confirmed = "no_reset" in input ? null : input.confirm_data_loss.confirmed;
-      return admitted(yield* removeServer(caller, machineId, confirmed, call), (id) => ({ id }));
+      return admitted(yield* removeServer(caller, machineId, input.confirm_data_loss.confirmed, call), (id) => ({ id }));
+    }
+    case "POST servers/:id/forget": {
+      const machineId = serverIdOf(id);
+      if (machineId === null) return noSuchServer();
+      yield* decodeBody(ForgetServer, request, "Forgetting a Server takes no options.");
+      const call = yield* operationCall(request);
+      if (!call.ok) return refusal(call.refused.refusal);
+      return admitted(yield* forgetServer(caller, machineId, call), (id) => ({ id }));
     }
     case "GET server-removals/:id": {
       const attempt = Schema.is(Uuid)(id)
@@ -267,6 +249,13 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
         const run = yield* runVolume(caller, input, call);
         return run.ok ? { run: yield* getVolumeRun(caller.organization.id, run.id) } : refusal(run.refusal);
       }).pipe(Effect.catchTag("NotFound", (missing) => Effect.succeed(missingRefusal(missing.message))));
+    }
+    case "POST volumes/:id/sync": {
+      const body = yield* decodeBody(SyncVolume, request, "A volume sync takes its environment.");
+      return yield* refreshMirror({ userId: caller.userId, organizationId: caller.organization.id }, body.environment, id ?? "").pipe(
+        Effect.map((synced) => synced.ok ? { lines: synced.lines } : refusal(synced.refusal)),
+        Effect.catchTag("NotFound", (missing) => Effect.succeed(missingRefusal(missing.message))),
+      );
     }
     case "GET volumes/:id/runs":
       return { runs: yield* listVolumeRuns(caller.organization.id, id ?? "") };

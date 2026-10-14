@@ -189,6 +189,30 @@ fn closing_stdout_stops_the_server_and_the_call_it_is_running() {
     );
 }
 
+#[test]
+fn closing_stdout_before_initialize_stops_the_server_quietly() {
+    let home = tempfile::tempdir().unwrap();
+    let mut server = mcp("http://127.0.0.1:9", home.path());
+    drop(server.stdout.take());
+    let mut stdin = server.stdin.take().unwrap();
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": { "name": "test", "version": "0" },
+            },
+        }),
+    );
+    let status = exited_within(&mut server, Duration::from_secs(5))
+        .expect("the server stops once its stdout is closed");
+    assert_eq!(status.code(), Some(0), "{status}");
+}
+
 /// `ployz` run in `dir` on the in-process Store in `home`, away from any ambient scope.
 fn local(home: &std::path::Path, dir: &std::path::Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_ployz"));
@@ -247,6 +271,55 @@ fn each_call_acts_where_the_directory_is_linked_when_it_starts() {
     assert_eq!(shown(2), "shop/production");
     ployz(&["link", "--env", "staging"]);
     assert_eq!(shown(3), "shop/staging");
+    drop(stdin);
+    assert!(exited_within(&mut server, Duration::from_secs(10)).is_some());
+}
+
+#[test]
+fn a_renamed_project_keeps_the_directory_linked_to_it() {
+    let home = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let ployz = |args: &[&str]| {
+        let output = local(home.path(), dir.path()).args(args).output().unwrap();
+        assert!(output.status.success(), "{args:?}: {output:?}");
+    };
+    ployz(&["project", "new", "shop"]);
+    ployz(&["env", "new", "staging"]);
+    ployz(&["link", "--env", "staging"]);
+    let mut server = local(home.path(), dir.path())
+        .arg("mcp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut stdin = server.stdin.take().unwrap();
+    let mut stdout = BufReader::new(server.stdout.take().unwrap());
+    initialize(&mut stdin, &mut stdout);
+    let mut call = |id: u64, name: &str, arguments: Value| {
+        send(
+            &mut stdin,
+            &json!({
+                "jsonrpc": "2.0", "id": id, "method": "tools/call",
+                "params": { "name": name, "arguments": arguments },
+            }),
+        );
+        let mut line = String::new();
+        stdout.read_line(&mut line).unwrap();
+        let reply: Value = serde_json::from_str(&line).unwrap();
+        reply
+            .pointer("/result/structuredContent")
+            .cloned()
+            .unwrap_or_else(|| panic!("{reply}"))
+    };
+    let renamed = call(
+        2,
+        "project_rename",
+        json!({ "project": "shop", "to": "store" }),
+    );
+    assert_eq!(renamed.get("project"), Some(&json!("store")), "{renamed}");
+    let shown = call(3, "environment_show", json!({}));
+    assert_eq!(shown.get("at"), Some(&json!("store/staging")), "{shown}");
     drop(stdin);
     assert!(exited_within(&mut server, Duration::from_secs(10)).is_some());
 }

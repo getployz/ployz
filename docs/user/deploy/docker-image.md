@@ -94,8 +94,16 @@ image:
 2. Click **Start command** and enter the command, like `npm run worker`.
 3. Deploy the change.
 
-The start command replaces the image's `CMD`, runs with `/bin/sh -c`, and keeps the image's
-`ENTRYPOINT`. Minimal images without a shell can't take one. Clear the field to go back to the
+The start command replaces the image's `ENTRYPOINT` and `CMD`, the same as on Railway. It runs
+directly, without a shell, so it works on images that have none:
+
+- Quotes group words, and a backslash escapes the next character.
+- Variables like `$PORT` stay as written. Ployz doesn't expand them.
+- The command ends at the first `;`, `&`, `|`, `<` or `>` outside quotes. In
+  `npm run migrate && npm start`, only `npm run migrate` runs.
+
+To use variables or chain commands, run a shell yourself, like
+`sh -c 'npm run migrate && exec npm start --port "$PORT"'`. Clear the field to go back to the
 image's own command.
 
 Next: [give your app its variables](../services/variables.md).

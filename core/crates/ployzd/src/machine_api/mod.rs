@@ -38,7 +38,7 @@ pub struct MachineApiBuilder {
 }
 
 impl MachineApi {
-    /// Start configuring this Machine's Machine API.
+    /// A builder over the record `owner` holds, with no Cluster attached until `with_cluster`.
     #[must_use]
     pub fn builder(owner: RecordOwner) -> MachineApiBuilder {
         MachineApiBuilder {

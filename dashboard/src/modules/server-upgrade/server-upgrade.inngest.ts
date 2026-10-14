@@ -1,9 +1,12 @@
-import type { MachineUpgradeAttemptId } from "@ployz/sdk";
+import type { MachineId, MachineUpgradeAttemptId } from "@ployz/sdk";
 import { Effect, Option, Schema } from "effect";
+import { newMachineUpgradeAttemptId } from "#/lib/ids";
 import { attemptLifecycle } from "#/modules/inngest/attempt-lifecycle";
 import type { PloyzStepTools } from "#/modules/inngest/client";
 import { createServerUpgradeRequestedEvent, serverUpgradeRequestedEventType } from "#/modules/inngest/events";
-import { machineIdStringSchema } from "#/modules/machines/enrollment";
+import { rustMachineIdSchema } from "#/modules/machines/enrollment";
+import { upgradeFailedMail } from "#/modules/mail/templates/servers/upgrade-failed";
+import { queueOrganizationMail } from "#/modules/notifications/recipients.server";
 import { type FinalOutcome, type ReleaseChannel, UPGRADE_TRIGGERS } from "#/modules/server-upgrade/server-upgrade";
 import {
   closeRunUpgradeAttempts,
@@ -13,19 +16,24 @@ import {
   finishUpgradeAttempt,
   listAutomaticUpgradeOrganizationIds,
   listServersBehind,
-  mintAttemptId,
+  listUnknownAutomaticRollouts,
   observeUpgradeableServer,
   organizationReleaseChannel,
   pollUpgradeOnServer,
+  observeServerNames,
+  readUpgradeFailures,
+  type RolloutAttempts,
   recordUpgradeAttempt,
   requestUpgradeOnServer,
 } from "#/modules/server-upgrade/server-upgrade.server";
+import { AppConfig } from "#/server/config.server";
 import type { runInngestEffect } from "#/server/run.server";
 
 type StepTools = Pick<PloyzStepTools, "run" | "sleep">;
 type EffectRunner = typeof runInngestEffect;
 
 const POLL_INTERVAL_MS = 15_000;
+const SWEEP_INTERVAL_MS = 60 * 60_000;
 
 const AttemptIdType = Schema.declare<MachineUpgradeAttemptId>(
   (value): value is MachineUpgradeAttemptId => typeof value === "string",
@@ -33,7 +41,7 @@ const AttemptIdType = Schema.declare<MachineUpgradeAttemptId>(
 
 const ServerUpgradeRequestedData = Schema.Struct({
   organizationId: Schema.String.check(Schema.isNonEmpty()),
-  machineId: Schema.NullOr(machineIdStringSchema),
+  machineId: Schema.NullOr(rustMachineIdSchema),
   trigger: Schema.Literals(UPGRADE_TRIGGERS),
   userId: Schema.NullOr(Schema.String),
   attemptId: Schema.optional(Schema.String.check(Schema.isPattern(/^[0-9a-f]{32}$/)).pipe(Schema.decodeTo(AttemptIdType))),
@@ -42,13 +50,13 @@ type Request = Omit<typeof ServerUpgradeRequestedData.Type, "machineId"> & { rea
 /** One Server's part of a Rollout: skipped with nothing recorded, or attempted to an outcome. */
 type ServerResult =
   | { readonly kind: "skipped"; readonly reason: "not-online" | "busy" }
-  | { readonly kind: "attempted"; readonly attemptId: string; readonly outcome: FinalOutcome };
+  | { readonly kind: "attempted"; readonly attemptId: string; readonly name: string; readonly outcome: FinalOutcome };
 
 /**
  * One Rollout run along the Organization's Release Channel: the named Server, or every Server behind (online, idle,
  * older than the newest release on the channel for its line) in name order, one at a time; an automatic one skips a
  * Halted release. It stops at the first outcome that isn't `succeeded`; a Server that went
- * offline or refuses as Busy is skipped and records nothing.
+ * offline or refuses as Busy is skipped and records nothing. An automatic one that didn't finish mails the members.
  */
 export async function executeRollOutServerUpgrade(
   { event, step, runId }: { event: { data: unknown }; step: StepTools; runId: string },
@@ -71,8 +79,62 @@ export async function executeRollOutServerUpgrade(
     results.push({ machineId: id, ...result });
     if (result.kind === "attempted" && result.outcome !== "succeeded") break;
   }
+  const failed = results.flatMap((result) =>
+    result.kind === "attempted" && result.outcome !== "succeeded" ? [result] : []);
+  if (request.trigger === "automatic" && failed.length > 0) {
+    await step.run("mail-upgrade-failures", () => runEffect(mailUpgradeFailures(
+      runId,
+      { organizationId: request.organizationId, attemptIds: failed.map(({ attemptId }) => attemptId) },
+      new Map(failed.flatMap(({ machineId, name }) => name === undefined ? [] : [[machineId, name]])),
+    )));
+  }
   return { results };
 }
+
+/**
+ * Queue one email per member naming the Rollout's failed attempts, keyed on its run so the handler and the lifecycle
+ * close send it once; how many members it queued for. A Server `names` lacks is named from the Runtime Watch.
+ */
+const mailUpgradeFailures = Effect.fn("ServerUpgrade.mailFailures")(function* (
+  runId: string,
+  rollout: RolloutAttempts,
+  names: ReadonlyMap<string, string>,
+) {
+  const read = yield* readUpgradeFailures(rollout);
+  if (read === null) return 0;
+  const { organizationId, organization, failures } = read;
+  const watched = failures.every(({ machineId }) => names.has(machineId)) ? names : yield* observeServerNames(organizationId);
+  const [first, ...rest] = failures.map((failure) => ({
+    ...failure,
+    name: names.get(failure.machineId) ?? watched.get(failure.machineId) ?? failure.machineId.slice(0, 12),
+  }));
+  if (first === undefined) return 0;
+  const config = yield* AppConfig;
+  return yield* queueOrganizationMail({
+    organizationId,
+    type: "upgrade-failed",
+    key: `upgrade-rollout:${runId}`,
+    content: upgradeFailedMail({ organization, failures: [first, ...rest], origin: config.app.url.origin }),
+  });
+});
+
+/** Close the run's running attempts as `unknown`, then mail an automatic Rollout's failures as the handler would have. */
+const closeRollout = Effect.fn("ServerUpgrade.closeRollout")(function* (runId: string) {
+  const closed = yield* closeRunUpgradeAttempts(runId);
+  yield* mailUpgradeFailures(runId, { inngestRunId: runId }, new Map());
+  return closed;
+});
+
+/**
+ * Close attempts whose run was lost, then mail every automatic Rollout that ended `unknown` within two sweeps. A retry
+ * after a failed send finds nothing left to close but the same Rollouts to mail; their keys send each once.
+ */
+const closeStaleRollouts = Effect.fn("ServerUpgrade.closeStaleRollouts")(function* () {
+  const closed = yield* closeStaleUpgradeAttempts();
+  const runIds = yield* listUnknownAutomaticRollouts(new Date(Date.now() - 2 * SWEEP_INTERVAL_MS));
+  yield* Effect.forEach(runIds, (runId) => mailUpgradeFailures(runId, { inngestRunId: runId }, new Map()), { discard: true });
+  return { closed };
+});
 
 /**
  * Upgrade one Server: observe it online and idle → record the attempt → request the Upgrade along the channel → poll
@@ -80,21 +142,21 @@ export async function executeRollOutServerUpgrade(
  * `unknown` with the last stage seen.
  */
 async function upgradeServer(
-  { request, machineId, step, runId }: { request: Request; machineId: string; step: StepTools; runId: string },
+  { request, machineId, step, runId }: { request: Request; machineId: MachineId; step: StepTools; runId: string },
   runEffect: EffectRunner,
 ): Promise<ServerResult> {
   const { organizationId, channel, attemptId: requested, ...event } = request;
   const observed = await step.run(`observe-server-${machineId}`, async () => {
-    const fromVersion = await runEffect(observeUpgradeableServer(organizationId, machineId));
-    if (fromVersion === null) {
+    const server = await runEffect(observeUpgradeableServer(organizationId, machineId));
+    if (server === null) {
       if (requested !== undefined) await runEffect(dropUpgradeAttempt(organizationId, requested));
       return null;
     }
     // Minted here so every retry of a later step reuses it.
-    return { fromVersion, attemptId: requested ?? mintAttemptId() };
+    return { name: server.name, fromVersion: server.version, attemptId: requested ?? newMachineUpgradeAttemptId() };
   });
   if (observed === null) return { kind: "skipped", reason: "not-online" };
-  const { fromVersion, attemptId } = observed;
+  const { name, fromVersion, attemptId } = observed;
   await step.run(`record-attempt-${machineId}`, () => runEffect(recordUpgradeAttempt({
     request: { organizationId, ...event, machineId },
     attemptId,
@@ -122,7 +184,7 @@ async function upgradeServer(
   }
   const recorded = outcome ?? { outcome: "unknown" as const, stage: null, error: null };
   await step.run(`record-outcome-${machineId}`, () => runEffect(finishUpgradeAttempt({ organizationId, attemptId, ...recorded })));
-  return { kind: "attempted", attemptId, outcome: recorded.outcome };
+  return { kind: "attempted", attemptId, name, outcome: recorded.outcome };
 }
 
 const lifecycle = attemptLifecycle({
@@ -133,10 +195,10 @@ const lifecycle = attemptLifecycle({
     handler: executeRollOutServerUpgrade,
   },
   cancelId: "cancel-server-upgrade",
-  closeRun: closeRunUpgradeAttempts,
+  closeRun: closeRollout,
   sweep: {
     id: "schedule-server-upgrades",
-    closeStale: () => Effect.map(closeStaleUpgradeAttempts(), (closed) => ({ closed })),
+    closeStale: closeStaleRollouts,
     afterSweep: async (step, runEffect) => {
       const organizationIds = await step.run("list-automatic-organizations", () => runEffect(listAutomaticUpgradeOrganizationIds()));
       if (organizationIds.length > 0) {

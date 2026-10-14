@@ -3,13 +3,13 @@ import { assert, it } from "@effect/vitest";
 import { vi } from "vitest";
 import { createHash } from "node:crypto";
 import type { Client, DockerVolumeName, MachineId, RuntimeWatchView } from "@ployz/sdk";
-import { eq, sql } from "drizzle-orm";
-import { Cause, ConfigProvider, Effect, Exit, Layer } from "effect";
+import { and, eq, sql } from "drizzle-orm";
+import { Cause, ConfigProvider, Effect, Exit, Layer, Schema } from "effect";
 import { Inngest } from "inngest";
 import { Polar } from "#/modules/billing/polar-provider.server";
 import { GithubRepositoriesLive } from "#/modules/github/github-cli.server";
 import { GithubApi } from "#/modules/github/github-observation.api";
-import { githubInstallation, githubRepositoryCache } from "#/modules/github/tables";
+import { githubInstallation, githubRepositoryCache, organizationGithubInstallation } from "#/modules/github/tables";
 import { InngestClient } from "#/modules/inngest/client";
 import { member, organizationToken, session } from "#/modules/identity/tables";
 import { asTestDouble } from "#/lib/test-double";
@@ -21,6 +21,8 @@ import { OrganizationRuntime, OrganizationRuntimeLive } from "#/modules/runtime/
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
 import { DEFAULT_SERVER_UPGRADE_SETTINGS } from "#/modules/server-upgrade/server-upgrade";
 import { operationApprovals } from "#/modules/approvals/tables";
+import type { Caller } from "#/modules/identity/actor";
+import { forgetServer } from "#/modules/operations/operations.server";
 import { callStore, readStore } from "#/modules/config-store/config-store.server";
 import { CloudStoreLive } from "#/modules/config-store/store-sdk.server";
 import { organization } from "#/modules/organization/tables";
@@ -36,15 +38,16 @@ import { AppConfig } from "#/server/config.server";
 import { Database, DatabaseLive } from "#/server/database.server";
 import { encodePublicError, statusForPublicError } from "#/server/public-error";
 import { fakeGithubApi } from "#/test/fake-github";
+import * as ids from "#/test/ids";
 import { postgresTestDatabase } from "#/test/postgres";
 
 const origin = "http://localhost:3000";
 
 /** GitHub: the private acme/web (through installation 7) has branches main and dev, a Dockerfile and a src directory. */
 const github = fakeGithubApi({
-  "https://api.github.com/repos/acme/web/branches?per_page=100&page=1": [{ name: "main" }, { name: "dev" }],
-  "https://api.github.com/repos/acme/web/commits/main": { commit: { tree: { sha: "a".repeat(40) } } },
-  [`https://api.github.com/repos/acme/web/git/trees/${"a".repeat(40)}?recursive=1`]: {
+  "/repos/acme/web/branches?per_page=100&page=1": [{ name: "main" }, { name: "dev" }],
+  "/repos/acme/web/commits/main": { commit: { tree: { sha: "a".repeat(40) } } },
+  [`/repos/acme/web/git/trees/${"a".repeat(40)}?recursive=1`]: {
     truncated: false,
     tree: [
       { path: "Dockerfile", type: "blob", mode: "100644" },
@@ -52,10 +55,10 @@ const github = fakeGithubApi({
       { path: "src/main.ts", type: "blob", mode: "100644" },
     ],
   },
-  "https://api.github.com/repos/acme/web/contents/Dockerfile?ref=main": {
+  "/repos/acme/web/contents/Dockerfile?ref=main": {
     type: "file", size: 12, encoding: "base64", content: Buffer.from("FROM alpine\n").toString("base64"),
   },
-  "https://api.github.com/repos/acme/web/contents/src?ref=main": [{ path: "src/main.ts" }],
+  "/repos/acme/web/contents/src?ref=main": [{ path: "src/main.ts" }],
 });
 
 const encryption = makeSecretEncryption("fixture-server-access-encryption-1234567890");
@@ -88,7 +91,7 @@ function fakeServers() {
 const pairingSecret = "ppair_fixture_server_access";
 
 /** Pair the Organization with Cloud and enroll one Server. */
-const enroll = Effect.fn(function* (organizationId: string, machineId: string, first: boolean) {
+const enroll = Effect.fn(function* (organizationId: string, machineId: MachineId, first: boolean) {
   const database = yield* Database;
   if (first) {
     yield* database.drizzle.insert(organizationPairing).values({
@@ -109,11 +112,15 @@ const enroll = Effect.fn(function* (organizationId: string, machineId: string, f
 
 const cliLayer = Effect.fn(function* (
   ployz: Layer.Layer<Ployz> = fakeServers().layer,
-  overrides: { readonly runtime?: Layer.Layer<OrganizationRuntime>; readonly inngest?: Inngest } = {},
+  overrides: {
+    readonly runtime?: Layer.Layer<OrganizationRuntime>;
+    readonly inngest?: Inngest;
+    readonly env?: Record<string, string>;
+  } = {},
 ) {
   const testDatabase = yield* postgresTestDatabase;
   const provider = ConfigProvider.fromEnv({
-    env: { ...testConfigEnvironment(), NODE_ENV: "test", DATABASE_URL: testDatabase.url.href },
+    env: { ...testConfigEnvironment(), NODE_ENV: "test", DATABASE_URL: testDatabase.url.href, ...overrides.env },
   });
   const configLayer = AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(provider)));
   const databaseLayer = DatabaseLive.pipe(Layer.provide(configLayer));
@@ -133,54 +140,64 @@ const cliLayer = Effect.fn(function* (
 });
 
 /** The fields these tests read from `/api/cli` replies. */
-type Reply = {
-  readonly run?: { readonly id: string; readonly state: string };
-  readonly organizations?: ReadonlyArray<{ readonly id: string; readonly slug: string; readonly current: boolean }>;
-  readonly token?: { readonly id: string; readonly secret: string; readonly organization: string };
-  readonly tokens?: ReadonlyArray<{ readonly id: string; readonly current: boolean; readonly expired: boolean }>;
-  readonly devices?: ReadonlyArray<{ readonly id: string; readonly current: boolean }>;
-  readonly removed?: boolean | { readonly id: string; readonly kind: string };
-  readonly connections?: ReadonlyArray<{ readonly machine_id: string; readonly management: string }>;
-  readonly unreachable?: ReadonlyArray<string>;
-  readonly servers?: { readonly confirmed: ReadonlyArray<string>; readonly unconfirmed: ReadonlyArray<string> };
-  readonly signed_out?: { readonly id: string };
-  readonly linked?: boolean;
-  readonly ready?: boolean;
-  readonly install_url?: string;
-  readonly installations?: ReadonlyArray<{ readonly id: number; readonly account: string; readonly repositories: number }>;
-  readonly repositories?: ReadonlyArray<{ readonly repository: string; readonly installation: number }>;
-  readonly branches?: ReadonlyArray<string>;
-  readonly access?: string;
-  readonly disconnected?: { readonly id: number; readonly account: string };
-  readonly uninstall_url?: string;
-  readonly ref?: string;
-  readonly paths?: ReadonlyArray<string>;
-  readonly repository?: string;
-  readonly path?: string;
-  readonly size?: number;
-  readonly truncated?: boolean;
-  readonly content?: string | null;
-  readonly organization?: string;
-  readonly namespace?: string;
-  readonly volumes?: ReadonlyArray<unknown>;
-  readonly approval?: { readonly id: string; readonly status: string; readonly digest: string };
-  readonly error?: {
-    readonly code: string;
-    readonly message: string;
-    readonly details: {
-      readonly next?: string | { readonly tool: string; readonly input: Readonly<Record<string, string>> };
-      readonly approval?: string;
-      readonly approval_id?: string;
-      readonly channel?: string;
-      readonly effects?: ReadonlyArray<{ readonly kind: string; readonly name: string }>;
-      readonly operation?: { readonly verb: string; readonly name: string };
-      readonly valid_children?: ReadonlyArray<string>;
-    };
-  };
-  readonly id?: string;
-  readonly state?: string;
-  readonly revoking?: ReadonlyArray<{ readonly id: string; readonly kind: string; readonly unconfirmed: ReadonlyArray<string> }>;
-};
+const Named = Schema.Struct({ id: Schema.String, kind: Schema.String });
+const Approval = Schema.Struct({ id: Schema.String, status: Schema.String, digest: Schema.String });
+const Reply = Schema.Struct({
+  run: Schema.optionalKey(Schema.Struct({ id: Schema.String, state: Schema.String })),
+  organizations: Schema.optionalKey(Schema.Array(Schema.Struct({ id: Schema.String, slug: Schema.String, current: Schema.Boolean }))),
+  token: Schema.optionalKey(Schema.Struct({ id: Schema.String, secret: Schema.String, organization: Schema.String })),
+  tokens: Schema.optionalKey(Schema.Array(Schema.Struct({ id: Schema.String, current: Schema.Boolean, expired: Schema.Boolean }))),
+  devices: Schema.optionalKey(Schema.Array(Schema.Struct({ id: Schema.String, current: Schema.Boolean }))),
+  removed: Schema.optionalKey(Schema.Union([Schema.Boolean, Named])),
+  connections: Schema.optionalKey(Schema.Array(Schema.Struct({ machine_id: Schema.String, management: Schema.String }))),
+  unreachable: Schema.optionalKey(Schema.Array(Schema.String)),
+  servers: Schema.optionalKey(Schema.Struct({ confirmed: Schema.Array(Schema.String), unconfirmed: Schema.Array(Schema.String) })),
+  signed_out: Schema.optionalKey(Schema.Struct({ id: Schema.String })),
+  linked: Schema.optionalKey(Schema.Boolean),
+  ready: Schema.optionalKey(Schema.Boolean),
+  install_url: Schema.optionalKey(Schema.String),
+  installations: Schema.optionalKey(Schema.Array(Schema.Struct({ id: Schema.Number, account: Schema.String, repositories: Schema.Number }))),
+  repositories: Schema.optionalKey(Schema.Array(Schema.Struct({ repository: Schema.String, installation: Schema.Number }))),
+  branches: Schema.optionalKey(Schema.Array(Schema.String)),
+  access: Schema.optionalKey(Schema.String),
+  disconnected: Schema.optionalKey(Schema.Struct({ id: Schema.Number, account: Schema.String })),
+  uninstall_url: Schema.optionalKey(Schema.String),
+  ref: Schema.optionalKey(Schema.String),
+  paths: Schema.optionalKey(Schema.Array(Schema.String)),
+  repository: Schema.optionalKey(Schema.String),
+  path: Schema.optionalKey(Schema.String),
+  size: Schema.optionalKey(Schema.Number),
+  truncated: Schema.optionalKey(Schema.Boolean),
+  content: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  organization: Schema.optionalKey(Schema.String),
+  namespace: Schema.optionalKey(Schema.String),
+  volumes: Schema.optionalKey(Schema.Array(Schema.Unknown)),
+  approval: Schema.optionalKey(Approval),
+  error: Schema.optionalKey(Schema.Struct({
+    code: Schema.String,
+    message: Schema.String,
+    details: Schema.NullOr(Schema.Struct({
+      next: Schema.optionalKey(Schema.Union([
+        Schema.String,
+        Schema.Struct({ tool: Schema.String, input: Schema.Record(Schema.String, Schema.String) }),
+      ])),
+      approval: Schema.optionalKey(Schema.Union([Schema.String, Approval])),
+      approval_id: Schema.optionalKey(Schema.String),
+      channel: Schema.optionalKey(Schema.String),
+      effects: Schema.optionalKey(Schema.Array(Schema.Struct({ kind: Schema.String, name: Schema.String }))),
+      operation: Schema.optionalKey(Schema.Struct({ verb: Schema.String, name: Schema.String })),
+      valid_children: Schema.optionalKey(Schema.Array(Schema.String)),
+    })),
+  })),
+  id: Schema.optionalKey(Schema.String),
+  state: Schema.optionalKey(Schema.String),
+  revoking: Schema.optionalKey(Schema.Array(Schema.Struct({
+    id: Schema.String, kind: Schema.String, unconfirmed: Schema.Array(Schema.String),
+  }))),
+});
+type Reply = typeof Reply.Type;
+/** Checks the fields the tests read and keeps the rest, so whole-reply assertions still see every field. */
+const decodeReply = (text: string) => Schema.decodeUnknownSync(Reply)(JSON.parse(text), { onExcessProperty: "preserve" });
 
 type As = { readonly cookie?: string; readonly bearer?: string; readonly approval?: string; readonly key?: string };
 
@@ -197,12 +214,11 @@ const cli = Effect.fn(function* (method: string, path: string, as: As, body?: Cl
   const exit = yield* Effect.exit(handleCliRequest(new Request(`${origin}/api/cli/${path}`, init)));
   if (Exit.isSuccess(exit) && exit.value instanceof Response) {
     const text = yield* Effect.promise(() => (exit.value as Response).text());
-    // SAFETY: test-only view of the handler's JSON; assertions check every field read.
-    return { status: exit.value.status, json: JSON.parse(text) as Reply, text };
+    return { status: exit.value.status, json: decodeReply(text), text };
   }
   if (Exit.isSuccess(exit)) {
-    // SAFETY: test-only view of the handler's JSON; assertions check every field read.
-    return { status: 200, json: JSON.parse(JSON.stringify(exit.value)) as Reply, text: JSON.stringify(exit.value) };
+    const text = JSON.stringify(exit.value);
+    return { status: 200, json: decodeReply(text), text };
   }
   const empty: Reply = {};
   const error = encodePublicError(Cause.squash(exit.cause));
@@ -260,13 +276,11 @@ it.live(
         assert.strictEqual((yield* cli("DELETE", `tokens/${token.id}`, bob)).status, 404);
         assert.strictEqual((yield* cli("DELETE", "tokens/not-a-uuid", alice)).status, 404);
 
-        // Expired.
         yield* database.drizzle.update(organizationToken)
           .set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(organizationToken.id, token.id));
         assert.strictEqual((yield* cli("GET", "tokens", { bearer: token.secret })).status, 401);
         assert.isTrue((yield* cli("GET", "tokens", alice)).json.tokens?.[0]?.expired);
 
-        // Its maker left the Organization.
         const second = (yield* cli("POST", "tokens", alice, { name: "ci-2", expires_in_days: 1 })).json.token
           ?? assert.fail("no token");
         assert.strictEqual((yield* cli("GET", "tokens", { bearer: second.secret })).status, 200);
@@ -277,7 +291,6 @@ it.live(
         assert.strictEqual((yield* cli("GET", "tokens", alice)).status, 403);
         yield* database.drizzle.insert(member).values(membership ?? assert.fail("no membership"));
 
-        // Revoked.
         const removed = yield* cli("DELETE", `tokens/${second.id}`, alice);
         assert.deepStrictEqual(removed.json.removed, { id: second.id, kind: "token" });
         assert.strictEqual((yield* cli("GET", "tokens", { bearer: second.secret })).status, 401);
@@ -341,7 +354,7 @@ it.live(
 /** The bodies `ployz volume mirror|sync|mirror rm|move|release|restore` send, pinned the same in the CLI's `each_kind_posts_only_its_own_fields`. */
 const cliVolumeRunBodies: ReadonlyArray<CliBody> = [
   { environment: { project: "shop", environment: "production" }, kind: "mirror", to: "web-2" },
-  { environment: { project: "shop", environment: "production" }, kind: "sync", full: false },
+  { environment: { project: "shop", environment: "production" }, kind: "sync", full: true },
   { environment: { project: "shop", environment: "production" }, kind: "delete_mirror", slot: "web-2", confirm: "data" },
   { environment: { project: "shop", environment: "production" }, kind: "move", to: "web-2" },
   { environment: { project: "shop", environment: "production" }, kind: "release" },
@@ -359,8 +372,12 @@ it.live(
           const reply = yield* cli("POST", "volumes/vol-1/runs", alice, body);
           assert.notStrictEqual(reply.status, 422, JSON.stringify(body));
         }
-        const byId = yield* cli("POST", "volumes/vol-1/runs", alice, { environment: "env-1", kind: "sync" });
+        const byId = yield* cli("POST", "volumes/vol-1/runs", alice, { environment: "env-1", kind: "sync", full: true });
         assert.strictEqual(byId.status, 422);
+        const plain = yield* cli("POST", "volumes/vol-1/runs", alice, { environment: { project: "shop", environment: "production" }, kind: "sync", full: false });
+        assert.strictEqual(plain.status, 422);
+        const sync = yield* cli("POST", "volumes/vol-1/sync", alice, { environment: { project: "shop", environment: "production" } });
+        assert.notStrictEqual(sync.status, 422);
       }).pipe(Effect.provide(layer));
     }),
   60_000,
@@ -407,8 +424,8 @@ it.live(
       const layer = yield* cliLayer(fake.layer);
       yield* Effect.gen(function* () {
         const database = yield* Database;
-        const first = "00000000000000000000000000001239";
-        const later = "00000000000000000000000000001240";
+        const first = ids.machineId("00000000000000000000000000001239");
+        const later = ids.machineId("00000000000000000000000000001240");
         const alice = yield* signUp("alice");
         const device = (yield* cli("GET", "tokens", alice)).json.devices?.[0]?.id ?? assert.fail("no device");
         const token = (yield* cli("POST", "tokens", alice, { name: "ci", expires_in_days: 30 })).json.token
@@ -501,29 +518,36 @@ it.live(
   "github lists the caller's installations and a readable repository's branches, and disconnects one",
   () =>
     Effect.gen(function* () {
-      const layer = yield* cliLayer();
+      const layer = yield* cliLayer(undefined, { env: { PLOYZ_VERIFY_GITHUB_ORIGIN: "http://127.0.0.1:4555" } });
       yield* Effect.gen(function* () {
         const alice = yield* signUp("alice");
         const empty = yield* cli("GET", "github", alice);
         assert.deepInclude(empty.json, { linked: false, ready: false, installations: [], repositories: [] });
-        assert.match(empty.json.install_url ?? "", /^https:\/\/github\.com\/apps\/.+\/installations\/new$/);
+        assert.match(empty.json.install_url ?? "", /^http:\/\/127\.0\.0\.1:4555\/apps\/.+\/installations\/new$/);
 
         const database = yield* Database;
         const [row] = yield* database.drizzle.select({ userId: member.userId }).from(member)
           .where(eq(member.organizationId, alice.organization.id));
         const userId = row?.userId ?? assert.fail("no member");
-        yield* database.drizzle.insert(githubInstallation).values({ userId, installationId: 7, accountLogin: "acme", accountType: "Organization" });
+        yield* database.drizzle.insert(githubInstallation).values([
+          { installationId: 7, accountLogin: "acme", accountType: "Organization" },
+          { installationId: 8, accountLogin: "alice", accountType: "User" },
+        ]);
+        yield* database.drizzle.insert(organizationGithubInstallation).values([
+          { organizationId: alice.organization.id, installationId: 7, connectedByUserId: userId, connectedGithubLogin: "alice" },
+          { organizationId: alice.organization.id, installationId: 8, connectedByUserId: userId, connectedGithubLogin: "alice" },
+        ]);
         yield* database.drizzle.insert(githubRepositoryCache).values({
-          userId, installationId: 7, repositoryId: 11, name: "web", fullName: "acme/web", defaultBranch: "main",
+          installationId: 7, repositoryId: 11, name: "web", fullName: "acme/web", defaultBranch: "main",
           private: true, htmlUrl: "https://github.com/acme/web", repoUpdatedAt: new Date(),
         });
         const connected = yield* cli("GET", "github", alice);
         assert.deepInclude(connected.json, { ready: true });
         assert.deepStrictEqual(connected.json.installations?.map(({ id, account, repositories }) => ({ id, account, repositories })),
-          [{ id: 7, account: "acme", repositories: 1 }]);
+          [{ id: 7, account: "acme", repositories: 1 }, { id: 8, account: "alice", repositories: 0 }]);
 
         const branches = yield* cli("GET", "github/branches?repository=ACME/web", alice);
-        assert.deepInclude(branches.json, { access: "installation", branches: ["dev", "main"] });
+        assert.deepInclude(branches.json, { access: "connected", branches: ["dev", "main"] });
         assert.strictEqual((yield* cli("GET", "github/branches?repository=acme/secret", alice)).status, 404);
 
         const tree = yield* cli("GET", "github/tree?repository=acme%2Fweb&path=src", alice);
@@ -548,8 +572,10 @@ it.live(
 
         const removed = yield* cli("DELETE", "github/7", alice);
         assert.deepStrictEqual(removed.json.disconnected, { id: 7, account: "acme" });
-        assert.strictEqual(removed.json.uninstall_url, "https://github.com/organizations/acme/settings/installations/7");
+        assert.strictEqual(removed.json.uninstall_url, "http://127.0.0.1:4555/organizations/acme/settings/installations/7");
         assert.strictEqual((yield* cli("DELETE", "github/7", alice)).status, 404);
+        const personal = yield* cli("DELETE", "github/8", alice);
+        assert.strictEqual(personal.json.uninstall_url, "http://127.0.0.1:4555/settings/installations/8");
         assert.deepInclude((yield* cli("GET", "github", alice)).json, { ready: false, installations: [] });
       }).pipe(Effect.provide(layer));
     }),
@@ -565,7 +591,7 @@ it.live(
       const layer = yield* cliLayer(fake.layer);
       yield* Effect.gen(function* () {
         const database = yield* Database;
-        const machine = "00000000000000000000000000001260";
+        const machine = ids.machineId("00000000000000000000000000001260");
         const alice = yield* signUp("alice");
         const slug = alice.organization.slug;
         const [owner] = yield* database.drizzle.select({ userId: member.userId }).from(member)
@@ -581,7 +607,7 @@ it.live(
         // Only the Organization the credential acts in.
         const other = yield* cli("DELETE", "organizations/elsewhere", alice);
         assert.strictEqual(other.status, 422);
-        assert.strictEqual(other.json.error?.details.next, "ployz org use elsewhere");
+        assert.strictEqual(other.json.error?.details?.next, "ployz org use elsewhere");
 
         // A Project must go first, through its own teardown; nothing is unpaired meanwhile.
         const write = (command: Parameters<typeof callStore>[2]) => callStore(alice.organization.id, userId, command);
@@ -592,7 +618,7 @@ it.live(
         assert.isTrue(created.ok);
         const refused = yield* cli("DELETE", `organizations/${slug}`, alice);
         assert.strictEqual(refused.status, 409);
-        assert.deepStrictEqual(refused.json.error?.details.next, { tool: "remove", input: { project: "shop" } });
+        assert.deepStrictEqual(refused.json.error?.details?.next, { tool: "remove", input: { project: "shop" } });
         assert.isTrue(server.slots.has("cloud"));
         assert.isTrue((yield* write({ operation: "write", command: { command: "remove", project: "shop" } })).ok);
 
@@ -611,6 +637,69 @@ it.live(
         assert.lengthOf(yield* database.drizzle.select().from(organization).where(eq(organization.id, alice.organization.id)), 0);
         assert.lengthOf(yield* database.drizzle.select().from(organizationPairing), 0);
         assert.lengthOf(yield* database.drizzle.select().from(serverAccess), 0);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "org rm is an owner's alone: an admin or a member is refused and the Organization stays",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cliLayer();
+      yield* Effect.gen(function* () {
+        const database = yield* Database;
+        const alice = yield* signUp("alice");
+        const bob = yield* signUp("bob");
+        const slug = alice.organization.slug;
+        const [personal] = yield* database.drizzle.select({ userId: member.userId }).from(member)
+          .where(eq(member.organizationId, bob.organization.id));
+        const bobId = personal?.userId ?? assert.fail("no member");
+        yield* database.drizzle.insert(member).values({ userId: bobId, organizationId: alice.organization.id, role: "admin" });
+        yield* database.drizzle.update(session).set({ activeOrganizationId: alice.organization.id, activeOrganizationSlug: slug })
+          .where(eq(session.userId, bobId));
+        for (const role of ["admin", "member"] as const) {
+          yield* database.drizzle.update(member).set({ role })
+            .where(and(eq(member.userId, bobId), eq(member.organizationId, alice.organization.id)));
+          const refused = yield* cli("DELETE", `organizations/${slug}`, bob);
+          assert.strictEqual(refused.status, 403);
+          assert.strictEqual(refused.json.error?.code, "forbidden");
+          assert.lengthOf(yield* database.drizzle.select().from(organization).where(eq(organization.id, alice.organization.id)), 1);
+        }
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+/** Every route better-auth 1.7.6's organization plugin mounts with Ployz's options, but set-active, `ployz org use`. */
+const CLOSED_ORGANIZATION_ROUTES = [
+  "accept-invitation", "cancel-invitation", "check-slug", "create", "delete", "get-active-member", "get-active-member-role",
+  "get-full-organization", "get-invitation", "get-organization", "has-permission", "invite-member", "leave", "list",
+  "list-invitations", "list-members", "list-user-invitations", "reject-invitation", "remove-member", "update",
+  "update-member-role",
+];
+
+it.live(
+  "better-auth's organization routes but set-active answer 404 to a signed-in member, so membership changes only go through Ployz",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cliLayer();
+      yield* Effect.gen(function* () {
+        const auth = yield* Auth;
+        const alice = yield* signUp("alice");
+        const body = JSON.stringify({ organizationId: alice.organization.id, email: "eve@example.test", role: "owner" });
+        const call = (method: "GET" | "POST", path: string) => {
+          const init: RequestInit = { method, headers: { cookie: alice.cookie, "content-type": "application/json", origin } };
+          if (method === "POST") init.body = body;
+          return auth.handler(new Request(`${origin}/api/auth${path}`, init));
+        };
+        assert.strictEqual((yield* call("GET", "/get-session")).status, 200);
+        for (const route of CLOSED_ORGANIZATION_ROUTES) {
+          for (const path of [`/organization/${route}`, `/organization/${route}/`]) {
+            assert.strictEqual((yield* call("POST", path)).status, 404, `POST ${path}`);
+            assert.strictEqual((yield* call("GET", path)).status, 404, `GET ${path}`);
+          }
+        }
       }).pipe(Effect.provide(layer));
     }),
   60_000,
@@ -680,8 +769,8 @@ it.live(
   60_000,
 );
 
-const fra1 = "f".repeat(32);
-const leftBehind = { kind: "docker_volume" as const, id: { machine_id: fra1 as MachineId, name: "left-behind_data" as DockerVolumeName } };
+const fra1 = ids.machineId("f");
+const leftBehind = { kind: "docker_volume" as const, id: { machine_id: fra1, name: "left-behind_data" as DockerVolumeName } };
 
 type LeftBehind = { observesFra1: boolean; sessionsOpened: number };
 
@@ -737,7 +826,7 @@ it.live(
 
         const pending = yield* cli("POST", "namespaces/left-behind/clean", { ...alice, approval: approvalId });
         assert.strictEqual(pending.status, 409);
-        assert.strictEqual(pending.json.error?.details.approval_id, approvalId);
+        assert.strictEqual(pending.json.error?.details?.approval_id, approvalId);
 
         const approved = yield* cli("POST", `approvals/${approvalId}`, alice, { approve: { digest: details.approval ?? "" } });
         assert.strictEqual(approved.status, 200);
@@ -752,9 +841,9 @@ it.live(
         assert.deepStrictEqual(sent.mock.calls.map(([event]) => (event as { id?: string }).id), [`namespace-cleanup-${cleanupId}`]);
         assert.strictEqual((yield* cli("GET", "namespace-cleanups/not-a-uuid", alice)).json.error?.code, "not_found");
 
-        const removal = yield* cli("DELETE", `servers/${fra1}`, alice, { no_reset: true });
+        const removal = yield* cli("POST", `servers/${fra1}/forget`, alice, {});
         assert.strictEqual(removal.status, 409);
-        assert.deepStrictEqual(removal.json.error?.details.operation, { verb: "remove", name: "fra-1" });
+        assert.deepStrictEqual(removal.json.error?.details?.operation, { verb: "forget", name: "fra-1" });
 
         const drain = yield* cli("POST", `servers/${fra1}/drain`, alice);
         assert.strictEqual(drain.status, 202);
@@ -778,6 +867,37 @@ it.live(
 );
 
 it.live(
+  "a person forgetting a Server from its dashboard modal starts it at once, and a sidebar agent's forget asks first",
+  () =>
+    Effect.gen(function* () {
+      const inngest = new Inngest({ id: "dashboard-forget-test" });
+      const sent = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
+      const layer = yield* cliLayer(fakeServers().layer, { runtime: leftBehindCluster, inngest });
+      yield* Effect.gen(function* () {
+        const { drizzle } = yield* Database;
+        const { organization: org } = yield* signUp("alice");
+        const [alice] = yield* drizzle.select({ userId: member.userId }).from(member).where(eq(member.organizationId, org.id));
+        assert.isDefined(alice);
+        const { userId } = alice;
+        const caller = (via: Caller["via"]): Caller =>
+          ({ userId, organization: { id: org.id, slug: org.slug }, credential: { kind: "session", id: "session-1" }, role: "owner", support: null, via });
+
+        const agent = yield* forgetServer(caller("agent"), fra1, { key: "agent-forget", approvalId: null });
+        assert.strictEqual(agent?.ok, false);
+        assert.lengthOf(sent.mock.calls, 0);
+
+        const person = yield* forgetServer(caller("dashboard"), fra1, { key: "modal-forget", approvalId: null });
+        assert.strictEqual(person?.ok, true);
+        assert.lengthOf(yield* drizzle.select().from(machineRemoveAttempt), 1);
+        assert.lengthOf(sent.mock.calls, 1);
+        const approvals = yield* drizzle.select({ status: operationApprovals.status }).from(operationApprovals);
+        assert.deepStrictEqual(approvals.map(({ status }) => status), ["pending"]);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
   "an approved `server rm` removes once, and a removal that would reset the Server isn't covered by a keep-data approval",
   () =>
     Effect.gen(function* () {
@@ -787,26 +907,25 @@ it.live(
       yield* Effect.gen(function* () {
         const { drizzle } = yield* Database;
         const alice = yield* signUp("alice");
-        const keep = { no_reset: true };
-        const asked = (yield* cli("DELETE", `servers/${fra1}`, alice, keep)).json.error?.details ?? assert.fail("no ask");
+        const asked = (yield* cli("POST", `servers/${fra1}/forget`, alice, {})).json.error?.details ?? assert.fail("no ask");
         const approvalId = asked.approval_id ?? assert.fail("no approval id");
         yield* cli("POST", `approvals/${approvalId}`, alice, { approve: { digest: asked.approval ?? "" } });
 
         const reset = yield* cli("DELETE", `servers/${fra1}`, { ...alice, approval: approvalId }, { confirm_data_loss: { confirmed: [] } });
         assert.strictEqual(reset.json.error?.code, "approval_required");
-        assert.notStrictEqual(reset.json.error?.details.approval_id, approvalId);
+        assert.notStrictEqual(reset.json.error?.details?.approval_id ?? assert.fail("no approval id"), approvalId);
 
-        const started = yield* cli("DELETE", `servers/${fra1}`, { ...alice, approval: approvalId }, keep);
+        const started = yield* cli("POST", `servers/${fra1}/forget`, { ...alice, approval: approvalId }, {});
         const removalId = started.json.id ?? assert.fail("no removal id");
         const resetAfterUse = yield* cli("DELETE", `servers/${fra1}`, { ...alice, approval: approvalId }, { confirm_data_loss: { confirmed: [] } });
         assert.strictEqual(resetAfterUse.json.error?.code, "approval_required");
-        const elsewhere = yield* cli("DELETE", `servers/${"e".repeat(32)}`, { ...alice, approval: approvalId }, keep);
+        const elsewhere = yield* cli("POST", `servers/${"e".repeat(32)}/forget`, { ...alice, approval: approvalId }, {});
         assert.strictEqual(elsewhere.json.error?.code, "not_found");
         const ended = new Date();
         yield* drizzle.update(machineRemoveAttempt).set({
           state: "failed", inngestRunId: "run-1", startedAt: ended, terminalAt: ended, failureCode: "unreachable", failureMessage: "gone",
         }).where(eq(machineRemoveAttempt.id, removalId));
-        assert.strictEqual((yield* cli("DELETE", `servers/${fra1}`, { ...alice, approval: approvalId }, keep)).json.id, removalId);
+        assert.strictEqual((yield* cli("POST", `servers/${fra1}/forget`, { ...alice, approval: approvalId }, {})).json.id, removalId);
         assert.deepStrictEqual(sent.mock.calls.map(([event]) => (event as { id?: string }).id), [`machine-remove-${removalId}`]);
       }).pipe(Effect.provide(layer));
     }),
@@ -824,22 +943,23 @@ it.live(
       yield* Effect.gen(function* () {
         const { drizzle } = yield* Database;
         const alice = yield* signUp("alice");
-        const keep = { no_reset: true };
-        const asked = (yield* cli("DELETE", `servers/${fra1}`, alice, keep)).json.error?.details ?? assert.fail("no ask");
+        const asked = (yield* cli("POST", `servers/${fra1}/forget`, alice, {})).json.error?.details ?? assert.fail("no ask");
         const approvalId = asked.approval_id ?? assert.fail("no approval id");
         yield* cli("POST", `approvals/${approvalId}`, alice, { approve: { digest: asked.approval ?? "" } });
-        const removalId = (yield* cli("DELETE", `servers/${fra1}`, { ...alice, approval: approvalId }, keep)).json.id
+        const removalId = (yield* cli("POST", `servers/${fra1}/forget`, { ...alice, approval: approvalId }, {})).json.id
           ?? assert.fail("no removal id");
         const ended = new Date();
         yield* drizzle.update(machineRemoveAttempt).set({ state: "succeeded", inngestRunId: "run-1", startedAt: ended, terminalAt: ended })
           .where(eq(machineRemoveAttempt.id, removalId));
         cluster.observesFra1 = false;
 
-        const retried = yield* cli("DELETE", `servers/${fra1}`, { ...alice, approval: approvalId }, keep);
+        const retried = yield* cli("POST", `servers/${fra1}/forget`, { ...alice, approval: approvalId }, {});
         assert.strictEqual(retried.status, 200);
         assert.strictEqual(retried.json.id, removalId);
-        for (const body of [keep, { confirm_data_loss: { confirmed: [] } }]) {
-          const gone = yield* cli("DELETE", `servers/${fra1}`, alice, body);
+        for (const gone of [
+          yield* cli("POST", `servers/${fra1}/forget`, alice, {}),
+          yield* cli("DELETE", `servers/${fra1}`, alice, { confirm_data_loss: { confirmed: [] } }),
+        ]) {
           assert.strictEqual(gone.status, 404);
           assert.deepStrictEqual([gone.json.error?.code, gone.json.error?.message], ["not_found", "No such Server."]);
         }
@@ -924,7 +1044,7 @@ const operationClusterOf = (plan: FraRunsGlobal) => Layer.succeed(OrganizationRu
 });
 
 const operations = [
-  { verb: "remove", name: "fra-1", method: "DELETE", path: `servers/${fra1}`, body: { no_reset: true } },
+  { verb: "forget", name: "fra-1", method: "POST", path: `servers/${fra1}/forget`, body: {} },
   { verb: "clean", name: "left-behind", method: "POST", path: "namespaces/left-behind/clean", body: undefined },
   { verb: "drain", name: "fra-1", method: "POST", path: `servers/${fra1}/drain`, body: undefined },
 ] as const;
@@ -968,17 +1088,17 @@ for (const operation of operations) {
             plan.destroys = true;
             const asked = yield* cli(operation.method, operation.path, alice, operation.body);
             assert.strictEqual(asked.status, 409, reason);
-            const approvalId = asked.json.error?.details.approval_id ?? assert.fail("no approval id");
+            const approvalId = asked.json.error?.details?.approval_id ?? assert.fail("no approval id");
             const denied = yield* cli("POST", `approvals/${approvalId}`, alice, { reject: { reason } });
             assert.strictEqual(denied.json.approval?.status, "denied", reason);
-            const approvedLate = yield* cli("POST", `approvals/${approvalId}`, alice, { approve: { digest: asked.json.error?.details.approval ?? "" } });
+            const approvedLate = yield* cli("POST", `approvals/${approvalId}`, alice, { approve: { digest: asked.json.error?.details?.approval ?? "" } });
             assert.deepStrictEqual(
               [approvedLate.status, approvedLate.json.error?.code, approvedLate.json.error?.message],
               [409, "conflict", "This approval was already decided elsewhere (denied)."],
               reason,
             );
 
-            const plans = operation.verb === "remove" ? [true] : [true, false];
+            const plans = operation.verb === "forget" ? [true] : [true, false];
             for (const destroys of plans) {
               plan.destroys = destroys;
               const retried = yield* cli(operation.method, operation.path, { ...alice, approval: approvalId }, operation.body);
@@ -1088,16 +1208,16 @@ it.live(
         const alice = yield* signUp("alice");
         const removal = operations[0];
         const clean = operations[1];
-        const removalId = (yield* cli(removal.method, removal.path, alice, removal.body)).json.error?.details.approval_id
+        const removalId = (yield* cli(removal.method, removal.path, alice, removal.body)).json.error?.details?.approval_id
           ?? assert.fail("no approval id");
-        const cleanId = (yield* cli(clean.method, clean.path, alice)).json.error?.details.approval_id
+        const cleanId = (yield* cli(clean.method, clean.path, alice)).json.error?.details?.approval_id
           ?? assert.fail("no approval id");
         const waiting = yield* cli(removal.method, removal.path, { ...alice, approval: removalId }, removal.body);
-        assert.deepStrictEqual([waiting.status, waiting.json.error?.details.approval_id], [409, removalId]);
+        assert.deepStrictEqual([waiting.status, waiting.json.error?.details?.approval_id], [409, removalId]);
         assert.lengthOf(sent.mock.calls, 0);
 
         const unnamed = yield* cli(removal.method, removal.path, alice, removal.body);
-        assert.deepStrictEqual([unnamed.status, unnamed.json.error?.details.approval_id], [409, removalId]);
+        assert.deepStrictEqual([unnamed.status, unnamed.json.error?.details?.approval_id], [409, removalId]);
 
         plan.destroys = false;
         const emptied = yield* cli(clean.method, clean.path, { ...alice, approval: cleanId });

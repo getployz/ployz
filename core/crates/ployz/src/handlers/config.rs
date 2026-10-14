@@ -431,7 +431,6 @@ pub(super) fn unset(root: &ArgMatches) -> Result<(), Error> {
     edit(root, changes)
 }
 
-/// Apply `changes`.
 fn edit(root: &ArgMatches, changes: Vec<Change>) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let unchanged = unchanged(&changes);

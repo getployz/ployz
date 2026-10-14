@@ -156,7 +156,10 @@ async fn cancelled_create_finishes_before_reset_cleanup() {
         .await;
         let owner = RecordOwner::spawn(store).unwrap();
         let plugin = FakePlugin::default();
-        plugin.reply("Storage.Demote", json!({"Ok": []}));
+        plugin.reply(
+            "Storage.Demote",
+            json!({"Ok": {"demoted": [], "stuck": [], "failed": []}}),
+        );
         let (plugin, _plugin_server) = plugin.serve(&data_dir);
         let local = LocalMachine::new(owner.clone()).with_containers(Some(runtime.clone()));
         let resetting = LocalMachine::new(owner)
@@ -335,7 +338,10 @@ async fn removal_warning_restarts_and_keeps_recovery_available_without_container
     let owner = RecordOwner::spawn(store).unwrap();
     let restarting = owner.restart_requested();
     let plugin = FakePlugin::default();
-    plugin.reply("Storage.Demote", json!({"Ok": []}));
+    plugin.reply(
+        "Storage.Demote",
+        json!({"Ok": {"demoted": [], "stuck": [], "failed": []}}),
+    );
     let (plugin, _plugin_server) = plugin.serve(&data_dir);
     let local = LocalMachine::new(owner)
         .with_containers(Some(runtime))
@@ -487,6 +493,7 @@ mod plan {
             resolved_spec: spec(image),
             deployment_id: None,
             registry_auth: None,
+            image_prepared: false,
             answer: ployz_core::AnswerWhen::Started,
         }
     }
@@ -1020,6 +1027,74 @@ mod settled {
         })
         .await
         .expect("the abandoned removal still empties the slot");
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn removal_by_id_succeeds_when_the_retirer_removes_it_during_the_drain() {
+        let Settling {
+            local,
+            fake,
+            data_dir,
+        } = settling().await;
+        let EnsuredContainer::Ensured {
+            now: ContainerNow::Present(old),
+            ..
+        } = local
+            .ensure_container(run(new_container("started")))
+            .await
+            .unwrap()
+        else {
+            panic!("the old Container did not start");
+        };
+        let id = old.container_id;
+        let gone = tokio::spawn({
+            let local = local.clone();
+            async move {
+                local
+                    .ensure_container(ContainerWant::Gone {
+                        container: ployz_core::ContainerLocator::Id(id),
+                        drain: ployz_core::Drain::try_from(500).unwrap(),
+                        anonymous_volumes: ployz_core::AnonymousVolumes::Remove,
+                    })
+                    .await
+            }
+        });
+        let containers = local.containers.as_ref().unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !containers.stopping_ids_for_test().contains(&id) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            local
+                .remove_drained_if(id, async { Ok(true) })
+                .await
+                .unwrap()
+        );
+
+        let reply = gone.await.unwrap().unwrap();
+
+        assert!(
+            matches!(
+                reply,
+                EnsuredContainer::Ensured {
+                    now: ContainerNow::Absent { .. },
+                    ..
+                }
+            ),
+            "expected the Container gone, got {reply:?}"
+        );
+        assert!(
+            fake.named_containers
+                .as_ref()
+                .unwrap()
+                .lock()
+                .unwrap()
+                .is_empty()
+        );
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 

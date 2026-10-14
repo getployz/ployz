@@ -5,7 +5,7 @@ export const APPROVAL_STATUSES = ["pending", "approved", "denied", "superseded"]
 export type ApprovalStatus = (typeof APPROVAL_STATUSES)[number];
 
 /** The Server and Namespace operations the CLI runs through Cloud that may wait for a human. Upgrade never does. */
-export type OperationVerb = "drain" | "clean" | "remove" | "release" | "remove_mirror";
+export type OperationVerb = "drain" | "set" | "clean" | "remove" | "forget" | "release" | "remove_mirror";
 
 /** An operation as a human approves it: its verb, what it acts on by name, and the preview its digest covers. */
 export type OperationReview = { verb: OperationVerb; name: string; preview: JsonValue };
@@ -44,6 +44,9 @@ const destroys = {
   detaches_volume: { verb: "Detaches", noun: "volume", after: "" },
   removes_domain: { verb: "Removes", noun: "domain", after: "" },
   removes_server: { verb: "Removes", noun: "server", after: "" },
+  removes_member: { verb: "Removes", noun: "member", after: "" },
+  changes_role: { verb: "Changes", noun: "role of", after: "" },
+  revokes_invite: { verb: "Revokes", noun: "invite for", after: "" },
 } satisfies Record<DestructiveKind, { verb: string; noun: string; after: string }>;
 
 /** One thing the plan destroys, worded as the card leads with it: by name, or as "a volume" when it has none. */

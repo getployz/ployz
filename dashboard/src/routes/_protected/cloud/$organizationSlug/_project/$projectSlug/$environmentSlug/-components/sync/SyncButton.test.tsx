@@ -115,13 +115,12 @@ async function pick(place: string) {
 it("says what a Sync into the Parent carries, and opens the dialog into the Parent", async () => {
   open();
   const sync = await dialog();
-  // Any other place of the Project can be picked instead.
   expect(sync.getAllByRole("option").map((option) => option.textContent)).toEqual(["production", "staging", "demo"]);
   expect(sync.getByRole<HTMLSelectElement>("combobox", { name: "Place to sync into" }).value).toBe("production");
   expect(sync.getByText("These become production's changes to deploy.")).toBeTruthy();
   const changes = within(sync.getByRole("region", { name: "api" })).getAllByRole("listitem").map((item) => item.textContent);
   expect(changes).toEqual([
-    "Sourceshop/api:1.8shop/api:1.9",
+    "Sourceshop/api:1.81.9",
     "LOG_LEVELChanged in productionwarndebug",
     "APP_ENVproductionstaging",
     "STRIPE_WEBHOOK_SECRETSecret",
@@ -176,7 +175,6 @@ it("marks an unticked change Never sync, and syncs a never-synced one again", as
     ...syncView().never_synced, neverSynced("env.APP_ENV"),
   ] });
   fireEvent.click(sync.getByRole("button", { name: "Never sync" }));
-  // Once the Store answers: the row joins the never-synced list.
   expect(await sync.findByRole("button", { name: "2 never synced" })).toBeTruthy();
   expect(sync.queryByText("APP_ENV")).toBeNull();
   await waitFor(() => expect(app.commands()).toEqual([

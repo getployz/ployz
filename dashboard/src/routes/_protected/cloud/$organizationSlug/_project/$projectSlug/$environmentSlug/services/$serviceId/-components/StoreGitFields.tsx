@@ -29,8 +29,8 @@ export function useRepositoryRef(organizationSlug: string, environment: Environm
 type GitRef = { repositoryId: number; installationId: number };
 
 /** The branch a Git Service builds, picked from the repository's branches (typed when GitHub isn't known yet). */
-export function StoreBranchField({ repository, gitRef, value, change, onSet }: {
-  repository: string; gitRef: GitRef | undefined; value: string; change: ServiceSettingChange | undefined;
+export function StoreBranchField({ organizationSlug, repository, gitRef, value, change, onSet }: {
+  organizationSlug: string; repository: string; gitRef: GitRef | undefined; value: string; change: ServiceSettingChange | undefined;
   onSet: (branch: string) => PersistableTransaction;
 }) {
   const setting = serviceSetting("branch");
@@ -50,7 +50,7 @@ export function StoreBranchField({ repository, gitRef, value, change, onSet }: {
               </Button>
             </ItemActions>
           </Item>
-          <GitBranchSelectorDialog open={picking} onOpenChange={setPicking} repositoryFullName={repository}
+          <GitBranchSelectorDialog open={picking} onOpenChange={setPicking} organizationSlug={organizationSlug} repositoryFullName={repository}
             repositoryId={gitRef.repositoryId} installationId={gitRef.installationId}
             onSelectBranch={(branch) => { void onSet(branch); setPicking(false); }} />
         </>
@@ -62,14 +62,14 @@ export function StoreBranchField({ repository, gitRef, value, change, onSet }: {
 }
 
 /** The Dockerfile a Git Service builds, suggesting the repository's Dockerfiles once the field is focused. */
-export function StoreDockerfileField({ gitRef, branch, value, change, onCommit }: {
-  gitRef: GitRef | undefined; branch: string; value: string; change: ServiceSettingChange | undefined;
+export function StoreDockerfileField({ organizationSlug, gitRef, branch, value, change, onCommit }: {
+  organizationSlug: string; gitRef: GitRef | undefined; branch: string; value: string; change: ServiceSettingChange | undefined;
   onCommit: (raw: string) => PersistableTransaction;
 }) {
   const setting = serviceSetting("dockerfilePath");
   const [search, setSearch] = useState(false);
   const files = useQuery({
-    ...githubFileSearchQueryOptions({ repositoryId: gitRef?.repositoryId ?? 0, installationId: gitRef?.installationId ?? null,
+    ...githubFileSearchQueryOptions({ organizationSlug, repositoryId: gitRef?.repositoryId ?? 0, installationId: gitRef?.installationId ?? null,
       ref: branch, pattern: "**/*Dockerfile*" }),
     enabled: search && gitRef !== undefined && branch !== "",
     retry: false,

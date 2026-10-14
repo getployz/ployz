@@ -131,6 +131,7 @@ export function useRuntimeStatus() {
     // These are direct Runtime Watch fields. They deliberately do not imply
     // DNS publication, route binding, certificate use, or service health.
     certificates: row?.certificates ?? [],
+    published: row?.published ?? [],
     incompleteIds: row?.incompleteIds ?? EMPTY_RUNTIME_INCOMPLETE_IDS,
   };
 }

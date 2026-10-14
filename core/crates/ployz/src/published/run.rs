@@ -58,17 +58,33 @@ pub(crate) fn run(
             "Cancelled. Nothing changed.",
         )?;
     }
-    let key = uuid::Uuid::new_v4().to_string();
-    let ran = runtime
-        .block_on(run_on(
-            &credential,
-            &command.name,
-            input,
-            approval.as_deref(),
-            &key,
-        ))
-        .0
-        .map_err(|error| refused(error, command, setup))?;
+    let mut approval = approval;
+    let ran = loop {
+        let key = uuid::Uuid::new_v4().to_string();
+        let ran = runtime
+            .block_on(run_on(
+                &credential,
+                &command.name,
+                input.clone(),
+                approval.as_deref(),
+                &key,
+            ))
+            .0;
+        let asked = match &ran {
+            Err(StoreCallError::Refused(refusal)) if !ui::json() => {
+                crate::approval::Asked::of(refusal)
+            }
+            _ => None,
+        };
+        let Some(asked) = asked else {
+            break ran.map_err(|error| refused(error, command, setup))?;
+        };
+        let retry = format!("ployz {} --approval {}", command.path(), asked.id);
+        approval = Some(
+            crate::approval::settle(&runtime, &credential, asked.verb(), &asked, retry)
+                .map_err(Failure::from)?,
+        );
+    };
     print(command, ran.output, ran.message)
 }
 

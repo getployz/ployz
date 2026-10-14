@@ -1582,6 +1582,7 @@ fn ensure_container_names_the_want_the_observation_and_the_refusal_on_the_wire()
                 resolved_spec: spec.clone(),
                 deployment_id: None,
                 registry_auth: None,
+                image_prepared: false,
                 answer: AnswerWhen::Started,
             }),
         },

@@ -21,6 +21,7 @@ use crate::logs::{
 };
 
 const NANOS_PER_SECOND: i64 = 1_000_000_000;
+const EXEC_OUTPUT_IDLE: Duration = Duration::from_millis(100);
 
 impl ContainerRuntime {
     pub async fn exec(&self, mut requests: Streaming<OpaquePayload>) -> Result<RpcStream, Status> {
@@ -251,7 +252,7 @@ async fn finish_exec_output(
     // ponytail: 100 ms idle ends a held hijack; use a Docker output-complete signal if added.
     // Forwarding buffered output may take longer under downstream backpressure.
     loop {
-        match tokio::time::timeout(Duration::from_millis(100), output.next()).await {
+        match tokio::time::timeout(EXEC_OUTPUT_IDLE, output.next()).await {
             Ok(Some(Ok(output))) => send_exec(sender, exec_output(output, tty)).await?,
             Ok(Some(Err(error))) => return send_exec_error(sender, error).await,
             Ok(None) | Err(_) => break,
@@ -428,8 +429,7 @@ mod tests {
             match ExecResponseFrame::decode(&payload.unwrap()).unwrap() {
                 ExecResponseFrame::Stdout(output) => {
                     bytes.extend(output);
-                    // The downstream reader takes longer than the old entire-drain deadline.
-                    tokio::time::sleep(Duration::from_millis(150)).await;
+                    tokio::time::sleep(EXEC_OUTPUT_IDLE + Duration::from_millis(50)).await;
                 }
                 ExecResponseFrame::Exit(code) => exit = Some(code),
                 other @ (ExecResponseFrame::ExecId(_)

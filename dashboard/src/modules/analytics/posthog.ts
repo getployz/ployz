@@ -18,10 +18,11 @@ export const getPostHogBrowserConfig = createIsomorphicFn()
 
 /**
  * Starts PostHog once per page load. Sign-in arrives through a full page load, so identifying here covers it.
- * Replays show inputs: anything secret carries `ph-no-capture` (see CODING_STANDARDS.md).
+ * Replays show inputs: anything secret carries `ph-no-capture` (see CODING_STANDARDS.md). An invite page's URL is
+ * itself the secret, and PostHog records every URL, so a page load there starts nothing.
  */
 export function startPostHog(config: PostHogBrowserConfig, session: AuthSession | null) {
-  if (config === null) return;
+  if (config === null || window.location.pathname.startsWith("/invite/")) return;
   posthog.init(config.key, {
     api_host: config.host,
     // ponytail: the PostHog app's own origin, for links and the toolbar while api_host is the managed proxy.

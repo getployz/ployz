@@ -19,7 +19,7 @@ import { canvasPositionSchema } from "#/modules/canvas/canvas-positions";
 import { CanvasInspectorOverlay } from "./CanvasInspectorOverlay";
 import { useCanvasInspectorSelection } from "./useCanvasInspectorSelection";
 import { LOADING_NODE, canvasNodeTypes } from "./canvas/canvas-node-types";
-import { BottomBarSlot } from "./canvas/BottomBar";
+import { BottomBarSlot, HistoryStages } from "./canvas/BottomBar";
 import { CanvasFlow } from "./canvas/CanvasFlow";
 import { DeploymentLightingProvider, useOpenDeployment } from "./deployment-page";
 import { useCanvasCopies } from "./canvas/useCanvasCopies";
@@ -27,7 +27,7 @@ import { buildStoreEdges, buildStoreNodes, volumeTrays } from "./canvas/nodes";
 import type { StoreCanvas } from "./canvas/types";
 import { configTrays } from "#/modules/config-store/store-configs";
 import { branchQuery, configsQuery, diffQuery, domainsQuery, environmentSettingsQuery, namespaceQuery, requireView, servicesQuery, useStoreViews, volumesQuery } from "#/modules/config-store/store-view.queries";
-import { liveNodes } from "#/modules/config-store/store-branches";
+import { isBranch, liveNodes } from "#/modules/config-store/store-branches";
 import { serviceChangeCount, serviceChanges, serviceSettingRows, settingText } from "#/modules/config-store/store-services";
 import { notSetVariables } from "#/modules/config-store/store-variables";
 import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
@@ -74,7 +74,6 @@ function CanvasWithData() {
   const { organizationSlug, projectSlug, environmentSlug } = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const { store: ref, environmentId } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const { organizationId } = useLoaderData({ from: "/_protected/cloud/$organizationSlug" });
-  // The branch view is refused unless this is a Branch.
   const [servicesResult, settingsResult, diffResult, volumesResult, branch, namespace, domainsResult, configsResult] = useStoreViews(organizationSlug,
     [servicesQuery(ref), environmentSettingsQuery(ref), diffQuery(ref), volumesQuery(ref), branchQuery(ref), namespaceQuery(ref), domainsQuery(ref),
       configsQuery(ref)] as const);
@@ -123,7 +122,7 @@ function CanvasWithData() {
     unmountedVolumes: unmounted,
     unmountedConfigs: configs.unmounted,
     copies,
-    live: branch.ok ? liveNodes(branch.value.live, services.services) : [],
+    live: isBranch(branch) ? liveNodes(branch.value.live, services.services) : [],
     diff,
   };
   const initialNodes = buildStoreNodes(store, canvasPositions, environmentId);
@@ -160,9 +159,12 @@ export function EnvironmentCanvasScene() {
   const { selectedNodeId, selectedServiceId, deploymentId, deploymentReturnTo, deploymentList, history, newBranch, prPlan } = useCanvasInspectorSelection();
   const lighting = useOpenDeployment();
   const [bottomBarSlot, setBottomBarSlot] = useState<HTMLElement | null>(null);
+  const [historyStages, setHistoryStages] = useState(0);
+  const stages = { count: historyStages, staged: () => setHistoryStages((count) => count + 1) };
 
   return (
     <BottomBarSlot.Provider value={bottomBarSlot}>
+    <HistoryStages.Provider value={stages}>
     <StorePickingProvider newBranch={newBranch}>
     <StorePrPickingProvider prPlan={prPlan}>
     <CanvasInspectorOverlay
@@ -190,6 +192,7 @@ export function EnvironmentCanvasScene() {
     </CanvasInspectorOverlay>
     </StorePrPickingProvider>
     </StorePickingProvider>
+    </HistoryStages.Provider>
     </BottomBarSlot.Provider>
   );
 }

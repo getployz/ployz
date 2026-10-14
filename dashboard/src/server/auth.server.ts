@@ -7,7 +7,6 @@ import {
   deviceAuthorization,
   organization as organizationPlugin,
 } from "better-auth/plugins";
-import { createAuthMiddleware } from "better-auth/api";
 import { tanstackStartCookies } from "better-auth/tanstack-start";
 import { Context, Data, Effect, Layer, Redacted, Schema } from "effect";
 import { sessionAdditionalFields, userAdditionalFields } from "#/auth/session-fields";
@@ -25,7 +24,6 @@ import { organization } from "#/modules/organization/tables";
 import {
   createOrganizationBillingSyncEventsFromCustomerStatePayload,
   createOrganizationBillingSyncEventsFromSubscriptionPayload,
-  createServerAccessRetireRequestedEvent,
   type InngestSendableEvent,
 } from "#/modules/inngest/events";
 import {
@@ -95,6 +93,8 @@ export interface AuthService {
 }
 
 export class Auth extends Context.Service<Auth, AuthService>()("ployz/Auth") {}
+
+const ORGANIZATION_USE_PATH = "/organization/set-active";
 
 const AuthSchema = {
   account,
@@ -185,6 +185,10 @@ const makeAuth = Effect.gen(function* () {
         createOrganizationBillingSyncEventsFromCustomerStatePayload(payload),
       ),
   });
+  // Ployz owns invitations; the plugin's routes for them are closed, so it only needs to know the column it never writes.
+  const organizations = organizationPlugin({
+    schema: { invitation: { additionalFields: { tokenHash: { type: "string", required: true, input: false } } } },
+  });
   const instance = betterAuth({
     secret: Redacted.value(config.auth.secret),
     baseURL: {
@@ -243,18 +247,12 @@ const makeAuth = Effect.gen(function* () {
         },
       },
     },
-    hooks: {
-      // A member removed or leaving: their devices' holders on the Organization's Servers go now, not at the next sweep.
-      after: createAuthMiddleware(async (ctx) => {
-        if (ctx.path !== "/organization/remove-member" && ctx.path !== "/organization/leave") return;
-        // The retirement sweeps every holder a credential no longer authorizes: it needs no payload.
-        await runHook(sendInngestEvent(createServerAccessRetireRequestedEvent()).pipe(
-          Effect.catch((error) => Effect.logWarning("Server access retirement was not requested; the sweep does it.", error)),
-        ));
-      }),
-    },
+    // Membership changes go through Ployz's role-gated operations, so the organization plugin's routes answer 404. Only
+    // set-active stays: `ployz org use` moves its own session with it, and better-auth checks the membership.
+    disabledPaths: Object.values(organizations.endpoints)
+      .flatMap((endpoint) => endpoint.path === undefined || endpoint.path === ORGANIZATION_USE_PATH ? [] : [endpoint.path]),
     plugins: [
-      organizationPlugin(),
+      organizations,
       ...cliSignInPlugins,
       ...(polarPlugin === null ? [] : [polarPlugin]),
       tanstackStartCookies(),
@@ -283,7 +281,7 @@ const makeAuth = Effect.gen(function* () {
     signInGithub: (headers, callbackURL) => Effect.tryPromise({
       try: () => instance.api.signInSocial({
         headers,
-        body: { provider: "github", callbackURL, newUserCallbackURL: "/cloud?welcome=true" },
+        body: { provider: "github", callbackURL, newUserCallbackURL: callbackURL === "/cloud" ? "/cloud?welcome=true" : callbackURL },
         asResponse: true,
       }),
       catch: (cause) => new AuthenticationUnavailable({ cause }),

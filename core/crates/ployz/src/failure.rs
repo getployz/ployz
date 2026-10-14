@@ -44,7 +44,6 @@ enum Inner {
 }
 
 /// A product failure raised by the CLI itself, with its `--json` error code.
-// Skip marker for later capture_exception; not a library error.
 #[derive(Debug)]
 struct Message {
     code: RpcErrorCode,

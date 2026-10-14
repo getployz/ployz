@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "revision": "bd4caabb04b8",
+  "revision": "d6564b3f4efc",
   "commands": [
     {
       "name": "server_upgrade_policy_show",
@@ -429,6 +429,378 @@
           "reason",
           "created_at",
           "decided_at"
+        ],
+        "additionalProperties": false
+      },
+      "render": "message"
+    },
+    {
+      "name": "org_member_ls",
+      "path": [
+        "org",
+        "member",
+        "ls"
+      ],
+      "about": "List the Organization's members and their roles",
+      "examples": [
+        "ployz org member ls"
+      ],
+      "kind": "read",
+      "gate": "never",
+      "agents": true,
+      "typed": null,
+      "positional": [],
+      "input": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "output": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "email": {
+              "type": "string"
+            },
+            "role": {
+              "type": "string",
+              "enum": [
+                "owner",
+                "admin",
+                "member"
+              ]
+            },
+            "joined_at": {
+              "type": "string"
+            },
+            "you": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "name",
+            "email",
+            "role",
+            "joined_at",
+            "you"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "render": "table"
+    },
+    {
+      "name": "org_member_invite",
+      "path": [
+        "org",
+        "member",
+        "invite"
+      ],
+      "about": "Make an invite link that adds whoever opens it as a member. It lasts 7 days and works once",
+      "examples": [
+        "ployz org member invite bob@example.com",
+        "ployz org member invite bob@example.com --role admin"
+      ],
+      "kind": "write",
+      "gate": "never",
+      "agents": false,
+      "typed": null,
+      "positional": [
+        "email"
+      ],
+      "input": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "pattern": "^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$",
+            "description": "Who the link is for. Cloud emails it there when email is on. Anyone with the link can use it"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "admin",
+              "member"
+            ],
+            "description": "The role it grants: admin or member. member when left out"
+          }
+        },
+        "additionalProperties": false,
+        "required": []
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "admin",
+              "member"
+            ]
+          },
+          "link": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "string"
+          },
+          "emailed_to": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "email",
+          "role",
+          "link",
+          "expires_at",
+          "emailed_to"
+        ],
+        "additionalProperties": false
+      },
+      "render": "message"
+    },
+    {
+      "name": "org_member_role",
+      "path": [
+        "org",
+        "member",
+        "role"
+      ],
+      "about": "Change a member's role to owner, admin or member. Only an owner can make or remove an owner",
+      "examples": [
+        "ployz org member role bob@example.com admin",
+        "ployz org member role Bob member"
+      ],
+      "kind": "write",
+      "gate": "ask",
+      "agents": true,
+      "typed": null,
+      "positional": [
+        "member",
+        "role"
+      ],
+      "input": {
+        "type": "object",
+        "properties": {
+          "member": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The member, by email or name"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "owner",
+              "admin",
+              "member"
+            ],
+            "description": "The new role: owner, admin or member"
+          }
+        },
+        "required": [
+          "member",
+          "role"
+        ],
+        "additionalProperties": false
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "owner",
+              "admin",
+              "member"
+            ]
+          }
+        },
+        "required": [
+          "email",
+          "role"
+        ],
+        "additionalProperties": false
+      },
+      "render": "message"
+    },
+    {
+      "name": "org_member_rm",
+      "path": [
+        "org",
+        "member",
+        "rm"
+      ],
+      "about": "Remove a member. Their Organization Tokens stop working and their devices lose access to its Servers",
+      "examples": [
+        "ployz org member rm bob@example.com",
+        "ployz org member rm Bob"
+      ],
+      "kind": "write",
+      "gate": "ask",
+      "agents": true,
+      "typed": null,
+      "positional": [
+        "member"
+      ],
+      "input": {
+        "type": "object",
+        "properties": {
+          "member": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The member, by email or name"
+          }
+        },
+        "required": [
+          "member"
+        ],
+        "additionalProperties": false
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "email"
+        ],
+        "additionalProperties": false
+      },
+      "render": "message"
+    },
+    {
+      "name": "org_invite_ls",
+      "path": [
+        "org",
+        "invite",
+        "ls"
+      ],
+      "about": "List the Organization's pending invites",
+      "examples": [
+        "ployz org invite ls"
+      ],
+      "kind": "read",
+      "gate": "never",
+      "agents": true,
+      "typed": null,
+      "positional": [],
+      "input": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "output": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "email": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "role": {
+              "type": "string",
+              "enum": [
+                "admin",
+                "member"
+              ]
+            },
+            "invited_by": {
+              "type": "string"
+            },
+            "expires_at": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "email",
+            "role",
+            "invited_by",
+            "expires_at"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "render": "table"
+    },
+    {
+      "name": "org_invite_revoke",
+      "path": [
+        "org",
+        "invite",
+        "revoke"
+      ],
+      "about": "Revoke a pending invite so its link stops working",
+      "examples": [
+        "ployz org invite revoke bob@example.com"
+      ],
+      "kind": "write",
+      "gate": "ask",
+      "agents": true,
+      "typed": null,
+      "positional": [
+        "invite"
+      ],
+      "input": {
+        "type": "object",
+        "properties": {
+          "invite": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The invite, by id or by the email it names"
+          }
+        },
+        "required": [
+          "invite"
+        ],
+        "additionalProperties": false
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "email"
         ],
         "additionalProperties": false
       },

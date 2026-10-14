@@ -58,7 +58,7 @@ function useSynced(params: EnvironmentRouteParams, from: string) {
 function RootSync({ params, store, environments }: {
   params: EnvironmentRouteParams; store: EnvironmentRef; environments: readonly EnvironmentListing[];
 }) {
-  const [into, setInto] = useState<string | null>(null);
+  const [dialogInto, setDialogInto] = useState<string | null>(null);
   const name = store.environment ?? "";
   const places = placesFrom(environments, name);
   const synced = useSynced(params, name);
@@ -66,13 +66,13 @@ function RootSync({ params, store, environments }: {
   if (first === undefined) return null;
   return (
     <>
-      <Button variant="outline" className="pointer-events-auto" onClick={() => setInto(first)}>
+      <Button variant="outline" className="pointer-events-auto" onClick={() => setDialogInto(first)}>
         <GitBranchIcon data-icon="inline-start" />Sync
       </Button>
-      {into === null ? null : (
+      {dialogInto === null ? null : (
         <Suspense fallback={null}>
-          <SyncDialog organizationSlug={params.organizationSlug} from={store} into={into} places={places} closable={() => false}
-            onClose={() => setInto(null)} onSynced={(to, changes, sync) => { setInto(null); synced(to, changes, sync); }} />
+          <SyncDialog organizationSlug={params.organizationSlug} from={store} into={dialogInto} places={places} closable={() => false}
+            onClose={() => setDialogInto(null)} onSynced={(to, changes, sync) => { setDialogInto(null); synced(to, changes, sync); }} />
         </Suspense>
       )}
     </>
@@ -85,8 +85,7 @@ function BranchSync({ params, store, branch, environments }: {
   const writer = useStoreWriter(params.organizationSlug);
   const scope = useCollectionScope();
   const closing = useStoreBranchClose(params, store, branch);
-  // Where the open dialog syncs to.
-  const [into, setInto] = useState<string | null>(null);
+  const [dialogInto, setDialogInto] = useState<string | null>(null);
   const [asking, setAsking] = useState(false);
   const name = branch.environment.name;
   const me = environments.find((environment) => environment.name === name);
@@ -104,7 +103,7 @@ function BranchSync({ params, store, branch, environments }: {
     <>
       <ButtonGroup className="pointer-events-auto">
         <Button variant="outline" aria-label={state.count === null ? state.label : `${state.label} · ${state.count}`}
-          onClick={() => setInto(state.into)}>
+          onClick={() => setDialogInto(state.into)}>
           <GitBranchIcon data-icon="inline-start" />
           {state.label}
           {state.count === null ? null : <span className="text-muted-foreground tabular-nums">{state.count}</span>}
@@ -142,13 +141,13 @@ function BranchSync({ params, store, branch, environments }: {
           </DropdownMenuContent>
         </DropdownMenu>
       </ButtonGroup>
-      {into === null ? null : (
+      {dialogInto === null ? null : (
         <Suspense fallback={null}>
-          <SyncDialog organizationSlug={params.organizationSlug} from={store} into={into} places={placesFrom(environments, name)}
+          <SyncDialog organizationSlug={params.organizationSlug} from={store} into={dialogInto} places={placesFrom(environments, name)}
             // Closing after syncs only a Branch that isn't kept, and only into its Parent; a PR Environment closes
             // with its pull request.
             closable={(to) => to === branch.parent && !branch.kept && !me?.default && !shuttable}
-            onClose={() => setInto(null)} onSynced={(to, changes, sync) => { setInto(null); synced(to, changes, sync); }} />
+            onClose={() => setDialogInto(null)} onSynced={(to, changes, sync) => { setDialogInto(null); synced(to, changes, sync); }} />
         </Suspense>
       )}
       {closing.dialog}

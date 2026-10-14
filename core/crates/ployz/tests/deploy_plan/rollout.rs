@@ -645,14 +645,14 @@ fn each_service_is_one_group_with_its_hook_inside_and_edges_from_depends_on() {
                 dependencies: Vec::new(),
                 steps: vec![Step::Serial(0), Step::Parallel(vec![1, 2])],
                 publish: true,
-                previous: None,
+                kept: Vec::new(),
             },
             ServiceGroup {
                 service: Some(web.name),
                 dependencies: vec![db.name],
                 steps: vec![Step::Parallel(vec![3])],
                 publish: true,
-                previous: None,
+                kept: Vec::new(),
             },
         ]
     );
@@ -762,4 +762,41 @@ fn a_host_port_forces_stop_first_but_keeps_a_chosen_rolling() {
             "{order:?}"
         );
     }
+}
+
+#[test]
+fn a_scale_up_keeps_the_running_copy_in_its_flip() {
+    use ployz_core::DeployIntent;
+
+    let running = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    let copy = container('b', '1', &running, &service_id('a'));
+    let kept = vec![copy.container_id];
+    let snapshot = DeploySnapshot {
+        machines: vec![machine('1', "first"), machine('2', "second")],
+        containers: vec![copy],
+        ..Default::default()
+    };
+    let scaled = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(2).unwrap(),
+    });
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&scaled],
+        PlanOptions::default(),
+    );
+
+    let plan = ployz::deploy::plan_deploy(&intent, &snapshot).unwrap();
+
+    assert!(matches!(
+        operations(&plan).as_slice(),
+        [DeployOperation::RunContainer { .. }]
+    ));
+    let groups: Vec<_> = plan
+        .groups()
+        .iter()
+        .map(|group| group.kept.clone())
+        .collect();
+    assert_eq!(groups, [kept]);
 }

@@ -112,7 +112,7 @@ for SCENARIO in symlink-failure dangling-failure fifo-failure directory-failure 
     mkdir -p "$TMP/state" "$TMP/run"
     touch "$TMP/state/receipt" "$TMP/run/socket"
     if [ "$SCENARIO" != absent ]; then touch "$TMP/run/worker" "$TMP/run/daemon" "$TMP/run/dns"; fi
-    touch "$TMP/runtime-systemd/ployz-dns.service"
+    touch "$TMP/runtime-systemd/ployz-dns.service" "$TMP/runtime-systemd/ployz-observe.service"
     touch "$TMP/install/ployzd" "$TMP/install/ployz-uninstall" "$TMP/install/ployz-corrosion"
     printf 'CLI retained\n' > "$TMP/install/ployz"
     chmod 0755 "$TMP/install/ployzd" "$TMP/install/ployz-uninstall"
@@ -160,6 +160,7 @@ for SCENARIO in symlink-failure dangling-failure fifo-failure directory-failure 
         [ ! -e "$TMP/install/ployzd" ]
         [ ! -e "$TMP/install/ployz-uninstall" ]
         [ ! -e "$TMP/runtime-systemd/ployz-dns.service" ]
+        [ ! -e "$TMP/runtime-systemd/ployz-observe.service" ]
         [ ! -e "$TMP/state" ]
         # Keep the lock inode: unlinking it lets a concurrent installer bypass ownership.
         [ "$(ls -A "$TMP/run")" = .install.lock ]
@@ -176,6 +177,7 @@ for SCENARIO in symlink-failure dangling-failure fifo-failure directory-failure 
         case "$SCENARIO" in *failure|busy) ;; *) echo "unexpected uninstall failure: $SCENARIO" >&2; exit 1 ;; esac
         [ -e "$TMP/install/ployzd" ] && [ -e "$TMP/install/ployz-uninstall" ]
         [ -e "$TMP/state/receipt" ] && [ -e "$TMP/run/socket" ] && [ -e "$TMP/runtime-systemd/ployz-dns.service" ]
+        [ -e "$TMP/runtime-systemd/ployz-observe.service" ]
         if [ "$SCENARIO" = wireguard-delete-failure ]; then
             grep -Fxq 'ip link delete ployz-wg' "$LOG"
         elif grep -q '^docker ' "$LOG"; then

@@ -10,7 +10,7 @@ import type { DeploymentSummary } from "@ployz/sdk";
 import type { ChangeGroup } from "#/modules/config-store/store-deployments";
 import { asTestDouble } from "#/lib/test-double";
 import { AgentDock } from "#/components/agent-sidebar/agent-dock";
-import { BottomBar, BottomBarSlot } from "./BottomBar";
+import { BottomBar, BottomBarSlot, HistoryStages } from "./BottomBar";
 
 const [running, queued] = ["aaaa1111-uuid", "aaaa2222-uuid"];
 const deployment = (id: string, status: DeploymentSummary["status"], number: number) =>
@@ -27,6 +27,8 @@ const onPublish = vi.fn();
 let active: DeploymentSummary[] = [];
 let ended: DeploymentSummary[] | undefined = [];
 let storage: (deploymentId: string) => string | null = () => null;
+/** Secrets without a value the next Deploy leaves out. */
+let notSet = 0;
 /** Moves Deployments between in flight and ended while the bar stays mounted. */
 let settle: (lists: { active: DeploymentSummary[]; ended: DeploymentSummary[] | undefined }) => void = () => {};
 
@@ -34,6 +36,7 @@ beforeEach(() => {
   active = [];
   ended = [];
   storage = () => null;
+  notSet = 0;
   localStorage.clear();
   vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
 });
@@ -51,16 +54,20 @@ function open(url: string, groups: ChangeGroup[] = [], totalChanges = 0, canPubl
     settle = setLists;
     const [dock, setDock] = useState<HTMLElement | null>(null);
     const [agent, setAgent] = useState(false);
+    const [stages, setStages] = useState(0);
     return (
       <AgentDock.Provider value={dock}>
       <BottomBarSlot.Provider value={slot}>
+      <HistoryStages.Provider value={{ count: stages, staged: () => setStages(stages + 1) }}>
         <button type="button" onClick={() => setAgent(!agent)}>Agent</button>
+        <button type="button" onClick={() => setStages(stages + 1)}>Stage from History</button>
         {agent ? <aside aria-label="Agent"><div ref={setDock} /></aside> : null}
         <section aria-label="Canvas"><div ref={setSlot} /></section>
         <BottomBar groups={groups} totalChanges={totalChanges} canPublish={canPublish} onDeploy={onDeploy} onPublish={onPublish}
-          onDiscardAll={onDiscardAll} onDiscardNode={() => {}} onDiscardRow={() => {}} active={lists.active} ended={lists.ended} storage={storage} notes={{}}
+          onDiscardAll={onDiscardAll} onDiscardNode={() => {}} onDiscardRow={() => {}} active={lists.active} ended={lists.ended} storage={storage} notes={{}} notSet={notSet}
           proposals={{ included: [] }} />
         <Outlet />
+      </HistoryStages.Provider>
       </BottomBarSlot.Provider>
       </AgentDock.Provider>
     );
@@ -101,6 +108,12 @@ it("shows changes to deploy first, in one row like Railway's: the count, Details
   await act(async () => { fireEvent.click(staged.getByRole("button", { name: "More change actions" })); });
   fireEvent.click(await screen.findByRole("menuitem", { name: "Discard all changes" }));
   expect(onDiscardAll).toHaveBeenCalledOnce();
+});
+
+it("counts the secrets the Deploy leaves out beside the changes", async () => {
+  notSet = 2;
+  open(canvasUrl, [replicas], 1);
+  expect((await bar()).getByText("1 change · 2 not set")).toBeTruthy();
 });
 
 it("keeps the review open through Discard all so its inverse draft stays reviewable", async () => {
@@ -238,7 +251,8 @@ it("hides while nothing is staged or running, and while the only Deployment's pa
 });
 
 
-it("preserves the Change message while a Save can still refuse or fail", async () => {
+it("preserves the Change message when a Save is refused or fails", async () => {
+  onPublish.mockResolvedValue(false);
   open(canvasUrl, [replicas], 1, true);
   fireEvent.click((await bar()).getByRole("button", { name: "Details" }));
   fireEvent.change(screen.getByRole("textbox", { name: "Change message" }), { target: { value: "Explain this change" } });
@@ -246,6 +260,39 @@ it("preserves the Change message while a Save can still refuse or fail", async (
   expect(onPublish).toHaveBeenCalledWith("Explain this change");
   expect(screen.getByRole("textbox", { name: "Change message" })).toHaveProperty("value", "Explain this change");
   expect(screen.getByRole("dialog", { name: "Environment changes" })).toBeTruthy();
+});
+
+it("clears the Change message once a Save succeeds", async () => {
+  onPublish.mockResolvedValue(true);
+  open(canvasUrl, [replicas], 1, true);
+  fireEvent.click((await bar()).getByRole("button", { name: "Details" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Change message" }), { target: { value: "Explain this change" } });
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Save" })); });
+  expect(onPublish).toHaveBeenCalledWith("Explain this change");
+  expect(screen.getByRole("textbox", { name: "Change message" })).toHaveProperty("value", "");
+});
+
+it("keeps a Change message edited while the Save is in flight", async () => {
+  let saved: (value: boolean) => void = () => {};
+  onPublish.mockReturnValue(new Promise<boolean>((resolve) => { saved = resolve; }));
+  open(canvasUrl, [replicas], 1, true);
+  fireEvent.click((await bar()).getByRole("button", { name: "Details" }));
+  const box = () => screen.getByRole("textbox", { name: "Change message" });
+  fireEvent.change(box(), { target: { value: "Explain this change" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  fireEvent.change(box(), { target: { value: "The next change" } });
+  await act(async () => { saved(true); });
+  expect(box()).toHaveProperty("value", "The next change");
+});
+
+it("clears the Change message once History stages other changes", async () => {
+  open(canvasUrl, [replicas], 1, true);
+  fireEvent.click((await bar()).getByRole("button", { name: "Details" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Change message" }), { target: { value: "Raise api replicas" } });
+  fireEvent.click(screen.getByRole("button", { name: "Close" }));
+  fireEvent.click(screen.getByRole("button", { name: "Stage from History" }));
+  fireEvent.click((await bar()).getByRole("button", { name: "Details" }));
+  expect(screen.getByRole("textbox", { name: "Change message" })).toHaveProperty("value", "");
 });
 
 it("docks in the open agent and returns to the canvas when it closes, keeping the Change message", async () => {

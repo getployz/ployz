@@ -95,6 +95,9 @@ macro_rules! define_capabilities {
         /// The daemon can take a Certificate Policy from cluster state.
         pub const CERTIFICATE_POLICY_CAPABILITY: &str = "ployz.certificates.policy.v1";
 
+        /// `SetVolumeCopy` honours `gen`, takes the `floor` want and refuses `stale`.
+        pub const VOLUME_FLOOR_CAPABILITY: &str = "ployz.volume.copy.floor.v1";
+
         /// `Inspect` can report requested current local Machine storage evidence.
         pub const MACHINE_STORAGE_OBSERVATION_CAPABILITY: &str =
             "ployz.machine.storage-observation.v1";
@@ -104,6 +107,7 @@ macro_rules! define_capabilities {
             $(($stream_capability, CapabilityAdvertisement::$stream_advertisement),)+
             (EXEC_CONTAINER_CAPABILITY, CapabilityAdvertisement::Container),
             (BUILD_CAPABILITY, CapabilityAdvertisement::Container),
+            (VOLUME_FLOOR_CAPABILITY, CapabilityAdvertisement::Container),
             (CERTIFICATE_POLICY_CAPABILITY, CapabilityAdvertisement::Always),
             (
                 MACHINE_STORAGE_OBSERVATION_CAPABILITY,
@@ -474,6 +478,9 @@ pub struct NewContainer {
     /// Credentials for pulling the image; used for this pull only, never stored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub registry_auth: Option<crate::RegistryAuth>,
+    /// A `PullImage` already placed the image, so creation uses it without pulling.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub image_prepared: bool,
     #[serde(default, skip_serializing_if = "AnswerWhen::is_started")]
     pub answer: AnswerWhen,
 }
@@ -700,7 +707,18 @@ impl PeerImagePull {
     }
 }
 
-/// Successful `PullImageFromMachine` payload.
+/// Make one image present on this Machine as `policy` asks, pulling from its registry.
+/// The image must be present afterwards, so `Never` fails for an absent image.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PullImageRequest {
+    pub image: String,
+    pub policy: crate::PullPolicy,
+    /// Credentials for a private image; used for this pull only, never stored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registry_auth: Option<crate::RegistryAuth>,
+}
+
+/// Successful `PullImage` and `PullImageFromMachine` payload.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ImagePulled {}
 
@@ -977,6 +995,9 @@ pub struct ContainerDetails {
     /// The newest healthcheck result; `None` without one, or from older daemons.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_check: Option<crate::LastHealthCheck>,
+    /// Which run of the Container this is; `None` from older daemons.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<crate::ContainerRun>,
 }
 
 /// The Machine's answer to `EnsureContainer`: the Container as now observed, and
@@ -1188,9 +1209,50 @@ pub struct ReadServingPointerRequest {
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ServingPointerRead {
     pub pointer: Option<ServingPointer>,
-    /// Machines whose ingress_routes row names a deploy for this Service, and which deploy.
+    /// Machines whose ingress_routes row routes `pointer`'s deploy and every
+    /// Container it names, and which deploy that is. Empty without a pointer.
     #[serde(default)]
     pub acks: BTreeMap<MachineId, crate::DeploymentLogId>,
+    /// Every Machine not reported Down acks `pointer`. False without a pointer or
+    /// while the Machine list is partly replicated.
+    #[serde(default)]
+    pub all_routed: bool,
+}
+
+/// Refusal of a Serving Pointer read or publish by a Machine that is not the lowest-id
+/// Machine inviting RPC in its own Membership Observation.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "reason", rename = "not_pointer_publisher")]
+pub struct NotPointerPublisher {
+    /// The Machine the refusing Machine sees as the publisher.
+    pub publisher: MachineId,
+}
+
+impl NotPointerPublisher {
+    /// The refusal carried by `error`, if it is one.
+    #[must_use]
+    pub fn from_error(error: &RpcError) -> Option<Self> {
+        let tagged =
+            error.details.get("reason").and_then(Value::as_str) == Some("not_pointer_publisher");
+        if error.code != RpcErrorCode::Unavailable || !tagged {
+            return None;
+        }
+        Self::deserialize(&error.details).ok()
+    }
+
+    /// An RPC error that carries this refusal in `details`.
+    #[must_use]
+    pub fn rpc_error(&self) -> RpcError {
+        RpcError {
+            code: RpcErrorCode::Unavailable,
+            message: format!(
+                "Serving Pointers are published by Machine {}",
+                self.publisher
+            ),
+            details: serde_json::to_value(self).unwrap_or(Value::Null),
+            cause: Vec::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -1442,6 +1504,22 @@ impl RpcError {
             cause: crate::error_chain::causes(error),
         }
     }
+}
+
+/// Metadata an entry Machine's router puts on a status it made because the target
+/// Machine did not answer the forwarded call. A status the target sent never has it.
+pub const TARGET_UNANSWERED_KEY: &str = "ployz-target-unanswered";
+
+/// [`caused_status`] as `Unavailable`, marked [`TARGET_UNANSWERED_KEY`].
+#[cfg(not(target_arch = "wasm32"))]
+#[must_use]
+pub fn target_unanswered_status(error: &(dyn std::error::Error + 'static)) -> tonic::Status {
+    let mut status = caused_status(tonic::Code::Unavailable, error);
+    status.metadata_mut().insert(
+        TARGET_UNANSWERED_KEY,
+        tonic::metadata::MetadataValue::from_static("1"),
+    );
+    status
 }
 
 /// A gRPC status with `error`'s own sentence as the message and its sources in
@@ -1697,12 +1775,13 @@ mod served_capabilities_tests {
     }
 
     #[test]
-    fn served_capabilities_cover_every_catalog_row_and_the_four_without_one() {
+    fn served_capabilities_cover_every_catalog_row_and_the_five_without_one() {
         let served = served_capabilities();
         let rows = crate::rpc_catalog!(catalog_capabilities);
         let without_row = [
             "ployz.container.exec.v1",
             "ployz.build.v1",
+            "ployz.volume.copy.floor.v1",
             "ployz.certificates.policy.v1",
             "ployz.machine.storage-observation.v1",
         ];
@@ -1766,5 +1845,34 @@ mod streaming_routing_tests {
         ] {
             assert_eq!(super::capability_of(path), None);
         }
+    }
+}
+
+#[cfg(test)]
+mod not_pointer_publisher_tests {
+    use super::*;
+
+    #[test]
+    fn only_an_unavailable_error_tagged_as_the_refusal_redirects() {
+        let refusal = NotPointerPublisher {
+            publisher: MachineId::parse("1".repeat(32)).unwrap(),
+        };
+        let error = refusal.rpc_error();
+        assert_eq!(
+            NotPointerPublisher::from_error(&error),
+            Some(refusal.clone())
+        );
+
+        let untagged = RpcError {
+            details: serde_json::json!({ "publisher": refusal.publisher }),
+            ..error.clone()
+        };
+        assert_eq!(NotPointerPublisher::from_error(&untagged), None);
+
+        let other_code = RpcError {
+            code: RpcErrorCode::Conflict,
+            ..error
+        };
+        assert_eq!(NotPointerPublisher::from_error(&other_code), None);
     }
 }

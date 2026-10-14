@@ -75,7 +75,7 @@ pub(crate) fn prepare(
             .platforms
             .iter()
             .map(String::as_str)
-            .chain(target.platforms.is_empty().then_some(native))
+            .chain(target.is_native().then_some(native))
         {
             if !matches!(platform, "linux/amd64" | "linux/arm64") {
                 return Err(BuildError::Request(

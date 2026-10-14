@@ -1,5 +1,4 @@
 import "@tanstack/react-start/server-only";
-import { createRequire } from "node:module";
 import type {
   Client,
   CloudQuery,
@@ -14,6 +13,7 @@ import type {
   DrainReport,
   DrainScope,
   ExecutionError,
+  IngressCheck,
   LocalMachineRemoved,
   MachineDetails,
   MachineTarget,
@@ -29,7 +29,7 @@ import type {
   VolumeSwitchRequest,
   WatchOptions,
 } from "@ployz/sdk";
-import type * as PloyzSdk from "@ployz/sdk";
+import { connect as connectSdk, observeCopies, ployzVersion, setVolumeCopyRefusal } from "@ployz/sdk";
 import { Context, Data, Effect, Layer, Option, Schema, type Scope } from "effect";
 import type { JsonValue } from "#/db/tables";
 import { describeFailureCause } from "#/lib/error-message";
@@ -39,14 +39,10 @@ import { MissingDataLossIdentities } from "#/modules/runtime/data-loss-confirm";
 import { dataLossIdentitySchema } from "#/modules/runtime/data-loss-identity";
 import { RuntimeConnectionFailure } from "#/modules/runtime/runtime-connection-errors";
 
-// SAFETY: the package exports this named CommonJS SDK surface at runtime.
-const { connect: connectSdk, ployzVersion } = createRequire(import.meta.url)("@ployz/sdk") as Pick<typeof PloyzSdk, "connect" | "ployzVersion">;
-
 /** The release this SDK speaks; it needs no Machine. */
 export { ployzVersion };
 
-// SAFETY: the package exports this named CommonJS SDK surface at runtime.
-const { observeCopies } = createRequire(import.meta.url)("@ployz/sdk") as Pick<typeof PloyzSdk, "observeCopies">;
+export { setVolumeCopyRefusal };
 
 export const observeVolumeCopies = (connections: Parameters<typeof observeCopies>[0]) =>
   sdkPromise("observe copies", () => observeCopies(connections));
@@ -105,6 +101,13 @@ export interface PloyzSession {
     machine: MachineTarget,
     scope: DrainScope,
   ) => Effect.Effect<DrainReport, PloyzSdkError>;
+  /**
+   * Start the web server on a Server whose web traffic is on: waits for the Cluster to see the role, then creates or
+   * starts the proxy on every Server that holds it. Resolves to what it did on each, and why one didn't start.
+   */
+  readonly startIngress: (machine: MachineTarget) => Effect.Effect<IngressCheck, PloyzSdkError>;
+  /** Stop and remove the web server on a Server. */
+  readonly stopIngress: (machine: MachineTarget) => Effect.Effect<void, PloyzSdkError>;
   /** Ask one Server to Upgrade; resending it with the same attempt ID is the poll. */
   readonly requestMachineUpgrade: (
     machine: MachineTarget,
@@ -294,6 +297,8 @@ function wrapClient(client: Client): PloyzSession {
       ),
     drainMachine: (machine, scope) =>
       sdkPromise("drain machine", () => client.drainMachine(machine, scope)),
+    startIngress: (machine) => sdkPromise("start ingress", () => client.startIngress(machine)),
+    stopIngress: (machine) => sdkPromise("stop ingress", () => client.stopIngress(machine)),
     volumeSwitch: (machine, request) =>
       sdkPromise("volume switch", () => client.volumeSwitch(machine, request)),
     inspectContainer: (machine, container) =>

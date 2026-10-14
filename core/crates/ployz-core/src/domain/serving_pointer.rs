@@ -12,7 +12,8 @@ pub struct ServingPointer {
     pub containers: Vec<ContainerId>,
     /// Deploy that served before this pointer, routed while a pointed row is still missing.
     pub previous: Option<DeploymentLogId>,
-    /// Containers this pointer superseded. Routing ignores it.
+    /// Containers this pointer superseded. While a pointed row is missing they
+    /// serve with `previous`, which matters for old copies without a deploy label.
     pub retiring: Vec<ContainerId>,
 }
 

@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import type { Connection, MachineId as SdkMachineId } from "@ployz/sdk";
+import type { Connection } from "@ployz/sdk";
 import { and, eq, isNotNull, isNull, not, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import type { MachineId } from "#/db/tables";
@@ -145,9 +145,7 @@ export const retireServerAccess = Effect.fn("ServerAccess.retire")(function* (
     const management = yield* decryptPairingSecret(row.cloud);
     yield* Effect.scoped(Effect.gen(function* () {
       const ployz = yield* Ployz;
-      // SAFETY: the organization_machine constraint enforces the SDK Machine ID representation.
-      const machineId = row.machineId as SdkMachineId;
-      const client = yield* ployz.connect({ connections: [{ machine_id: machineId, management }], timeoutMs: SERVER_TIMEOUT_MS });
+      const client = yield* ployz.connect({ connections: [{ machine_id: row.machineId, management }], timeoutMs: SERVER_TIMEOUT_MS });
       // Clearing an absent or already-cleared slot succeeds, so a retry after a lost reply confirms.
       yield* client.clearManagementClient(serverAccessLabel(row.credentialId));
     })).pipe(Effect.timeout(SERVER_TIMEOUT_MS * 2));

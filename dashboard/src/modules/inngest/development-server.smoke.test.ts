@@ -8,7 +8,7 @@ import { connect, type WorkerConnection } from "inngest/connect";
 import { Inngest } from "inngest";
 import { afterEach, describe, expect, it } from "vitest";
 import { DRAIN_SLOT } from "#/modules/inngest/drain-slot";
-import { serverDrainRequestedEvent, serverPolicyChangeRequestedEvent } from "#/modules/inngest/events";
+import { serverDrainRequestedEvent, serverPolicyChangeRequestedEvent, volumeRunTakenEvent } from "#/modules/inngest/events";
 import type { ServerPolicyChange } from "#/modules/machines/server-policy";
 import { createVolumeRunFunctions } from "#/modules/volume-run/volume-run.inngest";
 
@@ -362,49 +362,38 @@ describe("Inngest development server durable smoke", () => {
     await expect.poll(() => running.has("policy m3"), { timeout: 10_000 }).toBe(true);
   }, 60_000);
 
-  it("run_volume_singleton_skips: a second run of one Volume is skipped while the first sleeps and while it awaits a retry", async () => {
+  it("run_volume_taken_cancels: a taken event cancels the run of its row and leaves another row's run alone", async () => {
     const started = await startDevServer();
     devServer = started.process;
     const inngest = new Inngest({
-      id: "ployz-volume-singleton-smoke",
+      id: "ployz-volume-taken-smoke",
       eventKey: "local",
       baseUrl: `http://127.0.0.1:${started.devPort}`,
       isDev: true,
     });
-    const { singleton } = createVolumeRunFunctions(new Inngest({ id: "test" }))[0].opts;
-    const claims: string[] = [];
-    let sleeping = false;
-    let failures = 0;
-    let finished = false;
+    const { cancelOn } = createVolumeRunFunctions(new Inngest({ id: "test" }))[0].opts;
+    const sleeping = new Set<string>();
+    const finished = new Set<string>();
     const run = inngest.createFunction(
-      { id: "volume-singleton-smoke", retries: 2, triggers: [{ event: "smoke/volume-run" }], singleton },
+      { id: "volume-taken-smoke", retries: 0, triggers: [{ event: "smoke/volume-run" }], cancelOn },
       async ({ event, step }) => {
-        await step.run("claim", () => { claims.push(String(event.data["runId"])); });
-        sleeping = true;
+        const runId = String(event.data["runId"]);
+        await step.run("claim", () => { sleeping.add(runId); });
         await step.sleep("hold", "3s");
-        sleeping = false;
-        await step.run("flaky", () => {
-          if (failures < 2) {
-            failures += 1;
-            throw new Error("simulated busy Machine");
-          }
-        });
-        await step.run("finish", () => { finished = true; });
+        await step.run("finish", () => { finished.add(runId); });
       },
     );
     worker = await connect({ apps: [{ client: inngest, functions: [run] }],
       gatewayUrl: `ws://127.0.0.1:${started.gatewayPort}/v0/connect`, handleShutdownSignals: [] });
-    const send = (runId: string) => inngest.send({ name: "smoke/volume-run", data: { volumeId: "vol-1", runId } });
 
-    await send("first");
-    await expect.poll(() => sleeping, { timeout: 10_000 }).toBe(true);
-    await send("while-sleeping");
-    await expect.poll(() => failures, { timeout: 15_000 }).toBeGreaterThanOrEqual(1);
-    await send("while-retrying");
-    await expect.poll(() => finished, { timeout: 20_000 }).toBe(true);
+    await inngest.send({ name: "smoke/volume-run", data: { volumeId: "vol-1", runId: "taken" } });
+    await inngest.send({ name: "smoke/volume-run", data: { volumeId: "vol-2", runId: "kept" } });
+    await expect.poll(() => sleeping.size, { timeout: 10_000 }).toBe(2);
+    await inngest.send({ name: volumeRunTakenEvent, data: { runId: "taken" } });
+    await expect.poll(() => finished.has("kept"), { timeout: 20_000 }).toBe(true);
     await new Promise((resolve) => setTimeout(resolve, 1_500));
 
-    expect(claims).toEqual(["first"]);
+    expect([...finished]).toEqual(["kept"]);
   }, 60_000);
 });
 

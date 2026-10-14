@@ -56,24 +56,42 @@ ployz deploy
 
 ## Saved history
 
-Open **History** at the top of the canvas to see this environment's saved versions. Expand a
-version to review its changes, then use its **⋮** menu:
+Open **History** at the top of the canvas to see this environment's saved versions. Each version
+is titled from what it changed unless it was saved with a message, and lists its changes one per
+row, folding past three. The version's **⋮** menu:
 
-- **Undo this change** reverses that version's changed fields and preserves unrelated later edits.
-  The first recorded version has no earlier version to undo.
-- **Restore this version** stages its complete configuration in the current draft.
+- **Undo these N changes** reverses that version's changed fields and keeps the versions saved
+  after it. The first recorded version has no earlier version to undo.
+- **Roll back to #N** stages that version's complete configuration, undoing every later version.
+  The current version has nothing to roll back to.
+
+Each row's **⋮** undoes that one change. A change the same save tied to others undoes with them,
+and the menu says how many: adding a Service together with another Service's reference to it,
+a Volume together with its mounts, or a Source with its repository and branch. Every action stages
+on the canvas; nothing is saved or deployed until you do.
 
 If an action would overwrite draft changes, the confirmation lists exactly which fields.
 Cancel changes nothing. If someone edits the environment after your review, reopen the action
 to review the new draft. Save or Deploy makes the staged result a saved version.
 
-History restores configuration references and sealed variable values, with secrets masked in
-review. It does not recover deleted Volume data or undo private-image credential rotations.
+Undo and Roll back pass the same checks as an edit made by hand. One that would leave a
+reference to a deleted Service, reuse a name or hostname another Service took since, or break a
+rule is refused with the reason, and nothing is staged.
+
+History restores configuration references. It never brings back a sealed value. A sealed
+variable that still exists keeps its current value, and one added since stays. A sealed variable
+deleted since, or one inside a Service that comes back, comes back **Sealed** and **Not set**. A
+toast names those variables, the Service shows **· N not set**, and its Variables tab offers
+**Set value** on each. Deploys leave a Not set variable out of the container until you set it.
+A variable that was ever sealed can't come back as plain text. A version that only set sealed
+values has nothing to undo, so its Undo is disabled and says **Sealed. Nothing to undo.** History does not recover deleted Volume data or undo private-image credential rotations.
 An accepted deployment and its retries keep their original snapshot while you edit the draft.
 
 From the CLI, `ployz history` lists versions. `ployz history restore 2 --preview` reviews a
 Restore without writing. `ployz history undo 2` stages an Undo; use `--accept-overwrite` only
-after reviewing the named draft fields.
+after reviewing the named draft fields. Both list each variable that came back Not set, and
+`--json` carries them as `not_set`. The agent's `history` tool does the same by revision
+number; one that would overwrite draft changes refuses and names them first.
 
 ## When another deployment is running
 
@@ -134,12 +152,17 @@ their recorded outcomes.
 - On a queued deployment, **Deploy now** starts it if nothing is running ahead of it, and **⋮ →
   Cancel deployment…** takes it out of the queue.
 
+The CLI does the same with `ployz deployment retry`, `start` and `cancel`, and
+[the agent](../account/agent-sidebar.md) can too, without asking you first.
+
 ## Deploy without downtime
 
-Ployz swaps in the new version one replica at a time: it starts a new one, waits until it's
-ready, then stops an old one, so your app keeps serving. Before any replica stops, its server
-marks it as stopping so every server taking web traffic stops sending it requests, and the
-replica stops a few seconds later.
+Ployz starts the new replicas of a service alongside the old ones and waits until they're all
+ready. Then every server switches the service's traffic to the new replicas at once, and the old
+replicas stop once every server has switched, so your app keeps serving. A server that stops
+answering holds the old replicas for at most five minutes; after that they stop anyway. Before
+any replica stops, its server marks it as stopping so every server taking web traffic stops
+sending it requests, and the replica stops a few seconds later.
 
 - **Set a health check.** Under **Settings → Deploy**, set **Healthcheck** to an HTTP path like
   `/up` or a command like `pg_isready -h 127.0.0.1`. A new replica is ready when the path answers
@@ -151,14 +174,16 @@ replica stops a few seconds later.
 - **Migrations run first.** A **Pre-deploy command**, like `npm run migrate`, runs once with the
   new code before any replica is replaced. If it fails or runs past 5 minutes, the deployment
   fails and the old version keeps running.
-- **Services start in order.** If `web`'s [variables](../services/variables.md) reference
-  `${{ postgres.DATABASE_URL }}`, `postgres` comes up first, and passes its health check first if
-  it has one.
+- **Services that depend on each other start in order.** If `web`'s
+  [variables](../services/variables.md) reference `${{ postgres.DATABASE_URL }}`, `postgres`
+  switches first, and passes its health check first if it has one. Services that don't depend on
+  each other deploy at the same time.
 
 ## When a deploy fails
 
-Where a new replica doesn't come up, the old one keeps serving. Ployz doesn't roll back: what
-was already replaced keeps the new version, and services later in the order stay as they were.
+Where a new replica doesn't come up, the old ones keep serving. Ployz doesn't roll back: a
+service that already switched keeps the new version, services that depend on the failed one
+stay as they were, and services that don't depend on it may have switched already.
 
 > [!WARNING]
 > Ployz doesn't undo a pre-deploy command. If a migration ran and the deploy then failed, your

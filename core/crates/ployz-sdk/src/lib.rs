@@ -2,14 +2,8 @@
 //! (`ployz::sdk::typescript_declarations`).
 //!
 //! This crate is the workspace's only `unsafe_code` exception (napi-rs).
-//! The handwritten façade is connect / session observation and registration /
-//! about / runtime.watch / runtime.metricHistory / prepare / build / preview / run /
-//! previewNamespaceRemoval /
-//! remove_volumes / pruneImages / dataLossIfMachineRemoved / removeMachine /
-//! requestMachineUpgrade /
-//! dataLossIfNamespaceDestroyed / destroyNamespace / dataLossIfClusterDestroyed /
-//! destroyCluster / close, the Config Store's openConfigStore / read / write, and the
-//! agent tools' agentTools / agentStart / agentResume / agentAsk.
+//! The handwritten façade wraps the native Cloud session, the Config Store, and the
+//! agent tools.
 pub mod agent;
 pub mod config_store;
 
@@ -497,6 +491,23 @@ impl Client {
         to_json(&report)
     }
 
+    /// Start the Ingress Proxy on `machine` once its ingress role is on.
+    #[napi]
+    pub async fn start_ingress(&self, machine: String) -> Result<serde_json::Value> {
+        let check = self
+            .inner
+            .start_ingress(&machine)
+            .await
+            .map_err(rpc_to_napi)?;
+        to_json(&check)
+    }
+
+    /// Stop and remove the Ingress Proxy on `machine` once its ingress role is off.
+    #[napi]
+    pub async fn stop_ingress(&self, machine: String) -> Result<()> {
+        self.inner.stop_ingress(&machine).await.map_err(rpc_to_napi)
+    }
+
     /// Take `machine` out of the Cluster without resetting it.
     ///
     /// # Errors
@@ -854,9 +865,6 @@ fn to_json(value: &impl serde::Serialize) -> Result<serde_json::Value> {
     serde_json::to_value(value).map_err(|error| Error::from_reason(error.to_string()))
 }
 
-/// napi hands every JavaScript number above `u32::MAX` over as a float, even a whole one:
-/// `5_000_000_000` arrives as `5000000000.0`, which `u64` fields such as byte counts refuse.
-/// Give whole floats their integer form back before any payload is parsed.
 /// Decode JSON JavaScript sent. Napi hands a JS whole number above `u32::MAX` over
 /// as a float, which no integer field accepts, so every decode of a JS value goes
 /// through here.
@@ -867,6 +875,7 @@ pub(crate) fn from_js<T: serde::de::DeserializeOwned>(
     ployz_core::decode::decode(&whole_numbers(value))
 }
 
+/// Turn every float in `value` that holds a JS-safe whole number back into an integer.
 pub(crate) fn whole_numbers(value: serde_json::Value) -> serde_json::Value {
     use serde_json::Value;
     const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
@@ -935,6 +944,15 @@ pub fn allocate_enrollment(
             })
         })?;
     to_json(&assignment)
+}
+
+/// The refusal a `SetVolumeCopy` error carries in `details`, or null for any other error.
+#[napi]
+pub fn set_volume_copy_refusal(details: serde_json::Value) -> Result<Option<serde_json::Value>> {
+    from_js::<ployz_core::SetVolumeCopyRefused>(details)
+        .ok()
+        .map(|refused| to_json(&refused))
+        .transpose()
 }
 
 /// The ployz version fingerprints cover; a GitHub runner installs exactly this one.

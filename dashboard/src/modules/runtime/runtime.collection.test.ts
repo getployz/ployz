@@ -62,6 +62,7 @@ function observedSnapshot(): RuntimeSnapshot {
         viaProxy: false,
       },
     ],
+    published: ["api.example.test"],
     incompleteIds: {
       machines: [],
       containers: [],
@@ -160,6 +161,7 @@ describe("unreachableRuntimeSnapshot", () => {
       services: [],
       volumeCopies: [],
       certificates: [],
+      published: [],
       incompleteIds: {
         machines: [],
         containers: [],

@@ -1,5 +1,18 @@
+import type { MachineId } from "@ployz/sdk";
 import { sql } from "drizzle-orm";
-import { bigint, boolean, check, index, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import {
+  bigint,
+  boolean,
+  check,
+  index,
+  jsonb,
+  pgTable,
+  primaryKey,
+  text,
+  timestamp,
+  uniqueIndex,
+  uuid,
+} from "drizzle-orm/pg-core";
 import { createdAt, sqlStringLiterals, updatedAt } from "#/db/tables";
 import { user } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
@@ -7,8 +20,10 @@ import type { ServiceSpec } from "#/modules/volume-run/volume-run";
 import {
   type AnyVolumeRunArgs,
   VOLUME_RUN_KINDS,
+  VOLUME_RUN_PHASES,
   VOLUME_RUN_STATES,
   type VolumeRunKind,
+  type VolumeRunPhase,
   type VolumeRunState,
 } from "#/modules/volume-run/volume-run";
 
@@ -31,9 +46,15 @@ export const volumeRun = pgTable(
     state: text("state").default("requested").notNull().$type<VolumeRunState>(),
     /** The epoch this run gives a new writer, so a later run on the Volume numbers above it. */
     epoch: bigint("epoch", { mode: "number" }),
+    gen: bigint("gen", { mode: "number" }).generatedAlwaysAsIdentity().notNull(),
+    phase: text("phase").default("warm").notNull().$type<VolumeRunPhase>(),
+    /** The Machine a committed Move made the writer. */
+    current: text("current").$type<MachineId>(),
     /** The Service spec seen when the run started; Restore reads it once that Service's Server is gone. */
     serviceSpec: jsonb("service_spec").$type<ServiceSpec>(),
     inngestRunId: text("inngest_run_id"),
+    /** The Inngest run of a Deploy that holds this Volume beside this row's run, which it neither took nor holds. */
+    heldBy: text("held_by"),
     requestedByUserId: uuid("requested_by_user_id").references(() => user.id, { onDelete: "set null" }),
     message: text("message"),
     createdAt,
@@ -44,9 +65,35 @@ export const volumeRun = pgTable(
     uniqueIndex("volume_run_one_active_idx")
       .on(table.volumeId)
       .where(sql`${table.state} in ('requested', 'running')`),
+    index("volume_run_held_idx").on(table.volumeId).where(sql`${table.heldBy} is not null`),
     index("volume_run_latest_idx").on(table.organizationId, table.volumeId, table.createdAt.desc()),
     check("volume_run_kind_check", sql`${table.kind} in (${sqlStringLiterals(VOLUME_RUN_KINDS)})`),
     check("volume_run_state_check", sql`${table.state} in (${sqlStringLiterals(VOLUME_RUN_STATES)})`),
+    check("volume_run_phase_check", sql`${table.phase} in (${sqlStringLiterals(VOLUME_RUN_PHASES)})`),
     check("volume_run_message_check", sql`${table.message} is null or length(${table.message}) between 1 and 1024`),
   ],
+);
+
+/**
+ * What the mirror syncs saw of one mirror. The last pull that landed and the last that failed are kept apart, so a newer
+ * success never hides an older failure; `matchedAt` is the newest time the mirror held the writer's data as of: a sync
+ * that found it at the writer's newest, or the taking of a snapshot it landed.
+ */
+export const volumeMirrorStatus = pgTable(
+  "volume_mirror_status",
+  {
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    volumeId: text("volume_id").notNull(),
+    machineId: text("machine_id").notNull().$type<MachineId>(),
+    okAt: timestamp("ok_at", { mode: "date", withTimezone: true }),
+    okSnapshot: text("ok_snapshot"),
+    matchedAt: timestamp("matched_at", { mode: "date", withTimezone: true }),
+    failedAt: timestamp("failed_at", { mode: "date", withTimezone: true }),
+    failedSnapshot: text("failed_snapshot"),
+    failure: text("failure"),
+    updatedAt,
+  },
+  (table) => [primaryKey({ columns: [table.volumeId, table.machineId] })],
 );

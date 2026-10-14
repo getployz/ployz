@@ -5,8 +5,9 @@ import type {
   EnvironmentView, MergeRow, NodeChange, OnMerge, PrPlansView, ProjectsView, RowId, ServiceListing, ServicesView, SyncView,
   VolumeListing, VolumesView,
 } from "@ployz/sdk";
+import { nodeRowId } from "#/lib/ids";
 import type { StoreResult } from "./store.contract";
-import { environmentKey, queryOf, storeViewPrefix } from "./store-view.queries";
+import { cachedView, environmentKey, queryOf, storeViewPrefix } from "./store-view.queries";
 
 /**
  * Shows a Store command in the cached views at once, as the Store will answer once it commits: what the user sees while
@@ -41,17 +42,13 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
     });
   // The Services as the tab last read them.
   const listed = (environment: EnvironmentRef) => cached("services", environment).flatMap((query) => {
-    // SAFETY: `cached` found only services views.
-    const data = query.state.data as StoreResult<ServicesView> | undefined;
-    return data?.ok ? data.value.services : [];
+    return cachedView(query, "services")?.services ?? [];
   });
 
   // Item drawers can be inactive and retain names from before a rename or deletion.
   const workingConfigId = (environment: EnvironmentRef, name: string) => {
     const ids = new Set(cached("configs", environment).flatMap((query) => {
-      // SAFETY: `cached` found only Configs views.
-      const data = query.state.data as StoreResult<ConfigsView> | undefined;
-      return data?.ok ? data.value.configs.filter((config) => config.name === name && config.change !== "delete").map((config) => config.id) : [];
+      return (cachedView(query, "configs")?.configs ?? []).filter((config) => config.name === name && config.change !== "delete").map((config) => config.id);
     }));
     return ids.size === 1 ? ids.values().next().value : undefined;
   };
@@ -62,9 +59,8 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
       return;
     case "create_service":
     case "create_git_service": {
-      // SAFETY: a new Service's id is its lineage, and a node's RowId is `{lineage}:node`.
       const service: ServiceListing = {
-        id: command.id, row: `${command.id}:node` as RowId, name: command.name, private_dns: command.name, change: "create",
+        id: command.id, row: nodeRowId(command.id), name: command.name, private_dns: command.name, change: "create",
         source: command.command === "create_git_service" ? "git" : command.image === null ? "empty" : "image",
         template: command.command === "create_service" ? command.template ?? null : null,
       };

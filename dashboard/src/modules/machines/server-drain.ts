@@ -1,6 +1,6 @@
 import type { DrainReport } from "@ployz/sdk";
 import { Schema } from "effect";
-import { machineIdStringSchema } from "#/modules/machines/enrollment";
+import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 
 /**
  * One Drain Cloud runs on one Server, as its row moves: the click writes `pending`, the run claims it `running` right
@@ -34,11 +34,11 @@ export const DRAIN_RUNNING_LIMIT_MS = 24 * 60 * 60_000;
 
 export const RequestServerDrainInput = Schema.Struct({
   organizationSlug: Schema.String.check(Schema.isNonEmpty()),
-  machineId: machineIdStringSchema,
+  machineId: rustMachineIdSchema,
   /** Minted by the confirming tab: the row's id, so sending the same request again returns the same Drain. */
   requestId: Schema.String.check(Schema.isUUID()),
-  /** The approval a human gave this Drain in the sidebar, sent with the same request once it is approved. */
-  approvalId: Schema.optional(Schema.NullOr(Schema.String.check(Schema.isUUID()))),
+  /** The Services the confirm dialog showed as stopping. A Drain that would now stop another one is refused. */
+  stops: Schema.Array(Schema.String),
 });
 export type RequestServerDrainInput = typeof RequestServerDrainInput.Type;
 
@@ -59,10 +59,8 @@ export type LatestDrain =
   | { readonly attemptId: string; readonly state: "finished"; readonly endedAt: string; readonly report: DrainReport }
   | EndedDrain;
 
-/** The Drain a request admitted, or the approval it waits on because it would destroy something. */
-export type RequestedServerDrain =
-  | { readonly drain: LatestDrain }
-  | { readonly asking: { readonly approvalId: string; readonly message: string } };
+/** The Drain a request admitted. */
+export type RequestedServerDrain = { readonly drain: LatestDrain };
 
 /** Every Server's latest Drain, by Machine ID; a Server never drained has none. */
 export type LatestDrains = Readonly<Record<string, LatestDrain>>;

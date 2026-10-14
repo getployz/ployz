@@ -25,7 +25,6 @@ use crate::scope::EnvironmentSummary;
 /// What the rules read of one Environment.
 #[derive(Clone, Copy)]
 pub(crate) struct Facts<'a> {
-    /// Its Working State.
     pub(crate) working: &'a SavedEnvironmentIntent,
     /// The name of each node it uses live, by lineage.
     pub(crate) live: &'a BTreeMap<String, String>,
@@ -771,7 +770,6 @@ pub(crate) mod tests {
         });
         unrelated(&store, &who).unwrap();
         branch(&store, &who, &["db"]).unwrap();
-        // Breaking it further is still refused.
         let refused = set(&store, &who, &[("db.replicas", json!(3))]).unwrap_err();
         assert_eq!(refused.code, RpcErrorCode::Conflict);
     }

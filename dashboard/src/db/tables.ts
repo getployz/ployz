@@ -10,7 +10,7 @@ export type JsonValue = JsonPrimitive | JsonValue[] | JsonObject;
 
 export type JsonObject = { [key: string]: JsonValue };
 
-export type MachineId = string;
+export type { MachineId } from "@ployz/sdk";
 
 export type EncryptedSecretValue = {
   version: 1;

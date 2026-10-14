@@ -56,7 +56,6 @@ export function VariableRow({
     ? "References a variable whose service was deleted — it resolves to empty at deploy."
     : null;
 
-  // Writes are optimistic: the writer rolls back and toasts if saving fails.
   function handleSave() {
     // A secret's edit seals the typed value: it never becomes plain text.
     if (isSealed) {
@@ -103,6 +102,7 @@ export function VariableRow({
           dispatch({ type: "editValueChanged", value })
         }
         onSave={handleSave}
+        onSetValue={() => dispatch({ type: "editOpened", value: "" })}
         onToggleReveal={() => dispatch({ type: "revealToggled" })}
       />
 
@@ -110,7 +110,6 @@ export function VariableRow({
         editing={state.editing}
         exported={variable.exported}
         isSealed={isSealed}
-        notSet={notSet}
         plainValue={plainValue}
         showMetadata={showMetadata}
         onCancelEdit={() => dispatch({ type: "editCancelled" })}

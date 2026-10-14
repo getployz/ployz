@@ -109,6 +109,57 @@ async fn dependency_gate_waits_for_all_service_containers_before_the_dependent()
 }
 
 #[tokio::test(start_paused = true)]
+async fn dependency_gate_ignores_a_copy_the_dependency_row_no_longer_names() {
+    let dependency = QualifiedService::parse("app/api").unwrap();
+    let dependent = QualifiedService::parse("app/web").unwrap();
+    let serving_id = container('a');
+    let superseded_id = container('b');
+    let mut serving = observation(&machine('1'), &serving_id, healthy());
+    serving
+        .try_update(|parts| parts.resolved_spec.container.healthcheck = Some(healthcheck()))
+        .unwrap();
+    let mut superseded = observation(&machine('1'), &superseded_id, exited(1));
+    superseded
+        .try_update(|parts| parts.resolved_spec.container.healthcheck = Some(healthcheck()))
+        .unwrap();
+    let mut web = spec(Some(0), None, None);
+    web.name = ServiceName::parse("web").unwrap();
+    let plan = vec![
+        DeployOperation::WaitHealthy {
+            machine_id: machine('1'),
+            dependent,
+            dependency: dependency.clone(),
+        },
+        run(&machine('1'), web, true),
+    ];
+    let client = Scripted {
+        observations: Some(vec![serving, superseded]),
+        cancel_on_prepare: None,
+        ..Scripted::new(vec![created(
+            Call::Run(machine('1'), ContainerKind::ServiceContainer),
+            &container('c'),
+        )])
+    };
+    client.pointers.lock().unwrap().insert(
+        dependency,
+        ServingPointer {
+            deploy: run_id(),
+            containers: vec![serving_id],
+            previous: None,
+            retiring: vec![],
+        },
+    );
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "a superseded copy awaiting unroute must not fail the dependent, got {outcome:?}"
+    );
+    client.assert_done();
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_dependency_wait_reports_its_elapsed_and_deadline_clocks() {
     let dependency = QualifiedService::parse("app/api").unwrap();
     let mut observed = observation(&machine('1'), &container('a'), starting());
