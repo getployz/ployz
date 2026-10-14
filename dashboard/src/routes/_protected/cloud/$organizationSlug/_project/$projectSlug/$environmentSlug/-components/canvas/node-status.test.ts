@@ -175,6 +175,11 @@ describe("containerTrouble", () => {
     expect(containerTrouble(stopped(137), now)).toBeNull();
   });
 
+  it("starts a new loop when a crash comes after ten quiet minutes", () => {
+    expect(containerTrouble([...crashed("web-1", web1, now - 50 * 60_000), ...crashed("web-1", web1, now - 5 * 60_000)], now)).toBeNull();
+    expect(containerTrouble([...crashed("web-1", web1, now - 14 * 60_000), ...crashed("web-1", web1, now - 5 * 60_000)], now)).toBe("Restarting");
+  });
+
   it("tells apart same-named replicas on different Servers", () => {
     expect(containerTrouble([...crashed("web-1", web1), ...crashed("web-1", web2)], now)).toBeNull();
   });

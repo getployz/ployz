@@ -49,8 +49,8 @@ Below the table, Ployz counts the OOM kills, exits and restarts in the range. Wh
 ## Spot trouble on the canvas
 
 When a service's replicas were OOM killed in the last hour, its card shows **⚠ OOM**. When one
-replica crashed with a non-zero exit code and came back two or more times in the last hour, the
-card shows **⚠ Restarting** until that replica stays up for 10 minutes. A restart after a clean
+replica crashed with a non-zero exit code and came back twice, each time within 10 minutes of the
+last, the card shows **⚠ Restarting** until that replica stays up for 10 minutes. A restart after a clean
 exit or a stop, such as `ployz service restart`, a Deploy or a rollback, shows nothing, even when
 the app exits with 143 or 137 on the stop signal.
 When other issues share the card, the badge adds their count, as in **⚠ OOM +1**. The badge is

@@ -94,8 +94,8 @@ const STOP_SIGNAL_EXITS: ReadonlySet<number> = new Set([137, 143]);
 /**
  * What `markers` say at `now` (Unix milliseconds): only those in the hour before it count, however old the read is.
  * A replica's crash loop is its run of restarts that each followed a crash: a non-zero exit not from a stop signal. Any
- * other exit, as a Deploy or a requested restart leaves, ends the run. The replica is Restarting once its run reaches two, until it stays up for
- * `LOOP_QUIET_MS`.
+ * other exit, as a Deploy or a requested restart leaves, ends the run, and so does staying up for `LOOP_QUIET_MS`. The
+ * replica is Restarting while its run is two or more.
  */
 export function containerTrouble(markers: readonly Pick<Marker, "kind" | "at" | "server" | "replica" | "exitCode">[], now: number): ContainerTrouble | null {
   const recent = markers.filter((marker) => marker.at > now - TROUBLE_WINDOW_MS).sort((a, b) => a.at - b.at);
@@ -108,7 +108,8 @@ export function containerTrouble(markers: readonly Pick<Marker, "kind" | "at" | 
       if (marker.exitCode !== undefined && marker.exitCode !== 0 && !STOP_SIGNAL_EXITS.has(marker.exitCode)) loops.set(replica, { ...loop, crashed: true });
       else loops.delete(replica);
     } else if (marker.kind === "restart" && loop.crashed) {
-      loops.set(replica, { crashed: false, restarts: loop.restarts + 1, last: marker.at });
+      const restarts = marker.at - loop.last > LOOP_QUIET_MS ? 1 : loop.restarts + 1;
+      loops.set(replica, { crashed: false, restarts, last: marker.at });
     }
   }
   return [...loops.values()].some((loop) => loop.restarts >= 2 && loop.last > now - LOOP_QUIET_MS) ? "Restarting" : null;
