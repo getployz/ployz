@@ -222,6 +222,14 @@ finishes, so you can restore right away. Its error names the copy left:
 data's writer was on web-2 (removed). Restore from web-1's copy: ployz volume restore data --from web-1
 ```
 
+Nothing is owed a finish on a removed server, so moves of the volume are open again and a deploy
+no longer follows the move. While `web-2` is still a member, a deploy that follows the move fails
+if `web-2` is silent or holds no copy, and says what to do:
+
+```
+data finishes on web-2, which did not answer. Bring web-2 back or remove it with ployz server rm web-2. Restore from web-1's copy: ployz volume restore data --from web-1
+```
+
 ## Restore a volume
 
 When the server that wrote a volume is gone, make a copy on another server the writer:

@@ -14,7 +14,7 @@ import type {
   VolumeSwitchRequest,
   WantedCopy,
 } from "@ployz/sdk";
-import { and, desc, eq, inArray, isNotNull, isNull, lt, max, or, type SQL, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, lt, max, notInArray, or, type SQL, sql } from "drizzle-orm";
 import { Data, Effect, Option, Schema } from "effect";
 import { NonRetriableError } from "inngest";
 import type { OperationAsked } from "#/modules/approvals/approvals.server";
@@ -666,7 +666,8 @@ export const releaseLanesOff = Effect.fn("VolumeRun.releaseLanesOff")(function* 
 
 /**
  * Ends every committed lane whose writer-to-be is `machine`; each one's Inngest run is cancelled with it. A committed Move
- * that fails meanwhile hands its lane to a release bound for the same Server, so it looks again until none is left.
+ * that fails meanwhile hands its lane to a release bound for the same Server, so it looks again until none is left. Then
+ * every commitment to `machine` that ended unfinished stops naming it, so nothing is owed a finish there.
  */
 const endLanesTo = Effect.fn("VolumeRun.endLanesTo")(function* (
   organizationId: string,
@@ -680,7 +681,16 @@ const endLanesTo = Effect.fn("VolumeRun.endLanesTo")(function* (
       eq(volumeRun.phase, "committed"),
       eq(volumeRun.current, machine.id),
     ));
-    if (lanes.length === 0) return;
+    if (lanes.length === 0) {
+      yield* database.drizzle.update(volumeRun).set({ current: null }).where(and(
+        eq(volumeRun.organizationId, organizationId),
+        inArray(volumeRun.kind, ["move", "release"]),
+        eq(volumeRun.phase, "committed"),
+        eq(volumeRun.current, machine.id),
+        notInArray(volumeRun.state, [...ACTIVE_VOLUME_RUN_STATES, "done"]),
+      ));
+      return;
+    }
     for (const lane of lanes) {
       // The message only advises; a lane left active would block the restore it names.
       const holder = yield* observeVolumeMembers(organizationId, lane.dockerVolume).pipe(

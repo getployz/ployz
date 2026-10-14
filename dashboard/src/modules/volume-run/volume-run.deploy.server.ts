@@ -4,7 +4,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { NonRetriableError } from "inngest";
 import { readStore } from "#/modules/config-store/config-store.server";
-import { expectOf, observedEpoch, oldCopy } from "#/modules/volume-run/plan";
+import { expectOf, observedEpoch, oldCopy, restoreLine, restoreSource } from "#/modules/volume-run/plan";
 import { volumeRun } from "#/modules/volume-run/tables";
 import { ACTIVE_VOLUME_RUN_STATES, type AnsweredMember, copyName, dockerVolumeName, type Member, type VolumeRunArgs, type VolumeRunKind } from "#/modules/volume-run/volume-run";
 import {
@@ -238,13 +238,19 @@ const fenceFollowed = Effect.fn("VolumeRun.fenceFollowed")(function* (lane: Extr
       return yield* Effect.fail(new NonRetriableError(`${run.volumeName} changed since this Deploy placed it; Deploy again`));
     }
   }
-  const members = answered(yield* observeVolumeMembers(run.organizationId, run.dockerVolume));
-  const b = members.find((member) => (lane.machine === null ? member.machine.name === to : member.machine.id === lane.machine));
-  if (b === undefined) return yield* Effect.fail(new Error(`${to} did not answer for ${run.volumeName}`));
+  const members = yield* observeVolumeMembers(run.organizationId, run.dockerVolume);
+  const isB = (member: Member) => (lane.machine === null ? member.machine.name === to : member.machine.id === lane.machine);
+  const restore = () => restoreLine(run.volumeName, restoreSource(members.filter((member) => !isB(member))));
+  const b = answered(members).find(isB);
+  if (b === undefined) {
+    return yield* Effect.fail(new Error(`${run.volumeName} finishes on ${to}, which did not answer. Bring ${to} back or remove it with ployz server rm ${to}` + restore()));
+  }
   const machine: MachineRef = b.machine;
   const copy = b.view.copy;
   if (copy?.kind === "root" && run.kind === "restore") return { on: machine.name };
-  if (copy === null || copy.newest === null) return yield* Effect.fail(new NonRetriableError(`${run.volumeName} has no copy on ${machine.name} to deploy`));
+  if (copy === null || copy.newest === null) {
+    return yield* Effect.fail(new NonRetriableError(`${run.volumeName} finishes on ${machine.name}, which holds no copy to start. Remove it with ployz server rm ${machine.name}` + restore()));
+  }
   const epoch = copy.kind === "root" ? copy.epoch : lane.epoch;
   if (epoch === null) return yield* Effect.fail(new Error(`${run.volumeName}'s run on ${machine.name} has not chosen an epoch yet`));
   const started = run.kind === "restore"

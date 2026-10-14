@@ -273,7 +273,7 @@ export function restoreSource(members: readonly Member[]): MachineName | undefin
   return new Set(top.map(({ newest }) => newest.guid)).size === 1 ? top[0]?.name : undefined;
 }
 
-const restoreLine = (volumeName: string, holder: MachineName | undefined) => holder === undefined
+export const restoreLine = (volumeName: string, holder: MachineName | undefined) => holder === undefined
   ? ". No other server's copy is known to hold its newest data."
   : `. Restore from ${holder}'s copy: ployz volume restore ${volumeName} --from ${holder}`;
 
