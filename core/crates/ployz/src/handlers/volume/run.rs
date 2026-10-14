@@ -295,7 +295,7 @@ pub(super) fn move_command() -> Command {
 pub(super) fn release_command() -> Command {
     store::scoped(
         Command::new("release")
-            .about("Start a Volume's Service again where it was, ending a Move that stopped before the handover (Ployz Cloud)"),
+            .about("Stop what runs on a Volume and start its Service again where it was; a Move past its handover finishes there (Ployz Cloud)"),
     )
     .arg(positional("volume", true))
     .arg(approval_arg())

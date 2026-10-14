@@ -378,6 +378,11 @@ export function createVolumeRunRequestedEvent(data: VolumeRunRequestedEventData)
   return { id: `volume-run-${data.runId}`, name: volumeRunRequestedEvent, data } as const;
 }
 
+/** Keyed by the ended row: a row is taken over once. */
+export function createVolumeRunTakenEvent(data: VolumeRunTakenEventData) {
+  return { id: `volume-run-taken-${data.runId}`, name: volumeRunTakenEvent, data } as const;
+}
+
 /** Keyed by the Drain's row: sending it again for the same request runs nothing new. */
 export function createServerDrainRequestedEvent(data: ServerDrainRequestedEventData) {
   return { id: `server-drain-${data.attemptId}`, name: serverDrainRequestedEvent, data } as const;
@@ -561,6 +566,7 @@ export type InngestSendableEvent =
   | ReturnType<typeof createNamespaceCleanupRequestedEvent>
   | ReturnType<typeof createServiceActRequestedEvent>
   | ReturnType<typeof createVolumeRunRequestedEvent>
+  | ReturnType<typeof createVolumeRunTakenEvent>
   | ReturnType<typeof createClusterDomainSyncRequestedEvent>
   | ReturnType<typeof createConfigFirstServerJoinedEvent>
   | ReturnType<typeof createOrganizationBillingSyncRequestedEvent>

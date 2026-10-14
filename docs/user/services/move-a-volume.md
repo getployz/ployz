@@ -83,7 +83,11 @@ ployz volume runs data                   # what ran on this volume, and how it e
 ```
 
 Each command starts a run in Ployz Cloud and prints its id. Add `--wait` to wait for it to
-finish. One run at a time per volume: a second one is refused and names the run in progress.
+finish. One run at a time per volume. A second one is refused and says how to stop the first:
+
+```
+VolumeBusy: data is busy with a mirror; ployz volume release data stops it
+```
 
 ## Move a volume to another server
 
@@ -116,19 +120,41 @@ why. What happens next depends on how far it got.
   run fails and names what went wrong, and `ployz volume runs data` shows the release that
   finished it.
 
-If Ployz Cloud lost the run itself, the cleanup starts within about an hour. To start it now, release
-the volume:
+If Ployz Cloud lost the run itself, the cleanup starts within about an hour. To start it now, or
+to stop a move or a mirror that's still running, release the volume:
 
 ```
 ployz volume release data
 ```
 
-Release ends a move that stopped. Before `web-2` starts your service, Release deletes the copy
-on `web-2` and starts your service again on the old server. Once `web-2` is told to start it,
-Release starts it there and removes the old server's stopped container.
+Release stops the run on the volume and starts your service again on the old server, with all
+its data. Before `web-2` starts your service, Release deletes the copy on `web-2` first. With no
+run in progress, Release repairs a move that stopped. Once `web-2` is told to start your
+service, the move can only finish there, so Release is refused:
+
+```
+data is starting on web-2; it finishes there
+```
 
 Finishing on `web-2` still needs the old server to answer for its container. If the old server
-dies, the release fails, and your service stays down until it comes back or you restore the volume.
+dies, the move fails, and your service stays down until it comes back or you restore the volume.
+
+### When you remove a server mid-move
+
+Removing a server never waits for a move. A move or mirror still running to or from that server
+is released, and your service stays on the old server. If the old server is the one you removed,
+the release fails and names the copy to restore from:
+
+```
+data has no writer and no stopped Service on its copies; ployz volume restore data --from web-2
+```
+
+If you remove `web-2` after it was told to start your service, the move fails and names the copy
+left:
+
+```
+data's writer was on web-2 (removed). Restore from web-1's copy: ployz volume restore data --from web-1
+```
 
 ## Restore a volume
 

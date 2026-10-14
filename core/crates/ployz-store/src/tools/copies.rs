@@ -408,7 +408,7 @@ pub(crate) struct VolumeRelease {
 
 impl Tool for VolumeRelease {
     const NAME: &'static str = "volume_release";
-    const DESCRIPTION: &'static str = "Undo a move that stopped before the handover: start the Service again on the old server with its data.";
+    const DESCRIPTION: &'static str = "Stop what runs on a volume and start its Service again on the old server with its data. A move past its handover finishes on its new server instead.";
     const GATE: Gate = Gate::Cloud;
     const READ_ONLY: bool = false;
     const LOCAL_NEXT: Option<&'static str> = Some("environment_show");

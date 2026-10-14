@@ -2098,7 +2098,7 @@
       "read_only": false
     },
     {
-      "description": "Undo a move that stopped before the handover: start the Service again on the old server with its data. It may stop to ask a human to approve; call it alone, never alongside another tool.",
+      "description": "Stop what runs on a volume and start its Service again on the old server with its data. A move past its handover finishes on its new server instead. It may stop to ask a human to approve; call it alone, never alongside another tool.",
       "gate": "cloud",
       "input_schema": {
         "additionalProperties": false,

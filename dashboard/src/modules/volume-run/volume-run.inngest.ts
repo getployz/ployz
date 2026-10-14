@@ -27,6 +27,7 @@ import {
   findHolder,
   findKept,
   inspectCopy,
+  laneTarget,
   type MachineRef,
   observeMembers,
   organizationsWithMachines,
@@ -82,7 +83,10 @@ export async function runVolume(
   const run = claim.run as RunContext;
 
   // SAFETY: step output is the JSON of the Member list, and a Member holds only JSON values.
-  const members = (await step.run("01-observe", () => runEffect(observeMembers(run, runId)))) as Member[];
+  const observed = (await step.run("01-observe", () => runEffect(observeMembers(run, runId)))) as Member[];
+  const steps: RunSteps = { step, runEffect, run, runId };
+  const forward = run.kind === "release" && run.phase === "committed" && run.current !== null;
+  const members = run.kind === "release" && !forward ? await floor(steps, observed) : observed;
   // SAFETY: the row's kind and args were written together from one VolumeRunInput.
   const input = { kind: run.kind, args: run.args, volumeName: run.volumeName, orphan: run.orphan } as PlanInput;
   const plan = planFromCopies(input, members);
@@ -90,8 +94,7 @@ export async function runVolume(
     await step.run("02-refuse", () => runEffect(refuseRun(run, runId, plan.refusal)));
     return { runId: run.id, refused: plan.refusal };
   }
-  const steps: RunSteps = { step, runEffect, run, runId };
-  if (run.kind === "release" && run.phase === "committed" && run.current !== null) return finishRelease(steps, members, run.current);
+  if (forward && run.current !== null) return finishRelease(steps, members, run.current);
   const { phase } = plan;
   if (phase.kind === "seed") return seedVolume(steps, phase);
   if (phase.kind === "delete_mirror") return deleteMirror(steps, phase);
@@ -110,6 +113,24 @@ export async function runVolume(
     case "sync":
       return mirrorVolume(steps, phase, epoch);
   }
+}
+
+/**
+ * A release raises every copy's floor to its own gen before it plans, so the run it took over can switch nothing more.
+ * Each reply is the copy as it settled: a cut caught before its flip is still the root, one past it is the slot.
+ */
+async function floor({ step, runEffect, run, runId }: RunSteps, members: readonly Member[]): Promise<Member[]> {
+  const floored: Member[] = [];
+  for (const member of members) {
+    if (!member.answered) {
+      floored.push(member);
+      continue;
+    }
+    // A Machine with no copy is floored too, so the taken run's late Mirror cannot make one there.
+    const answer = await step.run(`01-floor-${member.machine.name}`, () => runEffect(setVolumeCopy(run, runId, member.machine, expectOf(member.view.copy), { kind: "floor" })));
+    floored.push({ ...member, view: { ...member.view, copy: answer.copy } });
+  }
+  return floored;
 }
 
 const fail = ({ step, runEffect, run, runId }: RunSteps, id: string, message: string): Promise<never> =>
@@ -336,7 +357,8 @@ async function releaseVolume(steps: RunSteps, phase: PhaseOf<"release">, epoch: 
     const owner = source === null ? undefined : from.slots.find((slot) => slot.machine.id === source.machine.id);
     const cut = slotAt(owner?.view.copy ?? null);
     if (source === null || owner === undefined || cut === null) {
-      return fail(steps, "03-no-source", `${run.volumeName} has no writer and no stopped Service on its copies; volume restore ${run.volumeName} --from <server>`);
+      const held = from.slots.find((slot) => slotAt(slot.view.copy) !== null)?.machine.name ?? "<server>";
+      return fail(steps, "03-no-source", `${run.volumeName} has no writer and no stopped Service on its copies; ployz volume restore ${run.volumeName} --from ${held}`);
     }
     const A = owner.machine;
     const at = cut.newest;
@@ -370,6 +392,14 @@ async function finishRelease(steps: RunSteps, members: readonly Member[], curren
   const B = members.find((member): member is AnsweredMember => member.answered && member.machine.id === current);
   const copy = B?.view.copy ?? null;
   const at = copy?.newest ?? null;
+  if (!members.some((member) => member.machine.id === current)) {
+    const target = await step.run("02-target", () => runEffect(laneTarget(run)));
+    const held = members.find((member): member is AnsweredMember => member.answered && (member.view.copy?.newest ?? null) !== null)?.machine.name;
+    const lost = `${run.volumeName}'s writer was on ${target ?? current} (removed)`;
+    return fail(steps, "02-failed", held === undefined
+      ? `${lost}, and no copy left holds its data`
+      : `${lost}. Restore from ${held}'s copy: ployz volume restore ${run.volumeName} --from ${held}`);
+  }
   if (B === undefined || at === null) return fail(steps, "02-failed", `${run.volumeName}'s Move committed, but its new copy is gone`);
   const { epoch } = await step.run("02-epoch", () => runEffect(takeEpoch(run, runId, observedEpoch(members))));
   try {
