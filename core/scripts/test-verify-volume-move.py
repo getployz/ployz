@@ -312,7 +312,8 @@ def busy(reply):
     message = str(error.get("message", "")) if error else ""
     if message.startswith("A run on this Volume just ended"):
         return dict(id="ended")
-    if not message.startswith("VolumeBusy"):
+    # A release names no VolumeBusy: a lane it cannot stop ends on its own.
+    if not message.startswith("VolumeBusy") and not message.endswith("it finishes on its own"):
         return None
     return (error.get("details") or {}).get("run") or dict(id="unknown")
 

@@ -405,3 +405,46 @@ it("shows a hidden file as hidden, and keeps its permissions until new text repl
     ] },
   } })));
 });
+
+const twoFiles: ConfigItemView = { ...initial,
+  files: [...initial.files, { name: "run.sh", bytes: 9, mode: "0444", uid: 1000, gid: 1000, references: [] }],
+  contents: { ...initial.contents, "run.sh": "#!/bin/sh" } };
+
+async function setPermissions(file: string, fields: { mode?: string; uid?: string; gid?: string }) {
+  fireEvent.click(screen.getByRole("button", { name: `${file} options` }));
+  fireEvent.click(await screen.findByRole("menuitem", { name: "Permissions…" }));
+  const dialog = await screen.findByRole("dialog", { name: `Permissions for ${file}` });
+  for (const [label, value] of [["Mode", fields.mode], ["User ID", fields.uid], ["Group ID", fields.gid]] as const) {
+    if (value !== undefined) fireEvent.change(within(dialog).getByRole("textbox", { name: label }), { target: { value } });
+  }
+  fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: `Permissions for ${file}` })).toBeNull());
+}
+
+it("stages a permissions change as a draft, leaving another file's unsaved text unsaved", async () => {
+  const test = await openDrawer(twoFiles);
+  test.edit("unsaved text");
+  await setPermissions("run.sh", { mode: "0750" });
+  expect(test.write).not.toHaveBeenCalled();
+  expect(within(screen.getByRole("tab", { name: /config.yml/ })).getByLabelText("Unsaved")).toBeTruthy();
+  expect(within(screen.getByRole("tab", { name: /run.sh/ })).getByLabelText("Unsaved")).toBeTruthy();
+  expect(test.text()).toBe("unsaved text");
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(test.write).toHaveBeenCalledWith(expect.objectContaining({ data: {
+    organizationSlug: "acme", command: { command: "batch", environment, commands: [
+      { command: "put_config_file", environment, config: "sentry", file: "config.yml", content: "unsaved text" },
+      { command: "put_config_file", environment, config: "sentry", file: "run.sh", content: "#!/bin/sh", mode: "0750" },
+    ] },
+  } })));
+});
+
+it("writes only the mode when the dialog changed only the mode, so the file's owner stays", async () => {
+  const test = await openDrawer(twoFiles);
+  await setPermissions("run.sh", { mode: "0640" });
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(test.write).toHaveBeenCalledWith(expect.objectContaining({ data: {
+    organizationSlug: "acme", command: { command: "batch", environment, commands: [
+      { command: "put_config_file", environment, config: "sentry", file: "run.sh", content: "#!/bin/sh", mode: "0640" },
+    ] },
+  } })));
+});

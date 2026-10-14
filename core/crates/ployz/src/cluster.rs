@@ -373,7 +373,7 @@ impl Client {
         &self,
         request: &ployz_core::RpcRequest,
         path: &'static str,
-        target: &MachineTarget,
+        target: Option<&MachineTarget>,
         timeout: Option<Duration>,
     ) -> Result<ployz_core::RpcResponse, RpcError> {
         let payload = request
@@ -384,12 +384,12 @@ impl Client {
             grpc.ready().await?;
             Ok(grpc
                 .unary(
-                    target_request(payload, Some(target)),
+                    target_request(payload, target),
                     PathAndQuery::from_static(path),
                     ProstCodec::<OpaquePayload, OpaquePayload>::default(),
                 )
                 .await
-                .map_err(|status| refused(status, path, Some(target)))?
+                .map_err(|status| refused(status, path, target))?
                 .into_inner()
                 .decode_response()?)
         })

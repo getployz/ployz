@@ -692,7 +692,7 @@ impl Session {
             .until_closed(client.invoke_raw(
                 &request,
                 path,
-                &target,
+                Some(&target),
                 Some(crate::connect::TARGET_RPC_TIMEOUT),
             ))
             .await?;
