@@ -155,6 +155,16 @@ find var/lib run opt -mindepth 1 -maxdepth 1 -name '*ployz*' ! -path var/lib/plo
 """ + scratch() + r""" -print0 2>/dev/null | LC_ALL=C sort -z | LC_ALL=C comm -z -13 "$stash.scratch" - | xargs -0r rm -rf --
 tar -xpf "$stash" -C .
 """
+# Drops the run's logs, relative to the working directory, which reset makes /: journald closes its files so
+# they become archives, and the archives and every other machine's journal go. The next boot logs to a fresh file.
+JOURNAL_RESET = r"""
+journalctl --rotate
+if [ -d var/log/journal ]; then
+    machine=$(cat etc/machine-id)
+    find var/log/journal -mindepth 1 -maxdepth 1 ! -name "$machine" -exec rm -rf {} +
+    find "var/log/journal/$machine" -mindepth 1 -name '*@*' -delete
+fi
+"""
 # Returns the guest to the bake: what uninstall.sh removes, everything else a run makes, then the bake's install.
 RESET = r"""
 stash=$1 key=$2
@@ -180,6 +190,7 @@ cd /
 install -d -m 700 /root/.ssh
 printf '%s\n' "$key" > /root/.ssh/authorized_keys
 chmod 600 /root/.ssh/authorized_keys
+""" + JOURNAL_RESET + r"""
 sync
 """
 

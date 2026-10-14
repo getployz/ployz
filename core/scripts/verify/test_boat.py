@@ -647,6 +647,26 @@ class Reset(unittest.TestCase):
         run("stash=$1\n" + boat.IMAGE_RESET)
         self.assertEqual(json.loads(state.read_text()), bake)
 
+    def test_journal_reset_drops_the_runs_archives_and_other_machines_and_keeps_the_open_journal(self):
+        bin_dir = Path(self.root.parent, "bin")
+        bin_dir.mkdir()
+        # journalctl --rotate archives each open file under a name with an @ and opens a fresh one.
+        Path(bin_dir, "journalctl").write_text("#!/bin/sh\n[ \"$1\" = --rotate ] || exit 1\n"
+                                               "for f in var/log/journal/*/*.journal; do case $f in *@*) ;; *)\n"
+                                               "mv \"$f\" \"${f%.journal}@0001.journal\"; : > \"$f\" ;; esac; done\n")
+        Path(bin_dir, "journalctl").chmod(0o755)
+        self.write("etc/machine-id", "abc\n")
+        self.write("var/log/journal/abc/system.journal", "run")
+        self.write("var/log/journal/abc/system@0000.journal", "older run")
+        self.write("var/log/journal/abc/user-1000@0000.journal~", "torn")
+        self.write("var/log/journal/old/system.journal", "bake's builder")
+        env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"}
+        subprocess.run(["bash", "-ec", boat.JOURNAL_RESET], cwd=self.root, env=env, check=True, capture_output=True)
+        journal = {name: content for name, content in self.tree().items() if name.startswith("var/log/journal")}
+        self.assertEqual(journal, {"var/log/journal": "/", "var/log/journal/abc": "/", "var/log/journal/abc/system.journal": ""})
+        # Reset runs it after RESTORE, from /.
+        self.assertGreater(boat.RESET.find(boat.JOURNAL_RESET), boat.RESET.find("cd /\n" + boat.RESTORE))
+
 
 if __name__ == "__main__":
     unittest.main()
