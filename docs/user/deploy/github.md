@@ -114,6 +114,21 @@ workspace, leave the root directory at `/`. Set a
 [**Start command**](../services/settings.md#start-command) for that app instead, such as
 `pnpm --filter web build`, and add the shared folder to its watch paths.
 
+## Who owns the connection
+
+A GitHub installation belongs to the organization it is connected to, not to the person who
+installed it. Everyone in the organization can pick its repositories, and it stays connected
+when that person leaves. One installation can be connected to more than one organization.
+
+To stop an organization from using an installation, run `ployz github ls` to find its ID, then
+`ployz github disconnect <id>`. Only an owner or admin can. Builds that organization has in
+flight on GitHub through that installation stop, and their deploys fail with "GitHub account
+`<login>` was disconnected". Other organizations connected to the same installation keep it.
+Suspending the app on GitHub hides its repositories from every organization until you unsuspend
+it; the connections stay. Uninstalling the app on GitHub removes it from every organization at
+once. Either way, builds in flight through it stop within seconds, and their deploys fail with
+"GitHub account `<login>` was suspended" or "was disconnected".
+
 ## Read a repository from the CLI
 
 To see what's in a repository before you deploy it, list its files and read one. Both work on

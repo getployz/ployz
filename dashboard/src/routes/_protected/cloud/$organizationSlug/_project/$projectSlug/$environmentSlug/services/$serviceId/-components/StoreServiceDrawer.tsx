@@ -403,7 +403,7 @@ function StoreDockerfile({ state }: { state: StoreService }) {
   const repository = settingText(state.rows.get("repository")?.value);
   const gitRef = useRepositoryRef(state.organizationSlug, state.environment, repository);
   return (
-    <StoreDockerfileField gitRef={gitRef} branch={settingText(state.rows.get("branch")?.value)}
+    <StoreDockerfileField organizationSlug={state.organizationSlug} gitRef={gitRef} branch={settingText(state.rows.get("branch")?.value)}
       value={settingText(state.rows.get("dockerfilePath")?.value)} change={state.changes.get("dockerfilePath")}
       onCommit={(raw) => state.edit(settingChange(state.path("dockerfilePath"), serviceSetting("dockerfilePath"), raw))} />
   );
@@ -474,7 +474,7 @@ function StoreSourceSection({ state }: { state: StoreService }) {
 
   const dialogs = <>
     <ImageSelectorDialog open={picking === "image"} onOpenChange={close} onSelectImage={(image) => { set("image", image); setPicking(null); }} />
-    <GitRepoSelectorDialog open={picking === "repository"} onOpenChange={close}
+    <GitRepoSelectorDialog open={picking === "repository"} onOpenChange={close} organizationSlug={state.organizationSlug}
       onSelectRepo={({ fullName }) => { set("repository", fullName); setPicking(null); }} />
   </>;
 
@@ -525,7 +525,7 @@ function StoreSourceSection({ state }: { state: StoreService }) {
       </Field>
       {kind === "repository" ? (
         <>
-          <StoreBranchField repository={value} gitRef={gitRef} value={settingText(state.rows.get("branch")?.value)}
+          <StoreBranchField organizationSlug={state.organizationSlug} repository={value} gitRef={gitRef} value={settingText(state.rows.get("branch")?.value)}
             change={state.changes.get("branch")} onSet={(branch) => set("branch", branch)} />
           <StoreSettingField state={state} name="rootDir" />
           {/* Its Deployment Policy: when a push to the branch deploys. */}

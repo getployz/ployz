@@ -14,9 +14,13 @@ import {
   GithubApiLive,
   GithubApi,
 } from "#/modules/github/github-observation.api";
+import { organizationAccess, type GithubAccess } from "#/modules/github/github-access";
 import { AppConfig } from "#/server/config.server";
+import { GithubTokensUnchecked } from "#/test/fake-github";
 
-const GithubTestLive = GithubApiLive.pipe(Layer.provideMerge(AppConfig.layer));
+const GithubTestLive = GithubApiLive.pipe(Layer.provideMerge(GithubTokensUnchecked), Layer.provideMerge(AppConfig.layer));
+const access = (installationId: number) => organizationAccess("org", installationId);
+const PUBLIC: GithubAccess = { type: "public" };
 
 async function resolveGithubRepository(
   ...args: Parameters<typeof resolveGithubRepositoryEffect>
@@ -116,7 +120,7 @@ describe("resolveGithubRepository", () => {
       jsonResponse({ id: 9_001, full_name: "ployz/example-renamed" }),
     );
 
-    const result = await resolveGithubRepository(4_001, 9_001);
+    const result = await resolveGithubRepository(access(4_001), 9_001);
 
     expect(Result.isSuccess(result)).toBe(true);
     if (Result.isFailure(result)) return;
@@ -138,7 +142,7 @@ describe("resolveGithubRepository", () => {
       jsonResponse({ id: 9_002, full_name: "ployz/wrong" }),
     );
 
-    const result = await resolveGithubRepository(4_002, 9_001);
+    const result = await resolveGithubRepository(access(4_002), 9_001);
 
     expect(Result.isFailure(result)).toBe(true);
     if (Result.isSuccess(result)) return;
@@ -156,11 +160,11 @@ describe("resolveGithubRepository", () => {
       jsonResponse({ id: 9_001, full_name: "../repository" }),
     );
 
-    const result = await resolveGithubRepository(4_003, 9_001);
+    const result = await resolveGithubRepository(access(4_003), 9_001);
 
     expect(Result.isFailure(result)).toBe(true);
     if (Result.isSuccess(result)) return;
-    expect(result.failure.code).toBe("invalid_response");
+    expect(result.failure).toMatchObject({ code: "invalid_response" });
   });
 
   it("retries a 403 only when rate-limit headers prove throttling", async () => {
@@ -175,8 +179,8 @@ describe("resolveGithubRepository", () => {
       ),
     );
 
-    const forbidden = await resolveGithubRepository(4_004, 9_001);
-    const rateLimited = await resolveGithubRepository(4_005, 9_001);
+    const forbidden = await resolveGithubRepository(access(4_004), 9_001);
+    const rateLimited = await resolveGithubRepository(access(4_005), 9_001);
 
     expect(Result.isFailure(forbidden)).toBe(true);
     if (Result.isFailure(forbidden)) expect(forbidden.failure.retriable).toBe(false);
@@ -208,7 +212,7 @@ describe("resolveGithubBranchHead", () => {
     );
 
     const result = await resolveGithubBranchHead(
-      4_101,
+      access(4_101),
       repository,
       "refs/heads/feature/storage/alarms",
     );
@@ -231,7 +235,7 @@ describe("resolveGithubBranchHead", () => {
     mockFetchSequence(installationTokenResponse(), jsonResponse({}, 404));
 
     const result = await resolveGithubBranchHead(
-      4_102,
+      access(4_102),
       repository,
       "refs/heads/deleted",
     );
@@ -251,7 +255,7 @@ describe("resolveGithubBranchHead", () => {
     );
 
     const result = await resolveGithubBranchHead(
-      4_103,
+      access(4_103),
       repository,
       "refs/heads/main",
     );
@@ -272,14 +276,14 @@ describe("resolveGithubBranchHead", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const result = await resolveGithubBranchHead(
-      4_104,
+      access(4_104),
       repository,
       "refs/heads/release/../main",
     );
 
     expect(Result.isFailure(result)).toBe(true);
     if (Result.isSuccess(result)) return;
-    expect(result.failure.code).toBe("invalid_input");
+    expect(result.failure).toMatchObject({ code: "invalid_input" });
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
@@ -304,7 +308,7 @@ describe("compareInstallationRepositoryCommits", () => {
     );
 
     const result = await compareInstallationRepositoryCommits(
-      4_201,
+      access(4_201),
       repository,
       baseSha,
       headSha,
@@ -344,7 +348,7 @@ describe("compareInstallationRepositoryCommits", () => {
       );
 
       const result = await compareInstallationRepositoryCommits(
-        4_300 + fileCount,
+        access(4_300 + fileCount),
         repository,
         baseSha,
         headSha,
@@ -370,7 +374,7 @@ describe("compareInstallationRepositoryCommits", () => {
       );
 
       const result = await compareInstallationRepositoryCommits(
-        4_400 + status.length,
+        access(4_400 + status.length),
         repository,
         baseSha,
         headSha,
@@ -401,7 +405,7 @@ describe("compareInstallationRepositoryCommits", () => {
     mockFetchSequence(installationTokenResponse(), jsonResponse(body));
 
     const result = await compareInstallationRepositoryCommits(
-      installationId,
+      access(installationId),
       repository,
       baseSha,
       headSha,
@@ -427,7 +431,7 @@ describe("compareInstallationRepositoryCommits", () => {
     );
 
     const result = await compareInstallationRepositoryCommits(
-      4_505,
+      access(4_505),
       repository,
       baseSha,
       headSha,
@@ -435,7 +439,7 @@ describe("compareInstallationRepositoryCommits", () => {
 
     expect(Result.isFailure(result)).toBe(true);
     if (Result.isSuccess(result)) return;
-    expect(result.failure.code).toBe("invalid_response");
+    expect(result.failure).toMatchObject({ code: "invalid_response" });
   });
 });
 
@@ -457,7 +461,7 @@ describe("fetchInstallationCheckSuite", () => {
     );
 
     const result = await fetchInstallationCheckSuite(
-      4_601,
+      access(4_601),
       repository,
       7_001,
     );
@@ -490,7 +494,7 @@ describe("fetchInstallationCheckSuite", () => {
       mockFetchSequence(installationTokenResponse(), jsonResponse(body));
 
       const result = await fetchInstallationCheckSuite(
-        installationId,
+        access(installationId),
         repository,
         7_001,
       );
@@ -512,7 +516,7 @@ describe("fetchInstallationCheckSuite", () => {
     );
 
     const result = await fetchInstallationCheckSuite(
-      4_607,
+      access(4_607),
       repository,
       7_001,
     );
@@ -539,7 +543,7 @@ describe("fetchInstallationCheckSuite", () => {
     );
 
     const result = await fetchInstallationCheckSuite(
-      4_608,
+      access(4_608),
       repository,
       7_001,
     );
@@ -558,7 +562,7 @@ describe("fetchInstallationCheckSuite", () => {
     );
 
     const result = await fetchInstallationCheckSuite(
-      4_609,
+      access(4_609),
       repository,
       7_001,
     );
@@ -581,7 +585,7 @@ describe("fetchInstallationCheckSuite", () => {
     );
 
     const result = await fetchInstallationCheckSuite(
-      4_610,
+      access(4_610),
       repository,
       7_001,
     );
@@ -602,7 +606,7 @@ describe("fetchInstallationCheckSuite", () => {
     );
 
     const result = await fetchInstallationCheckSuite(
-      4_611,
+      access(4_611),
       repository,
       7_001,
     );
@@ -673,7 +677,7 @@ describe("GitHub repository synchronization provider", () => {
       jsonResponse([{ name: "main", provider_only: "removed" }]),
     );
 
-    const result = await listGithubRepositoryBranches(8_102, "acme/api");
+    const result = await listGithubRepositoryBranches(access(8_102), "acme/api");
 
     expect(Result.isSuccess(result)).toBe(true);
     if (Result.isFailure(result)) return;
@@ -709,7 +713,7 @@ describe("source archives", () => {
       new Response("archive"));
     const response = await Effect.runPromise(Effect.gen(function* () {
       const api = yield* GithubApi;
-      return yield* api.archive({ installationId: 4001, repository: { id: 9001, fullName: "ployz/example" }, sha });
+      return yield* api.archive({ access: access(4001), repository: { id: 9001, fullName: "ployz/example" }, sha });
     }).pipe(Effect.provide(GithubTestLive)));
     expect(await response.text()).toBe("archive");
     expect(fetchMock.mock.calls[1]?.[0]).toBe(`https://api.github.com/repos/ployz/example/tarball/${sha}`);
@@ -722,7 +726,7 @@ describe("source archives", () => {
       new Response(null, { status: 302, headers: { location: "https://evil.example/?token=private" } }));
     const result = await Effect.runPromise(Effect.gen(function* () {
       const api = yield* GithubApi;
-      return yield* api.archive({ installationId: 4001, repository: { id: 9001, fullName: "ployz/example" }, sha: "a".repeat(40) });
+      return yield* api.archive({ access: access(4001), repository: { id: 9001, fullName: "ployz/example" }, sha: "a".repeat(40) });
     }).pipe(Effect.result, Effect.provide(GithubTestLive)));
     expect(Result.isFailure(result)).toBe(true);
     expect(JSON.stringify(result)).not.toContain("private");
@@ -736,7 +740,7 @@ it("public repository reads never request or attach installation credentials", a
     return Response.json({ id: 42, full_name: "owner/repo" });
   });
   vi.stubGlobal("fetch", fetchMock);
-  const result = await resolveGithubRepository(null, 42);
+  const result = await resolveGithubRepository(PUBLIC, 42);
   expect(Result.isSuccess(result)).toBe(true);
   expect(fetchMock).toHaveBeenCalledTimes(1);
   expect(fetchMock.mock.calls[0]?.[0]).toBe("https://api.github.com/repositories/42");
@@ -752,7 +756,7 @@ it("resolves pasted HTTP URLs through HTTPS without GitHub App access", async ()
 });
 it("does not fall back to installation credentials when a public repository disappears", async () => {
   const fetchMock = mockFetchSequence(new Response(null, { status: 404 }));
-  const result = await resolveGithubRepository(null, 42);
+  const result = await resolveGithubRepository(PUBLIC, 42);
   expect(Result.isFailure(result)).toBe(true);
   expect(fetchMock).toHaveBeenCalledTimes(1);
 });
@@ -761,7 +765,7 @@ it("downloads public archives at the pinned SHA without credentials", async () =
   const fetchMock = mockFetchSequence(new Response(null, { status: 302, headers: { location: `https://codeload.github.com/owner/repo/tar.gz/${sha}` } }), new Response("archive"));
   const response = await Effect.runPromise(Effect.gen(function* () {
     const api = yield* GithubApi;
-    return yield* api.archive({ installationId: null, repository: { id: 42, fullName: "owner/repo" }, sha });
+    return yield* api.archive({ access: PUBLIC, repository: { id: 42, fullName: "owner/repo" }, sha });
   }).pipe(Effect.provide(GithubTestLive)));
   expect(await response.text()).toBe("archive");
   expect(fetchMock.mock.calls[0]?.[0]).toBe(`https://api.github.com/repos/owner/repo/tarball/${sha}`);
@@ -777,7 +781,7 @@ describe("fetchInstallationPullRequest", () => {
       merged: false, merge_commit_sha: null, commits: 1,
     }));
 
-    const result = await Effect.runPromise(fetchInstallationPullRequest(4_901, 9_301, 7).pipe(Effect.provide(GithubTestLive)));
+    const result = await Effect.runPromise(fetchInstallationPullRequest(access(4_901), 9_301, 7).pipe(Effect.provide(GithubTestLive)));
 
     expect(result.author).toEqual({ login: "ghost", isBot: false });
   });

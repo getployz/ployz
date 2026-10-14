@@ -1,9 +1,7 @@
 import "@tanstack/react-start/server-only";
 import crypto from "node:crypto";
 import { Cache, Context, Data, Effect, Layer, Schema } from "effect";
-
-/** GitHub Actions' OIDC issuer: every runner token names it, and its JWKS signs them. */
-export const GITHUB_OIDC_ISSUER = "https://token.actions.githubusercontent.com";
+import { AppConfig } from "#/server/config.server";
 
 export class GithubOidcRejected extends Data.TaggedError("GithubOidcRejected")<{ readonly message: string }> {}
 
@@ -17,13 +15,14 @@ export class GithubOidcKeys extends Context.Service<GithubOidcKeys, {
 }>()("ployz/GithubOidcKeys") {}
 
 export const GithubOidcKeysLive = Layer.effect(GithubOidcKeys, Effect.gen(function* () {
+  const { origins } = (yield* AppConfig).github;
   // ponytail: a key GitHub rotated in within the TTL is refused until the cache expires; refetch on an unknown kid if that bites.
   const cache = yield* Cache.make({
     capacity: 1,
     timeToLive: "10 minutes",
     lookup: () => Effect.tryPromise({
       try: async (signal) => {
-        const response = await fetch(`${GITHUB_OIDC_ISSUER}/.well-known/jwks`, { signal });
+        const response = await fetch(`${origins.oidc}/.well-known/jwks`, { signal });
         if (!response.ok) throw new Error(`JWKS request failed: ${response.status}`);
         return Schema.decodeUnknownSync(jwksSchema)(await response.json()).keys;
       },
@@ -35,7 +34,7 @@ export const GithubOidcKeysLive = Layer.effect(GithubOidcKeys, Effect.gen(functi
 
 /** The claims Cloud checks. GitHub sends ids as strings. */
 const claimsSchema = Schema.Struct({
-  iss: Schema.Literal(GITHUB_OIDC_ISSUER),
+  iss: Schema.String,
   aud: Schema.Union([Schema.String, Schema.Array(Schema.String)]),
   exp: Schema.Number,
   nbf: Schema.optional(Schema.Number),
@@ -48,8 +47,9 @@ export type GithubOidcClaims = typeof claimsSchema.Type;
 
 const headerSchema = Schema.Struct({ alg: Schema.Literal("RS256"), kid: Schema.String });
 
-/** Verify a runner's OIDC token: RS256 by one of GitHub's keys, issued for `audience`, not expired. */
+/** Verify a runner's OIDC token: RS256 by one of GitHub's keys, from GitHub Actions' issuer, for `audience`, not expired. */
 export const verifyGithubOidcToken = Effect.fn("Github.verifyOidcToken")(function* (token: string, audience: string) {
+  const { origins } = (yield* AppConfig).github;
   const reject = (message: string) => new GithubOidcRejected({ message });
   const [header, payload, signature, ...rest] = token.split(".");
   if (!header || !payload || !signature || rest.length) return yield* reject("The token is not a JWT.");
@@ -65,6 +65,7 @@ export const verifyGithubOidcToken = Effect.fn("Github.verifyOidcToken")(functio
   });
   if (!valid) return yield* reject("The token's signature is invalid.");
   const claims = yield* decodePart(claimsSchema, payload, "The token is not from GitHub Actions.");
+  if (claims.iss !== origins.oidc) return yield* reject("The token is not from GitHub Actions.");
   const now = Date.now() / 1000;
   if (claims.exp < now || (claims.nbf ?? 0) > now + 60) return yield* reject("The token has expired.");
   if (![claims.aud].flat().includes(audience)) return yield* reject("The token is for another audience.");

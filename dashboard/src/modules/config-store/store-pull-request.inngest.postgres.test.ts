@@ -7,6 +7,7 @@ import { expect, vi } from "vitest";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { callStore } from "#/modules/config-store/config-store.server";
 import { createStorePullRequest } from "#/modules/config-store/store-github.inngest";
+import { unlinkGithubInstallation } from "#/modules/github/github.repository";
 import { githubPullRequestReceivedEvent } from "#/modules/inngest/events";
 import { makeInngestEffectRunner } from "#/server/run.server";
 import { fakeGithubApiBy } from "#/test/fake-github";
@@ -33,7 +34,7 @@ function github(pull: PullState, posted: unknown[]) {
       : path.includes("/check-runs?")
         ? { check_runs: [] }
         : path.endsWith("/check-runs") ? { id: 99 } : { id: 42, full_name: "acme/web", private: true };
-  }).service;
+  });
 }
 
 const delivery = (id: string) => ({
@@ -56,7 +57,8 @@ it.live(
         requested.push(event);
         return { ids: [] };
       });
-      const services = yield* Layer.build(yield* storeTestCloud({ github: github(pull, posted), inngest: checks }));
+      const githubApi = github(pull, posted);
+      const services = yield* Layer.build(yield* storeTestCloud({ github: githubApi.service, inngest: checks }));
       yield* Effect.all([seedStoreOrganization(ORGANIZATION), enrollStoreServer(ORGANIZATION)]).pipe(Effect.provide(services));
       const store = yield* cloudStore.pipe(Effect.provide(services));
       const write = (command: ConfigCommand, trusted?: ConfigTrusted) =>
@@ -94,6 +96,9 @@ it.live(
       expect(opened.admitted).toHaveLength(1);
       expect(opened.check).toBe("posted");
       expect(dispatched).toEqual(["open"]);
+      // Cloud reads the pull request as itself, once for all linked Organizations.
+      expect(githubApi.calls.filter((call) => call.path.endsWith("/pulls/5")).map((call) => call.access))
+        .toEqual([{ type: "installation", installationId: 7 }]);
       expect(sent).toEqual([[expect.objectContaining({ data: expect.objectContaining({ deploymentId: opened.admitted[0], trigger: "github" }) })]]);
       expect(yield* environments()).toEqual(["pr-5", "production"]);
       expect(posted).toMatchObject([{ head_sha: HEAD, conclusion: "success", output: { title: "No config changes" } }]);
@@ -127,6 +132,12 @@ it.live(
       expect(requested).toContainEqual(expect.objectContaining({ data: expect.objectContaining({ deploymentId: closed.removals[0] }) }));
       expect(yield* Effect.promise(() => store.read(ORGANIZATION, { query: "deployment", id: closed.removals[0] ?? "" })))
         .toMatchObject({ remove: true, status: "queued" });
+
+      expect(yield* unlinkGithubInstallation({ organizationId: ORGANIZATION, installationId: 7 }).pipe(Effect.provide(services))).toBe(true);
+      const checksBefore = posted.length;
+      Object.assign(pull, { state: "open", updated_at: "2026-09-29T14:00:00Z" });
+      expect(yield* run("unlinked")).toMatchObject({ admitted: [], removals: [], check: "skipped" });
+      expect(posted).toHaveLength(checksBefore);
     }),
   60_000,
 );

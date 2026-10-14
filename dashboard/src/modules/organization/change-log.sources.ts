@@ -60,6 +60,7 @@ export const changeSources = {
   organization_server_upgrades: { key: ["organization_id"] },
   organization_support_access: { key: ["organization_id"] },
   operation_approvals: { key: ["id"] },
+  organization_github_installation: { key: ["installation_id"] },
   uptime_check: { key: ["id"] },
   // Logs the check id, so a change names the one check whose open incident it touched.
   uptime_incident: { key: ["check_id"] },

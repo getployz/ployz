@@ -12,6 +12,8 @@ import type { PloyzInngest, PloyzStepTools } from "#/modules/inngest/client";
 import { decodeInngestEnvelope } from "#/modules/inngest/envelope";
 import { Schema } from "effect";
 import type { GithubSyncEffectRunner } from "#/modules/github/inngest-sync/sync";
+import { stopGithubInstallationBuilds } from "#/modules/config-store/config-store.server";
+import type { StoreEffectRunner } from "#/modules/config-store/store-deployment.server";
 import {
   processGithubInstallationEvent,
   processGithubInstallationRepositoriesEvent,
@@ -47,6 +49,7 @@ export async function executeProcessGithubInstallationReceived(
     step: GithubInstallationWebhookStepTools;
   },
   runEffect: GithubSyncEffectRunner,
+  runStore: StoreEffectRunner = runInngestEffect,
 ) {
   const payload = await step.run("decode-installation-event", () =>
     decodeInngestEnvelope(GithubInstallationEventEnvelope)(event)
@@ -55,6 +58,12 @@ export async function executeProcessGithubInstallationReceived(
   const result = await step.run("process-installation-event", () =>
     runEffect(processGithubInstallationEvent(payload)),
   );
+  // After the suspension or the forgetting is recorded, so the woken walks find it.
+  if (result.stopBuildsFor.length > 0) {
+    await step.run("stop-builds", () =>
+      runStore(stopGithubInstallationBuilds(result.installationId, result.stopBuildsFor)),
+    );
+  }
 
   if (result.shouldSyncRepositories) {
     await step.sendEvent(

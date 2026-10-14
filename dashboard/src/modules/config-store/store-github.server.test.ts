@@ -3,6 +3,7 @@ import type { JsonValue } from "@ployz/sdk";
 import { Effect } from "effect";
 import { expect } from "vitest";
 import { mergedInto } from "#/modules/config-store/store-github.server";
+import { organizationAccess } from "#/modules/github/github-access";
 import { GithubApi } from "#/modules/github/github-observation.api";
 import { fakeGithubApiBy } from "#/test/fake-github";
 
@@ -20,7 +21,7 @@ function github(status: string) {
 
 const into = (status: string, mergeCommitSha: string | null) => {
   const fake = github(status);
-  return mergedInto(7, 42, { mergeCommitSha, targetBranch: "main" }).pipe(
+  return mergedInto(organizationAccess("org", 7), 42, { mergeCommitSha, targetBranch: "main" }).pipe(
     Effect.provideService(GithubApi, fake.service),
     Effect.map((head) => ({ head, calls: fake.calls.length })),
   );
