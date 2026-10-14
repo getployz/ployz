@@ -1,6 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { Deferred, Effect, Fiber, Option, type Semaphore } from "effect";
-import { Database } from "#/server/database.server";
+import type { SqlError } from "effect/unstable/sql/SqlError";
+import { Database, type DatabasePostCommitFailure } from "#/server/database.server";
 
 /**
  * Runs `body` while a transaction of its own holds the advisory lock `lock` takes, so `body`'s queries stay outside that
@@ -11,13 +12,13 @@ import { Database } from "#/server/database.server";
 export const whileLocked = <A, E, R, LE, LR>(holders: Semaphore.Semaphore, lock: Effect.Effect<boolean, LE, LR>, body: Effect.Effect<A, E, R>) =>
   holders.withPermits(1)(Effect.gen(function* () {
     const database = yield* Database;
-    const locked = yield* Deferred.make<boolean>();
+    const locked = yield* Deferred.make<boolean, LE | SqlError | DatabasePostCommitFailure>();
     const done = yield* Deferred.make<void>();
     const holder = yield* database.transaction(Effect.gen(function* () {
       const held = yield* lock;
       yield* Deferred.succeed(locked, held);
       if (held) yield* Deferred.await(done);
-    })).pipe(Effect.orDie, Effect.onError((cause) => Deferred.failCause(locked, cause)), Effect.forkChild);
+    })).pipe(Effect.onError((cause) => Deferred.failCause(locked, cause)), Effect.forkChild);
     if (!(yield* Deferred.await(locked))) {
       yield* Fiber.await(holder);
       return Option.none<A>();

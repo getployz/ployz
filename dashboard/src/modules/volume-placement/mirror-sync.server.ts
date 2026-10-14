@@ -27,6 +27,7 @@ export type MirrorStep =
 
 /** What one sync of one Volume did. A sync never opens a lane except to demote a primary that came back. */
 export type MirrorSync =
+  | { readonly kind: "running" }
   | { readonly kind: "covered"; readonly run: { readonly id: string; readonly kind: string } }
   | { readonly kind: "deploying"; readonly message: string }
   | { readonly kind: "unanswered"; readonly servers: readonly string[] }
@@ -61,6 +62,8 @@ export function syncLines(name: string, { reported, sync }: Omit<MirrorSyncAnswe
 
 function outcomeLines(name: string, sync: MirrorSync): string[] {
   switch (sync.kind) {
+    case "running":
+      return [`skipped ${name}, another sync of it is running`];
     case "covered":
       return [sync.run.kind === "move"
         ? `${name} refresh is covered by move run ${sync.run.id}`
@@ -142,6 +145,14 @@ const newestGen = Effect.fn("MirrorSync.newestGen")(function* (volumeId: string)
   return row?.gen ?? 0;
 });
 
+/** Answers with `sync`'s lines, logging each. */
+const answerFor = (organizationId: string, volume: SyncedVolume) => (reported: readonly PullFailure[], sync: MirrorSync) => {
+  const lines = syncLines(volume.name, { reported, sync });
+  return Effect.as(Effect.forEach(lines, (line) => Effect.logInfo(line, { organizationId, volumeId: volume.volumeId })), {
+    reported, sync, lines,
+  } satisfies MirrorSyncAnswer);
+};
+
 /**
  * The writer reuses a snapshot name it already holds, so each sync names its own. Postgres never hands out a transaction
  * id twice, and the time in front keeps the round above a lane run's.
@@ -159,12 +170,7 @@ const snapshotRound = Effect.fn("MirrorSync.snapshotRound")(function* () {
  */
 const syncOnce = Effect.fn("MirrorSync.sync")(function* (organizationId: string, volume: SyncedVolume, observe: MemberObserver, ask: CopyAsk) {
   const { drizzle } = yield* Database;
-  const answer = (reported: readonly PullFailure[], sync: MirrorSync) => {
-    const lines = syncLines(volume.name, { reported, sync });
-    return Effect.as(Effect.forEach(lines, (line) => Effect.logInfo(line, { organizationId, volumeId: volume.volumeId })), {
-      reported, sync, lines,
-    } satisfies MirrorSyncAnswer);
-  };
+  const answer = answerFor(organizationId, volume);
 
   const members = yield* observe(organizationId, volume.dockerVolume);
   const [placement] = yield* drizzle.select().from(volumePlacement)
@@ -273,14 +279,22 @@ const syncOnce = Effect.fn("MirrorSync.sync")(function* (organizationId: string,
   return yield* answer(reported, { kind: "synced", mirrors: steps });
 });
 
-/** Waits out any other sync of Volume `volumeId`, so a second never snapshots past a pull the first just handed off. */
+/** Whether Volume `volumeId`'s sync lock was free, now held: false while another sync of it runs. */
 const syncLock = Effect.fn("MirrorSync.lock")(function* (volumeId: string) {
-  yield* (yield* Database).drizzle.execute(sql`select pg_advisory_xact_lock(hashtext(${`volume-sync:${volumeId}`}))`);
-  return true;
+  const [row] = yield* (yield* Database).drizzle.execute<{ held: boolean }>(
+    sql`select pg_try_advisory_xact_lock(hashtext(${`volume-sync:${volumeId}`})) as held`, "objects");
+  return row?.held === true;
 });
 
 /** Apart from staging's so a slow sync never queues a restore; two, so holders pin 3 of the pool's 10 connections and bodies keep 7. */
 const syncHolders = Semaphore.makeUnsafe(2);
 
+/**
+ * One sync of a Volume at a time, and none waits: one started while another runs skips, so it never snapshots past a pull
+ * the running one just handed off.
+ */
 export const syncMirrors = (organizationId: string, volume: SyncedVolume, observe: MemberObserver = observeVolumeMembers, ask: CopyAsk = askCopy) =>
-  whileLocked(syncHolders, syncLock(volume.volumeId), syncOnce(organizationId, volume, observe, ask)).pipe(Effect.map(Option.getOrThrow));
+  whileLocked(syncHolders, syncLock(volume.volumeId), syncOnce(organizationId, volume, observe, ask)).pipe(Effect.flatMap(Option.match({
+    onSome: Effect.succeed,
+    onNone: () => answerFor(organizationId, volume)([], { kind: "running" }),
+  })));
