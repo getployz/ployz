@@ -238,6 +238,14 @@ class Skipped(RuntimeError):
     pass
 
 
+class Interrupted(BaseException):
+    """SIGTERM or SIGHUP arrived. Not an Exception, so no handler on the way out mistakes it for a case failure."""
+
+
+def interrupt(signum, frame):
+    raise Interrupted(signal.Signals(signum).name)
+
+
 def busy(reply):
     error = reply.get("error") if isinstance(reply, dict) else None
     message = str(error.get("message", "")) if error else ""
@@ -1086,8 +1094,16 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
             escaped = f"{type(error).__name__}: {error}"[:2000]
             raise
         finally:
-            report = self.stop_probe()
+            report = cleanup = None
+            try:
+                report = self.stop_probe()
+            except BaseException as error:
+                # An error from the cases outranks one from the cleanup, and the one in flight keeps propagating.
+                cleanup = None if escaped else error
+                escaped = escaped or f"{type(error).__name__}: {error}"[:2000]
             summary = self.summarize(results, report, escaped)
+            if cleanup:
+                raise cleanup
         return summary
 
     def summarize(self, results, report, escaped):
@@ -1156,6 +1172,8 @@ def main():
             or "cloud" not in manifest:
         raise RuntimeError("Use a ready two-Machine Incus vc started with --cloud")
     checks = VolumeMove(args.manifest, size_gb=args.size_gb if args.soak else None)
+    for signum in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(signum, interrupt)
     summary = checks.run_all(cases)
     print(json.dumps(dict(summary=str(checks.out / "summary.json"), passed=summary["passed"],
                           downtime=summary["downtime"])), flush=True)
@@ -1165,6 +1183,6 @@ def main():
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except (AssertionError, RuntimeError, OSError, subprocess.TimeoutExpired) as error:
+    except (AssertionError, RuntimeError, OSError, subprocess.TimeoutExpired, Interrupted) as error:
         print(f"volume-move: {error}", file=sys.stderr)
         sys.exit(1)
