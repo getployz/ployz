@@ -191,14 +191,35 @@ describe("plan_from_copies_table", () => {
     });
   });
 
-  it.each([["release", release], ["sync", sync()], ["mirror rm", remove(null)]])("tells a %s facing two unfinished cuts to keep the newer and restore from it", (_, input) => {
+  it.each([["release", release], ["sync", sync()], ["mirror rm", remove(null)]])("tells a %s facing two unfinished cuts to keep the newer and release it", (_, input) => {
     expect(planFromCopies(input, [member("fsn-1", "cut", { epoch: 8 }), member("fsn-2", "cut", { epoch: 9 })])).toEqual({
       ok: false,
       refusal: {
         code: "volume_switching",
-        message: "data has unfinished cuts on fsn-1 and fsn-2, so release cannot pick a writer; server rm fsn-1, then ployz volume restore data --from fsn-2",
+        message: "data has unfinished cuts on fsn-1 and fsn-2, so release cannot pick a writer; server rm fsn-1, then ployz volume release data",
       },
     });
+  });
+
+  it("leaves a mirror beside two unfinished cuts, which the release of the cut kept does not need gone", () => {
+    const kept = member("fsn-2", "cut", { epoch: 9 });
+    expect(planFromCopies(release, [member("fsn-1", "cut", { epoch: 8 }), kept, member("fsn-3", "mirror")])).toEqual({
+      ok: false,
+      refusal: {
+        code: "volume_switching",
+        message: "data has unfinished cuts on fsn-1 and fsn-2, so release cannot pick a writer; server rm fsn-1, then ployz volume release data",
+      },
+    });
+    expect(outcome(release, [kept, member("fsn-3", "mirror")])).toBe("release cut fsn-2");
+  });
+
+  it("keeps the mid-run refusal for a mirror rm beside cuts while a writer stands", () => {
+    const members = [member("a", "writer", { epoch: 9 }), member("b", "cut", { epoch: 8 }), member("d", "cut", { epoch: 7 }), member("c", "mirror")];
+    expect(planFromCopies(remove("c"), members)).toEqual({
+      ok: false,
+      refusal: { code: "volume_switching", message: "data is mid-run; ployz volume release data stops it" },
+    });
+    expect(outcome(release, members)).toBe("demote d below a");
   });
 
   it("names every older cut for server rm", () => {
@@ -207,7 +228,7 @@ describe("plan_from_copies_table", () => {
       ok: false,
       refusal: {
         code: "volume_switching",
-        message: "data has unfinished cuts on fsn-1 and fsn-2 and fsn-3, so release cannot pick a writer; server rm fsn-1 and fsn-3, then ployz volume restore data --from fsn-2",
+        message: "data has unfinished cuts on fsn-1 and fsn-2 and fsn-3, so release cannot pick a writer; server rm fsn-1 and fsn-3, then ployz volume release data",
       },
     });
   });
@@ -220,7 +241,7 @@ describe("plan_from_copies_table", () => {
       ok: false,
       refusal: {
         code: "volume_switching",
-        message: "data has unfinished cuts on fsn-1 and fsn-2, so release cannot pick a writer; server rm all but one, then ployz volume restore data --from the one left",
+        message: "data has unfinished cuts on fsn-1 and fsn-2, so release cannot pick a writer; server rm all but one, then ployz volume release data",
       },
     });
   });
