@@ -664,13 +664,30 @@ impl MachineRpc for MachineService {
         let acks = match replicated.ingress_routes().await {
             Ok(routes) => routes
                 .into_iter()
-                .filter(|((_, service), _)| *service == request.service)
+                .filter(|((_, service), ack)| {
+                    *service == request.service && routes_pointer(ack, pointer.as_ref())
+                })
                 .map(|((machine_id, _), ack)| (machine_id, ack.deploy))
                 .collect(),
             Err(error) => return respond(cluster_store_error(error)),
         };
         respond(ServingPointerRead { pointer, acks })
     }
+}
+
+/// The Machine routes the pointer's deploy and every Container it names; an ack
+/// for a fallback deploy or for a subset of the pointed copies proves nothing.
+fn routes_pointer(
+    ack: &crate::corrosion::IngressRouteAck,
+    pointer: Option<&ployz_core::ServingPointer>,
+) -> bool {
+    pointer.is_some_and(|pointer| {
+        ack.deploy == pointer.deploy
+            && pointer
+                .containers
+                .iter()
+                .all(|container| ack.containers.contains(container))
+    })
 }
 
 #[allow(clippy::result_large_err)]

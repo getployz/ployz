@@ -1188,7 +1188,8 @@ pub struct ReadServingPointerRequest {
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ServingPointerRead {
     pub pointer: Option<ServingPointer>,
-    /// Machines whose ingress_routes row names a deploy for this Service, and which deploy.
+    /// Machines whose ingress_routes row routes `pointer`'s deploy and every
+    /// Container it names, and which deploy that is. Empty without a pointer.
     #[serde(default)]
     pub acks: BTreeMap<MachineId, crate::DeploymentLogId>,
 }

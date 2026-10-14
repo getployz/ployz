@@ -1903,12 +1903,14 @@ async fn serving_pointer_publish_answers_published_then_superseded_with_the_curr
 }
 
 #[tokio::test]
-async fn serving_pointer_read_returns_only_the_requested_services_acks() {
+async fn serving_pointer_read_acks_only_machines_routing_every_pointed_container() {
     use crate::corrosion::{
         AdminClient, IngressRouteAck, IngressRouteChange,
         store_tests::{corrosion_db, identity_store},
     };
-    use ployz_core::{DeploymentLogId, QualifiedService, ReadServingPointerRequest};
+    use ployz_core::{
+        ContainerId, DeploymentLogId, QualifiedService, ReadServingPointerRequest, ServingPointer,
+    };
     use std::collections::BTreeMap;
 
     let data_dir =
@@ -1933,21 +1935,46 @@ async fn serving_pointer_read_returns_only_the_requested_services_acks() {
     let web = QualifiedService::parse("app/web").unwrap();
     let first = MachineId::random();
     let second = MachineId::random();
-    let ack = |deploy: &str| {
+    let third = MachineId::random();
+    let pointed = ContainerId::parse("a".repeat(64)).unwrap();
+    let pointer = ServingPointer {
+        deploy: DeploymentLogId::parse("d1").unwrap(),
+        containers: vec![pointed],
+        previous: None,
+        retiring: Vec::new(),
+    };
+    replicated
+        .compare_and_set_serving_pointer(&api, None, &pointer)
+        .await
+        .unwrap();
+    let ack = |deploy: &str, containers: &[ContainerId]| {
         IngressRouteChange::Upsert(IngressRouteAck {
             deploy: DeploymentLogId::parse(deploy).unwrap(),
-            containers: Default::default(),
+            containers: containers.iter().copied().collect(),
         })
     };
     replicated
         .publish_ingress_routes(
             &first,
-            &BTreeMap::from([(api.clone(), ack("d1")), (web.clone(), ack("w1"))]),
+            &BTreeMap::from([
+                (api.clone(), ack("d1", &[pointed])),
+                (web.clone(), ack("w1", &[pointed])),
+            ]),
         )
         .await
         .unwrap();
     replicated
-        .publish_ingress_routes(&second, &BTreeMap::from([(web, ack("w2"))]))
+        .publish_ingress_routes(
+            &second,
+            &BTreeMap::from([(api.clone(), ack("d1", &[])), (web, ack("w2", &[pointed]))]),
+        )
+        .await
+        .unwrap();
+    replicated
+        .publish_ingress_routes(
+            &third,
+            &BTreeMap::from([(api.clone(), ack("d0", &[pointed]))]),
+        )
         .await
         .unwrap();
     let service = MachineService::with_cluster(
@@ -1968,10 +1995,11 @@ async fn serving_pointer_read_returns_only_the_requested_services_acks() {
         .unwrap()
         .decode::<op::ReadServingPointer>()
         .unwrap();
-    assert_eq!(read.pointer, None);
+    assert_eq!(read.pointer, Some(pointer));
     assert_eq!(
         read.acks,
-        BTreeMap::from([(first, DeploymentLogId::parse("d1").unwrap())])
+        BTreeMap::from([(first, DeploymentLogId::parse("d1").unwrap())]),
+        "second routes none of the pointed copies, third routes the fallback"
     );
     task.abort();
     std::fs::remove_dir_all(data_dir).ok();
