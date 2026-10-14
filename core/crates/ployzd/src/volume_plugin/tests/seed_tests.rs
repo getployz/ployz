@@ -393,3 +393,38 @@ async fn departure_destroys_an_unlanded_seed_and_keeps_its_point_in_the_source()
         );
     }
 }
+
+#[tokio::test]
+async fn departure_fails_naming_a_seed_whose_receive_will_not_stop() {
+    let test = TestDir::new();
+    fs::write(test.0.join("root"), "").unwrap();
+    fs::write(test.0.join("volume"), "").unwrap();
+    set_property(&test, "tank/ployz/data", "snapshots", POINT);
+    let stuck = "set readonly=on tank/ployz-mirror/seed/fs";
+    fs::write(test.0.join("props/stall-command"), stuck).unwrap();
+    let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
+    let socket = test.0.join("plugin.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let mut storage = VolumeStorage::with_programs(zpool, zfs);
+    storage.stop_deadline = Duration::from_millis(300);
+    let server = tokio::spawn(serve(listener, storage));
+    post(&socket, "/Volume.Seed", seed(77)).await;
+    for _ in 0..300 {
+        if commands(&test).contains(stuck) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let reply = tokio::time::timeout(
+        Duration::from_secs(5),
+        post(&socket, "/Storage.Demote", json!(null)),
+    )
+    .await
+    .expect("the departure waits on a receive that will not stop");
+    fs::remove_file(test.0.join("props/stall-command")).unwrap();
+    let error = reply.get("Err").unwrap_or_else(|| panic!("{reply}"));
+    assert!(error.to_string().contains("seed"), "{reply}");
+    assert!(test.0.join("volume").exists(), "nothing was demoted");
+    server.abort();
+}

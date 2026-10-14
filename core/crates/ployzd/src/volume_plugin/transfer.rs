@@ -25,6 +25,8 @@ const KILL_AFTER_BYTES: u64 = 1 << 20;
 
 pub(super) const RECEIVE_STALL: Duration = Duration::from_secs(60);
 
+pub(super) const STOP_DEADLINE: Duration = Duration::from_secs(30);
+
 /// The receive tasks this process started, by Volume name; a finished task keeps its
 /// outcome until the next one replaces it.
 #[derive(Clone, Default)]
@@ -323,6 +325,19 @@ impl VolumeStorage {
             }
         }
         Ok(())
+    }
+}
+
+/// A running `zfs` process.
+pub(super) struct ZfsChild(Child);
+
+impl ZfsChild {
+    pub(super) fn spawn(command: &mut Command) -> std::io::Result<Self> {
+        command.kill_on_drop(true).spawn().map(Self)
+    }
+
+    pub(super) fn id(&self) -> Option<u32> {
+        self.0.id()
     }
 }
 

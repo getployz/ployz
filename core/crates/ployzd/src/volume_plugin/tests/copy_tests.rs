@@ -542,7 +542,8 @@ async fn the_writer_route_reopens_a_read_only_root_of_its_own_epoch() {
 
 /// A writer Machine's send port, answering the bound and a stream text per request:
 /// the first answer whose key the request URI contains, else the default one. A held
-/// answer sends its headers at once and its stream only after `release`.
+/// answer sends its headers at once and its stream only after `release`; a silent one
+/// never answers.
 struct Source {
     requests: Arc<StdMutex<Vec<String>>>,
     answers: Arc<StdMutex<Vec<Answer>>>,
@@ -555,7 +556,14 @@ struct Answer {
     key: String,
     status: StatusCode,
     stream: String,
-    held: bool,
+    mode: Mode,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Mode {
+    Now,
+    Held,
+    Silent,
 }
 
 impl Source {
@@ -565,7 +573,7 @@ impl Source {
             key: String::new(),
             status: StatusCode::OK,
             stream: stream.to_owned(),
-            held: false,
+            mode: Mode::Now,
         }]));
         let gate = Arc::new(Semaphore::new(0));
         let state = (
@@ -592,8 +600,10 @@ impl Source {
                     .find(|answer| uri.contains(answer.key.as_str()))
                     .cloned()
                     .unwrap();
-                if !answer.held {
-                    return (answer.status, answer.stream).into_response();
+                match answer.mode {
+                    Mode::Now => return (answer.status, answer.stream).into_response(),
+                    Mode::Silent => std::future::pending::<()>().await,
+                    Mode::Held => {}
                 }
                 let body = futures_util::stream::once(async move {
                     let _permit = gate.acquire().await;
@@ -615,24 +625,29 @@ impl Source {
 
     /// Answer requests whose URI contains `key` with `status` and `stream` from now on.
     fn answer(&self, key: &str, status: StatusCode, stream: &str) {
-        self.push(key, status, stream, false);
+        self.push(key, status, stream, Mode::Now);
     }
 
     /// Like `answer`, but holding each stream until `release`.
     fn hold(&self, key: &str, stream: &str) {
-        self.push(key, StatusCode::OK, stream, true);
+        self.push(key, StatusCode::OK, stream, Mode::Held);
+    }
+
+    /// Never answer requests whose URI contains `key`, not even with headers.
+    fn silence(&self, key: &str) {
+        self.push(key, StatusCode::OK, "", Mode::Silent);
     }
 
     fn release(&self) {
         self.gate.add_permits(Semaphore::MAX_PERMITS);
     }
 
-    fn push(&self, key: &str, status: StatusCode, stream: &str, held: bool) {
+    fn push(&self, key: &str, status: StatusCode, stream: &str, mode: Mode) {
         self.answers.lock().unwrap().push(Answer {
             key: key.to_owned(),
             status,
             stream: stream.to_owned(),
-            held,
+            mode,
         });
     }
 
@@ -1158,6 +1173,112 @@ async fn a_pull_of_the_slots_newest_keeps_its_cut() {
     let reply = post(&socket, "/Storage.Demote", json!(null)).await;
     assert_eq!(reply, json!({"Ok": []}));
     assert!(test.0.join("mirror-fs").exists());
+    server.abort();
+}
+
+/// A receive that fails on its own deadline has reaped its child by the time it answers:
+/// a `zfs receive` still exiting holds the slot busy for the departure's destroy.
+#[tokio::test]
+async fn a_receive_that_stalls_answers_only_once_its_child_is_gone() {
+    for (marker, stream) in [
+        ("stall-exit", "snapshot w-1-1 77\n".to_owned()),
+        ("stall-read", "x".repeat(1 << 20)),
+    ] {
+        let source = Source::start(Some(BOUND), &stream).await;
+        let test = TestDir::new();
+        fs::write(test.0.join("root"), "").unwrap();
+        fs::write(test.0.join("mirror"), "").unwrap();
+        fs::create_dir_all(test.0.join("props")).unwrap();
+        fs::write(test.0.join("props").join(marker), "").unwrap();
+        let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
+        let mut storage = VolumeStorage::with_programs(zpool, zfs);
+        storage.send_port = source.port;
+        storage.receive_stall = Duration::from_millis(200);
+        let stream = ployz_core::SendStream {
+            name: "data".parse().unwrap(),
+            source: ployz_core::SendSource::Full {
+                target: "w-1-1".parse().unwrap(),
+            },
+        };
+
+        let received = storage
+            .receive(
+                ployz_core::ManagementAddress("::1".parse().unwrap()),
+                &stream,
+                SLOT_FS,
+                BOUND,
+                "test",
+                &CancellationToken::new(),
+            )
+            .await;
+        // No await between the answer and the check: a child only killed on drop is
+        // still a zombie here, and so still listed in /proc.
+        let pid = fs::read_to_string(test.0.join("props/receive-pid")).unwrap();
+        assert!(received.is_err(), "{marker}");
+        assert!(
+            !Path::new(&format!("/proc/{}", pid.trim())).exists(),
+            "{marker}: the receive answered before its child was reaped"
+        );
+    }
+}
+
+/// The seed's receive can fail to spawn after its send started, and a panic unwinds past
+/// every await: neither leaves a `zfs` process behind holding a dataset.
+#[tokio::test]
+async fn a_zfs_child_dropped_without_a_reap_has_exited() {
+    let child =
+        super::super::transfer::ZfsChild::spawn(tokio::process::Command::new("sleep").arg("30"))
+            .unwrap();
+    let pid = child.id().unwrap();
+    drop(child);
+    assert!(
+        !Path::new(&format!("/proc/{pid}")).exists(),
+        "the dropped child is still in /proc"
+    );
+}
+
+#[tokio::test]
+async fn a_receive_task_that_panics_records_a_failure() {
+    let receives = super::super::transfer::Receives::default();
+    let name: DockerVolumeName = "data".parse().unwrap();
+    receives.spawn(&name, |_stop| async { panic!("the receive task broke") });
+    for _ in 0..300 {
+        if !receives.running(&name) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(!receives.running(&name), "a panicked task reads as running");
+    assert!(receives.failure(&name).is_some());
+}
+
+#[tokio::test]
+async fn departure_stops_a_pull_whose_writer_never_answers() {
+    let source = Source::start(Some(BOUND), "").await;
+    source.silence("/volume-send/");
+    let test = TestDir::new();
+    let (socket, server) = puller(&test, &["root"], source.port);
+    let reply = post(&socket, "/Volume.Copy.Pull", pull("w-1-1")).await;
+    assert_eq!(reply.pointer("/Ok/kind"), Some(&json!("slot")), "{reply}");
+    for _ in 0..300 {
+        if source
+            .requests()
+            .iter()
+            .any(|uri| uri.starts_with("/volume-send/"))
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let reply = tokio::time::timeout(
+        Duration::from_secs(5),
+        post(&socket, "/Storage.Demote", json!(null)),
+    )
+    .await
+    .expect("the departure waits on a writer that never answers");
+    assert_eq!(reply, json!({"Ok": ["data"]}));
+    assert!(!test.0.join("mirror").exists());
     server.abort();
 }
 

@@ -107,6 +107,11 @@ if [ -e '{props}/fail-command' ] && [ "$(cat '{props}/fail-command')" = "$*" ]; 
   echo "injected failure: $*" >&2
   exit 1
 fi
+# A test writes the exact argument line of one command into props/stall-command; that
+# command waits until the marker goes.
+if [ -e '{props}/stall-command' ] && [ "$(cat '{props}/stall-command')" = "$*" ]; then
+  while [ -e '{props}/stall-command' ]; do sleep 0.01; done
+fi
 case "$*" in
   'list -H -o name -t filesystem')
     for d in tank tank/ployz tank/ployz/data tank/ployz/data/child tank/ployz/sibling tank/ployz/seed tank/ployz-mirror tank/ployz-mirror/copy tank/ployz-mirror/copy/fs tank/ployz-mirror/data tank/ployz-mirror/data/fs tank/ployz-mirror/seed tank/ployz-mirror/seed/fs; do

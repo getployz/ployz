@@ -15,7 +15,11 @@ use tokio::{
     sync::{Mutex, OwnedMutexGuard},
 };
 
-use super::{DockerVolumeName, Result, VolumeError, pool::PoolStorage, transfer::RECEIVE_STALL};
+use super::{
+    DockerVolumeName, Result, VolumeError,
+    pool::PoolStorage,
+    transfer::{RECEIVE_STALL, STOP_DEADLINE},
+};
 
 pub(super) use ployz_core::{DATASET_ROOT, MIRROR_ROOT};
 pub(super) const MOUNT_ROOT: &str = "/var/lib/ployz-volumes";
@@ -85,6 +89,9 @@ pub(super) struct VolumeStorage {
     /// Where a writer Machine serves send streams; tests point it at a local server.
     pub(super) send_port: u16,
     pub(super) receive_stall: Duration,
+    /// How long a departure waits for every receive to stop. Demote answers within its
+    /// 120 s timeout even when ZFS hangs one of them.
+    pub(super) stop_deadline: Duration,
 }
 
 /// Bytes a dataset commits the Pool to: a root's `refquota`, or a slot parent's. The
@@ -132,6 +139,7 @@ impl VolumeStorage {
             receives: super::transfer::Receives::default(),
             send_port: ployz_core::VOLUME_SEND_PORT,
             receive_stall: RECEIVE_STALL,
+            stop_deadline: STOP_DEADLINE,
         }
     }
 
@@ -154,6 +162,7 @@ impl VolumeStorage {
             receives: super::transfer::Receives::default(),
             send_port: ployz_core::VOLUME_SEND_PORT,
             receive_stall: RECEIVE_STALL,
+            stop_deadline: STOP_DEADLINE,
         }
     }
 
