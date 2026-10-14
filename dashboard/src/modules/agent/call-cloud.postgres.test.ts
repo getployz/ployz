@@ -167,5 +167,9 @@ describe("callCloud", () => {
       expect(send.mock.calls).toEqual([[expect.objectContaining({
         data: { organizationId: ORGANIZATION, machineId: MACHINE, change: { acceptsServices: false, acceptsIngress: false, buildConcurrency: 2 } },
       })]]);
+      // Catches a replayed act queuing the change again: Inngest runs one event per id.
+      yield* callCloud(caller, { act }).pipe(Effect.provide(services));
+      const ids = send.mock.calls.map(([event]) => (event as { id?: string }).id);
+      expect(ids).toEqual([`server-policy-${act.attempt}`, `server-policy-${act.attempt}`]);
     }));
 });

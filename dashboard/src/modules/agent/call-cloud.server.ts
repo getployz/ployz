@@ -203,7 +203,7 @@ const act = Effect.fn("CallCloud.act")(function* (caller: Caller, { attempt, dig
       if (action.accepts_ingress === true) return refusal("invalid_argument", "Only the terminal turns web traffic on.");
       yield* requestServerPolicyChange(caller, {
         organizationSlug: caller.organization.slug, machineId: action.server.machine, change: policyChangeOf(action),
-      });
+      }, attempt);
       return answer<Operation>({
         attempt: dashedAttempt(attempt), run: `set ${action.server.name}`, state: "accepted", requested_at: Math.floor(Date.now() / 1000),
         ended_at: null, reason: null, servers: [], kept: [], unanswered: [],
