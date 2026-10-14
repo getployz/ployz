@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 use ts_rs::TS;
 
 use crate::error;
+use crate::git::GitSetting;
 use crate::id::{Revision, VolumeName};
 use crate::policy::{self, Policy};
 use crate::registry;
@@ -32,7 +33,8 @@ pub struct Edit {
     /// Refuse with `conflict` unless Working State is still at this revision.
     #[serde(default)]
     pub expect: Option<Revision>,
-    /// The changes, applied in order.
+    /// The changes, applied in order, except that a new image or repository goes first.
+    /// Every Setting set must apply to the source the whole edit leaves.
     pub changes: Vec<Change>,
 }
 
@@ -137,11 +139,27 @@ pub(crate) fn edit(
     let before = environment.working.clone();
     let (mut staged, mut immediate) = (Vec::new(), Vec::new());
     let mut typed_addresses: Vec<TypedAddresses> = Vec::new();
-    let mut builds = Vec::new();
-    for (path, step) in expand(&edit.changes)? {
+    // Each Setting set, judged once the whole edit is in.
+    let mut set = Vec::new();
+    let mut steps = expand(&edit.changes)?;
+    // The source moves first, so every other change lands on the Service's final source.
+    steps.sort_by_key(|(path, _)| {
+        !matches!(
+            path.target(),
+            Some(Target::Setting(
+                ServiceSetting::Image | ServiceSetting::Git(GitSetting::Repository)
+            ))
+        )
+    });
+    for (path, step) in steps {
         let service = path.settings_of()?;
         let value = match step {
-            Step::Set(value) => Some(value),
+            Step::Set(value) => {
+                if let Some(Target::Setting(setting)) = path.target() {
+                    set.push((service.clone(), *setting));
+                }
+                Some(value)
+            }
             Step::Unset => None,
             Step::Rename {
                 to,
@@ -231,9 +249,6 @@ pub(crate) fn edit(
                 (changed, Apply::Staged)
             }
             (Some(Target::Setting(setting)), value) => {
-                if value.is_some() && setting.is_build() {
-                    builds.push((service.clone(), *setting));
-                }
                 let config = &mut environment.service_mut(service)?.config;
                 let was = setting.value(config, &Policy::default());
                 match value {
@@ -331,12 +346,12 @@ pub(crate) fn edit(
             list.push(path);
         }
     }
-    // Judged once every change is in, so their order never decides.
-    for (service, setting) in builds {
-        if !setting.applies(&environment.service(&service)?.config) {
-            return Err(setting.invalid(&format!(
-                "build settings need a repository source, and {service} runs an image"
-            )));
+    // Every Setting set must mean something to the source the edit leaves; unsetting never
+    // has to, and an empty Service takes build settings for the uploads it builds.
+    for (service, setting) in set {
+        let config = &environment.service(&service)?.config;
+        if !setting.applies(config) {
+            return Err(setting.not_for(&service, &config.source));
         }
     }
     crate::git::check_sources(&before, &environment.working, trusted)?;

@@ -960,7 +960,7 @@ fn setting_a_repository_or_an_image_switches_the_source_in_one_write() {
 }
 
 #[test]
-fn build_settings_need_a_repository_source_once_the_whole_edit_is_in() {
+fn every_setting_set_must_apply_to_the_source_the_whole_edit_leaves() {
     let (store, who) = shop();
     store
         .write(
@@ -974,37 +974,67 @@ fn build_settings_need_a_repository_source_once_the_whole_edit_is_in() {
             },
         )
         .unwrap();
-    let refused = |changes: Vec<Change>| {
+    let refused = |changes: Vec<Change>, message: &str| {
         let error = store
             .write_trusted(&who, &edit(changes), &evidence())
             .unwrap_err();
         assert_eq!(error.code, RpcErrorCode::InvalidArgument, "{error:?}");
-        assert!(
-            error
-                .message
-                .contains("build settings need a repository source"),
-            "{error:?}"
-        );
+        assert_eq!(error.message, message, "{error:?}");
     };
+    let unset = |path: &str| Change::Unset {
+        path: SettingPath::parse(path).unwrap(),
+    };
+    let image_build = "buildMethod: needs a repository source, and web runs an image";
 
     // An image Service takes no build setting, alone or beside a new image, in either order.
-    refused(vec![set("web.buildMethod", json!("dockerfile"))]);
-    refused(vec![
-        set("web.image", json!("nginx:2")),
-        set("web.buildMethod", json!("dockerfile")),
-    ]);
-    refused(vec![
-        set("web.buildCommand", json!("npm run build")),
-        set("web.image", json!("nginx:2")),
-    ]);
+    refused(
+        vec![set("web.buildMethod", json!("dockerfile"))],
+        image_build,
+    );
+    refused(
+        vec![
+            set("web.image", json!("nginx:2")),
+            set("web.buildMethod", json!("dockerfile")),
+        ],
+        image_build,
+    );
+    refused(
+        vec![
+            set("web.buildCommand", json!("npm run build")),
+            set("web.image", json!("nginx:2")),
+        ],
+        "buildCommand: needs a repository source, and web runs an image",
+    );
+    // An image and a repository in one edit: the later one is the source, and the other
+    // no longer applies to it.
+    refused(
+        vec![
+            set("web.image", json!("nginx:2")),
+            set("web.repository", json!("acme/web")),
+        ],
+        "image: needs an image source, and web builds a repository",
+    );
+    refused(
+        vec![
+            set("web.repository", json!("acme/web")),
+            set("web.image", json!("nginx:2")),
+        ],
+        "repository: needs a repository source, and web runs an image",
+    );
+    // Unsetting is never refused.
+    store
+        .write(&who, &edit(vec![unset("web.buildMethod")]))
+        .unwrap();
     assert_eq!(source(&store, &who), SourceKind::Image);
     assert_eq!(values(&store, &who)["image"], json!("nginx:1"));
 
-    // Switching to a repository in the same edit is fine, in either order.
+    // Switching to a repository in the same edit is fine, in either order, even for a
+    // branch that only a repository Service has.
     store
         .write_trusted(
             &who,
             &edit(vec![
+                set("web.branch", json!("dev")),
                 set("web.buildMethod", json!("dockerfile")),
                 set("web.repository", json!("acme/web")),
                 set("web.dockerfilePath", json!("web.Dockerfile")),
@@ -1015,25 +1045,47 @@ fn build_settings_need_a_repository_source_once_the_whole_edit_is_in() {
     assert_eq!(source(&store, &who), SourceKind::Git);
     let built = values(&store, &who);
     assert_eq!(
-        (&built["buildMethod"], &built["dockerfilePath"]),
-        (&json!("dockerfile"), &json!("web.Dockerfile")),
+        (
+            &built["branch"],
+            &built["buildMethod"],
+            &built["dockerfilePath"]
+        ),
+        (
+            &json!("dev"),
+            &json!("dockerfile"),
+            &json!("web.Dockerfile")
+        ),
         "{built}"
     );
 
-    // A repository Service switching to an image takes no build setting in the same edit.
-    refused(vec![
-        set("web.buildMethod", json!("railpack")),
-        set("web.image", json!("nginx:4")),
-    ]);
-    refused(vec![
-        set("web.image", json!("nginx:4")),
-        set("web.buildMethod", json!("railpack")),
-    ]);
+    // A repository Service switching to an image takes no build or repository setting in
+    // the same edit, in either order. The refusal names the Setting.
+    for (path, value) in [
+        ("web.buildMethod", json!("railpack")),
+        ("web.branch", json!("main")),
+        ("web.rootDir", json!("/apps/web")),
+        ("web.autoDeploy", json!(false)),
+    ] {
+        let named = format!("{}: ", path.trim_start_matches("web."));
+        for changes in [
+            vec![set(path, value.clone()), set("web.image", json!("nginx:4"))],
+            vec![set("web.image", json!("nginx:4")), set(path, value.clone())],
+        ] {
+            let error = store
+                .write_trusted(&who, &edit(changes), &evidence())
+                .unwrap_err();
+            assert_eq!(error.code, RpcErrorCode::InvalidArgument, "{error:?}");
+            assert!(error.message.starts_with(&named), "{error:?}");
+        }
+    }
     let patch = Change::Patch {
         path: SettingPath::parse("web").unwrap(),
         value: json!({ "image": "nginx:4", "buildCommand": "make" }),
     };
-    refused(vec![patch]);
+    refused(
+        vec![patch],
+        "buildCommand: needs a repository source, and web runs an image",
+    );
     assert_eq!(source(&store, &who), SourceKind::Git);
     assert_eq!(values(&store, &who), built);
 
@@ -1058,4 +1110,17 @@ fn build_settings_need_a_repository_source_once_the_whole_edit_is_in() {
         (&json!("railpack"), &Value::Null, &Value::Null),
         "{back}"
     );
+
+    // An empty Service builds uploads, so it takes build settings.
+    store
+        .write(&who, &edit(vec![unset("web.repository")]))
+        .unwrap();
+    assert_eq!(source(&store, &who), SourceKind::Empty);
+    store
+        .write(
+            &who,
+            &edit(vec![set("web.buildMethod", json!("dockerfile"))]),
+        )
+        .unwrap();
+    assert_eq!(values(&store, &who)["buildMethod"], json!("dockerfile"));
 }

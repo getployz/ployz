@@ -372,16 +372,6 @@ impl ServiceSetting {
         }
     }
 
-    /// Whether it says how the Service's image is built.
-    pub(crate) const fn is_build(self) -> bool {
-        matches!(
-            self,
-            Self::Git(
-                GitSetting::BuildMethod | GitSetting::DockerfilePath | GitSetting::BuildCommand
-            )
-        )
-    }
-
     /// Whether this Setting means anything for a Service with `config`'s source:
     /// `image` for an image, the source and build Settings for a repository.
     pub(crate) const fn applies(self, config: &AuthoredServiceConfig) -> bool {
@@ -390,9 +380,9 @@ impl ServiceSetting {
                 matches!(config.source, ServiceSource::Image { .. })
             }
             // A Service without a source builds from uploads, with the same build Settings.
-            Self::Git(_) if self.is_build() => {
-                !matches!(config.source, ServiceSource::Image { .. })
-            }
+            Self::Git(
+                GitSetting::BuildMethod | GitSetting::DockerfilePath | GitSetting::BuildCommand,
+            ) => !matches!(config.source, ServiceSource::Image { .. }),
             Self::Git(_) => matches!(config.source, ServiceSource::Git { .. }),
             Self::Policy(_) => PolicySetting::applies(config),
             Self::CpuLimit
@@ -406,6 +396,31 @@ impl ServiceSetting {
             | Self::StartCommand
             | Self::Template => true,
         }
+    }
+
+    /// Refuse this Setting for `service`, whose source it does not [apply](Self::applies) to.
+    pub(crate) fn not_for(self, service: &ServiceName, source: &ServiceSource) -> RpcError {
+        let needs = match self {
+            Self::Image | Self::RegistryCredential => "an image source",
+            Self::Git(_)
+            | Self::Policy(_)
+            | Self::CpuLimit
+            | Self::Healthcheck
+            | Self::MaxRetries
+            | Self::MemLimit
+            | Self::PreDeployCommand
+            | Self::PrivateDns
+            | Self::Replicas
+            | Self::RestartPolicy
+            | Self::StartCommand
+            | Self::Template => "a repository source",
+        };
+        let has = match source {
+            ServiceSource::Image { .. } => "runs an image",
+            ServiceSource::Git { .. } => "builds a repository",
+            ServiceSource::Empty { .. } => "has no source",
+        };
+        self.invalid(&format!("needs {needs}, and {service} {has}"))
     }
 
     /// Its value for a Service with `config` and Deployment Policy `policy`.
