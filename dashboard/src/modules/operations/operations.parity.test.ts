@@ -6,9 +6,9 @@ import { OPERATION_TOOLS, OPERATIONS } from "#/modules/operations/operations";
 const AGENT_TOOLS = new URL("../../../../core/crates/ployz-store/tests/snapshots/agent_tools.json", import.meta.url);
 const CLI_HANDLER = new URL("../../routes/api/cli/-cli.handler.ts", import.meta.url);
 
-/** Fields that address or key a call rather than carry an option. */
 /** Store tools that edit a config, not run an operation; A8 registers them. */
 const CONFIG_STORE_TOOLS = new Set(["volume_add", "volume_update", "volume_remove"]);
+/** Fields that address or key a call rather than carry an option. */
 const ADDRESSING = {
   agent: new Set(["request_key"]),
   cli: new Set(["kind"]),
