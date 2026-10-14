@@ -176,11 +176,18 @@ impl Tool for ConfigRename {
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
         let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
-        cx.expect(&scope, self.expect_revision)?;
-        let staged = cx.write(&RenameConfig {
-            environment: scope,
+        let rename = BatchCommand::RenameConfig(RenameConfig {
+            environment: scope.clone(),
             config: self.config.clone(),
             name: self.to,
+        });
+        let results = cx.batch(&scope, self.expect_revision, vec![rename])?;
+        let staged = written(results, |one| {
+            if let Written::ConfigRenamed(staged) = one {
+                Some(staged)
+            } else {
+                None
+            }
         })?;
         Ok(json!({
             "at": at(&staged.environment),

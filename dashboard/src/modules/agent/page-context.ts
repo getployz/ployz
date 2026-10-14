@@ -1,5 +1,5 @@
 import type { ModelMessage } from "@tanstack/ai";
-import { Schema } from "effect";
+import { Option, Schema } from "effect";
 
 const Value = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(200));
 
@@ -47,6 +47,33 @@ export function latestPageContext(messages: ReadonlyArray<ModelMessage>): string
     if (block !== undefined) return block;
   }
   return undefined;
+}
+
+const Renamed = Schema.fromJsonString(Schema.Struct({
+  ok: Schema.Literal(true),
+  value: Schema.Struct({ project: Schema.String, renamed_from: Schema.String }),
+}));
+const decodeRenamed = Schema.decodeUnknownOption(Renamed);
+
+/**
+ * `project` followed through each project_rename that ran after the newest block. The page keeps the old name until
+ * the member moves, and a block repeats only when the place changes, so without this every later call misses.
+ */
+export function renamedSincePage(messages: ReadonlyArray<ModelMessage>, project: string | undefined): string | undefined {
+  let start = messages.length;
+  for (; start > 0; start--) {
+    const message = messages[start - 1];
+    if (message !== undefined && pageContextOf(message) !== undefined) break;
+  }
+  const since = messages.slice(start);
+  const renames = new Set(since.flatMap((message) => message.role === "assistant"
+    ? (message.toolCalls ?? []).flatMap((call) => call.function.name === "project_rename" ? [call.id] : [])
+    : []));
+  return since.reduce((current, message) => {
+    if (message.role !== "tool" || message.toolCallId === undefined || !renames.has(message.toolCallId)) return current;
+    const renamed = decodeRenamed(message.content);
+    return Option.isSome(renamed) && renamed.value.value.renamed_from === current ? renamed.value.value.project : current;
+  }, project);
 }
 
 const unescape = (value: string) =>

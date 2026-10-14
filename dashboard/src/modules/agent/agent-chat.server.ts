@@ -37,7 +37,7 @@ import {
   Superseded,
 } from "#/modules/agent/persistence.server";
 import { FAILURES, providerFailure } from "#/modules/agent/provider-error";
-import { latestPageContext, PageContext, readPageContext, renderPageContext, withPageContext } from "#/modules/agent/page-context";
+import { latestPageContext, PageContext, readPageContext, renamedSincePage, renderPageContext, withPageContext } from "#/modules/agent/page-context";
 import { notSetUpScript, ScriptedAdapter, stubScript } from "#/modules/agent/scripted-adapter.server";
 import { PostHog } from "#/modules/analytics/posthog.server";
 import { decideApproval, requestApproval, reviewedDiff, trustedApproval } from "#/modules/approvals/approvals.server";
@@ -165,7 +165,7 @@ const placeIn = (caller: Caller, messages: ReadonlyArray<ModelMessage>): Place =
   const block = latestPageContext(messages);
   const at = block === undefined ? new Map<string, string>() : readPageContext(block);
   const store = { at: "cloud", organization: caller.organization.id } as const;
-  return { project: at.get("project") ?? null, environment: at.get("environment") ?? null, store };
+  return { project: renamedSincePage(messages, at.get("project")) ?? null, environment: at.get("environment") ?? null, store };
 };
 
 type Here = { place: Place };

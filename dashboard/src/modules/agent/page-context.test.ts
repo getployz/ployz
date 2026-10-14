@@ -1,7 +1,7 @@
 import type { ModelMessage } from "@tanstack/ai";
 import { Option, Schema } from "effect";
 import { describe, expect, it } from "vitest";
-import { isPageContext, PageContext, latestPageContext, renderPageContext, withPageContext } from "./page-context";
+import { isPageContext, PageContext, latestPageContext, renamedSincePage, renderPageContext, withPageContext } from "./page-context";
 
 describe("renderPageContext", () => {
   it("writes every named field in a fixed order, whatever order the object holds them in", () => {
@@ -66,5 +66,30 @@ describe("withPageContext", () => {
   it("opens the message with the block, replacing any block it already had", () => {
     expect(withPageContext(said(block("logs"), "hi"), block("servers"))).toEqual(said(block("servers"), "hi"));
     expect(withPageContext({ role: "user", content: "hi" }, block("servers"))).toEqual(said(block("servers"), "hi"));
+  });
+});
+
+describe("renamedSincePage", () => {
+  const page = (project: string): ModelMessage =>
+    ({ role: "user", content: [{ type: "text", content: renderPageContext({ page: "services", project }) }, { type: "text", content: "hi" }] });
+  const renamed = (id: string, from: string, to: string, ok = true): ModelMessage[] => [
+    { role: "assistant", content: null, toolCalls: [{ id, type: "function", function: { name: "project_rename", arguments: JSON.stringify({ project: from, to }) } }] },
+    { role: "tool", toolCallId: id, content: JSON.stringify(ok
+      ? { ok: true, value: { at: `${to}/production`, project: to, renamed_from: from } }
+      : { ok: false, refusal: { code: "conflict", message: "taken", details: null } }) },
+  ];
+
+  it("follows the page's Project through renames the agent made after the page named it", () => {
+    const messages = [page("shop"), ...renamed("a", "shop", "store"), ...renamed("b", "store", "outlet")];
+    expect(renamedSincePage(messages, "shop")).toBe("outlet");
+  });
+
+  it("keeps the page's Project after a refused rename or a rename of another Project", () => {
+    expect(renamedSincePage([page("shop"), ...renamed("a", "shop", "store", false)], "shop")).toBe("shop");
+    expect(renamedSincePage([page("shop"), ...renamed("a", "docs", "handbook")], "shop")).toBe("shop");
+  });
+
+  it("trusts a newer page over a rename before it", () => {
+    expect(renamedSincePage([page("shop"), ...renamed("a", "shop", "store"), page("shop")], "shop")).toBe("shop");
   });
 });

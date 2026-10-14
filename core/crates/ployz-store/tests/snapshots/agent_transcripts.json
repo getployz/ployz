@@ -2734,13 +2734,23 @@
           "write": {
             "at": "store",
             "write": {
-              "command": "rename_config",
+              "command": "batch",
               "environment": {
                 "project": "shop",
                 "environment": null
               },
-              "config": "nginx",
-              "name": "proxy"
+              "commands": [
+                {
+                  "command": "rename_config",
+                  "environment": {
+                    "project": "shop",
+                    "environment": null
+                  },
+                  "config": "nginx",
+                  "name": "proxy"
+                }
+              ],
+              "expect": null
             }
           }
         },
@@ -2800,13 +2810,23 @@
           "write": {
             "at": "store",
             "write": {
-              "command": "rename_config",
+              "command": "batch",
               "environment": {
                 "project": "shop",
                 "environment": null
               },
-              "config": "nginx",
-              "name": "proxy"
+              "commands": [
+                {
+                  "command": "rename_config",
+                  "environment": {
+                    "project": "shop",
+                    "environment": null
+                  },
+                  "config": "nginx",
+                  "name": "proxy"
+                }
+              ],
+              "expect": null
             }
           }
         },
