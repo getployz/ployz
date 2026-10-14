@@ -712,3 +712,38 @@ fn a_stop_first_service_keeps_its_serial_walk_and_flips_after_it() {
         }]
     );
 }
+
+#[test]
+fn a_scale_up_keeps_the_running_copy_in_its_flip() {
+    use ployz_core::DeployIntent;
+
+    let running = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    let snapshot = DeploySnapshot {
+        machines: vec![machine('1', "first"), machine('2', "second")],
+        containers: vec![container('b', '1', &running, &service_id('a'))],
+        ..Default::default()
+    };
+    let scaled = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(2).unwrap(),
+    });
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&scaled],
+        PlanOptions::default(),
+    );
+
+    let plan = ployz::deploy::plan_deploy(&intent, &snapshot).unwrap();
+
+    assert!(matches!(
+        operations(&plan).as_slice(),
+        [DeployOperation::RunContainer { .. }]
+    ));
+    let kept: Vec<_> = plan
+        .groups()
+        .iter()
+        .map(|group| group.kept.clone())
+        .collect();
+    assert_eq!(kept, [vec![snapshot.containers[0].container_id]]);
+}
