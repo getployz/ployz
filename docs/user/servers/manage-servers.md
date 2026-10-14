@@ -264,8 +264,8 @@ on.
 > [!WARNING]
 > Volumes stay on the removed server's disk as copies, and your services lose them until you
 > make a copy the writer again with `ployz volume restore`. The server's mirrors of volumes
-> written on other servers are deleted, and so is a restore that hasn't received any data there
-> yet. A restore that has received data stays as a copy. Copy off any data you need first.
+> written on other servers are deleted, and so is a restore still copying there. A restore that
+> finished copying stays as a copy. Copy off any data you need first.
 
 1. Open the server and click **Remove server**.
 2. Ployz lists the volumes on the server. Type the server's name and click **Remove**.
