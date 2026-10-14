@@ -28,11 +28,13 @@ import { Route as ApiCliManifestRouteImport } from './routes/api/cli/manifest'
 import { Route as ApiConfigSplatRouteImport } from './routes/api/config/$'
 import { Route as ApiEnrollTokenRouteImport } from './routes/api/enroll/$token'
 import { Route as ApiGithubWebhookRouteImport } from './routes/api/github/webhook'
+import { Route as ApiMailUnsubscribeRouteImport } from './routes/api/mail/unsubscribe'
 import { Route as ApiOrgChangesRouteImport } from './routes/api/org/changes'
 import { Route as ApiRuntimeEventsRouteImport } from './routes/api/runtime/events'
 import { Route as ApiRuntimeLogsRouteImport } from './routes/api/runtime/logs'
 import { Route as ProtectedCloudOrganizationSlugOrgRouteRouteImport } from './routes/_protected/cloud/$organizationSlug/_org/route'
 import { Route as ProtectedCloudOrganizationSlugProjectRouteRouteImport } from './routes/_protected/cloud/$organizationSlug/_project/route'
+import { Route as ProtectedCloudAccountIndexRouteImport } from './routes/_protected/cloud/account/index'
 import { Route as ApiAgentOrganizationSlugChatRouteImport } from './routes/api/agent/$organizationSlug/chat'
 import { Route as ApiBuildsBuildCheckInRouteImport } from './routes/api/builds/$build/check-in'
 import { Route as ApiBuildsBuildStepsRouteImport } from './routes/api/builds/$build/steps'
@@ -160,6 +162,11 @@ const ApiGithubWebhookRoute = ApiGithubWebhookRouteImport.update({
   path: '/api/github/webhook',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiMailUnsubscribeRoute = ApiMailUnsubscribeRouteImport.update({
+  id: '/api/mail/unsubscribe',
+  path: '/api/mail/unsubscribe',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiOrgChangesRoute = ApiOrgChangesRouteImport.update({
   id: '/api/org/changes',
   path: '/api/org/changes',
@@ -184,6 +191,12 @@ const ProtectedCloudOrganizationSlugProjectRouteRoute =
   ProtectedCloudOrganizationSlugProjectRouteRouteImport.update({
     id: '/_project',
     getParentRoute: () => ProtectedCloudOrganizationSlugRouteRoute,
+  } as any)
+const ProtectedCloudAccountIndexRoute =
+  ProtectedCloudAccountIndexRouteImport.update({
+    id: '/account/',
+    path: '/account/',
+    getParentRoute: () => ProtectedCloudRouteRoute,
   } as any)
 const ApiAgentOrganizationSlugChatRoute =
   ApiAgentOrganizationSlugChatRouteImport.update({
@@ -424,6 +437,7 @@ export interface FileRoutesByFullPath {
   '/api/config/$': typeof ApiConfigSplatRoute
   '/api/enroll/$token': typeof ApiEnrollTokenRouteWithChildren
   '/api/github/webhook': typeof ApiGithubWebhookRoute
+  '/api/mail/unsubscribe': typeof ApiMailUnsubscribeRoute
   '/api/org/changes': typeof ApiOrgChangesRoute
   '/api/runtime/events': typeof ApiRuntimeEventsRoute
   '/api/runtime/logs': typeof ApiRuntimeLogsRoute
@@ -439,6 +453,7 @@ export interface FileRoutesByFullPath {
   '/api/cli/servers/enrollment': typeof ApiCliServersEnrollmentRoute
   '/api/enroll/$token/callback': typeof ApiEnrollTokenCallbackRoute
   '/api/enroll/$token/report': typeof ApiEnrollTokenReportRoute
+  '/cloud/account/': typeof ProtectedCloudAccountIndexRoute
   '/cloud/$organizationSlug/$projectSlug': typeof ProtectedCloudOrganizationSlugProjectProjectSlugRouteRouteWithChildren
   '/cloud/$organizationSlug/new': typeof ProtectedCloudOrganizationSlugProjectNewRoute
   '/cloud/$organizationSlug/$projectSlug/$environmentSlug': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugRouteRouteWithChildren
@@ -476,6 +491,7 @@ export interface FileRoutesByTo {
   '/api/config/$': typeof ApiConfigSplatRoute
   '/api/enroll/$token': typeof ApiEnrollTokenRouteWithChildren
   '/api/github/webhook': typeof ApiGithubWebhookRoute
+  '/api/mail/unsubscribe': typeof ApiMailUnsubscribeRoute
   '/api/org/changes': typeof ApiOrgChangesRoute
   '/api/runtime/events': typeof ApiRuntimeEventsRoute
   '/api/runtime/logs': typeof ApiRuntimeLogsRoute
@@ -491,6 +507,7 @@ export interface FileRoutesByTo {
   '/api/cli/servers/enrollment': typeof ApiCliServersEnrollmentRoute
   '/api/enroll/$token/callback': typeof ApiEnrollTokenCallbackRoute
   '/api/enroll/$token/report': typeof ApiEnrollTokenReportRoute
+  '/cloud/account': typeof ProtectedCloudAccountIndexRoute
   '/cloud/$organizationSlug/new': typeof ProtectedCloudOrganizationSlugProjectNewRoute
   '/cloud/$organizationSlug/$projectSlug/$environmentSlug': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasIndexRoute
   '/cloud/$organizationSlug/~/billing': typeof ProtectedCloudOrganizationSlugOrgChar126BillingRoute
@@ -530,6 +547,7 @@ export interface FileRoutesById {
   '/api/config/$': typeof ApiConfigSplatRoute
   '/api/enroll/$token': typeof ApiEnrollTokenRouteWithChildren
   '/api/github/webhook': typeof ApiGithubWebhookRoute
+  '/api/mail/unsubscribe': typeof ApiMailUnsubscribeRoute
   '/api/org/changes': typeof ApiOrgChangesRoute
   '/api/runtime/events': typeof ApiRuntimeEventsRoute
   '/api/runtime/logs': typeof ApiRuntimeLogsRoute
@@ -547,6 +565,7 @@ export interface FileRoutesById {
   '/api/cli/servers/enrollment': typeof ApiCliServersEnrollmentRoute
   '/api/enroll/$token/callback': typeof ApiEnrollTokenCallbackRoute
   '/api/enroll/$token/report': typeof ApiEnrollTokenReportRoute
+  '/_protected/cloud/account/': typeof ProtectedCloudAccountIndexRoute
   '/_protected/cloud/$organizationSlug/_project/$projectSlug': typeof ProtectedCloudOrganizationSlugProjectProjectSlugRouteRouteWithChildren
   '/_protected/cloud/$organizationSlug/_project/new': typeof ProtectedCloudOrganizationSlugProjectNewRoute
   '/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugRouteRouteWithChildren
@@ -588,6 +607,7 @@ export interface FileRouteTypes {
     | '/api/config/$'
     | '/api/enroll/$token'
     | '/api/github/webhook'
+    | '/api/mail/unsubscribe'
     | '/api/org/changes'
     | '/api/runtime/events'
     | '/api/runtime/logs'
@@ -603,6 +623,7 @@ export interface FileRouteTypes {
     | '/api/cli/servers/enrollment'
     | '/api/enroll/$token/callback'
     | '/api/enroll/$token/report'
+    | '/cloud/account/'
     | '/cloud/$organizationSlug/$projectSlug'
     | '/cloud/$organizationSlug/new'
     | '/cloud/$organizationSlug/$projectSlug/$environmentSlug'
@@ -640,6 +661,7 @@ export interface FileRouteTypes {
     | '/api/config/$'
     | '/api/enroll/$token'
     | '/api/github/webhook'
+    | '/api/mail/unsubscribe'
     | '/api/org/changes'
     | '/api/runtime/events'
     | '/api/runtime/logs'
@@ -655,6 +677,7 @@ export interface FileRouteTypes {
     | '/api/cli/servers/enrollment'
     | '/api/enroll/$token/callback'
     | '/api/enroll/$token/report'
+    | '/cloud/account'
     | '/cloud/$organizationSlug/new'
     | '/cloud/$organizationSlug/$projectSlug/$environmentSlug'
     | '/cloud/$organizationSlug/~/billing'
@@ -693,6 +716,7 @@ export interface FileRouteTypes {
     | '/api/config/$'
     | '/api/enroll/$token'
     | '/api/github/webhook'
+    | '/api/mail/unsubscribe'
     | '/api/org/changes'
     | '/api/runtime/events'
     | '/api/runtime/logs'
@@ -710,6 +734,7 @@ export interface FileRouteTypes {
     | '/api/cli/servers/enrollment'
     | '/api/enroll/$token/callback'
     | '/api/enroll/$token/report'
+    | '/_protected/cloud/account/'
     | '/_protected/cloud/$organizationSlug/_project/$projectSlug'
     | '/_protected/cloud/$organizationSlug/_project/new'
     | '/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug'
@@ -748,6 +773,7 @@ export interface RootRouteChildren {
   ApiConfigSplatRoute: typeof ApiConfigSplatRoute
   ApiEnrollTokenRoute: typeof ApiEnrollTokenRouteWithChildren
   ApiGithubWebhookRoute: typeof ApiGithubWebhookRoute
+  ApiMailUnsubscribeRoute: typeof ApiMailUnsubscribeRoute
   ApiOrgChangesRoute: typeof ApiOrgChangesRoute
   ApiRuntimeEventsRoute: typeof ApiRuntimeEventsRoute
   ApiRuntimeLogsRoute: typeof ApiRuntimeLogsRoute
@@ -897,6 +923,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiGithubWebhookRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/mail/unsubscribe': {
+      id: '/api/mail/unsubscribe'
+      path: '/api/mail/unsubscribe'
+      fullPath: '/api/mail/unsubscribe'
+      preLoaderRoute: typeof ApiMailUnsubscribeRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/org/changes': {
       id: '/api/org/changes'
       path: '/api/org/changes'
@@ -931,6 +964,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/cloud/$organizationSlug'
       preLoaderRoute: typeof ProtectedCloudOrganizationSlugProjectRouteRouteImport
       parentRoute: typeof ProtectedCloudOrganizationSlugRouteRoute
+    }
+    '/_protected/cloud/account/': {
+      id: '/_protected/cloud/account/'
+      path: '/account'
+      fullPath: '/cloud/account/'
+      preLoaderRoute: typeof ProtectedCloudAccountIndexRouteImport
+      parentRoute: typeof ProtectedCloudRouteRoute
     }
     '/api/agent/$organizationSlug/chat': {
       id: '/api/agent/$organizationSlug/chat'
@@ -1303,12 +1343,14 @@ const ProtectedCloudOrganizationSlugRouteRouteWithChildren =
 interface ProtectedCloudRouteRouteChildren {
   ProtectedCloudOrganizationSlugRouteRoute: typeof ProtectedCloudOrganizationSlugRouteRouteWithChildren
   ProtectedCloudIndexRoute: typeof ProtectedCloudIndexRoute
+  ProtectedCloudAccountIndexRoute: typeof ProtectedCloudAccountIndexRoute
 }
 
 const ProtectedCloudRouteRouteChildren: ProtectedCloudRouteRouteChildren = {
   ProtectedCloudOrganizationSlugRouteRoute:
     ProtectedCloudOrganizationSlugRouteRouteWithChildren,
   ProtectedCloudIndexRoute: ProtectedCloudIndexRoute,
+  ProtectedCloudAccountIndexRoute: ProtectedCloudAccountIndexRoute,
 }
 
 const ProtectedCloudRouteRouteWithChildren =
@@ -1369,6 +1411,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiConfigSplatRoute: ApiConfigSplatRoute,
   ApiEnrollTokenRoute: ApiEnrollTokenRouteWithChildren,
   ApiGithubWebhookRoute: ApiGithubWebhookRoute,
+  ApiMailUnsubscribeRoute: ApiMailUnsubscribeRoute,
   ApiOrgChangesRoute: ApiOrgChangesRoute,
   ApiRuntimeEventsRoute: ApiRuntimeEventsRoute,
   ApiRuntimeLogsRoute: ApiRuntimeLogsRoute,

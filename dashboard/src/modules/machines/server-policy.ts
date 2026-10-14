@@ -22,7 +22,7 @@ export const ServerPolicyChangeSchema = Schema.Struct({
   buildConcurrency: Schema.optionalKey(BuildConcurrencyChangeSchema),
   /** Off is a cordon: nothing new starts on the Server, and what runs there stays until it's drained. */
   acceptsServices: Schema.optionalKey(Schema.Boolean),
-  /** Only off: turning web traffic on also starts the Ingress Proxy, which only `ployz server set` does. */
+  /** Only off: turning web traffic on also starts the Ingress Proxy, which the Server page switch or `ployz server set` does. */
   acceptsIngress: Schema.optionalKey(Schema.Literal(false)),
 });
 

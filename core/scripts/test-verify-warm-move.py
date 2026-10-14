@@ -19,6 +19,7 @@ import argparse
 from concurrent.futures import Future
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -43,10 +44,21 @@ IMAGE = "postgres:16-alpine"
 TERMINAL = {"done", "failed", "cancelled", "lost", "not_started", "yielded"}
 STOPPED = {"cancelled", "lost"}
 DOOMED = "doomed"
+MIRROR_CRON = 15 * 60
+MIRROR_CRON_RUNS = 90
+MOVE_PLAN = 30
 
 
 class CheckError(Exception):
     pass
+
+
+def mirror_cron_wait(into, span):
+    """Whole seconds to sleep, `into` seconds past a quarter hour, until the mirror cron has run and the next `span`
+    seconds miss its next run."""
+    if MIRROR_CRON_RUNS < into < MIRROR_CRON - span:
+        return 0
+    return math.ceil((MIRROR_CRON_RUNS - into) % MIRROR_CRON)
 
 
 def parse_json(text):
@@ -400,7 +412,17 @@ class Cluster:
             row = self.wait_run(volume, row["id"], env, limit)
         return code, row, data
 
+    def clear_of_mirror_cron(self, span):
+        """Cloud's mirror cron syncs every Volume in turn at each quarter hour. Its snapshot can land between a check's
+        writes, and a Move planned while it ran found a Machine not answering. Sleep until the next `span` seconds miss it."""
+        wait = mirror_cron_wait(time.time() % MIRROR_CRON, span)
+        if wait:
+            print(f"waiting {wait}s for the mirror cron", flush=True)
+            time.sleep(wait)
+        return wait
+
     def move(self, volume, to, limit=1500):
+        self.clear_of_mirror_cron(MOVE_PLAN)
         return self.run_volume("volume", "move", volume, "--to", to, volume=volume, limit=limit)
 
     def mirror(self, volume, to, env=None):
@@ -684,6 +706,7 @@ def restore_only_holder(vc):
     if not done(moved) or not vc.ready(B, phys):
         raise CheckError(f"move india to {B}: {text_of(moved, data)[:600]}")
     vc.psql(B, phys, "insert into kept values (2)")
+    waited = vc.clear_of_mirror_cron(300)
     vc.synced("india", A)
     vc.psql(B, phys, "insert into kept values (3)")
     refusals = {}
@@ -703,7 +726,8 @@ def restore_only_holder(vc):
         "rows up to the last sync survive and the later write is lost": rows == "1,2",
         f"exactly one writable copy, on {A}": len(writable) == 1 and writable[0].startswith(A + ":"),
     }, f"refusals {say(refusals)[:1200]}; rm exit {code_rm} {say(removed)[:300]}; restore exit {code_r} "
-       f"{say(restored)[:500]}; deploy exit {code_d}; rows on {A} {rows!r}; writable {writable}")
+       f"{say(restored)[:500]}; deploy exit {code_d}; rows on {A} {rows!r}; writable {writable}; "
+       f"waited {waited}s for the mirror cron")
     rejoin_verdict(vc, "C9")
 
 
@@ -1191,6 +1215,7 @@ def start_takes_15_seconds(vc):
     began = int(time.time())
     vc.slow_runc(target, "echo15", phys, 15)
     try:
+        vc.clear_of_mirror_cron(MOVE_PLAN)
         with Recorder(vc, "echo15", phys) as recorder:
             started = time.monotonic()
             _, row, data = vc.move("echo", target, limit=900)
@@ -1222,6 +1247,7 @@ def start_takes_150_seconds(vc):
     source = other(target)
     vc.slow_runc(target, "echo150", phys, 150)
     try:
+        vc.clear_of_mirror_cron(MOVE_PLAN)
         with Recorder(vc, "echo150", phys) as recorder:
             started = time.monotonic()
             _, row, data = vc.move("echo", target, limit=1200)
