@@ -222,7 +222,7 @@ export const requestApproval = Effect.fn("Approvals.request")(function* (
 
 /** An operation that may wait for a human: its sweep key, verb, name, preview, and what it destroys. */
 export type OperationAsked = {
-  /** `server:<machine id>`, `namespace:<name>` or `volume:<volume id>`. */
+  /** `server:<machine id>`, `namespace:<name>`, `volume:<volume id>`, `member:<user id>` or `invite:<invite id>`. */
   subject: string;
   verb: OperationVerb;
   name: string;
@@ -258,7 +258,7 @@ const requestOperationApproval = Effect.fn("Approvals.requestOperation")(functio
   return {
     code: "approval_required",
     message: `A human must approve this ${asked.verb.replaceAll("_", " ")} of ${asked.name} before it runs.`,
-    details: { effects: asked.effects, approval: digest, approval_id: recorded.id, operation },
+    details: { effects: asked.effects, approval: digest, approval_id: recorded.id, operation, organization: caller.organization.slug },
   } satisfies StoreRefusal;
 });
 

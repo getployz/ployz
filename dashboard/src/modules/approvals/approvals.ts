@@ -44,6 +44,9 @@ const destroys = {
   detaches_volume: { verb: "Detaches", noun: "volume", after: "" },
   removes_domain: { verb: "Removes", noun: "domain", after: "" },
   removes_server: { verb: "Removes", noun: "server", after: "" },
+  removes_member: { verb: "Removes", noun: "member", after: "" },
+  changes_role: { verb: "Changes", noun: "role of", after: "" },
+  revokes_invite: { verb: "Revokes", noun: "invite for", after: "" },
 } satisfies Record<DestructiveKind, { verb: string; noun: string; after: string }>;
 
 /** One thing the plan destroys, worded as the card leads with it: by name, or as "a volume" when it has none. */

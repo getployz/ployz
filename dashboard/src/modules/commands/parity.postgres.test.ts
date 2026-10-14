@@ -14,6 +14,8 @@ import { COMMANDS } from "#/modules/commands/registry.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import type { Caller } from "#/modules/identity/actor";
 import { createOrganizationToken } from "#/modules/identity/organization-token.server";
+import { invitation, member } from "#/modules/identity/tables";
+import { createInvite } from "#/modules/organization/invitation.server";
 import { organizationServerUpgrades } from "#/modules/server-upgrade/tables";
 import { uptimeCheck } from "#/modules/uptime/tables";
 import { handleRunRequest } from "#/routes/api/cli/-handlers";
@@ -148,7 +150,14 @@ const parity = Effect.fn(function* () {
     if (to.upgrades.length > 0) yield* drizzle.insert(organizationServerUpgrades).values(to.upgrades.map((row) => ({ organizationId: ORGANIZATION, ...row })));
   }));
 
-  return { route, sidebar, listed, rows, restore, checker, approvals: approvals.map(({ id }) => id), userId };
+  const team = provided(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    const members = yield* drizzle.select({ userId: member.userId, role: member.role }).from(member).where(eq(member.organizationId, ORGANIZATION));
+    const invites = yield* drizzle.select({ email: invitation.email, status: invitation.status }).from(invitation).where(eq(invitation.organizationId, ORGANIZATION));
+    return { members, invites };
+  }));
+
+  return { route, sidebar, converse, listed, rows, team, provided, restore, checker, approvals: approvals.map(({ id }) => id), userId };
 });
 
 it.live("lists each agent command in the sidebar with the manifest's input schema, so the agent never calls a command with a different input than ployz", () =>
@@ -176,7 +185,8 @@ it.live("gives the same answer and leaves the same rows through ployz and the si
       ["uptime_show", { service: "web" }],
     ];
     const raced = ["uptime_check"];
-    expect([...fixtures.map(([name]) => name), ...raced].sort()).toEqual(COMMANDS.filter((command) => command.agents).map((command) => command.name).sort());
+    const asked = ["org_member_role", "org_member_rm", "org_invite_revoke"];
+    expect([...fixtures.map(([name]) => name), ...raced, ...asked].sort()).toEqual(COMMANDS.filter((command) => command.agents).map((command) => command.name).sort());
     for (const [name, input] of fixtures) {
       const before = yield* rows;
       const viaRoute = yield* route(name, input);
@@ -189,6 +199,29 @@ it.live("gives the same answer and leaves the same rows through ployz and the si
       expect(yield* rows, name).toEqual(afterRoute);
     }
     expect((yield* rows).upgrades).toEqual([{ channel: "beta", automatic: false }]);
+  }));
+
+it.live("asks before changing a role, removing a member or revoking an invite through ployz and the sidebar alike, so neither changes the team unseen", () =>
+  Effect.gen(function* () {
+    const { route, converse, team, provided, userId } = yield* parity();
+    yield* provided(createInvite(ORGANIZATION, userId, { email: "cy@example.test", role: "member" }));
+    const before = yield* team;
+    const writes: ReadonlyArray<readonly [string, JsonValue]> = [
+      ["org_member_role", { member: "ada@example.test", role: "member" }],
+      ["org_member_rm", { member: "Ada" }],
+      ["org_invite_revoke", { invite: "cy@example.test" }],
+    ];
+    for (const [name, input] of writes) {
+      const viaRoute = yield* route(name, input);
+      expect(asRecord(asRecord(viaRoute.body)?.["error"])?.["code"], name).toBe("approval_required");
+      const model = fakeText();
+      model.setResponses([{ toolCalls: [{ name, input }] }, { text: "Done." }]);
+      const chunks = yield* converse(model);
+      const asking = chunks.flatMap((chunk) =>
+        chunk.type === EventType.RUN_FINISHED && chunk.outcome?.type === "interrupt" ? chunk.outcome.interrupts : []);
+      expect(asking.map((interrupt) => interrupt.reason), name).toEqual(["approval_required"]);
+      expect(yield* team, name).toEqual(before);
+    }
   }));
 
 it.live("refuses a bad input the same way through ployz and the sidebar, so the agent hears the error ployz prints", () =>

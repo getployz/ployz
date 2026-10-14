@@ -1,12 +1,16 @@
 import "@tanstack/react-start/server-only";
+import type { JsonValue } from "@ployz/sdk";
 import { Effect, Schema } from "effect";
 import { defineCommand, refused } from "#/modules/commands/command.server";
+import { StoreRefused } from "#/modules/config-store/store.contract";
 import type { Caller } from "#/modules/identity/actor";
+import { callerOrganizations } from "#/modules/identity/caller.server";
+import type { Role } from "#/modules/organization/access.server";
 import { emailInvite } from "#/modules/organization/invitation-mail.server";
-import { createInvite, listPendingInvites, revokeInvite } from "#/modules/organization/invitation.server";
+import { createInvite, INVITE_DAYS, listPendingInvites, revokeInvite } from "#/modules/organization/invitation.server";
 import { listMembers, MANAGE, OWN, removeMembership, setMemberRole } from "#/modules/organization/membership.server";
 import { AppConfig } from "#/server/config.server";
-import type { Conflict } from "#/server/public-error";
+import { type Conflict, NotFound } from "#/server/public-error";
 
 const MemberSelector = Schema.NonEmptyString.annotate({ description: "The member, by email or name" });
 const MemberRole = Schema.Literals(["owner", "admin", "member"]);
@@ -51,16 +55,33 @@ export const manages = (caller: Caller) => caller.role === "owner" || caller.rol
 
 const conflictRefused = (conflict: Conflict) => Effect.succeed(refused("conflict", conflict.message));
 
-const pick = Effect.fn("Members.pick")(function* (caller: Caller, selector: string) {
+const refuse = (code: string, message: string, details: JsonValue = null) => new StoreRefused({ code, message, details });
+
+/**
+ * The member `selector` names, by email when it holds an `@` and by name otherwise. Refuses `forbidden` unless the
+ * caller manages members, and unless they are an owner when `touchesOwner` says the change makes or removes one.
+ */
+const managed = Effect.fn("Members.managed")(function* (caller: Caller, selector: string, touchesOwner: (role: Role) => boolean) {
+  if (!manages(caller)) return yield* refuse("forbidden", MANAGE);
   const members = yield* listMembers(caller.organization.id);
   const wanted = selector.trim().toLowerCase();
   const named = members.filter((row) => (wanted.includes("@") ? row.email : row.name.trim()).toLowerCase() === wanted);
   const [only, ...rest] = named;
-  if (only === undefined) return refused("not_found", `No member of ${caller.organization.slug} is ${selector}.`);
+  if (only === undefined) return yield* refuse("not_found", `No member of ${caller.organization.slug} is ${selector}.`);
   if (rest.length > 0) {
-    return refused("ambiguous", `${named.length} members are named ${selector}. Pick one by email.`, { candidates: named.map((row) => row.email) });
+    return yield* refuse("ambiguous", `${named.length} members are named ${selector}: ${named.map((row) => row.email).join(", ")}. Pick one by email.`, { candidates: named.map((row) => row.email) });
   }
-  return { ok: true, member: only } as const;
+  if (touchesOwner(only.role) && caller.role !== "owner") return yield* refuse("forbidden", OWN);
+  return only;
+});
+
+const pendingInvite = Effect.fn("Members.pendingInvite")(function* (caller: Caller, selector: string) {
+  if (!manages(caller)) return yield* refuse("forbidden", MANAGE);
+  const wanted = selector.trim();
+  const invites = yield* listPendingInvites(caller.organization.id);
+  const found = invites.find((row) => row.id === wanted) ?? invites.find((row) => row.email === wanted.toLowerCase());
+  if (found === undefined) return yield* new NotFound({ message: `No pending invite matches ${selector}.` });
+  return found;
 });
 
 export const orgMemberLs = defineCommand({
@@ -90,19 +111,19 @@ export const orgMemberLs = defineCommand({
 export const orgMemberInvite = defineCommand({
   name: "org_member_invite",
   path: ["org", "member", "invite"],
-  about: "Make an invite link that adds whoever opens it as a member. It lasts 7 days and works once",
-  examples: ["ployz org member invite", "ployz org member invite --email bob@example.com --role admin"],
+  about: `Make an invite link that adds whoever opens it as a member. It lasts ${INVITE_DAYS} days and works once`,
+  examples: ["ployz org member invite bob@example.com", "ployz org member invite bob@example.com --role admin"],
   kind: "write",
   gate: "never",
   agents: false,
   typed: null,
-  positional: [],
+  positional: ["email"],
   input: Schema.Struct({
     email: Schema.optionalKey(InviteEmail.annotate({ description: "Who the link is for. Cloud emails it there when email is on. Anyone with the link can use it" })),
-    role: Schema.optionalKey(InviteRole.annotate({ description: "The role it grants. member when left out" })),
+    role: Schema.optionalKey(InviteRole.annotate({ description: "The role it grants: admin or member. member when left out" })),
   }),
   output: Invited,
-  render: "record",
+  render: "message",
   run: (caller, input) => Effect.gen(function* () {
     if (!manages(caller)) return refused("forbidden", MANAGE);
     const config = yield* AppConfig;
@@ -113,55 +134,72 @@ export const orgMemberInvite = defineCommand({
       ok: true,
       output: { id: invite.id, email: invite.email, role: invite.role, link, expires_at: invite.expiresAt.toISOString(), emailed_to: emailedTo },
       message: emailedTo === null
-        ? "Send this link to the person you're inviting. It works once and lasts 7 days."
-        : `Emailed to ${emailedTo}. The link works once and lasts 7 days.`,
+        ? `Send this link to the person you're inviting. It works once and lasts ${INVITE_DAYS} days.\n${link}`
+        : `Emailed to ${emailedTo}. The link works once and lasts ${INVITE_DAYS} days.\n${link}`,
     } as const;
   }).pipe(Effect.catchTag("Conflict", conflictRefused)),
 });
 
+const RoleInput = Schema.Struct({ member: MemberSelector, role: MemberRole.annotate({ description: "The new role: owner, admin or member" }) });
+
+const roleTarget = (caller: Caller, input: typeof RoleInput.Type) =>
+  managed(caller, input.member, (role) => role === "owner" || input.role === "owner");
+
 export const orgMemberRole = defineCommand({
   name: "org_member_role",
   path: ["org", "member", "role"],
-  about: "Change a member's role. Only an owner can make or remove an owner",
-  examples: ["ployz org member role bob@example.com admin"],
+  about: "Change a member's role to owner, admin or member. Only an owner can make or remove an owner",
+  examples: ["ployz org member role bob@example.com admin", "ployz org member role Bob member"],
   kind: "write",
-  gate: "never",
-  agents: false,
+  gate: {
+    gate: "ask",
+    asked: (caller, input) => roleTarget(caller, input).pipe(Effect.map((target) => ({
+      subject: `member:${target.userId}`,
+      verb: "set",
+      name: target.email,
+      preview: { email: target.email, from: target.role, to: input.role },
+      effects: target.role === input.role ? [] : [{ kind: "changes_role", name: target.email, node: target.userId, path: `members/${target.userId}` }],
+    }))),
+  },
+  agents: true,
   typed: null,
   positional: ["member", "role"],
-  input: Schema.Struct({ member: MemberSelector, role: MemberRole.annotate({ description: "owner, admin or member" }) }),
+  input: RoleInput,
   output: Changed,
   render: "message",
   run: (caller, input) => Effect.gen(function* () {
-    if (!manages(caller)) return refused("forbidden", MANAGE);
-    const picked = yield* pick(caller, input.member);
-    if (!picked.ok) return picked;
-    const target = picked.member;
-    if ((input.role === "owner" || target.role === "owner") && caller.role !== "owner") return refused("forbidden", OWN);
+    const target = yield* roleTarget(caller, input);
     yield* setMemberRole(caller.organization.id, target.userId, input.role, caller.userId);
     return { ok: true, output: { email: target.email, role: input.role }, message: `${target.email} is now ${input.role}.` } as const;
   }).pipe(Effect.catchTag("Conflict", conflictRefused)),
 });
 
+const rmTarget = (caller: Caller, member: string) => managed(caller, member, (role) => role === "owner");
+
 export const orgMemberRm = defineCommand({
   name: "org_member_rm",
   path: ["org", "member", "rm"],
   about: "Remove a member. Their Organization Tokens stop working and their devices lose access to its Servers",
-  examples: ["ployz org member rm bob@example.com"],
+  examples: ["ployz org member rm bob@example.com", "ployz org member rm Bob"],
   kind: "write",
-  gate: "never",
-  agents: false,
+  gate: {
+    gate: "ask",
+    asked: (caller, input) => rmTarget(caller, input.member).pipe(Effect.map((target) => ({
+      subject: `member:${target.userId}`,
+      verb: "remove",
+      name: target.email,
+      preview: { email: target.email, role: target.role },
+      effects: [{ kind: "removes_member", name: target.email, node: target.userId, path: `members/${target.userId}` }],
+    }))),
+  },
+  agents: true,
   typed: null,
   positional: ["member"],
   input: Schema.Struct({ member: MemberSelector }),
   output: Removed,
   render: "message",
   run: (caller, input) => Effect.gen(function* () {
-    if (!manages(caller)) return refused("forbidden", MANAGE);
-    const picked = yield* pick(caller, input.member);
-    if (!picked.ok) return picked;
-    const target = picked.member;
-    if (target.role === "owner" && caller.role !== "owner") return refused("forbidden", OWN);
+    const target = yield* rmTarget(caller, input.member);
     yield* removeMembership(caller.organization.id, target.userId, caller.userId);
     return { ok: true, output: { email: target.email }, message: `${target.email} is no longer a member of ${caller.organization.slug}.` } as const;
   }).pipe(Effect.catchTag("Conflict", conflictRefused)),
@@ -197,16 +235,25 @@ export const orgInviteRevoke = defineCommand({
   about: "Revoke a pending invite so its link stops working",
   examples: ["ployz org invite revoke bob@example.com"],
   kind: "write",
-  gate: "never",
-  agents: false,
+  gate: {
+    gate: "ask",
+    asked: (caller, input) => pendingInvite(caller, input.invite).pipe(Effect.map((invite) => ({
+      subject: `invite:${invite.id}`,
+      verb: "remove",
+      name: invite.email ?? invite.id,
+      preview: { id: invite.id, email: invite.email, role: invite.role },
+      effects: [{ kind: "revokes_invite", name: invite.email ?? invite.id, node: invite.id, path: `invites/${invite.id}` }],
+    }))),
+  },
+  agents: true,
   typed: null,
   positional: ["invite"],
   input: Schema.Struct({ invite: Schema.NonEmptyString.annotate({ description: "The invite, by id or by the email it names" }) }),
   output: Revoked,
   render: "message",
   run: (caller, input) => Effect.gen(function* () {
-    if (!manages(caller)) return refused("forbidden", MANAGE);
-    const revoked = yield* revokeInvite(caller.organization.id, input.invite);
+    const invite = yield* pendingInvite(caller, input.invite);
+    const revoked = yield* revokeInvite(caller.organization.id, invite.id);
     return { ok: true, output: revoked, message: `Revoked the invite${revoked.email === null ? "" : ` for ${revoked.email}`}. Its link no longer works.` } as const;
   }).pipe(Effect.catchTag("Conflict", conflictRefused)),
 });
@@ -221,11 +268,15 @@ export const orgLeave = defineCommand({
   agents: false,
   typed: null,
   positional: [],
-  input: Schema.Struct({}),
+  input: Schema.Struct({ organization: Schema.NonEmptyString.annotate({ description: "The Organization to leave, by slug" }) }),
   output: Left,
   render: "message",
-  run: (caller) => removeMembership(caller.organization.id, caller.userId, caller.userId).pipe(
-    Effect.as({ ok: true, output: { organization: caller.organization.slug }, message: `You left ${caller.organization.slug}.` } as const),
-    Effect.catchTag("Conflict", conflictRefused),
-  ),
+  // Leaves the Organization the input names, never the session's active one: a browser moves every session of the
+  // user, so the active one can differ from the Organization `ployz` confirmed.
+  run: (caller, input) => Effect.gen(function* () {
+    const leaving = (yield* callerOrganizations(caller)).find((row) => row.slug === input.organization);
+    if (leaving === undefined) return refused("not_found", `You are not a member of Organization ${input.organization}. Nothing changed.`);
+    yield* removeMembership(leaving.id, caller.userId, caller.userId);
+    return { ok: true, output: { organization: leaving.slug }, message: `You left ${leaving.slug}.` } as const;
+  }).pipe(Effect.catchTag("Conflict", conflictRefused)),
 });
