@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { MachineId } from "@ployz/sdk";
+import type { MachineId, VolumeCopy } from "@ployz/sdk";
 import { expectOf, observedEpoch, type PlanInput, planFromCopies, restoreSource, type Role, roleOf } from "#/modules/volume-run/plan";
-import type { Member } from "#/modules/volume-run/volume-run";
+import type { AnsweredMember, Member } from "#/modules/volume-run/volume-run";
 import { COPIES, type Copy, member } from "#/modules/volume-run/volume-run.test-fixture";
 
 const mirror = (to: string): PlanInput => ({ kind: "mirror", args: { to }, volumeName: "data", orphan: false });
@@ -290,8 +290,8 @@ describe("plan_from_copies_table", () => {
   });
 
   it("sends a pinned mirror or move to its Machine when another Server took the name", () => {
-    const renamed = { ...member("fsn-3", "empty"), machine: { id: "fsn-2".padEnd(32, "0") as MachineId, name: "fsn-3" } };
-    const reused = { ...member("fsn-2", "empty"), machine: { id: "fsn-9".padEnd(32, "0") as MachineId, name: "fsn-2" } };
+    const renamed = member("fsn-3", "empty", { id: "fsn-2" });
+    const reused = member("fsn-2", "empty", { id: "fsn-9" });
     const pinned = { to: "fsn-2", machine: "fsn-2".padEnd(32, "0") as MachineId };
     const members = [member("fsn-1", "writer"), reused, renamed];
     expect(outcome({ kind: "mirror", args: pinned, volumeName: "data", orphan: false }, members)).toBe("mirror fsn-1->fsn-3");
@@ -301,8 +301,8 @@ describe("plan_from_copies_table", () => {
   });
 
   it("restores a pinned copy from its Machine when another Server took the name", () => {
-    const renamed = { ...member("fsn-3", "mirror"), machine: { id: "fsn-2".padEnd(32, "0") as MachineId, name: "fsn-3" } };
-    const reused = { ...member("fsn-2", "empty"), machine: { id: "fsn-9".padEnd(32, "0") as MachineId, name: "fsn-2" } };
+    const renamed = member("fsn-3", "mirror", { id: "fsn-2" });
+    const reused = member("fsn-2", "empty", { id: "fsn-9" });
     const pinned = { from: "fsn-2", machine: "fsn-2".padEnd(32, "0") as MachineId };
     expect(outcome({ kind: "restore", args: pinned, volumeName: "data", orphan: false }, [reused, renamed])).toBe("restore fsn-3 11");
     expect(outcome({ kind: "restore", args: pinned, volumeName: "data", orphan: false }, [reused])).toBe("refuse invalid");
@@ -425,17 +425,52 @@ function follow(input: PlanInput, members: readonly Member[]) {
 }
 
 describe("follow every next step a refusal names", () => {
+  const twin = (id: string, floorless: boolean, copy: VolumeCopy): AnsweredMember => ({
+    machine: { id: id.padEnd(32, "0") as MachineId, name: "twin" }, address: `fdcc::${id}`, answered: true, view: { copy }, floorless,
+  } satisfies Required<AnsweredMember>);
+  const at = (name: string, each: AnsweredMember): Member => ({ ...each, machine: { ...each.machine, name } });
+  const newest = COPIES.mirror.newest;
+  const earlier = { ...COPIES.behind.newest, created_unix_seconds: newest.created_unix_seconds - 60 };
+  const slotA = twin("a", false, { ...COPIES.behind, newest: earlier });
+  const slotB = twin("b", true, { ...COPIES.mirror, slot: "2", resume_token: "tok", pull: { target: newest.name, failure: "no space" } });
+  const bareA = twin("a", false, { ...COPIES.cut, epoch: 9, newest: null });
+  const bareB = twin("b", true, { ...COPIES.cut, epoch: 9, newest: null });
+  const heldA = twin("a", false, { ...COPIES.cut, epoch: 9, newest: earlier });
+  const heldB = twin("b", true, { ...COPIES.cut, epoch: 9 });
+
+  type Tree = string | number | bigint | boolean | null | undefined | { readonly [key: string]: Tree };
+  const tied = (a: Tree, b: Tree, path = ""): string[] => {
+    if (!(a instanceof Object) && !(b instanceof Object)) return Object.is(a, b) ? [path] : [];
+    const keys = new Set([...Object.keys(a instanceof Object ? a : {}), ...Object.keys(b instanceof Object ? b : {})]);
+    const read = (value: Tree, key: string): Tree => (value instanceof Object ? value[key] : undefined);
+    return [...keys].flatMap((key) => tied(read(a, key), read(b, key), path === "" ? key : `${path}.${key}`)).sort();
+  };
+
+  it("pairs twins that tie only where they must", () => {
+    // A leaf may tie only if it makes the member a slot or a cut, if the settled rule ranks it ahead of the name, or if
+    // only orphan deletes read it, which follow never plans. `machine.name` is the placeholder each row replaces.
+    expect(tied(slotA, slotB)).toEqual(["answered", "machine.name", "view.copy.kind", "view.copy.readonly"]);
+    const cut = ["answered", "machine.name", "view.copy.epoch", "view.copy.kind", "view.copy.newest", "view.copy.readonly", "view.copy.seed"];
+    expect(tied(bareA, bareB)).toEqual(cut);
+    expect(tied(heldA, heldB)).toEqual(cut.filter((leaf) => leaf !== "view.copy.newest"));
+  });
+
+  // Each pair is the same two twins with only their names swapped. The twins differ in every leaf `tied` does not list,
+  // so a pick by any of those leaves, alone or ahead of the name, keeps a different Server in one of the two rows.
   const beside: [string, Member[]][] = [
     ["no slot", []],
     ["one slot", [member("fsn-3", "mirror")]],
-    // The same two slots with only their names swapped, so a pick by anything but the name takes fsn-4 in one row.
-    ["two slots", [member("fsn-4", "behind", { id: "a", slot: "1" }), member("fsn-3", "mirror", { id: "b", slot: "2" })]],
-    ["two slots listed by name", [member("fsn-3", "behind", { id: "a", slot: "1" }), member("fsn-4", "mirror", { id: "b", slot: "2" })]],
+    ["two slots", [at("fsn-4", slotA), at("fsn-3", slotB)]],
+    ["two slots listed by name", [at("fsn-3", slotA), at("fsn-4", slotB)]],
   ];
   const cuts: [string, Member[]][] = [
     ["a newer cut with a snapshot", [member("fsn-1", "cut", { epoch: 8 }), member("fsn-2", "cut", { epoch: 9 })]],
     ["a newer cut with no snapshot", [member("fsn-1", "cut", { epoch: 8 }), bare("fsn-2", 9)]],
     ["a lone cut with no snapshot", [bare("fsn-2", 9)]],
+    ["tied cuts with no snapshot", [at("fsn-2", bareA), at("fsn-1", bareB)]],
+    ["tied cuts with no snapshot listed by name", [at("fsn-1", bareA), at("fsn-2", bareB)]],
+    ["tied cuts with a snapshot", [at("fsn-2", heldA), at("fsn-1", heldB)]],
+    ["tied cuts with a snapshot listed by name", [at("fsn-1", heldA), at("fsn-2", heldB)]],
   ];
   const kinds: [string, PlanInput][] = [
     ["release", release],
@@ -451,7 +486,6 @@ describe("follow every next step a refusal names", () => {
     ...beside.flatMap(([slots, each]) => cuts.flatMap(([state, held]) => kinds.map(([kind, input]): [string, PlanInput, Member[]] =>
       [`${kind} on ${state} beside ${slots}`, input, [...held, ...each, fourth]]))),
     ["a tie where one cut holds a snapshot", release, [bare("fsn-1", 9), member("fsn-2", "cut", { epoch: 9 }), fourth]],
-    ["a tie where no cut holds a snapshot", release, [bare("fsn-1", 9), bare("fsn-2", 9), member("fsn-3", "mirror"), fourth]],
     ["three cuts with the top two tied", release, [member("fsn-1", "cut", { epoch: 7 }), member("fsn-2", "cut", { epoch: 9 }), bare("fsn-3", 9), fourth]],
   ])("%s", (_, input, members) => {
     follow(input, members);
