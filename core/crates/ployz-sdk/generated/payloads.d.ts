@@ -1606,7 +1606,7 @@ environment: EnvironmentRef,
  */
 expect: Revision | null,
 /**
- * The changes, applied in order, except that a new image or repository goes first.
+ * The changes, applied in order, except that image and repository changes go first.
  * Every Setting set must apply to the source the whole edit leaves.
  */
 changes: Array<Change>, };

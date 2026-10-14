@@ -615,12 +615,12 @@ impl ServiceSetting {
                 };
                 Ok(())
             }
-            (Self::Image, _) => Err(self.invalid("this Service runs no image")),
             (Self::RegistryCredential, ServiceSource::Image { credentials, .. }) => {
                 *credentials = ServiceImageCredentials::None;
                 Ok(())
             }
-            (Self::RegistryCredential, _) => Err(self.invalid("only an image Service has one")),
+            // A Setting the source does not have is already unset.
+            (Self::Image | Self::RegistryCredential, _) => Ok(()),
             (Self::Healthcheck, _) => {
                 config.healthcheck = ServiceHealthcheck::None;
                 Ok(())
