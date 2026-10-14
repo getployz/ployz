@@ -1,5 +1,5 @@
 import type { ModelMessage } from "@tanstack/ai";
-import { Option, Schema } from "effect";
+import { Effect, Schema } from "effect";
 
 const Value = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(200));
 
@@ -8,6 +8,8 @@ export const PageContext = Schema.Struct({
   page: Value,
   project: Schema.optional(Value),
   environment: Schema.optional(Value),
+  /** The Environment's id, which outlives renames of it and its Project. */
+  environment_id: Schema.optional(Value),
   /** The Service's name, the way tools take it. */
   service: Schema.optional(Value),
   deployment: Schema.optional(Value),
@@ -16,7 +18,7 @@ export const PageContext = Schema.Struct({
 export type PageContext = typeof PageContext.Type;
 
 const TAG = "<dashboard-page ";
-const ORDER = ["page", "project", "environment", "service", "deployment", "server"] as const satisfies ReadonlyArray<keyof PageContext>;
+const ORDER = ["page", "project", "environment", "environment_id", "service", "deployment", "server"] as const satisfies ReadonlyArray<keyof PageContext>;
 
 const escape = (value: string) =>
   value.replaceAll("&", "&amp;").replaceAll("\"", "&quot;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
@@ -49,27 +51,6 @@ export function latestPageContext(messages: ReadonlyArray<ModelMessage>): string
   return undefined;
 }
 
-const Renamed = Schema.fromJsonString(Schema.Struct({
-  ok: Schema.Literal(true),
-  value: Schema.Struct({ project: Schema.String, renamed_from: Schema.String }),
-}));
-const decodeRenamed = Schema.decodeUnknownOption(Renamed);
-
-/**
- * `project` followed through each project_rename the agent made in this thread. The dashboard stays on the old name
- * after such a rename, so a block can name it even after the rename ran.
- */
-export function followRenames(messages: ReadonlyArray<ModelMessage>, project: string | undefined): string | undefined {
-  const renames = new Set(messages.flatMap((message) => message.role === "assistant"
-    ? (message.toolCalls ?? []).flatMap((call) => call.function.name === "project_rename" ? [call.id] : [])
-    : []));
-  return messages.reduce((current, message) => {
-    if (message.role !== "tool" || message.toolCallId === undefined || !renames.has(message.toolCallId)) return current;
-    const renamed = decodeRenamed(message.content);
-    return Option.isSome(renamed) && renamed.value.value.renamed_from === current ? renamed.value.value.project : current;
-  }, project);
-}
-
 const unescape = (value: string) =>
   value.replaceAll("&quot;", "\"").replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&amp;", "&");
 
@@ -84,3 +65,30 @@ export function withPageContext(message: ModelMessage, block: string): ModelMess
     : message.content ? [{ type: "text" as const, content: message.content }] : [];
   return { ...message, content: [{ type: "text", content: block }, ...own] };
 }
+
+/** A Project's Environments, by id and current name. */
+export type Listing = { project: string; environments: ReadonlyArray<{ id: string; name: string }> };
+
+/**
+ * The Project and Environment `block` names, by their current names. The dashboard keeps a page's old names after a
+ * rename, and a new Project can take an old name, so a block's Environment id decides; its names are only where to look
+ * first, and the place when no Environment has that id.
+ */
+export const placeOfPage = <E, R>(
+  block: string | undefined,
+  projects: Effect.Effect<ReadonlyArray<string>, E, R>,
+  environmentsOf: (project: string) => Effect.Effect<Listing, E, R>,
+) => Effect.gen(function* () {
+  const at = block === undefined ? new Map<string, string>() : readPageContext(block);
+  const named = { project: at.get("project") ?? null, environment: at.get("environment") ?? null };
+  const id = at.get("environment_id");
+  if (id === undefined) return named;
+  const listed = yield* projects;
+  const order = [...listed.filter((project) => project === named.project), ...listed.filter((project) => project !== named.project)];
+  for (const project of order) {
+    const listing = yield* environmentsOf(project);
+    const environment = listing.environments.find((candidate) => candidate.id === id);
+    if (environment !== undefined) return { project: listing.project, environment: environment.name };
+  }
+  return named;
+});

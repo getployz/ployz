@@ -1,7 +1,7 @@
 import type { ModelMessage } from "@tanstack/ai";
-import { Option, Schema } from "effect";
+import { Effect, Option, Schema } from "effect";
 import { describe, expect, it } from "vitest";
-import { followRenames, isPageContext, PageContext, latestPageContext, renderPageContext, withPageContext } from "./page-context";
+import { isPageContext, PageContext, latestPageContext, placeOfPage, renderPageContext, withPageContext } from "./page-context";
 
 describe("renderPageContext", () => {
   it("writes every named field in a fixed order, whatever order the object holds them in", () => {
@@ -69,27 +69,33 @@ describe("withPageContext", () => {
   });
 });
 
-describe("followRenames", () => {
-  const page = (project: string): ModelMessage =>
-    ({ role: "user", content: [{ type: "text", content: renderPageContext({ page: "services", project }) }, { type: "text", content: "hi" }] });
-  const renamed = (id: string, from: string, to: string, ok = true): ModelMessage[] => [
-    { role: "assistant", content: null, toolCalls: [{ id, type: "function", function: { name: "project_rename", arguments: JSON.stringify({ project: from, to }) } }] },
-    { role: "tool", toolCallId: id, content: JSON.stringify(ok
-      ? { ok: true, value: { at: `${to}/production`, project: to, renamed_from: from } }
-      : { ok: false, refusal: { code: "conflict", message: "taken", details: null } }) },
-  ];
+describe("placeOfPage", () => {
+  type Store = Readonly<Record<string, ReadonlyArray<{ id: string; name: string }>>>;
+  const place = (store: Store, context: PageContext) => Effect.runSync(placeOfPage(
+    renderPageContext(context),
+    Effect.sync(() => Object.keys(store)),
+    (project) => Effect.sync(() => ({ project, environments: store[project] ?? [] })),
+  ));
+  const shop = { page: "services", project: "shop", environment: "production", environment_id: "env-1" };
 
-  it("follows the page's Project through each rename the agent made", () => {
-    const messages = [page("shop"), ...renamed("a", "shop", "store"), ...renamed("b", "store", "outlet")];
-    expect(followRenames(messages, "shop")).toBe("outlet");
+  it("names a page's Environment and Project by their current names after the URL went stale", () => {
+    expect(place({ store: [{ id: "env-1", name: "production" }] }, shop)).toEqual({ project: "store", environment: "production" });
   });
 
-  it("keeps the page's Project after a refused rename or a rename of another Project", () => {
-    expect(followRenames([page("shop"), ...renamed("a", "shop", "store", false)], "shop")).toBe("shop");
-    expect(followRenames([page("shop"), ...renamed("a", "docs", "handbook")], "shop")).toBe("shop");
+  it("names a new Project that took a renamed one's old name, not the renamed one", () => {
+    const store = { store: [{ id: "env-1", name: "production" }], docs: [{ id: "env-2", name: "production" }], shop: [{ id: "env-3", name: "production" }] };
+    expect(place(store, { ...shop, environment_id: "env-3" })).toEqual({ project: "shop", environment: "production" });
+    expect(place(store, shop)).toEqual({ project: "store", environment: "production" });
   });
 
-  it("follows a rename even when a later page still names the old Project", () => {
-    expect(followRenames([page("shop"), ...renamed("a", "shop", "store"), page("shop")], "shop")).toBe("store");
+  it("follows an Environment's rename", () => {
+    expect(place({ shop: [{ id: "env-1", name: "live" }] }, shop)).toEqual({ project: "shop", environment: "live" });
+  });
+
+  it("keeps the page's names when it carries no Environment id or no Environment has it", () => {
+    expect(place({ store: [{ id: "env-1", name: "production" }] }, { page: "services", project: "shop", environment: "production" }))
+      .toEqual({ project: "shop", environment: "production" });
+    expect(place({}, shop)).toEqual({ project: "shop", environment: "production" });
+    expect(place({}, { page: "servers" })).toEqual({ project: null, environment: null });
   });
 });

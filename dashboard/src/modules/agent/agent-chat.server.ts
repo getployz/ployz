@@ -37,14 +37,14 @@ import {
   Superseded,
 } from "#/modules/agent/persistence.server";
 import { FAILURES, providerFailure } from "#/modules/agent/provider-error";
-import { followRenames, latestPageContext, PageContext, readPageContext, renderPageContext, withPageContext } from "#/modules/agent/page-context";
+import { latestPageContext, placeOfPage, PageContext, renderPageContext, withPageContext } from "#/modules/agent/page-context";
 import { notSetUpScript, ScriptedAdapter, stubScript } from "#/modules/agent/scripted-adapter.server";
 import { PostHog } from "#/modules/analytics/posthog.server";
 import { decideApproval, requestApproval, reviewedDiff, trustedApproval } from "#/modules/approvals/approvals.server";
 import type { Ran } from "#/modules/commands/command.server";
 import { findCommand, inputSchema, type Published, runCommand } from "#/modules/commands/commands.server";
 import { COMMANDS } from "#/modules/commands/registry.server";
-import { callStore, type StoreSource } from "#/modules/config-store/config-store.server";
+import { callStore, readStore, type StoreSource } from "#/modules/config-store/config-store.server";
 import type { StoreAnswer, StoreCall, StoreRefusal, StoreResult } from "#/modules/config-store/store.contract";
 import type { Caller } from "#/modules/identity/actor";
 import { answerForSupport, refusalForSupport } from "#/modules/support-access/support-view";
@@ -161,11 +161,20 @@ type AgentServices =
 const decodeArguments = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 const toolInput = (args: string) => projectJsonValue(Option.getOrElse(decodeArguments(args.trim() === "" ? "{}" : args), () => null)) ?? null;
 
-const placeIn = (caller: Caller, messages: ReadonlyArray<ModelMessage>): Place => {
-  const block = latestPageContext(messages);
-  const at = block === undefined ? new Map<string, string>() : readPageContext(block);
-  const store = { at: "cloud", organization: caller.organization.id } as const;
-  return { project: followRenames(messages, at.get("project")) ?? null, environment: at.get("environment") ?? null, store };
+const placeIn = (caller: Caller, messages: ReadonlyArray<ModelMessage>) => {
+  const organizationId = caller.organization.id;
+  return placeOfPage(
+    latestPageContext(messages),
+    readStore(organizationId, { query: "projects" }).pipe(
+      Effect.map(({ projects }) => projects.map(({ name }) => name)),
+      // An unread Store leaves the page's own names.
+      Effect.catch(() => Effect.succeed([])),
+    ),
+    (project) => readStore(organizationId, { query: "environments", project }).pipe(
+      Effect.map((view) => ({ project: view.project.name, environments: view.environments })),
+      Effect.catch(() => Effect.succeed({ project, environments: [] })),
+    ),
+  ).pipe(Effect.map((named): Place => ({ ...named, store: { at: "cloud", organization: organizationId } })));
 };
 
 type Here = { place: Place };
@@ -235,7 +244,7 @@ const approvalGate = (caller: Caller, run: Run, here: Here) => {
     },
     onInterruptBoundary: async (ctx) => {
       if (ctx.phase !== "beforeTools") return undefined;
-      here.place = placeIn(caller, ctx.messages);
+      here.place = await run(placeIn(caller, ctx.messages));
       const calls = pendingCalls(ctx.messages);
       const gated = calls.filter((call) => GATED.has(call.function.name));
       if (calls.length > 1) {
@@ -528,7 +537,7 @@ export const agentChat = Effect.fn("Agent.chat")(function* (person: Caller, requ
   const page = resume === undefined ? Option.getOrUndefined(Schema.decodeUnknownOption(PageContext)(request.forwardedProps?.["page"])) : undefined;
   const turn = (stores: Persistence) => {
     const limit = stepLimit(stores);
-    const here: Here = { place: placeIn(caller, []) };
+    const here: Here = { place: { project: null, environment: null, store: { at: "cloud", organization: caller.organization.id } } };
     const base = {
       adapter,
       modelOptions,
