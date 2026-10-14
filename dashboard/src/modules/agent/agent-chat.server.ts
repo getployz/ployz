@@ -1,6 +1,5 @@
 import "@tanstack/react-start/server-only";
 import { randomUUID } from "node:crypto";
-import { type Act, agentResume, agentStart, type Answer, type Ask, type ConfigCommand, type ConfigWritten, type DiffView, type JsonValue, type Place, type Write } from "@ployz/sdk";
 import {
   type AnyTextAdapter,
   chat,
@@ -8,7 +7,6 @@ import {
   defineChatMiddleware,
   EventType,
   isTerminalRunStatus,
-  type JSONSchema,
   maxIterations,
   type ModelMessage,
   modelMessagesToUIMessages,
@@ -20,9 +18,9 @@ import { type AnthropicChatModelProviderOptionsByName, createAnthropicChat } fro
 import { withPersistence } from "@tanstack/ai-persistence";
 import { Config, Effect, Option, Redacted, Schema } from "effect";
 import { approvalInterrupt, type ToolOutcome } from "#/modules/agent/agent";
+import { AGENT_TOOLS, type AgentCaller, type AgentResult, runAgentCall } from "#/modules/agent/agent-runner.server";
 import { agentTracing, aiObservability } from "#/modules/agent/agent-telemetry.server";
-import { callCloud } from "#/modules/agent/call-cloud.server";
-import { AGENT, CATALOG, finish, GATED, untilWrite } from "#/modules/agent/agent-tools";
+import { CATALOG, GATED } from "#/modules/agent/agent-tools";
 import {
   type AgentScope,
   agentPersistence,
@@ -34,129 +32,38 @@ import {
   Superseded,
 } from "#/modules/agent/persistence.server";
 import { FAILURES, providerFailure } from "#/modules/agent/provider-error";
-import { latestPageContext, PageContext, type PagePlace, placeForCall, placeOfPage, renderPageContext, withPageContext } from "#/modules/agent/page-context";
+import { latestPageContext, PageContext, type PagePlace, placeOfPage, renderPageContext, withPageContext } from "#/modules/agent/page-context";
 import { notSetUpScript, ScriptedAdapter, stubScript } from "#/modules/agent/scripted-adapter.server";
 import { PostHog } from "#/modules/analytics/posthog.server";
-import { decideApproval, requestApproval, reviewedDiff, trustedApproval } from "#/modules/approvals/approvals.server";
-import type { Ran } from "#/modules/commands/command.server";
-import { findCommand, inputSchema, type Published, runCommand } from "#/modules/commands/commands.server";
-import { COMMANDS } from "#/modules/commands/registry.server";
-import { callStore, readStore, type StoreSource } from "#/modules/config-store/config-store.server";
-import type { StoreAnswer, StoreCall, StoreRefusal, StoreResult } from "#/modules/config-store/store.contract";
+import { decideApproval } from "#/modules/approvals/approvals.server";
+import { readStore } from "#/modules/config-store/config-store.server";
 import type { Caller } from "#/modules/identity/actor";
-import { answerForSupport, refusalForSupport } from "#/modules/support-access/support-view";
 import { projectJsonValue } from "#/lib/json";
-import { uuidFrom } from "#/server/uuid-from";
 
 type Gated = { outcome: ToolOutcome } | { asking: { approvalId: string; message: string } };
 type Run = <A, E>(effect: Effect.Effect<A, E, AgentServices>) => Promise<A>;
 
-const refused = (code: string, message: string): ToolOutcome => ({ ok: false, refusal: { code, message, details: null } });
-const invalid = (message: string) => refused("invalid_argument", message);
+const invalid = (message: string): ToolOutcome => ({ ok: false, refusal: { code: "invalid_argument", message, details: null } });
 
-const ApprovalAsked = Schema.Struct({ approval_id: Schema.String });
-const DeniedApproval = Schema.Struct({ approval: Schema.Struct({ reason: Schema.NullOr(Schema.String) }) });
-
-/** A denial as the agent hears it: what was denied and the human's reason, without the approval's ID to echo. */
-const denialForAgent = (what: string, refusal: StoreRefusal): StoreRefusal => {
-  if (refusal.code !== "approval_denied") return refusal;
-  const reason = Option.match(Schema.decodeUnknownOption(DeniedApproval)(refusal.details), { onNone: () => null, onSome: ({ approval }) => approval.reason });
-  return { code: refusal.code, message: `A human denied this ${what}${reason === null ? "." : `: ${reason}`}`, details: { approval: { reason } } };
+/** A gated call as the sidebar shows it: the Store write it committed is the card's data, not the tool's own answer. */
+const shown = (result: AgentResult): Gated => {
+  if ("asking" in result) return { asking: { approvalId: result.asking.approvalId, message: result.asking.refusal.message } };
+  const { outcome, written } = result;
+  if (written === null) return { outcome };
+  if (outcome.ok && "nothing_destroyed" in outcome) return { outcome: { ok: true, value: written, nothing_destroyed: true } };
+  return { outcome: { ok: true, value: written } };
 };
 
-const ACTS = {
-  service: "Service act",
-  drain: "drain",
-  upgrade: "upgrade",
-  set_server: "server policy change",
-  clean: "cleanup",
-  remove_server: "server removal",
-  forget_server: "server forget",
-  volume: "Volume run",
-} as const satisfies Record<Act["action"]["action"], string>;
-
-/** A UUID that only `approvalId` produces, so a second Deploy under one approval replays the first instead of running. */
-const approvalUuid = (approvalId: string) => uuidFrom(`ployz.agent.deploy:${approvalId}`);
-
-/**
- * `command` pinned to what one approval allows exactly once: a Deploy keyed by the approval, so a second one replays the
- * first, and a Publish of exactly the reviewed version, which the Store refuses as stale once that Publish committed.
- */
-const onceFor = (command: ConfigCommand, approvalId: string, reviewed: DiffView | null): ConfigCommand => {
-  if (command.command === "admit") return { ...command, id: approvalUuid(approvalId) };
-  if (command.command === "publish" && command.version == null && reviewed !== null) return { ...command, version: reviewed.version };
-  return command;
-};
-
-const StaleReview = Schema.Struct({
-  diff: Schema.Struct({
-    environment: Schema.Struct({ id: Schema.String, project: Schema.String, name: Schema.String, revision: Schema.Number }),
-    saved: Schema.NullOr(Schema.Number),
-    published: Schema.Boolean,
-  }),
-});
-
-/**
- * The Publish `reviewed` approved, when the Store refuses a replay of exactly its version as stale because it already
- * landed: Saved State holds the very Working State the human reviewed. Any other version keeps the Store's conflict.
- */
-const landedPublish = (sent: ConfigCommand, reviewed: DiffView, refusal: StoreRefusal): ConfigWritten | null => {
-  if (sent.command !== "publish" || sent.version !== reviewed.version || refusal.code !== "conflict") return null;
-  const stale = Schema.decodeUnknownOption(StaleReview)(refusal.details);
-  if (Option.isNone(stale)) return null;
-  const { environment, saved, published } = stale.value.diff;
-  const same = environment.id === reviewed.environment.id && environment.revision === reviewed.environment.revision;
-  return published && same ? { written: "published", environment, saved, created: false } : null;
-};
-
-/** A Store answer as `caller` may read it: support sees it under the Organization's rules. */
-const shownTo = <C extends StoreCall>(caller: Caller, call: C, result: StoreResult<StoreAnswer<C>>) =>
-  caller.support === null ? result : answerForSupport(call, result, caller.support);
-
-const runGated = Effect.fn("Agent.runGated")(function* (caller: Caller, asked: ConfigCommand, approvalId: string | null) {
-  const trusted = yield* trustedApproval(caller.organization.id, approvalId);
-  if (!trusted.ok) return { outcome: { ok: false, refusal: denialForAgent(asked.command === "publish" ? "publish" : "deploy", trusted.refusal) } } satisfies Gated;
-  const reviewed = approvalId === null || trusted.approval === "required" ? null : yield* reviewedDiff(caller.organization.id, approvalId);
-  const command = approvalId === null ? asked : onceFor(asked, approvalId, reviewed);
-  const call = { operation: "write", command } as const;
-  const stored = yield* callStore(caller.organization.id, caller.userId, call, AGENT, trusted.approval);
-  const landed = stored.ok || reviewed === null ? null : landedPublish(command, reviewed, stored.refusal);
-  if (landed !== null) return { outcome: { ok: true, value: landed } } satisfies Gated;
-  const result = shownTo(caller, call, stored);
-  if (result.ok && trusted.approval === "required") return { outcome: { ...result, nothing_destroyed: true } } satisfies Gated;
-  if (stored.ok || stored.refusal.code !== "approval_required") return { outcome: result } satisfies Gated;
-  const request: StoreRefusal = yield* requestApproval(caller, command, stored.refusal);
-  return asking(request) ?? { outcome: { ok: false, refusal: caller.support === null ? request : refusalForSupport(request, caller.support) } } satisfies Gated;
-});
-
-const asking = (refusal: StoreRefusal): Extract<Gated, { asking: unknown }> | null => {
-  const recorded = Schema.decodeUnknownOption(ApprovalAsked)(refusal.details);
-  return Option.isNone(recorded) ? null : { asking: { approvalId: recorded.value.approval_id, message: refusal.message } };
-};
-
-const runGatedAct = Effect.fn("Agent.runGatedAct")(function* (caller: Caller, act: Act, approvalId: string | null) {
-  const result = yield* callCloud(caller, { act }, approvalId);
-  if (result.ok) return { result };
-  if (result.refusal.code === "approval_required") {
-    const asked = asking(result.refusal);
-    if (asked !== null) return asked;
-  }
-  return { result: { ok: false, refusal: denialForAgent(ACTS[act.action.action], result.refusal) } as const };
-});
-
-/** A published command's answer as the model hears it; the line `ployz` prints for a human is not for the model. */
-const heard = (ran: Ran<unknown>): ToolOutcome => ran.ok ? { ok: true, value: ran.output } : { ok: false, refusal: ran.refusal };
+const outcomeOf = (result: AgentResult): ToolOutcome => "asking" in result ? { ok: false, refusal: result.asking.refusal } : result.outcome;
 
 type AgentServices =
-  | Effect.Services<ReturnType<typeof runGated>>
-  | Effect.Services<ReturnType<typeof runGatedAct>>
-  | Effect.Services<ReturnType<typeof runCommand>>
+  | Effect.Services<ReturnType<typeof runAgentCall>>
   | Effect.Services<ReturnType<typeof agentPersistence>>;
 
 const decodeArguments = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 const toolInput = (args: string) => projectJsonValue(Option.getOrElse(decodeArguments(args.trim() === "" ? "{}" : args), () => null)) ?? null;
 
-const placeIn = (caller: Caller, messages: ReadonlyArray<ModelMessage>) => {
+const placeIn = (caller: AgentCaller, messages: ReadonlyArray<ModelMessage>) => {
   const organizationId = caller.organization.id;
   return placeOfPage(
     latestPageContext(messages),
@@ -167,38 +74,7 @@ const placeIn = (caller: Caller, messages: ReadonlyArray<ModelMessage>) => {
   );
 };
 
-/** A catalog tool whose input takes a Project: it acts in an Environment, defaulting to the place when a call names none. */
-const ScopedTool = Schema.Struct({ name: Schema.String, input_schema: Schema.Struct({ properties: Schema.Struct({ project: Schema.Struct({}) }) }) });
-const SCOPED = new Set(CATALOG.tools.filter(Schema.is(ScopedTool)).map((tool) => tool.name));
-const namesProject = Schema.is(Schema.Struct({ project: Schema.String }));
-
 type Here = { page: PagePlace };
-
-/** The place `tool` runs `input` at from the page in `here`, or the refusal the model hears instead. */
-const placeOf = (caller: Caller, here: Here, tool: string, input: JsonValue): { place: Place } | { refusal: ToolOutcome } => {
-  const call = placeForCall(here.page, { scoped: SCOPED.has(tool), namesProject: namesProject(input) });
-  if (!call.ok) return { refusal: refused(call.code, call.message) };
-  return { place: { project: call.project, environment: call.environment, store: { at: "cloud", organization: caller.organization.id } } };
-};
-
-const answered = (result: StoreResult<unknown>): Answer =>
-  result.ok ? { value: projectJsonValue(result.value) ?? null } : { error: result.refusal };
-
-const storeAnswer = <C extends StoreCall>(caller: Caller, call: C, source?: StoreSource) =>
-  callStore(caller.organization.id, caller.userId, call, source).pipe(Effect.map((result) => answered(shownTo(caller, call, result))));
-
-const agentRead = (caller: Caller) => (ask: Ask) =>
-  ask.at === "store"
-    ? storeAnswer(caller, { operation: "read", query: ask.ask })
-    : callCloud(caller, { ask: ask.ask }).pipe(Effect.map(answered));
-
-const agentWrite = (caller: Caller) => (write: Write) =>
-  write.at === "store"
-    ? storeAnswer(caller, { operation: "write", command: write.write }, AGENT)
-    : callCloud(caller, { act: write.write }).pipe(Effect.map(answered));
-
-export const runTool = (caller: Caller, tool: string, input: JsonValue, place: Place, callKey: string) =>
-  finish(agentStart(tool, input, place, callKey), agentRead(caller), agentWrite(caller));
 
 /** The latest assistant turn's tool calls that have no result yet: what the tool phase is about to run. */
 const pendingCalls = (messages: ReadonlyArray<ModelMessage>) => {
@@ -207,11 +83,11 @@ const pendingCalls = (messages: ReadonlyArray<ModelMessage>) => {
   return (messages[turn]?.toolCalls ?? []).filter((call) => !answered.has(call.id));
 };
 
-const approvalGate = (caller: Caller, run: Run, here: Here) => {
+const approvalGate = (caller: AgentCaller, run: Run, here: Here) => {
   const outcomes = new Map<string, ToolOutcome>();
   const answers = new Map<string, { approvalId: string | null; cancelled: boolean }>();
   const decide = (call: { id: string; function: { name: string; arguments: string } }, turn: string) =>
-    Effect.gen(function* (): Effect.fn.Return<Gated, Effect.Error<ReturnType<typeof runGated>> | Effect.Error<ReturnType<typeof runCommand>>, AgentServices> {
+    Effect.gen(function* (): Effect.fn.Return<Gated, Effect.Error<ReturnType<typeof runAgentCall>>, AgentServices> {
       const answer = answers.get(call.id);
       if (answer?.cancelled === true) {
         if (answer.approvalId !== null) {
@@ -219,24 +95,8 @@ const approvalGate = (caller: Caller, run: Run, here: Here) => {
         }
         return { outcome: { ok: false, cancelled: true } };
       }
-      const published = findCommand(call.function.name);
-      if (published !== undefined) {
-        const ran = yield* runCommand(caller, published.name, toolInput(call.function.arguments), { approvalId: answer?.approvalId ?? null, key: `${turn}:${call.id}` });
-        return (!ran.ok && ran.refusal.code === "approval_required" ? asking(ran.refusal) : null) ?? { outcome: heard(ran) };
-      }
-      const read = agentRead(caller);
       const input = toolInput(call.function.arguments);
-      const at = placeOf(caller, here, call.function.name, input);
-      if ("refusal" in at) return { outcome: at.refusal };
-      const started = agentStart(call.function.name, input, at.place, `${turn}:${call.id}`);
-      const paused = yield* untilWrite(started, read);
-      const { step, state } = paused;
-      if (step.step !== "write") return { outcome: yield* finish(paused, read, agentWrite(caller)) };
-      const { write } = step;
-      if (write.at === "store") return yield* runGated(caller, write.write, answer?.approvalId ?? null);
-      const acted = yield* runGatedAct(caller, write.write, answer?.approvalId ?? null);
-      if ("asking" in acted) return acted;
-      return { outcome: yield* finish(agentResume(state, [answered(acted.result)]), read, agentWrite(caller)) };
+      return shown(yield* runAgentCall(caller, { tool: call.function.name, input, key: `${turn}:${call.id}`, approvalId: answer?.approvalId ?? null, page: here.page }));
     });
 
   return defineChatMiddleware<unknown, readonly [], readonly [], typeof approvalInterrupt>({
@@ -275,30 +135,16 @@ const approvalGate = (caller: Caller, run: Run, here: Here) => {
   });
 };
 
-const publishedTool = (caller: Caller, run: Run, turn: string) => (command: Published) =>
-  toolDefinition({ name: command.name, description: command.about, inputSchema: inputSchema(command) })
+/** Every agent tool. A gated one runs in the approval gate, so its own handler never does. */
+const agentTools = (caller: AgentCaller, run: Run, turn: string, here: Here) => AGENT_TOOLS.map((tool) =>
+  toolDefinition({ name: tool.name, description: tool.description, inputSchema: tool.inputSchema })
     .server((args, context) => {
-      if (GATED.has(command.name)) throw new Error(`${command.name} ran outside the approval gate.`);
+      if (GATED.has(tool.name)) throw new Error(`${tool.name} ran outside the approval gate.`);
       const key = `${turn}:${context?.toolCallId ?? randomUUID()}`;
-      return run(runCommand(caller, command.name, projectJsonValue(args) ?? null, { approvalId: null, key }).pipe(Effect.map(heard)));
-    });
+      return run(runAgentCall(caller, { tool: tool.name, input: projectJsonValue(args) ?? null, key, approvalId: null, page: here.page }).pipe(Effect.map(outcomeOf)));
+    }));
 
-/** The compiled catalog's tools, then every published command Cloud offers agents. */
-const agentTools = (caller: Caller, run: Run, turn: string, here: Here) => [
-  ...CATALOG.tools.map((tool) =>
-    // SAFETY: the catalog writes each input schema as a JSON Schema object.
-    toolDefinition({ name: tool.name, description: tool.description, inputSchema: tool.input_schema as JSONSchema })
-      .server((args, context) => {
-        if (GATED.has(tool.name)) throw new Error(`${tool.name} ran outside the approval gate.`);
-        const input = projectJsonValue(args) ?? null;
-        const at = placeOf(caller, here, tool.name, input);
-        if ("refusal" in at) return at.refusal;
-        return run(runTool(caller, tool.name, input, at.place, `${turn}:${context?.toolCallId ?? randomUUID()}`));
-      })),
-  ...COMMANDS.filter((command) => command.agents).map(publishedTool(caller, run, turn)),
-];
-
-const systemPrompt = (caller: Caller, model: string) => `${CATALOG.instructions}
+const systemPrompt = (caller: AgentCaller, model: string) => `${CATALOG.instructions}
 
 You are ${model}, the Ployz agent in the sidebar of Ployz Cloud. You act in the Organization "${caller.organization.slug}" as the member who is talking to you. Never act in another Organization.
 
@@ -545,7 +391,7 @@ async function* startOnce(
  * replaces the configured one, for the agent eval.
  */
 export const agentChat = Effect.fn("Agent.chat")(function* (person: Caller, request: ChatRequest, model?: AnyTextAdapter) {
-  const caller: Caller = { ...person, via: "agent" };
+  const caller: AgentCaller = { ...person, via: "agent" };
   const run: Run = Effect.runPromiseWith(yield* Effect.context<AgentServices>());
   const scope: AgentScope = { organizationId: caller.organization.id, userId: caller.userId };
   const persistence = yield* agentPersistence(scope);
