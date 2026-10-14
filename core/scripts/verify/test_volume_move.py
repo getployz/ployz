@@ -1706,6 +1706,16 @@ class VolumeMoveTests(unittest.TestCase):
                 result, _ = self.run_with(name, lambda model: self.admit_pull(model, "machine-2", 30, 40))
                 self.assert_not_credited(result)
 
+    def test_a_receive_whose_pull_names_an_older_epoch_is_not_credited_to_the_first_run(self):
+        # A late step of the closed run admits its own round pull after the clean start, and that receive runs while
+        # the first run, epoch 2, works.
+        def late_pull(begun):
+            model = self.model
+            model.at(begun + 1, lambda: (model.pull_targets.update({"machine-2": "w-1-0"}),
+                                         setattr(model, "receiving", {"machine-2"})))
+        result, _ = self.run_with("soak-1-rounds-runner-kill", self.close_an_earlier_run, 5, late_pull)
+        self.assertIn("the trigger never fired before the run ended", result["failures"], result)
+
     def test_a_cut_an_earlier_move_left_waiting_in_the_daemon_is_not_credited_to_the_first_run(self):
         # Codex r4's detached cut: the cut waits for the admission turn and stops the writer after the clean start.
         def waiting(model):
