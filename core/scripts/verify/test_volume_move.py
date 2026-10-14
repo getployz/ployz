@@ -2563,6 +2563,12 @@ finally:
                                   lambda begun: self.model.log_fault("machine-1", begun + 1, epoch=1))
         self.assert_not_credited(result)
 
+    def test_a_fault_line_from_another_gen_with_this_runs_epoch_is_not_credited(self):
+        # A later run that reuses the epoch, say after a requeue, names the same snapshot; only its gen differs.
+        result, _ = self.run_with("kill-snapshot", lambda model: setattr(self, "model", model), 3,
+                                  lambda begun: self.model.log_fault("machine-1", begun + 1, gen=999))
+        self.assert_not_credited(result)
+
     def test_a_fault_line_for_another_volume_is_not_credited(self):
         result, _ = self.run_with("kill-snapshot", lambda model: setattr(self, "model", model), 3,
                                   lambda begun: self.model.log_fault("machine-1", begun + 1, volume="other_vol"))
