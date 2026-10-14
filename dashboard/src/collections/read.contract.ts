@@ -26,7 +26,7 @@ export type StoreViewName = (typeof storeViewNames)[number];
  * What a change stream event names: an Org Store collection, `organization` for the organization state read,
  * `server_upgrade` for the Servers' latest Upgrade attempts, or a Config Store table family.
  */
-export const changeNameSchema = Schema.Literals([...collectionNames, "organization", "server_upgrade", "server_drain", "volume_run", "volume_placement", "members", ...storeViewNames]);
+export const changeNameSchema = Schema.Literals([...collectionNames, "organization", "server_upgrade", "server_drain", "volume_run", "service_act", "volume_placement", "members", ...storeViewNames]);
 export type ChangeName = typeof changeNameSchema.Type;
 
 /** A collection read. `full` replaces every row; otherwise drop `deleted`, then upsert `rows`. `cursor` is the next `since`. */

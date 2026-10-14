@@ -13,10 +13,14 @@ use super::{
     VolumeStorage,
     inspect::internal,
     mirror,
-    storage::{PROMOTE_PROPERTY, PULL_PROPERTY, root_dataset, slot_fs, slot_parent},
+    storage::{
+        PROMOTE_PROPERTY, PULL_PROPERTY, PULLED_PROPERTY, root_dataset, slot_fs, slot_parent,
+    },
+    transfer::{Stop, ZfsChild, exited},
 };
 
-/// On a seeded root: the guid of the restore point it holds.
+/// On the root a seed lands as: the guid of the restore point it holds. Landing sets it on
+/// the slot just before the rename, so a completed copy that has not landed carries none.
 pub(super) const SEED_PROPERTY: &str = "ployz:seed";
 
 impl VolumeStorage {
@@ -107,12 +111,10 @@ impl VolumeStorage {
         self.zfs(&["set", &format!("{PULL_PROPERTY}={}", point.name), &parent])
             .await
             .map_err(internal)?;
-        let outcome = self.receives.start(&into);
         let storage = self.clone();
         let snapshot = format!("{source}@{}", point.name);
-        tokio::spawn(async move {
-            let result = storage.copy_snapshot(&snapshot, &fs, bound).await;
-            *outcome.lock().expect("outcome lock") = Some(result);
+        self.receives.spawn(&into, |stop| async move {
+            storage.copy_snapshot(&snapshot, &fs, bound, &stop).await
         });
         self.seeded(&pool, &into).await
     }
@@ -138,6 +140,10 @@ impl VolumeStorage {
         snapshot: &str,
         request: &SeedVolumeRequest,
     ) -> Result<(), RpcError> {
+        // The slot may be a mirror that pulled this point; landed, it is no received copy.
+        self.zfs(&["inherit", PULLED_PROPERTY, fs])
+            .await
+            .map_err(internal)?;
         self.zfs(&["set", &format!("{SEED_PROPERTY}={}", request.guid), fs])
             .await
             .map_err(internal)?;
@@ -172,54 +178,73 @@ impl VolumeStorage {
         Ok(())
     }
 
-    /// `zfs send` of one local snapshot piped into a bounded, read-only receive of `fs`.
-    async fn copy_snapshot(&self, snapshot: &str, fs: &str, bound: u64) -> Result<(), String> {
-        let mut send = Command::new(&self.zfs)
-            .args(["send", snapshot])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|error| format!("could not run zfs send: {error}"))?;
+    /// `zfs send` of one local snapshot piped into a bounded, read-only receive of `fs`,
+    /// checked read-only at its bound once the receive has it all. It sets no `pulled`
+    /// mark, so a departure keeps a seed that has not landed. Once `stop` fires, both are
+    /// killed and reaped before this returns.
+    async fn copy_snapshot(
+        &self,
+        snapshot: &str,
+        fs: &str,
+        bound: u64,
+        stop: &Stop,
+    ) -> Result<(), String> {
+        let mut send = ZfsChild::spawn(
+            Command::new(&self.zfs)
+                .args(["send", snapshot])
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped()),
+            stop,
+        )
+        .map_err(|error| format!("could not run zfs send: {error}"))?;
         let stream = send
+            .child()
             .stdout
             .take()
             .expect("zfs send stdout is piped")
             .into_owned_fd()
             .map_err(|error| format!("could not hand the send stream over: {error}"))?;
         let refquota = format!("refquota={bound}");
-        let receive = Command::new(&self.zfs)
-            .args([
-                "receive",
-                "-u",
-                "-s",
-                "-o",
-                "readonly=on",
-                "-o",
-                &refquota,
-                fs,
-            ])
-            .stdin(Stdio::from(stream))
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|error| format!("could not run zfs receive: {error}"))?;
-        let (sent, received) = tokio::join!(send.wait_with_output(), receive.wait_with_output());
-        let received = received.map_err(|error| format!("zfs receive did not finish: {error}"))?;
-        let sent = sent.map_err(|error| format!("zfs send did not finish: {error}"))?;
-        if !received.status.success() {
-            return Err(format!(
-                "zfs receive into {fs} failed: {}",
-                String::from_utf8_lossy(&received.stderr).trim()
-            ));
+        let mut receive = ZfsChild::spawn(
+            Command::new(&self.zfs)
+                .args([
+                    "receive",
+                    "-u",
+                    "-s",
+                    "-o",
+                    "readonly=on",
+                    "-o",
+                    &refquota,
+                    fs,
+                ])
+                .stdin(Stdio::from(stream))
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped()),
+            stop,
+        )
+        .map_err(|error| format!("could not run zfs receive: {error}"))?;
+        let exits = {
+            let both = async { tokio::join!(exited(send.child()), exited(receive.child())) };
+            tokio::select! {
+                biased;
+                () = stop.cancelled() => None,
+                exits = both => Some(exits),
+            }
+        };
+        send.reap().await;
+        receive.reap().await;
+        let Some((sent, received)) = exits else {
+            return Err(format!("the seed of {fs} was stopped"));
+        };
+        let (received, stderr) =
+            received.map_err(|error| format!("zfs receive did not finish: {error}"))?;
+        if !received.success() {
+            return Err(format!("zfs receive into {fs} failed: {}", stderr.trim()));
         }
-        if !sent.status.success() {
-            return Err(format!(
-                "zfs send of {snapshot} failed: {}",
-                String::from_utf8_lossy(&sent.stderr).trim()
-            ));
+        let (sent, stderr) = sent.map_err(|error| format!("zfs send did not finish: {error}"))?;
+        if !sent.success() {
+            return Err(format!("zfs send of {snapshot} failed: {}", stderr.trim()));
         }
         self.finish_copy(fs, bound).await
     }

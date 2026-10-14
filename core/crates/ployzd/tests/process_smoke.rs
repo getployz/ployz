@@ -13,7 +13,7 @@ use std::{
 use ployz_core::{
     AdvertisedEndpoint, DESCRIBE_CONTRACT_CAPABILITY, DescribeContractRequest, EnrollAs,
     EnrollRequest, Enrolled, InspectRequest, Machine, MachineId, MachineName, MachineRpcClient,
-    Registered, op,
+    Registered, StorageDeparture, op,
 };
 use tonic::transport::{Channel, Endpoint};
 
@@ -240,9 +240,16 @@ fn serve_empty_plugin(socket: &Path) {
             .unwrap()
             .block_on(async move {
                 let listener = tokio::net::UnixListener::bind(&socket).unwrap();
-                let router = axum::Router::new().fallback(axum::routing::post(|| async {
-                    axum::Json(serde_json::json!({"Ok": []}))
-                }));
+                let router = axum::Router::new()
+                    .route(
+                        "/Storage.Demote",
+                        axum::routing::post(|| async {
+                            axum::Json(serde_json::json!({"Ok": StorageDeparture::default()}))
+                        }),
+                    )
+                    .fallback(axum::routing::post(|| async {
+                        axum::Json(serde_json::json!({"Ok": []}))
+                    }));
                 axum::serve(listener, router).await.unwrap();
             });
     });

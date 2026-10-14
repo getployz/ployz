@@ -98,6 +98,12 @@ A run that can't be stopped, such as a mirror removal, says it finishes on its o
 VolumeBusy: data is busy with a mirror removal; it finishes on its own
 ```
 
+While a deploy runs, each of these runs is refused until the deploy ends:
+
+```
+data is deploying; the Deploy ends its run
+```
+
 `volume sync` starts no run. It hands the mirror its pull and prints what it did, like Refresh
 now; `ployz volume show data` shows the download. `volume sync data --full` copies everything
 again as a run, and takes `--wait`.
@@ -127,6 +133,14 @@ server, and the move is requested again once the deploy ends. From the moment `w
 start your service, a deploy follows the move and starts your service on `web-2`. A deploy with a
 volume change staged on that volume fails instead, with "data is starting on web-2; it finishes
 there", and the change waits for your next deploy.
+
+A move asked for while a deploy runs is refused:
+
+```
+data is deploying; the Deploy ends its run
+```
+
+Ask for the move again once the deploy ends.
 
 ## When a move stops
 
@@ -159,6 +173,8 @@ service, the move can only finish there, so Release is refused:
 ```
 data is starting on web-2; it finishes there
 ```
+
+While a deploy runs, Release is refused with "data is deploying; the Deploy ends its run".
 
 Finishing on `web-2` still needs the old server to answer for its container. If the old server
 dies, the move fails, and your service stays down until it comes back or you restore the volume.

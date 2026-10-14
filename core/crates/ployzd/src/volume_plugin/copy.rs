@@ -20,11 +20,12 @@ use super::{
     inspect::internal,
     mirror,
     pool::UnlabeledBacking,
+    seed::SEED_PROPERTY,
     storage::{
         CUT_PROPERTY, DATASET_ROOT, EPOCH_PROPERTY, PROMOTE_PROPERTY, PULL_PROPERTY,
-        RESUME_TOKEN_PROPERTY, slot_fs, slot_parent,
+        PULLED_PROPERTY, RESUME_TOKEN_PROPERTY, slot_fs, slot_parent,
     },
-    transfer::ReceiveFailure,
+    transfer::{ReceiveFailure, Stop},
 };
 
 type Copy = Option<VolumeCopy>;
@@ -448,6 +449,9 @@ impl VolumeStorage {
         {
             self.z(&["receive", "-A", &fs_name]).await?;
         }
+        // The slot stops being a received copy here, so the departure must not take it
+        // for one from a crash on.
+        self.z(&["inherit", PULLED_PROPERTY, &fs_name]).await?;
         self.z(&[
             "set",
             &format!("{EPOCH_PROPERTY}={}", request.epoch),
@@ -610,10 +614,6 @@ impl VolumeStorage {
                 "slot {parent} carries no bound"
             ))));
         }
-        if pulling.as_deref() != Some(target.as_str()) {
-            self.z(&["set", &format!("{PULL_PROPERTY}={target}"), &parent])
-                .await?;
-        }
         let fs = slot_fs(&scope.pool, name);
         let newest = match scope.fs() {
             Some(_) => self
@@ -624,19 +624,23 @@ impl VolumeStorage {
                 .next(),
             None => None,
         };
-        if newest
-            .as_ref()
-            .is_some_and(|newest| newest.name == request.target)
-        {
+        let newest_name = newest.as_ref().map(|newest| newest.name.as_str());
+        if newest_name == Some(target.as_str()) {
             self.finish_copy(&fs, bound)
                 .await
                 .map_err(|error| internal(error.into()))?;
             let snapshots = self.snapshots(&fs).await.map_err(internal)?;
             self.destroy_snapshots(&fs, snapshots.get(1..).unwrap_or_default())
                 .await?;
-            self.z(&["inherit", PULL_PROPERTY, &parent]).await?;
+            if pulling.is_some() {
+                self.z(&["inherit", PULL_PROPERTY, &parent]).await?;
+            }
             self.receives.forget(name);
             return self.copy_now(&scope).await;
+        }
+        if pulling.as_deref() != Some(target.as_str()) {
+            self.z(&["set", &format!("{PULL_PROPERTY}={target}"), &parent])
+                .await?;
         }
         let bound = if fresh {
             bound
@@ -668,15 +672,17 @@ impl VolumeStorage {
             name: request.name.clone(),
             source,
         };
-        let outcome = self.receives.start(name);
         let storage = self.clone();
         let from = request.from;
-        tokio::spawn(async move {
-            let result = storage.pull_stream(from, stream, &fs, bound).await;
+        self.receives.spawn(name, |stop| async move {
+            let result = match storage.pull_stream(from, stream, &fs, bound, &stop).await {
+                Ok(()) => storage.mark_pulled(&fs).await,
+                Err(error) => Err(error),
+            };
             if let Err(error) = &result {
                 tracing::warn!(%fs, %error, "Volume pull failed");
             }
-            *outcome.lock().expect("outcome lock") = Some(result);
+            result
         });
         self.copy_now(&scope).await
     }
@@ -691,9 +697,10 @@ impl VolumeStorage {
         stream: SendStream,
         fs: &str,
         bound: u64,
+        stop: &Stop,
     ) -> Result<(), String> {
         let fault = "SetVolumeCopy.MirrorToMirror";
-        match self.receive(from, &stream, fs, bound, fault).await {
+        match self.receive(from, &stream, fs, bound, fault, stop).await {
             Ok(()) => return Ok(()),
             Err(ReceiveFailure::Failed(error)) => return Err(error),
             Err(ReceiveFailure::NoStream(_)) => {}
@@ -718,7 +725,7 @@ impl VolumeStorage {
             source: SendSource::Full { target },
         };
         let opened = self
-            .open_stream(from, &full)
+            .open_stream(from, &full, stop)
             .await
             .map_err(|failure| failure.to_string())?;
         // Aborting an interrupted first receive destroys the copy it began.
@@ -727,9 +734,38 @@ impl VolumeStorage {
                 .await
                 .map_err(|error| error.to_string())?;
         }
-        self.receive_opened(opened, fs, bound, fault)
+        self.receive_opened(opened, fs, bound, fault, stop)
             .await
             .map_err(|failure| failure.to_string())
+    }
+
+    /// Marks the slot received from a writer elsewhere. A receive that exits 0 made the
+    /// stream's snapshot, and a pull of the slot's own newest never starts one, so the
+    /// newest snapshot is the one a writer elsewhere sent. Any cut, restore, promote or
+    /// seed mark describes a point that writer has since built on, so each goes first: a
+    /// crash between leaves a slot with neither, which the departure keeps.
+    async fn mark_pulled(&self, fs: &str) -> Result<(), String> {
+        let Some(newest) = self
+            .newest_guid(fs)
+            .await
+            .map_err(|error| error.to_string())?
+        else {
+            return Ok(());
+        };
+        for mark in [
+            CUT_PROPERTY,
+            EPOCH_PROPERTY,
+            PROMOTE_PROPERTY,
+            SEED_PROPERTY,
+        ] {
+            self.zfs(&["inherit", mark, fs])
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+        self.zfs(&["set", &format!("{PULLED_PROPERTY}={newest}"), fs])
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(())
     }
 
     /// The slot's bound raised to the writer's, when the writer's Volume grew since the
