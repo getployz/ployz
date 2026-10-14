@@ -572,6 +572,26 @@ class Reset(unittest.TestCase):
         self.sh("stash=$1\n" + boat.RESTORE, self.stash)
         self.assertEqual(self.tree(), bake)
 
+    def test_restore_drops_scratch_a_run_left_and_keeps_live_agent_and_systemd_state(self):
+        self.write("var/tmp/ariana/db", "agent")
+        self.sh(boat.KEEP_INSTALL)
+        self.write("etc/default/ployz", "PLOYZ_FLAG=1")
+        self.write("root/.cache/ployz/deep/file", "run")
+        self.write("root/notes", "edited")
+        self.write("srv/data", "run")
+        self.write("var/tmp/cloud-init/run-file", "run")
+        self.write("var/tmp/a name with\nnewline", "run")
+        survivors = {"var/tmp/ariana/db-wal": "agent", "var/tmp/systemd-private-abc/tmp/x": "boot"}
+        for name, content in survivors.items():
+            self.write(name, content)
+        expected = self.tree()
+        for name in ["etc/default/ployz", "root/.cache", "root/.cache/ployz", "root/.cache/ployz/deep",
+                     "root/.cache/ployz/deep/file", "srv/data", "var/tmp/cloud-init/run-file", "var/tmp/a name with\nnewline"]:
+            del expected[name]
+        self.sh("stash=$1\n" + boat.RESTORE, self.stash)
+        # Reset keeps a bake file's path; it only proves the path list, and the fingerprint lists paths, not contents.
+        self.assertEqual(self.tree(), expected)
+
 
 if __name__ == "__main__":
     unittest.main()

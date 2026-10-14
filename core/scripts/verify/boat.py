@@ -75,10 +75,19 @@ POOL = REGISTRY / "pool.ledger"
 POOL_SIZE = int(os.environ.get("PLOYZ_VERIFY_BOAT_POOL", 6))
 # The bake's own ployz install, relative to /; a run's install overwrites it, so reset restores it from STASH.
 INSTALLED = ("usr/local/bin/ployz* etc/systemd/system/ployz* etc/systemd/system/*.wants/ployz* etc/docker/daemon.json "
-             "etc/modprobe.d/ployz* etc/modules-load.d/ployz*")
+             "etc/modprobe.d/ployz* etc/modules-load.d/ployz* etc/default/ployz*")
 # Files a run replaces outside INSTALLED: test-verify-warm-move.py swaps runc for a wrapper and keeps runc.<tag>-original.
 REPLACED = "usr/bin/runc"
 STASH = "/var/lib/ployz-verify-bake.tar"
+
+
+def scratch(depth=""):
+    """find over the directories a run can litter that the base image fills itself, relative to /, before its action.
+
+    Boat's agent keeps live state in var/tmp/ariana, and systemd names new private directories every boot, so both are skipped."""
+    return f"find root srv var/tmp -mindepth 1 {depth}\\( -path 'var/tmp/systemd-private-*' -o -path var/tmp/ariana \\) -prune -o"
+
+
 # Linux's default ip_local_port_range: avahi, Boat's wg0 and the kernel pick a new port here on every boot.
 EPHEMERAL = (32768, 60999)
 # Image ids a fresh clone holds once Docker restored the bake's containers; reset removes every other image.
@@ -91,6 +100,8 @@ RECORD_IMAGES = HOLDS + (f"[ -e {BAKE_IMAGES} ] || {{ docker image ls -q --no-tr
 KEEP_INSTALL = f"""
 if [ ! -e {STASH} ]; then
     cd / && shopt -s nullglob && found=()
+    # Reset deletes every scratch path this listing lacks.
+    {scratch()} -print0 2>/dev/null | LC_ALL=C sort -z > {STASH}.scratch
     for path in {INSTALLED} {REPLACED} var/lib/ployz; do if [ -e "$path" ] || [ -L "$path" ]; then found+=("$path"); fi; done
     tar -cpf {STASH}.next "${{found[@]}}" && sync {STASH}.next && mv {STASH}.next {STASH}
 fi
@@ -115,6 +126,7 @@ section enabled; systemctl list-unit-files --no-legend --state=enabled | awk '{p
 section listening; ss -Hlntup | awk '{print $1, $5, $7}'
 section authorized; sha256sum /root/.ssh/authorized_keys
 section replaced; sha256sum /usr/bin/runc 2>&1; find /usr/bin -maxdepth 1 -name 'runc.*' 2>/dev/null
+section scratch; cd / && """ + scratch("-maxdepth 2 ") + r""" -printf '%p %y\n' 2>/dev/null
 true
 """
 # Puts back the bake's files from "$stash", relative to the working directory, which reset makes /.
@@ -124,6 +136,8 @@ rm -rf """ + INSTALLED + " " + REPLACED + " " + REPLACED + r""".* run/systemd/sy
 # /var/lib/ployz can be a mount point, so it stays and only its contents go.
 find var/lib/ployz -mindepth 1 -delete
 find var/lib run opt -mindepth 1 -maxdepth 1 -name '*ployz*' ! -path var/lib/ployz ! -path "${stash#/}*" -exec rm -rf {} +
+[ -e "$stash.scratch" ] || { echo "no record of the bake's scratch paths" >&2; exit 1; }
+""" + scratch() + r""" -print0 2>/dev/null | LC_ALL=C sort -z | LC_ALL=C comm -z -13 "$stash.scratch" - | xargs -0r rm -rf --
 tar -xpf "$stash" -C .
 """
 # Returns the guest to the bake: what uninstall.sh removes, everything else a run makes, then the bake's install.
