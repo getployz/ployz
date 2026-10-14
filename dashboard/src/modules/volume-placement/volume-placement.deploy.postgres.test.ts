@@ -330,6 +330,46 @@ describe("deploying a Volume placement", () => {
     expect((await runRows()).map((row) => row.state)).toEqual(["yielded", "done"]);
   });
 
+  describe("a staged move whose run took over a Move that had cut the primary", () => {
+    const restoring = async () => {
+      members = [member("web-1", "mirror"), member("web-2", "mirror")];
+      const taken = (await land("move", '{"to":"web-2"}')).rows[0].id;
+      await stageMove("web-2", ["web-2"]);
+      const started = await run(advancePlacement(organizationId, "dep-1", null, inspect, answered));
+      if (started.kind !== "wait") throw new Error("expected a run");
+      expect((await harness.pool.query(`select kind, args from volume_run where id = $1`, [started.wait.runId])).rows)
+        .toEqual([{ kind: "restore", args: { from: "web-2" } }]);
+      return { taken, started };
+    };
+
+    it("plans again from the copies the fence left, and moves the Volume to web-2", async () => {
+      const { taken, started } = await restoring();
+      await endRun(started.wait.runId, "failed", "web-1 holds another copy of data");
+      members = [member("web-1", "writer"), member("web-2", "mirror")];
+      const moving = await run(advancePlacement(organizationId, "dep-1", started.wait, inspect, answered));
+      expect(moving).toMatchObject({ kind: "wait", wait: { volumeId, step: { run: { kind: "move", args: { to: "web-2" } }, mirrors: [] } } });
+      if (moving.kind !== "wait") throw new Error("expected a run");
+      expect(await runRows()).toEqual([
+        { id: taken, kind: "move", state: "yielded", message: "a Deploy took this run over" },
+        { id: started.wait.runId, kind: "restore", state: "failed", message: "web-1 holds another copy of data" },
+        { id: moving.wait.runId, kind: "move", state: "requested", message: null },
+      ]);
+
+      await endRun(moving.wait.runId, "done");
+      members = [member("web-2", "writer"), member("web-1", "mirror")];
+      expect(await run(advancePlacement(organizationId, "dep-1", moving.wait, inspect, answered))).toEqual({ kind: "done" });
+      expect(await placement()).toMatchObject({ mirrors: [], staged: null, deploymentId: null });
+    });
+
+    it("fails the Deploy when the copies after the fence plan the same restore", async () => {
+      const { started } = await restoring();
+      await endRun(started.wait.runId, "failed", "web-2 did not answer");
+      expect(await run(advancePlacement(organizationId, "dep-1", started.wait, inspect, answered))).toEqual({ kind: "failed", message: "data: web-2 did not answer" });
+      expect(await placement()).toMatchObject({ mirrors: [web("web-2")], staged: null, deploymentId: null });
+      expect((await runRows()).map((row) => row.state)).toEqual(["yielded", "failed"]);
+    });
+  });
+
   it("fails on a run past its return, leaving the change staged for the next Deploy", async () => {
     members = [member("web-1", "writer"), member("web-2", "mirror")];
     const committed = (await land("move", '{"to":"web-2"}', "running", "committed")).rows[0].id;
