@@ -1884,6 +1884,24 @@ mod set_volume_copy {
             );
         }
 
+        #[test]
+        fn an_admission_fault_line_names_the_volume_and_the_want() {
+            let (output, child) = run("a_cut_under_a_switch_delay", "delay-rpc:SetVolumeCopy:0");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success() && stdout.contains("1 passed"),
+                "{child}:\n{stdout}\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                fault_lines(&stdout),
+                vec![
+                    r#" WARN fault: delaying switch verb verb="SetVolumeCopy" secs=0 volume=app_data target=f-1 gen=6"#,
+                    r#" WARN fault: releasing switch verb verb="SetVolumeCopy" by=limit volume=app_data target=f-1 gen=6"#,
+                ]
+            );
+        }
+
         /// A Floor only raises the gen floor, outside the switch lock, so an armed switch
         /// fault never holds it.
         #[test]
