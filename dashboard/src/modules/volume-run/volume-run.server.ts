@@ -38,7 +38,6 @@ import { volumeRun } from "#/modules/volume-run/tables";
 import {
   ACTIVE_VOLUME_RUN_STATES,
   type AnsweredMember,
-  type AnyVolumeRunArgs,
   copyName,
   dockerVolumeName,
   managementAddress,
@@ -48,7 +47,6 @@ import {
   VOLUME_RUN_MESSAGE_LIMIT,
   VOLUME_RUN_RUNNING_CHECK_MS,
   VOLUME_RUN_UNCLAIMED_LIMIT_MS,
-  type VolumeRunArgs,
   type VolumeLaneInput,
   type VolumeRunInput,
   type VolumeRunKind,
@@ -63,21 +61,21 @@ import type { SecretEncryption } from "#/utils/encrypted-secret.server";
 type VolumeRunRow = typeof volumeRun.$inferSelect;
 type PlannedPhase = Extract<Planned, { ok: true }>["phase"];
 
-/** Plain JSON: Inngest memoizes step output as JSON. */
-export type RunContext = {
+type RunBase = {
   readonly id: string;
   readonly organizationId: string;
   readonly volumeId: string;
   readonly volumeName: string;
   readonly dockerVolume: string;
-  readonly kind: VolumeRunKind;
-  readonly args: AnyVolumeRunArgs;
   readonly orphan: boolean;
   readonly refquotaBytes: number;
   readonly gen: number;
   readonly phase: VolumeRunPhase;
   readonly current: MachineId | null;
 };
+
+/** Plain JSON: Inngest memoizes step output as JSON. */
+export type RunContext = RunBase & VolumeLaneInput;
 
 export type MachineRef = { readonly id: MachineId; readonly name: MachineName };
 
@@ -103,14 +101,18 @@ export function volumeRunView(row: VolumeRunRow): VolumeRunView {
   };
 }
 
+export function laneInputOf(lane: Pick<VolumeRunRow, "kind" | "args">): VolumeLaneInput {
+  // SAFETY: the row's kind and args were written together from one VolumeLaneInput.
+  return { kind: lane.kind, args: lane.args } as VolumeLaneInput;
+}
+
 export const contextOf = (row: VolumeRunRow): RunContext => ({
+  ...laneInputOf(row),
   id: row.id,
   organizationId: row.organizationId,
   volumeId: row.volumeId,
   volumeName: row.volumeName,
   dockerVolume: row.dockerVolume,
-  kind: row.kind,
-  args: row.args,
   orphan: row.orphan,
   refquotaBytes: row.refquotaBytes,
   gen: row.gen,
@@ -148,22 +150,20 @@ type LaneEnd = "cancelled" | "yielded";
 const keepsLane = (lane: VolumeRunRow, end: LaneEnd, kind: VolumeRunKind) =>
   pastReturn(lane) || (deploying(lane) && kind !== "deploy") || ((lane.kind === "seed" || lane.kind === "delete_mirror") && end === "cancelled");
 
-// SAFETY: the row's kind and args were written together from one VolumeRunInput.
-const laneInput = (lane: Pick<VolumeRunRow, "kind" | "args">) => ({ kind: lane.kind, args: lane.args }) as VolumeRunInput;
-
 export const laneTarget = Effect.fn("VolumeRun.laneTarget")(function* (lane: Pick<VolumeRunRow, "volumeId" | "kind" | "args" | "current">) {
-  const input = laneInput(lane);
+  const input = laneInputOf(lane);
   if (input.kind === "restore") return input.args.from;
   if (input.kind === "move") return input.args.to;
   const { current } = lane;
   if (current === null) return null;
   const { drizzle } = yield* Database;
-  const [move] = yield* drizzle.select({ args: volumeRun.args }).from(volumeRun)
+  const [move] = yield* drizzle.select({ kind: volumeRun.kind, args: volumeRun.args }).from(volumeRun)
     .where(and(eq(volumeRun.volumeId, lane.volumeId), eq(volumeRun.kind, "move"), eq(volumeRun.current, current)))
     .orderBy(desc(volumeRun.createdAt))
     .limit(1);
-  // SAFETY: a move row's args are a Destination.
-  return (move?.args as VolumeRunArgs["move"] | undefined)?.to ?? null;
+  if (move === undefined) return null;
+  const moved = laneInputOf(move);
+  return moved.kind === "move" ? moved.args.to : null;
 });
 
 const activeLane = Effect.fn("VolumeRun.activeLane")(function* (volumeId: string, lock = false) {
@@ -180,7 +180,7 @@ const laneRefusal = Effect.fn("VolumeRun.laneRefusal")(function* (lane: VolumeRu
   if (deploying(lane)) return { code: "conflict", message: `${lane.volumeName} is deploying; the Deploy ends its run`, details: { run } } satisfies StoreRefusal;
   const refuse = (message: string, details: JsonValue = { run }) =>
     ({ code: "conflict", message: kind === "release" ? message : `VolumeBusy: ${message}`, details }) satisfies StoreRefusal;
-  const input = laneInput(lane);
+  const input = laneInputOf(lane);
   if (input.kind === "seed") return refuse(`${lane.volumeName} is being copied into ${input.args.into.name}; it finishes on its own`);
   if (!pastReturn(lane)) return refuse(busyWith(lane));
   const target = yield* laneTarget(lane);
@@ -546,8 +546,8 @@ export const releaseLanesOff = Effect.fn("VolumeRun.releaseLanesOff")(function* 
   ));
   const released: string[] = [];
   for (const lane of lanes) {
-    const input = laneInput(lane);
-    if (pastReturn(lane) || input.kind === "release" || lane.kind === "deploy") continue;
+    const input = laneInputOf(lane);
+    if (pastReturn(lane) || input.kind === "release" || input.kind === "deploy") continue;
     const bound = machine.name !== null && isDestination(input, { id: machine.id, name: machine.name });
     if (!bound && !writes.includes(lane.dockerVolume)) continue;
     const taker: LaneTaker = {
@@ -1056,7 +1056,7 @@ const lackSentence = Effect.fn("VolumeRun.lackSentence")(function* (
 
 export const observeMembers = Effect.fn("VolumeRun.observe")(function* (ctx: RunContext, inngestRunId: string) {
   yield* requireOwner(ctx.id, inngestRunId);
-  return yield* observeVolumeMembers(ctx.organizationId, ctx.dockerVolume, laneInput(ctx));
+  return yield* observeVolumeMembers(ctx.organizationId, ctx.dockerVolume, ctx);
 });
 
 /**
@@ -1092,9 +1092,9 @@ export const requeueTakenMoves = Effect.fn("VolumeRun.requeueTakenMoves")(functi
   const requeued: string[] = [];
   const refused: string[] = [];
   for (const row of rows) {
-    if (row.kind !== "deploy") continue;
-    // SAFETY: a deploy row's args were written from a VolumeRunArgs["deploy"].
-    const { resume } = row.args as VolumeRunArgs["deploy"];
+    const input = laneInputOf(row);
+    if (input.kind !== "deploy") continue;
+    const { resume } = input.args;
     if (resume === null) continue;
     const again = yield* insertRun(
       { userId: null, organizationId: row.organizationId },
