@@ -179,7 +179,6 @@ fn ps_folds_a_services_superseded_containers_into_one_draining_row() {
             vec![None; 5]
         )
     );
-    // A superseded Container that is not running keeps its own row.
     assert_eq!(
         render(&superseded(&['b', 'e'])),
         (

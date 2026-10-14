@@ -70,9 +70,6 @@ pub fn processes(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
-/// Containers the Serving Pointers of `services` list as retiring, read from
-/// one Machine that answered for its Containers. A pointer that cannot be read
-/// adds nothing, so its Containers show their own state.
 async fn retiring(
     client: &crate::connect::Client,
     live: &LiveServices<RpcError>,
@@ -111,8 +108,6 @@ async fn retiring(
         .collect()
 }
 
-/// A running Service Container its Serving Pointer has replaced, still up
-/// until every Machine stops routing to it.
 fn is_draining(container: ContainerRef<'_>, retiring: &HashSet<ContainerId>) -> bool {
     let observation = container.as_observation();
     matches!(container, ContainerRef::Service(_))
@@ -123,7 +118,6 @@ fn is_draining(container: ContainerRef<'_>, retiring: &HashSet<ContainerId>) -> 
         && retiring.contains(&observation.container_id)
 }
 
-/// One `ps --json` entry: the observation, flagged while it drains.
 #[derive(Serialize)]
 struct Process<'a> {
     #[serde(flatten)]
@@ -145,36 +139,53 @@ fn process_rows<'a>(
         .collect()
 }
 
-/// Each Container next to how many it stands for: `None` for itself, `Some(n)`
-/// for the `n` draining Containers of one Service on one Server, kept at the
-/// position of the first.
+#[derive(Clone, Copy)]
+enum Row<'a> {
+    Container(ContainerRef<'a>),
+    Draining {
+        first: ContainerRef<'a>,
+        count: usize,
+    },
+}
+
+impl<'a> Row<'a> {
+    fn container(self) -> ContainerRef<'a> {
+        match self {
+            Row::Container(container)
+            | Row::Draining {
+                first: container, ..
+            } => container,
+        }
+    }
+}
+
 fn collapse_draining<'a>(
     containers: &[ContainerRef<'a>],
     retiring: &HashSet<ContainerId>,
-) -> Vec<(ContainerRef<'a>, Option<usize>)> {
-    let mut entries: Vec<(ContainerRef<'a>, Option<usize>)> = Vec::new();
+) -> Vec<Row<'a>> {
+    let mut entries = Vec::new();
     let mut groups: HashMap<(QualifiedService, MachineId), usize> = HashMap::new();
     for container in containers {
         if !is_draining(*container, retiring) {
-            entries.push((*container, None));
+            entries.push(Row::Container(*container));
             continue;
         }
         let observation = container.as_observation();
         let key = (observation.identity(), observation.machine_id);
         match groups.get(&key).and_then(|index| entries.get_mut(*index)) {
-            Some((_, Some(count))) => *count += 1,
+            Some(Row::Draining { count, .. }) => *count += 1,
             _ => {
                 groups.insert(key, entries.len());
-                entries.push((*container, Some(1)));
+                entries.push(Row::Draining {
+                    first: *container,
+                    count: 1,
+                });
             }
         }
     }
     entries
 }
 
-/// One row per Container, except that a Service's draining Containers on one
-/// Server share a `draining N` row. Other rows that read the same get the short
-/// Container ID, which `exec` takes.
 fn process_table(
     containers: &[ContainerRef<'_>],
     scoped: bool,
@@ -184,7 +195,8 @@ fn process_table(
     let entries = collapse_draining(containers, retiring);
     let rows: Vec<[String; 3]> = entries
         .iter()
-        .map(|(container, _)| {
+        .map(|entry| {
+            let container = entry.container();
             let observation = container.as_observation();
             // Scoped to one Environment, its Namespace on every row says nothing.
             let service = if scoped {
@@ -194,7 +206,7 @@ fn process_table(
             };
             [
                 service,
-                process_kind(*container).to_owned(),
+                process_kind(container).to_owned(),
                 server(names, &observation.machine_id),
             ]
         })
@@ -203,30 +215,39 @@ fn process_table(
     for (row, _) in rows
         .iter()
         .zip(&entries)
-        .filter(|(_, (_, draining))| draining.is_none())
+        .filter(|(_, entry)| matches!(entry, Row::Container(_)))
     {
         *seen.entry(row).or_default() += 1;
     }
-    let clashes = |row: &[String; 3]| seen.get(row).is_some_and(|count| *count > 1);
     let clash = seen.values().any(|count| *count > 1);
     let mut header = vec!["SERVICE", "KIND", "SERVER", "STATE"];
     if clash {
         header.push("CONTAINER");
     }
     let mut table = Table::new(header, "No Containers running yet.");
-    for ((container, draining), row) in entries.iter().zip(&rows) {
-        let observation = container.as_observation();
+    for (entry, row) in entries.iter().zip(&rows) {
         let mut cells: Vec<Cell> = row.iter().map(Cell::from).collect();
-        cells.push(match draining {
-            Some(count) => Cell::status(format!("draining {count}"), Tone::Change),
-            None => Cell::status(process_state(&observation.runtime), state_tone(*container)),
-        });
+        let (state, id) = match *entry {
+            Row::Draining { count, .. } => (
+                Cell::status(format!("draining {count}"), Tone::Change),
+                Cell::from(""),
+            ),
+            Row::Container(container) => {
+                let observation = container.as_observation();
+                let id = if seen.get(row).is_some_and(|count| *count > 1) {
+                    Cell::from(crate::ui::short_id(observation.container_id.as_str()))
+                } else {
+                    Cell::from("")
+                };
+                (
+                    Cell::status(process_state(&observation.runtime), state_tone(container)),
+                    id,
+                )
+            }
+        };
+        cells.push(state);
         if clash {
-            cells.push(if draining.is_none() && clashes(row) {
-                Cell::from(crate::ui::short_id(observation.container_id.as_str()))
-            } else {
-                Cell::from("")
-            });
+            cells.push(id);
         }
         table.row(cells);
     }

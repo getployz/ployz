@@ -368,7 +368,6 @@ zfs version
 
 
 def overdue_drains(run, commands, backend):
-    """Draining Containers their ployzd already forced to retire: drained past its 300 s cap."""
     node = run["machines"][0]
     containers = json.loads(cli(run, commands, ["--json", "--connect", "ssh://root@" + node["address"], "ps"]).stdout)["containers"]
     draining = {}
