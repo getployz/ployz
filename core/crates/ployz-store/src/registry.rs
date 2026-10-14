@@ -96,8 +96,14 @@ fn input(value: &Value) -> Result<Option<Credential>, RpcError> {
     // The CLI sends `web.registryCredential={"secret":true}` as JSON text. Text never carries a
     // new secret: that would put it in shell history.
     if let Some(text) = value.as_str() {
-        return match serde_json::from_str::<Value>(text) {
-            Ok(keep) if keep == json!({ "secret": true }) => Ok(None),
+        // A typed parse refuses a duplicate key, so `{"secret":"…","secret":true}` can't slip through.
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Keep {
+            secret: bool,
+        }
+        return match serde_json::from_str::<Keep>(text) {
+            Ok(Keep { secret: true }) => Ok(None),
             _ => Err(invalid()),
         };
     }
