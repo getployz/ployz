@@ -865,6 +865,84 @@ async fn a_stop_first_replacement_that_cannot_inspect_its_old_copy_leaves_the_ro
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_stop_first_retirement_in_flight_does_not_hold_up_another_services_flip() {
+    let machine = machine('1');
+    let old = container('a');
+    let new = container('b');
+    let other = container('c');
+    let older = DeploymentLogId::parse("older").unwrap();
+    let web = ServiceName::parse("web").unwrap();
+    let plan = vec![
+        global_replacement(&machine, &old, UpdateOrder::StopFirst),
+        web_run(&machine),
+    ];
+    let groups = vec![
+        crate::deploy::schedule::ServiceGroup {
+            service: Some(ServiceName::parse("api").unwrap()),
+            dependencies: Vec::new(),
+            steps: vec![crate::deploy::schedule::Step::Serial(0)],
+            publish: true,
+            kept: Vec::new(),
+        },
+        crate::deploy::schedule::ServiceGroup {
+            service: Some(web.clone()),
+            dependencies: Vec::new(),
+            steps: vec![crate::deploy::schedule::Step::Serial(1)],
+            publish: true,
+            kept: Vec::new(),
+        },
+    ];
+    let client = Scripted {
+        amendment_stall: Some(AmendmentStall::new()),
+        ..Scripted::new(vec![
+            observed(Call::Inspect(machine, old), running()),
+            created(Call::Run(machine, ContainerKind::ServiceContainer), &other),
+            ok(Call::Stop(machine, old)),
+            created(Call::Run(machine, ContainerKind::ServiceContainer), &new),
+            ok(Call::Remove(machine, old)),
+        ])
+    };
+    client.pointers.lock().unwrap().insert(
+        api(),
+        ServingPointer {
+            deploy: older.clone(),
+            containers: vec![old],
+            previous: None,
+            retiring: Vec::new(),
+        },
+    );
+
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(30),
+        execute_groups(&plan, groups, &client),
+    )
+    .await
+    .expect("the executor publishes web while api's retirement is in flight");
+
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    let pointers = client.pointers.lock().unwrap();
+    assert_eq!(
+        pointers.get(&api()),
+        Some(&ServingPointer {
+            deploy: run_id(),
+            containers: vec![new],
+            previous: Some(older),
+            retiring: vec![old],
+        })
+    );
+    let web = QualifiedService::new(test_namespace(), web);
+    assert_eq!(
+        pointers.get(&web).map(|row| row.containers.clone()),
+        Some(vec![other])
+    );
+    drop(pointers);
+    client.assert_done();
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_stop_first_replacement_waits_for_its_dependency_like_any_start() {
     let machine = machine('1');
     let old = container('a');

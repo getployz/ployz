@@ -91,8 +91,27 @@ enum Reply {
 
 struct Step(Call, Reply);
 
+/// Holds the first retiring amendment until the first Container start of the
+/// run has reached the Machine, then lets both through.
+struct AmendmentStall {
+    requested: tokio::sync::Notify,
+    released: tokio::sync::Notify,
+    spent: std::sync::atomic::AtomicBool,
+}
+
+impl AmendmentStall {
+    fn new() -> Self {
+        Self {
+            requested: tokio::sync::Notify::new(),
+            released: tokio::sync::Notify::new(),
+            spent: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+}
+
 struct Scripted {
     steps: Mutex<VecDeque<Step>>,
+    amendment_stall: Option<AmendmentStall>,
     observations: Option<Vec<ContainerObservation>>,
     slots: Mutex<Vec<SlotKey>>,
     answers: Mutex<Vec<AnswerWhen>>,
@@ -126,6 +145,7 @@ impl Scripted {
     fn new(steps: Vec<Step>) -> Self {
         Self {
             steps: Mutex::new(steps.into()),
+            amendment_stall: None,
             observations: None,
             slots: Mutex::new(Vec::new()),
             answers: Mutex::new(Vec::new()),
@@ -282,6 +302,12 @@ impl MachineOperations for Scripted {
                 (call, container)
             }
         };
+        if let (Call::Run(..), Some(stall)) = (&call, &self.amendment_stall)
+            && !stall.spent.swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            stall.requested.notified().await;
+            stall.released.notify_one();
+        }
         let healthy = settled.then_some(HealthVerdict::Healthy);
         let present = |container_id: &ContainerId| {
             ContainerNow::Present(observation(machine_id, container_id, running()))
@@ -421,6 +447,13 @@ impl MachineOperations for Scripted {
     ) -> Result<ServingPointerPublication, RpcError> {
         self.publications.lock().unwrap().push(request.clone());
         let flip = request.pointer.deploy == run_id();
+        if let Some(stall) = &self.amendment_stall
+            && !flip
+            && !request.pointer.retiring.is_empty()
+        {
+            stall.requested.notify_one();
+            stall.released.notified().await;
+        }
         if flip && self.dropped_publish {
             return Err(error("connection reset"));
         }
