@@ -510,16 +510,20 @@ export const holdDeployLane = Effect.fn("VolumeRun.holdDeployLane")(function* (c
   );
 });
 
-/** The Machines the Cluster names now. */
+/** The Machines the Cluster names now; none when it does not answer. */
 export const namedMachines = Effect.fn("VolumeRun.namedMachines")(function* (organizationId: string) {
-  const session = yield* openSession(organizationId);
-  const { machines } = yield* session.watchFirstFrame(5_000);
-  return machines.map(({ machine }): MachineRef => ({ id: machine.id, name: machine.name }));
+  const frame = yield* openSession(organizationId).pipe(
+    Effect.flatMap((session) => session.watchFirstFrame(5_000)),
+    Effect.option,
+  );
+  return Option.match(frame, {
+    onNone: (): MachineRef[] => [],
+    onSome: ({ machines }) => machines.map(({ machine }) => ({ id: machine.id, name: machine.name })),
+  });
 }, Effect.scoped);
 
-/** `machine` with the name the Cluster gives it, or none when the Cluster does not answer. */
 export const machineNamed = Effect.fn("VolumeRun.machineNamed")(function* (organizationId: string, machine: MachineId) {
-  const named = (yield* namedMachines(organizationId).pipe(Effect.orElseSucceed(() => []))).find((entry) => entry.id === machine);
+  const named = (yield* namedMachines(organizationId)).find((entry) => entry.id === machine);
   return { id: machine, name: named?.name ?? null };
 });
 
@@ -544,7 +548,7 @@ export const releaseLanesOff = Effect.fn("VolumeRun.releaseLanesOff")(function* 
   for (const lane of lanes) {
     const input = laneInputOf(lane);
     if (pastReturn(lane) || input.kind === "release" || input.kind === "deploy") continue;
-    const bound = machine.name !== null && isDestination(input, { id: machine.id, name: machine.name });
+    const bound = isDestination(input, machine);
     if (!bound && !writes.includes(lane.dockerVolume)) continue;
     const taker: LaneTaker = {
       input: { volumeId: lane.volumeId, kind: "release", args: {} },
@@ -979,7 +983,7 @@ export const removeContainer = Effect.fn("VolumeRun.removeContainer")(function* 
   );
 }, Effect.scoped);
 
-const isDestination = (run: VolumeLaneInput, machine: MachineRef) =>
+const isDestination = (run: VolumeLaneInput, machine: { readonly id: MachineId; readonly name: MachineName | null }) =>
   (run.kind === "move" || run.kind === "mirror") && (run.args.machine === undefined ? run.args.to === machine.name : run.args.machine === machine.id);
 
 /**
