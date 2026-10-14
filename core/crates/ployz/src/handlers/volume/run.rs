@@ -75,18 +75,33 @@ pub(crate) enum VolumeRunState {
     Yielded,
 }
 
-impl VolumeRunState {
-    const fn ended(self) -> bool {
-        !matches!(self, Self::Requested | Self::Running)
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum MaybeKnown<T> {
+    Known(T),
+    Unknown(String),
+}
+
+impl MaybeKnown<VolumeRunState> {
+    const fn ended(&self) -> bool {
+        match self {
+            Self::Known(VolumeRunState::Requested | VolumeRunState::Running) => false,
+            Self::Known(_) | Self::Unknown(_) => true,
+        }
     }
 
-    const fn tone(self) -> Tone {
+    const fn tone(&self) -> Tone {
         match self {
-            Self::Requested | Self::Running => Tone::Change,
-            Self::Done => Tone::Good,
-            Self::Failed | Self::Cancelled | Self::Lost | Self::NotStarted | Self::Yielded => {
-                Tone::Bad
-            }
+            Self::Known(VolumeRunState::Requested | VolumeRunState::Running) => Tone::Change,
+            Self::Known(VolumeRunState::Done) => Tone::Good,
+            Self::Known(
+                VolumeRunState::Failed
+                | VolumeRunState::Cancelled
+                | VolumeRunState::Lost
+                | VolumeRunState::NotStarted
+                | VolumeRunState::Yielded,
+            ) => Tone::Bad,
+            Self::Unknown(_) => Tone::Muted,
         }
     }
 }
@@ -117,11 +132,11 @@ pub(crate) struct VolumeRun {
     pub(crate) id: VolumeRunId,
     pub(crate) volume_id: VolumeId,
     pub(crate) volume_name: String,
-    pub(crate) kind: VolumeRunKind,
+    pub(crate) kind: MaybeKnown<VolumeRunKind>,
     pub(crate) args: VolumeRunArgs,
     /// Cloud started it for a Volume no config holds any more.
     pub(crate) orphan: bool,
-    pub(crate) state: VolumeRunState,
+    pub(crate) state: MaybeKnown<VolumeRunState>,
     /// Why it failed or was refused.
     pub(crate) message: Option<String>,
     pub(crate) created_at: String,
@@ -216,7 +231,7 @@ pub(crate) async fn settle(
     credential: &Credential,
     mut run: VolumeRun,
 ) -> Result<VolumeRun, StoreCallError> {
-    let mut said = run.state;
+    let mut said = run.state.clone();
     while !run.state.ended() {
         tokio::time::sleep(POLL).await;
         run = get(credential, &run.id).await?;
@@ -227,7 +242,7 @@ pub(crate) async fn settle(
                 store::word(&run.state)
             ));
         }
-        said = run.state;
+        said = run.state.clone();
     }
     Ok(run)
 }
@@ -629,39 +644,47 @@ fn approved(
 }
 
 fn ended(run: &VolumeRun, started: &str, follow: String) -> Result<(), Error> {
-    if run.state == VolumeRunState::Done {
+    if run.state == MaybeKnown::Known(VolumeRunState::Done) {
         return crate::ui::finish(&OneRun { run: run.clone() }, || {
             crate::ui::stream(format_args!("The {started} is done: run {}.", run.id));
         });
     }
     let why = run.message.as_deref().unwrap_or("Cloud gave no reason");
     let code = match run.state {
-        VolumeRunState::Lost | VolumeRunState::NotStarted => RpcErrorCode::Unavailable,
-        VolumeRunState::Requested
-        | VolumeRunState::Running
-        | VolumeRunState::Done
-        | VolumeRunState::Failed
-        | VolumeRunState::Cancelled
-        | VolumeRunState::Yielded => RpcErrorCode::Conflict,
+        MaybeKnown::Known(VolumeRunState::Lost | VolumeRunState::NotStarted) => {
+            RpcErrorCode::Unavailable
+        }
+        MaybeKnown::Known(
+            VolumeRunState::Requested
+            | VolumeRunState::Running
+            | VolumeRunState::Done
+            | VolumeRunState::Failed
+            | VolumeRunState::Cancelled
+            | VolumeRunState::Yielded,
+        )
+        | MaybeKnown::Unknown(_) => RpcErrorCode::Conflict,
     };
     Err(Error::detailed(
         code,
-        format!("The {started} {}: {why}", ended_word(run.state)),
+        format!("The {started} {}: {why}", ended_word(&run.state)),
         serde_json::json!({ "run": run }),
     )
     .hint(Hint::Inspect(follow)))
 }
 
-const fn ended_word(state: VolumeRunState) -> &'static str {
+fn ended_word(state: &MaybeKnown<VolumeRunState>) -> String {
     match state {
-        VolumeRunState::Cancelled => "was cancelled",
-        VolumeRunState::Lost => "was lost",
-        VolumeRunState::NotStarted => "never started",
-        VolumeRunState::Yielded => "gave way to a Deploy",
-        VolumeRunState::Requested
-        | VolumeRunState::Running
-        | VolumeRunState::Done
-        | VolumeRunState::Failed => "failed",
+        MaybeKnown::Known(VolumeRunState::Cancelled) => "was cancelled".to_owned(),
+        MaybeKnown::Known(VolumeRunState::Lost) => "was lost".to_owned(),
+        MaybeKnown::Known(VolumeRunState::NotStarted) => "never started".to_owned(),
+        MaybeKnown::Known(VolumeRunState::Yielded) => "gave way to a Deploy".to_owned(),
+        MaybeKnown::Known(
+            VolumeRunState::Requested
+            | VolumeRunState::Running
+            | VolumeRunState::Done
+            | VolumeRunState::Failed,
+        ) => "failed".to_owned(),
+        MaybeKnown::Unknown(_) => format!("is {}", store::word(state)),
     }
 }
 

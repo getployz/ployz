@@ -10,6 +10,8 @@ import {
   volumeRunRequestedEventType,
   volumeRunTakenEventType,
 } from "#/modules/inngest/events";
+import { PATIENCE, PATIENCE_WAITS } from "#/modules/volume-run/patience";
+import { fenceTaken } from "#/modules/volume-run/volume-run.deploy.server";
 import { alreadyOn, epochOf, expectOf, observedEpoch, type PlanInput, type Planned, planFromCopies } from "#/modules/volume-run/plan";
 import { type AnsweredMember, copyName, type Member, type VolumeRunArgs } from "#/modules/volume-run/volume-run";
 import {
@@ -49,15 +51,15 @@ type EffectRunner = typeof runInngestEffect;
 export const RUN_VOLUME_FUNCTION_ID = "run-volume";
 // A Volume written faster than it ships never converges, so the rounds are capped.
 export const MAX_ROUNDS = 3;
-const POLL_INTERVAL = "5s";
-const MAX_POLLS = 500;
 // Docker decides how long a Container step takes; 120 checks five seconds apart wait out ten minutes of it.
+const BUSY_WAIT = "5s";
 const BUSY_CHECKS = 120;
 
 const VolumeRunRequestedData = Schema.Struct({
   organizationId: Schema.String.check(Schema.isNonEmpty()),
   volumeId: Schema.String.check(Schema.isNonEmpty()),
   runId: Schema.String.check(Schema.isUUID()),
+  took: Schema.optional(Schema.String),
 });
 
 type PhaseOf<K> = Extract<Extract<Planned, { ok: true }>["phase"], { kind: K }>;
@@ -82,6 +84,7 @@ export async function runVolume(
   // SAFETY: step output is the JSON of a RunContext, and a RunContext holds only JSON values.
   const run = claim.run as RunContext;
 
+  if (request.took !== undefined) await step.run("01-fence", () => runEffect(fenceTaken(run, runId)));
   // SAFETY: step output is the JSON of the Member list, and a Member holds only JSON values.
   const observed = (await step.run("01-observe", () => runEffect(observeMembers(run, runId)))) as Member[];
   const steps: RunSteps = { step, runEffect, run, runId };
@@ -166,7 +169,7 @@ const finish = ({ step, runEffect, run, runId }: RunSteps, id: string, message: 
  */
 async function settle({ step, runEffect, run, runId }: RunSteps, id: string, ask: Effect.Effect<CopyAnswer, Error, AppServices>, still: string) {
   for (let check = 0; check < BUSY_CHECKS; check += 1) {
-    if (check > 0) await step.sleep(`${id}-wait-${check}`, POLL_INTERVAL);
+    if (check > 0) await step.sleep(`${id}-wait-${check}`, BUSY_WAIT);
     const answer = await step.run(check === 0 ? id : `${id}-${check}`, () => runEffect(ask));
     if (!answer.ok && answer.reason === "stale") {
       await step.run(`${id}-stale`, () => runEffect(endRun(run, runId, "failed", answer.message)));
@@ -219,16 +222,18 @@ async function pull(steps: RunSteps, prefix: string, ctx: { readonly B: MachineR
   const want: WantedCopy = { kind: "mirror", from: ctx.from, target: target.name, drain: DRAIN_MS };
   const still = `${slot} is still busy`;
   let copy = await askPullFollowingDrift(steps, `${prefix}-pull`, B, ctx.copy, want, still);
-  for (let poll = 0; poll < MAX_POLLS; poll += 1) {
+  for (let check = 0; ; check += 1) {
     if (pulled(copy, target)) return copy;
     const failure = copy?.kind === "slot" ? copy.pull?.failure ?? null : null;
     if (failure !== null) throw new NonRetriableError(`${slot} could not receive ${target.name}: ${failure}`);
+    const wait = PATIENCE_WAITS[check];
+    if (wait === undefined) throw new NonRetriableError(`${slot} has not finished ${target.name} after ${PATIENCE}`);
     // A landed pull still verifying keeps `pull` set, so only an idle copy skips the wait.
     const idle = copy?.kind === "slot" && copy.pull === null;
-    if (!idle) await step.sleep(`${prefix}-wait-${poll}`, POLL_INTERVAL);
-    copy = await askPullFollowingDrift(steps, `${prefix}-repull-${poll}`, B, copy, want, still);
+    // Ids apart from the 5 s checks' `-wait-`/`-repull-`, so a run they started replays none of them into this schedule.
+    if (!idle) await step.sleep(`${prefix}-backoff-${check}`, `${wait}s`);
+    copy = await askPullFollowingDrift(steps, `${prefix}-ask-${check}`, B, copy, want, still);
   }
-  throw new NonRetriableError(`${slot} is still receiving ${target.name} after ${MAX_POLLS} checks`);
 }
 
 /**
@@ -522,9 +527,13 @@ async function seedVolume({ step, runEffect, run, runId }: RunSteps, phase: Phas
   };
 
   for (let poll = 0; ; poll += 1) {
-    if (poll === MAX_POLLS) return failed("03-too-long", `${args.into.name} is still copying after ${MAX_POLLS} checks`);
-    if (poll > 0) await step.sleep(`03-wait-${poll}`, POLL_INTERVAL);
-    const copy = await step.run(`03-seed-${poll}`, () => runEffect(sendSwitch(run, runId, source, {
+    if (poll > 0) {
+      const wait = PATIENCE_WAITS[poll - 1];
+      if (wait === undefined) return failed("03-too-long", `${args.into.name} has not finished copying after ${PATIENCE}`);
+      await step.sleep(`03-backoff-${poll}`, `${wait}s`);
+    }
+    // Ids apart from the 5 s checks' `03-wait-`/`03-seed-`, as in `pull`.
+    const copy = await step.run(`03-ask-${poll}`, () => runEffect(sendSwitch(run, runId, source, {
       command: "seed_volume",
       payload: { name: run.dockerVolume, into: args.into.dockerVolume, guid: args.guid },
     }).pipe(

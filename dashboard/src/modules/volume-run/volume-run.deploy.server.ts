@@ -13,6 +13,7 @@ import {
   keptOn,
   laneTarget,
   type MachineRef,
+  observeMembers,
   observeVolumeMembers,
   pastReturn,
   requeueTakenMoves,
@@ -92,9 +93,6 @@ const pinned = (lane: Pick<typeof volumeRun.$inferSelect, "kind" | "args">) => (
 
 const answered = (members: readonly Member[]) => members.filter((member): member is AnsweredMember => member.answered);
 
-// SAFETY: a took lane is the Deploy's own row, written from a VolumeRunArgs["deploy"].
-const observeMembers = (run: RunContext) => observeVolumeMembers(run.organizationId, run.dockerVolume, { kind: "deploy", args: run.args as VolumeRunArgs["deploy"] });
-
 /**
  * The writer, or the slot a cut left keeping the stopped Service. Of two roots it is the one a sync's demote keeps, so
  * the Deploy never writes on the root the next sync cuts.
@@ -118,9 +116,14 @@ const writerOf = Effect.fn("VolumeRun.writerOf")(function* (run: RunContext, mem
   return held;
 });
 
-const fenceTaken = Effect.fn("VolumeRun.fenceTaken")(function* (run: RunContext, inngestRunId: string) {
+/**
+ * D2 and D3 of a takeover: the run's first call to A raises its floor, so the lane it took can switch nothing more, and a
+ * cut that flipped A before the floor rose is promoted back to the writer at its snapshot, starting the Service the cut
+ * stopped. The Deploy's own lanes and a staged placement's run both fence this way before they plan.
+ */
+export const fenceTaken = Effect.fn("VolumeRun.fenceTaken")(function* (run: RunContext, inngestRunId: string) {
   for (let round = 1; ; round++) {
-    const members = yield* observeMembers(run);
+    const members = yield* observeMembers(run, inngestRunId);
     for (const member of members) if (!member.answered && member.lack !== undefined) return yield* Effect.fail(new NonRetriableError(member.lack));
     const replied = answered(members);
     const writer = yield* writerOf(run, replied);
