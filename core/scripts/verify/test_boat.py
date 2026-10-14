@@ -359,6 +359,20 @@ class Pool(unittest.TestCase):
         self.assertEqual(boat.differences(fresh, dirty), ["containers (-[] +['web|nginx|exited|'])", "volumes (-[] +['local data'])"])
         self.assertIn("ssh (-[] +['exit 255'])", boat.differences(fresh, {**fresh, "ssh": ["exit 255"]}))
 
+    def test_listeners_compare_across_clones_but_not_a_new_port(self):
+        fresh = boat.fingerprint('== listening\nudp 0.0.0.0:57550 \nudp [::]:33831 users:(("avahi-daemon",pid=834,fd=15))\n'
+                                 'tcp 0.0.0.0:22 users:(("sshd",pid=19,fd=3),("systemd",pid=1,fd=313))\n'
+                                 'udp 192.168.122.49%enp7s0:68 users:(("systemd-network",pid=728,fd=23))\n')
+        clone = ('== listening\ntcp 0.0.0.0:22 users:(("systemd",pid=1,fd=40),("sshd",pid=7,fd=3))\n'
+                 'udp [::]:45818 users:(("avahi-daemon",pid=901,fd=15))\nudp 0.0.0.0:40543 \n'
+                 'udp 192.168.122.47%enp7s0:68 users:(("systemd-network",pid=700,fd=23))\n')
+        self.assertEqual(boat.differences(fresh, boat.fingerprint(clone)), [])
+        leftover = boat.fingerprint(clone + 'udp 0.0.0.0:51820 \ntcp [::]:7574 users:(("ployzd",pid=5,fd=13))\n')
+        self.assertEqual(boat.differences(fresh, leftover),
+                         ["listening (-[] +['tcp [::]:7574 ployzd', 'udp 0.0.0.0:ephemeral'])"])
+        renamed = boat.fingerprint(clone.replace('("systemd",pid=1,fd=40),', ''))
+        self.assertEqual(boat.differences(fresh, renamed), ["listening (-['tcp 0.0.0.0:22 sshd systemd'] +['tcp 0.0.0.0:22 sshd'])"])
+
     def test_a_run_claims_its_own_bake_newest_first_one_per_node_up_to_its_size(self):
         entries = [parked("bx_old", 1, at=1), parked("bx_new", 1, at=3), parked("bx_two", 2, at=2), parked("bx_three", 3, at=0),
                    parked("bx_other", 4, image="bake-b", at=9), parked("bx_down", 5, at=8), parked("bx_taken", 6, at=7)]

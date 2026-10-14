@@ -1,5 +1,6 @@
 """Boat sandbox backend for verify-cluster's disposable-Machine contract."""
 
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 import fcntl
@@ -74,33 +75,42 @@ POOL = REGISTRY / "pool.ledger"
 POOL_SIZE = int(os.environ.get("PLOYZ_VERIFY_BOAT_POOL", 6))
 # The bake's own ployz install, relative to /; a run's install overwrites it, so reset restores it from STASH.
 INSTALLED = ("usr/local/bin/ployz* etc/systemd/system/ployz* etc/systemd/system/*.wants/ployz* etc/docker/daemon.json "
-             "etc/modprobe.d/ployz* etc/modules-load.d/ployz* var/lib/ployz")
+             "etc/modprobe.d/ployz* etc/modules-load.d/ployz*")
 STASH = "/var/lib/ployz-verify-bake.tar"
+# Linux's default ip_local_port_range: avahi, Boat's wg0 and the kernel pick a new port here on every boot.
+EPHEMERAL = (32768, 60999)
+# Image ids a fresh clone holds once Docker restored the bake's containers; reset removes every other image.
+BAKE_IMAGES = STASH + ".images"
+# Boat restores the bake's containers lazily after boot; until every holder is back, Docker's state is still moving.
+HOLDS = (f"for i in $(seq 240); do [ \"$(docker ps -aq --filter label=ployz.verify.hold=1 | wc -l)\" -ge {len(IMAGES) + 2} ]"
+         " && break; sleep 0.5; done; ")
+RECORD_IMAGES = HOLDS + (f"[ -e {BAKE_IMAGES} ] || {{ docker image ls -q --no-trunc | sort -u > {BAKE_IMAGES}.next"
+                         f" && mv {BAKE_IMAGES}.next {BAKE_IMAGES}; }}\n")
 KEEP_INSTALL = f"""
 if [ ! -e {STASH} ]; then
     cd / && shopt -s nullglob && found=()
-    for path in {INSTALLED}; do if [ -e "$path" ] || [ -L "$path" ]; then found+=("$path"); fi; done
+    for path in {INSTALLED} var/lib/ployz; do if [ -e "$path" ] || [ -L "$path" ]; then found+=("$path"); fi; done
     tar -cpf {STASH}.next "${{found[@]}}" && sync {STASH}.next && mv {STASH}.next {STASH}
 fi
 """
 # What a run can leave behind, as a fresh clone of the bake shows it; reset must bring every section back.
-FINGERPRINT = SETTLE + r"""
+FINGERPRINT = SETTLE + HOLDS + r"""
 section() { printf '== %s\n' "$1"; }
 section containers; docker ps -a --format '{{.Names}}|{{.Image}}|{{.State}}|{{.Label "ployz.verify.hold"}}' 2>&1
-section images; docker image ls --format '{{.Repository}}:{{.Tag}}' 2>&1
 section volumes; docker volume ls --format '{{.Driver}} {{.Name}}' 2>&1
 section networks; docker network ls --format '{{.Name}} {{.Driver}}' 2>&1
 section zpools; if command -v zpool >/dev/null; then zpool list -H -o name 2>&1; fi
 section links; ip -br link | awk '{print $1}'
-section paths; find /var/lib/ployz /run/ployz /var/lib/ployz-volumes /var/lib/ployz-mirror /var/lib/ployz-machine-pool \
-    /opt/ployz-verify /run/ployz-containerd -printf '%p %y\n' 2>/dev/null
+section paths; find /var/lib /run /opt -mindepth 1 -maxdepth 1 -name '*ployz*' -printf '%p %y\n' 2>/dev/null
+find /var/lib/ployz /run/ployz /var/lib/ployz-volumes /var/lib/ployz-mirror /var/lib/ployz-machine-pool \
+    /opt/ployz-verify /run/ployz-containerd -mindepth 1 -printf '%p %y\n' 2>/dev/null
 section units; find /etc/systemd/system /run/systemd/system -name 'ployz*' -printf '%p %y %l\n' 2>/dev/null
 section contents; find /usr/local/bin /etc/systemd/system /etc/docker /etc/modprobe.d /etc/modules-load.d -maxdepth 1 \
     -type f \( -name 'ployz*' -o -name daemon.json \) -exec sha256sum {} + 2>/dev/null
 find /var/lib/ployz -type f -exec sha256sum {} + 2>/dev/null
 section unit-files; systemctl list-unit-files --no-legend 'ployz*'
 section enabled; systemctl list-unit-files --no-legend --state=enabled | awk '{print $1}'
-section listening; ss -Hlntu | awk '{print $1, $5}'
+section listening; ss -Hlntup | awk '{print $1, $5, $7}'
 section authorized; sha256sum /root/.ssh/authorized_keys
 true
 """
@@ -117,14 +127,18 @@ volumes=$(docker volume ls -q)
 if [ -n "$volumes" ]; then docker volume rm -f $volumes >/dev/null; fi
 networks=$(docker network ls --format '{{.Name}}' | grep -vxE 'bridge|host|none' || true)
 if [ -n "$networks" ]; then docker network rm $networks >/dev/null; fi
-docker image prune -af >/dev/null
+[ -s "$stash.images" ] || { echo "no record of the bake's images" >&2; exit 1; }
+extra=$(docker image ls -q --no-trunc | sort -u | comm -23 - "$stash.images")
+if [ -n "$extra" ]; then docker rmi -f $extra >/dev/null; fi
 observe="$(docker info -f '{{.DockerRootDir}}')/ployz-observe"
 if command -v zpool >/dev/null; then for pool in $(zpool list -H -o name); do zpool destroy -f "$pool"; done; fi
-for link in $(ip -o link show type wireguard | awk -F': ' '{print $2}' | cut -d@ -f1); do ip link del "$link"; done
-if ip link show ployz >/dev/null 2>&1; then ip link del ployz; fi
+# Boat's own WireGuard link is wg0; only ployz's links go.
+for link in $(ip -o link show | awk -F': ' '{print $2}' | cut -d@ -f1 | grep '^ployz' || true); do ip link del "$link"; done
 cd / && shopt -s nullglob
-rm -rf """ + INSTALLED + r""" run/systemd/system/ployz* run/ployz run/ployz-containerd var/lib/ployz-volumes \
-    var/lib/ployz-mirror var/lib/ployz-machine-pool opt/ployz-verify "$observe"
+rm -rf """ + INSTALLED + r""" run/systemd/system/ployz* "$observe"
+# /var/lib/ployz can be a mount point, so it stays and only its contents go.
+find var/lib/ployz -mindepth 1 -delete
+find var/lib run opt -mindepth 1 -maxdepth 1 -name '*ployz*' ! -path var/lib/ployz ! -path "${stash#/}*" -exec rm -rf {} +
 tar -xpf "$stash" -C /
 install -d -m 700 /root/.ssh
 printf '%s\n' "$key" > /root/.ssh/authorized_keys
@@ -310,7 +324,7 @@ def stale(entries, states, image, force):
 
 
 def fingerprint(text):
-    """FINGERPRINT's output by section, with each hold container's generated name replaced."""
+    """FINGERPRINT's output by section, without hold container names, ephemeral ports, or pids."""
     fields, current = {}, None
     for line in text.splitlines():
         if line.startswith("== "):
@@ -318,8 +332,23 @@ def fingerprint(text):
         elif current is not None and line.strip():
             if line.count("|") == 3 and line.endswith("|1"):
                 line = "hold|" + line.split("|", 1)[1]
+            elif current is fields.get("listening"):
+                line = listener(line)
             current.append(line)
     return {name: sorted(lines) for name, lines in fields.items()}
+
+
+def listener(line):
+    """`proto address:port users:(...)` without pids, ephemeral ports or lease addresses, so clones compare equal."""
+    proto, address, *users = line.split(maxsplit=2)
+    host, _, port = address.rpartition(":")
+    if "%" in host:
+        # An interface-bound listener, such as the DHCP client, holds that sandbox's own lease address.
+        host = "%" + host.split("%")[1]
+    if port.isdigit() and EPHEMERAL[0] <= int(port) <= EPHEMERAL[1]:
+        port = "ephemeral"
+    names = sorted(set(re.findall(r'\("([^"]+)"', users[0]))) if users else []
+    return " ".join([proto, f"{host}:{port}", *names])
 
 
 def differences(expected, actual):
@@ -327,8 +356,8 @@ def differences(expected, actual):
     found = []
     for name in sorted(expected.keys() | actual.keys()):
         if expected.get(name) != actual.get(name):
-            lost = sorted(set(expected.get(name, [])) - set(actual.get(name, [])))
-            gained = sorted(set(actual.get(name, [])) - set(expected.get(name, [])))
+            lost = sorted((Counter(expected.get(name, [])) - Counter(actual.get(name, []))).elements())
+            gained = sorted((Counter(actual.get(name, [])) - Counter(expected.get(name, []))).elements())
             found.append(f"{name} (-{lost[:3]} +{gained[:3]})")
     return found
 
@@ -575,7 +604,7 @@ class Provider:
             self.install_key(node, sandbox)
         self.wait_agent(node)
         # A baked sandbox already holds BAKE's result; it keeps its own ployz install for reset to restore.
-        bake = BAKE if self.run["image"] == SNAPSHOT else KEEP_INSTALL
+        bake = BAKE if self.run["image"] == SNAPSHOT else KEEP_INSTALL + (RECORD_IMAGES if POOL_SIZE else "")
         self.exec(node, ["bash", "-ec", f"""
 {SETTLE}
 main=$(systemctl show -p MainPID --value ssh.service)
