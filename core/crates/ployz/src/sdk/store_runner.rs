@@ -16,6 +16,7 @@ use ployz_store::{
 };
 use serde::Deserialize as _;
 use serde_json::Value;
+use tokio_util::sync::CancellationToken;
 
 use super::build::BuildOutcome;
 use super::preparation::{BuildReceipt, PreparationInput, UploadDigest, needs_upload};
@@ -308,6 +309,9 @@ impl Run {
                 } else {
                     Vec::new()
                 };
+                if self.status().await.ok() != Some(DeploymentStatus::Cancelling) {
+                    self.fill_ingress(session).await;
+                }
                 self.record(RunEvidence::Executed {
                     progress,
                     outcome: Box::new(outcome),
@@ -317,6 +321,38 @@ impl Run {
             }
             // The session ended mid-execution: what ran is unknown.
             Err(_) => self.record(RunEvidence::Abandoned).await,
+        }
+    }
+
+    async fn fill_ingress(&self, session: &Session) {
+        let filled = match session.client() {
+            Ok(mut client) => {
+                let stop = CancellationToken::new();
+                self.renewing(crate::ingress::fill_slots(&mut client, &stop), || {
+                    stop.cancel()
+                })
+                .await
+                .map_err(|failure| failure.to_string())
+            }
+            Err(error) => Err(error.to_string()),
+        };
+        let evidence: Vec<_> = match filled {
+            Ok(check) => (!check.repairs.is_empty())
+                .then_some(RunEvidence::Ingress(check.repairs))
+                .into_iter()
+                .chain(
+                    check
+                        .unchecked
+                        .into_iter()
+                        .map(RunEvidence::IngressUnchecked),
+                )
+                .collect(),
+            Err(cause) => vec![RunEvidence::IngressUnchecked(cause)],
+        };
+        for evidence in evidence {
+            if let Err(error) = self.record(evidence).await {
+                tracing::warn!(%error, "couldn't record what the Deploy did to ingress");
+            }
         }
     }
 

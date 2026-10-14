@@ -49,6 +49,7 @@ pub(crate) enum Verb {
     Drain,
     Clean,
     Remove,
+    Forget,
     Release,
     RemoveMirror,
 }
@@ -61,6 +62,7 @@ impl Verb {
             Self::Drain => "drain",
             Self::Clean => "cleanup",
             Self::Remove => "removal",
+            Self::Forget => "forgetting",
             Self::Release => "release",
             Self::RemoveMirror => "mirror removal",
         }
@@ -73,6 +75,7 @@ impl Verb {
             Self::Drain => "drained",
             Self::Clean => "cleaned",
             Self::Remove => "removed",
+            Self::Forget => "forgotten",
             Self::Release => "released",
             Self::RemoveMirror => "removed",
         }

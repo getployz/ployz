@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 use ployz_core::{
     AdvertisedEndpoint, DockerVolume, EnrollAs, EnrollRequest, Enrolled, LeaveRequest,
-    LocalMachinePhase, Machine, MachineId, MachineName, Registered, RpcErrorCode,
+    LocalMachinePhase, Machine, MachineId, MachineName, Registered, RpcErrorCode, VolumeGen,
 };
 use serde_json::json;
 
@@ -120,6 +120,29 @@ async fn leave_departs_storage_before_the_phase_commits() {
     assert_eq!(test.plugin.routes_called(), ["Storage.Demote"]);
     assert!(forgot_data(&test.docker));
     assert_eq!(test.local.record().phase(), LocalMachinePhase::Resetting);
+}
+
+#[tokio::test]
+async fn leave_forgets_every_volume_floor() {
+    let test = harness(true).await;
+    let containers = test.local.containers.as_ref().unwrap();
+    let data = "data".parse().unwrap();
+    let raised = containers
+        .floor_turn()
+        .await
+        .admit(&data, VolumeGen::new(7))
+        .await
+        .unwrap();
+    assert_eq!(raised, Ok(()));
+
+    test.local.leave(LeaveRequest::default()).await.unwrap();
+    let after = containers
+        .floor_turn()
+        .await
+        .admit(&data, VolumeGen::new(0))
+        .await
+        .unwrap();
+    assert_eq!(after, Ok(()));
 }
 
 #[tokio::test]

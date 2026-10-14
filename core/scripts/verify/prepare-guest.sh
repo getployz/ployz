@@ -7,21 +7,27 @@ apt-get install -y -qq --no-install-recommends ca-certificates curl openssh-serv
 # The actual installer prepares Docker, ZFS and systemd once, in the template.
 /opt/ployz-verify/ployzd install --version "$1" --storage zfs
 docker pull "$2"
-docker pull nginx:1.29-alpine
 docker pull caddy:2
+# Scenario workloads, so no check waits on Docker Hub (postgres:16-alpine alone took 44 to 55 s per Machine).
+for image in nginx:1.29-alpine nginx:1.27-alpine postgres:16-alpine alpine:3.20 traefik/whoami:v1.10.3; do
+    docker pull "$image"
+done
 # Enrollment discovers an exact Caddy tag; cache that tag as well as the major alias.
 caddy_version=$(docker run --rm --entrypoint caddy caddy:2 version)
 caddy_version=${caddy_version%% *}
 docker tag caddy:2 "caddy:${caddy_version#v}"
-# Releases before the Log Store ship no ployz-observe unit.
+# Releases before the Log Store ship no ployz-observe unit; later ones have the daemon write it
+# under /run, and only the releases between install it in /etc.
 observe=
 if systemctl cat ployz-observe.service >/dev/null 2>&1; then observe=ployz-observe.service; fi
 systemctl stop ployz.socket ployz.service ployz-volume-plugin.socket ployz-volume-plugin.service $observe
+installed_observe=
+if [ -e /etc/systemd/system/ployz-observe.service ]; then installed_observe=ployz-observe.service; fi
 # ployz-dns.service exists only after the daemon has written it under /run.
 if [ -n "$(systemctl list-units --all --plain --no-legend ployz-dns.service)" ]; then
     systemctl stop ployz-dns.service
 fi
-systemctl disable ployz.socket ployz.service ployz-volume-plugin.socket $observe
+systemctl disable ployz.socket ployz.service ployz-volume-plugin.socket $installed_observe
 systemctl enable ssh docker
 # Clone dependencies and cached images, then create each Machine's identity on first start.
 rm -rf /var/lib/ployz /root/.ployz /root/.ssh /opt/ployz-verify

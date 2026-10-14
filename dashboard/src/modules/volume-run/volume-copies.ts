@@ -1,7 +1,7 @@
 import type { VolumeRunView } from "./volume-run";
 
 /** Any run's arguments, each field present only for the kinds that take it. */
-function runArgs(run: VolumeRunView): Partial<{ readonly to: string; readonly from: string; readonly full: boolean; readonly slot: string | null; readonly into: { readonly name: string } }> {
+function runArgs(run: VolumeRunView): Partial<{ readonly to: string; readonly from: string; readonly full: boolean; readonly slot: string | null; readonly into: { readonly name: string }; readonly deployment: string }> {
   return run.args;
 }
 
@@ -16,5 +16,6 @@ export function runWords(run: VolumeRunView): string {
     release: "Resuming the primary",
     restore: `Using mirror on ${args.from}`,
     seed: `Restoring into ${args.into?.name}`,
+    deploy: "Deploying",
   }[run.kind];
 }

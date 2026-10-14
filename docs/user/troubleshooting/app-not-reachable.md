@@ -147,6 +147,22 @@ publish it through a Cloudflare Tunnel instead. Once port 80 is free, the server
 ingress on its own within a minute. You don't need to remove and re-add the server. Then click
 **Check again** under **Domain** in **Organization → General**.
 
+## Ingress isn't running
+
+You'll see **Ingress isn't running on web-1**, under **Domain** in **Organization → General**
+or on a deployment. The web server Ployz runs on web-1 is missing or stopped, so web-1 takes
+no web traffic. When your other servers still take the traffic, your domains stay live and only
+**Domain** in **Organization → General** says so. Deploy any project to bring it back:
+
+```sh
+ployz deploy
+```
+
+A deploy creates or starts the missing ingress on every server that takes web traffic.
+`ployz deploy --plan` lists it first, as `ingress on web-1: would create`. If it
+still isn't running, the deploy says why. When something else holds port 80 or 443, see
+[above](#something-else-answers-on-port-80).
+
 ## None of my servers takes web traffic
 
 You'll see **No Server receives traffic** or **No ingress Server has a public IP**. Either every server has web traffic turned off,
@@ -154,12 +170,15 @@ or Ployz doesn't know their public addresses. [Add a server](../servers/add-a-se
 it from the CLI (these settings aren't in the dashboard yet):
 
 ```sh
-# Take web traffic on web-1 again
+# Turn web traffic back on for web-1
 ployz server set web-1 --accepts-ingress=true
 
 # Tell Ployz web-1's public address
 ployz server set web-1 --public-ip 203.0.113.10
 ```
+
+A server that takes web traffic but whose ingress is missing or stopped needs a deploy, not
+these settings. See [Ingress isn't running](#ingress-isnt-running).
 
 ## One service can't reach another
 

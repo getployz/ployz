@@ -11,6 +11,7 @@ const blocked = [{ machineId: "a", address: "203.0.113.1" }, { machineId: "b", a
   Extract<NonNullable<ClusterDomainRow["traffic"]>, { kind: "probed" }>["unreachable"];
 const serving = [{ machineId: "c", address: "198.51.100.7" }] as typeof blocked;
 const none = [] as const;
+const down = [{ machineId: "a", address: "203.0.113.1", name: "web-1" }];
 
 describe("clusterDomainStatus", () => {
   it.each([
@@ -26,7 +27,15 @@ describe("clusterDomainStatus", () => {
       { kind: "attention", reason: "port_80_taken", addresses: ["203.0.113.1", "2001:db8::1"] }],
     ["port 80 closed on one Server, taken on another",
       { ...ready, traffic: { kind: "probed", reachable: blocked.slice(0, 0), unreachable: blocked.slice(0, 1), taken: blocked.slice(1) } },
-      { kind: "attention", reason: "port_80", addresses: ["203.0.113.1"] }],
+      { kind: "attention", reason: "port_80_taken", addresses: ["2001:db8::1"] }],
+    ["ingress stopped", { ...ready, traffic: { kind: "probed", reachable: blocked.slice(0, 0), unreachable: blocked.slice(0, 0), down } },
+      { kind: "attention", reason: "ingress_down", servers: ["web-1"] }],
+    ["ingress stopped on one Server, port 80 closed on another",
+      { ...ready, traffic: { kind: "probed", reachable: blocked.slice(0, 0), unreachable: blocked.slice(1), down } },
+      { kind: "attention", reason: "ingress_down", servers: ["web-1"] }],
+    ["ingress stopped on one Server, port 80 taken on another",
+      { ...ready, traffic: { kind: "probed", reachable: blocked.slice(0, 0), unreachable: blocked.slice(0, 0), taken: blocked.slice(1), down } },
+      { kind: "attention", reason: "port_80_taken", addresses: ["2001:db8::1"] }],
     ["wildcard expired", { ...ready, certificateNotAfter: new Date("2026-09-24T00:00:00Z") },
       { kind: "attention", reason: "https_down" }],
     // What the user can fix comes before what Ployz is fixing or still setting up.
@@ -48,6 +57,15 @@ describe("clusterDomainStatus", () => {
     expect(clusterDomainStatus(domain, now)).toEqual({
       state: { kind: "ready" },
       excluded: [{ address: "203.0.113.1", reason: "port_80" }, { address: "2001:db8::1", reason: "port_80_taken" }],
+    });
+  });
+
+  it("serves traffic through the Servers that answer, and names a Server whose ingress isn't running", () => {
+    const domain = { ...ready, traffic: { kind: "probed", reachable: serving, unreachable: blocked.slice(1), down } } as const;
+
+    expect(clusterDomainStatus(domain, now)).toEqual({
+      state: { kind: "ready" },
+      excluded: [{ address: "2001:db8::1", reason: "port_80" }, { server: "web-1", reason: "ingress_down" }],
     });
   });
 

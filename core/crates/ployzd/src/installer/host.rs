@@ -199,11 +199,7 @@ pub(super) fn install_systemd(paths: &InstallPaths, install_only: bool) -> Resul
         &volume_plugin_service_unit(&paths.bin_dir),
         "write Volume plugin service unit",
     )?;
-    write_file_atomically(
-        &paths.systemd_dir.join("ployz-observe.service"),
-        &observe_service_unit(&paths.bin_dir, &paths.run_dir),
-        "write Log Store service unit",
-    )?;
+    remove_legacy_observe_unit(&paths.systemd_dir)?;
     if !install_only {
         systemctl("reload systemd units", ["daemon-reload"])?;
         systemctl("enable daemon", ["enable", "ployz.service"])?;
@@ -214,10 +210,6 @@ pub(super) fn install_systemd(paths: &InstallPaths, install_only: bool) -> Resul
         systemctl(
             "enable volume plugin socket",
             ["enable", "--now", "ployz-volume-plugin.socket"],
-        )?;
-        systemctl(
-            "enable Log Store",
-            ["enable", "--now", "ployz-observe.service"],
         )?;
     }
     Ok(())
@@ -323,41 +315,25 @@ RestrictNamespaces=true
     )
 }
 
-/// The Log Store harvester runs as root to link Docker's root-only log files,
-/// so its cgroup limits keep a runaway harvester from starving the Machine.
-fn observe_service_unit(bin_dir: &Path, run_dir: &Path) -> String {
-    let bin = bin_dir.display();
-    let run = run_dir.display();
-    format!(
-        "\
-[Unit]
-Description=Ployz Log Store
-After=docker.service
-Wants=docker.service
-
-[Service]
-Type=simple
-ExecStartPre=/usr/bin/install -d -m {PLOYZ_DIR_MODE:04o} -o {PLOYZ_USER} -g {PLOYZ_USER} {run}
-ExecStart={bin}/ployzd observe
-EnvironmentFile=-/etc/default/ployz
-Restart=always
-RestartSec=2
-CPUQuota=10%
-MemoryMax=256M
-IOWeight=10
-NoNewPrivileges=true
-ProtectSystem=full
-ProtectControlGroups=true
-ProtectHome=read-only
-ProtectKernelTunables=true
-PrivateTmp=true
-RestrictAddressFamilies=AF_UNIX
-RestrictNamespaces=true
-
-[Install]
-WantedBy=multi-user.target
-"
-    )
+/// Earlier releases installed the Observe Store here. The daemon
+/// now writes it as a runtime unit, which an `/etc` copy would shadow.
+fn remove_legacy_observe_unit(systemd_dir: &Path) -> Result<(), Error> {
+    for path in [
+        systemd_dir.join("multi-user.target.wants/ployz-observe.service"),
+        systemd_dir.join("ployz-observe.service"),
+    ] {
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(source) => {
+                return Err(Error::Io {
+                    stage: "remove legacy Log Store unit",
+                    source,
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn write_file_atomically(

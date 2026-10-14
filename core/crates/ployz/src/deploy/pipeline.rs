@@ -57,6 +57,21 @@ impl Client {
         preview_gathered(snapshot, &intent).await
     }
 
+    /// Plan bringing back the Ingress Proxy, one confirmable plan per Server. See
+    /// [`planning::plan_ingress_repairs`].
+    ///
+    /// # Errors
+    ///
+    /// Returns when snapshot gathering fails.
+    pub async fn plan_ingress_repairs(
+        &mut self,
+        intent: DeployIntent,
+    ) -> Result<Vec<super::SlotRepair>, DeployError> {
+        let machines = self.machines().await?;
+        let snapshot = gather_deploy_snapshot(self, machines, &intent).await?;
+        Ok(planning::plan_ingress_repairs(&intent, &snapshot))
+    }
+
     /// Calculate a Namespace-removal preview. Confirming executes these operations.
     ///
     /// Reserved names reuse [`crate::namespace::refuse_reserved`]. Incomplete
@@ -341,7 +356,7 @@ async fn preview_gathered(
     intent: &DeployIntent,
 ) -> Result<DeployPlan, DeployError> {
     let mut preview = plan_deploy(intent, &snapshot)?;
-    let warnings = hostname_warnings(&preview, &snapshot.machines).await;
+    let warnings = hostname_warnings(&preview, &snapshot).await;
     preview.prepend_warnings(warnings);
     Ok(preview)
 }
@@ -396,13 +411,15 @@ async fn gather_deploy_snapshot(
 
 async fn hostname_warnings(
     preview: &DeployPreview,
-    machines: &[MachineObservation],
+    snapshot: &DeploySnapshot,
 ) -> Vec<DeployWarning> {
+    let machines = &snapshot.machines;
     let machine_ids: Vec<_> = machines.iter().map(|machine| machine.machine.id).collect();
     resolve_ingress_dns_warnings_for_ports(
         preview_ports(preview),
         &machine_ids,
         &machine_public_addresses(machines),
+        &snapshot.ingress_returning(),
     )
     .await
     .into_iter()

@@ -75,11 +75,21 @@ describe("ClusterDomainSection", () => {
       reachable: [{ machineId: "a", address: "203.0.113.1" }],
       unreachable: [{ machineId: "b", address: "203.0.113.2" }],
       taken: [{ machineId: "c", address: "203.0.113.3" }],
+      down: [{ machineId: "d", address: "203.0.113.4", name: "web-4" }],
     } } as Omit<ClusterDomainRow, "id">;
     render(<ClusterDomainSection organizationSlug="acme" domain={degraded} onCheck={vi.fn()} />);
 
     expect(screen.getByText("Ready")).toBeTruthy();
-    expect(screen.getByText("Port 80 closed on 203.0.113.2. Port 80 taken on 203.0.113.3.")).toBeTruthy();
+    expect(screen.getByText("Port 80 closed on 203.0.113.2. Port 80 taken on 203.0.113.3. Ingress isn’t running on web-4.")).toBeTruthy();
+    expect(screen.getByText("Check again")).toBeTruthy();
+  });
+
+  it("names the Server whose ingress isn't running", () => {
+    const down = { ...ready, traffic: { kind: "probed", unreachable: [], down: [{ machineId: "a", address: "203.0.113.1", name: "web-1" }] } } as Omit<ClusterDomainRow, "id">;
+    render(<ClusterDomainSection organizationSlug="acme" domain={down} onCheck={vi.fn()} />);
+
+    expect(screen.getByText("Needs attention")).toBeTruthy();
+    expect(screen.getByText("Ingress isn’t running on web-1. Deploy to bring it back.")).toBeTruthy();
     expect(screen.getByText("Check again")).toBeTruthy();
   });
 });

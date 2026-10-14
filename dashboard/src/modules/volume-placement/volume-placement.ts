@@ -1,4 +1,5 @@
 import type { ChangeKind, MachineId, MachineName } from "@ployz/sdk";
+import { Schema } from "effect";
 import type { DeletionItem } from "#/components/deletion-dialog";
 import type { ChangeGroup } from "#/modules/config-store/store-deployments";
 import { STALE_AFTER_MS } from "#/modules/volume-copies/volume-copies";
@@ -700,3 +701,15 @@ export function mergeRestoreGroups(store: readonly ChangeGroup[], placement: rea
   });
   return [...merged, ...placement.filter((group) => group.lifecycle !== "create" || restored.has(group.nodeId))];
 }
+
+export const VolumeInput = Schema.Struct({
+  organizationSlug: Schema.NonEmptyString,
+  volumeId: Schema.NonEmptyString,
+  environment: Schema.Struct({ project: Schema.NullOr(Schema.String), environment: Schema.NullOr(Schema.String) }),
+});
+
+/** Restores a snapshot into the Volume: `at` is the restore point's time in Unix seconds. */
+export const StageRestoreInput = Schema.Struct({ ...VolumeInput.fields, guid: Schema.NonEmptyString, name: Schema.NonEmptyString, at: Schema.Number });
+
+/** Deletes the Volume's old copy on `server`. */
+export const DeleteCopyInput = Schema.Struct({ ...VolumeInput.fields, server: Schema.NonEmptyString });

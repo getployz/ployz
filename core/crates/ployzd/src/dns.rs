@@ -48,8 +48,9 @@ mod service;
 mod spec;
 
 pub use process::{ABDICATED, DnsExit, serve};
+pub(crate) use process::{InstalledExe, identity_of};
 use query::{InternalQuery, MachineServiceTarget, Query, parse};
-pub use service::{DnsService, DnsSupervision};
+pub use service::DnsService;
 
 pub const PORT: u16 = 53;
 const FORWARD_TIMEOUT: Duration = Duration::from_secs(3);

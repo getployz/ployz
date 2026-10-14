@@ -544,6 +544,7 @@ impl MachineRpc for DeployService {
         encoded(RpcResponse::from(ContainerDetails {
             image_id: None,
             last_check: None,
+            run: None,
             environment: Some(BTreeMap::from([
                 ("TOKEN".into(), "live-only-sentinel".into()),
                 ("PLAIN".into(), "from-docker".into()),

@@ -9,7 +9,9 @@ use std::{
 };
 
 use hex::encode as hex_encode;
-use ployz_core::{ConfigMount, ConfigSpec, ContainerId, ResolvedServiceSpec};
+use ployz_core::{
+    ConfigMount, ConfigSpec, ContainerId, DockerVolumeName, ResolvedServiceSpec, VolumeGen,
+};
 use rusqlite::{Connection, OptionalExtension, params};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -20,6 +22,10 @@ CREATE TABLE IF NOT EXISTS containers (
     id           TEXT NOT NULL PRIMARY KEY,
     service_spec TEXT NOT NULL CHECK (json_valid(service_spec))
 );
+CREATE TABLE IF NOT EXISTS volume_floors (
+    name  TEXT NOT NULL PRIMARY KEY,
+    floor INTEGER NOT NULL
+);
 ";
 static TEMPORARY_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -27,9 +33,17 @@ static TEMPORARY_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 pub struct MachineSpecStore {
     path: PathBuf,
     config_operations: Arc<Mutex<()>>,
+    floors: Arc<Mutex<()>>,
 }
 
 pub(super) struct ConfigOperation<'a> {
+    store: &'a MachineSpecStore,
+    _guard: MutexGuard<'a, ()>,
+}
+
+/// The floor lock, held. Each Volume's floor is the newest lane `gen` this Machine
+/// accepted; it is read and raised only through this.
+pub struct FloorTurn<'a> {
     store: &'a MachineSpecStore,
     _guard: MutexGuard<'a, ()>,
 }
@@ -42,7 +56,28 @@ impl MachineSpecStore {
         Ok(Self {
             path,
             config_operations: Arc::new(Mutex::new(())),
+            floors: Arc::new(Mutex::new(())),
         })
+    }
+
+    /// Take the floor lock. It comes after the switch lock and the admission turn, and
+    /// nothing waits on another lock while holding it.
+    pub async fn floor_turn(&self) -> FloorTurn<'_> {
+        FloorTurn {
+            store: self,
+            _guard: self.floors.lock().await,
+        }
+    }
+
+    /// Forget every floor, for a Machine leaving its cluster.
+    pub async fn clear_floors(&self) -> Result<(), Error> {
+        let _turn = self.floor_turn().await;
+        let path = self.path.clone();
+        blocking(move || {
+            connect(&path)?.execute("DELETE FROM volume_floors", [])?;
+            Ok(())
+        })
+        .await
     }
 
     pub(super) async fn config_operation(&self) -> ConfigOperation<'_> {
@@ -134,6 +169,44 @@ impl ConfigOperation<'_> {
             garbage_collect_config_files(&path, &retained)
         })
         .await
+    }
+}
+
+impl FloorTurn<'_> {
+    /// Refuse a `gen` below the floor of `name` with that floor; otherwise raise the
+    /// floor to `gen`. A Volume with no floor yet has floor 0.
+    pub async fn admit(
+        &mut self,
+        name: &DockerVolumeName,
+        r#gen: VolumeGen,
+    ) -> Result<Result<(), VolumeGen>, super::Error> {
+        let path = self.store.path.clone();
+        let name = name.to_string();
+        blocking(move || {
+            let connection = connect(&path)?;
+            let floor = connection
+                .query_row(
+                    "SELECT floor FROM volume_floors WHERE name = ?1",
+                    [&name],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?
+                .map_or(VolumeGen::default(), |floor| {
+                    VolumeGen::new(u64::try_from(floor).unwrap_or_default())
+                });
+            if r#gen < floor {
+                return Ok(Err(floor));
+            }
+            connection.execute(
+                "INSERT INTO volume_floors (name, floor) VALUES (?1, ?2) ON CONFLICT (name) DO UPDATE SET floor = max(floor, excluded.floor)",
+                // SQLite integers are signed. Cloud's gen is a Postgres bigint, so it
+                // fits; saturating keeps the order if one ever does not.
+                params![name, i64::try_from(r#gen.get()).unwrap_or(i64::MAX)],
+            )?;
+            Ok(Ok(()))
+        })
+        .await
+        .map_err(super::Error::from)
     }
 }
 
@@ -301,10 +374,52 @@ mod tests {
         os::unix::fs::{MetadataExt, PermissionsExt},
     };
 
-    use ployz_core::{ContainerId, ResolvedServiceSpec};
+    use ployz_core::{ContainerId, DockerVolumeName, ResolvedServiceSpec, VolumeGen};
     use serde_json::json;
 
     use super::{MachineSpecStore, connect};
+
+    #[tokio::test]
+    async fn a_floor_starts_at_zero_only_rises_and_survives_a_reopen() {
+        let root = std::env::temp_dir().join(format!(
+            "ployzd-machine-db-{}",
+            ployz_core::MachineId::random()
+        ));
+        let store = MachineSpecStore::open(root.join("machine.db"))
+            .await
+            .unwrap();
+        let data: DockerVolumeName = "data".parse().unwrap();
+        let other: DockerVolumeName = "other".parse().unwrap();
+        let mut turn = store.floor_turn().await;
+
+        assert_eq!(turn.admit(&data, VolumeGen::new(0)).await.unwrap(), Ok(()));
+        assert_eq!(turn.admit(&data, VolumeGen::new(7)).await.unwrap(), Ok(()));
+        assert_eq!(turn.admit(&data, VolumeGen::new(7)).await.unwrap(), Ok(()));
+        assert_eq!(
+            turn.admit(&data, VolumeGen::new(6)).await.unwrap(),
+            Err(VolumeGen::new(7))
+        );
+        assert_eq!(
+            turn.admit(&data, VolumeGen::new(0)).await.unwrap(),
+            Err(VolumeGen::new(7))
+        );
+        assert_eq!(turn.admit(&other, VolumeGen::new(1)).await.unwrap(), Ok(()));
+        drop(turn);
+
+        let reopened = MachineSpecStore::open(root.join("machine.db"))
+            .await
+            .unwrap();
+        assert_eq!(
+            reopened
+                .floor_turn()
+                .await
+                .admit(&data, VolumeGen::new(6))
+                .await
+                .unwrap(),
+            Err(VolumeGen::new(7))
+        );
+        let _ = fs::remove_dir_all(root);
+    }
 
     #[tokio::test]
     async fn resolved_spec_round_trips_and_removal_reclaims_unreferenced_configs() {

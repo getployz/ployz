@@ -610,8 +610,8 @@ async fn remove_machine_membership_refuses_a_server_that_answers_holding_copies(
     assert_eq!(error.code, RpcErrorCode::Conflict);
     assert_eq!(
         error.message,
-        "Server peer answers and holds copies of Volumes data, logs; removing it without a reset \
-         leaves them behind. No changes made. Drop --no-reset so the reset demotes them."
+        "Server peer answers and holds copies of Volumes data, logs; forgetting it leaves them \
+         behind. No changes made. Remove it with ployz server rm so its reset demotes them."
     );
     assert!(service.removed_machines.lock().unwrap().is_empty());
     server.abort();

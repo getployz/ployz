@@ -225,11 +225,11 @@ cluster until it reboots or you remove it.
 1. Check at your provider that the server is running, then run `sudo systemctl status ployz` on
    it.
 2. Make sure UDP 51820 is open between your servers.
-3. If the server is gone for good, remove it without resetting it, then deploy again. This is
-   CLI-only for now:
+3. If the server is gone for good, [forget it](../servers/manage-servers.md#forget-a-server-that-is-gone),
+   then deploy again. Its page offers **Forget server** while it's offline, or from the CLI:
 
    ```sh
-   ployz server rm web-2 --no-reset --confirm dead
+   ployz server forget web-2 --confirm dead
    ```
 
    See [When a server goes down](../services/scaling.md#when-a-server-goes-down) for which

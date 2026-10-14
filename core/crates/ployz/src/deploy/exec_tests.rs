@@ -251,6 +251,7 @@ impl MachineOperations for Scripted {
                     environment: None,
                     image_id: None,
                     last_check,
+                    run: None,
                 })
             }
             Reply::ObservedIngress(runtime) => {
@@ -266,6 +267,7 @@ impl MachineOperations for Scripted {
                     environment: None,
                     image_id: None,
                     last_check: None,
+                    run: None,
                 })
             }
             Reply::Pending => std::future::pending().await,

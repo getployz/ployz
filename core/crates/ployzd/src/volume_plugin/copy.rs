@@ -111,7 +111,12 @@ impl Scope {
 }
 
 fn refuse(reason: CopyRefusal, copy: Copy, message: String) -> RpcError {
-    SetVolumeCopyRefused { reason, copy }.rpc_error(message)
+    SetVolumeCopyRefused {
+        reason,
+        copy,
+        floor: None,
+    }
+    .rpc_error(message)
 }
 
 fn no_pool() -> RpcError {
