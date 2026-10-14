@@ -1,8 +1,8 @@
 import type { Effect } from "effect";
 import type { PloyzInngest } from "#/modules/inngest/client";
 import { uptimeBackfillRequestedEventType } from "#/modules/inngest/events";
-import { prunedKinds, pruneUptimeBatch, rollupUptime } from "#/modules/uptime/maintenance.server";
-import { PRUNE_BATCH_ROWS } from "#/modules/uptime/retention";
+import { pruneUptimeBatch, rollupUptime } from "#/modules/uptime/maintenance.server";
+import { PRUNE_BATCH_ROWS, RETAINED } from "#/modules/uptime/retention";
 import { backfillUptimeChecks } from "#/modules/uptime/uptime-sync.server";
 import type { Database } from "#/server/database.server";
 import { runInngestEffect } from "#/server/run.server";
@@ -38,7 +38,7 @@ const createPruneUptime = (inngest: PloyzInngest, runEffect: UptimeEffectRunner)
       concurrency: [{ limit: 1 }],
     },
     async ({ step }) => {
-      for (const kind of prunedKinds) {
+      for (const kind of RETAINED) {
         for (let batch = 0; batch < MAX_PRUNE_BATCHES; batch += 1) {
           const deleted = await step.run(`prune-${kind}`, () => runEffect(pruneUptimeBatch(kind, new Date())));
           if (deleted < PRUNE_BATCH_ROWS) break;

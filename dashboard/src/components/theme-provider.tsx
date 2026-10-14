@@ -26,10 +26,20 @@ const ThemeContext = createContext<ThemeContextValue | null>(null)
 const systemThemeQuery = '(prefers-color-scheme: dark)'
 const themeListeners = new Set<() => void>()
 
-let themeSnapshot: `${UserTheme}:${AppTheme}` | null = null
+type ThemeSnapshot = {
+  readonly userTheme: UserTheme
+  readonly appTheme: AppTheme
+}
 
-function toThemeSnapshot(userTheme: UserTheme): `${UserTheme}:${AppTheme}` {
-  return `${userTheme}:${resolveTheme(userTheme)}`
+let themeSnapshot: ThemeSnapshot | null = null
+
+/** Reuses the current snapshot when nothing changed, so React sees the same object and skips the render. */
+function toThemeSnapshot(userTheme: UserTheme): ThemeSnapshot {
+  const appTheme = resolveTheme(userTheme)
+  return themeSnapshot?.userTheme === userTheme &&
+    themeSnapshot.appTheme === appTheme
+    ? themeSnapshot
+    : { userTheme, appTheme }
 }
 
 function publishThemeSnapshot(userTheme: UserTheme) {
@@ -58,10 +68,7 @@ function subscribeToTheme(listener: () => void) {
 
   const mediaQuery = window.matchMedia(systemThemeQuery)
   const handleSystemThemeChange = () => {
-    // SAFETY: theme snapshots are always `${UserTheme}:${AppTheme}`; String.split returns string[].
-    const [userTheme] = getThemeSnapshot().split(':') as [UserTheme, AppTheme]
-
-    if (userTheme === 'system') {
+    if (getThemeSnapshot().userTheme === 'system') {
       publishThemeSnapshot('system')
     }
   }
@@ -89,17 +96,13 @@ export function ThemeProvider({
     publishThemeSnapshot(theme)
   }, [theme])
 
+  const serverSnapshot = useMemo(() => toThemeSnapshot(theme), [theme])
   const snapshot = useSyncExternalStore(
     subscribeToTheme,
     getThemeSnapshot,
-    () => toThemeSnapshot(theme),
+    () => serverSnapshot,
   )
-  // SAFETY: theme snapshots are always `${UserTheme}:${AppTheme}`; String.split returns string[].
-  const [userTheme, appTheme] = snapshot.split(':') as [UserTheme, AppTheme]
-  const value = useMemo(
-    () => ({ userTheme, appTheme, setTheme }),
-    [userTheme, appTheme],
-  )
+  const value = useMemo(() => ({ ...snapshot, setTheme }), [snapshot])
 
   return (
     <ThemeContext value={value}>

@@ -33,8 +33,6 @@ export function getRegistryHostFromImageReference(image: string) {
 
 /** A registry the credentials form knows how to ask for: what it's called, and what it wants as username and secret. */
 type RegistryProvider = {
-  /** Whether an image's registry host is this one; the last entry takes any host. */
-  matches: (host: string) => boolean;
   label: string;
   /** Null when the registry needs no username of the user's own. */
   usernameLabel: string | null;
@@ -46,7 +44,7 @@ type RegistryProvider = {
   description: string;
 };
 
-const REGISTRY_PROVIDERS: readonly RegistryProvider[] = [
+const REGISTRY_PROVIDERS: ReadonlyArray<RegistryProvider & { matches: (host: string) => boolean }> = [
   { matches: (host) => host === "ghcr.io", label: "GitHub Container Registry", usernameLabel: null, fixedUsername: null,
     secretLabel: "GitHub Access Token", description: "Use a GitHub Personal Access Token with the read:packages scope." },
   { matches: (host) => host === "registry.gitlab.com", label: "GitLab Container Registry", usernameLabel: "Username", fixedUsername: null,
@@ -62,13 +60,14 @@ const REGISTRY_PROVIDERS: readonly RegistryProvider[] = [
     secretLabel: "Password or Token", description: "Many MCR images are public, but private images can use standard Docker authentication." },
   { matches: (host) => host === "docker.io", label: "Docker Hub", usernameLabel: "Username", fixedUsername: null,
     secretLabel: "Personal Access Token", description: "Use your Docker ID and a Docker Hub personal access token." },
-  { matches: () => true, label: "Custom Registry", usernameLabel: "Username", fixedUsername: null, secretLabel: "Password or Token",
-    description: "Use any registry credentials that work with standard Docker authentication." },
 ];
+
+/** Any host the list doesn't name. */
+const CUSTOM_REGISTRY: RegistryProvider = { label: "Custom Registry", usernameLabel: "Username", fixedUsername: null,
+  secretLabel: "Password or Token", description: "Use any registry credentials that work with standard Docker authentication." };
 
 /** The registry an image pulls from, as the credentials form asks for it. */
 export function registryProvider(image: string): RegistryProvider {
   const host = getRegistryHostFromImageReference(image);
-  // SAFETY: the last provider matches every host.
-  return REGISTRY_PROVIDERS.find((provider) => provider.matches(host)) as RegistryProvider;
+  return REGISTRY_PROVIDERS.find((provider) => provider.matches(host)) ?? CUSTOM_REGISTRY;
 }

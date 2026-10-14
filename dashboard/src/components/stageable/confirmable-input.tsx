@@ -13,9 +13,10 @@ import {
 
 export type ConfirmableInputProps = Omit<
   React.ComponentProps<"input"> & React.ComponentProps<"textarea">,
-  "defaultValue" | "onChange" | "onSubmit" | "value"
+  "defaultValue" | "onChange" | "onKeyDown" | "onSubmit" | "value"
 > & {
   value: string
+  onKeyDown?: React.KeyboardEventHandler<HTMLInputElement | HTMLTextAreaElement>
   onValueChange: (value: string) => void
   onConfirm?: () => void
   onCancel?: () => void
@@ -45,13 +46,9 @@ function ConfirmableInput({
   startAddon,
   endAddon,
   renderInput,
+  onKeyDown,
   ...props
 }: ConfirmableInputProps) {
-  // SAFETY: input and textarea onKeyDown handlers are the same function; their event element types don't unify.
-  const onKeyDown = props.onKeyDown as
-    | ((event: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => void)
-    | undefined
-
   function updateDraftValue(
     e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>,
   ) {
