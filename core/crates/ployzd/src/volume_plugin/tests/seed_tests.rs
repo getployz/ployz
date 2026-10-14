@@ -445,7 +445,7 @@ async fn departure_keeps_a_seed_whose_landing_stopped_before_the_rename() {
 }
 
 #[tokio::test]
-async fn departure_fails_naming_a_seed_whose_receive_will_not_stop() {
+async fn departure_demotes_the_others_and_names_a_seed_whose_receive_will_not_stop() {
     let test = TestDir::new();
     fs::write(test.0.join("root"), "").unwrap();
     fs::write(test.0.join("volume"), "").unwrap();
@@ -473,8 +473,12 @@ async fn departure_fails_naming_a_seed_whose_receive_will_not_stop() {
     .await
     .expect("the departure waits on a receive that will not stop");
     fs::remove_file(test.0.join("props/stall-command")).unwrap();
-    let error = reply.get("Err").unwrap_or_else(|| panic!("{reply}"));
-    assert!(error.to_string().contains("seed"), "{reply}");
-    assert!(test.0.join("volume").exists(), "nothing was demoted");
+    assert_eq!(
+        reply,
+        json!({"Ok": {"demoted": ["data"], "stuck": ["seed"]}}),
+        "a stuck seed leaves every other Volume to be demoted"
+    );
+    let again = post(&socket, "/Storage.Demote", json!(null)).await;
+    assert!(again.get("Ok").is_some(), "the departure released admission: {again}");
     server.abort();
 }

@@ -155,6 +155,25 @@ async fn a_failed_departure_keeps_the_machine_in_place() {
     assert!(!forgot_data(&test.docker));
 }
 
+#[tokio::test]
+async fn a_departure_with_a_stuck_copy_forgets_the_demoted_and_fails_naming_it() {
+    let test = harness(true).await;
+    test.plugin.reply(
+        "Storage.Demote",
+        json!({"Ok": {"demoted": ["data"], "stuck": ["seed"]}}),
+    );
+    let error = test.local.leave(LeaveRequest::default()).await.unwrap_err();
+    assert!(
+        matches!(&error, Error::Cleanup(message) if message.contains("seed")),
+        "{error}"
+    );
+    assert!(forgot_data(&test.docker));
+    assert_eq!(
+        test.local.record().phase(),
+        LocalMachinePhase::Participating
+    );
+}
+
 fn held(machine_id: MachineId, role: &str) -> DockerVolume {
     serde_json::from_value(json!({
         "id": {"machine_id": machine_id, "name": "app_data"},
