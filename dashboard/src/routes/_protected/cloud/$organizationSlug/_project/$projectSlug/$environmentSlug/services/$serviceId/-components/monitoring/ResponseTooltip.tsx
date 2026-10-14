@@ -39,7 +39,7 @@ export function ResponseTooltip({ step, end, regions }: {
   const timeZone = useTimeZone();
   const slowest = Math.max(...step.regions.map(meanTotal), 0);
   return (
-    <div className="flex w-64 flex-col gap-2 rounded-lg bg-popover p-2.5 text-popover-foreground shadow-md ring-1 ring-foreground/10">
+    <div className="flex w-64 flex-col gap-2">
       <div className="flex items-baseline justify-between gap-3">
         <span className="font-medium">{stepLabel(step.at, end, timeZone)}</span>
         {step.regions.length > 0 ? <span className="text-muted-foreground tabular-nums">{checksLabel(step.regions)}</span> : null}

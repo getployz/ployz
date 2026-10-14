@@ -5,6 +5,7 @@ import { decorative } from "@tanstack/charts/mark/decorative";
 import { Chart } from "@tanstack/charts/react/tooltip";
 import { scaleLinear } from "@tanstack/charts/scales/linear";
 import { tooltip } from "@tanstack/charts/tooltip";
+import { portal } from "@tanstack/charts/tooltip/portal";
 import { scaleUtc } from "d3-scale";
 import { Button } from "#/components/ui/button";
 import { Card } from "#/components/ui/card";
@@ -143,6 +144,8 @@ export function MetricChart({
     cursor: { use: cursorHost, controller: cursor, mode: "focus", match: "x", pin: true },
     tooltip: {
       use: tooltip,
+      // In the top layer, so the card's overflow-hidden never cuts a tall tooltip off.
+      portal,
       anchor: { x: "group-center", y: "plot-top" },
       placement: ["right", "left", "bottom"],
       className: "metric-tooltip",
@@ -176,8 +179,8 @@ export function MetricChart({
             const time = primaryPoint.xValue.getTime();
             const open = pinned ? incidentAt?.(time) ?? null : null;
             return (
-              <div className="rounded-md border bg-popover px-2 py-1.5 whitespace-pre text-popover-foreground shadow-md">
-                {renderTooltip?.(time) ?? defaultBody}
+              <div className="rounded-lg bg-popover p-2.5 text-xs text-popover-foreground shadow-md ring-1 ring-foreground/10">
+                {renderTooltip?.(time) ?? <div className="whitespace-pre">{defaultBody}</div>}
                 {open ? (
                   <Button variant="link" size="sm" className="h-auto px-0 pt-1"
                     onClick={(event) => { dismiss(); open(event.clientX, event.clientY); }}>

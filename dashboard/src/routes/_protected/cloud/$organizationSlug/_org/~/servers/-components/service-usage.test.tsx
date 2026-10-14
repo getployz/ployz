@@ -40,17 +40,17 @@ function show(read: MetricRead, landedAt: number) {
 it("drops the Service's usage when a refresh fails", async () => {
   const reads = vi.spyOn(functions, "readRuntimeServiceMetricsServerFn").mockRejectedValue(new Error("unreachable"));
   const client = show(readAt(Date.now()), Date.now());
-  expect(screen.getByText("0.37 vCPU · 2 MB")).toBeTruthy();
+  expect(screen.getByText("37% CPU · 2 MB")).toBeTruthy();
 
   await act(() => client.refetchQueries({ queryKey: options.queryKey }));
   expect(reads).toHaveBeenCalled();
   expect(await screen.findByText("–")).toBeTruthy();
-  expect(screen.queryByText(/vCPU/)).toBeNull();
+  expect(screen.queryByText(/CPU/)).toBeNull();
 });
 
 it("doesn't call an hour-old cached read current while its refresh is out", () => {
   vi.spyOn(functions, "readRuntimeServiceMetricsServerFn").mockReturnValue(new Promise(() => {}) as never);
   show(readAt(Date.now() - HOUR), Date.now() - HOUR);
   expect(screen.getByText("–")).toBeTruthy();
-  expect(screen.queryByText(/vCPU/)).toBeNull();
+  expect(screen.queryByText(/CPU/)).toBeNull();
 });

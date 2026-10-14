@@ -19,7 +19,7 @@ mod integration_tests;
 pub(crate) mod test_support;
 
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeMap, HashMap},
     net::{Ipv4Addr, SocketAddr},
     path::PathBuf,
     sync::Arc,
@@ -151,7 +151,7 @@ impl LocalDocker {
             == creates
     }
 
-    async fn managed_container_ids(&self) -> Result<Vec<ContainerId>, Error> {
+    pub(crate) async fn managed_container_ids(&self) -> Result<Vec<ContainerId>, Error> {
         let filters = HashMap::from([(
             "label",
             vec![LABEL_MANAGED, LABEL_NAMESPACE, LABEL_SERVICE_ID],
@@ -180,7 +180,7 @@ pub struct ContainerRuntime {
     docker: LocalDocker,
     specs: MachineSpecStore,
     sink: Option<ObservationSink>,
-    stopping: watch::Sender<BTreeSet<ContainerId>>,
+    stopping: watch::Sender<BTreeMap<ContainerId, usize>>,
     checks: Arc<std::sync::Mutex<CheckRecords>>,
     stranded: Arc<tokio::sync::Mutex<observe::StrandedIngress>>,
 }
@@ -192,7 +192,7 @@ impl ContainerRuntime {
             docker,
             specs,
             sink: None,
-            stopping: watch::Sender::new(BTreeSet::new()),
+            stopping: watch::Sender::new(BTreeMap::new()),
             checks: Arc::new(std::sync::Mutex::new(CheckRecords::new(chrono::Utc::now()))),
             stranded: Arc::default(),
         }
@@ -206,17 +206,33 @@ impl ContainerRuntime {
         Ok(self.specs.clear_floors().await?)
     }
 
-    /// Report this Container as `stopping` until its stop runs,
-    /// so the Ingress Proxies stop routing to it before it stops.
-    pub fn mark_stopping(&self, container_id: ContainerId) {
-        self.stopping
-            .send_if_modified(|stopping| stopping.insert(container_id));
+    /// Report this Container as `stopping` until the returned Withdrawal drops,
+    /// so the Ingress Proxies stop routing to it before it stops. Each operation
+    /// holds its own; the Container returns to ingress once none is held.
+    pub fn withdraw(&self, container_id: ContainerId) -> Withdrawal {
+        self.stopping.send_if_modified(|stopping| {
+            let held = stopping.entry(container_id).or_default();
+            *held += 1;
+            *held == 1
+        });
+        Withdrawal {
+            stopping: self.stopping.clone(),
+            container_id,
+        }
     }
 
-    /// Route this Container again: a drain that ends without a stop puts it back.
-    pub fn clear_stopping(&self, container_id: &ContainerId) {
-        self.stopping
-            .send_if_modified(|stopping| stopping.remove(container_id));
+    fn is_withdrawn(&self, container_id: &ContainerId) -> bool {
+        self.stopping.borrow().contains_key(container_id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn stopping_ids_for_test(&self) -> std::collections::BTreeSet<ContainerId> {
+        self.stopping.borrow().keys().copied().collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn spec_store_path_for_test(&self) -> &std::path::Path {
+        self.specs.path_for_test()
     }
 
     /// Drop what the daemon remembers about a container Docker no longer has.
@@ -409,7 +425,7 @@ impl ContainerRuntime {
                     ),
             };
         }
-        let runtime = withdrawn(runtime, self.stopping.borrow().contains(container_id));
+        let runtime = withdrawn(runtime, self.is_withdrawn(container_id));
         let container =
             ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
                 container_id: *container_id,
@@ -434,6 +450,29 @@ impl ContainerRuntime {
             last_check,
             run,
         })
+    }
+}
+
+/// One operation's hold on a Container's `stopping` mark.
+#[must_use = "the Container returns to ingress when its Withdrawal drops"]
+pub struct Withdrawal {
+    stopping: watch::Sender<BTreeMap<ContainerId, usize>>,
+    container_id: ContainerId,
+}
+
+impl Drop for Withdrawal {
+    fn drop(&mut self) {
+        self.stopping.send_if_modified(|stopping| {
+            let Some(held) = stopping.get_mut(&self.container_id) else {
+                return false;
+            };
+            *held -= 1;
+            if *held > 0 {
+                return false;
+            }
+            stopping.remove(&self.container_id);
+            true
+        });
     }
 }
 
@@ -1218,7 +1257,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(hook.cmd, Some(vec!["migrate".into()]));
-        assert_eq!(hook.entrypoint, Some(vec!["/entrypoint".into()]));
+        assert_eq!(regular.entrypoint, Some(vec!["/entrypoint".into()]));
+        assert_eq!(hook.entrypoint, Some(Vec::new()));
         assert_eq!(hook.hostname.as_deref(), Some("shared-host"));
         assert_eq!(hook.user.as_deref(), Some("1000"));
         let hook_env = hook.env.as_ref().unwrap();

@@ -168,6 +168,8 @@ export const serverDrainAttempt = pgTable(
     targets: jsonb("targets").$type<QualifiedService[] | null>(),
     /** The approval this drain consumed: a retry with it answers this row instead of draining again. */
     approvalId: uuid("approval_id"),
+    /** The digest of the plan its gate admitted: it runs only while it would destroy exactly that, or nothing. */
+    planDigest: text("plan_digest"),
     requestedAt: timestamp("requested_at", { mode: "date", withTimezone: true }).defaultNow().notNull(),
     startedAt: timestamp("started_at", { mode: "date", withTimezone: true }),
     endedAt: timestamp("ended_at", { mode: "date", withTimezone: true }),

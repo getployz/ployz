@@ -61,7 +61,9 @@ impl MachineSpecStore {
     }
 
     /// Take the floor lock. It comes after the switch lock and the admission turn, and
-    /// nothing waits on another lock while holding it.
+    /// nothing waits on either of those while holding it. A holder may wait on Docker
+    /// or the volume plugin: a fenced stop holds it through the Docker stop, a cut
+    /// through `zfs`.
     pub async fn floor_turn(&self) -> FloorTurn<'_> {
         FloorTurn {
             store: self,
@@ -169,6 +171,13 @@ impl ConfigOperation<'_> {
             garbage_collect_config_files(&path, &retained)
         })
         .await
+    }
+}
+
+#[cfg(test)]
+impl MachineSpecStore {
+    pub(crate) fn path_for_test(&self) -> &std::path::Path {
+        &self.path
     }
 }
 

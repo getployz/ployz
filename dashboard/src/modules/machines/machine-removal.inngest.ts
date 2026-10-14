@@ -145,6 +145,7 @@ export async function executeProcessMachineRemove({
       machineId: attempt.machineId,
       name: leaving.machine.name,
       writes: leaving.writes,
+      held: leaving.held,
     })),
   );
   // Its own step: a retry after the reset releases again, never resets a Server that's gone.

@@ -155,7 +155,7 @@ const tools = Effect.fn(function* (seed: boolean) {
     const store = yield* cloudStore.pipe(Effect.provide(services));
     yield* Effect.promise(() => store.write(ORGANIZATION, SHOP));
   }
-  const caller: Caller = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "session", id: "session-1" }, support: null };
+  const caller: Caller = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "session", id: "session-1" }, support: null, via: "agent" };
   let calls = 0;
   return ({ tool, input, callKey = `call-${++calls}` }: Step) => runTool(caller, tool, input, place, `run-1:${callKey}`).pipe(Effect.provide(services));
 });

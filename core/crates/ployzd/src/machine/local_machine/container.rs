@@ -292,15 +292,15 @@ impl LocalMachine {
     /// already holding a turn deadlocks.
     ///
     /// The stopping mark is set without a turn so replication tells every proxy
-    /// while the drain sleeps. The stop clears the mark whether it succeeds or
-    /// fails, so a Container that failed to stop is routed again. A daemon
-    /// restart forgets the mark; a still-running Container returns to ingress
-    /// and the resend redoes the drain.
+    /// while the drain sleeps. A daemon restart forgets the mark; a still-running
+    /// Container returns to ingress and the resend redoes the drain.
     ///
     /// With a `fence`, the Container holds that Volume and the gen is checked against
     /// its floor under the turn, after the drain: a Deploy that raised the floor
     /// meanwhile may already have answered Done on this holder, so a raised floor
-    /// clears the mark and stops nothing. A start ordered after that check waits for
+    /// drops the Withdrawal and stops nothing. The floor lock is held from that check
+    /// through the stop, so a floor raised mid-stop waits and its Deploy reads the
+    /// holder stopped, not still running. A start ordered after that check waits for
     /// the turn, so it runs after the stop.
     ///
     /// Polls no proxy and reads no other Machine.
@@ -319,18 +319,19 @@ impl LocalMachine {
         if !is_running(&observed) {
             return Ok(Ok(observed));
         }
-        containers.mark_stopping(*container);
+        let _withdrawal = containers.withdraw(*container);
         tokio::time::sleep(drain.as_duration()).await;
         let turn = self.owner.admission_lock().write_owned().await;
-        if let Some((name, r#gen)) = fence {
-            let admitted = containers.floor_turn().await.admit(name, r#gen).await;
-            if !matches!(admitted, Ok(Ok(()))) {
-                containers.clear_stopping(container);
+        let floor = match fence {
+            Some((name, r#gen)) => {
+                let mut floor = containers.floor_turn().await;
+                if let Err(floor) = floor.admit(name, r#gen).await? {
+                    return Ok(Err(floor));
+                }
+                Some(floor)
             }
-            if let Err(floor) = admitted? {
-                return Ok(Err(floor));
-            }
-        }
+            None => None,
+        };
         let stopped = containers
             .stop(
                 container,
@@ -338,11 +339,41 @@ impl LocalMachine {
                 stop.grace_period_seconds.map(i32::from),
             )
             .await;
+        drop(floor);
         drop(turn);
         stopped?;
         Ok(Ok(containers
             .inspect_managed(container, &machine_id)
             .await?))
+    }
+
+    pub(crate) async fn remove_drained_if<W>(
+        &self,
+        container: ContainerId,
+        still_wanted: W,
+    ) -> Result<bool, Error>
+    where
+        W: std::future::Future<Output = Result<bool, crate::corrosion::Error>> + Send + 'static,
+    {
+        let local = self.clone();
+        self.finish_mutation(async move {
+            let containers = local.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+            let still_wanted = async { Ok::<_, Error>(still_wanted.await?) };
+            match containers
+                .stop_if(&container, None, None, still_wanted)
+                .await
+            {
+                Ok(true) | Err(Error::Docker(crate::docker::Error::ContainerNotFound(_))) => {}
+                Ok(false) => return Ok(false),
+                Err(error) => return Err(error),
+            }
+            let remove_volumes = AnonymousVolumes::default() == AnonymousVolumes::Remove;
+            match containers.remove(&container, remove_volumes, false).await {
+                Ok(()) | Err(crate::docker::Error::ContainerNotFound(_)) => Ok(true),
+                Err(error) => Err(error.into()),
+            }
+        })
+        .await
     }
 
     /// The cut's Container half: drain and stop every holder of the Volume, then run

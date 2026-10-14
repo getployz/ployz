@@ -117,6 +117,9 @@ its URL `github.com/apps/<slug>`.
    Leave every `POLAR_*` and `POSTHOG_*` variable unset: that turns off billing and product
    analytics. If a required value is missing, `web` and `worker` stop with a `ConfigError`.
    To turn on the [Ployz agent](account/agent-sidebar.md), set `ANTHROPIC_API_KEY`.
+   Email is optional too. Ployz Cloud sends none while `POSTSHIBA_API_KEY`, `POSTSHIBA_TEAM_ID`,
+   `POSTSHIBA_CLUSTER_ID`, and `MAIL_FROM` are unset. Set all four to send through
+   PostShiba. With only some of them set, `web` and `worker` stop at startup.
 
 > [!WARNING]
 > Keep `APP_ENCRYPTION_SECRET` the same forever, and back it up with the Postgres volume

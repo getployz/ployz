@@ -24,6 +24,7 @@ import { InngestClient } from "#/modules/inngest/client";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { requirements, ServerLacks } from "#/modules/runtime/daemon-compat";
 import { PloyzProviderError, type PloyzSdkError, type PloyzSession } from "#/modules/runtime/ployz.server";
+import { RuntimeConnectionFailure } from "#/modules/runtime/runtime-connection-errors";
 import { createCancelStoreDeployment, createRunStoreDeployment } from "#/modules/config-store/store-deployment.inngest";
 import type { InngestRunStatus } from "#/modules/inngest/client";
 import { createCloseFinishedVolumeRun, createCloseStaleVolumeRuns, createRunVolume } from "#/modules/volume-run/volume-run.inngest";
@@ -51,6 +52,7 @@ import { member } from "#/modules/volume-run/volume-run.test-fixture";
 import { type DeployLane, fenceDeployVolume, finishDeployVolumes, placeDeployVolumes } from "#/modules/volume-run/volume-run.deploy.server";
 import type { Caller } from "#/modules/identity/actor";
 import { runVolume } from "#/modules/operations/operations.server";
+import { decideApproval } from "#/modules/approvals/approvals.server";
 import type { Database } from "#/server/database.server";
 import { makeInngestEffectRunner, type runInngestEffect } from "#/server/run.server";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
@@ -141,6 +143,9 @@ describe("volume runs", () => {
   let beforeSet: Map<string, () => void | Promise<void>>;
   /** Runs while a writer start reads the kept Container's spec, between the commit and the send. */
   let beforeStart: (() => Promise<void>) | null;
+  /** Fails a runtime frame read, counted from 1 in `frames`, as a Server that never answers its first frame. */
+  let frameFault: ((read: number) => boolean) | null;
+  let frames: number;
   let sent: SetVolumeCopyRequest[];
   let held: Map<string, () => CopyRefusal | null>;
   let storeVolumes: Array<{ id: string; name: string; storage: { kind: "provisioned"; maximumBytes: number } | { kind: "docker" }; change?: "delete" }>;
@@ -286,7 +291,9 @@ describe("volume runs", () => {
   };
 
   const session = asTestDouble<PloyzSession>()({
-    watchFirstFrame: () => Effect.succeed({
+    watchFirstFrame: () => frameFault?.(++frames) === true
+      ? Effect.fail(new RuntimeConnectionFailure({ cause: new Error("Runtime watch timed out") }))
+      : Effect.succeed({
       machines: machines.map((fake) => ({
         machine: { id: fake.id ?? idOf(fake.name), name: fake.name, public_key: Array.from({ length: 32 }, (_, index) => index), runtime: { daemon_version: fake.lacks ?? "", capabilities: fake.capabilities } },
         storage: fake.stateless === true ? { state: "stateless" } : fake.pool ? { state: "pool", size_bytes: 1, used_bytes: 0, free_bytes: 1 } : { state: "ready" },
@@ -398,6 +405,15 @@ describe("volume runs", () => {
     if (!result.ok) throw new Error(result.refusal.message);
     return result.run;
   };
+  const waitingOnLock = async () => {
+    for (let poll = 0; poll < 200; poll++) {
+      const { rows: waiting } = await harness.pool.query(
+        "select 1 from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'");
+      if (waiting.length > 0) return;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    throw new Error("nothing waited on the held row lock");
+  };
   const settled = ["05-cut", "07-start", "03-start", "04-resume", "05-resume", "03-restore", "03-demote", "03-reset-forget-mirror", "03-reset-forget-writer", "04-forget"];
   const sleeps = [
     ...["03-r0", "03-r1", "03-r2", "06-final"].flatMap((prefix) => Array.from({ length: 9 }, (_, poll) => `${prefix}-backoff-${poll}`)),
@@ -446,6 +462,8 @@ describe("volume runs", () => {
     failNext = new Map();
     beforeSet = new Map();
     beforeStart = null;
+    frameFault = null;
+    frames = 0;
     sent = [];
     held = new Map();
     guids = 0;
@@ -602,6 +620,33 @@ describe("volume runs", () => {
       await execute(first.id);
       expect((await request({ kind: "sync", args: { full: false } })).ok).toBe(true);
     });
+
+    it("a mirror removal under way says it finishes on its own, and a release leaves it to, since it cannot retract a destroy a Machine started", async () => {
+      const removal = await requested({ kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null } });
+
+      const busy = { ok: false, refusal: { code: "conflict", message: "VolumeBusy: data is busy with a mirror removal; it finishes on its own" } };
+      expect(await request({ kind: "sync", args: { full: false } })).toMatchObject(busy);
+      expect(await request({ kind: "release", args: {} })).toMatchObject(busy);
+      expect(await rows()).toMatchObject([{ id: removal.id, kind: "delete_mirror", state: "requested" }]);
+    });
+
+    it("a request whose insert lost to a run that ended before its read inserts again, on the now free Volume", async () => {
+      const first = await requested({ kind: "mirror", args: { to: "fsn-2" } });
+      const other = await harness.pool.connect();
+      try {
+        await other.query("begin");
+        await other.query("select id from volume_run where id = $1 for update", [first.id]);
+        const second = request({ kind: "sync", args: { full: false } });
+        await waitingOnLock();
+        await other.query("update volume_run set state = 'done', finished_at = now() where id = $1", [first.id]);
+        await other.query("commit");
+
+        expect(await second).toMatchObject({ ok: true, run: { kind: "sync", state: "requested" } });
+      } finally {
+        other.release();
+      }
+      expect((await rows()).map((row) => [row.kind, row.state])).toEqual([["mirror", "done"], ["sync", "requested"]]);
+    });
   });
 
 
@@ -719,15 +764,6 @@ describe("volume runs", () => {
         sync: '{"full":false}',
         release: "{}",
         delete_mirror: '{"slot":"fsn-2","confirmed_name":null}',
-      };
-      const waitingOnLock = async () => {
-        for (let poll = 0; poll < 200; poll++) {
-          const { rows: waiting } = await harness.pool.query(
-            "select 1 from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'");
-          if (waiting.length > 0) return;
-          await new Promise((resolve) => setTimeout(resolve, 25));
-        }
-        throw new Error("the insert never waited on the landing lane");
       };
 
       for (const [kind, args] of Object.entries(landings)) {
@@ -917,9 +953,7 @@ describe("volume runs", () => {
         await other.query("begin");
         await other.query("select id from volume_run where id = $1 for update", [move.id]);
         const releasing = runEffect(releaseLanesOff(organizationId, fsn("fsn-2"), []));
-        while ((await harness.pool.query("select 1 from pg_stat_activity where wait_event_type = 'Lock'")).rowCount === 0) {
-          await new Promise((resolve) => setTimeout(resolve, 10));
-        }
+        await waitingOnLock();
         await other.query("update volume_run set state = 'done', finished_at = now() where id = $1", [move.id]);
         await other.query(`
           insert into volume_run (id, organization_id, environment_id, volume_id, volume_name, docker_volume, refquota_bytes, kind, args, state, inngest_run_id)
@@ -961,6 +995,93 @@ describe("volume runs", () => {
       expect(await releaseRow()).toMatchObject({
         state: "failed", message: "data's writer was on fsn-2 (removed). Restore from fsn-1's copy: ployz volume restore data --from fsn-1",
       });
+    });
+
+    it.each(["release", "move"] as const)("removing B ends a running committed %s at once, so a restore from A's copy starts", async (kind) => {
+      const move = await warmMove();
+      await harness.pool.query("update volume_run set phase = 'committed', current = $2 where id = $1", [move.id, idOf("fsn-2")]);
+      let lane = move.id;
+      if (kind === "release") {
+        await harness.pool.query("update volume_run set state = 'failed', finished_at = now() where id = $1", [move.id]);
+        lane = (await requested({ kind: "release", args: {} })).id;
+        await harness.pool.query("update volume_run set state = 'running', inngest_run_id = 'run-2', phase = 'committed', current = $2 where id = $1", [lane, idOf("fsn-2")]);
+      }
+      send.mockClear();
+
+      await runEffect(releaseLanesOff(organizationId, fsn("fsn-2"), [], { [dockerVolume]: "fsn-1" }));
+
+      expect((await lanes()).find((row) => row.id === lane)).toMatchObject({
+        state: "failed", message: "data's writer was on fsn-2 (removed). Restore from fsn-1's copy: ployz volume restore data --from fsn-1",
+      });
+      expect(send).toHaveBeenCalledWith(expect.objectContaining({ name: "volume/run.taken", data: { runId: lane } }));
+      expect(await request({ kind: "restore", args: { from: "fsn-1" } })).toMatchObject({ ok: true, run: { kind: "restore" } });
+    });
+
+    it("a warm Move that commits to B while B's removal takes it still ends, so a restore from A's copy starts", async () => {
+      const move = await warmMove();
+      const committing = await harness.pool.connect();
+      try {
+        await committing.query("begin");
+        await committing.query("select id from volume_run where id = $1 for update", [move.id]);
+        const releasing = runEffect(releaseLanesOff(organizationId, fsn("fsn-2"), [], { [dockerVolume]: "fsn-1" }));
+        await waitingOnLock();
+        await committing.query("update volume_run set phase = 'committed', current = $2 where id = $1", [move.id, idOf("fsn-2")]);
+        await committing.query("commit");
+
+        expect(await releasing).toEqual([]);
+      } finally {
+        // Destroying the client rolls back a transaction a failed lock poll left open, so the removal it blocks ends.
+        committing.release(true);
+      }
+      expect(await lanes()).toMatchObject([{
+        id: move.id, state: "failed", message: "data's writer was on fsn-2 (removed). Restore from fsn-1's copy: ployz volume restore data --from fsn-1",
+      }]);
+      expect(await request({ kind: "restore", args: { from: "fsn-1" } })).toMatchObject({ ok: true, run: { kind: "restore" } });
+    });
+
+    it("a committed Move that fails into a release while B's removal ends it still frees the lane, so a restore starts", async () => {
+      const move = await warmMove();
+      await harness.pool.query("update volume_run set phase = 'committed', current = $2 where id = $1", [move.id, idOf("fsn-2")]);
+      const failing = await harness.pool.connect();
+      try {
+        await failing.query("begin");
+        await failing.query("select id from volume_run where id = $1 for update", [move.id]);
+        const releasing = runEffect(releaseLanesOff(organizationId, fsn("fsn-2"), [], { [dockerVolume]: "fsn-1" }));
+        await waitingOnLock();
+        await failing.query("update volume_run set state = 'failed', finished_at = now() where id = $1", [move.id]);
+        await failing.query(`
+          insert into volume_run (organization_id, environment_id, volume_id, volume_name, docker_volume, refquota_bytes, kind, args, phase, current)
+          select organization_id, environment_id, volume_id, volume_name, docker_volume, refquota_bytes, 'release', '{}', phase, current
+          from volume_run where id = $1`, [move.id]);
+        await failing.query("commit");
+
+        await releasing;
+      } finally {
+        failing.release(true);
+      }
+      expect(await lanes()).toMatchObject([
+        { id: move.id, state: "failed" },
+        { kind: "release", state: "failed", message: "data's writer was on fsn-2 (removed). Restore from fsn-1's copy: ployz volume restore data --from fsn-1" },
+      ]);
+      expect(await request({ kind: "restore", args: { from: "fsn-1" } })).toMatchObject({ ok: true, run: { kind: "restore" } });
+    });
+
+    it("removing B ends a committed Move with no copy known elsewhere, and names none", async () => {
+      const move = await warmMove();
+      await harness.pool.query("update volume_run set phase = 'committed', current = $2 where id = $1", [move.id, idOf("fsn-2")]);
+
+      await runEffect(releaseLanesOff(organizationId, fsn("fsn-2"), []));
+
+      expect(await lanes()).toMatchObject([{ id: move.id, state: "failed", message: "data's writer was on fsn-2 (removed). No other server's copy is known to hold its newest data." }]);
+    });
+
+    it("removing a Server leaves a committed lane bound elsewhere alone", async () => {
+      const move = await warmMove();
+      await harness.pool.query("update volume_run set phase = 'committed', current = $2 where id = $1", [move.id, idOf("fsn-2")]);
+
+      await runEffect(releaseLanesOff(organizationId, fsn("fsn-1"), [dockerVolume], { [dockerVolume]: "fsn-2" }));
+
+      expect(await lanes()).toMatchObject([{ id: move.id, state: "running", phase: "committed" }]);
     });
   });
 
@@ -2172,7 +2293,7 @@ describe("volume runs", () => {
   });
 
   describe("admission", () => {
-    const caller: Caller = { userId, organization: { id: organizationId, slug: "acme" }, credential: { kind: "session", id: "session-1" }, support: null };
+    const caller: Caller = { userId, organization: { id: organizationId, slug: "acme" }, credential: { kind: "session", id: "session-1" }, support: null, via: "agent" };
     const run = (input: VolumeRunInput) => runEffect(runVolume(caller, { volumeId, environment, ...input }, { key: null, approvalId: null }));
 
     it("a Mirror Remove of the last copy asks first, names the copy it deletes, and writes no run", async () => {
@@ -2246,6 +2367,81 @@ describe("volume runs", () => {
 
       expect(admitted).toMatchObject({ ok: false, refusal: { message: "data's writer is already on fsn-2" } });
       expect(await rows()).toEqual([]);
+    });
+
+    describe("a Release from slots", () => {
+      const slots = () => {
+        const at = newSnap("f-1");
+        machines = [
+          { name: "fsn-1", pool: true, copy: slotCopy(at) },
+          { name: "fsn-2", pool: true, copy: slotCopy(at) },
+        ];
+        containers = [{ machine: "fsn-1", id: "web-fsn-1", running: false }];
+      };
+      const release = (approvalId: string | null = null) =>
+        runEffect(runVolume(caller, { volumeId, environment, kind: "release", args: {} }, { key: null, approvalId }));
+      const approve = async (asked: Awaited<ReturnType<typeof release>>) => {
+        if (asked.ok || asked.refusal.code !== "approval_required") throw new Error(`expected an ask, got ${JSON.stringify(asked)}`);
+        // SAFETY: an approval_required refusal carries the digest and id of the approval it recorded.
+        const { approval, approval_id } = asked.refusal.details as { approval: string; approval_id: string };
+        await runEffect(decideApproval(caller, approval_id, { approve: { digest: approval } }));
+        return release(approval_id);
+      };
+      const admittedId = (admitted: Awaited<ReturnType<typeof release>>) => {
+        if (!admitted.ok) throw new Error(admitted.refusal.message);
+        return admitted.id;
+      };
+      const changed = (holder: string) =>
+        `data's copies changed since this release was planned; nothing was forgotten and data's Service stays stopped on ${holder}. Run ployz volume release data again`;
+
+      it("whose kept-source read times out asks for every slot it may forget, and the approved run forgets only the copy beside the source", async () => {
+        slots();
+        frameFault = (read) => read % 2 === 0;
+
+        const asked = await release();
+
+        expect(asked).toMatchObject({
+          ok: false,
+          refusal: { code: "approval_required", details: { effects: [{ node: `${idOf("fsn-1")}/${dockerVolume}` }, { node: `${idOf("fsn-2")}/${dockerVolume}` }] } },
+        });
+        expect(await rows()).toEqual([]);
+        expect(send).not.toHaveBeenCalled();
+
+        const id = admittedId(await approve(asked));
+        frameFault = null;
+        const output = await execute(id);
+
+        expect(output.result).toEqual({ runId: id, released: "fsn-1" });
+        expect(verbs).toEqual(["floor@fsn-1", "floor@fsn-2", "forget@fsn-2", "writer@fsn-1(kept)"]);
+      });
+
+      it("planned with two stopped Containers forgets nothing once one of them goes", async () => {
+        slots();
+        containers.push({ machine: "fsn-2", id: "web-fsn-2", running: false });
+        const id = admittedId(await release());
+        containers = containers.filter((container) => container.machine !== "fsn-2");
+
+        const output = await execute(id);
+
+        expect(verbs).toEqual(["floor@fsn-1", "floor@fsn-2"]);
+        expect(output.error).toBeDefined();
+        expect(machines.map((fake) => fake.copy?.kind)).toEqual(["slot", "slot"]);
+        expect(containers).toEqual([{ machine: "fsn-1", id: "web-fsn-1", running: false }]);
+        expect(await rows()).toMatchObject([{ state: "failed", message: changed("fsn-1") }]);
+      });
+
+      it("approved to keep fsn-1 fails rather than forget fsn-1 when fsn-2 holds the stopped Container instead", async () => {
+        slots();
+        const id = admittedId(await approve(await release()));
+        containers = [{ machine: "fsn-2", id: "web-fsn-2", running: false }];
+
+        const output = await execute(id);
+
+        expect(verbs).toEqual(["floor@fsn-1", "floor@fsn-2"]);
+        expect(output.error).toBeDefined();
+        expect(machines.map((fake) => fake.copy?.kind)).toEqual(["slot", "slot"]);
+        expect(await rows()).toMatchObject([{ state: "failed", message: changed("fsn-2") }]);
+      });
     });
   });
 

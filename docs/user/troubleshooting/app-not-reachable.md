@@ -74,8 +74,10 @@ the request to. The page reloads itself every 10 seconds.
 The domain's row says where traffic goes. **→ Uses PORT** means the `PORT` variable, which is
 `8080` unless you set it. Either:
 
-- add a `PORT` variable set to your app's port, then deploy (the health check uses it too), or
+- add a `PORT` variable set to your app's port, then deploy, or
 - click the pencil on the domain and set **Target port** to the port your app listens on.
+
+The health check follows whichever you pick.
 
 ## Nothing is deployed here
 

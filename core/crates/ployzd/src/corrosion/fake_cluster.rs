@@ -31,6 +31,7 @@ struct ClusterKv {
     container_changes: broadcast::Sender<()>,
     machine_changes: broadcast::Sender<()>,
     pointer_changes: broadcast::Sender<()>,
+    ingress_changes: broadcast::Sender<()>,
     subscriptions: bool,
     snapshots_fail: bool,
     tokens: Vec<String>,
@@ -41,6 +42,7 @@ impl ClusterKv {
         let (container_changes, _) = broadcast::channel(16);
         let (machine_changes, _) = broadcast::channel(16);
         let (pointer_changes, _) = broadcast::channel(16);
+        let (ingress_changes, _) = broadcast::channel(16);
         Self {
             network: "10.210.0.0/16".into(),
             machines: BTreeMap::new(),
@@ -51,6 +53,7 @@ impl ClusterKv {
             container_changes,
             machine_changes,
             pointer_changes,
+            ingress_changes,
             subscriptions,
             snapshots_fail: false,
             tokens: Vec::new(),
@@ -233,6 +236,10 @@ async fn subscriptions(
             kv.pointer_changes.subscribe(),
             "{\"columns\":[\"serving_key\",\"value\"]}\n{\"eoq\":{\"time\":0.0}}\n",
         ),
+        "SELECT machine_id, service_id, deploy, containers FROM ingress_routes" => (
+            kv.ingress_changes.subscribe(),
+            "{\"columns\":[\"machine_id\",\"service_id\",\"deploy\",\"containers\"]}\n{\"eoq\":{\"time\":0.0}}\n",
+        ),
         query => panic!("unexpected subscription {query}"),
     };
     drop(kv);
@@ -322,6 +329,19 @@ fn query(kv: &Mutex<ClusterKv>, statement: Statement) -> Result<Bytes, StatusCod
                 .iter()
                 .map(|(key, value)| vec![json!(key), json!(value)]),
         ),
+        "SELECT machine_id, service_id, deploy, containers FROM ingress_routes" => events(
+            &["machine_id", "service_id", "deploy", "containers"],
+            kv.ingress_routes
+                .iter()
+                .map(|((machine_id, service_id), (deploy, containers))| {
+                    vec![
+                        json!(machine_id),
+                        json!(service_id),
+                        json!(deploy),
+                        json!(containers),
+                    ]
+                }),
+        ),
         "SELECT site_id, db_version FROM crsql_db_versions" => {
             events(&["site_id", "db_version"], Vec::new())
         }
@@ -339,6 +359,11 @@ fn execute(kv: &Mutex<ClusterKv>, statements: Vec<Statement>) -> Bytes {
                     text_param(&statement.params, 1).to_owned(),
                 );
                 let _ = kv.machine_changes.send(());
+            }
+            query
+                if query.starts_with("INSERT INTO cluster (key, value) VALUES ('network', ?)") =>
+            {
+                text_param(&statement.params, 0).clone_into(&mut kv.network);
             }
             query if query.starts_with("INSERT INTO volumes (machine_id, name, volume)") => {
                 kv.volumes.insert(
@@ -370,12 +395,14 @@ fn execute(kv: &Mutex<ClusterKv>, statements: Vec<Statement>) -> Bytes {
                         text_param(&statement.params, 3).to_owned(),
                     ),
                 );
+                let _ = kv.ingress_changes.send(());
             }
             query if query.starts_with("DELETE FROM ingress_routes") => {
                 kv.ingress_routes.remove(&(
                     text_param(&statement.params, 0).to_owned(),
                     text_param(&statement.params, 1).to_owned(),
                 ));
+                let _ = kv.ingress_changes.send(());
             }
             query => panic!("unexpected statement {query}"),
         }
