@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::{
-    ConfigError, FileMode, ServiceConfig, ServiceEnvValue, ServiceHealthcheck, ServiceSource,
-    ValuePart, ValuePartOwner, VolumeKind, parse_service_config,
+    BuildMethod, ConfigError, FileMode, ServiceConfig, ServiceEnvValue, ServiceHealthcheck,
+    ServiceSource, ValuePart, ValuePartOwner, VolumeKind, parse_service_config,
 };
 use crate::{
     ByteQuantity, ConfigFileName, ConfigMount, ConfigName, ConfigSpec, ConfiguredHealthcheck,
@@ -79,6 +79,11 @@ pub struct LowerDeploymentSnapshot {
     /// Run in order after the service's own pre-deploy command, in the same hook.
     #[serde(default)]
     pub setup_commands: Vec<String>,
+    /// How Ployz builds the image its source was replaced with; None when the Service
+    /// pulls its authored image. A Railpack image keeps its shell ENTRYPOINT for the
+    /// start command, any other has the start command replace it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub built_with: Option<BuildMethod>,
 }
 
 /// One Volume the Namespace holds.
@@ -350,6 +355,16 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
                 })
             })
             .transpose()?;
+        // Railway's start command rules: Railpack's `/bin/bash -c` ENTRYPOINT runs the
+        // command as one shell string; any other image has it replace ENTRYPOINT and
+        // CMD, split into argv without a shell. An empty split keeps the image's own.
+        let (entrypoint, command) = match config.start_command.as_deref() {
+            None => (Vec::new(), Vec::new()),
+            Some(start) if snapshot.built_with == Some(BuildMethod::Railpack) => {
+                (Vec::new(), vec![start.to_owned()])
+            }
+            Some(start) => (super::split_start_command(start)?, Vec::new()),
+        };
         let mut spec = RequestedServiceSpec {
             name: config.private_dns,
             mode: ServiceMode::Replicated {
@@ -357,11 +372,7 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
             },
             container: ServiceContainerSpec {
                 image: image.clone(),
-                command: config
-                    .start_command
-                    .as_deref()
-                    .map(command)
-                    .unwrap_or_default(),
+                command,
                 environment,
                 pull_policy: PullPolicy::Missing,
                 restart,
@@ -374,7 +385,7 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
                         .map_err(lowering_error)?,
                     ..Default::default()
                 },
-                entrypoint: Vec::new(),
+                entrypoint,
                 labels: crate::ContainerLabels::parse(
                     snapshot
                         .service_id
