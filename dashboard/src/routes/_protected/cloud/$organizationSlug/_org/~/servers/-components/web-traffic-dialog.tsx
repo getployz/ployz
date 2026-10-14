@@ -17,7 +17,7 @@ const listed = {
 /** The confirm before web traffic goes off: which domains this affects, and whether another Server keeps serving them. */
 export function WebTrafficDialog({ serverName, domains, partial, reach, open, onOpenChange, onConfirm }: {
   serverName: string;
-  /** Every domain pointed at your Servers. */
+  /** Every hostname your Services publish through web traffic. */
   domains: readonly string[];
   /** Some domains weren't observed, so the list may be short. */
   partial: boolean;

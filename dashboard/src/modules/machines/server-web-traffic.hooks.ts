@@ -15,9 +15,9 @@ const PENDING_MS = 60_000;
 
 export type ServerWebTraffic = {
   readonly view: WebTrafficView;
-  /** The domains that point at Servers taking web traffic: what turning off here affects. */
+  /** The hostnames your Services publish through web traffic: what turning off here affects. */
   readonly domains: readonly string[];
-  /** Some Server's certificates weren't observed, so `domains` may miss some. */
+  /** Some Servers or containers weren't observed, so `domains` may miss some. */
   readonly partial: boolean;
   /** No other online Server takes web traffic: turning off here stops every domain. */
   readonly reach: WebTrafficReach;
@@ -42,7 +42,7 @@ export function useServerWebTraffic(
 ): ServerWebTraffic {
   const queryClient = useQueryClient();
   const { servers: latest } = useServerWebTrafficChanges(organizationSlug);
-  const { certificates, incompleteIds } = useRuntimeStatus();
+  const { published, incompleteIds } = useRuntimeStatus();
   const [requested, setRequested] = useState<{ readonly id: string; readonly want: WebTrafficWant } | null>(null);
   const [open, setOpen] = useState(false);
   const [settledId, setSettledId] = useState<string | null>(null);
@@ -92,8 +92,8 @@ export function useServerWebTraffic(
       requested,
       settled: finished !== null && settledId === finished.attemptId,
     }),
-    domains: [...new Set(certificates.map((certificate) => certificate.hostname))],
-    partial: incompleteIds.certificates.length > 0,
+    domains: published,
+    partial: incompleteIds.machines.length > 0 || incompleteIds.containers.length > 0,
     reach: webTrafficReach({ id: server.id, acceptsIngress: machine.acceptsIngress, publicIp: machine.publicIp }, servers),
     turnOn: () => send("on"),
     ask: () => setOpen(true),
