@@ -633,13 +633,17 @@ export const removeContainer = Effect.fn("VolumeRun.removeContainer")(function* 
   );
 }, Effect.scoped);
 
-/** Each managed Server's copy of `dockerVolume`; a Server that doesn't answer in time is a member that didn't answer. */
+/**
+ * Each managed Server's copy of `dockerVolume`; a Server that doesn't answer in time is a member that didn't answer.
+ * So is one the frame lists only by id: it is still in the cluster, so a mirror on it is not gone.
+ */
 export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(function* (organizationId: string, dockerVolume: string, kind?: VolumeRunKind) {
   const session = yield* openSession(organizationId);
   const frame = yield* session.watchFirstFrame(5_000);
   // A Docker-only Machine holds no copy and may not serve the verb, so it must not block the run.
   const managed = frame.machines.filter((observed) => observed.storage?.state !== "stateless");
-  return yield* Effect.forEach(managed, ({ machine }) =>
+  const unlisted = frame.incomplete_ids.machines.map((id): Member => ({ machine: { id, name: id }, answered: false }));
+  const listed = yield* Effect.forEach(managed, ({ machine }) =>
     session.volumeSwitch(machine.id, { command: "inspect_volume_copy", payload: { name: dockerVolume } }).pipe(
       Effect.map((view): Member => ({
         machine: { id: machine.id, name: machine.name },
@@ -653,6 +657,7 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
       )),
       Effect.orElseSucceed((): Member => ({ machine: { id: machine.id, name: machine.name }, answered: false })),
     ), { concurrency: "unbounded" });
+  return [...listed, ...unlisted];
 }, Effect.scoped);
 
 /** What a run of each kind is called when a Server can't run it. */

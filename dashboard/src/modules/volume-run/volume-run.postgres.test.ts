@@ -281,6 +281,7 @@ describe("volume runs", () => {
         resolved_spec: { name: "web", container: { pull_policy: "always", environment: {} }, volumes: [{ source: { kind: "provisioned", name: dockerVolume } }] },
         runtime: { state: container.running ? "running" : "exited" },
       })),
+      incomplete_ids: { machines: [] },
     }),
     inspectContainer: (target: string, container: string) => Effect.sync(() => ({
       container: {
