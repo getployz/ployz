@@ -548,7 +548,7 @@ export const releaseLanesOff = Effect.fn("VolumeRun.releaseLanesOff")(function* 
   for (const lane of lanes) {
     const input = laneInputOf(lane);
     if (pastReturn(lane) || input.kind === "release" || input.kind === "deploy") continue;
-    const bound = machine.name !== null && isDestination(input, { id: machine.id, name: machine.name });
+    const bound = isDestination(input, machine);
     if (!bound && !writes.includes(lane.dockerVolume)) continue;
     const taker: LaneTaker = {
       input: { volumeId: lane.volumeId, kind: "release", args: {} },
@@ -983,7 +983,7 @@ export const removeContainer = Effect.fn("VolumeRun.removeContainer")(function* 
   );
 }, Effect.scoped);
 
-const isDestination = (run: VolumeLaneInput, machine: MachineRef) =>
+const isDestination = (run: VolumeLaneInput, machine: { readonly id: MachineId; readonly name: MachineName | null }) =>
   (run.kind === "move" || run.kind === "mirror") && (run.args.machine === undefined ? run.args.to === machine.name : run.args.machine === machine.id);
 
 /**
@@ -1209,15 +1209,21 @@ const configVolumeNames = Effect.fn("VolumeRun.configVolumeNames")(function* (or
 
 export type CopyObserver = (organizationId: string) => Effect.Effect<CopyObservation["copies"], unknown, Database | SecretEncryption>;
 
-export const observeOrganization = (organizationId: string) =>
-  Effect.gen(function* () {
-    const loaded = yield* loadOrganizationConnections(organizationId);
-    if (loaded.kind !== "ready" || loaded.connections.length === 0) return { copies: [], unanswered: [] } satisfies CopyObservation;
-    return yield* observeVolumeCopies(loaded.connections);
-  });
+class ClusterNotPaired extends Data.TaggedError("ClusterNotPaired")<{ readonly organizationId: string }> {}
+
+/** Every copy the Cluster's Servers report, failing when Cloud holds no pairing to ask them through. */
+export const observeOrganization = Effect.fn("VolumeRun.observeOrganization")(function* (organizationId: string) {
+  const loaded = yield* loadOrganizationConnections(organizationId);
+  if (loaded.kind !== "ready") return yield* new ClusterNotPaired({ organizationId });
+  if (loaded.connections.length === 0) return { copies: [], unanswered: [] } satisfies CopyObservation;
+  return yield* observeVolumeCopies(loaded.connections);
+});
 
 export const observeOrganizationCopies: CopyObserver = (organizationId) =>
-  observeOrganization(organizationId).pipe(Effect.map((observed) => observed.copies));
+  observeOrganization(organizationId).pipe(
+    Effect.map((observed) => observed.copies),
+    Effect.catchTag("ClusterNotPaired", () => Effect.succeed([])),
+  );
 
 function unheldRootNames(copies: CopyObservation["copies"], configNames: ReadonlySet<string>): string[] {
   const roots = copies.filter((copy) => copy.role !== "slot" && !configNames.has(copy.name));
