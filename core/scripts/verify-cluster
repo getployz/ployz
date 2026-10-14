@@ -26,6 +26,7 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(CORE / "scripts" / "verify"))
 sys.path.insert(0, str(CORE / "scripts"))
 import artifacts  # noqa: E402
+import boat  # noqa: E402
 import host  # noqa: E402
 import releases  # noqa: E402
 
@@ -71,10 +72,13 @@ class Commands:
         return result
 
 
+PROVIDERS = ["incus", "boat"]
+
+
 def provider(run, commands):
-    # A backend implements prepare/create/start/exec/push/address/destroy.
+    # A backend implements prepare/create/start/exec/push/address/ssh/destroy.
     # The manifest binds subsequent operations to the provider that created it.
-    if run["provider"] != "incus":
+    if run["provider"] not in PROVIDERS:
         raise RuntimeError(f"Unknown provider: {run['provider']}")
     return importlib.import_module(run["provider"]).Provider(run, commands, CORE)
 
@@ -205,28 +209,42 @@ def cli(run, commands, args, **kwargs):
 
 
 PARTITION = """
-iptables -N PLOYZ-VERIFY-PARTITION 2>/dev/null || iptables -F PLOYZ-VERIFY-PARTITION
+tables=
 for peer in "$@"; do
-    iptables -A PLOYZ-VERIFY-PARTITION -s "$peer" -j DROP
-    iptables -A PLOYZ-VERIFY-PARTITION -d "$peer" -j DROP
+    case $peer in *:*) table=ip6tables ;; *) table=iptables ;; esac
+    case " $tables " in
+        *" $table "*) ;;
+        *) tables="$tables $table"; $table -N PLOYZ-VERIFY-PARTITION 2>/dev/null || $table -F PLOYZ-VERIFY-PARTITION ;;
+    esac
+    $table -A PLOYZ-VERIFY-PARTITION -s "$peer" -j DROP
+    $table -A PLOYZ-VERIFY-PARTITION -d "$peer" -j DROP
 done
-for hook in INPUT OUTPUT FORWARD; do
-    iptables -C "$hook" -j PLOYZ-VERIFY-PARTITION 2>/dev/null || iptables -I "$hook" 1 -j PLOYZ-VERIFY-PARTITION
+for table in $tables; do
+    for hook in INPUT OUTPUT FORWARD; do
+        $table -C "$hook" -j PLOYZ-VERIFY-PARTITION 2>/dev/null || $table -I "$hook" 1 -j PLOYZ-VERIFY-PARTITION
+    done
 done
 """
 
 UNPARTITION = """
-for hook in INPUT OUTPUT FORWARD; do
-    while iptables -D "$hook" -j PLOYZ-VERIFY-PARTITION 2>/dev/null; do :; done
+for table in iptables ip6tables; do
+    for hook in INPUT OUTPUT FORWARD; do
+        while $table -D "$hook" -j PLOYZ-VERIFY-PARTITION 2>/dev/null; do :; done
+    done
+    $table -F PLOYZ-VERIFY-PARTITION 2>/dev/null || true
+    $table -X PLOYZ-VERIFY-PARTITION 2>/dev/null || true
 done
-iptables -F PLOYZ-VERIFY-PARTITION 2>/dev/null || true
-iptables -X PLOYZ-VERIFY-PARTITION 2>/dev/null || true
 """
 
 
+def endpoint(address):
+    """The WireGuard endpoint on a Machine's underlay address."""
+    return f"[{address}]:51820" if ":" in address else address + ":51820"
+
+
 def partition(run, backend, node, cut):
-    """Drop the Machine's traffic with each peer's underlay address, which carries WireGuard. The host bridge
-    address stays reachable, so SSH, the guest agent and Cloud still answer. The rules do not survive a reboot."""
+    """Drop the Machine's traffic with each peer's underlay address, which carries WireGuard. The path SSH
+    takes stays reachable, so SSH, the guest agent and Cloud still answer. The rules do not survive a reboot."""
     peers = [peer["address"] for peer in run["machines"] if peer is not node]
     backend.exec(node, ["bash", "-ec", PARTITION if cut else UNPARTITION, "partition", *peers])
 
@@ -355,7 +373,7 @@ zfs version
             raise RuntimeError(f"{node['name']}: running binaries differ from its {label}")
         if lines[1 + len(names)].strip() != daemon["version"]:
             raise RuntimeError(f"{node['name']}: running daemon reports {lines[1 + len(names)].strip()}, not its {label}")
-        result = cli(run, commands, ["--json", "--connect", "ssh://root@" + node["address"], "server", "ls"])
+        result = cli(run, commands, ["--json", "--connect", "ssh://" + node["ssh"], "server", "ls"])
         servers = json.loads(result.stdout)["servers"]
         expected_ids = {item["machine_id"] for item in run["machines"]}
         if {item["machine"]["id"] for item in servers} != expected_ids or any(item["membership"] != "up" for item in servers):
@@ -439,12 +457,15 @@ done
 def teardown(run, commands, backend):
     run["state"] = "tearing-down"
     save(run)
-    for node in run["machines"]:
-        try:
-            backend.exec(node, ["bash", "-c", "journalctl -u ployz -u ployz-dns -u ployz-observe -u ployz-volume-plugin -u docker -u ssh -u ssh.socket --no-pager -n 300; zpool status; zfs list; wg show"], check=False, timeout=10)
-        except (RuntimeError, subprocess.TimeoutExpired):
-            pass
-    backend.destroy()
+    try:
+        for node in run["machines"]:
+            try:
+                backend.exec(node, ["bash", "-c", "journalctl -u ployz -u ployz-dns -u ployz-observe -u ployz-volume-plugin -u docker -u ssh -u ssh.socket --no-pager -n 300; zpool status; zfs list; wg show"], check=False, timeout=10)
+            except (RuntimeError, subprocess.TimeoutExpired):
+                pass
+    finally:
+        # Evidence is best effort; a Machine that never got an address must not keep the rest alive.
+        backend.destroy()
     private = Path(run["manifest"]).parent / "private"
     cloud = run.get("cloud", {})
     if cloud.get("owns_dashboard") and (private / "cloud-token").exists():
@@ -484,9 +505,30 @@ def table(rows, columns):
                      for row in [{column: column.upper() for column in columns}, *rows])
 
 
+def host_runs():
+    """Every verify run on this host, from any checkout and provider."""
+    found = []
+    for name in PROVIDERS:
+        if name == "incus" and not shutil.which("incus"):
+            continue
+        try:
+            found += [{**run, "provider": name} for run in importlib.import_module(name).runs()]
+        except (RuntimeError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+            # One provider being unreachable must not hide or block the other's runs.
+            print(f"Skipping {name} runs: {str(error).splitlines()[0]}", file=sys.stderr)
+    return found
+
+
 def preflight(args):
     """Refuse a launch the shared host cannot hold, naming the runs that hold it."""
     module = importlib.import_module(args.provider)
+    if args.provider == "boat":
+        if args.memory or args.disk:
+            raise RuntimeError("--memory and --disk size Incus VMs; every Boat sandbox is the small type, so add --provider incus")
+        if not shutil.which(module.cli()[0]):
+            raise RuntimeError("The boat CLI is not on PATH; install it, set BOAT_CLI, or add --provider incus")
+        module.preflight(args.machines, CORE)
+        return
     memory = host.size(args.memory or module.DEFAULT_SIZES["memory"])
     meminfo = {line.split(":")[0]: int(line.split()[1]) * 1024 for line in Path("/proc/meminfo").read_text().splitlines()}
     try:
@@ -508,9 +550,8 @@ def preflight(args):
 
 
 def reap(args):
-    module = importlib.import_module("incus")
     now, rows = time.time(), []
-    for found in module.runs():
+    for found in host_runs():
         if args.runs and found["id"] not in args.runs:
             continue
         remove, reason = host.verdict(found, now, int(args.older_than * 3600), args.force)
@@ -531,11 +572,17 @@ def reap(args):
             # The manifest is gone, so evidence goes to the host cache.
             directory = Path.home() / ".cache" / "ployz" / "verify" / "reaped" / found["id"]
             directory.mkdir(parents=True, exist_ok=True)
-            run = dict(id=found["id"], manifest=str(directory / "cluster.json"), provider="incus", provider_state={},
+            run = dict(id=found["id"], manifest=str(directory / "cluster.json"), provider=found["provider"], provider_state={},
                        machines=[dict(name=machine["name"]) for machine in found["machines"]])
             commands = Commands(run)
             provider(run, commands).destroy()
         rows[-1]["action"] = "removed"
+    if not args.runs and shutil.which(boat.cli()[0]):
+        try:
+            rows += [dict(run=row["id"], action=row["action"], reason=row["reason"], age="", machines="pooled", ram="", owner="", checkout="")
+                     for row in boat.reap_pool(args.force, args.yes)]
+        except (RuntimeError, OSError, subprocess.SubprocessError) as error:
+            print(f"Skipping the Boat pool: {str(error).splitlines()[0]}", file=sys.stderr)
     print(table(rows, ["run", "action", "reason", "age", "machines", "ram", "owner", "checkout"]))
     if not args.yes and any(row["action"] == "remove" for row in rows):
         print("Dry run; pass --yes to remove the runs marked remove.", file=sys.stderr)
@@ -613,6 +660,7 @@ if [ -e /etc/systemd/system/ployz-observe.service ]; then observe=ployz-observe.
 systemctl enable --now ployz.socket ployz-volume-plugin.socket ployz.service $observe
 """])
                 node["address"] = backend.address(node)
+                node["ssh"], node["endpoint"] = backend.ssh(node), endpoint(node["address"])
             parallel(start, run["machines"])
             binaries.result()
             if paired:
@@ -624,10 +672,10 @@ systemctl enable --now ployz.socket ployz-volume-plugin.socket ployz.service $ob
             # Cloud enrollment currently ignores --public-ip and --wg-endpoint; the Machine advertises the endpoints it discovers.
             # --no-install requires --storage none, yet managed Volumes work: the image ran `ployzd install --storage zfs`,
             # and the daemon creates the Machine Pool on the first Volume, as on a real Server.
-            result = cli(run, commands, ["--json", "server", "add", "root@" + node["address"],
+            result = cli(run, commands, ["--json", "server", "add", node["ssh"],
                                *([] if "cloud" in run else ["--standalone"]), "--no-install", "--storage", "none", "--yes",
                                "--name", node["name"], "--ssh-key", str(private / "id_ed25519"),
-                               "--public-ip", "none", "--wg-endpoint", node["address"] + ":51820", "--wg-mtu", "1420"], check=False)
+                               "--public-ip", "none", "--wg-endpoint", node["endpoint"], "--wg-mtu", "1420"], check=False)
             response = json.loads(result.stdout) if result.stdout else {}
             follow_up = response.get("follow_up_error", {})
             if result.returncode and not (result.returncode == 3 and response.get("server") and follow_up.get("code") == "unavailable"):
@@ -641,7 +689,7 @@ systemctl enable --now ployz.socket ployz-volume-plugin.socket ployz.service $ob
                 print(f"{node['name']}: enrollment committed with a follow-up failure; checking readiness. Evidence: {commands.evidence}", file=sys.stderr)
                 deadline = time.monotonic() + 30
                 while True:
-                    observed = cli(run, commands, ["--json", "--connect", "ssh://root@" + node["address"], "server", "ls"], check=False, timeout=5)
+                    observed = cli(run, commands, ["--json", "--connect", "ssh://" + node["ssh"], "server", "ls"], check=False, timeout=5)
                     if not observed.returncode and any(server["machine"]["id"] == node["machine_id"] and server["membership"] == "up"
                             for server in json.loads(observed.stdout)["servers"]):
                         break
@@ -685,13 +733,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     actions = parser.add_subparsers(dest="action", required=True)
     launch = actions.add_parser("up", help="Boot a new disposable cluster")
-    launch.add_argument("--provider", choices=["incus"], default="incus")
+    launch.add_argument("--provider", choices=PROVIDERS, default="boat",
+                        help="Where Machines run: boat sandboxes (default), or incus VMs on this host")
     launch.add_argument("--machines", type=int, choices=range(1, 9), default=1)
     daemon_help = ("[MACHINE=]SOURCE, repeatable. SOURCE is checkout, main (main's CI build, stale), stable, beta or an exact release version; "
                    "a bare SOURCE sets every Machine and MACHINE=SOURCE overrides one")
     launch.add_argument("--daemon", action="append", metavar="[MACHINE=]SOURCE", help=daemon_help + "; checkout by default")
-    launch.add_argument("--memory", help="RAM per Machine VM as an Incus size; 2GiB by default")
-    launch.add_argument("--disk", help="Root disk per Machine VM, which bounds its Machine Pool; 24GiB by default")
+    launch.add_argument("--memory", help="RAM per Machine VM as an Incus size; 2GiB by default; needs --provider incus")
+    launch.add_argument("--disk", help="Root disk per Machine VM, which bounds its Machine Pool; 24GiB by default; needs --provider incus")
     pairing = launch.add_mutually_exclusive_group()
     pairing.add_argument("--cloud", action="store_true",
                          help="Start this checkout's dashboard verify instance and enroll through it; down stops it")
@@ -740,13 +789,22 @@ def main():
         return 0
     if args.action == "ls":
         now = time.time()
-        rows = [describe(found, now) for found in importlib.import_module("incus").runs()]
-        print(json.dumps({"runs": rows}) if args.json else table(rows, ["run", "age", "machines", "ram", "owner", "checkout"]))
+        rows = [describe(found, now) for found in host_runs()]
+        parked = boat.pooled()
+        print(json.dumps({"runs": rows, "pool": parked}) if args.json else table(rows, ["run", "age", "machines", "ram", "owner", "checkout"]))
+        if not args.json:
+            for image, count in sorted(parked.items()):
+                print(f"Boat pool: {count} parked ({image})")
         return 0
     if args.action == "reap":
         reap(args)
         return 0
     run = json.loads(args.manifest.read_text())
+    for node in run["machines"]:
+        # Manifests written before ssh and endpoint were split out record only the address.
+        if "address" in node:
+            node.setdefault("ssh", "root@" + node["address"])
+            node.setdefault("endpoint", endpoint(node["address"]))
     if run["root"] != str(CORE) or Path(run["manifest"]).resolve() != args.manifest.resolve():
         raise RuntimeError("Use this run's originating checkout and manifest path")
     if run["state"] == "removed":
@@ -756,6 +814,8 @@ def main():
         raise RuntimeError("This cluster has been removed")
     commands = Commands(run)
     backend = provider(run, commands)
+    if run["provider"] == "boat" and args.action != "down":
+        backend.refresh()
     machine = next((node for node in run["machines"] if node["name"] == getattr(args, "machine", None)), None)
     if hasattr(args, "machine") and machine is None:
         raise RuntimeError(f"Unknown Machine: {args.machine}")
