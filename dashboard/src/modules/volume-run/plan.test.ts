@@ -362,20 +362,32 @@ function keptCut(members: readonly Member[]) {
 }
 
 function nextStep(message: string) {
-  const step = /^(?:(?!ployz )[^;])*; (?:ployz server rm ([\w-]+(?: and [\w-]+)*), then )?ployz volume (?:(release) data|(move) data --to (<another server>|[\w-]+))$/
-    .exec(message);
+  const step = new RegExp([
+    /^data (?:has unfinished cuts on ([\w-]+(?: and [\w-]+)*), so release cannot pick a writer|on ([\w-]+) stopped before its first snapshot); /.source,
+    /(?:ployz server rm ([\w-]+(?: and [\w-]+)*), then )?ployz volume (?:(release) data|(move) data --to (<another server>|[\w-]+))$/.source,
+  ].join("")).exec(message);
   if (step === null) throw new Error(`no step in: ${message}`);
-  const [, removed, released, moved, to] = step;
-  return { gone: removed?.split(" and ") ?? [], verb: released ?? moved, to };
+  const [, cuts, stopped, removed, released, moved, to] = step;
+  return { about: (cuts ?? stopped ?? "").split(" and "), gone: removed?.split(" and ") ?? [], verb: released ?? moved, to };
 }
 
 describe("read the next step a refusal names", () => {
+  const first = "data has unfinished cuts on fsn-1 and fsn-2, so release cannot pick a writer";
+  const cuts = `${first}; ployz server rm fsn-1, then ployz volume release data`;
+  const stopped = "data on fsn-2 stopped before its first snapshot; ployz volume move data --to fsn-3";
   it.each([
-    ["a step inside the first clause", "ployz volume release data; ployz server rm fsn-1, then ployz volume release data"],
-    ["a target on a release", "data on fsn-2 is mid-run; ployz volume release data --to fsn-9"],
-    ["a move with no target", "data on fsn-2 stopped before its first snapshot; ployz volume move data"],
-    ["text after the step", "data is mid-run; ployz volume release data stops it"],
-  ])("rejects %s", (_, message) => {
+    ["a step inside the first clause", cuts, first, "ployz volume release data"],
+    ["a command with no ployz prefix in the first clause", cuts, "so release cannot", "so volume release data cannot"],
+    ["a tab after ployz in the first clause", cuts, first, "ployz\tvolume release data"],
+    ["a capitalized command as the first clause", cuts, first, "Ployz volume release data first"],
+    ["a first clause the planner does not print", stopped, "on fsn-2 stopped before its first snapshot", "is mid-run"],
+    ["a target on a release", cuts, "release data", "release data --to fsn-9"],
+    ["a move with no target", stopped, " --to fsn-3", ""],
+    ["text after the step", cuts, "release data", "release data stops it"],
+  ])("rejects %s and accepts the step without it", (_, step, from, to) => {
+    const message = step.replace(from, to);
+    expect(message).not.toBe(step);
+    expect(() => nextStep(step)).not.toThrow();
     expect(() => nextStep(message)).toThrow("no step in");
   });
 });
@@ -383,9 +395,10 @@ describe("read the next step a refusal names", () => {
 function follow(input: PlanInput, members: readonly Member[]) {
   const planned = planFromCopies(input, members);
   if (planned.ok) throw new Error(`planned ${planned.phase.kind}, not a refusal`);
-  const { gone, verb, to } = nextStep(planned.refusal.message);
+  const { about, gone, verb, to } = nextStep(planned.refusal.message);
   const kept = keptCut(members);
   const slots = named(members, "mirror");
+  expect([...about].sort()).toEqual(named(members, "cutting"));
   expect([...gone].sort()).toEqual([...named(members, "cutting").filter((name) => name !== kept), ...(verb === "move" ? slots.slice(1) : [])].sort());
   const left = members.filter((each) => !gone.includes(each.machine.name));
   if (verb === "release") {
