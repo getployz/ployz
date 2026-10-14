@@ -1118,6 +1118,50 @@ async fn departure_stops_a_pull_into_a_slot_it_keeps() {
 }
 
 #[tokio::test]
+async fn a_landed_pull_drops_the_writer_marks_so_the_departure_destroys_the_mirror() {
+    for (mark, value) in [
+        ("ployz:cut", "on"),
+        ("ployz:epoch", "3"),
+        ("ployz:promote", "on"),
+    ] {
+        let source = Source::start(Some(BOUND), "snapshot w-1-2 12\n").await;
+        let test = TestDir::new();
+        let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
+        set_snapshots(&test, SLOT_FS, &[("w-1-1", 11)]);
+        set_property(&test, SLOT_FS, mark, value);
+
+        post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
+        finished(&socket, "w-1-2").await;
+        assert_eq!(property(&test, SLOT_FS, mark), None, "{mark}");
+
+        let reply = post(&socket, "/Storage.Demote", json!(null)).await;
+        assert_eq!(reply, json!({"Ok": ["data"]}), "{mark}");
+        assert!(!test.0.join("mirror").exists(), "{mark}");
+        server.abort();
+    }
+}
+
+#[tokio::test]
+async fn a_pull_of_the_slots_newest_keeps_its_cut() {
+    let source = Source::start(Some(BOUND), "snapshot w-1-1 11\n").await;
+    let test = TestDir::new();
+    let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
+    set_snapshots(&test, SLOT_FS, &[("w-1-1", 11)]);
+    set_property(&test, SLOT_FS, "ployz:cut", "on");
+
+    finished(&socket, "w-1-1").await;
+    assert_eq!(
+        property(&test, SLOT_FS, "ployz:cut").as_deref(),
+        Some("on"),
+        "nothing newer landed, so the cut may still be the only copy"
+    );
+    let reply = post(&socket, "/Storage.Demote", json!(null)).await;
+    assert_eq!(reply, json!({"Ok": []}));
+    assert!(test.0.join("mirror-fs").exists());
+    server.abort();
+}
+
+#[tokio::test]
 async fn a_pull_into_a_slot_smaller_than_the_writer_raises_the_slot_to_the_writer_bound() {
     let source = Source::start(Some(2 * BOUND), "snapshot w-1-2 12\n").await;
     let test = TestDir::new();
