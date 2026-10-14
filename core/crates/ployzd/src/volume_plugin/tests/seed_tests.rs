@@ -3,6 +3,7 @@
 
 use std::time::Duration;
 
+use super::copy_tests::receive_ready;
 use super::inspect_tests::{set_property, start};
 use super::*;
 
@@ -361,14 +362,7 @@ async fn departure_during_a_seed_copy_stops_it_and_destroys_the_slot() {
     set_property(&test, "tank/ployz/data", "snapshots", POINT);
     fs::write(test.0.join("props").join("stall-read"), "").unwrap();
     post(&socket, "/Volume.Seed", seed(77)).await;
-    let pid = test.0.join("props/receive-pid");
-    for _ in 0..300 {
-        if pid.exists() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    let pid = fs::read_to_string(pid).unwrap();
+    let pid = receive_ready(&test).await;
     assert_eq!(
         property(&test, "tank/ployz-mirror/seed/fs", "readonly").as_deref(),
         Some("on"),
@@ -385,7 +379,7 @@ async fn departure_during_a_seed_copy_stops_it_and_destroys_the_slot() {
         reply,
         json!({"Ok": {"demoted": ["data", "seed"], "stuck": [], "failed": []}})
     );
-    assert!(!Path::new(&format!("/proc/{}", pid.trim())).exists());
+    assert!(!Path::new(&format!("/proc/{pid}")).exists());
     assert!(!test.0.join("seed-slot").exists());
 }
 

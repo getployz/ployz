@@ -443,6 +443,8 @@ case "$*" in
       fi
       previous=$option
     done
+    # Apart from the pid, so a departure test can stop a receive that already holds its dataset.
+    echo $$ > '{props}/receive-ready'
     while [ -e '{props}/stall-read' ]; do sleep 0.01; done
     read -r verb arg guid || verb=empty
     if [ -e '{props}/stall-exit' ]; then cat >/dev/null; exec sleep 30; fi

@@ -94,6 +94,7 @@ fn state(test: &TestDir) -> Vec<(String, String)> {
                         | "zfs"
                         | "zpool"
                         | "receive-pid"
+                        | "receive-ready"
                         | "fail-command"
                         | "next-guid"
                 )
@@ -669,6 +670,16 @@ fn puller_stalling_after(
     port: u16,
     stall: Duration,
 ) -> (PathBuf, Server) {
+    let (socket, server, _) = puller_with_receives(test, markers, port, stall);
+    (socket, server)
+}
+
+fn puller_with_receives(
+    test: &TestDir,
+    markers: &[&str],
+    port: u16,
+    stall: Duration,
+) -> (PathBuf, Server, Receives) {
     for marker in markers {
         fs::write(test.0.join(marker), "").unwrap();
     }
@@ -678,7 +689,8 @@ fn puller_stalling_after(
     let mut storage = VolumeStorage::with_programs(zpool, zfs);
     storage.send_port = port;
     storage.receive_stall = stall;
-    (socket, tokio::spawn(serve(listener, storage)))
+    let receives = storage.receives.clone();
+    (socket, tokio::spawn(serve(listener, storage)), receives)
 }
 
 fn pull(target: &str) -> Value {
@@ -1081,21 +1093,14 @@ async fn departure_during_a_receive_stops_it_and_destroys_the_mirror() {
     fs::create_dir_all(test.0.join("props")).unwrap();
     fs::write(test.0.join("props/stall-read"), "").unwrap();
     post(&socket, "/Volume.Copy.Pull", pull("w-1-1")).await;
-    let pid = test.0.join("props/receive-pid");
-    for _ in 0..300 {
-        if pid.exists() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    let pid = fs::read_to_string(pid).unwrap();
+    let pid = receive_ready(&test).await;
 
     let reply = post(&socket, "/Storage.Demote", json!(null)).await;
     assert_eq!(
         reply,
         json!({"Ok": {"demoted": ["data"], "stuck": [], "failed": []}})
     );
-    assert!(!Path::new(&format!("/proc/{}", pid.trim())).exists());
+    assert!(!Path::new(&format!("/proc/{pid}")).exists());
     let copy = post(&socket, "/Volume.Copy.Inspect", json!({"name": "data"})).await;
     assert_eq!(copy, json!({"Ok": null}));
     assert!(!test.0.join("mirror").exists());
@@ -1111,6 +1116,14 @@ async fn eventually(what: &str, mut done: impl FnMut() -> bool) {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     panic!("{what} never happened");
+}
+
+/// Waits until the fake receive has made its dataset and set its properties, as a
+/// receive does before it reads any data, and answers its pid.
+pub(super) async fn receive_ready(test: &TestDir) -> String {
+    let ready = test.0.join("props/receive-ready");
+    eventually("the receive's dataset", || ready.exists()).await;
+    fs::read_to_string(ready).unwrap().trim().to_owned()
 }
 
 /// Waits for the fake receive to start, and answers its pid.
@@ -1130,12 +1143,17 @@ async fn departure_stops_a_pull_into_a_slot_it_keeps() {
     for (mark, value) in [("ployz:cut", "on"), ("ployz:epoch", "3")] {
         let source = Source::start(Some(BOUND), "snapshot w-1-2 12\n").await;
         let test = TestDir::new();
-        let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
+        let (socket, server, receives) = puller_with_receives(
+            &test,
+            &["root", "mirror", "mirror-fs"],
+            source.port,
+            Duration::from_secs(60),
+        );
         set_snapshots(&test, SLOT_FS, &[("w-1-1", 11)]);
         set_property(&test, SLOT_FS, mark, value);
         fs::write(test.0.join("props/stall-read"), "").unwrap();
         post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
-        let pid = receive_pid(&test).await;
+        receive_pid(&test).await;
         let scan =
             "list -Hp -o name,refquota,used,usedbydataset,mountpoint,mounted,readonly -r tank";
         // The pull ran this scan before it answered, so only a stall proves the departure's.
@@ -1151,10 +1169,12 @@ async fn departure_stops_a_pull_into_a_slot_it_keeps() {
             fs::read_to_string(&stalled).is_ok_and(|line| line.trim() == scan)
         })
         .await;
-        // A receive still running at the scan lands now, before the departure judges.
+        // A receive still running at the scan lands now, and its task marks the pull
+        // before the departure goes on, so stopping it can no longer beat that mark.
         fs::remove_file(test.0.join("props/stall-read")).unwrap();
-        eventually(&format!("{mark}: the receive's exit"), || {
-            !Path::new(&format!("/proc/{pid}")).exists()
+        let name: DockerVolumeName = "data".parse().unwrap();
+        eventually(&format!("{mark}: the receive task's finish"), || {
+            !receives.running(&name)
         })
         .await;
         fs::remove_file(test.0.join("props/stall-command")).unwrap();
