@@ -141,12 +141,14 @@ async function call(store, tool, input, key) {
 const FIXTURES = [
   ["environment_show", {}],
   ["project_create", { name: "docs", request_key: "project-docs-0001" }],
+  ["project_rename", { project: "docs", to: "handbook" }],
   ["service_add", { name: "web", image: "nginx:1.27" }],
   ["service_add", { name: "db", image: "postgres:17" }],
   ["service_add", { name: "api", repository: "acme/api" }],
   ["volume_add", { name: "pgdata", size: "10GiB", service: "db", path: "/var/lib/postgresql/data" }],
   ["volume_update", { volume: "pgdata", shared_writes: true }],
   ["config_write", { config: "nginx", files: { "nginx.conf": "events {}" }, service: "web", path: "/etc/nginx" }],
+  ["config_rename", { config: "nginx", to: "proxy" }],
   ["domain_add", { service: "web", hostname: "app.example.com" }],
   ["domain_add", { service: "web", prefix: "shop" }],
   ["domain_update", { domain: "shop", prefix: "store" }],
@@ -186,7 +188,7 @@ const FIXTURES = [
   ["volume_mirror_remove", { volume: "pgdata" }],
   ["volume_release", { volume: "pgdata", wait_seconds: 0 }],
   ["volume_restore", { volume: "pgdata", from: "db-2", wait_seconds: 0 }],
-  ["config_remove", { config: "nginx", file: "nginx.conf" }],
+  ["config_remove", { config: "proxy", file: "nginx.conf" }],
   ["domain_remove", { domain: "store" }],
   ["service_rename", { service: "web", to: "www" }],
   ["volume_remove", { volume: "pgdata" }],
@@ -196,7 +198,7 @@ const FIXTURES = [
   ["server_remove", { server: "web-1" }],
   ["server_forget", { server: "web-1" }],
   ["environment_remove", { environment: "production", wait_seconds: 0 }, "unsupported"],
-  ["project_remove", { project: "docs", wait_seconds: 0 }],
+  ["project_remove", { project: "handbook", wait_seconds: 0 }],
 ];
 
 const INTERNAL = /unknown shape|came back short|did not encode/;
