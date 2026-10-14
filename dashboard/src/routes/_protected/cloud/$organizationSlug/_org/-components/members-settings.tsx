@@ -82,7 +82,6 @@ export function MembersSettings({ organizationSlug }: { organizationSlug: string
     mutationFn: () => leaveOrganizationServerFn({ data: { organizationSlug } }),
     // The session acts in another Organization now, or none.
     onSuccess: () => navigate({ to: "/cloud", replace: true, reloadDocument: true }),
-    onError: failed("Couldn't leave the organization."),
   });
   const revoke = useMutation({
     mutationFn: (invite: string) => revokeInviteServerFn({ data: { organizationSlug, invite } }),
@@ -113,7 +112,7 @@ export function MembersSettings({ organizationSlug }: { organizationSlug: string
             <TableRow>
               <TableHead>Name</TableHead>
               <TableHead>Role</TableHead>
-              <TableHead>Joined</TableHead>
+              <TableHead className="hidden sm:table-cell">Joined</TableHead>
               <TableHead><span className="sr-only">Actions</span></TableHead>
             </TableRow>
           </TableHeader>
@@ -122,7 +121,7 @@ export function MembersSettings({ organizationSlug }: { organizationSlug: string
               const editable = manager && !row.you && (yourRole === "owner" || row.role !== "owner");
               return (
                 <TableRow key={row.email}>
-                  <TableCell>
+                  <TableCell className="whitespace-normal wrap-anywhere">
                     <div className="flex flex-col">
                       <span>{row.name}{row.you ? <span className="text-muted-foreground"> (you)</span> : null}</span>
                       <span className="text-xs text-muted-foreground">{row.email}</span>
@@ -132,6 +131,7 @@ export function MembersSettings({ organizationSlug }: { organizationSlug: string
                     {editable ? (
                       <NativeSelect
                         size="sm"
+                        className="min-w-28"
                         aria-label={`Role of ${row.name}`}
                         value={row.role}
                         onChange={(event) => {
@@ -143,7 +143,7 @@ export function MembersSettings({ organizationSlug }: { organizationSlug: string
                       </NativeSelect>
                     ) : ROLE_LABELS[row.role]}
                   </TableCell>
-                  <TableCell className="text-muted-foreground">{formatDate(row.joined_at)}</TableCell>
+                  <TableCell className="hidden text-muted-foreground sm:table-cell">{formatDate(row.joined_at)}</TableCell>
                   <TableCell className="text-right">
                     {row.you ? (
                       <Button variant="ghost" size="sm" onClick={() => setConfirming({ kind: "leave" })}>Leave</Button>
@@ -163,19 +163,26 @@ export function MembersSettings({ organizationSlug }: { organizationSlug: string
             <TableHeader>
               <TableRow>
                 <TableHead>For</TableHead>
-                <TableHead>Role</TableHead>
-                <TableHead>Sent by</TableHead>
-                <TableHead>Expires</TableHead>
+                <TableHead className="hidden sm:table-cell">Role</TableHead>
+                <TableHead className="hidden sm:table-cell">Sent by</TableHead>
+                <TableHead className="hidden sm:table-cell">Expires</TableHead>
                 <TableHead><span className="sr-only">Actions</span></TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {data.invites.map((invite) => (
                 <TableRow key={invite.id}>
-                  <TableCell>{invite.email ?? <span className="text-muted-foreground">Anyone with the link</span>}</TableCell>
-                  <TableCell>{ROLE_LABELS[invite.role]}</TableCell>
-                  <TableCell>{invite.invited_by}</TableCell>
-                  <TableCell className="text-muted-foreground">{formatDate(invite.expires_at)}</TableCell>
+                  <TableCell className="whitespace-normal wrap-anywhere">
+                    <div className="flex flex-col">
+                      <span>{invite.email ?? <span className="text-muted-foreground">Anyone with the link</span>}</span>
+                      <span className="text-xs text-muted-foreground sm:hidden">
+                        {ROLE_LABELS[invite.role]} · from {invite.invited_by} · expires {formatDate(invite.expires_at)}
+                      </span>
+                    </div>
+                  </TableCell>
+                  <TableCell className="hidden sm:table-cell">{ROLE_LABELS[invite.role]}</TableCell>
+                  <TableCell className="hidden sm:table-cell">{invite.invited_by}</TableCell>
+                  <TableCell className="hidden text-muted-foreground sm:table-cell">{formatDate(invite.expires_at)}</TableCell>
                   <TableCell className="text-right">
                     {manager ? (
                       <Button variant="ghost" size="sm" onClick={() => revoke.mutate(invite.id)}>Revoke</Button>
@@ -188,7 +195,14 @@ export function MembersSettings({ organizationSlug }: { organizationSlug: string
         </SettingsSection>
       ) : null}
       {inviting ? <InviteDialog organizationSlug={organizationSlug} onInvited={refresh} onOpenChange={setInviting} /> : null}
-      <AlertDialog open={confirming !== null} onOpenChange={(open) => !open && setConfirming(null)}>
+      <AlertDialog
+        open={confirming !== null}
+        onOpenChange={(open) => {
+          if (open) return;
+          setConfirming(null);
+          leave.reset();
+        }}
+      >
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>{confirming?.kind === "remove" ? `Remove ${confirming.name}?` : `Leave ${organizationSlug}?`}</AlertDialogTitle>
@@ -198,6 +212,9 @@ export function MembersSettings({ organizationSlug }: { organizationSlug: string
                 : "Your organization tokens stop working and your devices lose access to its servers. Someone must invite you to come back."}
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {confirming?.kind === "leave" && leave.error ? (
+            <p role="alert" className="text-sm text-destructive">{toErrorMessage(leave.error, "Couldn't leave the organization.")}</p>
+          ) : null}
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
