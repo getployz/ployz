@@ -179,8 +179,9 @@ impl VolumeStorage {
     }
 
     /// `zfs send` of one local snapshot piped into a bounded, read-only receive of `fs`,
-    /// marked with the point's `guid` once the receive has it all. Once `stop` fires, both
-    /// are killed and reaped before this returns.
+    /// checked read-only at its bound once the receive has it all. It sets no `pulled`
+    /// mark, so a departure keeps a seed that has not landed. Once `stop` fires, both are
+    /// killed and reaped before this returns.
     async fn copy_snapshot(
         &self,
         snapshot: &str,
