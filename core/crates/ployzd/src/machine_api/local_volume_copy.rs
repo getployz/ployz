@@ -221,10 +221,14 @@ impl MachineService {
     }
 
     async fn joined_floor_turn(&self) -> Result<FloorTurn<'_>, LocalMachineError> {
+        let joined = || {
+            self.require_joined()
+                .map_err(|_| LocalMachineError::NotParticipating)
+        };
+        joined()?;
         let turn = self.containers()?.floor_turn().await;
-        if self.require_joined().is_err() {
-            return Err(LocalMachineError::NotParticipating);
-        }
+        // Checked again under the floor lock: a reset may have begun while this queued.
+        joined()?;
         Ok(turn)
     }
 
