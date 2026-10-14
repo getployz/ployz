@@ -1,7 +1,8 @@
-import type { JsonValue, LiveNode, NamedRow } from "@ployz/sdk";
+import type { BranchView, JsonValue, LiveNode, NamedRow } from "@ployz/sdk";
 import { Option, Schema } from "effect";
 import { asRecord } from "#/lib/json";
 import { settingTitle } from "./catalog";
+import type { StoreResult } from "./store.contract";
 
 /** A node as the user names it: `data`, not `volumes.data`. */
 export const nodeName = (node: string) => node.replace(/^(volumes|configs)\./, "");
@@ -102,6 +103,11 @@ export function presentRow(row: NamedRow & { value: JsonValue }) {
     return { node: nodeName(row.node), label: row.name.slice("files.".length), after: row.value === null ? "" : "File" };
   }
   return { node: nodeName(row.node), label: row.name === null ? "New" : settingName(row.name).name, after: row.name === null ? "" : rowText(row.value, row.name) };
+}
+
+/** The Store answers the branch view only for a Branch; any other Environment's is refused. */
+export function isBranch(branch: StoreResult<BranchView>): branch is { ok: true; value: BranchView } {
+  return branch.ok;
 }
 
 /** A Branch's Live Nodes as the canvas draws them, each with the ids of the Services here the Store says read it. */

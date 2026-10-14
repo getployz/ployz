@@ -47,8 +47,7 @@ export function SyncDialog({ organizationSlug, from, into: first, places = [], c
   // The id of the last Sync sent and what it asked: an identical retry reuses it, so a lost response never syncs twice,
   // and changed picks, values or version mint a new one, so the Store never answers them with the old Sync.
   const lastSync = useRef<{ intent: string; id: string } | null>(null);
-  // The never-synced list, opened from the footer.
-  const [listing, setListing] = useState(false);
+  const [neverSyncedOpen, setNeverSyncedOpen] = useState(false);
   const name = from.environment ?? "";
   const rows = view.ok ? view.value.rows : [];
   const picked = syncPicks(rows, flips);
@@ -124,7 +123,7 @@ export function SyncDialog({ organizationSlug, from, into: first, places = [], c
           ))}
           {stale || flipsMoved(rows, flips) ? <p role="status" className="text-muted-foreground">These changed since you opened them. Here they are now.</p> : null}
         </div>
-        {listing && neverSynced.length ? (
+        {neverSyncedOpen && neverSynced.length ? (
           <ul id="never-synced" aria-label="Never synced" className="max-h-40 shrink-0 overflow-y-auto border-t">
             {neverSynced.map((row) => <NeverSyncedItem key={row.row} row={row} onSyncAgain={() => {
               for (const mark of row.marks) neverSync(mark.environment, mark.row, true);
@@ -139,9 +138,9 @@ export function SyncDialog({ organizationSlug, from, into: first, places = [], c
         ) : null}
         <DialogFooter>
           {neverSynced.length ? (
-            <Button variant="ghost" className="text-muted-foreground sm:mr-auto" aria-expanded={listing} aria-controls="never-synced"
-              onClick={() => setListing(!listing)}>
-              {neverSynced.length} never synced<ChevronDownIcon data-icon="inline-end" className={cn(listing && "rotate-180")} />
+            <Button variant="ghost" className="text-muted-foreground sm:mr-auto" aria-expanded={neverSyncedOpen} aria-controls="never-synced"
+              onClick={() => setNeverSyncedOpen(!neverSyncedOpen)}>
+              {neverSynced.length} never synced<ChevronDownIcon data-icon="inline-end" className={cn(neverSyncedOpen && "rotate-180")} />
             </Button>
           ) : null}
           {rows.length ? <>
