@@ -355,6 +355,14 @@ it.live("a code redeemed while disconnected yields no refresh token that works a
     expect(redeemed.status).toBe(400);
   }).pipe(Effect.scoped), 30_000);
 
+it.live("disconnecting a consent id that isn't one answers 404", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    for (const id of ["", "not-a-consent"]) {
+      expect((yield* consentCall(shop, "/api/auth/oauth2/delete-consent", { id })).status).toBe(404);
+    }
+  }).pipe(Effect.scoped), 30_000);
+
 it.live("taking the ployz scope off the consent turns the next call away", () =>
   Effect.gen(function* () {
     const shop = yield* hostedShop();

@@ -46,6 +46,8 @@ const grantClaims = async ({ ctx, user, client, referenceId }: OAuthClaimExtensi
   return { org: referenceId, grant: consent.id };
 };
 
+// Consent ids are UUIDs. The endpoint looks any other id up in a uuid column and fails with a 500, so it's a 404 here.
+const isConsentId = Schema.is(Schema.String.check(Schema.isUUID()));
 const DeleteConsent = Schema.Struct({ id: Schema.String });
 
 type Grant = { readonly clientId: string; readonly userId: string; readonly referenceId?: string | null };
@@ -98,10 +100,12 @@ const revokeOnDisconnect = {
       {
         matcher: (ctx) => ctx.path === "/oauth2/delete-consent",
         handler: createAuthMiddleware(async (ctx) => {
-          const asked = Schema.decodeUnknownOption(DeleteConsent)(ctx.body);
           const session = await getSessionFromCtx(ctx);
-          if (Option.isNone(asked) || session === null) return;
+          if (session === null) return;
+          const asked = Schema.decodeUnknownOption(DeleteConsent)(ctx.body);
+          if (Option.isNone(asked)) return;
           const { id } = asked.value;
+          if (!isConsentId(id)) throw new APIError("NOT_FOUND", { error: "not_found", error_description: "no consent" });
           const consent = await ctx.context.adapter.findOne<Grant>({ model: "oauthConsent", where: [{ field: "id", value: id }] });
           if (consent === null || consent.userId !== session.user.id) return;
           disconnecting.set(id, consent);
