@@ -5,9 +5,9 @@
 //! is and named in the answer; the daemon fails the departure on it once Docker has
 //! forgotten the rest, and a retry judges it after its receive has stopped.
 //!
-//! A slot is kept when it may hold the only copy of its point. A departure snapshot or a
-//! completed seed keeps it whatever else it holds: the seed's source root may since have
-//! pruned that point. A Move's cut or a restore's epoch keeps it only while no pull has
+//! A slot is kept when it may hold the only copy of its point. A departure snapshot, a
+//! completed seed or a promote that has not renamed keeps it whatever else it holds: the
+//! seed's source root may since have pruned that point. A Move's cut or a restore's epoch keeps it only while no pull has
 //! landed over the point it marks, which the slot's parent records by naming the pulled
 //! snapshot. Only this Machine sets these marks and a send carries none, so every other
 //! slot is a received copy, a mirror or a partial seed, and is destroyed: the writer or
@@ -23,7 +23,9 @@ use super::{
     Dataset, DockerVolumeName, MIRROR_ROOT, Place, VolumeStorage,
     inspect::internal,
     seed::SEED_PROPERTY,
-    storage::{CUT_PROPERTY, EPOCH_PROPERTY, PULL_PROPERTY, slot_fs, slot_parent},
+    storage::{
+        CUT_PROPERTY, EPOCH_PROPERTY, PROMOTE_PROPERTY, PULL_PROPERTY, slot_fs, slot_parent,
+    },
 };
 
 /// Prefix of the snapshot a departure takes on each root before demoting it.
@@ -192,7 +194,8 @@ impl VolumeStorage {
     /// and a send carries no properties, so a received copy has none of its own. A
     /// cut or an epoch describes the point it was set at, so it stops counting once the
     /// slot's parent records that its newest snapshot was pulled: a writer elsewhere made
-    /// that snapshot after it.
+    /// that snapshot after it. A promote mark counts regardless: v0.3.0-beta.1 promoted
+    /// without dropping the pull record, and a landed pull at worst leaks one old point.
     async fn written_here(&self, parent: &str, fs: &str) -> super::Result<bool> {
         let points: Vec<String> = self
             .snapshot_names(fs)
@@ -204,6 +207,7 @@ impl VolumeStorage {
             .iter()
             .any(|point| point.starts_with(DEPARTURE_SNAPSHOT_PREFIX))
             || self.property(fs, SEED_PROPERTY).await?.is_some()
+            || self.property(fs, PROMOTE_PROPERTY).await?.is_some()
         {
             return Ok(true);
         }
