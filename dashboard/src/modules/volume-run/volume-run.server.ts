@@ -28,6 +28,7 @@ import { enqueueEvent } from "#/modules/operations/outbox.server";
 import { loadOrganizationConnections } from "#/modules/machines/connections.server";
 import { organizationMachine } from "#/modules/machines/tables";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
+import { RuntimeConnectionFailure } from "#/modules/runtime/runtime-connection-errors";
 import { type Requirement, requirementFor, requirements, serverSupports } from "#/modules/runtime/daemon-compat";
 import { observeVolumeCopies, type PloyzSdkError, sdkFailureMessage, setVolumeCopyRefusal } from "#/modules/runtime/ployz.server";
 import {
@@ -840,8 +841,11 @@ export const noteRun = Effect.fn("VolumeRun.note")(function* (ctx: Pick<RunConte
 export const refuseRun = (ctx: Pick<RunContext, "id">, inngestRunId: string, refusal: Refusal) =>
   endRun(ctx, inngestRunId, "failed", refusal.message);
 
+class ClusterUnreachable extends Data.TaggedError("ClusterUnreachable")<{ readonly message: string }> {}
+
 const openSession = Effect.fn("VolumeRun.openSession")(function* (organizationId: string) {
   const session = yield* (yield* OrganizationRuntime).open(organizationId);
+  if (session.status === "unreachable") return yield* new ClusterUnreachable({ message: "The cluster is unreachable." });
   if (session.status !== "connected") return yield* Effect.fail(new Error(`The cluster is ${session.status}.`));
   return session.connected;
 });
@@ -1202,10 +1206,18 @@ export const observeMembers = Effect.fn("VolumeRun.observe")(function* (ctx: Run
   return yield* observeVolumeMembers(ctx.organizationId, ctx.dockerVolume, ctx);
 });
 
-/** observeMembers, or null when no Server could be reached at all, which a forward release waits out like a silent one. */
+/**
+ * observeMembers, or null when Cloud could not reach the Cluster, which a forward release waits out like a silent
+ * Server.
+ */
 export const observeReachable = Effect.fn("VolumeRun.observeReachable")(function* (ctx: RunContext, inngestRunId: string) {
   yield* requireOwner(ctx.id, inngestRunId);
-  return yield* observeVolumeMembers(ctx.organizationId, ctx.dockerVolume, ctx).pipe(Effect.orElseSucceed(() => null));
+  return yield* observeVolumeMembers(ctx.organizationId, ctx.dockerVolume, ctx).pipe(
+    Effect.catchIf(
+      (error) => error instanceof ClusterUnreachable || error instanceof RuntimeConnectionFailure,
+      () => Effect.succeed(null),
+    ),
+  );
 });
 
 /**
