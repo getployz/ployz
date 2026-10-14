@@ -91,6 +91,22 @@ MOUNT_FAILURE = ("Error: invalid Docker Provisioned Volume observation: Provisio
                  "mountpoint\nrollback: Docker 500: error while mounting volume\n")
 
 
+def clock_escapes(source):
+    """Every path in the harness source to a clock the property test does not perturb. The model replaces the
+    module's one `time` binding, so a clock read any other way runs on the real clock and hides from it."""
+    tree = ast.parse(source)
+    escapes = [f"time.{node.attr}" for node in ast.walk(tree) if isinstance(node, ast.Attribute)
+               and isinstance(node.value, ast.Name) and node.value.id == "time"
+               and node.attr not in ("monotonic", "sleep", "strftime")]
+    imported = {alias.name.split(".")[0] for node in ast.walk(tree) if isinstance(node, (ast.Import, ast.ImportFrom))
+                for alias in node.names} | {node.module.split(".")[0] for node in ast.walk(tree)
+                                            if isinstance(node, ast.ImportFrom) and node.module}
+    escapes += sorted(imported & {"datetime", "calendar"})
+    escapes += [f"from time import, line {node.lineno}" for node in ast.walk(tree)
+                if isinstance(node, ast.ImportFrom) and node.module == "time"]
+    return escapes
+
+
 class ClusterModel:
     """Two Machines and a Cloud whose moves run step by step on the test clock, with optional planted defects.
 
@@ -3054,18 +3070,44 @@ finally:
         return dict(passed=summary["passed"], error=summary["error"], cases=decided)
 
     def test_the_harness_reads_only_the_host_clocks_the_model_perturbs(self):
-        # The property test perturbs the `time` module the harness sees, so a clock read from anywhere else would
-        # run on the real clock and hide from it. Only monotonic deadlines, sleeps and the evidence name are sanctioned.
-        tree = ast.parse(Path(spec.origin).read_text())
-        reads = sorted({node.attr for node in ast.walk(tree)
-                        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "time"})
-        self.assertEqual(reads, ["monotonic", "sleep", "strftime"])
-        imported = {alias.name.split(".")[0] for node in ast.walk(tree) if isinstance(node, (ast.Import, ast.ImportFrom))
-                    for alias in node.names} | {node.module.split(".")[0] for node in ast.walk(tree)
-                                                if isinstance(node, ast.ImportFrom) and node.module}
-        self.assertFalse(imported & {"datetime", "calendar"}, imported)
-        self.assertFalse([node.lineno for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
-                          and node.module == "time"])
+        self.assertEqual(clock_escapes(Path(spec.origin).read_text()), [])
+
+    def test_the_clock_guard_refuses_every_other_path_to_a_clock(self):
+        # Codex r12: an aliased import read the real clock, and both the source test and the property test passed.
+        # Each spelling below reads a clock the model does not perturb, or one the harness is not sanctioned to read.
+        source = Path(spec.origin).read_text()
+        anchor = "        event = result[\"triggered\"]\n        if case[\"action\"] == \"cancel\":\n"
+        self.assertIn(anchor, source)
+        late = "        if {} < self.since:\n            return None\n"
+        spellings = {
+            "import time as": ("import time as host_clock\n", "host_clock.time()"),
+            "from time import": ("from time import time as now\n", "now()"),
+            "getattr": ("", 'getattr(time, "time")()'),
+            "__import__": ("", '__import__("time").time()'),
+            "importlib": ("import importlib\n", 'importlib.import_module("time").time()'),
+            "sys.modules": ("", 'sys.modules["time"].time()'),
+            "a bound function": ("", "NOW()"),
+            "datetime": ("import datetime\n", "datetime.datetime.now().timestamp()"),
+            "calendar": ("import calendar\n", "calendar.timegm(time.gmtime())"),
+            "os.stat": ("import os\n", 'os.stat("/proc/self").st_mtime'),
+            "Path.stat": ("", 'Path("/proc/self").stat().st_mtime'),
+            "os.path.getmtime": ("import os\n", 'os.path.getmtime("/proc/self")'),
+            "a nested import": ("", "self.wall()"),
+            "shell date": ("", 'float(self.ssh("machine-1", "date +%s.%N"))'),
+            "a Cloud stamp": ("", 'float(self.first_row().get("finished_at") or 0)'),
+            "a journal stamp": ("", 'int(self.last_entry["__REALTIME_TIMESTAMP"]) / 1e6'),
+        }
+        for name, (imported, read) in spellings.items():
+            with self.subTest(name):
+                mutated = source.replace("import time\n", "import time\n" + imported, 1).replace(
+                    anchor, late.format(read) + anchor, 1)
+                if name == "a bound function":
+                    mutated = mutated.replace("\nREPO = ", "\nNOW = time.time\nREPO = ", 1)
+                if name == "a nested import":
+                    mutated = mutated.replace("    def outside_run(self, case, result):",
+                                              "    def wall(self):\n        import time\n        return time.time()\n\n"
+                                              "    def outside_run(self, case, result):", 1)
+                self.assertNotEqual(clock_escapes(mutated), [], name)
 
     def test_a_host_wall_clock_step_moves_no_deadline(self):
         # Opus N1: deadlines read the monotonic clock, so stepping the host's realtime clock an hour either way while
