@@ -920,7 +920,7 @@ fn setting_a_repository_or_an_image_switches_the_source_in_one_write() {
         (&json!("acme/web"), &json!("main"), &Value::Null)
     );
 
-    // Build settings written in the same edit as the switch survive it.
+    // A repository Service takes a root directory and build settings.
     store
         .write_trusted(
             &who,
@@ -955,6 +955,107 @@ fn setting_a_repository_or_an_image_switches_the_source_in_one_write() {
             &back["dockerfilePath"]
         ),
         (&Value::Null, &json!("railpack"), &Value::Null),
+        "{back}"
+    );
+}
+
+#[test]
+fn build_settings_need_a_repository_source_once_the_whole_edit_is_in() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse(SERVICE).unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("web").unwrap(),
+                image: Some("nginx:1".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    let refused = |changes: Vec<Change>| {
+        let error = store
+            .write_trusted(&who, &edit(changes), &evidence())
+            .unwrap_err();
+        assert_eq!(error.code, RpcErrorCode::InvalidArgument, "{error:?}");
+        assert!(
+            error
+                .message
+                .contains("build settings need a repository source"),
+            "{error:?}"
+        );
+    };
+
+    // An image Service takes no build setting, alone or beside a new image, in either order.
+    refused(vec![set("web.buildMethod", json!("dockerfile"))]);
+    refused(vec![
+        set("web.image", json!("nginx:2")),
+        set("web.buildMethod", json!("dockerfile")),
+    ]);
+    refused(vec![
+        set("web.buildCommand", json!("npm run build")),
+        set("web.image", json!("nginx:2")),
+    ]);
+    assert_eq!(source(&store, &who), SourceKind::Image);
+    assert_eq!(values(&store, &who)["image"], json!("nginx:1"));
+
+    // Switching to a repository in the same edit is fine, in either order.
+    store
+        .write_trusted(
+            &who,
+            &edit(vec![
+                set("web.buildMethod", json!("dockerfile")),
+                set("web.repository", json!("acme/web")),
+                set("web.dockerfilePath", json!("web.Dockerfile")),
+            ]),
+            &evidence(),
+        )
+        .unwrap();
+    assert_eq!(source(&store, &who), SourceKind::Git);
+    let built = values(&store, &who);
+    assert_eq!(
+        (&built["buildMethod"], &built["dockerfilePath"]),
+        (&json!("dockerfile"), &json!("web.Dockerfile")),
+        "{built}"
+    );
+
+    // A repository Service switching to an image takes no build setting in the same edit.
+    refused(vec![
+        set("web.buildMethod", json!("railpack")),
+        set("web.image", json!("nginx:4")),
+    ]);
+    refused(vec![
+        set("web.image", json!("nginx:4")),
+        set("web.buildMethod", json!("railpack")),
+    ]);
+    let patch = Change::Patch {
+        path: SettingPath::parse("web").unwrap(),
+        value: json!({ "image": "nginx:4", "buildCommand": "make" }),
+    };
+    refused(vec![patch]);
+    assert_eq!(source(&store, &who), SourceKind::Git);
+    assert_eq!(values(&store, &who), built);
+
+    // Nothing hidden survives the switch: a later repository builds with the defaults.
+    store
+        .write(&who, &edit(vec![set("web.image", json!("nginx:4"))]))
+        .unwrap();
+    store
+        .write_trusted(
+            &who,
+            &edit(vec![set("web.repository", json!("acme/web"))]),
+            &evidence(),
+        )
+        .unwrap();
+    let back = values(&store, &who);
+    assert_eq!(
+        (
+            &back["buildMethod"],
+            &back["dockerfilePath"],
+            &back["buildCommand"]
+        ),
+        (&json!("railpack"), &Value::Null, &Value::Null),
         "{back}"
     );
 }

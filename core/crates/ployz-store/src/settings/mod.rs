@@ -372,6 +372,16 @@ impl ServiceSetting {
         }
     }
 
+    /// Whether it says how the Service's image is built.
+    pub(crate) const fn is_build(self) -> bool {
+        matches!(
+            self,
+            Self::Git(
+                GitSetting::BuildMethod | GitSetting::DockerfilePath | GitSetting::BuildCommand
+            )
+        )
+    }
+
     /// Whether this Setting means anything for a Service with `config`'s source:
     /// `image` for an image, the source and build Settings for a repository.
     pub(crate) const fn applies(self, config: &AuthoredServiceConfig) -> bool {
@@ -380,9 +390,9 @@ impl ServiceSetting {
                 matches!(config.source, ServiceSource::Image { .. })
             }
             // A Service without a source builds from uploads, with the same build Settings.
-            Self::Git(
-                GitSetting::BuildMethod | GitSetting::DockerfilePath | GitSetting::BuildCommand,
-            ) => !matches!(config.source, ServiceSource::Image { .. }),
+            Self::Git(_) if self.is_build() => {
+                !matches!(config.source, ServiceSource::Image { .. })
+            }
             Self::Git(_) => matches!(config.source, ServiceSource::Git { .. }),
             Self::Policy(_) => PolicySetting::applies(config),
             Self::CpuLimit

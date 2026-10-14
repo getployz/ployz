@@ -137,6 +137,7 @@ pub(crate) fn edit(
     let before = environment.working.clone();
     let (mut staged, mut immediate) = (Vec::new(), Vec::new());
     let mut typed_addresses: Vec<TypedAddresses> = Vec::new();
+    let mut builds = Vec::new();
     for (path, step) in expand(&edit.changes)? {
         let service = path.settings_of()?;
         let value = match step {
@@ -230,6 +231,9 @@ pub(crate) fn edit(
                 (changed, Apply::Staged)
             }
             (Some(Target::Setting(setting)), value) => {
+                if value.is_some() && setting.is_build() {
+                    builds.push((service.clone(), *setting));
+                }
                 let config = &mut environment.service_mut(service)?.config;
                 let was = setting.value(config, &Policy::default());
                 match value {
@@ -325,6 +329,14 @@ pub(crate) fn edit(
         };
         if !list.contains(&path) {
             list.push(path);
+        }
+    }
+    // Judged once every change is in, so their order never decides.
+    for (service, setting) in builds {
+        if !setting.applies(&environment.service(&service)?.config) {
+            return Err(setting.invalid(&format!(
+                "build settings need a repository source, and {service} runs an image"
+            )));
         }
     }
     crate::git::check_sources(&before, &environment.working, trusted)?;

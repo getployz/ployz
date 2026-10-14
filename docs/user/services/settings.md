@@ -90,6 +90,15 @@ switches to an image loses its root directory and build settings, so they are ba
 defaults if it later builds a repository again. Like every change, the switch waits for your
 next deploy, and Discard undoes it.
 
+An image service is never built, so it refuses the build settings `buildMethod`, `dockerfilePath`
+and `buildCommand`. To use them, switch to a repository in the same `set` or before it. Ployz
+judges the source after the whole `set`, so the order of its settings never matters:
+
+```sh
+ployz set web.repository=acme/web web.buildMethod=dockerfile   # works on an image service
+ployz set web.image=nginx:1.27 web.buildMethod=dockerfile      # refused: an image is not built
+```
+
 ## Networking
 
 ![Settings → Networking: a generated domain that uses PORT, Custom Domain, and the private name](../images/service-settings-networking.png)
