@@ -154,6 +154,9 @@ describe("volume runs", () => {
   /** Fails a runtime frame read, counted from 1 in `frames`, as a Server that never answers its first frame. */
   let frameFault: ((read: number) => boolean) | null;
   let frames: number;
+  /** Fails a session open, counted from 1 in `opens`: an Error as Cloud failing on its own side, or a Cluster it cannot reach. */
+  let openFault: ((open: number) => Error | "unreachable" | null) | null;
+  let opens: number;
   let sent: SetVolumeCopyRequest[];
   let held: Map<string, () => CopyRefusal | null>;
   let storeVolumes: Array<{ id: string; name: string; storage: { kind: "provisioned"; maximumBytes: number } | { kind: "docker" }; change?: "delete" }>;
@@ -409,7 +412,11 @@ describe("volume runs", () => {
       }),
       Effect.provideService(OrganizationRuntime, {
         cancel: () => Effect.void,
-        open: () => Effect.succeed({ status: "connected" as const, connected: session }),
+        open: () => {
+          const fault = openFault?.(++opens) ?? null;
+          if (fault === "unreachable") return Effect.succeed({ status: "unreachable" as const, error: null });
+          return fault === null ? Effect.succeed({ status: "connected" as const, connected: session }) : Effect.fail(fault);
+        },
       }),
     ))) as typeof runInngestEffect;
 
@@ -480,6 +487,8 @@ describe("volume runs", () => {
     beforeStart = null;
     frameFault = null;
     frames = 0;
+    openFault = null;
+    opens = 0;
     sent = [];
     held = new Map();
     guids = 0;
@@ -1765,6 +1774,36 @@ describe("volume runs", () => {
         expect(output.result).toMatchObject({ moved: "fsn-2" });
         expect(verbs).toEqual(["writer@fsn-2(create)", "remove@fsn-1(web-fsn-1)"]);
         expect((await rows()).at(-1)).toMatchObject({ id, state: "done" });
+      });
+
+      it("waits when no Server's connection opens, then finishes on B once one does", async () => {
+        await pending();
+        const id = (await requested({ kind: "release", args: {} })).id;
+        const unreachable = opens + 1;
+        openFault = (open) => open === unreachable ? "unreachable" : null;
+
+        const paused = await execute(id, "run-3", [{ id: "01-observe-1", handler: () => { throw new Error("paused"); } }]);
+
+        expect(paused.error).toBeDefined();
+        expect((await rows()).at(-1)).toMatchObject({ id, state: "running", message: "waiting for the Servers to answer (check 1 of 8)" });
+
+        const output = await execute(id, "run-3");
+
+        expect(output.result).toMatchObject({ moved: "fsn-2" });
+        expect((await rows()).at(-1)).toMatchObject({ id, state: "done" });
+      });
+
+      it("fails the observe step, without waiting, when Cloud cannot open the session on its own side", async () => {
+        await pending();
+        const id = (await requested({ kind: "release", args: {} })).id;
+        const broken = opens + 1;
+        openFault = (open) => open === broken ? new Error("could not decrypt the pairing") : null;
+
+        const output = await execute(id, "run-3", [{ id: "01-observe-1", handler: () => { throw new Error("waited"); } }]);
+
+        expect(output.error).toMatchObject({ message: "could not decrypt the pairing" });
+        expect(verbs).toEqual([]);
+        expect((await rows()).at(-1)).toMatchObject({ id, state: "running", message: null });
       });
 
       it("fails once A stays silent past fifteen minutes of checks, keeping the commitment for the next release", async () => {
