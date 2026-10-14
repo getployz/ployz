@@ -163,8 +163,8 @@ class ClusterModel:
         # first round; and a Machine whose receive sits in D state and stays in the plugin's cgroup after the stop.
         self.pull_targets = {}
         self.stuck_receive = set()
-        # A Machine whose plugin cgroup.procs cannot be read, and a restart reply cut short: "exit 1", "no end" or
-        # "no cursor".
+        # A Machine whose plugin cgroup.procs cannot be read, and a restart reply cut short: "exit 1", "no end",
+        # "no cursor", "no daemon procs" or "no plugin procs".
         self.unread_procs = set()
         self.restart_reply = {}
         # Machine to a line its journal read emits first that is not a JSON object.
@@ -288,6 +288,8 @@ class ClusterModel:
         status = "1" if machine in self.unread_procs else "0"
         lines = [f"procs {DAEMON} absent",
                  f"procs {PLUGIN} {status} " + " ".join(plugin) if plugin or status != "0" else f"procs {PLUGIN} absent"]
+        dropped = {"no daemon procs": DAEMON, "no plugin procs": PLUGIN}.get(self.restart_reply.get(machine))
+        lines = [line for line in lines if not (dropped and line.startswith(f"procs {dropped} "))]
         if "--show-cursor" in script and self.restart_reply.get(machine) != "no cursor":
             lines.append(self.tail_cursor(machine).rstrip("\n"))
         if self.restart_reply.get(machine) == "no end":
@@ -2468,7 +2470,9 @@ finally:
 
     def test_a_restart_reply_that_exits_nonzero_or_stops_short_skips_the_case(self):
         for reply, problem in (("exit 1", "the restart exited 1"), ("no end", "the restart exited 0"),
-                               ("no cursor", "no journal cursor")):
+                               ("no cursor", "no journal cursor"),
+                               ("no daemon procs", f"no cgroup.procs line for {volume_move.DAEMON}"),
+                               ("no plugin procs", f"no cgroup.procs line for {volume_move.PLUGIN}")):
             with self.subTest(reply):
                 result, _ = self.run_cut(plant=lambda model, reply=reply: model.restart_reply.update({"machine-2": reply}))
                 self.assertFalse(result["passed"], result)
