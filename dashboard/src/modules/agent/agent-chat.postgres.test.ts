@@ -172,6 +172,22 @@ it.live("a store tool the agent mints ids for creates a Service where the member
     expect(JSON.stringify(listed)).toContain('"api"');
   }));
 
+it.live("a store tool acts in the page's Environment by id after its Project was renamed under the page", () =>
+  Effect.gen(function* () {
+    const { say, store, write } = yield* sidebar({ removeWeb: false });
+    const docs = "00000000-0000-4000-8000-00000000a607";
+    const production = "00000000-0000-4000-8000-00000000a608";
+    yield* write({ command: "create_project", id: docs, name: "docs", default_environment: production });
+    yield* write({ command: "rename_project", project: "docs", name: "guides" });
+    const model = fakeText();
+    model.setResponses([{ toolCalls: [{ name: "service_add", input: { name: "api", image: "nginx" } }] }, { text: "Done." }]);
+    const page = { page: "architecture", project: "docs", environment: "production", environment_id: production };
+    const answered = yield* say("add an nginx service called api", { page }, model);
+    expect(answered.results).toMatchObject([{ ok: true }]);
+    const listed = yield* Effect.promise(() => store.read(ORGANIZATION, { query: "services", environment: { project: "guides", environment: "production" } }));
+    expect(JSON.stringify(listed)).toContain('"api"');
+  }));
+
 it.live("a turn Claude fails tells the member what happened in plain words, never the provider's JSON", () =>
   Effect.gen(function* () {
     const { say } = yield* sidebar({ removeWeb: false });
