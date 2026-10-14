@@ -227,8 +227,8 @@ class Provider:
         self.registry = registry(run["id"])
         self.lock = threading.Lock()
         self.private = Path(run["manifest"]).parent / "private"
-        # A socket path must fit in 108 bytes, which the run directory does not.
-        self.control = REGISTRY / "ssh"
+        # A socket path must fit in 108 bytes with ssh's 17-character bind suffix; neither the run nor the registry directory does.
+        self.control = Path(f"/tmp/ployz-boat-{os.getuid()}")
 
     def boat(self, *args, **kwargs):
         return self.commands([*cli(), *args, "--json"], **kwargs)
@@ -388,7 +388,10 @@ systemctl enable --now {PLOYZ_UNITS} $observe
         return ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
                 "-o", "LogLevel=ERROR", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15",
                 "-i", str(self.private / "id_ed25519"), "-i", str(BOOTSTRAP / "id_ed25519"), "-o", "ControlMaster=auto", "-o", "ControlPersist=300",
-                "-o", "ControlPath=" + str(self.control / (self.run["id"] + "-%C"))]
+                "-o", "ControlPath=" + self.control_path()]
+
+    def control_path(self):
+        return str(self.control / (hashlib.sha1(self.run["id"].encode()).hexdigest()[:8] + "-%C"))
 
     def exec(self, node, args, **kwargs):
         destination = ((self.record() or {}).get("sandboxes", {}).get(node["name"]) or {}).get("ssh")

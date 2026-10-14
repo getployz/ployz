@@ -166,6 +166,15 @@ class Registry(unittest.TestCase):
         self.assertIn("sandbox.delete-own", said.getvalue())
         self.assertEqual(json.loads(boat.registry("run1").read_text())["sandboxes"]["machine-1"]["state"], "stopped")
 
+    def test_the_ssh_control_socket_fits_a_unix_socket_path(self):
+        def path(run):
+            with unittest.mock.patch.object(boat, "REGISTRY", self.saved):
+                return boat.Provider(dict(id=run, manifest=self.run["manifest"]), self.fake, Path(".")).control_path()
+        for run in ["bake-" + "f" * 10, "20261014T034406-9a4821d75f"]:
+            # %C expands to 40 hex characters and ssh adds a 17-character suffix while it binds.
+            self.assertLessEqual(len(path(run).replace("%C", "0" * 40)) + 17, 107)
+        self.assertNotEqual(path("a"), path("b"))
+
     def test_a_failed_stop_still_cleans_the_rest_then_fails(self):
         self.registered(**{"machine-1": dict(id="bx_a", state="running"), "machine-2": dict(id="bx_b", state="running")})
         self.answers[("delete", "bx_a")] = result(1, {"event": "error", "code": "api_key_action_forbidden", "status": 403})
