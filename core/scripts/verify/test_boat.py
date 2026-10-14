@@ -6,6 +6,7 @@ import importlib.machinery
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -173,14 +174,17 @@ class Registry(unittest.TestCase):
         self.assertEqual(json.loads(boat.registry("run1").read_text())["sandboxes"]["machine-1"]["state"], "stopped")
 
     def test_the_ssh_control_socket_fits_a_unix_socket_path(self):
-        def path(run):
-            with unittest.mock.patch.dict("os.environ", XDG_RUNTIME_DIR="/run/user/4294967295"):
+        def path(run, runtime="/run/user/4294967295"):
+            with unittest.mock.patch.dict("os.environ", XDG_RUNTIME_DIR=runtime):
                 return boat.Provider(dict(id=run, manifest=self.run["manifest"]), self.fake, Path(".")).control_path()
         for run in ["bake-" + "f" * 10, "20261014T034406-9a4821d75f"]:
             self.assertTrue(path(run).startswith("/run/user/4294967295/ployz-boat/"))
             # %C expands to 40 hex characters and ssh adds a 17-character suffix while it binds.
             self.assertLessEqual(len(path(run).replace("%C", "0" * 40)) + 17, 107)
         self.assertNotEqual(path("a"), path("b"))
+        long = path("a", "/" + "r" * 74)
+        self.assertTrue(long.startswith(f"/tmp/ployz-boat-{os.getuid()}/"))
+        self.assertLessEqual(len(long.replace("%C", "0" * 40)) + 17, 107)
 
     def test_a_control_directory_others_can_open_is_refused(self):
         self.provider.control = boat.REGISTRY / "control"

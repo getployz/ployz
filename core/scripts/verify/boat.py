@@ -244,8 +244,9 @@ class Provider:
         self.private = Path(run["manifest"]).parent / "private"
         # A socket path must fit in 108 bytes with ssh's 17-character bind suffix; neither the run nor the registry directory does.
         # The per-user runtime directory is private; /tmp is the fallback options() checks.
-        runtime = os.environ.get("XDG_RUNTIME_DIR")
-        self.control = Path(runtime) / "ployz-boat" if runtime else Path(f"/tmp/ployz-boat-{os.getuid()}")
+        private = os.environ.get("XDG_RUNTIME_DIR") and Path(os.environ["XDG_RUNTIME_DIR"]) / "ployz-boat"
+        # "/<8>-<%C as 40>" plus the bind suffix is 67 more characters.
+        self.control = private if private and len(str(private)) + 67 <= 107 else Path(f"/tmp/ployz-boat-{os.getuid()}")
 
     def boat(self, *args, **kwargs):
         return self.commands([*cli(), *args, "--json"], **kwargs)
