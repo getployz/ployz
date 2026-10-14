@@ -3,27 +3,30 @@
 Many agent threads build and land PRs in parallel. Each thread owns its PR end to end:
 it verifies the PR, runs bounded review rounds, resolves its own conflicts, and merges.
 
-## Verify: each PR proves itself
+## Verify: a swarm breaks each PR
+
+Agents verify behaviour by using it; a growing script suite is not the goal. Every gate
+added here slows every PR, so add none.
 
 - A PR that changes Machine behaviour (daemon, Docker, WireGuard, ZFS, moves, deploys)
-  boots Boat in its own thread before it goes ready: the `verify-server` skill, or
-  `core/scripts/verify-cluster`. Use the changed feature as a real user would, check the
-  observable end state, and exercise what the change might break. That run is the
-  verification.
-- Put the evidence in the PR body: the commands you ran and the results you observed.
+  sends a swarm of 2-3 agents before it goes ready. Each agent boots its own Boat (the
+  `verify-server` skill, or `core/scripts/verify-cluster`) and tries to break the changed
+  feature the way a real user would: the happy path, the edges, and what the change might
+  break nearby. Give each agent a different angle. Agents drive the CLI and dashboard by
+  hand; they write no scenario scripts.
+- A swarm agent's report is the commands it ran and the end state it observed. A break it
+  finds gets fixed in the PR, then the agent that found it reruns its angle.
+- Put each agent's evidence in the PR body.
 - A PR that leaves Machine behaviour alone skips Boat. Verify dashboard UI with the
   `verify-dashboard` skill.
 - Merges run no scenario suite.
 
 ### Durable scenarios
 
-The durable scenario set (`core/scripts/test-verify-*.py`) runs on release candidates
-only. Releases are Nick's job; agents leave them alone.
-
-- Add a scenario only to pin down behaviour that is fickle or likely to regress. Name the
-  defect it catches before you write it. "The feature works" is not a defect.
-- Extend the `verify-cluster` CLI in preference to writing a new script.
-- Delete a scenario that overlaps another or no longer catches anything.
+`core/scripts/test-verify-*.py` is frozen: shrink it, never grow it. Delete a scenario
+that overlaps another or no longer catches anything. A behaviour worth checking again goes
+into the next swarm's angles, not into a script. Releases are Nick's job; agents leave
+them alone.
 
 ## Review: bounded rounds
 
@@ -52,8 +55,9 @@ panel had a 60% real-bug rate; CodeRabbit had 11%.
 ## Land
 
 - Open PRs ready, not draft.
-- Merge when your own CI is green, review is clean, and the PR has no conflicts. The
-  branch does not need to be up to date with main.
+- Once review is clean, arm auto-merge: `gh pr merge <n> --auto --merge`. GitHub merges
+  when the required "CI ready" check passes and the PR has no conflicts. The branch does
+  not need to be up to date with main.
 - Keep stacks short and merge each layer as soon as it is green. Ship unfinished work
   dark, behind a flag, in place of a tall stack.
 
