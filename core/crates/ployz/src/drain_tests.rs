@@ -123,9 +123,7 @@ struct Scripted {
     /// Cancelled once the first Service converges.
     cancel_after_converge: Option<CancellationToken>,
     retired: bool,
-    /// The pointer every Service reads as; none leaves each one unpointed.
     pointer: Option<ServingPointer>,
-    /// What each convergence was told to do with old copies: the `retiring` it kept.
     kept: Vec<Option<Vec<ContainerId>>>,
     repointed: Vec<(QualifiedService, Option<DeploymentLogId>, Vec<Replacement>)>,
     repoint_error: Option<RpcError>,

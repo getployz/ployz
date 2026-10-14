@@ -394,8 +394,6 @@ trait DrainClient {
         old: OldCopy<'_>,
         cancellation: &CancellationToken,
     ) -> Converged;
-    /// Add each replacement to the pointer of `deploy` and move what it replaced to
-    /// `retiring`.
     async fn repoint(
         &mut self,
         service: &QualifiedService,
@@ -453,8 +451,6 @@ impl DrainClient for Client {
     }
 }
 
-/// Add each replacement to the pointer of `deploy` and move the copy it replaced to
-/// `retiring`, where h5 retires it once every Machine acknowledges.
 async fn publish_replacements<C: PointerClient>(
     client: &mut C,
     service: &QualifiedService,
@@ -540,7 +536,6 @@ async fn execute<C: DrainClient>(
                     },
                     Some(&pointer.deploy),
                 ),
-                // Unread, it may be pointed: its old copies are left for h5 to retire.
                 Err(_) => (OldCopy::Keep { retiring: &[] }, None),
             };
             let outcome = match client.converge(service, old, cancellation).await {
@@ -568,7 +563,6 @@ async fn execute<C: DrainClient>(
                     replaced,
                     stop,
                 } => {
-                    // Interrupted already says the Service did not finish moving.
                     let _ = repoint(client, service, old, deploy, &moves, &replaced).await;
                     record.push(service.clone(), DrainOutcome::Interrupted { moves });
                     record.stop(stop, after);
@@ -602,8 +596,6 @@ async fn execute<C: DrainClient>(
     }
 }
 
-/// Publish the replacements of moves that kept their old copies. Until it publishes, the
-/// old copies keep serving and the Service has not moved.
 async fn repoint<C: DrainClient>(
     client: &mut C,
     service: &QualifiedService,

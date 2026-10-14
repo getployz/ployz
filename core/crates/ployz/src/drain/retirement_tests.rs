@@ -289,7 +289,7 @@ async fn a_pointed_global_still_there_after_the_wait_is_not_retired() {
         &mut server,
         &MachineId::parse("b".repeat(32)).unwrap(),
         &QualifiedService::parse("app/api").unwrap(),
-        Duration::from_secs(30),
+        LISTING + LISTING / 2,
         &CancellationToken::new(),
     )
     .await
@@ -369,7 +369,8 @@ async fn a_pointed_global_lists_no_copies_past_its_deadline() {
     );
 }
 
-/// Each listing takes 20 s, so a 30 s wait has time for the first two only.
+const LISTING: Duration = Duration::from_secs(20);
+
 struct SlowLister {
     server: PointedServer,
     listings: u32,
@@ -404,7 +405,7 @@ impl CopyLister for SlowLister {
         service: &QualifiedService,
     ) -> Result<Vec<ployz_core::ContainerId>, RpcError> {
         self.listings += 1;
-        tokio::time::sleep(Duration::from_secs(20)).await;
+        tokio::time::sleep(LISTING).await;
         self.server.copies_on(machine_id, service).await
     }
 }

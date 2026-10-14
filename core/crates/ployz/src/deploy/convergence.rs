@@ -52,25 +52,19 @@ pub struct Move {
     pub to: MachineRef,
 }
 
-/// A moved Container and the Container that now serves in its place.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct Replacement {
     pub(crate) old: ContainerId,
     pub(crate) new: ContainerId,
 }
 
-/// What a move does with the Container it replaces.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum OldCopy<'a> {
-    /// Stopped and removed once its replacement serves.
     Remove,
-    /// Left running for its Serving Pointer to retire. Containers in `retiring` already
-    /// are, so they stay put.
     Keep { retiring: &'a [ContainerId] },
 }
 
-/// How converging one replicated Service ended. `replaced` pairs each move with the
-/// Container it started.
+/// How converging one replicated Service ended.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Converged {
     /// Every Container that had to move did. Never empty.
@@ -223,8 +217,6 @@ impl fmt::Display for MoveFailure {
     }
 }
 
-/// What convergence needs from a Cluster: a fresh snapshot and one move, answering the
-/// Container that replaced `container`.
 pub(crate) trait ConvergenceClient {
     async fn observe(&mut self) -> Result<DeploySnapshot, ConnectError>;
     async fn move_one(
@@ -253,9 +245,6 @@ impl ConvergenceClient for Client {
     }
 }
 
-/// Converge `service`: replace each active Container on a Machine its own spec now rules
-/// out with one on an eligible Machine, then treat the old one as `old` says. Each move
-/// after the first starts from a fresh snapshot, rechecked as the first was.
 pub(crate) async fn converge<C: ConvergenceClient>(
     client: &mut C,
     service: &QualifiedService,
@@ -450,7 +439,6 @@ fn stranded<'a>(
         .collect()
 }
 
-/// The stranded Containers not already retiring.
 fn movable<'a>(
     snapshot: &'a DeploySnapshot,
     service: &QualifiedService,
@@ -476,7 +464,6 @@ fn machine_ref(snapshot: &DeploySnapshot, id: &MachineId) -> MachineRef {
     MachineRef::from(machine(snapshot, id))
 }
 
-/// Place, copy the exact image, start and serve, then treat the old Container as `old` says.
 async fn move_one(
     client: &mut Client,
     snapshot: &DeploySnapshot,
@@ -684,7 +671,6 @@ mod tests {
         );
     }
 
-    /// Serves queued snapshots; every move succeeds onto machine-b as Container `f`.
     struct Scripted {
         snapshots: std::collections::VecDeque<Result<DeploySnapshot, ConnectError>>,
         kept: Vec<bool>,

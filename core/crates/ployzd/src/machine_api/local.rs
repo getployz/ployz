@@ -128,7 +128,6 @@ impl MachineService {
         self.replicated()
     }
 
-    /// The replicated store, only on the Machine this one sees as the pointer publisher.
     async fn pointer_replicated(&self) -> Result<&ReplicatedStore, RpcError> {
         let replicated = self.ready_replicated()?;
         let publisher = match self.local.pointer_publisher().await {

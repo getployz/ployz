@@ -23,15 +23,12 @@ pub(crate) const AMEND_RETRIES: u32 = 3;
 
 /// What pointer publishing needs from a Cluster.
 pub(crate) trait PointerClient {
-    /// The Machine pointer reads and publishes go to.
     async fn pointer_publisher(&mut self) -> Result<MachineTarget, RpcError>;
-    /// Read at `at`, moving `at` to the publisher it names if it refuses.
     async fn read_pointer_at(
         &mut self,
         at: &mut MachineTarget,
         service: &QualifiedService,
     ) -> Result<Option<ServingPointer>, RpcError>;
-    /// Publish at `at`, moving `at` to the publisher it names if it refuses.
     async fn publish_pointer_at(
         &mut self,
         at: &mut MachineTarget,
@@ -155,19 +152,12 @@ pub(crate) enum Amendment {
     /// The change was already in the pointer.
     Unchanged,
     /// Published after `retries` lost compare-and-sets.
-    Published { retries: u32 },
-    /// The pointer names a deploy other than the one the change was made for; nothing
-    /// was written.
+    Published {
+        retries: u32,
+    },
     Outdated,
 }
 
-/// Apply `change` to the Service's pointer at one publisher, re-reading and retrying up to
-/// [`AMEND_RETRIES`] times when another writer wins. `change` answers `None` when the
-/// pointer already holds what it wants.
-///
-/// # Errors
-///
-/// A read or publish failed, or every retry lost.
 pub(crate) async fn amend_pointer<C: PointerClient>(
     client: &mut C,
     service: &QualifiedService,

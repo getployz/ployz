@@ -91,8 +91,6 @@ impl ApiClient {
         self.transaction(&self.client, statements).await.map(drop)
     }
 
-    /// Runs `statements` in one transaction, sent once, and answers each statement's affected
-    /// row count. A transport error leaves the outcome unknown.
     pub(crate) async fn execute_counted(
         &self,
         statements: impl IntoIterator<Item = Statement>,

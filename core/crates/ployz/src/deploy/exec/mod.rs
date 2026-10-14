@@ -715,14 +715,6 @@ pub(in crate::deploy) enum MoveContainerError {
     },
 }
 
-/// Placement convergence's one move: start `spec` on `to`, wait until it is healthy,
-/// then, when `remove_old`, remove `old` from `from`. A new Container that never gets
-/// healthy is removed again, so `old` keeps serving. No hooks run.
-///
-/// # Errors
-///
-/// [`MoveContainerError::NotServing`] when the new Container never served;
-/// [`MoveContainerError::OldNotRemoved`] when it serves but `old` could not be removed.
 pub(in crate::deploy) async fn move_container<C: MachineOperations>(
     client: &C,
     namespace: &Namespace,

@@ -127,8 +127,6 @@ fn rotation_joins_retires_and_reports_no_change() {
     );
 }
 
-/// The real [`Client`] against a fixture Cluster of Machines 1 and 2 whose pointer row
-/// is shared, recording each pointer RPC with the Machine it targeted.
 mod rpc {
     use std::sync::{Arc, Mutex};
 
@@ -146,8 +144,6 @@ mod rpc {
         calls: Arc<Mutex<Vec<(&'static str, String)>>>,
     }
 
-    /// `down` is missing from the client's Membership Observation; `refusing` refuses
-    /// every pointer RPC, naming the other Machine.
     async fn cluster(
         row: Option<ServingPointer>,
         down: Option<char>,
@@ -288,8 +284,6 @@ mod rpc {
         server.abort();
     }
 
-    /// The client sees only Machine 2, which refuses and names Machine 1: the read
-    /// follows the refusal once, and the publish goes straight to Machine 1.
     #[tokio::test]
     async fn an_amendment_follows_one_refusal_and_publishes_where_it_read() {
         let (mut client, fixture, server) =

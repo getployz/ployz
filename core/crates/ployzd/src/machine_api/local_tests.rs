@@ -1831,7 +1831,6 @@ mod serving_pointer {
         store_tests::{corrosion_db, identity_store},
     };
 
-    /// A Corrosion admin socket whose every MembershipStates answer is `states`.
     fn admin_socket(dir: &Path, states: Vec<Value>) -> PathBuf {
         let path = dir.join(format!("admin-{}.sock", MachineId::random()));
         let listener = UnixListener::bind(&path).unwrap();
@@ -1855,7 +1854,6 @@ mod serving_pointer {
         path
     }
 
-    /// Machine 1, lower than every random Machine ID.
     fn machine_one() -> Machine {
         serde_json::from_value(json!({
             "id": "0".repeat(32),
@@ -1876,8 +1874,6 @@ mod serving_pointer {
         json!({ "id": { "addr": address }, "state": "Alive" })
     }
 
-    /// A participating Machine on its own Corrosion node holding `rows`, whose
-    /// Membership Observation comes from `states`.
     async fn machine(
         dir: &Path,
         rows: &[Machine],
@@ -1988,9 +1984,6 @@ mod serving_pointer {
         std::fs::remove_dir_all(dir).ok();
     }
 
-    /// Two Machines on separate Corrosion nodes disagree on whether Machine 1 is up, and
-    /// both are asked to publish from the same read: only the one that sees no lower
-    /// Machine writes, and the other names Machine 1 instead.
     #[tokio::test]
     async fn machines_that_disagree_on_machine_one_never_both_publish() {
         let dir = std::env::temp_dir().join(format!("ployzd-pointer-{}", MachineId::random()));

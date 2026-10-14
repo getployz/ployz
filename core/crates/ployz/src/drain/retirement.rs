@@ -127,11 +127,6 @@ impl CopyLister for Client {
     }
 }
 
-/// Move the Service's Containers on `machine_id` into its Serving Pointer's `retiring` and
-/// wait up to `wait` for the Server's retire loop to stop them, which it does once every
-/// up Machine stopped routing to them. Answers `false`, having written nothing, when the
-/// Service has no pointer. Cancellation ends every listing and pause at once; the
-/// amendment itself, once sent, is let finish.
 pub(crate) async fn retire_pointed<C: CopyLister>(
     client: &mut C,
     machine_id: &MachineId,

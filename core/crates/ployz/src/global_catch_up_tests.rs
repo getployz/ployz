@@ -336,7 +336,6 @@ struct FakeCatchUpClient {
     run_result: Result<Option<ContainerId>, RpcError>,
     failures: Vec<ployz_core::MachineFailure<RpcError>>,
     omissions: Vec<MachineId>,
-    /// Every listing after the first, when a deploy lands between them.
     relisted: Option<Vec<ServiceObservation>>,
     listings: u32,
 }
@@ -616,7 +615,6 @@ async fn a_publish_that_keeps_losing_fails_the_slot() {
     assert_eq!(error.unresolved, [qualified("app", "api")]);
 }
 
-/// A deploy that lands between catch-up's listing and its publish.
 fn newer_deploy(joiner: &Machine, row: &FakeRow, before_read: bool) -> Vec<ServiceObservation> {
     let newer = pointed("dep-q", &['e'], &['d']);
     if before_read {

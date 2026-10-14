@@ -5,7 +5,7 @@ use ployz_core::{
     ContainerWant, CreationKey, EnvironmentValues, InspectRequest, ListContainersRequest,
     LiveServices, Machine, MachineId, MachineTarget, NewContainer, QualifiedService,
     ResolvedServiceSpec, RpcError, RunTarget, ServiceObservation, ServicePlacementEligibility,
-    SlotKey, op, service_containers,
+    ServingPointer, SlotKey, op, service_containers,
 };
 
 use crate::global_slot::{remove_slot, slot_eligibility, unknown_eligibility};
@@ -217,7 +217,6 @@ pub(crate) enum CatchUpFact {
     Identified(Vec<QualifiedService>),
     Creating(QualifiedService),
     Excluded(QualifiedService),
-    /// Running and in the Serving Pointer, after `pointer_retries` lost compare-and-sets.
     Running {
         service: QualifiedService,
         pointer_retries: u32,
@@ -448,6 +447,18 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
     Ok(())
 }
 
+fn names_another_spec(
+    pointer: &ServingPointer,
+    members: &[ContainerObservation],
+    spec: &ResolvedServiceSpec,
+) -> bool {
+    pointer.containers.iter().any(|id| {
+        members
+            .iter()
+            .any(|member| member.container_id == *id && member.resolved_spec != *spec)
+    })
+}
+
 async fn point_at<C: CatchUpClient>(
     client: &mut C,
     this_machine: &Machine,
@@ -464,13 +475,7 @@ async fn point_at<C: CatchUpClient>(
             "cannot update the Serving Pointer of {service} from partial Service observations"
         )));
     };
-    // Each pointer copy must run the spec `running` was started for; any other spec
-    // means a newer deploy owns the pointer.
-    if read.containers.iter().any(|id| {
-        members
-            .iter()
-            .any(|member| member.container_id == *id && member.resolved_spec != *spec)
-    }) {
+    if names_another_spec(&read, &members, spec) {
         return Ok(Amendment::Outdated);
     }
     let replaced = members
