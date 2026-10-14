@@ -174,8 +174,10 @@ class Registry(unittest.TestCase):
 
     def test_the_ssh_control_socket_fits_a_unix_socket_path(self):
         def path(run):
-            return boat.Provider(dict(id=run, manifest=self.run["manifest"]), self.fake, Path(".")).control_path()
+            with unittest.mock.patch.dict("os.environ", XDG_RUNTIME_DIR="/run/user/4294967295"):
+                return boat.Provider(dict(id=run, manifest=self.run["manifest"]), self.fake, Path(".")).control_path()
         for run in ["bake-" + "f" * 10, "20261014T034406-9a4821d75f"]:
+            self.assertTrue(path(run).startswith("/run/user/4294967295/ployz-boat/"))
             # %C expands to 40 hex characters and ssh adds a 17-character suffix while it binds.
             self.assertLessEqual(len(path(run).replace("%C", "0" * 40)) + 17, 107)
         self.assertNotEqual(path("a"), path("b"))
@@ -188,6 +190,13 @@ class Registry(unittest.TestCase):
             self.provider.options()
         self.provider.control.chmod(0o700)
         self.assertIn("ControlMaster=auto", self.provider.options())
+
+    def test_runs_lists_each_registered_run_with_its_sandbox_state(self):
+        self.registered(**{"machine-1": dict(id="bx_a", state="running")})
+        listed = dict(sandboxes=[dict(id="bx_a", state="running")])
+        with unittest.mock.patch.object(boat, "boat_json", return_value=listed):
+            found = boat.runs()
+        self.assertEqual([(run["id"], [machine["sandbox"] for machine in run["machines"]]) for run in found], [("run1", ["bx_a"])])
 
     def test_a_corrupt_run_record_hides_only_itself(self):
         self.registered(**{"machine-1": dict(id="bx_a", state="running")})

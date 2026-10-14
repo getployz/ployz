@@ -202,8 +202,8 @@ def status(state):
 
 def runs():
     """Every Boat verify run this user's registry holds, from any checkout."""
-    records = list(records())
-    if not records:
+    found = list(records())
+    if not found:
         return []
     states = {sandbox["id"]: sandbox["state"] for sandbox in boat_json("list", "--all")["sandboxes"]}
     return [dict(id=record["run"], provider="boat", owner=record.get("owner", {}), created=record.get("created"),
@@ -211,7 +211,7 @@ def runs():
                                        memory=MEMORY, created=entry.get("created", record.get("created")))
                                   for name, entry in record["sandboxes"].items() if entry["state"] != "deleted"),
                                  key=lambda machine: machine["name"]))
-            for record in records]
+            for record in found]
 
 
 def shortfalls(machines, limits):
@@ -243,7 +243,9 @@ class Provider:
         self.lock = threading.Lock()
         self.private = Path(run["manifest"]).parent / "private"
         # A socket path must fit in 108 bytes with ssh's 17-character bind suffix; neither the run nor the registry directory does.
-        self.control = Path(f"/tmp/ployz-boat-{os.getuid()}")
+        # The per-user runtime directory is private; /tmp is the fallback options() checks.
+        runtime = os.environ.get("XDG_RUNTIME_DIR")
+        self.control = Path(runtime) / "ployz-boat" if runtime else Path(f"/tmp/ployz-boat-{os.getuid()}")
 
     def boat(self, *args, **kwargs):
         return self.commands([*cli(), *args, "--json"], **kwargs)
