@@ -128,6 +128,14 @@ start your service, a deploy follows the move and starts your service on `web-2`
 volume change staged on that volume fails instead, with "data is starting on web-2; it finishes
 there", and the change waits for your next deploy.
 
+A move asked for while a deploy runs is refused:
+
+```
+data is deploying; the Deploy ends its run
+```
+
+Ask for the move again once the deploy ends.
+
 ## When a move stops
 
 A move can stop if a server or Ployz Cloud goes away during it. `ployz volume runs data` shows
@@ -159,6 +167,8 @@ service, the move can only finish there, so Release is refused:
 ```
 data is starting on web-2; it finishes there
 ```
+
+While a deploy runs, Release is refused with "data is deploying; the Deploy ends its run".
 
 Finishing on `web-2` still needs the old server to answer for its container. If the old server
 dies, the move fails, and your service stays down until it comes back or you restore the volume.

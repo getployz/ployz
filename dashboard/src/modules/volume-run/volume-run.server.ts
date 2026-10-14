@@ -143,9 +143,9 @@ export const finishesThere = (volumeName: string, server: string) => `${volumeNa
 export const pastReturn = (lane: Pick<VolumeRunRow, "phase" | "kind">) => lane.phase === "committed" || lane.kind === "restore";
 type LaneEnd = "cancelled" | "yielded";
 // A seed's copy into the new Volume runs on without its row, and a Machine destroying a mirror's copy runs on without
-// its removal's, so a release could only stop watching them.
-const keepsLane = (lane: VolumeRunRow, end: LaneEnd) =>
-  pastReturn(lane) || ((lane.kind === "deploy" || lane.kind === "seed" || lane.kind === "delete_mirror") && end === "cancelled");
+// its removal's, so a release could only stop watching them. A Deploy's Services run on its lane, so only a Deploy takes it.
+const keepsLane = (lane: VolumeRunRow, end: LaneEnd, kind: VolumeRunKind) =>
+  pastReturn(lane) || (lane.kind === "deploy" && kind !== "deploy") || ((lane.kind === "seed" || lane.kind === "delete_mirror") && end === "cancelled");
 
 // SAFETY: the row's kind and args were written together from one VolumeRunInput.
 const laneInput = (lane: Pick<VolumeRunRow, "kind" | "args">) => ({ kind: lane.kind, args: lane.args }) as VolumeRunInput;
@@ -336,7 +336,7 @@ export const planVolumeRun = Effect.fn("VolumeRun.plan")(function* (
     if (refusal !== null) return { ok: false, refusal } satisfies VolumeRunPlan;
   }
   const lane = yield* activeLane(input.volumeId);
-  if (lane !== undefined && (input.kind !== "release" || keepsLane(lane, "cancelled"))) {
+  if (lane !== undefined && (input.kind !== "release" || keepsLane(lane, "cancelled", "release"))) {
     return { ok: false, refusal: yield* laneRefusal(lane, input.kind) } satisfies VolumeRunPlan;
   }
   const members = yield* observeVolumeMembers(organizationId, volume.dockerVolume, input).pipe(Effect.option);
@@ -433,7 +433,7 @@ const takeLane = Effect.fn("VolumeRun.takeLane")(function* (caller: Caller, { in
     if (only !== undefined && lane?.id !== only) return yield* new LaneMoved({ active: lane });
     let taken: VolumeRunRow | undefined;
     if (lane !== undefined && end !== null) {
-      if (keepsLane(lane, end)) return yield* new LaneRefused({ refusal: yield* laneRefusal(lane, input.kind), busy: volumeRunView(lane) });
+      if (keepsLane(lane, end, input.kind)) return yield* new LaneRefused({ refusal: yield* laneRefusal(lane, input.kind), busy: volumeRunView(lane) });
       [taken] = yield* drizzle.update(volumeRun).set(ended(end, TAKEN_BY[end]))
         .where(and(eq(volumeRun.id, lane.id), inArray(volumeRun.state, ACTIVE_VOLUME_RUN_STATES), eq(volumeRun.phase, "warm")))
         .returning();
@@ -484,6 +484,16 @@ export const takeDeployLane = Effect.fn("VolumeRun.takeDeployLane")(function* (c
   const row = yield* readRow(taker.id);
   if (row === undefined) return yield* Effect.fail(new Error(`volume run ${taker.id} vanished after its insert`));
   return { run: contextOf(row), ended };
+});
+
+/**
+ * A Deploy's hold on a Volume no run holds, so nothing starts beside its Services. It takes nothing, so a lane that
+ * landed since the Deploy's read fails the step, and the retry places over that lane.
+ */
+export const holdDeployLane = Effect.fn("VolumeRun.holdDeployLane")(function* (caller: Caller, taker: LaneTaker, inngestRunId: string) {
+  yield* takeLane(caller, taker, null, inngestRunId).pipe(
+    Effect.catchTag("LaneRefused", ({ refusal }) => Effect.fail(new Error(refusal.message))),
+  );
 });
 
 /** The Machines the Cluster names now; none when it does not answer. */
