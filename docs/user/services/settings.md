@@ -90,6 +90,23 @@ switches to an image loses its root directory and build settings, so they are ba
 defaults if it later builds a repository again. Like every change, the switch waits for your
 next deploy, and Discard undoes it.
 
+Each setting belongs to one kind of source. An image service refuses the repository settings:
+`branch`, `rootDir`, the build settings and the deploy-on-push settings. A repository service
+refuses the registry credential. Ployz checks every setting you set against the source the
+whole edit leaves, so the order of its settings never matters. To use repository settings on an
+image service, switch to a repository in the same `set` or before it:
+
+```sh
+ployz set web.branch=dev web.repository=acme/web            # works on an image service
+ployz set web.image=nginx:1.27 web.buildMethod=dockerfile   # refused: an image is not built
+ployz set web.image=nginx:1.27 web.repository=acme/web      # refused: one source at a time
+```
+
+The source never blocks an unset. A setting the service's source does not have is already
+at its default, so unsetting it changes nothing. A repository service still refuses an unset
+`branch`, because it always builds a branch: set another one instead. An empty service takes
+the build settings, because it builds the code you upload.
+
 ## Networking
 
 ![Settings → Networking: a generated domain that uses PORT, Custom Domain, and the private name](../images/service-settings-networking.png)
