@@ -260,7 +260,7 @@ const fenceFollowed = Effect.fn("VolumeRun.fenceFollowed")(function* (lane: Foll
   const restore = () => restoreLine(run.volumeName, restoreSource(members.filter((member) => !isB(member))));
   const b = answered(members).find(isB);
   if (b === undefined) {
-    return yield* Effect.fail(new Error(`${run.volumeName} finishes on ${to}, which did not answer. Bring ${to} back or remove it with ployz server rm ${to}` + restore()));
+    return yield* Effect.fail(new Error(`${run.volumeName} finishes on ${to}, which did not answer. Bring ${to} back or forget it with ployz server forget ${to} --confirm dead` + restore()));
   }
   const machine: MachineRef = b.machine;
   const copy = b.view.copy;

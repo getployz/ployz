@@ -220,12 +220,22 @@ data is starting on web-2; it finishes there
 While a deploy runs, Release is refused with "data is deploying; the Deploy ends its run".
 
 Finishing on `web-2` still needs every server to answer, since `web-2` starts from the old
-server's container. Release waits up to 15 minutes for a silent server, and the run shows
-"waiting for web-1 to answer (check 1 of 8)", or "waiting for the Servers to answer" when Ployz
-Cloud can't reach any of them. While it waits, a restore of the volume is refused. Removing the
-silent server ends the wait at the next check. If the old server stays silent, the release fails
-with "web-1 did not answer for 15m; data still finishes on web-2; ployz volume release data tries
-again". Your service stays down until it comes back or you restore the volume.
+server's stopped container. Release waits up to 15 minutes for a silent server, and the run shows
+"waiting for web-1 to answer (check 1 of 8)". When Ployz Cloud can't read your servers, it shows
+"waiting for the Servers to answer" instead. While it waits, a restore of the volume is refused.
+If the old server stays silent, the release fails with "web-1 did not answer for 15m; data still
+finishes on web-2; ployz volume release data tries again". Your service stays down until it comes
+back or you restore the volume.
+
+A silent server can't be reset, so `ployz server rm` refuses it.
+[Forget it](../servers/manage-servers.md#forget-a-server-that-is-gone) instead:
+
+```sh
+ployz server forget web-1 --confirm dead
+```
+
+The wait ends at the next check. The old server's stopped container goes with it, so the release
+fails with "data has no stopped Service container to start on web-2".
 
 ### When you remove a server mid-move
 
@@ -238,7 +248,9 @@ data has no writer and no stopped Service on its copies; ployz volume restore da
 ```
 
 If you remove `web-2` after it was told to start your service, the move fails as the removal
-finishes, so you can restore right away. Its error names the copy left:
+finishes, so you can restore right away. When `web-2` is silent, `ployz server rm` can't reset it.
+[Forget it](../servers/manage-servers.md#forget-a-server-that-is-gone) with
+`ployz server forget web-2 --confirm dead` instead. Either way, the error names the copy left:
 
 ```
 data's writer was on web-2 (removed). Restore from web-1's copy: ployz volume restore data --from web-1
@@ -249,7 +261,7 @@ no longer follows the move. While `web-2` is still a member, a deploy that follo
 if `web-2` is silent or holds no copy, and says what to do:
 
 ```
-data finishes on web-2, which did not answer. Bring web-2 back or remove it with ployz server rm web-2. Restore from web-1's copy: ployz volume restore data --from web-1
+data finishes on web-2, which did not answer. Bring web-2 back or forget it with ployz server forget web-2 --confirm dead. Restore from web-1's copy: ployz volume restore data --from web-1
 ```
 
 ## Restore a volume

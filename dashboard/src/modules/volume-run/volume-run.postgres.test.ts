@@ -3463,7 +3463,7 @@ describe("volume runs", () => {
         machines = machines.filter((fake) => fake.name !== "fsn-2");
 
         await expect(fence(placed[0])).rejects.toThrow(
-          "data finishes on fsn-2, which did not answer. Bring fsn-2 back or remove it with ployz server rm fsn-2. Restore from fsn-1's copy: ployz volume restore data --from fsn-1");
+          "data finishes on fsn-2, which did not answer. Bring fsn-2 back or forget it with ployz server forget fsn-2 --confirm dead. Restore from fsn-1's copy: ployz volume restore data --from fsn-1");
       });
 
       it("a copyless B fails the follow with what to do", async () => {
