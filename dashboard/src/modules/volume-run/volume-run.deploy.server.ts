@@ -10,6 +10,7 @@ import { ACTIVE_VOLUME_RUN_STATES, type AnsweredMember, copyName, dockerVolumeNa
 import {
   askCopy,
   contextOf,
+  type CopyAnswer,
   ended,
   holdDeployLane,
   keptOn,
@@ -22,6 +23,7 @@ import {
   type RunContext,
   setVolumeCopy,
   startWriter,
+  SwitchAttemptError,
   takeDeployLane,
   takeEpoch,
 } from "#/modules/volume-run/volume-run.server";
@@ -150,20 +152,25 @@ const writerOf = Effect.fn("VolumeRun.writerOf")(function* (run: RunContext, mem
 /**
  * Floors every answered Machine at this run's gen, the empty ones too, so the run it took can switch nothing more
  * anywhere, not even with a late Mirror onto its destination. A Server without the floor holds no copy and is no
- * destination, so it stays as observed.
+ * destination, so it stays as observed. A Machine that refuses or fails its floor stops none of the others: they are
+ * floored first, then the first failure is the answer, since the run may end before it fences again.
  */
 const floorMembers = Effect.fn("VolumeRun.floorMembers")(function* (run: RunContext, inngestRunId: string, members: readonly AnsweredMember[]) {
   const floored: AnsweredMember[] = [];
+  let failed: Extract<CopyAnswer, { ok: false }> | SwitchAttemptError | null = null;
   for (const member of members) {
     if (member.floorless) {
       floored.push(member);
       continue;
     }
-    const answer = yield* setVolumeCopy(run, inngestRunId, member.machine, expectOf(member.view.copy), { kind: "floor" });
-    if (!answer.ok) return answer;
-    floored.push({ ...member, view: { ...member.view, copy: answer.copy } });
+    const answer = yield* setVolumeCopy(run, inngestRunId, member.machine, expectOf(member.view.copy), { kind: "floor" }).pipe(
+      Effect.catchIf((error) => error instanceof SwitchAttemptError, (error) => Effect.succeed(error)),
+    );
+    if (answer instanceof SwitchAttemptError || !answer.ok) failed ??= answer;
+    else floored.push({ ...member, view: { ...member.view, copy: answer.copy } });
   }
-  return { ok: true, members: floored } as const;
+  if (failed instanceof SwitchAttemptError) return yield* Effect.fail(failed);
+  return failed ?? ({ ok: true, members: floored } as const);
 });
 
 /**
