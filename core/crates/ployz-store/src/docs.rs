@@ -2,15 +2,12 @@
 //! read one page. The docs tool and `ployz docs` both answer through
 //! [`lookup`].
 
-mod rank;
+mod index;
 mod split;
 
-use std::collections::HashSet;
 use std::sync::OnceLock;
 
 use serde::Serialize;
-
-use split::Section;
 
 include!(concat!(env!("OUT_DIR"), "/docs_pages.rs"));
 
@@ -95,21 +92,17 @@ fn page(path: &'static str, source: &'static str) -> Page {
 
 fn search(query: &str) -> Found {
     let index = index();
-    let terms = rank::query_terms(query);
-    let wanted = terms.iter().map(String::as_str).collect::<HashSet<_>>();
+    let terms = index.terms(query);
     let results = index
-        .ranker
-        .rank(&terms)
+        .search(query, RESULTS)
         .into_iter()
-        .take(RESULTS)
-        .filter_map(|(at, score)| index.sections.get(at).map(|section| (section, score)))
         .map(|(section, score)| Hit {
             path: section.path,
             title: section.title,
             heading: &section.heading,
             anchor: &section.anchor,
             score: (f64::from(score) * 100.0).round() / 100.0,
-            excerpt: excerpt(&section.text, &wanted),
+            excerpt: excerpt(&section.text, index.first_match(&section.text, &terms)),
         })
         .collect();
     Found {
@@ -118,29 +111,22 @@ fn search(query: &str) -> Found {
     }
 }
 
-struct Index {
-    sections: Vec<Section>,
-    ranker: rank::Ranker,
-}
-
-fn index() -> &'static Index {
-    static INDEX: OnceLock<Index> = OnceLock::new();
+fn index() -> &'static index::Index {
+    static INDEX: OnceLock<index::Index> = OnceLock::new();
     INDEX.get_or_init(|| {
-        let sections = PAGES
-            .iter()
-            .flat_map(|&(path, source)| split::split(path, source))
-            .collect::<Vec<_>>();
-        let ranker = rank::Ranker::new(&sections);
-        Index { sections, ranker }
+        index::Index::new(
+            PAGES
+                .iter()
+                .flat_map(|&(path, source)| split::split(path, source))
+                .collect(),
+        )
     })
 }
 
 /// About [`EXCERPT`] characters of `text` on one line, starting a little
-/// before the first word that matches a query term.
-fn excerpt(text: &str, wanted: &HashSet<&str>) -> String {
-    let at = rank::words(text)
-        .find(|(_, word)| rank::term(word).is_some_and(|term| wanted.contains(term.as_str())))
-        .map_or(0, |(at, _)| at);
+/// before `at`, the first word that matches the query.
+fn excerpt(text: &str, at: Option<usize>) -> String {
+    let at = at.unwrap_or(0);
     let before = text.get(..at).unwrap_or_default();
     let start = before
         .char_indices()
@@ -249,6 +235,18 @@ mod tests {
         assert!(excerpt.to_lowercase().contains("domain"), "{excerpt}");
         assert!(excerpt.chars().count() <= EXCERPT + 2, "{excerpt}");
         assert!(!excerpt.contains('\n'), "{excerpt}");
+    }
+
+    #[test]
+    fn a_misspelled_question_finds_its_section() {
+        let Lookup::Search(found) = lookup("custon domian") else {
+            panic!("a question searches");
+        };
+        let top = found.results.first().expect("a misspelling still matches");
+        assert_eq!(
+            format!("{}#{}", top.path, top.anchor),
+            "services/domains.md#add-a-custom-domain"
+        );
     }
 
     #[test]

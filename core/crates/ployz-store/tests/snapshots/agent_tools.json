@@ -1,6 +1,28 @@
 {
-  "instructions": "Ployz runs Projects with Environments of Services on your servers. Names, not ids. Every result says where it ran as at. A refusal has code, message, field, expected, example, retry (a complete call), writes (none, committed or unknown) and next (the calls to make now). When writes is unknown, make the next call before anything else. Most writes are Staged: review shows them, discard undoes them, deploy ships them. Not here: branches, tokens, servers added, exec, live logs, up; the member does those in the terminal. project and environment default to the place you are in. request_key: any 8 to 64 letters, digits, - or _; send the same key again after a lost reply and you get the same run, never a second one. wait_seconds: wait up to that long (max 300) for the outcome; 0 returns once accepted. accept_volume_loss, every_copy and version come only from a refusal, for exactly the loss the member accepted. Reads say when they were seen; a server that did not answer is listed, never guessed. Logs never show a secret; do not ask a tool for one. Servers, their logs and metrics need Ployz Cloud.",
+  "instructions": "Ployz runs Projects with Environments of Services on your servers. Names, not ids. Every result says where it ran as at. A refusal has code, message, field, expected, example, retry (a complete call), writes (none, committed or unknown) and next (the calls to make now). When writes is unknown, make the next call before anything else. Most writes are Staged: review shows them, discard undoes them, deploy ships them. Not here: branches, tokens, servers added, exec, live logs, up; the member does those in the terminal. project and environment default to the place you are in. request_key: any 8 to 64 letters, digits, - or _; send the same key again after a lost reply and you get the same run, never a second one. wait_seconds: wait up to that long (max 300) for the outcome; 0 returns once accepted. accept_volume_loss, every_copy and version come only from a refusal, for exactly the loss the member accepted. Reads say when they were seen; a server that did not answer is listed, never guessed. Logs never show a secret; do not ask a tool for one. Servers, their logs and metrics need Ployz Cloud. For how Ployz works or how to do something, read docs before answering from memory.",
   "tools": [
+    {
+      "description": "Search the Ployz docs, or read a page by path. Pages: production-checklist, self-hosting, account/{agent-sidebar,organizations}, builds/{build-resources-and-cache,overview,railpack-and-dockerfiles,where-builds-run}, cli/overview, deploy/{deployments,docker-image,github}, environments/{environments,preview-environments}, getting-started/{introduction,quick-start,the-basics}, observe/{logs,metrics,uptime}, servers/{add-a-server,manage-servers}, services/{configs,databases,domains,move-a-volume,private-networking,restore-a-volume,scaling,services,settings,variables,volumes}, troubleshooting/{app-not-reachable,builds,deployments,servers,trace}. Never asks a human to approve.",
+      "gate": "never",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "query": {
+            "description": "A question, or a page path ending in .md.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "docs",
+      "output_schema": {
+        "type": "object"
+      },
+      "read_only": true
+    },
     {
       "description": "Where you are: Projects and Environments, Services with source and domains, Volumes, Configs, how many changes are Staged, and the latest Deployment. Never asks a human to approve.",
       "gate": "never",
@@ -8,12 +30,12 @@
         "additionalProperties": false,
         "properties": {
           "environment": {
-            "description": "Environment name, e.g. staging. Omit for the one you are in.",
+            "description": "Environment name, e.g. staging.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           },
           "project": {
-            "description": "Project name. Omit for the one you are in.",
+            "description": "Project name.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           }
@@ -92,12 +114,12 @@
         "additionalProperties": false,
         "properties": {
           "environment": {
-            "description": "Environment name, e.g. staging. Omit for the one you are in.",
+            "description": "Environment name, e.g. staging.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           },
           "project": {
-            "description": "Project name. Omit for the one you are in.",
+            "description": "Project name.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           },
@@ -129,7 +151,7 @@
             "type": "string"
           },
           "environment": {
-            "description": "Environment name, e.g. staging. Omit for the one you are in.",
+            "description": "Environment name, e.g. staging.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           },
@@ -155,7 +177,7 @@
             "type": "string"
           },
           "project": {
-            "description": "Project name. Omit for the one you are in.",
+            "description": "Project name.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           },
@@ -186,7 +208,7 @@
         "additionalProperties": false,
         "properties": {
           "environment": {
-            "description": "Environment name, e.g. staging. Omit for the one you are in.",
+            "description": "Environment name, e.g. staging.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           },
@@ -196,7 +218,7 @@
             "type": "integer"
           },
           "project": {
-            "description": "Project name. Omit for the one you are in.",
+            "description": "Project name.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           },
@@ -758,7 +780,7 @@
         "additionalProperties": false,
         "properties": {
           "environment": {
-            "description": "Environment name, e.g. staging. Omit for the one you are in.",
+            "description": "Environment name, e.g. staging.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           },
@@ -768,7 +790,7 @@
             "type": "integer"
           },
           "project": {
-            "description": "Project name. Omit for the one you are in.",
+            "description": "Project name.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           },
@@ -801,7 +823,7 @@
         "additionalProperties": false,
         "properties": {
           "environment": {
-            "description": "Environment name, e.g. staging. Omit for the one you are in.",
+            "description": "Environment name, e.g. staging.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           },
@@ -811,7 +833,7 @@
             "type": "integer"
           },
           "project": {
-            "description": "Project name. Omit for the one you are in.",
+            "description": "Project name.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           },
@@ -872,7 +894,7 @@
         "additionalProperties": false,
         "properties": {
           "environment": {
-            "description": "Environment name, e.g. staging. Omit for the one you are in.",
+            "description": "Environment name, e.g. staging.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           },
@@ -899,7 +921,7 @@
             "type": "string"
           },
           "project": {
-            "description": "Project name. Omit for the one you are in.",
+            "description": "Project name.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           },
@@ -937,7 +959,7 @@
             "type": "string"
           },
           "environment": {
-            "description": "Environment name, e.g. staging. Omit for the one you are in.",
+            "description": "Environment name, e.g. staging.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           },
@@ -958,7 +980,7 @@
             "type": "string"
           },
           "project": {
-            "description": "Project name. Omit for the one you are in.",
+            "description": "Project name.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           }
@@ -989,7 +1011,7 @@
             "type": "string"
           },
           "environment": {
-            "description": "Environment name, e.g. staging. Omit for the one you are in.",
+            "description": "Environment name, e.g. staging.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           },
@@ -999,7 +1021,7 @@
             "type": "integer"
           },
           "project": {
-            "description": "Project name. Omit for the one you are in.",
+            "description": "Project name.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           }
@@ -1022,7 +1044,7 @@
         "additionalProperties": false,
         "properties": {
           "environment": {
-            "description": "Environment name, e.g. staging. Omit for the one you are in.",
+            "description": "Environment name, e.g. staging.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           },
@@ -1042,7 +1064,7 @@
             "type": "string"
           },
           "project": {
-            "description": "Project name. Omit for the one you are in.",
+            "description": "Project name.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           },
@@ -1078,7 +1100,7 @@
         "additionalProperties": false,
         "properties": {
           "environment": {
-            "description": "Environment name, e.g. staging. Omit for the one you are in.",
+            "description": "Environment name, e.g. staging.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           },
@@ -1088,7 +1110,7 @@
             "type": "integer"
           },
           "project": {
-            "description": "Project name. Omit for the one you are in.",
+            "description": "Project name.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           },
@@ -1132,7 +1154,7 @@
         "additionalProperties": false,
         "properties": {
           "environment": {
-            "description": "Environment name, e.g. staging. Omit for the one you are in.",
+            "description": "Environment name, e.g. staging.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           },
@@ -1142,7 +1164,7 @@
             "type": "integer"
           },
           "project": {
-            "description": "Project name. Omit for the one you are in.",
+            "description": "Project name.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           },
@@ -1174,7 +1196,7 @@
             "type": "string"
           },
           "environment": {
-            "description": "Environment name, e.g. staging. Omit for the one you are in.",
+            "description": "Environment name, e.g. staging.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           },
@@ -1205,7 +1227,7 @@
             "type": "string"
           },
           "project": {
-            "description": "Project name. Omit for the one you are in.",
+            "description": "Project name.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           },
@@ -1285,7 +1307,7 @@
             "type": "string"
           },
           "environment": {
-            "description": "Environment name, e.g. staging. Omit for the one you are in.",
+            "description": "Environment name, e.g. staging.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           },
@@ -1300,7 +1322,7 @@
             "type": "string"
           },
           "project": {
-            "description": "Project name. Omit for the one you are in.",
+            "description": "Project name.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           }
@@ -1323,12 +1345,12 @@
         "additionalProperties": false,
         "properties": {
           "environment": {
-            "description": "Environment name, e.g. staging. Omit for the one you are in.",
+            "description": "Environment name, e.g. staging.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           },
           "project": {
-            "description": "Project name. Omit for the one you are in.",
+            "description": "Project name.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           }
@@ -1353,7 +1375,7 @@
             "type": "string"
           },
           "environment": {
-            "description": "Environment name, e.g. staging. Omit for the one you are in.",
+            "description": "Environment name, e.g. staging.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           },
@@ -1363,7 +1385,7 @@
             "type": "integer"
           },
           "project": {
-            "description": "Project name. Omit for the one you are in.",
+            "description": "Project name.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           },
@@ -1446,12 +1468,12 @@
             "type": "array"
           },
           "environment": {
-            "description": "Environment name, e.g. staging. Omit for the one you are in.",
+            "description": "Environment name, e.g. staging.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           },
           "project": {
-            "description": "Project name. Omit for the one you are in.",
+            "description": "Project name.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           },
@@ -1483,7 +1505,7 @@
             "type": "array"
           },
           "environment": {
-            "description": "Environment name, e.g. staging. Omit for the one you are in.",
+            "description": "Environment name, e.g. staging.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           },
@@ -1493,7 +1515,7 @@
             "type": "string"
           },
           "project": {
-            "description": "Project name. Omit for the one you are in.",
+            "description": "Project name.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           },
@@ -1568,12 +1590,12 @@
             "type": "integer"
           },
           "environment": {
-            "description": "Environment name, e.g. staging. Omit for the one you are in.",
+            "description": "Environment name, e.g. staging.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           },
           "project": {
-            "description": "Project name. Omit for the one you are in.",
+            "description": "Project name.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           },
@@ -1668,12 +1690,12 @@
             "type": "integer"
           },
           "environment": {
-            "description": "Environment name, e.g. staging. Omit for the one you are in.",
+            "description": "Environment name, e.g. staging.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           },
           "project": {
-            "description": "Project name. Omit for the one you are in.",
+            "description": "Project name.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           }
@@ -1697,7 +1719,7 @@
             "type": "boolean"
           },
           "environment": {
-            "description": "Environment name, e.g. staging. Omit for the one you are in.",
+            "description": "Environment name, e.g. staging.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           },
@@ -1707,7 +1729,7 @@
             "type": "integer"
           },
           "project": {
-            "description": "Project name. Omit for the one you are in.",
+            "description": "Project name.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           },
@@ -1735,12 +1757,12 @@
         "additionalProperties": false,
         "properties": {
           "environment": {
-            "description": "Environment name, e.g. staging. Omit for the one you are in.",
+            "description": "Environment name, e.g. staging.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           },
           "project": {
-            "description": "Project name. Omit for the one you are in.",
+            "description": "Project name.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           }
