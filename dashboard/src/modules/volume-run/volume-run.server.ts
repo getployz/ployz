@@ -510,20 +510,16 @@ export const holdDeployLane = Effect.fn("VolumeRun.holdDeployLane")(function* (c
   );
 });
 
-/** The Machines the Cluster names now; none when it does not answer. */
+/** The Machines the Cluster names now. */
 export const namedMachines = Effect.fn("VolumeRun.namedMachines")(function* (organizationId: string) {
-  const frame = yield* openSession(organizationId).pipe(
-    Effect.flatMap((session) => session.watchFirstFrame(5_000)),
-    Effect.option,
-  );
-  return Option.match(frame, {
-    onNone: (): MachineRef[] => [],
-    onSome: ({ machines }) => machines.map(({ machine }) => ({ id: machine.id, name: machine.name })),
-  });
+  const session = yield* openSession(organizationId);
+  const { machines } = yield* session.watchFirstFrame(5_000);
+  return machines.map(({ machine }): MachineRef => ({ id: machine.id, name: machine.name }));
 }, Effect.scoped);
 
+/** `machine` with the name the Cluster gives it, or none when the Cluster does not answer. */
 export const machineNamed = Effect.fn("VolumeRun.machineNamed")(function* (organizationId: string, machine: MachineId) {
-  const named = (yield* namedMachines(organizationId)).find((entry) => entry.id === machine);
+  const named = (yield* namedMachines(organizationId).pipe(Effect.orElseSucceed(() => []))).find((entry) => entry.id === machine);
   return { id: machine, name: named?.name ?? null };
 });
 
@@ -1209,15 +1205,21 @@ const configVolumeNames = Effect.fn("VolumeRun.configVolumeNames")(function* (or
 
 export type CopyObserver = (organizationId: string) => Effect.Effect<CopyObservation["copies"], unknown, Database | SecretEncryption>;
 
-export const observeOrganization = (organizationId: string) =>
-  Effect.gen(function* () {
-    const loaded = yield* loadOrganizationConnections(organizationId);
-    if (loaded.kind !== "ready" || loaded.connections.length === 0) return { copies: [], unanswered: [] } satisfies CopyObservation;
-    return yield* observeVolumeCopies(loaded.connections);
-  });
+class ClusterNotPaired extends Data.TaggedError("ClusterNotPaired")<{ readonly organizationId: string }> {}
+
+/** Every copy the Cluster's Servers report, failing when Cloud holds no pairing to ask them through. */
+export const observeOrganization = Effect.fn("VolumeRun.observeOrganization")(function* (organizationId: string) {
+  const loaded = yield* loadOrganizationConnections(organizationId);
+  if (loaded.kind !== "ready") return yield* new ClusterNotPaired({ organizationId });
+  if (loaded.connections.length === 0) return { copies: [], unanswered: [] } satisfies CopyObservation;
+  return yield* observeVolumeCopies(loaded.connections);
+});
 
 export const observeOrganizationCopies: CopyObserver = (organizationId) =>
-  observeOrganization(organizationId).pipe(Effect.map((observed) => observed.copies));
+  observeOrganization(organizationId).pipe(
+    Effect.map((observed) => observed.copies),
+    Effect.catchTag("ClusterNotPaired", () => Effect.succeed([])),
+  );
 
 function unheldRootNames(copies: CopyObservation["copies"], configNames: ReadonlySet<string>): string[] {
   const roots = copies.filter((copy) => copy.role !== "slot" && !configNames.has(copy.name));

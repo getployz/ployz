@@ -154,13 +154,14 @@ export const removeMachineActivity = Effect.fn("MachineRemoval.remove")(
   },
 );
 
+/** Fails rather than read blind: a Volume this Server writes but the read missed keeps its lanes bound for a gone Server. */
 export const observeLeavingServerActivity = Effect.fn("MachineRemoval.observeLeaving")(function* (input: {
   organizationId: string; machineId: MachineId;
 }, observe: typeof observeOrganization = observeOrganization) {
   const id = input.machineId;
   const servers = yield* namedMachines(input.organizationId);
   const machine = { id, name: servers.find((server) => server.id === id)?.name ?? null };
-  const observed = yield* observe(input.organizationId).pipe(Effect.orElseSucceed(() => ({ copies: [], unanswered: [] })));
+  const observed = yield* observe(input.organizationId);
   const writes = observed.copies.flatMap((copy) => copy.machine_id === id && copy.role === "writer" ? [copy.name] : []);
   return { machine, writes };
 });
