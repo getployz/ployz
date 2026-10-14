@@ -272,6 +272,42 @@ async fn tail_logs_reads_each_target_from_its_live_source_without_the_observer()
 }
 
 #[tokio::test]
+async fn a_pulled_image_answers_only_after_docker_holds_it() {
+    use axum::http::Method;
+    let (data_dir, _store, service, fake) = fake_docker_service("ployzd-pull-image").await;
+    let image = "example.test/api:1";
+    service
+        .pull_image(Request::new(
+            op::PullImage::into_request(ployz_core::PullImageRequest {
+                image: image.into(),
+                policy: ployz_core::PullPolicy::Always,
+                registry_auth: None,
+            })
+            .encode()
+            .unwrap(),
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+        .decode_response()
+        .unwrap()
+        .decode::<op::PullImage>()
+        .unwrap();
+    let requests = fake.requests.lock().unwrap().clone();
+    let pulled = requests
+        .iter()
+        .position(|(method, path)| *method == Method::POST && path.ends_with("/images/create"));
+    let inspected = requests.iter().rposition(|(method, path)| {
+        *method == Method::GET && path.ends_with(&format!("/images/{image}/json"))
+    });
+    assert!(
+        matches!((pulled, inspected), (Some(pulled), Some(inspected)) if pulled < inspected),
+        "{requests:?}"
+    );
+    std::fs::remove_dir_all(data_dir).unwrap();
+}
+
+#[tokio::test]
 async fn keyed_creation_replays_conflicts_and_obeys_new_work_admission() {
     use serde_json::json;
     #[derive(Clone)]
@@ -1482,6 +1518,29 @@ mod ensure_container {
         assert!(
             later.iter().all(|(method, _)| *method == Method::GET),
             "a resend only observes: {later:?}"
+        );
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture edits")]
+    async fn a_prepared_image_is_never_pulled_again_at_creation() {
+        let (data_dir, _store, service, fake) = fake_docker_service("ployzd-ensure-prepared").await;
+        let mut spec = spec("example.test/api:1");
+        spec["container"]["pull_policy"] = json!("always");
+        let pulls =
+            |fake: &FakeDocker| ends_with(&requests(fake), Method::POST, "/images/create").count();
+
+        let mut prepared = run_new("k1", spec.clone());
+        prepared["want"]["container"]["new"]["image_prepared"] = json!(true);
+        present(&ensure(&service, prepared).await);
+        assert_eq!(pulls(&fake), 0);
+
+        present(&ensure(&service, run_new("k2", spec)).await);
+        assert_eq!(
+            pulls(&fake),
+            1,
+            "an unprepared image pulls under its policy"
         );
         std::fs::remove_dir_all(data_dir).unwrap();
     }

@@ -196,6 +196,8 @@ async fn fake_docker(
             },
             |container| (StatusCode::OK, container),
         )
+    } else if method == Method::POST && path.ends_with("/images/create") {
+        (StatusCode::OK, serde_json::json!({}))
     } else if method == Method::GET && path.contains("/images/") && path.ends_with("/json") {
         if let Some(barrier) = &fake.image_barrier {
             barrier.wait().await;

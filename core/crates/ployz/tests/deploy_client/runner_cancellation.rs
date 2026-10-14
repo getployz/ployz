@@ -165,5 +165,25 @@ async fn a_run_another_runner_takes_over_mid_execution_records_it_interrupted() 
         Some("interrupted"),
         "{summary}"
     );
+    assert_eq!(
+        summary.get("completed"),
+        Some(&serde_json::json!(0)),
+        "{summary}"
+    );
+    assert_eq!(
+        summary.get("unexecuted"),
+        Some(&serde_json::json!(1)),
+        "{summary}"
+    );
+    let view = store
+        .read(&actor, &ployz_store::DeploymentQuery { id: id.clone() })
+        .unwrap();
+    assert!(
+        view.nodes
+            .iter()
+            .all(|node| node.outcome == ployz_store::NodeStatus::NotAttempted),
+        "an interrupted run confirms nothing into Applied State: {:?}",
+        view.nodes
+    );
     server.abort();
 }

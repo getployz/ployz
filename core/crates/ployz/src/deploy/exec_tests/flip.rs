@@ -911,3 +911,143 @@ async fn a_pin_that_loses_to_another_deploy_stops_with_nothing_touched() {
     assert_eq!(client.pointers.lock().unwrap().get(&api()), Some(&winner));
     client.assert_done();
 }
+
+fn not_routed(outcome: &DeployOutcome<ExecutionError>) -> bool {
+    matches!(
+        outcome,
+        DeployOutcome::Failed {
+            completed,
+            failed: FailedOperation::Operation {
+                error: ExecutionError::DependencyHealth {
+                    failure: DependencyHealthFailure::NotRouted { .. },
+                    ..
+                },
+                ..
+            },
+            ..
+        } if completed.is_empty()
+    )
+}
+
+/// A retry over the pointer store an earlier attempt left behind.
+fn retry(
+    earlier: &Scripted,
+    observations: Vec<ContainerObservation>,
+    unrouted_pin: bool,
+    steps: Vec<Step>,
+) -> Scripted {
+    Scripted {
+        observations: Some(observations),
+        unrouted_pin,
+        pointers: Mutex::new(earlier.pointers.lock().unwrap().clone()),
+        ..Scripted::new(steps)
+    }
+}
+
+/// A pin that timed out unrouted stays in the store. Each retry waits on that
+/// row and starts nothing until every Machine routes it.
+async fn retry_after_an_unrouted_pin(
+    plan: &[DeployOperation],
+    observations: Vec<ContainerObservation>,
+    start: Step,
+) {
+    let first = retry(
+        &Scripted::new(Vec::new()),
+        observations.clone(),
+        true,
+        Vec::new(),
+    );
+    let outcome = execute_with(plan, &first, &CancellationToken::new()).await;
+    assert!(not_routed(&outcome), "{outcome:?}");
+    assert_eq!(first.pins().len(), 1);
+
+    let unrouted = retry(&first, observations.clone(), true, Vec::new());
+    let outcome = execute_with(plan, &unrouted, &CancellationToken::new()).await;
+    assert!(not_routed(&outcome), "{outcome:?}");
+    assert!(unrouted.publications.lock().unwrap().is_empty());
+
+    let routed = retry(&first, observations, false, vec![start]);
+    let outcome = execute_with(plan, &routed, &CancellationToken::new()).await;
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    assert!(routed.pins().is_empty());
+    assert_eq!(routed.publications().len(), 1);
+    routed.assert_done();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_retry_over_an_unrouted_empty_pin_starts_nothing_until_it_is_routed() {
+    let machine = machine('1');
+    retry_after_an_unrouted_pin(
+        &[run(&machine, spec(None, None, None), true)],
+        Vec::new(),
+        created(
+            Call::Run(machine, ContainerKind::ServiceContainer),
+            &container('b'),
+        ),
+    )
+    .await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_retry_over_an_unrouted_labelled_pin_starts_nothing_until_it_is_routed() {
+    let machine = machine('1');
+    let old = container('a');
+    retry_after_an_unrouted_pin(
+        &[global_replacement(&machine, &old, UpdateOrder::StartFirst)],
+        vec![serving(&machine, &old, Some("dep-x"))],
+        created(
+            Call::Run(machine, ContainerKind::ServiceContainer),
+            &container('b'),
+        ),
+    )
+    .await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_join_starts_once_every_dependency_it_needs_is_routed() {
+    let machine = machine('1');
+    let named = |service: &str| {
+        let mut named = spec(None, None, None);
+        named.name = ServiceName::parse(service).unwrap();
+        run(&machine, named, true)
+    };
+    let plan = vec![named("db"), named("cache"), named("app")];
+    let client = Scripted::new(
+        ['a', 'b', 'c']
+            .map(|id| {
+                created(
+                    Call::Run(machine, ContainerKind::ServiceContainer),
+                    &container(id),
+                )
+            })
+            .into(),
+    );
+    let group =
+        |service: &str, dependencies: &[&str], task| crate::deploy::schedule::ServiceGroup {
+            service: Some(ServiceName::parse(service).unwrap()),
+            dependencies: dependencies
+                .iter()
+                .map(|dependency| ServiceName::parse(*dependency).unwrap())
+                .collect(),
+            steps: vec![crate::deploy::schedule::Step::Parallel(vec![task])],
+            publish: true,
+            kept: Vec::new(),
+        };
+    let groups = vec![
+        group("db", &[], 0),
+        group("cache", &[], 1),
+        group("app", &["db", "cache"], 2),
+    ];
+
+    let outcome = execute_groups(&plan, groups, &client).await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(client.publications().len(), 3);
+    client.assert_done();
+}

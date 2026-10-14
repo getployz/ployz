@@ -655,7 +655,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                     let spec = schedule.group(group).clone();
                     let new = started.get(&group).cloned().unwrap_or_default();
                     let old = replaced.get(&group).cloned().unwrap_or_default();
-                    let current = admitted.get(&group).cloned().flatten();
+                    let current = admitted.get(&group).cloned();
                     Either::Right(async move {
                         let result = if cancellation.is_cancelled() {
                             Err(ExecutionError::Cancelled)
@@ -785,8 +785,13 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
             }
             None => {
                 let expired = blocked_since.is_some_and(|since| since.elapsed() >= ACK_WAIT);
+                // A task waits on every dependency it lacks; it fails once.
+                let mut failed = BTreeSet::new();
                 if cancellation.is_cancelled() || expired {
                     for (task, dependency) in blocked {
+                        if !failed.insert(task) {
+                            continue;
+                        }
                         let error = if cancellation.is_cancelled() {
                             ExecutionError::Cancelled
                         } else {
@@ -833,9 +838,9 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                             }
                             Err(error) => {
                                 let error = machine_error(MachineAction::ReadServingPointer, error);
-                                for (task, _) in
-                                    blocked.iter().filter(|(_, blocker)| blocker == service)
-                                {
+                                for (task, _) in blocked.iter().filter(|(task, blocker)| {
+                                    blocker == service && failed.insert(*task)
+                                }) {
                                     progress.fail(*task, error.clone());
                                     stop.get_or_insert(Stop::Failed {
                                         index: *task,
@@ -932,14 +937,14 @@ fn retain_unpointed(started: &mut Vec<(MachineId, ContainerId)>, pointer: Option
 /// The row each later publish of a Service replaces, or Superseded when
 /// another Deploy wrote one first.
 enum Pin {
-    Admitted(Option<ServingPointer>),
+    Admitted(ServingPointer),
     Superseded,
 }
 
-/// With no pointer row, names what the Service serves now, even nothing, and
-/// waits until every Machine routes that pin before any start, so no new copy
-/// serves before its flip. Unlabelled Containers get a Deploy id of this
-/// run's making.
+/// Waits until every Machine routes the Service's pointer row before any
+/// start, so no new copy serves before its flip. With no row, first pins what
+/// the Service serves now, even nothing; unlabelled Containers get a Deploy id
+/// of this run's making. A row that changes while waiting is Superseded.
 async fn pin_reality<C: MachineOperations>(
     client: &C,
     run: &DeploymentLogId,
@@ -951,9 +956,46 @@ async fn pin_reality<C: MachineOperations>(
         .read_pointer(service)
         .await
         .map_err(|error| machine_error(MachineAction::ReadServingPointer, error))?;
-    if read.pointer.is_some() {
-        return Ok(Pin::Admitted(read.pointer));
+    let pointer = match read.pointer {
+        Some(pointer) if read.all_routed => return Ok(Pin::Admitted(pointer)),
+        Some(pointer) => pointer,
+        None => match publish_pin(client, run, service).await? {
+            Some(pointer) => pointer,
+            None => return Ok(Pin::Superseded),
+        },
+    };
+    let since = Instant::now();
+    loop {
+        let read = client
+            .read_pointer(service)
+            .await
+            .map_err(|error| machine_error(MachineAction::ReadServingPointer, error))?;
+        if read.pointer.as_ref() != Some(&pointer) {
+            return Ok(Pin::Superseded);
+        }
+        if read.all_routed {
+            return Ok(Pin::Admitted(pointer));
+        }
+        if cancellation.is_cancelled() {
+            return Err(ExecutionError::Cancelled);
+        }
+        if since.elapsed() >= ACK_WAIT {
+            return Err(ExecutionError::DependencyHealth {
+                dependency: service.clone(),
+                failure: DependencyHealthFailure::NotRouted { machine_id },
+            });
+        }
+        ack_tick(cancellation, Some(since)).await;
     }
+}
+
+/// Publishes a pin of the containers serving now, or returns `None` when
+/// another writer created the row first.
+async fn publish_pin<C: MachineOperations>(
+    client: &C,
+    run: &DeploymentLogId,
+    service: &QualifiedService,
+) -> Result<Option<ServingPointer>, ExecutionError> {
     let observed = client
         .service_containers(service)
         .await
@@ -986,32 +1028,10 @@ async fn pin_reality<C: MachineOperations>(
         })
         .await
         .map_err(|error| machine_error(MachineAction::PublishServingPointer, error))?;
-    if let ServingPointerPublication::Superseded { .. } = publication {
-        return Ok(Pin::Superseded);
-    }
-    let since = Instant::now();
-    loop {
-        let read = client
-            .read_pointer(service)
-            .await
-            .map_err(|error| machine_error(MachineAction::ReadServingPointer, error))?;
-        if read.pointer.as_ref() != Some(&pointer) {
-            return Ok(Pin::Superseded);
-        }
-        if read.all_routed {
-            return Ok(Pin::Admitted(Some(pointer)));
-        }
-        if cancellation.is_cancelled() {
-            return Err(ExecutionError::Cancelled);
-        }
-        if since.elapsed() >= ACK_WAIT {
-            return Err(ExecutionError::DependencyHealth {
-                dependency: service.clone(),
-                failure: DependencyHealthFailure::NotRouted { machine_id },
-            });
-        }
-        ack_tick(cancellation, Some(since)).await;
-    }
+    Ok(match publication {
+        ServingPointerPublication::Published => Some(pointer),
+        ServingPointerPublication::Superseded { .. } => None,
+    })
 }
 
 enum Done {

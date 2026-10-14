@@ -225,9 +225,10 @@ impl Schedule {
                 Phase::Waiting | Phase::Publishing | Phase::Done | Phase::Failed => Vec::new(),
             };
             for task in pending {
-                if let Some(service) = self.missing_ack(group, task) {
-                    blocked.push((task, service));
-                }
+                blocked.extend(
+                    self.missing_acks(group, task)
+                        .map(|service| (task, service.clone())),
+                );
             }
         }
         blocked
@@ -308,7 +309,12 @@ impl Schedule {
                 } = self.task(task);
                 let window = windows.entry(*machine).or_insert(0);
                 let room = !*starts || *window < MACHINE_WINDOW;
-                if room && self.missing_ack(&self.slot(group).group, task).is_none() {
+                if room
+                    && self
+                        .missing_acks(&self.slot(group).group, task)
+                        .next()
+                        .is_none()
+                {
                     if *starts {
                         *window += 1;
                         self.starting.insert(task);
@@ -399,27 +405,27 @@ impl Schedule {
             })
     }
 
-    /// The published dependency `task` still waits on, if any. A new Container
-    /// needs its dependencies routable where it runs; removing an old copy
-    /// needs every Machine routing past it.
-    fn missing_ack(&self, group: &ServiceGroup, task: usize) -> Option<ServiceName> {
+    /// Every published dependency `task` still waits on. A new Container needs
+    /// its dependencies routable where it runs; removing an old copy needs
+    /// every Machine routing past it.
+    fn missing_acks<'a>(
+        &'a self,
+        group: &'a ServiceGroup,
+        task: usize,
+    ) -> impl Iterator<Item = &'a ServiceName> {
         let Task {
             machine,
             starts,
             unroutes,
         } = self.task(task);
-        group
-            .dependencies
-            .iter()
-            .find(|dependency| {
-                self.published.contains(*dependency)
-                    && if *unroutes {
-                        !self.routed.contains(*dependency)
-                    } else {
-                        *starts && !self.acked.contains(&((*dependency).clone(), *machine))
-                    }
-            })
-            .cloned()
+        group.dependencies.iter().filter(move |dependency| {
+            self.published.contains(*dependency)
+                && if *unroutes {
+                    !self.routed.contains(*dependency)
+                } else {
+                    *starts && !self.acked.contains(&((*dependency).clone(), *machine))
+                }
+        })
     }
 }
 
@@ -717,6 +723,35 @@ mod tests {
         );
         assert_eq!(schedule.blocked_on_acks(), vec![(2, name("db"))]);
         schedule.apply(ack("db", '1'));
+        assert_eq!(starts(&mut schedule), vec![2]);
+    }
+
+    #[test]
+    fn a_join_reads_every_dependency_it_lacks_in_one_round() {
+        let mut schedule = Schedule::new(
+            vec![
+                group("db", &[], vec![Step::Parallel(vec![0])]),
+                group("cache", &[], vec![Step::Parallel(vec![1])]),
+                group("app", &["db", "cache"], vec![Step::Parallel(vec![2])]),
+            ],
+            vec![start('1'), start('1'), start('1')],
+        );
+        assert_eq!(starts(&mut schedule), vec![0, 1]);
+        schedule.apply(Event::Completed(0));
+        schedule.apply(Event::Completed(1));
+        assert_eq!(publishes(&mut schedule), vec![0, 1]);
+        schedule.apply(Event::Published(0));
+        schedule.apply(Event::Published(1));
+        assert_eq!(
+            schedule.blocked_on_acks(),
+            vec![(2, name("db")), (2, name("cache"))]
+        );
+        for (_, service) in schedule.blocked_on_acks() {
+            schedule.apply(Event::Acked {
+                service,
+                machine: machine('1'),
+            });
+        }
         assert_eq!(starts(&mut schedule), vec![2]);
     }
 
