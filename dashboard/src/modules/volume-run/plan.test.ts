@@ -358,7 +358,7 @@ function keptCut(members: readonly Member[]) {
     return be - ae || bs - as || a.machine.name.localeCompare(b.machine.name);
   });
   if (kept === undefined) throw new Error("no cut to keep");
-  return kept.machine.name;
+  return kept;
 }
 
 function nextStep(message: string) {
@@ -368,7 +368,13 @@ function nextStep(message: string) {
   ].join("")).exec(message);
   if (step === null) throw new Error(`no step in: ${message}`);
   const [, cuts, stopped, removed, released, moved, to] = step;
-  return { about: (cuts ?? stopped ?? "").split(" and "), gone: removed?.split(" and ") ?? [], verb: released ?? moved, to };
+  return {
+    stem: cuts === undefined ? "stopped" : "cuts",
+    about: (cuts ?? stopped ?? "").split(" and ").sort(),
+    gone: removed?.split(" and ").sort() ?? [],
+    verb: released ?? moved,
+    to,
+  };
 }
 
 describe("read the next step a refusal names", () => {
@@ -380,7 +386,7 @@ describe("read the next step a refusal names", () => {
     ["a command with no ployz prefix in the first clause", cuts, "so release cannot", "so volume release data cannot"],
     ["a tab after ployz in the first clause", cuts, first, "ployz\tvolume release data"],
     ["a capitalized command as the first clause", cuts, first, "Ployz volume release data first"],
-    ["a first clause the planner does not print", stopped, "on fsn-2 stopped before its first snapshot", "is mid-run"],
+    ["the mid-run first clause, which follow does not read", stopped, "on fsn-2 stopped before its first snapshot", "is mid-run"],
     ["a target on a release", cuts, "release data", "release data --to fsn-9"],
     ["a move with no target", stopped, " --to fsn-3", ""],
     ["text after the step", cuts, "release data", "release data stops it"],
@@ -395,19 +401,26 @@ describe("read the next step a refusal names", () => {
 function follow(input: PlanInput, members: readonly Member[]) {
   const planned = planFromCopies(input, members);
   if (planned.ok) throw new Error(`planned ${planned.phase.kind}, not a refusal`);
-  const { about, gone, verb, to } = nextStep(planned.refusal.message);
   const kept = keptCut(members);
+  const copy = kept.answered ? kept.view.copy : null;
+  const cutting = named(members, "cutting");
   const slots = named(members, "mirror");
-  expect([...about].sort()).toEqual(named(members, "cutting"));
-  expect([...gone].sort()).toEqual([...named(members, "cutting").filter((name) => name !== kept), ...(verb === "move" ? slots.slice(1) : [])].sort());
-  const left = members.filter((each) => !gone.includes(each.machine.name));
+  const verb = copy?.kind === "root" && copy.newest !== null ? "release" : "move";
+  const expected = {
+    stem: cutting.length === 1 ? "stopped" : "cuts",
+    about: cutting,
+    gone: [...cutting.filter((name) => name !== kept.machine.name), ...(verb === "move" ? slots.slice(1) : [])].sort(),
+    verb,
+    to: verb === "move" ? (slots[0] ?? "<another server>") : undefined,
+  };
+  expect(nextStep(planned.refusal.message)).toEqual(expected);
+  const left = members.filter((each) => !expected.gone.includes(each.machine.name));
   if (verb === "release") {
-    expect(outcome(release, left)).toBe(`release cut ${kept}`);
+    expect(outcome(release, left)).toBe(`release cut ${kept.machine.name}`);
     return;
   }
-  expect(to).toBe(slots[0] ?? "<another server>");
   const target = slots[0] ?? left.find((each) => roleOf(each) === "empty")?.machine.name ?? "no empty Server";
-  expect(outcome(move(target), left)).toBe(`move ${kept}->${target} at cut`);
+  expect(outcome(move(target), left)).toBe(`move ${kept.machine.name}->${target} at cut`);
   if (slots.length > 0) expect(outcome(move(named(left, "empty")[0] ?? "no empty Server"), left)).toBe("refuse second_mirror");
 }
 
