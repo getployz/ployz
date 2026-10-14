@@ -191,10 +191,11 @@ it("lists Settings' sections under it in the rail, and on phones under the top b
   expect(within(rail).getByRole("link", { name: "Environment" }).getAttribute("aria-current")).toBeNull();
 });
 
-it("holds only organization switching, Theme, Home and Log out in the account menu, and applies a theme choice", async () => {
+it("holds only Account, organization switching, Theme, Home and Log out in the account menu, and applies a theme choice", async () => {
   const { rail } = await show();
   const menu = await openAccountMenu(rail);
-  expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Switch organization", "Home", "Log out"]);
+  expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Account", "Switch organization", "Home", "Log out"]);
+  expect(within(menu).getByRole("menuitem", { name: "Account" }).getAttribute("href")).toBe("/cloud/account");
   expect(within(menu).getByRole("menuitem", { name: "Home" }).getAttribute("href")).toBe("/home");
   expect(within(menu).getAllByRole("menuitemradio").map((item) => item.textContent)).toEqual(["System", "Light", "Dark"]);
   expect(screen.getAllByText("test@example.com").length).toBeGreaterThan(0);

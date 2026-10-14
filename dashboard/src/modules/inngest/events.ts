@@ -378,6 +378,11 @@ export function createServerPolicyChangeRequestedEvent(
   return { name: serverPolicyChangeRequestedEvent, data } as const;
 }
 
+/** Keyed by the attempt its request key admits: sending it again for the same act runs nothing new. */
+export function createKeyedServerPolicyChangeRequestedEvent(data: ServerPolicyChangeRequestedEventData, attemptId: string) {
+  return { id: `server-policy-${attemptId}`, name: serverPolicyChangeRequestedEvent, data } as const;
+}
+
 export function createServerUpgradeRequestedEvent(data: ServerUpgradeRequestedEventData) {
   return { name: serverUpgradeRequestedEvent, data } as const;
 }
@@ -579,6 +584,7 @@ export type InngestSendableEvent =
   | ReturnType<typeof createGithubRepositoriesSyncRequestedEvent>
   | ReturnType<typeof createMachineRemoveRequestedEvent>
   | ReturnType<typeof createServerPolicyChangeRequestedEvent>
+  | ReturnType<typeof createKeyedServerPolicyChangeRequestedEvent>
   | ReturnType<typeof createServerUpgradeRequestedEvent>
   | ReturnType<typeof createCliServerUpgradeRequestedEvent>
   | ReturnType<typeof createServerDrainRequestedEvent>
