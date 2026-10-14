@@ -121,7 +121,7 @@ fn pointed_or_fallback<'serving>(
         return pointed;
     }
     let previous = pointer.previous.as_ref().map(DeploymentLogId::as_str);
-    let fallback = others.into_iter().filter(|container| {
+    let (fallback, rest): (Vec<_>, Vec<_>) = others.into_iter().partition(|container| {
         previous.is_some_and(|previous| {
             container
                 .as_observation()
@@ -130,7 +130,28 @@ fn pointed_or_fallback<'serving>(
                 .is_some_and(|deploy| deploy == previous)
         })
     });
-    pointed.into_iter().chain(fallback).collect()
+    let mut selected: Vec<_> = pointed.into_iter().chain(fallback).collect();
+    if !selected
+        .iter()
+        .any(|container| container.traffic_address().is_some())
+    {
+        selected.extend(retiring_as_last_route(rest, pointer));
+    }
+    selected
+}
+
+fn retiring_as_last_route<'serving>(
+    unselected: Vec<&'serving ServiceContainer>,
+    pointer: &ServingPointer,
+) -> Vec<&'serving ServiceContainer> {
+    unselected
+        .into_iter()
+        .filter(|container| {
+            pointer
+                .retiring
+                .contains(&container.as_observation().container_id)
+        })
+        .collect()
 }
 
 /// Machine-local occupancy of one wanted Serving Shape.
@@ -698,6 +719,22 @@ mod tests {
         assert_eq!(
             pointer_routes(&rows, &pointer_of("d3", &['c'], Some("d2"), &['a', 'b'])),
             vec!['b']
+        );
+    }
+
+    #[test]
+    fn a_retiring_container_is_the_last_route_whatever_its_label() {
+        let rows = [('b', 2, HEALTHY)];
+        assert_eq!(
+            pointer_routes(&rows, &pointer_of("d2", &['c'], Some("d1"), &['b'])),
+            vec!['b'],
+            "the pointed copy is gone and no copy carries the previous label"
+        );
+        let rows = [('1', 1, HEALTHY), ('b', 2, HEALTHY)];
+        assert_eq!(
+            pointer_routes(&rows, &pointer_of("d2", &['c'], Some("d1"), &['b'])),
+            vec!['1'],
+            "a routable previous-label copy keeps the retiring one out"
         );
     }
 

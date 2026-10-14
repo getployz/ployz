@@ -1696,9 +1696,12 @@ mod tests {
                 }))
                 .unwrap();
                 local_machine
-                    .ensure_container(ployz_core::ContainerWant::Running {
-                        container: ployz_core::RunTarget::New(new),
-                    })
+                    .ensure_container(
+                        ployz_core::ContainerWant::Running {
+                            container: ployz_core::RunTarget::New(new),
+                        },
+                        false,
+                    )
                     .await
                     .unwrap();
                 let id = ids(&named).difference(&before).next().unwrap().clone();
@@ -1917,11 +1920,14 @@ mod tests {
             let a = machine.a;
             async move {
                 local
-                    .ensure_container(ContainerWant::Stopped {
-                        container: ContainerLocator::Id(a),
-                        drain: Drain::DEFAULT,
-                        stop: StopOptions::default(),
-                    })
+                    .ensure_container(
+                        ContainerWant::Stopped {
+                            container: ContainerLocator::Id(a),
+                            drain: Drain::DEFAULT,
+                            stop: StopOptions::default(),
+                        },
+                        true,
+                    )
                     .await
             }
         });
@@ -2157,11 +2163,14 @@ mod tests {
         machine
             .host
             .machine
-            .ensure_container(ContainerWant::Stopped {
-                container: ContainerLocator::Id(machine.a),
-                drain: Drain::NONE,
-                stop: StopOptions::default(),
-            })
+            .ensure_container(
+                ContainerWant::Stopped {
+                    container: ContainerLocator::Id(machine.a),
+                    drain: Drain::NONE,
+                    stop: StopOptions::default(),
+                },
+                true,
+            )
             .await
             .unwrap();
 

@@ -806,3 +806,57 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
     );
     server.abort();
 }
+
+#[tokio::test]
+async fn a_stop_or_removal_of_a_pointed_copy_fails_the_deploy_with_the_machines_refusal() {
+    let machine = machine('1');
+    for (operation, refused) in [
+        (
+            DeployOperation::StopContainer {
+                machine_id: machine,
+                container_id: container('a'),
+                purpose: ployz_core::StopContainerPurpose::Lifecycle,
+            },
+            Call::Stop(machine, container('a')),
+        ),
+        (
+            DeployOperation::RemoveContainer {
+                machine_id: machine,
+                container_id: container('a'),
+                purpose: ployz_core::RemoveContainerPurpose::Rollout,
+            },
+            Call::Remove(machine, container('a')),
+        ),
+    ] {
+        let client = Scripted::new(vec![refused_as_named(refused)]);
+        let outcome = execute_with(
+            std::slice::from_ref(&operation),
+            &client,
+            &CancellationToken::new(),
+        )
+        .await;
+        let DeployOutcome::Failed {
+            completed,
+            failed:
+                FailedOperation::Operation {
+                    operation: at,
+                    error,
+                },
+            unexecuted,
+        } = &outcome
+        else {
+            panic!("the deploy succeeded without a route: {outcome:?}");
+        };
+        assert!(completed.is_empty());
+        assert!(unexecuted.is_empty());
+        assert_eq!(at, &operation);
+        let ExecutionError::Machine { error, .. } = error else {
+            panic!("{error:?}");
+        };
+        assert_eq!(
+            ployz_core::ContainerRefusalReason::from_details(&error.details),
+            Some(ployz_core::ContainerRefusalReason::NamedByServingPointer)
+        );
+        client.assert_done();
+    }
+}

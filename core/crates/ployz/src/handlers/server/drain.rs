@@ -245,9 +245,7 @@ fn remaining(report: &DrainReport) -> Result<String, String> {
 }
 
 fn still_retiring(report: &DrainReport, service: &QualifiedService) -> bool {
-    report.services.iter().any(|drained| {
-        drained.service == *service && matches!(drained.outcome, DrainOutcome::Moved { .. })
-    })
+    matches!(&report.remaining, Remaining::Observed { retiring, .. } if retiring.contains(service))
 }
 
 #[cfg(test)]

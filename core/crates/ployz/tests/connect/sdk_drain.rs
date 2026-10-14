@@ -60,6 +60,7 @@ async fn an_empty_owned_scope_turns_the_role_off_and_touches_nothing() {
         Remaining::Observed {
             services: vec![QualifiedService::parse("app/api").unwrap()],
             unchosen: vec![QualifiedService::parse("app/api").unwrap()],
+            retiring: vec![],
         }
     );
     // Neither convergence nor Global slot convergence ran: both inspect a Machine first.
@@ -154,6 +155,7 @@ async fn a_services_scope_leaves_an_unlisted_service_in_place() {
         Remaining::Observed {
             services: vec![api, web.clone()],
             unchosen: vec![web],
+            retiring: vec![],
         }
     );
     client.close().await;

@@ -10,7 +10,7 @@
 //! [`crate::sdk::Session::drain_machine`] (Cloud stores the final report).
 
 use ployz_core::{
-    DeploymentLogId, EnvironmentValues, LiveServices, Machine, MachineId, MachineName,
+    ContainerId, DeploymentLogId, EnvironmentValues, LiveServices, Machine, MachineId, MachineName,
     MachineTarget, MachineUpdate, Namespace, QualifiedService, RpcError, RpcErrorCode, ServiceMode,
     ServingPointer, UpdateMachineRequest, op,
 };
@@ -94,18 +94,21 @@ pub struct DrainReport {
 
 impl DrainReport {
     /// Every chosen Service left the Server or moved, the Drain ran to its end, and what
-    /// remains was observed. A moved Service may still be listed: its old copy is retiring
-    /// through its pointer, and ployzd stops it once every Machine stops routing to it.
+    /// remains was observed. A moved Service may still be listed when every copy of it
+    /// there is retiring through its pointer; ployzd stops those once every Machine stops
+    /// routing to them.
     #[must_use]
     pub fn complete(&self) -> bool {
-        let Remaining::Observed { services, .. } = &self.remaining else {
+        let Remaining::Observed {
+            services, retiring, ..
+        } = &self.remaining
+        else {
             return false;
         };
         self.stopped.is_none()
             && self.services.iter().all(|service| {
                 service.outcome.complete()
-                    && (matches!(service.outcome, DrainOutcome::Moved { .. })
-                        || !services.contains(&service.service))
+                    && (!services.contains(&service.service) || retiring.contains(&service.service))
             })
     }
 }
@@ -220,6 +223,10 @@ pub enum Remaining {
         services: Vec<QualifiedService>,
         /// The user Services of `services` that the Drain's scope left alone.
         unchosen: Vec<QualifiedService>,
+        /// The moved Services of `services` whose every Container there is in their
+        /// pointer's retiring set, so ployzd stops them once nothing routes to them.
+        #[serde(default)]
+        retiring: Vec<QualifiedService>,
     },
     /// The Server could not be observed, and why.
     Unobserved { error: String },
@@ -379,8 +386,7 @@ async fn turn_services_off(
 
 /// What a Drain's execution needs from a Cluster.
 trait DrainClient {
-    /// The Services with a Container on `id`, from a fresh observation.
-    async fn still_on(&mut self, id: &MachineId) -> Result<Vec<QualifiedService>, Lost>;
+    async fn still_on(&mut self, id: &MachineId) -> Result<Vec<Listed>, Lost>;
     async fn retire(
         &mut self,
         server: &Machine,
@@ -406,7 +412,7 @@ trait DrainClient {
 }
 
 impl DrainClient for Client {
-    async fn still_on(&mut self, id: &MachineId) -> Result<Vec<QualifiedService>, Lost> {
+    async fn still_on(&mut self, id: &MachineId) -> Result<Vec<Listed>, Lost> {
         let machines = self
             .machines()
             .await
@@ -416,7 +422,7 @@ impl DrainClient for Client {
             .await
             .map_err(|error| Lost::Entry(crate::ui::row(&error)))?;
         observed(&live, id).map_err(Lost::Server)?;
-        Ok(services_on(id, &live))
+        Ok(listed_on(id, &live))
     }
 
     async fn retire(
@@ -521,9 +527,11 @@ async fn execute<C: DrainClient>(
                     // Only a fresh observation that still finds it undoes an acknowledged
                     // retirement; a lost one leaves that to `remaining`.
                     Retirement::Retired => match &still {
-                        Ok(still) if still.contains(&global) => DrainOutcome::NotRetired {
-                            error: format!("still running on {}", server.name),
-                        },
+                        Ok(still) if still.iter().any(|listed| listed.service == global) => {
+                            DrainOutcome::NotRetired {
+                                error: format!("still running on {}", server.name),
+                            }
+                        }
                         Ok(_) | Err(_) => DrainOutcome::Retired,
                     },
                     Retirement::NotRetired(error) => DrainOutcome::NotRetired { error },
@@ -603,20 +611,39 @@ async fn execute<C: DrainClient>(
             rest = after;
         }
     }
-    let remaining = match client.still_on(&server.id).await {
-        Ok(services) => Remaining::Observed {
-            unchosen: services
-                .iter()
-                .filter(|service| !service.namespace.is_reserved() && !scope.includes(service))
-                .cloned()
-                .collect(),
-            services,
-        },
-        Err(Lost::Server(error) | Lost::Entry(error)) => Remaining::Unobserved { error },
-    };
     let Record {
         services, stopped, ..
     } = record;
+    let remaining = match client.still_on(&server.id).await {
+        Ok(listed) => {
+            let moved = |listed: &Listed| {
+                services.iter().any(|drained| {
+                    drained.service == listed.service
+                        && matches!(drained.outcome, DrainOutcome::Moved { .. })
+                })
+            };
+            let mut retiring = Vec::new();
+            for listed in listed.iter().filter(|listed| moved(listed)) {
+                if all_retiring(client, listed).await {
+                    retiring.push(listed.service.clone());
+                }
+            }
+            let services = listed
+                .into_iter()
+                .map(|listed| listed.service)
+                .collect::<Vec<_>>();
+            Remaining::Observed {
+                unchosen: services
+                    .iter()
+                    .filter(|service| !service.namespace.is_reserved() && !scope.includes(service))
+                    .cloned()
+                    .collect(),
+                services,
+                retiring,
+            }
+        }
+        Err(Lost::Server(error) | Lost::Entry(error)) => Remaining::Unobserved { error },
+    };
     DrainReport {
         server,
         services_role,
@@ -691,6 +718,22 @@ impl Record<'_> {
     }
 }
 
+async fn all_retiring<C: DrainClient>(client: &mut C, listed: &Listed) -> bool {
+    match client.pointer(&listed.service).await {
+        Ok(Some(pointer)) => listed
+            .copies
+            .iter()
+            .all(|copy| pointer.retiring.contains(copy)),
+        Ok(None) | Err(_) => false,
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Listed {
+    pub(crate) service: QualifiedService,
+    pub(crate) copies: Vec<ContainerId>,
+}
+
 /// Why a follow-up observation failed: the entry (the Drain stops) or the Server (one
 /// Service's evidence).
 enum Lost {
@@ -727,6 +770,25 @@ pub(crate) fn services_on(
                 .any(|container| container.as_observation().machine_id == *machine_id)
         })
         .map(|service| service.identity)
+        .collect()
+}
+
+fn listed_on(machine_id: &MachineId, live: &LiveServices<RpcError>) -> Vec<Listed> {
+    live.services()
+        .into_iter()
+        .filter_map(|service| {
+            let copies = service
+                .containers
+                .iter()
+                .map(|container| container.as_observation())
+                .filter(|container| container.machine_id == *machine_id)
+                .map(|container| container.container_id)
+                .collect::<Vec<_>>();
+            (!copies.is_empty()).then_some(Listed {
+                service: service.identity,
+                copies,
+            })
+        })
         .collect()
 }
 

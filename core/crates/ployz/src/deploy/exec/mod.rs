@@ -2,12 +2,13 @@ use std::{future::Future, time::Duration};
 
 use ployz_core::{
     AnonymousVolumes, AnswerWhen, ContainerDetails, ContainerId, ContainerKind, ContainerLocator,
-    ContainerNow, ContainerObservation, ContainerRuntimeObservation, ContainerWant, CreationKey,
-    DeployEvent, DeploymentLogId, DockerVolumeId, Drain, ExecutionError, FailedOperation,
-    HEALTH_POLL_INTERVAL, HealthFailure, HealthVerdict, HookFailure, InspectContainerRequest,
-    ListContainersRequest, MachineAction, MachineId, MachineTarget, MembershipObservation,
-    Namespace, NewContainer, OperationPhase, QualifiedService, RemoveVolumeRequest,
-    ResolvedServiceSpec, RpcError, RpcErrorCode, RunTarget, SlotKey, StopOptions, UpdateOrder, op,
+    ContainerNow, ContainerObservation, ContainerRefusalReason, ContainerRuntimeObservation,
+    ContainerWant, CreationKey, DeployEvent, DeploymentLogId, DockerVolumeId, Drain,
+    ExecutionError, FailedOperation, HEALTH_POLL_INTERVAL, HealthFailure, HealthVerdict,
+    HookFailure, InspectContainerRequest, ListContainersRequest, MachineAction, MachineId,
+    MachineTarget, MembershipObservation, Namespace, NewContainer, OperationPhase,
+    QualifiedService, RemoveVolumeRequest, ResolvedServiceSpec, RpcError, RpcErrorCode, RunTarget,
+    SlotKey, StopOptions, UpdateOrder, op,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc::UnboundedSender;
@@ -191,7 +192,7 @@ impl MachineOperations for Client {
             ContainerWant::Stopped { stop, .. } => stop_rpc_timeout(stop.grace_period_seconds, 1),
             ContainerWant::Gone { .. } => None,
         };
-        Client::ensure_settled(self, machine_id, want, timeout).await
+        Client::ensure_settled(self, machine_id, want, timeout, false).await
     }
 
     async fn inspect_container(
@@ -718,9 +719,6 @@ pub(in crate::deploy) enum MoveContainerError {
     },
 }
 
-/// Whether a move may stop or remove its old Container. `move_container` asks
-/// immediately before each destructive request, so a Serving Pointer published
-/// meanwhile keeps the old Container for that pointer's retire path.
 pub(in crate::deploy) trait RemovesOld {
     async fn removes_old(&mut self) -> bool;
 }
@@ -785,16 +783,40 @@ pub(in crate::deploy) async fn move_container<C: MachineOperations>(
             error,
             old_stopped: false,
         })?;
-    if !gate.removes_old().await {
-        return Ok(new);
+    if let Err(error) = remove(&client, from, old, Drain::NONE).await {
+        // The Machine refuses a copy its Serving Pointer named since the stop; that copy
+        // must serve again, as the pointer still routes to it.
+        let old_stopped =
+            !(named_by_serving_pointer(&error) && restart(&client, from, old).await.is_ok());
+        return Err(MoveContainerError::OldNotRemoved { error, old_stopped });
     }
-    remove(&client, from, old, Drain::NONE)
-        .await
-        .map_err(|error| MoveContainerError::OldNotRemoved {
-            error,
-            old_stopped: true,
-        })?;
     Ok(new)
+}
+
+fn named_by_serving_pointer(error: &ExecutionError) -> bool {
+    matches!(
+        error,
+        ExecutionError::Machine { error, .. }
+            if ContainerRefusalReason::from_details(&error.details)
+                == Some(ContainerRefusalReason::NamedByServingPointer)
+    )
+}
+
+async fn restart<C: MachineOperations>(
+    client: &C,
+    machine_id: &MachineId,
+    container_id: &ContainerId,
+) -> Result<(), ExecutionError> {
+    client
+        .ensure_container(
+            machine_id,
+            ContainerWant::Running {
+                container: RunTarget::Existing(ContainerLocator::Id(*container_id)),
+            },
+        )
+        .await
+        .map(|_| ())
+        .map_err(|error| machine_error(MachineAction::StartContainer, error))
 }
 
 #[expect(
@@ -1131,17 +1153,7 @@ async fn restore_old_container<C: MachineOperations>(
     client: &C,
     operation: &ReplacementOperation,
 ) -> RestartAttempt<ExecutionError> {
-    let restored = client
-        .ensure_container(
-            &operation.machine_id,
-            ContainerWant::Running {
-                container: RunTarget::Existing(ContainerLocator::Id(operation.old_container_id)),
-            },
-        )
-        .await
-        .map(|_| ())
-        .map_err(|error| machine_error(MachineAction::StartContainer, error));
-    RestartAttempt::from(restored)
+    RestartAttempt::from(restart(client, &operation.machine_id, &operation.old_container_id).await)
 }
 
 #[expect(

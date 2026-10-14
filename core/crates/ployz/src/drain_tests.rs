@@ -10,7 +10,7 @@ use serde_json::json;
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    DrainClient, DrainOutcome, DrainReport, DrainScope, DrainStop, Lost, MachineRef, Move,
+    DrainClient, DrainOutcome, DrainReport, DrainScope, DrainStop, Listed, Lost, MachineRef, Move,
     MoveFailure, Ready, Remaining, ServiceDrain, ServicesRole, StayReason, execute,
     publish_replacements_past_cancel,
 };
@@ -118,7 +118,7 @@ fn an_outcome_is_flat_on_result() {
 #[derive(Default)]
 struct Scripted {
     retirements: Vec<(QualifiedService, Retirement)>,
-    observations: VecDeque<Result<Vec<QualifiedService>, Lost>>,
+    observations: VecDeque<Result<Vec<Listed>, Lost>>,
     convergences: VecDeque<Converged>,
     /// Cancelled once the first Service converges.
     cancel_after_converge: Option<CancellationToken>,
@@ -131,7 +131,7 @@ struct Scripted {
 }
 
 impl DrainClient for Scripted {
-    async fn still_on(&mut self, _id: &MachineId) -> Result<Vec<QualifiedService>, Lost> {
+    async fn still_on(&mut self, _id: &MachineId) -> Result<Vec<Listed>, Lost> {
         self.observations
             .pop_front()
             .expect("one scripted observation per look")
@@ -276,8 +276,17 @@ fn entry(name: &str, outcome: DrainOutcome) -> (String, DrainOutcome) {
     (format!("app/{name}"), outcome)
 }
 
-fn nothing_left() -> Result<Vec<QualifiedService>, Lost> {
+fn nothing_left() -> Result<Vec<Listed>, Lost> {
     Ok(Vec::new())
+}
+
+/// `service` still on the Server with `copies`, the old copy `'1'` unless given.
+fn listed(service: QualifiedService, copies: &[char]) -> Listed {
+    let copies = if copies.is_empty() { &['1'] } else { copies };
+    Listed {
+        service,
+        copies: copies.iter().map(|id| container(*id)).collect(),
+    }
 }
 
 #[tokio::test]
@@ -355,6 +364,7 @@ async fn cancelled_between_services_keeps_the_moves_made() {
         Remaining::Observed {
             services: Vec::new(),
             unchosen: Vec::new(),
+            retiring: Vec::new(),
         }
     );
     assert!(!report.complete());
@@ -499,7 +509,11 @@ async fn only_a_global_still_observed_undoes_its_retirement() {
 
     let mut client = Scripted {
         retirements: retirements(),
-        observations: [Ok(vec![qualified("probe")]), Ok(vec![qualified("probe")])].into(),
+        observations: [
+            Ok(vec![listed(qualified("probe"), &[])]),
+            Ok(vec![listed(qualified("probe"), &[])]),
+        ]
+        .into(),
         convergences: [Converged::Moved {
             moves: one_move(),
             replaced: one_replaced(),
@@ -532,7 +546,11 @@ async fn only_a_global_still_observed_undoes_its_retirement() {
 async fn a_full_drain_is_complete_and_names_the_user_services_its_scope_left_alone() {
     let blog = QualifiedService::parse("blog/web").unwrap();
     let mut client = Scripted {
-        observations: [Ok(vec![blog.clone(), QualifiedService::system_ingress()])].into(),
+        observations: [Ok(vec![
+            listed(blog.clone(), &[]),
+            listed(QualifiedService::system_ingress(), &[]),
+        ])]
+        .into(),
         convergences: [Converged::Moved {
             moves: one_move(),
             replaced: one_replaced(),
@@ -549,6 +567,7 @@ async fn a_full_drain_is_complete_and_names_the_user_services_its_scope_left_alo
         Remaining::Observed {
             services: vec![blog.clone(), QualifiedService::system_ingress()],
             unchosen: vec![blog],
+            retiring: Vec::new(),
         }
     );
     assert!(report.complete());
@@ -789,7 +808,7 @@ async fn an_old_copy_a_first_pointer_named_before_removal_is_repointed_under_it(
 
 #[tokio::test]
 async fn a_pointed_move_is_complete_while_its_old_copy_retires() {
-    let still_listed = || Ok(vec![qualified("web")]);
+    let still_listed = || Ok(vec![listed(qualified("web"), &['1'])]);
     let mut client = Scripted {
         observations: [still_listed(), still_listed(), nothing_left()].into(),
         convergences: [
@@ -801,7 +820,7 @@ async fn a_pointed_move_is_complete_while_its_old_copy_retires() {
             Converged::NothingToMove,
         ]
         .into(),
-        pointer: Some(pointer('a', &['1'], &[])),
+        pointer: Some(pointer('a', &['9'], &['1'])),
         ..Scripted::default()
     };
     let first = run(&mut client, &[], &["web"], &CancellationToken::new()).await;
@@ -810,6 +829,10 @@ async fn a_pointed_move_is_complete_while_its_old_copy_retires() {
         first.complete(),
         "the old copy retires through its pointer: {first:?}"
     );
+    assert!(matches!(
+        &first.remaining,
+        Remaining::Observed { retiring, .. } if *retiring == [qualified("web")]
+    ));
     let retry = run(&mut client, &[], &["web"], &CancellationToken::new()).await;
     assert_eq!(
         outcomes(&retry),
@@ -821,4 +844,31 @@ async fn a_pointed_move_is_complete_while_its_old_copy_retires() {
     );
     let gone = run(&mut client, &[], &["web"], &CancellationToken::new()).await;
     assert!(gone.complete(), "{gone:?}");
+}
+
+#[tokio::test]
+async fn a_moved_service_with_a_copy_outside_the_retiring_set_is_not_complete() {
+    for pointer in [pointer('b', &['5'], &['1']), pointer('a', &['9'], &['1'])] {
+        let mut client = Scripted {
+            observations: [Ok(vec![listed(qualified("web"), &['1', '5'])])].into(),
+            convergences: [Converged::Moved {
+                moves: one_move(),
+                replaced: one_replaced(),
+            }]
+            .into(),
+            pointer: Some(pointer),
+            ..Scripted::default()
+        };
+        let report = run(&mut client, &[], &["web"], &CancellationToken::new()).await;
+        assert_eq!(outcomes(&report), [entry("web", moved())]);
+        assert_eq!(
+            report.remaining,
+            Remaining::Observed {
+                services: vec![qualified("web")],
+                unchosen: Vec::new(),
+                retiring: Vec::new(),
+            }
+        );
+        assert!(!report.complete(), "{report:?}");
+    }
 }

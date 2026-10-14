@@ -748,7 +748,7 @@ export type ContainerPath = string;
 
 export type ContainerRefusal = { reason: ContainerRefusalReason, message: string, };
 
-export type ContainerRefusalReason = "not_participating" | "not_eligible" | "invalid_ingress" | "slot_occupied" | "image_pull_failed" | "volumes_not_prepared" | "not_found" | "unrecognized";
+export type ContainerRefusalReason = "not_participating" | "not_eligible" | "invalid_ingress" | "slot_occupied" | "image_pull_failed" | "volumes_not_prepared" | "not_found" | "named_by_serving_pointer" | "unrecognized";
 
 export type ContainerReport = { server: MachineName, service: ServiceName, state: ContainerState, exit_code: number | null, health: Health | null,
 /**
@@ -1659,7 +1659,12 @@ machines: Array<Machine>,
  */
 target_versions: { [key in string]: number }, };
 
-export type EnsureContainerRequest = { want: ContainerWant, };
+export type EnsureContainerRequest = { want: ContainerWant,
+/**
+ * A user named this copy for stopping or removal. The Machine then skips
+ * its serving-pointer guard. Drivers never set it.
+ */
+user_named: boolean, };
 
 export type EnsuredContainer = { "status": "ensured", now: ContainerNow,
 /**
@@ -3292,7 +3297,12 @@ services: Array<QualifiedService>,
 /**
  * The user Services of `services` that the Drain's scope left alone.
  */
-unchosen: Array<QualifiedService>, } | { "kind": "unobserved", error: string, };
+unchosen: Array<QualifiedService>,
+/**
+ * The moved Services of `services` whose every Container there is in their
+ * pointer's retiring set, so ployzd stops them once nothing routes to them.
+ */
+retiring: Array<QualifiedService>, } | { "kind": "unobserved", error: string, };
 
 export type Removal = { "removal": "removed", residuals: Array<Residual>, } | { "removal": "removing", id: RemovalId, left: Array<Left>, waiting_on: Array<Waiting>, };
 

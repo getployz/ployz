@@ -342,6 +342,24 @@ async fn an_amendment_joining_without_evidence_is_outdated_and_writes_nothing() 
 }
 
 #[tokio::test]
+async fn an_amendment_under_an_older_deploy_is_outdated_even_with_evidence() {
+    let mut fake = FakeRow::default();
+    *fake.row.lock().unwrap() = Some(pointer('b', &['1'], &[]));
+    let amended = amend_pointer(
+        &mut fake,
+        &service(),
+        &deploy('a'),
+        &CancellationToken::new(),
+        &replacing('2', '1'),
+    )
+    .await
+    .unwrap();
+    assert_eq!(amended, Amendment::Outdated);
+    assert_eq!(*fake.publishes.lock().unwrap(), 0);
+    assert_eq!(*fake.row.lock().unwrap(), Some(pointer('b', &['1'], &[])));
+}
+
+#[tokio::test]
 async fn an_amendment_losing_its_evidence_to_a_newer_row_is_outdated() {
     let mut fake = FakeRow::default();
     *fake.row.lock().unwrap() = Some(pointer('a', &['1'], &[]));

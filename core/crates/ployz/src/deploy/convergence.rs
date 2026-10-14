@@ -570,8 +570,6 @@ async fn move_one(
     }
 }
 
-/// What the old copy's Serving Pointer says about it, from the view the move started with
-/// and then from a read immediately before each stop or removal.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(in crate::deploy) enum AtRemoval {
     /// No pointer names it; the move stops and removes it.
@@ -606,8 +604,6 @@ impl AtRemoval {
     }
 }
 
-/// A move's old copy and its Serving Pointer. Each destructive step asks it again,
-/// and `at_removal` records what the latest read said.
 pub(in crate::deploy) struct OldCopyGate<'a, C> {
     pub(in crate::deploy) at_removal: AtRemoval,
     pub(in crate::deploy) reader: C,

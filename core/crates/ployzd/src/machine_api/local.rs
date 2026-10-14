@@ -312,7 +312,11 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::EnsureContainer>(request)?;
-        finish(self.local.ensure_container(request.want).await)
+        finish(
+            self.local
+                .ensure_container(request.want, request.user_named)
+                .await,
+        )
     }
 
     async fn inspect_storage(

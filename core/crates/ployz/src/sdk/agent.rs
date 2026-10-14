@@ -475,7 +475,7 @@ pub async fn stop_one(
 ) -> Result<(), RpcError> {
     let client = session.client()?;
     session
-        .until_closed(client.ensure_container(
+        .until_closed(client.ensure_container_by_user(
             &machine,
             ContainerWant::Stopped {
                 container: ContainerLocator::Id(container),
@@ -504,7 +504,7 @@ pub async fn remove_one(
 ) -> Result<(), RpcError> {
     let client = session.client()?;
     session
-        .until_closed(client.ensure_container(
+        .until_closed(client.ensure_container_by_user(
             &machine,
             ContainerWant::Gone {
                 container: ContainerLocator::Id(container),

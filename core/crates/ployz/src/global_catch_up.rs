@@ -168,6 +168,7 @@ async fn ensure_retried(
         .call::<op::EnsureContainer>(
             ployz_core::EnsureContainerRequest {
                 want: ContainerWant::Running { container },
+                user_named: false,
             },
             Some(target),
         )

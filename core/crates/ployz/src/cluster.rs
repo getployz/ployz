@@ -1019,7 +1019,20 @@ impl Client {
         want: ContainerWant,
         timeout: Option<Duration>,
     ) -> Result<ContainerNow, RpcError> {
-        self.ensure_settled(machine_id, want, timeout)
+        self.ensure_settled(machine_id, want, timeout, false)
+            .await
+            .map(|(now, _)| now)
+    }
+
+    /// Like [`Self::ensure_container`] for a copy a user named. The Machine stops or
+    /// removes it even while the Service's serving pointer names it.
+    pub async fn ensure_container_by_user(
+        &self,
+        machine_id: &MachineId,
+        want: ContainerWant,
+        timeout: Option<Duration>,
+    ) -> Result<ContainerNow, RpcError> {
+        self.ensure_settled(machine_id, want, timeout, true)
             .await
             .map(|(now, _)| now)
     }
@@ -1029,10 +1042,12 @@ impl Client {
         machine_id: &MachineId,
         want: ContainerWant,
         timeout: Option<Duration>,
+        user_named: bool,
     ) -> Result<(ContainerNow, Option<ployz_core::HealthVerdict>), RpcError> {
-        let payload = op::EnsureContainer::into_request(EnsureContainerRequest { want })
-            .encode()
-            .map_err(|error| rpc_error(ConnectError::Codec(error)))?;
+        let payload =
+            op::EnsureContainer::into_request(EnsureContainerRequest { want, user_named })
+                .encode()
+                .map_err(|error| rpc_error(ConnectError::Codec(error)))?;
         let target = MachineTarget::from(machine_id);
         apply_timeout(timeout, async {
             self.call_once::<op::EnsureContainer>(payload, Some(&target))
@@ -1814,7 +1829,7 @@ async fn change_container_rpc(
         ),
     };
     client
-        .ensure_container(machine_id, want, timeout)
+        .ensure_container_by_user(machine_id, want, timeout)
         .await
         .map(|_| ())
 }

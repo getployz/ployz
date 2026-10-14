@@ -1576,6 +1576,7 @@ fn ensure_container_names_the_want_the_observation_and_the_refusal_on_the_wire()
         "creation_key": "deploy/slot-1"
     });
     let running = EnsureContainerRequest {
+        user_named: false,
         want: ContainerWant::Running {
             container: RunTarget::New(NewContainer {
                 slot: slot.clone(),

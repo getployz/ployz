@@ -145,9 +145,6 @@ impl CopyLister for Client {
     }
 }
 
-/// Retire every copy of `service` on `machine_id` under the pointer-membership contract:
-/// a read immediately before each step decides it. Fails once `wait` passes with a copy
-/// still listed.
 pub(crate) async fn retire_copies<C: CopyLister>(
     client: &mut C,
     machine_id: &MachineId,
@@ -156,15 +153,50 @@ pub(crate) async fn retire_copies<C: CopyLister>(
     cancellation: &CancellationToken,
 ) -> Result<(), RpcError> {
     let deadline = tokio::time::Instant::now() + wait;
+    let still_retiring = || {
+        unavailable(format!(
+            "still retiring after {} s; a Machine has not stopped routing to it",
+            wait.as_secs()
+        ))
+    };
+    let within = |deadline| {
+        if tokio::time::Instant::now() >= deadline {
+            Err(still_retiring())
+        } else {
+            Ok(())
+        }
+    };
+    let mut generation: Option<Generation> = None;
     loop {
+        within(deadline)?;
         let copies = cancellable(cancellation, client.copies_on(machine_id, service)).await?;
+        let generation = generation.get_or_insert_with(|| Generation {
+            copies: copies.clone(),
+            deploy: None,
+        });
+        if let Some(newer) = copies.iter().find(|copy| !generation.copies.contains(copy)) {
+            return Err(replanned(format!(
+                "a newer copy {newer} of {service} appeared"
+            )));
+        }
         let mut waiting = false;
         for copy in copies {
-            match cancellable(cancellation, protection(client, service, &copy)).await? {
+            let protection = cancellable(cancellation, protection(client, service, &copy)).await?;
+            within(deadline)?;
+            match protection {
                 Protection::Unnamed => {
                     cancellable(cancellation, client.remove_copy(machine_id, &copy)).await?;
                 }
                 Protection::Pointed(pointer) => {
+                    let bound = generation
+                        .deploy
+                        .get_or_insert_with(|| pointer.deploy.clone());
+                    if *bound != pointer.deploy {
+                        return Err(replanned(format!(
+                            "a newer deploy {} of {service} published its pointer",
+                            pointer.deploy
+                        )));
+                    }
                     amend_pointer(
                         client,
                         service,
@@ -181,22 +213,35 @@ pub(crate) async fn retire_copies<C: CopyLister>(
         if !waiting {
             return Ok(());
         }
-        if tokio::time::Instant::now() >= deadline {
-            return Err(RpcError {
-                code: RpcErrorCode::Unavailable,
-                message: format!(
-                    "still retiring after {} s; a Machine has not stopped routing to it",
-                    wait.as_secs()
-                ),
-                details: serde_json::Value::Null,
-                cause: Vec::new(),
-            });
-        }
+        let next = (tokio::time::Instant::now() + POINTED_RETIRE_POLL).min(deadline);
         cancellable(cancellation, async {
-            tokio::time::sleep(POINTED_RETIRE_POLL).await;
+            tokio::time::sleep_until(next).await;
             Ok(())
         })
         .await?;
+    }
+}
+
+struct Generation {
+    copies: Vec<ContainerId>,
+    deploy: Option<ployz_core::DeploymentLogId>,
+}
+
+fn replanned(message: String) -> RpcError {
+    RpcError {
+        code: RpcErrorCode::Conflict,
+        message: format!("{message}; observe the Server again"),
+        details: serde_json::Value::Null,
+        cause: Vec::new(),
+    }
+}
+
+fn unavailable(message: String) -> RpcError {
+    RpcError {
+        code: RpcErrorCode::Unavailable,
+        message,
+        details: serde_json::Value::Null,
+        cause: Vec::new(),
     }
 }
 
@@ -211,12 +256,7 @@ async fn cancellable<T>(
 }
 
 fn cancelled() -> RpcError {
-    RpcError {
-        code: RpcErrorCode::Unavailable,
-        message: "the drain was cancelled while it retired".into(),
-        details: serde_json::Value::Null,
-        cause: Vec::new(),
-    }
+    unavailable("the drain was cancelled while it retired".into())
 }
 
 /// Retire `globals` on `server` only: each is stopped and removed there when fresh evidence

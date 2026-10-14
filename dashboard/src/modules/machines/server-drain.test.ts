@@ -25,7 +25,7 @@ const serverNames = new Map([web1, web2, web3].map(({ id, name }) => [id, name])
 const report = (
   services: ServiceDrain[],
   stopped: DrainReport["stopped"] = null,
-  remaining: DrainReport["remaining"] = { kind: "observed", services: [], unchosen: [] },
+  remaining: DrainReport["remaining"] = { kind: "observed", services: [], unchosen: [], retiring: [] },
 ): DrainReport => ({
   server: runtimeWatchMachineFixture(web2.id, web2.name),
   services_role: "turned_off",
@@ -57,11 +57,11 @@ describe("Drain result", () => {
 
   it("counts what it left alone and never says nothing ran here while something does", () => {
     const unowned = ["left-behind/old", "legacy/cron"];
-    const left: DrainReport["remaining"] = { kind: "observed", services: [...unowned, "ployz-system/dns"], unchosen: unowned };
+    const left: DrainReport["remaining"] = { kind: "observed", services: [...unowned, "ployz-system/dns"], unchosen: unowned, retiring: [] };
     expect(drainSummary(report([], null, left), "web-2")).toBe("2 left alone");
-    const stayed: DrainReport["remaining"] = { kind: "observed", services: ["left-behind/old", "shop/postgres"], unchosen: ["left-behind/old"] };
+    const stayed: DrainReport["remaining"] = { kind: "observed", services: ["left-behind/old", "shop/postgres"], unchosen: ["left-behind/old"], retiring: [] };
     expect(drainSummary(report([moved, volume], null, stayed), "web-2")).toBe("1 moved, 1 stayed, 1 left alone");
-    const system: DrainReport["remaining"] = { kind: "observed", services: ["ployz-system/dns"], unchosen: [] };
+    const system: DrainReport["remaining"] = { kind: "observed", services: ["ployz-system/dns"], unchosen: [], retiring: [] };
     expect(drainSummary(report([], null, system), "web-2")).toBe("Nothing was running here");
   });
 

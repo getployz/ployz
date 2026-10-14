@@ -212,6 +212,15 @@ struct PointedServer {
     row: FakeRow,
     copies: Vec<ployz_core::ContainerId>,
     polls_left: Option<u32>,
+    /// What a newer deploy adds once the first retirement pass is through: its copies and
+    /// its pointer. They show from the third listing on.
+    later: Option<(
+        Vec<ployz_core::ContainerId>,
+        Option<ployz_core::ServingPointer>,
+    )>,
+    listings: u32,
+    /// Rows answered to reads before the shared row is, one per read.
+    reads: std::collections::VecDeque<Option<ployz_core::ServingPointer>>,
 }
 
 impl PointerClient for PointedServer {
@@ -224,6 +233,9 @@ impl PointerClient for PointedServer {
         at: &mut ployz_core::MachineTarget,
         service: &QualifiedService,
     ) -> Result<Option<ployz_core::ServingPointer>, RpcError> {
+        if let Some(read) = self.reads.pop_front() {
+            return Ok(read);
+        }
         self.row.read_pointer_at(at, service).await
     }
 
@@ -248,6 +260,15 @@ impl CopyLister for PointedServer {
             Some(left) => *left -= 1,
             None => {}
         }
+        self.listings += 1;
+        if self.listings == 2
+            && let Some((newer, pointer)) = self.later.take()
+        {
+            self.copies.extend(newer);
+            if pointer.is_some() {
+                *self.row.row.lock().unwrap() = pointer;
+            }
+        }
         Ok(copies)
     }
 
@@ -266,7 +287,124 @@ fn pointed_server(row: &FakeRow, polls_left: Option<u32>) -> PointedServer {
         row: row.clone(),
         copies: vec![container('2')],
         polls_left,
+        later: None,
+        listings: 0,
+        reads: std::collections::VecDeque::new(),
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_amendment_is_bound_to_the_deploy_the_protection_read_saw() {
+    let row = FakeRow::default();
+    *row.row.lock().unwrap() = Some(pointer('b', &['2'], &[]));
+    let mut server = pointed_server(&row, None);
+    server.reads.push_back(Some(pointer('a', &['2'], &[])));
+    let error = retire_copies(
+        &mut server,
+        &MachineId::parse("b".repeat(32)).unwrap(),
+        &QualifiedService::parse("app/api").unwrap(),
+        Duration::from_secs(30),
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.message.contains("newer deploy"), "{error:?}");
+    assert_eq!(*row.publishes.lock().unwrap(), 0, "the amend read deploy b");
+    assert_eq!(*row.row.lock().unwrap(), Some(pointer('b', &['2'], &[])));
+    assert_eq!(server.copies, [container('2')]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_newer_deploys_sole_copy_is_never_retired() {
+    for newer_pointer in [Some(pointer('b', &['5'], &['2'])), None] {
+        let row = FakeRow::default();
+        *row.row.lock().unwrap() = Some(pointer('a', &['1', '2'], &[]));
+        let mut server = pointed_server(&row, None);
+        server.later = Some((vec![container('5')], newer_pointer.clone()));
+        let error = retire_copies(
+            &mut server,
+            &MachineId::parse("b".repeat(32)).unwrap(),
+            &QualifiedService::parse("app/api").unwrap(),
+            Duration::from_secs(30),
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.message.contains("newer copy"), "{error:?}");
+        assert_eq!(server.copies, [container('2'), container('5')]);
+        let expected = newer_pointer.unwrap_or_else(|| pointer('a', &['1'], &['2']));
+        assert_eq!(*row.row.lock().unwrap(), Some(expected));
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_pointer_republished_by_a_newer_deploy_ends_the_retirement() {
+    let row = FakeRow::default();
+    *row.row.lock().unwrap() = Some(pointer('a', &['1', '2'], &[]));
+    let mut server = pointed_server(&row, None);
+    server.later = Some((Vec::new(), Some(pointer('b', &['2'], &[]))));
+    let error = retire_copies(
+        &mut server,
+        &MachineId::parse("b".repeat(32)).unwrap(),
+        &QualifiedService::parse("app/api").unwrap(),
+        Duration::from_secs(30),
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.message.contains("newer deploy"), "{error:?}");
+    assert_eq!(
+        *row.row.lock().unwrap(),
+        Some(pointer('b', &['2'], &[])),
+        "the newer deploy's pointer is left alone"
+    );
+    assert_eq!(server.copies, [container('2')]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn retirement_ends_at_its_deadline_not_at_the_next_poll() {
+    let row = FakeRow::default();
+    *row.row.lock().unwrap() = Some(pointer('a', &['1', '2'], &[]));
+    let mut server = pointed_server(&row, None);
+    let wait = Duration::from_millis(2500);
+    let started = tokio::time::Instant::now();
+    let error = retire_copies(
+        &mut server,
+        &MachineId::parse("b".repeat(32)).unwrap(),
+        &QualifiedService::parse("app/api").unwrap(),
+        wait,
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.message.contains("still retiring"), "{error:?}");
+    assert_eq!(started.elapsed(), wait);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_listing_that_ends_past_the_deadline_touches_nothing() {
+    let row = FakeRow::default();
+    *row.row.lock().unwrap() = Some(pointer('a', &['1', '2'], &[]));
+    let mut server = SlowLister {
+        server: pointed_server(&row, None),
+        listings: 0,
+    };
+    server.server.copies.push(container('9'));
+    let error = retire_copies(
+        &mut server,
+        &MachineId::parse("b".repeat(32)).unwrap(),
+        &QualifiedService::parse("app/api").unwrap(),
+        LISTING / 2,
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.message.contains("still retiring"), "{error:?}");
+    assert_eq!(
+        *row.row.lock().unwrap(),
+        Some(pointer('a', &['1', '2'], &[]))
+    );
+    assert_eq!(server.server.copies, [container('2'), container('9')]);
 }
 
 #[tokio::test(start_paused = true)]

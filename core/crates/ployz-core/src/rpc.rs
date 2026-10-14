@@ -408,6 +408,10 @@ pub enum ContainerLocator {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct EnsureContainerRequest {
     pub want: ContainerWant,
+    /// A user named this copy for stopping or removal. The Machine then skips
+    /// its serving-pointer guard. Drivers never set it.
+    #[serde(default)]
+    pub user_named: bool,
 }
 
 /// The state a driver wants one Container in. The Machine converges to it and
@@ -1102,7 +1106,8 @@ impl ContainerRefusal {
             ContainerRefusalReason::InvalidIngress => RpcErrorCode::InvalidArgument,
             ContainerRefusalReason::NotEligible
             | ContainerRefusalReason::SlotOccupied
-            | ContainerRefusalReason::VolumesNotPrepared => RpcErrorCode::Conflict,
+            | ContainerRefusalReason::VolumesNotPrepared
+            | ContainerRefusalReason::NamedByServingPointer => RpcErrorCode::Conflict,
             ContainerRefusalReason::ImagePullFailed | ContainerRefusalReason::Unrecognized => {
                 RpcErrorCode::Internal
             }
@@ -1110,9 +1115,19 @@ impl ContainerRefusal {
         RpcError {
             code,
             message: self.message,
-            details: Value::Null,
+            details: serde_json::json!({ "reason": self.reason }),
             cause: Vec::new(),
         }
+    }
+}
+
+impl ContainerRefusalReason {
+    /// The `reason` a refusal carried in `RpcError.details`, if it is one of the frozen names.
+    #[must_use]
+    pub fn from_details(details: &Value) -> Option<Self> {
+        details
+            .get("reason")
+            .and_then(|reason| Self::deserialize(reason).ok())
     }
 }
 
@@ -1128,6 +1143,9 @@ pub enum ContainerRefusalReason {
     ImagePullFailed,
     VolumesNotPrepared,
     NotFound,
+    /// The Service's serving pointer names or retires this copy. Only a user
+    /// may stop or remove it.
+    NamedByServingPointer,
     #[serde(other)]
     Unrecognized,
 }

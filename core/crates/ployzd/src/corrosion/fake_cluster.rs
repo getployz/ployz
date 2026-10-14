@@ -323,6 +323,13 @@ fn query(kv: &Mutex<ClusterKv>, statement: Statement) -> Result<Bytes, StatusCod
         "SELECT value FROM cluster WHERE key = 'network'" => {
             events(&["value"], vec![vec![json!(kv.network)]])
         }
+        "SELECT value FROM cluster WHERE key = ?" => {
+            let key = text_param(&statement.params, 0);
+            events(
+                &["value"],
+                kv.serving_pointers.get(key).map(|value| vec![json!(value)]),
+            )
+        }
         "SELECT key AS serving_key, value FROM cluster WHERE key LIKE 'serving/%'" => events(
             &["serving_key", "value"],
             kv.serving_pointers

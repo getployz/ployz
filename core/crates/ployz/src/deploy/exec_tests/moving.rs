@@ -422,7 +422,34 @@ async fn a_pointer_whose_row_does_not_name_the_old_copy_lets_the_move_remove_it(
 }
 
 #[tokio::test]
-async fn a_pointer_published_after_the_stop_keeps_the_old_container_unremoved() {
+async fn a_removal_refused_after_the_stop_restarts_the_old_container() {
+    for (restart, stopped) in [
+        (ok(Call::Restart(machine(FROM), container('a'))), false),
+        (
+            failed(Call::Restart(machine(FROM), container('a')), "start failed"),
+            true,
+        ),
+    ] {
+        let mut steps = served();
+        steps.extend([
+            ok(Call::Stop(machine(FROM), container('a'))),
+            refused_as_named(Call::Discard(machine(FROM), container('a'))),
+            restart,
+        ]);
+        let client = Scripted::new(steps);
+        let Err(MoveContainerError::OldNotRemoved { error, old_stopped }) =
+            move_with(&client).await
+        else {
+            panic!("the old Container stayed");
+        };
+        assert_eq!(old_stopped, stopped);
+        assert!(error.to_string().contains("serving pointer"), "{error}");
+        client.assert_done();
+    }
+}
+
+#[tokio::test]
+async fn a_move_reads_the_pointer_once_before_the_stop() {
     use crate::deploy::convergence::{AtRemoval, OldCopy, OldCopyGate};
     use crate::serving_publish::PointerClient;
     use crate::serving_publish::tests::{FakeRow, pointer};
@@ -465,6 +492,7 @@ async fn a_pointer_published_after_the_stop_keeps_the_old_container_unremoved() 
             &container('b'),
         ),
         ok(Call::Stop(machine(FROM), container('a'))),
+        ok(Call::Discard(machine(FROM), container('a'))),
     ]);
     let service = QualifiedService::parse("app/web").unwrap();
     let (namespace, spec, to, from, old) = (
@@ -496,12 +524,8 @@ async fn a_pointer_published_after_the_stop_keeps_the_old_container_unremoved() 
     assert_eq!(moved.unwrap(), container('b'));
     client.assert_done();
     assert_eq!(
-        gate.reader.reads, 2,
-        "one read before the stop, one before the removal"
+        gate.reader.reads, 1,
+        "the Machine guards the removal; the client reads only before the stop"
     );
-    assert_eq!(
-        gate.at_removal,
-        AtRemoval::Pointed(pointer('a', &[], &[]).deploy),
-        "the stopped copy is left for its pointer's retire path"
-    );
+    assert_eq!(gate.at_removal, AtRemoval::Remove);
 }

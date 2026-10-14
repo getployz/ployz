@@ -149,7 +149,8 @@ impl Client {
 /// The pointer-membership contract. A copy id stands in one of four states relative to a
 /// Service's Serving Pointer row, and every change between them runs through one path:
 /// `Rotation` applied inside `amend_pointer` against the row the compare-and-set reads, or
-/// `Protection` read immediately before a stop or removal.
+/// `Protection` read immediately before a stop or removal, and the Machine's own guard, which
+/// refuses an unasked stop or removal of a copy its replica's row names.
 ///
 /// | state    | the row                                                           |
 /// |----------|-------------------------------------------------------------------|
@@ -164,7 +165,7 @@ impl Client {
 /// | pointed -> retiring | the row names the id in `containers`; other leaving ids are ignored | catch-up, drain, retirement |
 /// | retiring -> unnamed | the row read before a complete listing named it in `retiring` and that listing lacks it | catch-up |
 /// | retiring -> gone    | every up Machine acknowledged the row                             | ployzd retire |
-/// | unnamed -> gone     | a read immediately before each stop or removal shows no row naming it | drain, retirement, catch-up |
+/// | unnamed -> gone     | the Machine's replica names it in neither list at the stop or removal, or the user named the copy | the Machine guard |
 /// | pointed -> gone     | never directly: pointed -> retiring first                         |     |
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct Rotation {

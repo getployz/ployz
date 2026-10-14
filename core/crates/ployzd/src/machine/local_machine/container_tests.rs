@@ -827,7 +827,7 @@ mod settled {
         let started = std::time::Instant::now();
         let ensure = tokio::spawn({
             let local = local.clone();
-            async move { local.ensure_container(want).await }
+            async move { local.ensure_container(want, false).await }
         });
         report_once_started(&fake, state).await;
         let reply = tokio::time::timeout(Duration::from_secs(10), ensure)
@@ -868,10 +868,13 @@ mod settled {
         let mut new = new_container("started");
         new.resolved_spec.update.monitor_millis = Some(60_000);
 
-        let reply = tokio::time::timeout(Duration::from_secs(5), local.ensure_container(run(new)))
-            .await
-            .expect("a Started ensure answers without waiting out the monitor")
-            .unwrap();
+        let reply = tokio::time::timeout(
+            Duration::from_secs(5),
+            local.ensure_container(run(new), false),
+        )
+        .await
+        .expect("a Started ensure answers without waiting out the monitor")
+        .unwrap();
 
         assert!(
             matches!(
@@ -924,7 +927,11 @@ mod settled {
         started.notified().await;
         let create = tokio::spawn({
             let local = local.clone();
-            async move { local.ensure_container(run(new_container("started"))).await }
+            async move {
+                local
+                    .ensure_container(run(new_container("started")), false)
+                    .await
+            }
         });
         tokio::time::sleep(Duration::from_millis(50)).await;
         let new = new_container("started");
@@ -932,11 +939,14 @@ mod settled {
             let local = local.clone();
             async move {
                 local
-                    .ensure_container(ContainerWant::Gone {
-                        container: ployz_core::ContainerLocator::Key(new.slot),
-                        drain: ployz_core::Drain::NONE,
-                        anonymous_volumes: ployz_core::AnonymousVolumes::Remove,
-                    })
+                    .ensure_container(
+                        ContainerWant::Gone {
+                            container: ployz_core::ContainerLocator::Key(new.slot),
+                            drain: ployz_core::Drain::NONE,
+                            anonymous_volumes: ployz_core::AnonymousVolumes::Remove,
+                        },
+                        false,
+                    )
                     .await
             }
         });
@@ -989,7 +999,11 @@ mod settled {
         started.notified().await;
         let create = tokio::spawn({
             let local = local.clone();
-            async move { local.ensure_container(run(new_container("started"))).await }
+            async move {
+                local
+                    .ensure_container(run(new_container("started")), false)
+                    .await
+            }
         });
         tokio::time::sleep(Duration::from_millis(50)).await;
         let new = new_container("started");
@@ -997,11 +1011,14 @@ mod settled {
             let local = local.clone();
             async move {
                 local
-                    .ensure_container(ContainerWant::Gone {
-                        container: ployz_core::ContainerLocator::Key(new.slot),
-                        drain: ployz_core::Drain::NONE,
-                        anonymous_volumes: ployz_core::AnonymousVolumes::Remove,
-                    })
+                    .ensure_container(
+                        ContainerWant::Gone {
+                            container: ployz_core::ContainerLocator::Key(new.slot),
+                            drain: ployz_core::Drain::NONE,
+                            anonymous_volumes: ployz_core::AnonymousVolumes::Remove,
+                        },
+                        false,
+                    )
                     .await
             }
         });
@@ -1068,5 +1085,276 @@ mod settled {
             waited >= Duration::from_millis(1_500) && waited < Duration::from_millis(2_500),
             "waited {waited:?}"
         );
+    }
+}
+
+mod guarded {
+    use std::{collections::BTreeMap, sync::Mutex, time::Duration};
+
+    use ployz_core::{
+        AnonymousVolumes, ContainerId, ContainerLocator, ContainerNow, ContainerRefusal,
+        ContainerRefusalReason, ContainerWant, DeploymentLogId, Drain, EnsuredContainer,
+        MachineName, NewContainer, QualifiedService, RunTarget, ServingPointer, StopOptions,
+    };
+    use serde_json::{Value, json};
+
+    use super::*;
+    use crate::{
+        corrosion::{AdminClient, fake_cluster::FakeCluster},
+        docker::test_support::{FakeDocker, fake_runtime_with, spec_with_sources},
+    };
+
+    struct Guarded {
+        local: LocalMachine,
+        fake: FakeDocker,
+        cluster: FakeCluster,
+        data_dir: std::path::PathBuf,
+    }
+
+    impl Drop for Guarded {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.data_dir);
+        }
+    }
+
+    impl Guarded {
+        fn point(&self, containers: &[ContainerId], retiring: &[ContainerId]) {
+            let pointer = ServingPointer {
+                deploy: DeploymentLogId::parse("d2").unwrap(),
+                containers: containers.to_vec(),
+                previous: None,
+                retiring: retiring.to_vec(),
+            };
+            self.cluster.write_serving_pointer(
+                &ServingPointer::key(&service()),
+                &serde_json::to_string(&pointer).unwrap(),
+            );
+        }
+
+        async fn start_copy(&self) -> ContainerId {
+            let reply = tokio::time::timeout(
+                Duration::from_secs(5),
+                self.local
+                    .ensure_container(run(new_container("started")), false),
+            )
+            .await
+            .expect("a Started ensure answers")
+            .unwrap();
+            let EnsuredContainer::Ensured {
+                now: ContainerNow::Present(observed),
+                ..
+            } = reply
+            else {
+                panic!("expected the copy started, got {reply:?}");
+            };
+            observed.container_id
+        }
+
+        fn docker_state(&self, id: &ContainerId) -> Option<Value> {
+            let containers = self.fake.named_containers.as_ref().unwrap().lock().unwrap();
+            containers
+                .values()
+                .find(|container| container["Id"] == id.to_string())
+                .and_then(|container| container.get("State")?.get("Status").cloned())
+        }
+    }
+
+    async fn guarded() -> Guarded {
+        let data_dir = std::env::temp_dir().join(format!("ployzd-guarded-{}", MachineId::random()));
+        let mut store = LocalMachineStore::open(&data_dir).unwrap();
+        store
+            .enroll(ployz_core::EnrollRequest {
+                role: ployz_core::EnrollAs::Founder {
+                    initial_policy: Default::default(),
+                    name: MachineName::parse("local").unwrap(),
+                    cluster_network: "10.210.0.0/16".parse().unwrap(),
+                    public_ip: None,
+                    advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(
+                        "192.0.2.1:51820".parse().unwrap(),
+                    )],
+                },
+                wireguard_mtu: None,
+            })
+            .unwrap();
+        let owner = RecordOwner::spawn(store).unwrap();
+        let (runtime, fake) = fake_runtime_with(FakeDocker {
+            named_containers: Some(Arc::new(Mutex::new(BTreeMap::new()))),
+            ..Default::default()
+        })
+        .await;
+        let cluster = FakeCluster::start();
+        let local = LocalMachine::new(owner)
+            .with_containers(Some(runtime))
+            .with_cluster(Some((
+                cluster.store(),
+                AdminClient::new("/no/such/admin.sock"),
+            )))
+            .with_zpool("true");
+        Guarded {
+            local,
+            fake,
+            cluster,
+            data_dir,
+        }
+    }
+
+    fn service() -> QualifiedService {
+        QualifiedService::parse("app/api").unwrap()
+    }
+
+    fn new_container(answer: &str) -> NewContainer {
+        serde_json::from_value(json!({
+            "slot": {"namespace":"app", "kind":"service_container", "creation_key":"s1"},
+            "resolved_spec": spec_with_sources(vec![]),
+            "answer": answer,
+        }))
+        .unwrap()
+    }
+
+    fn run(new: NewContainer) -> ContainerWant {
+        ContainerWant::Running {
+            container: RunTarget::New(new),
+        }
+    }
+
+    fn stop(id: ContainerId) -> ContainerWant {
+        ContainerWant::Stopped {
+            container: ContainerLocator::Id(id),
+            drain: Drain::NONE,
+            stop: StopOptions::default(),
+        }
+    }
+
+    fn gone(container: ContainerLocator) -> ContainerWant {
+        ContainerWant::Gone {
+            container,
+            drain: Drain::NONE,
+            anonymous_volumes: AnonymousVolumes::Remove,
+        }
+    }
+
+    async fn ensure(
+        local: &LocalMachine,
+        want: ContainerWant,
+        user_named: bool,
+    ) -> EnsuredContainer {
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            local.ensure_container(want, user_named),
+        )
+        .await
+        .expect("the ensure answers")
+        .unwrap()
+    }
+
+    fn assert_named_refusal(reply: &EnsuredContainer) {
+        assert!(
+            matches!(
+                reply,
+                EnsuredContainer::Refused {
+                    refusal: ContainerRefusal {
+                        reason: ContainerRefusalReason::NamedByServingPointer,
+                        ..
+                    },
+                    ..
+                }
+            ),
+            "expected a NamedByServingPointer refusal, got {reply:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_driver_stop_of_a_pointed_copy_is_refused_and_the_copy_keeps_running() {
+        let guarded = guarded().await;
+        let id = guarded.start_copy().await;
+        guarded.point(&[id], &[]);
+
+        let reply = ensure(&guarded.local, stop(id), false).await;
+
+        assert_named_refusal(&reply);
+        assert_eq!(guarded.docker_state(&id), Some(Value::from("running")));
+    }
+
+    #[tokio::test]
+    async fn a_driver_removal_of_a_retiring_copy_is_refused_and_the_copy_stays() {
+        let guarded = guarded().await;
+        let id = guarded.start_copy().await;
+        guarded.point(&[ContainerId::parse("f".repeat(64)).unwrap()], &[id]);
+
+        let reply = ensure(&guarded.local, gone(ContainerLocator::Id(id)), false).await;
+
+        assert_named_refusal(&reply);
+        assert_eq!(guarded.docker_state(&id), Some(Value::from("running")));
+    }
+
+    #[tokio::test]
+    async fn a_driver_removal_by_slot_of_a_pointed_occupant_is_refused() {
+        let guarded = guarded().await;
+        let id = guarded.start_copy().await;
+        guarded.point(&[id], &[]);
+
+        let reply = ensure(
+            &guarded.local,
+            gone(ContainerLocator::Key(new_container("started").slot)),
+            false,
+        )
+        .await;
+
+        assert_named_refusal(&reply);
+        assert_eq!(guarded.docker_state(&id), Some(Value::from("running")));
+    }
+
+    #[tokio::test]
+    async fn a_retried_removal_is_refused_once_the_pointer_names_the_copy() {
+        let guarded = guarded().await;
+        let id = guarded.start_copy().await;
+
+        let stopped = ensure(&guarded.local, stop(id), false).await;
+        assert!(
+            matches!(stopped, EnsuredContainer::Ensured { .. }),
+            "an unnamed copy stops, got {stopped:?}"
+        );
+        assert_eq!(guarded.docker_state(&id), Some(Value::from("exited")));
+
+        guarded.point(&[id], &[]);
+        let reply = ensure(&guarded.local, gone(ContainerLocator::Id(id)), false).await;
+
+        assert_named_refusal(&reply);
+        assert_eq!(guarded.docker_state(&id), Some(Value::from("exited")));
+    }
+
+    #[tokio::test]
+    async fn a_user_named_stop_of_a_pointed_copy_proceeds() {
+        let guarded = guarded().await;
+        let id = guarded.start_copy().await;
+        guarded.point(&[id], &[]);
+
+        let reply = ensure(&guarded.local, stop(id), true).await;
+
+        assert!(
+            matches!(reply, EnsuredContainer::Ensured { .. }),
+            "a user-named stop proceeds, got {reply:?}"
+        );
+        assert_eq!(guarded.docker_state(&id), Some(Value::from("exited")));
+    }
+
+    #[tokio::test]
+    async fn an_unnamed_copy_is_removed_without_a_pointer_row() {
+        let guarded = guarded().await;
+        let id = guarded.start_copy().await;
+
+        let reply = ensure(&guarded.local, gone(ContainerLocator::Id(id)), false).await;
+
+        assert!(
+            matches!(
+                reply,
+                EnsuredContainer::Ensured {
+                    now: ContainerNow::Absent { .. },
+                    ..
+                }
+            ),
+            "expected the copy gone, got {reply:?}"
+        );
+        assert_eq!(guarded.docker_state(&id), None);
     }
 }

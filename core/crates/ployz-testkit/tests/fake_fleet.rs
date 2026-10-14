@@ -69,6 +69,7 @@ async fn client(fleet: &FakeFleet, machine: &str) -> Client {
 
 fn stop(container: &str) -> EnsureContainerRequest {
     EnsureContainerRequest {
+        user_named: false,
         want: ContainerWant::Stopped {
             container: ContainerLocator::Id(container_id(container)),
             drain: Drain::NONE,
@@ -261,6 +262,7 @@ async fn an_unmodeled_command_is_recorded_and_answers_unimplemented() {
     let error = client
         .call::<op::EnsureContainer>(
             EnsureContainerRequest {
+                user_named: false,
                 want: ContainerWant::Gone {
                     container: ContainerLocator::Id(container_id("app-staging-web-1")),
                     drain: Drain::NONE,

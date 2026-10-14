@@ -818,6 +818,29 @@ async fn a_newer_deploy_published_while_the_copy_starts_keeps_its_pointer() {
 }
 
 #[tokio::test]
+async fn a_newer_deploy_still_naming_the_source_keeps_its_pointer() {
+    let row = FakeRow::default();
+    *row.row.lock().unwrap() = Some(pointed("dep-a", &['d'], &[]));
+    let (joiner, mut client) = replacing_client(row.clone());
+    client.published_while_running = Some(pointed("dep-q", &['d'], &[]));
+    let error = catch_up_globals(
+        &mut client,
+        &joiner,
+        &tokio_util::sync::CancellationToken::new(),
+        |_| {},
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        *row.row.lock().unwrap(),
+        Some(pointed("dep-q", &['d'], &[])),
+        "a copy started under dep-a never joins dep-q, even with dep-q naming its source"
+    );
+    assert_eq!(*row.publishes.lock().unwrap(), 0);
+    assert_eq!(error.unresolved, [qualified("app", "api")]);
+}
+
+#[tokio::test]
 async fn a_pointer_naming_only_absent_copies_never_gains_an_older_spec_recreation() {
     let row = FakeRow::default();
     *row.row.lock().unwrap() = Some(pointed("dep-q", &['7'], &[]));

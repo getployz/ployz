@@ -23,7 +23,7 @@ const finished = (services: ServiceDrain[], stopped: DrainReport["stopped"] = nu
   attemptId: "a1",
   state: "finished",
   endedAt: at,
-  report: { server: runtimeWatchMachineFixture(web2.id, web2.name), services_role: "turned_off", services, stopped, remaining: { kind: "observed", services: [], unchosen: [] }, complete },
+  report: { server: runtimeWatchMachineFixture(web2.id, web2.name), services_role: "turned_off", services, stopped, remaining: { kind: "observed", services: [], unchosen: [], retiring: [] }, complete },
 });
 const view = (latest: LatestDrain | null, requested: string | null = null) => drainView({
   server: web2,

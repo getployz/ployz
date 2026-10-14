@@ -549,6 +549,7 @@ impl LocalMachine {
     pub(crate) async fn ensure_container(
         &self,
         want: ContainerWant,
+        user_named: bool,
     ) -> Result<EnsuredContainer, Error> {
         let settled_spec = if let ContainerWant::Running {
             container: RunTarget::New(new),
@@ -559,7 +560,7 @@ impl LocalMachine {
         } else {
             None
         };
-        let ensured = self.converge_container(want).await?;
+        let ensured = self.converge_container(want, user_named).await?;
         let Some(spec) = settled_spec else {
             return Ok(ensured);
         };
@@ -632,7 +633,11 @@ impl LocalMachine {
         }
     }
 
-    async fn converge_container(&self, want: ContainerWant) -> Result<EnsuredContainer, Error> {
+    async fn converge_container(
+        &self,
+        want: ContainerWant,
+        user_named: bool,
+    ) -> Result<EnsuredContainer, Error> {
         if matches!(
             want,
             ContainerWant::Gone {
@@ -645,17 +650,31 @@ impl LocalMachine {
             let local = self.clone();
             return tokio::spawn(async move {
                 local.wait_for_admitted_work().await;
-                local.converge_now(want).await
+                local.converge_now(want, user_named).await
             })
             .await?;
         }
-        self.converge_now(want).await
+        self.converge_now(want, user_named).await
     }
 
-    async fn converge_now(&self, want: ContainerWant) -> Result<EnsuredContainer, Error> {
+    async fn converge_now(
+        &self,
+        want: ContainerWant,
+        user_named: bool,
+    ) -> Result<EnsuredContainer, Error> {
         let locator = want_locator(&want);
         let now = self.container_now(&locator).await?;
-        let refusal = match plan_container(want, &now, &self.record().phase()) {
+        let step = plan_container(want, &now, &self.record().phase());
+        if step.ends_occupant()
+            && !user_named
+            && let Some(refusal) = self.named_by_serving_pointer(&now).await?
+        {
+            return Ok(EnsuredContainer::Refused {
+                now: redacted(now),
+                refusal,
+            });
+        }
+        let refusal = match step {
             ContainerStep::Done => {
                 return Ok(EnsuredContainer::Ensured {
                     now: redacted(now),
@@ -750,6 +769,33 @@ impl LocalMachine {
 
     async fn wait_for_admitted_work(&self) {
         drop(self.owner.admission_lock().write_owned().await);
+    }
+
+    async fn named_by_serving_pointer(
+        &self,
+        now: &ContainerNow,
+    ) -> Result<Option<ContainerRefusal>, Error> {
+        let Some(observed) = now.present() else {
+            return Ok(None);
+        };
+        let Some(cluster) = &self.cluster else {
+            return Ok(None);
+        };
+        if observed.kind != ContainerKind::ServiceContainer {
+            return Ok(None);
+        }
+        let service = observed.identity();
+        let Some(pointer) = cluster.replicated.serving_pointer(&service).await? else {
+            return Ok(None);
+        };
+        let id = observed.container_id;
+        if !pointer.containers.contains(&id) && !pointer.retiring.contains(&id) {
+            return Ok(None);
+        }
+        Ok(Some(refuse(
+            ContainerRefusalReason::NamedByServingPointer,
+            format!("the serving pointer of {service} names container {id}"),
+        )))
     }
 
     async fn container_now(&self, locator: &ContainerLocator) -> Result<ContainerNow, Error> {
@@ -895,6 +941,15 @@ enum ContainerStep {
         anonymous_volumes: AnonymousVolumes,
     },
     Remove(ContainerId, AnonymousVolumes),
+}
+
+impl ContainerStep {
+    const fn ends_occupant(&self) -> bool {
+        matches!(
+            self,
+            Self::Hold(_) | Self::Stop { .. } | Self::StopThenRemove { .. } | Self::Remove(..)
+        )
+    }
 }
 
 fn plan_container(

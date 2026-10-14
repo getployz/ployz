@@ -557,6 +557,14 @@ fn failed_unavailable(call: Call, message: &str) -> Step {
     Step(call, Reply::Error(unavailable(message)))
 }
 
+fn refused_as_named(call: Call) -> Step {
+    let refusal = ployz_core::ContainerRefusal {
+        reason: ployz_core::ContainerRefusalReason::NamedByServingPointer,
+        message: "the serving pointer names it".into(),
+    };
+    Step(call, Reply::Error(refusal.into_error()))
+}
+
 #[tokio::test]
 async fn storage_preparation_failure_leaves_all_application_operations_unexecuted() {
     let first = machine('1');
