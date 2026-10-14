@@ -11,7 +11,7 @@ import { AccountSectionView, VariantSwitcher } from "./-components/account-secti
 
 // Prototype: no variant is B, this page. A and C live in the active Organization's shell; without one they fall back here.
 const accountSearchSchema = Schema.Struct({
-  variant: Schema.optional(Schema.Literals(["a", "b", "c"]).pipe(
+  variant: Schema.optional(Schema.Literals(["a", "b", "c", "d", "e"]).pipe(
     Schema.catchDecoding(() => Effect.succeed(Option.some("b" as const))),
   )),
   section: Schema.optional(Schema.Literals(accountSectionOrder).pipe(
@@ -23,7 +23,7 @@ export const Route = createFileRoute("/_protected/cloud/account/")({
   validateSearch: Schema.toStandardSchemaV1(accountSearchSchema),
   beforeLoad: ({ context, search, cause }) => {
     const slug = context.session.session.activeOrganizationSlug;
-    if (cause === "preload" || !slug || (search.variant !== "a" && search.variant !== "c")) return;
+    if (cause === "preload" || !slug || search.variant === undefined || search.variant === "b") return;
     throw redirect({ to: "/cloud/$organizationSlug/~/account", params: { organizationSlug: slug }, search: { variant: search.variant, section: search.section } });
   },
   loader: ({ context }) => {

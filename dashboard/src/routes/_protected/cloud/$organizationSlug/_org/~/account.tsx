@@ -7,9 +7,10 @@ import { accountSessionsRead, linkedAccountsRead } from "#/modules/account/accou
 import { notificationSettingsQueryOptions } from "#/modules/notifications/notifications.queries";
 import { AccountSectionView, VariantSwitcher } from "#/routes/_protected/cloud/account/-components/account-sections";
 
-// Prototype: A is one section at a time behind the rail, C is every section on one scrolling page.
+// Prototype: A is one section at a time behind the rail; C, D and E are every section on one scrolling page, and
+// differ only in how the rail reaches it.
 const accountSearchSchema = Schema.Struct({
-  variant: Schema.optional(Schema.Literals(["a", "c"]).pipe(
+  variant: Schema.optional(Schema.Literals(["a", "c", "d", "e"]).pipe(
     Schema.catchDecoding(() => Effect.succeed(Option.some("a" as const))),
   )),
   section: Schema.optional(Schema.Literals(accountSectionOrder).pipe(
@@ -30,7 +31,7 @@ function AccountInShell() {
   const { variant = "a", section = "profile" } = Route.useSearch();
   return (
     <DashboardPage width="content">
-      {variant === "c" ? (
+      {variant !== "a" ? (
         <div className="flex flex-col gap-6">
           {accountSectionOrder.map((key) => (
             <div key={key} id={key} className="scroll-mt-16 border-t pt-6 first:border-t-0 first:pt-0"><AccountSectionView section={key} /></div>

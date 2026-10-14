@@ -99,7 +99,7 @@ export interface DashboardSectionSearch {
   scope?: "environment" | "project";
   section?: "general" | "builds" | AccountSection;
   /** Prototype: which Account layout is open. */
-  variant?: "a" | "b" | "c";
+  variant?: "a" | "b" | "c" | "d" | "e";
 }
 
 export const accountSectionOrder = ["profile", "sessions", "notifications"] as const;
@@ -167,9 +167,10 @@ function placeSections(
   if (place === "account") {
     const params = { organizationSlug: scope.organizationSlug };
     const to = organizationDestinations.account.path;
-    // C is one page, so its sections are anchors on it; A opens one section at a time.
-    return accountSectionOrder.map((key) => variant === "c"
-      ? { label: accountSectionLabels[key], current: false, ...linkOptions({ to, params, search: { variant: "c" as const }, hash: key }) }
+    // C and D are one page, so their sections are anchors on it; A opens one section at a time. E lists none.
+    if (variant === "e") return [];
+    return accountSectionOrder.map((key) => variant === "c" || variant === "d"
+      ? { label: accountSectionLabels[key], current: false, ...linkOptions({ to, params, search: { variant }, hash: key }) }
       : { label: accountSectionLabels[key], current: open === key, ...linkOptions({ to, params, search: { variant: "a" as const, section: key } }) });
   }
   if (scope.kind === "environment" && place === "settings") {
@@ -219,9 +220,16 @@ export function createDashboardNavigation(
   });
   const organizationScope = { kind: "all" as const, organizationSlug: scope.organizationSlug };
   const organization = organizationPlaceOrder.map((key) => item(organizationScope, key, organizationDestinations[key]));
-  // Account is a place only while open: below the divider, over the avatar it belongs to.
-  const account = currentPlace === "account" ? [item(organizationScope, "account", organizationDestinations.account)] : [];
-  if (scope.kind === "all") return { places: organization, organization: account };
+  // Account is a place only while open. A and C put it below the divider, over the avatar it belongs to; D lists it
+  // under Organization; E has no rail entry, and the avatar row is the current place instead.
+  const account = currentPlace === "account" && search.variant !== "e"
+    ? [item(organizationScope, "account", organizationDestinations.account)]
+    : [];
+  if (scope.kind === "all") {
+    return search.variant === "d"
+      ? { places: [...organization, ...account], organization: [] }
+      : { places: organization, organization: account };
+  }
   return {
     places: environmentPlaceOrder.map((key) => item(scope, key, environmentPlaces[key])),
     organization: organization.filter((place) => place.section !== "organization-settings"),

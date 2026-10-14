@@ -105,11 +105,11 @@ export function AccountSectionView({ section }: { section: AccountSection }) {
   }
 }
 
-/** Prototype only: flips between the layout variants. A and C live in an Organization's shell, so they need one. */
-export function VariantSwitcher({ current }: { current: "a" | "b" | "c" }) {
+/** Prototype only: flips between the layout variants. All but B live in an Organization's shell, so they need one. */
+export function VariantSwitcher({ current }: { current: "a" | "b" | "c" | "d" | "e" }) {
   const { session } = useRouteContext({ from: "/_protected" });
   const slug = session.session.activeOrganizationSlug;
-  const pill = (variant: "a" | "b" | "c") => cn(
+  const pill = (variant: "a" | "b" | "c" | "d" | "e") => cn(
     "rounded-full px-2.5 py-1 font-medium uppercase",
     variant === current ? "bg-foreground text-background" : "text-muted-foreground hover:text-foreground",
   );
@@ -119,7 +119,9 @@ export function VariantSwitcher({ current }: { current: "a" | "b" | "c" }) {
       <span className="px-2 text-muted-foreground">Variant</span>
       {slug ? <Link to="/cloud/$organizationSlug/~/account" params={{ organizationSlug: slug }} search={{ variant: "a" }} className={pill("a")}>a</Link> : null}
       <Link to="/cloud/account" search={{ variant: "b" }} className={pill("b")}>b</Link>
-      {slug ? <Link to="/cloud/$organizationSlug/~/account" params={{ organizationSlug: slug }} search={{ variant: "c" }} className={pill("c")}>c</Link> : null}
+      {slug ? (["c", "d", "e"] as const).map((variant) => (
+        <Link key={variant} to="/cloud/$organizationSlug/~/account" params={{ organizationSlug: slug }} search={{ variant }} className={pill(variant)}>{variant}</Link>
+      )) : null}
     </nav>
   );
 }
