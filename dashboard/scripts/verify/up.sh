@@ -105,7 +105,7 @@ else
       fake_github=$(sed -n 's/^VERIFY_FAKE_GITHUB //p' "$run/fake-github.log") && [ -n "$fake_github" ] && break; sleep 0.25
     done
     [ -n "$fake_github" ] || { echo "up.sh: the fake GitHub did not start (see $run/fake-github.log)" >&2; cat "$run/fake-github.log" >&2; exit 1; }
-    github_origin="PLOYZ_GITHUB_ORIGIN=$fake_github"
+    github_origin="PLOYZ_VERIFY_GITHUB_ORIGIN=$fake_github"
   fi
 
   # Secrets are stable per checkout, so the browser's cookie survives a restart. A dead URL (port 9) keeps Inngest

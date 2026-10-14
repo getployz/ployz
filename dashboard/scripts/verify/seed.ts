@@ -60,7 +60,7 @@ const seed = Effect.gen(function* () {
   const organizationId = yield* ensurePersonalOrganizationForUser(ada);
   const [org] = yield* drizzle.select({ slug: organization.slug }).from(organization).where(eq(organization.id, organizationId));
   const organizationSlug = org?.slug ?? "";
-  if (process.env["PLOYZ_GITHUB_ORIGIN"]) yield* linkFakeGithubAccount(ada);
+  if (process.env["PLOYZ_VERIFY_GITHUB_ORIGIN"]) yield* linkFakeGithubAccount(ada);
 
   // A session better-auth accepts: its row plus the HMAC-signed `better-auth.session_token` cookie.
   const token = env("VERIFY_SESSION_TOKEN");
