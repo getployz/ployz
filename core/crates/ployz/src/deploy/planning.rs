@@ -482,6 +482,7 @@ fn seal_plan(planned: Planned, snapshot: &DeploySnapshot, namespace: &Namespace)
         would_remove: planned.would_remove,
         preserved_volumes: planned.preserved_volumes,
         prune_refusal: planned.prune_refusal,
+        depths: super::report::depths(&planned.groups),
     };
     DeployPlan {
         operations: planned.operations,

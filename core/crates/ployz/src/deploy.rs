@@ -40,6 +40,7 @@ pub use ployz_core::{
 pub use schedule::{ServiceGroup, Step};
 
 pub(crate) use progress::pending_rows;
+pub(crate) use report::{Replica, service_row};
 
 fn is_active_runtime(runtime: &ContainerRuntimeObservation) -> bool {
     matches!(

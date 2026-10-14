@@ -5,6 +5,7 @@ use ployz_core::{
     DeployPreview, MachineAction, MachineName, RequestedServiceSpec, ResolvedServiceSpec,
     ResolvedUpdateConfig, UpdateOrder,
 };
+use ployz_store::RowPhase;
 
 fn spec() -> ResolvedServiceSpec {
     let requested: RequestedServiceSpec = serde_json::from_value(serde_json::json!({"name":"web", "mode":{"mode":"replicated","replicas":1}, "container":{"image":"nginx", "pull_policy":"missing"}})).unwrap();
@@ -49,7 +50,7 @@ fn denied() -> ExecutionError {
 }
 
 #[test]
-fn operations_group_by_service_and_machine_without_merging_duplicate_names() {
+fn replicas_on_two_machines_fold_into_one_partial_service_row() {
     let one = MachineId::random();
     let two = MachineId::random();
     let operations = vec![
@@ -70,21 +71,22 @@ fn operations_group_by_service_and_machine_without_merging_duplicate_names() {
     );
     let mut direct = Direct::new(&preview, "Deploying shop".into());
     let frame = direct.frame();
-    assert_eq!(frame.rows.len(), 2);
+    assert_eq!(frame.rows.len(), 1);
+    let row = frame.rows.first().unwrap();
     assert_eq!(
-        frame
-            .rows
-            .iter()
-            .filter(|row| row.state == State::Completed)
-            .count(),
-        1
+        row.state,
+        State::Running(ployz_store::RowPhase::StartingContainer)
     );
-    assert!(
-        frame
-            .rows
-            .iter()
-            .any(|row| row.state == State::Running(ployz_store::RowPhase::StartingContainer))
-    );
+    assert!(matches!(
+        &row.subject,
+        Subject::Service(graph) if graph.ready == 1 && graph.total == 2 && graph.machines.len() == 2
+    ));
+    let live = lines(&frame);
+    let [depth, web] = live.as_slice() else {
+        panic!("expected a depth header and one row: {live:?}");
+    };
+    assert_eq!(depth, "depth 0");
+    assert!(web.starts_with("  ◐ web  booting 1/2"), "{live:?}");
     let completed: Vec<_> = operations
         .into_iter()
         .map(|row| OperationRow {
@@ -93,12 +95,230 @@ fn operations_group_by_service_and_machine_without_merging_duplicate_names() {
         })
         .collect();
     direct.observe(&completed);
-    assert!(
-        direct
-            .frame()
-            .rows
+    assert_eq!(lines(&direct.frame()), ["depth 0", "  ✔ web  switched 2/2"]);
+}
+
+fn group(service: &str, dependencies: &[&str]) -> ServiceGroup {
+    ServiceGroup {
+        service: Some(ServiceName::parse(service).unwrap()),
+        dependencies: dependencies
             .iter()
-            .all(|row| row.state == State::Completed)
+            .map(|dependency| ServiceName::parse(*dependency).unwrap())
+            .collect(),
+        steps: Vec::new(),
+        publish: true,
+        previous: None,
+    }
+}
+
+fn row_state(state: &str) -> RowState {
+    match state {
+        "pending" => RowState::Pending,
+        "booting" => RowState::Running {
+            phase: RowPhase::WaitingForHealth,
+        },
+        "draining" => RowState::Running {
+            phase: RowPhase::StoppingContainer,
+        },
+        "completed" => RowState::Completed,
+        "failed" => RowState::Failed {
+            reason: "health check failed".into(),
+            cause: Vec::new(),
+            step: None,
+            log: None,
+        },
+        "not_attempted" => RowState::NotAttempted,
+        other => panic!("unknown row state {other}"),
+    }
+}
+
+/// A frame of `services` in the given order, each with one replica per state,
+/// at the depth `groups` place it.
+fn graph_frame(groups: &[ServiceGroup], services: &[(&str, &[&str])]) -> Frame {
+    let depths = depths(groups);
+    let namespace = Namespace::parse("shop").unwrap();
+    Frame {
+        run: Run::Direct(namespace.clone()),
+        title: "Deploying shop".into(),
+        rows: services
+            .iter()
+            .map(|(service, states)| {
+                let name = ServiceName::parse(*service).unwrap();
+                let states: Vec<_> = states.iter().map(|state| row_state(state)).collect();
+                service_row(
+                    QualifiedService::new(namespace.clone(), name.clone()),
+                    depths.get(&name).copied().unwrap_or(0),
+                    states.iter().map(|state| Replica {
+                        machine: MachineId::random(),
+                        state,
+                        timing: Timing::Unavailable,
+                    }),
+                )
+            })
+            .collect(),
+        notices: Vec::new(),
+    }
+}
+
+/// The live view below its title line, without color.
+fn lines(frame: &Frame) -> Vec<String> {
+    crate::ui::progress::live_lines(frame, 0, 80, 40, false)
+        .into_iter()
+        .skip(1)
+        .collect()
+}
+
+#[test]
+fn a_chain_starts_one_depth_after_another() {
+    let groups = [
+        group("db", &[]),
+        group("api", &["db"]),
+        group("web", &["api"]),
+    ];
+    let frame = graph_frame(
+        &groups,
+        &[
+            ("web", &["pending"]),
+            ("api", &["booting"]),
+            ("db", &["completed"]),
+        ],
+    );
+    assert_eq!(
+        lines(&frame),
+        [
+            "depth 0",
+            "  ✔ db  switched 1/1",
+            "depth 1",
+            "  ⠋ api  booting 0/1",
+            "depth 2",
+            "  · web  waiting 0/1",
+        ]
+    );
+}
+
+#[test]
+fn a_diamond_places_the_join_below_its_deepest_side() {
+    let groups = [
+        group("db", &[]),
+        group("cache", &[]),
+        group("queue", &["db"]),
+        group("api", &["queue", "cache"]),
+    ];
+    let depths = depths(&groups);
+    let depth = |service: &str| depths.get(&ServiceName::parse(service).unwrap()).copied();
+    assert_eq!(
+        [depth("db"), depth("cache"), depth("queue"), depth("api")],
+        [Some(0), Some(0), Some(1), Some(2)]
+    );
+    let frame = graph_frame(
+        &groups,
+        &[
+            ("api", &["pending"]),
+            ("queue", &["completed"]),
+            ("cache", &["completed"]),
+            ("db", &["completed"]),
+        ],
+    );
+    assert_eq!(
+        lines(&frame),
+        [
+            "depth 0",
+            "  ✔ cache  switched 1/1",
+            "  ✔ db  switched 1/1",
+            "depth 1",
+            "  ✔ queue  switched 1/1",
+            "depth 2",
+            "  · api  waiting 0/1",
+        ]
+    );
+}
+
+#[test]
+fn a_partially_healthy_service_shows_its_ready_count() {
+    let frame = graph_frame(
+        &[group("db", &[]), group("app", &["db"])],
+        &[
+            ("db", &["completed"]),
+            ("app", &["completed", "booting", "pending"]),
+        ],
+    );
+    assert_eq!(
+        lines(&frame),
+        [
+            "depth 0",
+            "  ✔ db  switched 1/1",
+            "depth 1",
+            "  ◐ app  booting 1/3",
+        ]
+    );
+}
+
+#[test]
+fn a_failure_leaves_every_later_service_not_started() {
+    let frame = graph_frame(
+        &[
+            group("db", &[]),
+            group("api", &["db"]),
+            group("web", &["api"]),
+            group("worker", &["api"]),
+        ],
+        &[
+            ("db", &["completed"]),
+            ("api", &["failed", "completed"]),
+            ("web", &["not_attempted"]),
+            ("worker", &["not_attempted", "not_attempted"]),
+        ],
+    );
+    assert_eq!(
+        lines(&frame),
+        [
+            "depth 0",
+            "  ✔ db  switched 1/1",
+            "depth 1",
+            "  ✘ api  failed 1/2",
+            "depth 2",
+            "  ⊘ web  not started",
+            "  ⊘ worker  not started",
+        ]
+    );
+}
+
+#[test]
+fn old_containers_draining_get_a_line_under_their_service() {
+    let frame = graph_frame(
+        &[group("db", &[]), group("app", &["db"])],
+        &[
+            ("db", &["completed", "draining"]),
+            ("app", &["completed", "draining", "draining"]),
+        ],
+    );
+    assert_eq!(
+        lines(&frame),
+        [
+            "depth 0",
+            "  ◐ db  booting 1/2",
+            "    draining old",
+            "depth 1",
+            "  ◐ app  booting 1/3",
+            "    draining old (2)",
+        ]
+    );
+}
+
+#[test]
+fn a_failure_never_jumps_ahead_of_an_earlier_depth() {
+    let frame = graph_frame(
+        &[group("db", &[]), group("api", &["db"])],
+        &[("api", &["failed"]), ("db", &["pending"])],
+    );
+    assert_eq!(
+        lines(&frame),
+        [
+            "depth 0",
+            "  · db  waiting 0/1",
+            "depth 1",
+            "  ✘ api  failed 0/1",
+        ]
     );
 }
 

@@ -36,7 +36,7 @@ pub(crate) enum Subject {
         machine: MachineId,
         server: String,
     },
-    Service(QualifiedService),
+    Service(GraphService),
     Operation {
         index: u32,
         machine: MachineId,
@@ -64,7 +64,7 @@ impl Subject {
                     ..
                 },
             ) => a == b && am == bm,
-            (Self::Service(a), Self::Service(b)) => a == b,
+            (Self::Service(a), Self::Service(b)) => a.service == b.service,
             (
                 Self::Operation {
                     index: a,
@@ -79,6 +79,65 @@ impl Subject {
             ) => a == b && am == bm,
             (Self::Node { index: a, .. }, Self::Node { index: b, .. }) => a == b,
             _ => false,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+/// One Service of a Deploy graph: the depth it starts at and its replicas' progress.
+pub(crate) struct GraphService {
+    pub service: QualifiedService,
+    pub depth: u32,
+    /// Replicas whose work completed.
+    pub ready: usize,
+    /// Replicas this Deploy works on; 0 before any work is recorded.
+    pub total: usize,
+    /// Replicas stopping or removing an old Container.
+    pub draining: usize,
+    pub machines: BTreeSet<MachineId>,
+}
+
+impl GraphService {
+    fn mark(&self, state: &State) -> Option<&'static str> {
+        match state {
+            State::NotAttempted => Some("⊘"),
+            State::Running(_) if self.ready > 0 && self.ready < self.total => Some("◐"),
+            State::Pending
+            | State::Running(_)
+            | State::Completed
+            | State::ObservedRunning
+            | State::Unchanged
+            | State::Failed
+            | State::Unknown
+            | State::Excluded => None,
+        }
+    }
+
+    fn word(&self, state: &State) -> String {
+        let word = match state {
+            State::Pending => "waiting",
+            State::Running(_) => "booting",
+            State::Completed => "switched",
+            State::NotAttempted if self.ready == 0 => "not started",
+            State::NotAttempted => "stopped",
+            State::ObservedRunning
+            | State::Unchanged
+            | State::Failed
+            | State::Unknown
+            | State::Excluded => state.word(),
+        };
+        if self.total == 0 || (*state == State::NotAttempted && self.ready == 0) {
+            word.to_owned()
+        } else {
+            format!("{word} {}/{}", self.ready, self.total)
+        }
+    }
+
+    fn draining_line(&self) -> Option<String> {
+        match self.draining {
+            0 => None,
+            1 => Some("draining old".to_owned()),
+            n => Some(format!("draining old ({n})")),
         }
     }
 }
@@ -416,7 +475,7 @@ fn drive(
                     .rows
                     .iter()
                     .filter(|row| row.state.active())
-                    .map(|row| format!("{}, {}", label(&row.subject, &frame), row.state.word()))
+                    .map(|row| format!("{}, {}", label(&row.subject, &frame), word(row)))
                     .collect::<Vec<_>>()
                     .join(", ");
                 let _ = writeln!(writer, "  still waiting: {waiting}");
@@ -449,7 +508,7 @@ fn label(subject: &Subject, frame: &Frame) -> String {
                 format!("{} on {server}", service_label(service, frame))
             }
         }
-        Subject::Service(service) => service_label(service, frame),
+        Subject::Service(graph) => service_label(&graph.service, frame),
         Subject::Operation { name, server, .. } => format!("{name} on {server}"),
         Subject::Node { name, .. } => name.clone(),
     }
@@ -460,7 +519,8 @@ fn service_label(service: &QualifiedService, frame: &Frame) -> String {
         .rows
         .iter()
         .filter_map(|row| match &row.subject {
-            Subject::ServiceOnServer { service, .. } | Subject::Service(service) => Some(service),
+            Subject::ServiceOnServer { service, .. } => Some(service),
+            Subject::Service(graph) => Some(&graph.service),
             Subject::Operation { .. } | Subject::Node { .. } => None,
         })
         .any(|other| other.name == service.name && other != service);
@@ -479,7 +539,21 @@ fn paint(text: &str, tone: Tone, color: bool) -> String {
     }
 }
 
-fn row_text(row: &Row, frame: &Frame, mark: &str) -> String {
+fn word(row: &Row) -> String {
+    match &row.subject {
+        Subject::Service(graph) => graph.word(&row.state),
+        Subject::ServiceOnServer { .. } | Subject::Operation { .. } | Subject::Node { .. } => {
+            row.state.word().to_owned()
+        }
+    }
+}
+
+fn row_text(row: &Row, frame: &Frame, tick: usize) -> String {
+    let mark = match &row.subject {
+        Subject::Service(graph) => graph.mark(&row.state),
+        Subject::ServiceOnServer { .. } | Subject::Operation { .. } | Subject::Node { .. } => None,
+    }
+    .unwrap_or_else(|| mark(&row.state, tick));
     let elapsed = match row.timing {
         Timing::Unavailable => String::new(),
         Timing::Started(at) => format!("  {:.1}s", at.elapsed().unwrap_or_default().as_secs_f64()),
@@ -493,8 +567,52 @@ fn row_text(row: &Row, frame: &Frame, mark: &str) -> String {
     format!(
         "{mark} {}  {}{detail}{elapsed}",
         label(&row.subject, frame),
-        row.state.word()
+        word(row)
     )
+}
+
+/// Lines for `others` in the caller's order, then every graph Service in the
+/// order the Deploy starts them: by depth under a header per depth, each with
+/// a `draining old` line while old Containers stop.
+fn body<'a>(
+    frame: &'a Frame,
+    others: impl IntoIterator<Item = &'a Row>,
+    tick: usize,
+) -> Vec<(String, Tone)> {
+    let mut lines: Vec<_> = others
+        .into_iter()
+        .map(|row| (row_text(row, frame, tick), row.state.tone()))
+        .collect();
+    let mut graph: Vec<_> = frame
+        .rows
+        .iter()
+        .filter_map(|row| match &row.subject {
+            Subject::Service(graph) => Some((graph, row)),
+            Subject::ServiceOnServer { .. } | Subject::Operation { .. } | Subject::Node { .. } => {
+                None
+            }
+        })
+        .collect();
+    graph.sort_by_key(|(graph, _)| graph.depth);
+    let mut depth = None;
+    for (graph, row) in graph {
+        if depth != Some(graph.depth) {
+            depth = Some(graph.depth);
+            lines.push((format!("depth {}", graph.depth), Tone::Muted));
+        }
+        lines.push((
+            format!("  {}", row_text(row, frame, tick)),
+            row.state.tone(),
+        ));
+        if let Some(draining) = graph.draining_line() {
+            lines.push((format!("    {draining}"), Tone::Change));
+        }
+    }
+    lines
+}
+
+fn ungraphed(row: &&Row) -> bool {
+    !matches!(row.subject, Subject::Service(_))
 }
 
 fn mark(state: &State, tick: usize) -> &'static str {
@@ -530,7 +648,13 @@ fn clip(text: &str, width: usize) -> String {
     result
 }
 
-fn live_lines(frame: &Frame, tick: usize, width: usize, height: usize, color: bool) -> Vec<String> {
+pub(crate) fn live_lines(
+    frame: &Frame,
+    tick: usize,
+    width: usize,
+    height: usize,
+    color: bool,
+) -> Vec<String> {
     let width = width.saturating_sub(1 + usize::from(terminal::ECHO_ROOM));
     let height = height.saturating_sub(1).max(1);
     let mut rows: Vec<_> = frame.rows.iter().collect();
@@ -548,14 +672,15 @@ fn live_lines(frame: &Frame, tick: usize, width: usize, height: usize, color: bo
             || vec![clip(&frame.title, width)],
             |row| {
                 vec![paint(
-                    &clip(&row_text(row, frame, mark(&row.state, tick)), width),
+                    &clip(&row_text(row, frame, tick), width),
                     row.state.tone(),
                     color,
                 )]
             },
         );
     }
-    let overflow = rows.len() + 1 > height;
+    let body = body(frame, rows.into_iter().filter(ungraphed), tick);
+    let overflow = body.len() + 1 > height;
     let available = height.saturating_sub(if overflow && height > 2 { 2 } else { 1 });
     let mut lines = vec![clip(
         &format!(
@@ -566,18 +691,14 @@ fn live_lines(frame: &Frame, tick: usize, width: usize, height: usize, color: bo
         ),
         width,
     )];
-    lines.extend(rows.iter().take(available).map(|row| {
-        paint(
-            &clip(&row_text(row, frame, mark(&row.state, tick)), width),
-            row.state.tone(),
-            color,
-        )
-    }));
+    let hidden = body.len().saturating_sub(available);
+    lines.extend(
+        body.into_iter()
+            .take(available)
+            .map(|(text, tone)| paint(&clip(&text, width), tone, color)),
+    );
     if overflow && height > 2 {
-        lines.push(clip(
-            &format!("  … {} more rows", rows.len().saturating_sub(available)),
-            width,
-        ));
+        lines.push(clip(&format!("  … {hidden} more rows"), width));
     }
     lines
 }
@@ -598,21 +719,39 @@ fn changes(
                 .rows
                 .iter()
                 .find(|old| old.subject.same_identity(&row.subject))
+                .map(|old| (old, previous))
         });
-        if old.is_none_or(|old| {
-            old.state != row.state || old.detail != row.detail || old.subject != row.subject
-        }) {
+        let line = |row: &Row, frame: &Frame, color: bool| {
             let detail = row
                 .detail
                 .as_deref()
                 .map(|detail| format!(" ({detail})"))
                 .unwrap_or_default();
-            writeln!(
-                writer,
-                "  {}: {}{detail}",
+            let depth = match &row.subject {
+                Subject::Service(graph) => format!(" (depth {})", graph.depth),
+                Subject::ServiceOnServer { .. }
+                | Subject::Operation { .. }
+                | Subject::Node { .. } => String::new(),
+            };
+            format!(
+                "  {}{depth}: {}{detail}",
                 label(&row.subject, frame),
-                paint(row.state.word(), row.state.tone(), color)
-            )?;
+                paint(&word(row), row.state.tone(), color)
+            )
+        };
+        if old.is_none_or(|(old, previous)| line(old, previous, false) != line(row, frame, false)) {
+            writeln!(writer, "{}", line(row, frame, color))?;
+        }
+        let draining = |row: &Row| match &row.subject {
+            Subject::Service(graph) => graph.draining_line(),
+            Subject::ServiceOnServer { .. } | Subject::Operation { .. } | Subject::Node { .. } => {
+                None
+            }
+        };
+        if let Some(text) = draining(row)
+            && old.is_none_or(|(old, _)| draining(old).as_ref() != Some(&text))
+        {
+            writeln!(writer, "  {}: {text}", label(&row.subject, frame))?;
         }
     }
     let previous_notices = previous.map(notices).unwrap_or_default();
@@ -694,16 +833,8 @@ fn finish(
     }
     if interactive {
         writeln!(writer, "{}", frame.title)?;
-        for row in &frame.rows {
-            writeln!(
-                writer,
-                "{}",
-                paint(
-                    &row_text(row, frame, mark(&row.state, 0)),
-                    row.state.tone(),
-                    color
-                )
-            )?;
+        for (text, tone) in body(frame, frame.rows.iter().filter(ungraphed), 0) {
+            writeln!(writer, "{}", paint(&text, tone, color))?;
         }
         for notice in notices(frame) {
             writeln!(writer, "! {notice}")?;
@@ -741,11 +872,12 @@ fn finish(
     let servers: BTreeSet<_> = frame
         .rows
         .iter()
-        .filter_map(|row| match &row.subject {
+        .flat_map(|row| match &row.subject {
             Subject::ServiceOnServer { machine, .. } | Subject::Operation { machine, .. } => {
-                Some(machine)
+                vec![machine]
             }
-            Subject::Service(_) | Subject::Node { .. } => None,
+            Subject::Service(graph) => graph.machines.iter().collect(),
+            Subject::Node { .. } => Vec::new(),
         })
         .collect();
     if !servers.is_empty() {

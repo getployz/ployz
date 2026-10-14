@@ -3,7 +3,9 @@
 use crate::{
     connect::Client,
     failure::Failure,
-    ui::progress::{Detail, Diagnostic, Frame, LogTail, Row, Run, State, Subject, Timing},
+    ui::progress::{
+        Detail, Diagnostic, Frame, GraphService, LogTail, Row, Run, State, Subject, Timing,
+    },
 };
 use ployz_core::{
     ContainerId, DeployOperation, DeployOutcome, ExecutionError, FailedOperation, MachineId,
@@ -12,9 +14,143 @@ use ployz_core::{
     ServiceName, StopAttempt,
 };
 use ployz_store::tools::SecretSet;
-use ployz_store::{RowState, RowTracker, ServerProgress};
-use std::collections::BTreeMap;
-use std::time::SystemTime;
+use ployz_store::{RowPhase, RowState, RowTracker, ServerProgress};
+use std::collections::{BTreeMap, BTreeSet};
+use std::time::{Duration, SystemTime};
+
+use super::ServiceGroup;
+
+/// The depth at which each Service starts: 0 without a dependency in this
+/// Deploy, else one more than its deepest dependency. `groups` come in
+/// execution order, so every dependency is placed before its dependents.
+pub(super) fn depths(groups: &[ServiceGroup]) -> BTreeMap<ServiceName, u32> {
+    let mut depths = BTreeMap::new();
+    for group in groups {
+        let Some(service) = &group.service else {
+            continue;
+        };
+        let depth = group
+            .dependencies
+            .iter()
+            .filter_map(|dependency| depths.get(dependency))
+            .max()
+            .map_or(0, |deepest: &u32| deepest + 1);
+        depths.insert(service.clone(), depth);
+    }
+    depths
+}
+
+/// One replica's recorded work, for [`service_row`].
+pub(crate) struct Replica<'a> {
+    pub machine: MachineId,
+    pub state: &'a RowState,
+    pub timing: Timing,
+}
+
+/// One row for a Service's replicas: failed when any failed, booting while any
+/// work runs, switched once all completed, and not started when the Deploy
+/// stopped before any of it ran. A Service with no recorded work is waiting.
+pub(crate) fn service_row<'a>(
+    service: QualifiedService,
+    depth: u32,
+    replicas: impl IntoIterator<Item = Replica<'a>>,
+) -> Row {
+    let replicas: Vec<_> = replicas.into_iter().collect();
+    let draining = |state: &RowState| {
+        matches!(
+            state,
+            RowState::Running {
+                phase: RowPhase::StoppingContainer | RowPhase::RemovingContainer
+            }
+        )
+    };
+    let all = |test: fn(&RowState) -> bool| replicas.iter().all(|replica| test(replica.state));
+    let phases: Vec<_> = replicas
+        .iter()
+        .filter_map(|replica| match replica.state {
+            RowState::Running { phase } => Some((draining(replica.state), *phase)),
+            RowState::Pending
+            | RowState::Completed
+            | RowState::Failed { .. }
+            | RowState::NotAttempted
+            | RowState::Unknown => None,
+        })
+        .collect();
+    let running = phases
+        .iter()
+        .find(|(draining, _)| !draining)
+        .or_else(|| phases.first());
+    let state = if replicas
+        .iter()
+        .any(|replica| matches!(replica.state, RowState::Failed { .. }))
+    {
+        State::Failed
+    } else if replicas
+        .iter()
+        .any(|replica| matches!(replica.state, RowState::Unknown))
+    {
+        State::Unknown
+    } else if let Some((_, phase)) = running {
+        State::Running(*phase)
+    } else if all(|state| matches!(state, RowState::Pending)) {
+        State::Pending
+    } else if all(|state| matches!(state, RowState::Completed)) {
+        State::Completed
+    } else if replicas
+        .iter()
+        .any(|replica| matches!(replica.state, RowState::NotAttempted))
+    {
+        State::NotAttempted
+    } else {
+        State::Running(RowPhase::Starting)
+    };
+    let started = replicas
+        .iter()
+        .filter_map(|replica| match replica.timing {
+            Timing::Started(at) => Some(at),
+            Timing::Unavailable | Timing::Finished(_) => None,
+        })
+        .min();
+    let timing = match started {
+        Some(at) => Timing::Started(at),
+        None if !replicas.is_empty()
+            && replicas
+                .iter()
+                .all(|replica| matches!(replica.timing, Timing::Finished(_))) =>
+        {
+            Timing::Finished(
+                replicas
+                    .iter()
+                    .filter_map(|replica| match replica.timing {
+                        Timing::Finished(elapsed) => Some(elapsed),
+                        Timing::Unavailable | Timing::Started(_) => None,
+                    })
+                    .max()
+                    .unwrap_or(Duration::ZERO),
+            )
+        }
+        None => Timing::Unavailable,
+    };
+    Row {
+        subject: Subject::Service(GraphService {
+            service,
+            depth,
+            ready: replicas
+                .iter()
+                .filter(|replica| matches!(replica.state, RowState::Completed))
+                .count(),
+            total: replicas.len(),
+            draining: replicas
+                .iter()
+                .filter(|replica| draining(replica.state))
+                .count(),
+            machines: replicas.iter().map(|replica| replica.machine).collect(),
+        }),
+        state,
+        detail: None,
+        timing,
+    }
+}
 
 /// Factual Service/Server progress plus standalone operations and failed Container identity.
 pub(super) struct Direct {
@@ -24,6 +160,7 @@ pub(super) struct Direct {
     rows: BTreeMap<(ServiceName, MachineId), (ServerProgress, Timing)>,
     pub(super) operations: Vec<OperationRow>,
     notices: Vec<ployz_core::DeployWarning>,
+    depths: BTreeMap<ServiceName, u32>,
 }
 
 impl Direct {
@@ -35,6 +172,7 @@ impl Direct {
             rows: BTreeMap::new(),
             operations: Vec::new(),
             notices: preview.warnings.clone(),
+            depths: preview.depths.clone(),
         };
         direct.observe(&preview.operations);
         direct
@@ -66,18 +204,22 @@ impl Direct {
     }
 
     pub(super) fn frame(&self) -> Frame {
-        let mut rows: Vec<_> = self
-            .rows
-            .values()
-            .map(|(row, timing)| Row {
-                subject: Subject::ServiceOnServer {
-                    service: QualifiedService::new(self.namespace.clone(), row.service.clone()),
-                    machine: row.machine,
-                    server: row.server.clone(),
-                },
-                state: (&row.state).into(),
-                detail: None,
-                timing: timing.clone(),
+        let services: BTreeSet<_> = self.rows.keys().map(|(service, _)| service).collect();
+        let mut rows: Vec<_> = services
+            .into_iter()
+            .map(|service| {
+                service_row(
+                    QualifiedService::new(self.namespace.clone(), service.clone()),
+                    self.depths.get(service).copied().unwrap_or(0),
+                    self.rows
+                        .values()
+                        .filter(|(row, _)| row.service == *service)
+                        .map(|(row, timing)| Replica {
+                            machine: row.machine,
+                            state: &row.state,
+                            timing: timing.clone(),
+                        }),
+                )
             })
             .collect();
         rows.extend(

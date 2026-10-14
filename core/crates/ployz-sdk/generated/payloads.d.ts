@@ -1098,7 +1098,12 @@ preserved_volumes: Array<PreservedVolume>,
 /**
  * Why pruning will not run. `None` means obsolete Services are removed.
  */
-prune_refusal: PruneRefusal | null, };
+prune_refusal: PruneRefusal | null,
+/**
+ * The graph depth at which each deployed Service starts: 0 without a
+ * deployed dependency, else one more than its deepest deployed dependency.
+ */
+depths: { [key in ServiceName]: number }, };
 
 export type DeployWarning = { "type": "storage_headroom",
 /**

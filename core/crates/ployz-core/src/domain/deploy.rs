@@ -557,6 +557,10 @@ pub struct DeployPreview {
     /// Why pruning will not run. `None` means obsolete Services are removed.
     #[serde(default)]
     pub prune_refusal: Option<PruneRefusal>,
+    /// The graph depth at which each deployed Service starts: 0 without a
+    /// deployed dependency, else one more than its deepest deployed dependency.
+    #[serde(default)]
+    pub depths: BTreeMap<ServiceName, u32>,
 }
 
 /// One managed Docker Volume current observations indicate a container operation would create.
@@ -625,6 +629,7 @@ impl DeployPreview {
             would_remove: Vec::new(),
             preserved_volumes: Vec::new(),
             prune_refusal: None,
+            depths: BTreeMap::new(),
         }
     }
 
