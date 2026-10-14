@@ -483,6 +483,7 @@ mod tests {
         for case in [
             "success",
             "install-only",
+            "installed-units",
             "same-target",
             "missing",
             "missing-tar",
@@ -578,7 +579,7 @@ mod tests {
         let paths = InstallPaths::at(&root);
         fs::create_dir_all(&paths.bin_dir).unwrap();
         let existing = match case {
-            "success" | "install-only" => None,
+            "success" | "install-only" | "installed-units" => None,
             "same-target" => Some(write_existing_daemon(&paths, "1.2.3")),
             _ => Some(write_existing_daemon(&paths, "1.2.2")),
         };
@@ -587,6 +588,9 @@ mod tests {
         }
         if case == "missing-tar" {
             fs::remove_file(root.join("commands/tar")).unwrap();
+        }
+        if case == "installed-units" {
+            fs::create_dir_all(&paths.systemd_dir).unwrap();
         }
 
         let request = InstallRequest {
@@ -610,9 +614,24 @@ mod tests {
                 assert!(paths.bin_dir.join("ployzd").is_file());
                 assert!(paths.systemd_dir.join("ployz.service").is_file());
                 assert!(paths.systemd_dir.join("ployz.socket").is_file());
+                let service = fs::read_to_string(paths.systemd_dir.join("ployz.service")).unwrap();
+                assert!(
+                    service.contains(&format!("ExecStart={}/ployzd\n", paths.bin_dir.display())),
+                    "a daemon that rejects install-units leaves this release's units: {service}"
+                );
                 if case == "install-only" {
                     assert!(!root.join("forbidden-invocation").exists());
                     assert!(!paths.data_dir.exists());
+                }
+            }
+            "installed-units" => {
+                result.unwrap();
+                for unit in ["ployz.service", "ployz-volume-plugin.service"] {
+                    assert_eq!(
+                        fs::read_to_string(paths.systemd_dir.join(unit)).unwrap(),
+                        "written by installed 1.2.3\n",
+                        "{unit} was not written by the installed daemon"
+                    );
                 }
             }
             "same-target" => {
@@ -673,7 +692,8 @@ mod tests {
         let daemon = match case {
             "rejected-executable" => "case \"$1\" in version) echo 9.9.9 ;; esac",
             "hung-executable" => "case \"$1\" in version) sleep 1; echo 1.2.3 ;; esac",
-            _ => "case \"$1\" in version) echo 1.2.3 ;; esac",
+            "installed-units" => INSTALLED_UNITS_DAEMON,
+            _ => "case \"$1\" in version) echo 1.2.3 ;; *) exit 2 ;; esac",
         };
         write_script(&payload.join("ployzd"), daemon);
         write_script(&payload.join("ployz-uninstall"), "exit 0");
@@ -745,6 +765,19 @@ mod tests {
             fs::write(release.join("checksums.txt"), "bad checksum\n").unwrap();
         }
     }
+
+    const INSTALLED_UNITS_DAEMON: &str = r#"case "$1" in
+  version) echo 1.2.3 ;;
+  install-units)
+    while [ $# -gt 1 ]; do
+      case "$1" in --systemd-dir) dir=$2 ;; esac
+      shift
+    done
+    for unit in ployz.service ployz.socket ployz-volume-plugin.socket ployz-volume-plugin.service; do
+      echo "written by installed 1.2.3" > "$dir/$unit"
+    done ;;
+  *) exit 2 ;;
+esac"#;
 
     pub(super) fn write_existing_daemon(paths: &InstallPaths, version: &str) -> Vec<u8> {
         fs::create_dir_all(&paths.bin_dir).unwrap();
