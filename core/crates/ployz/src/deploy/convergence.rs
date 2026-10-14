@@ -535,11 +535,14 @@ async fn move_one(
                     deploy,
                 }),
             )),
-            AtRemoval::Unread(detail) => Err(MoveFailure::OldNotRemoved {
+            AtRemoval::Unread {
+                detail,
+                old_stopped,
+            } => Err(MoveFailure::OldNotRemoved {
                 from,
                 to,
                 detail: format!("reading its Serving Pointer before removing it: {detail}"),
-                old_stopped: false,
+                old_stopped,
             }),
         },
         Err(MoveContainerError::NotServing {
@@ -581,8 +584,9 @@ pub(in crate::deploy) enum AtRemoval {
     Pointed(DeploymentLogId),
     /// Its pointer already retires it; ployzd stops it after every Machine acknowledged.
     Retiring,
-    /// The pointer could not be read; the old copy stays until it can be.
-    Unread(String),
+    /// The pointer could not be read; the old copy stays until it can be, stopped already
+    /// when the read came after the stop.
+    Unread { detail: String, old_stopped: bool },
 }
 
 impl AtRemoval {
@@ -601,7 +605,7 @@ impl AtRemoval {
     pub(in crate::deploy) fn replacement_deploy(&self) -> Option<DeploymentLogId> {
         match self {
             Self::Pointed(deploy) => Some(deploy.clone()),
-            Self::Remove | Self::Retiring | Self::Unread(_) => None,
+            Self::Remove | Self::Retiring | Self::Unread { .. } => None,
         }
     }
 }
@@ -616,12 +620,15 @@ pub(in crate::deploy) struct OldCopyGate<'a, C> {
 }
 
 impl<C: PointerClient> RemovesOld for OldCopyGate<'_, C> {
-    async fn removes_old(&mut self) -> bool {
+    async fn removes_old(&mut self, old_stopped: bool) -> bool {
         self.at_removal = match protection(&mut self.reader, self.service, self.old).await {
             Ok(Protection::Unnamed) => AtRemoval::Remove,
             Ok(Protection::Pointed(pointer)) => AtRemoval::Pointed(pointer.deploy),
             Ok(Protection::Retiring) => AtRemoval::Retiring,
-            Err(error) => AtRemoval::Unread(crate::ui::row(&error)),
+            Err(error) => AtRemoval::Unread {
+                detail: crate::ui::row(&error),
+                old_stopped,
+            },
         };
         self.at_removal == AtRemoval::Remove
     }
