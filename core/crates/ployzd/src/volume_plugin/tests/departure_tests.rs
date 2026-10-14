@@ -238,7 +238,8 @@ async fn departure_keeps_a_copy_this_machine_wrote() {
 #[tokio::test]
 async fn departure_keeps_every_slot_no_landed_pull_marked() {
     const NEWEST: &str = "tank/ployz-mirror/data/fs@w-1-2\t12\t1700000002";
-    let cases: &[(&str, &[(&str, &str, &str)])] = &[
+    type Writes<'a> = &'a [(&'a str, &'a str, &'a str)];
+    let cases: &[(&str, Writes)] = &[
         ("a released mirror", &[]),
         (
             "a released mirror whose parent names its newest",

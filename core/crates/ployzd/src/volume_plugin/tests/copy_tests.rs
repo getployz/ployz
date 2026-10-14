@@ -2986,7 +2986,11 @@ async fn every_stop_of_a_writer_path_leaves_a_slot_the_departure_keeps_until_a_p
             let source = Source::start(Some(BOUND), "snapshot w-1-2 12\n").await;
             let test = TestDir::new();
             let (socket, server) = writing.fixture(&test, source.port);
-            let earlier = steps[..index].iter().filter(|done| *done == step).count();
+            let earlier = steps
+                .iter()
+                .take(index)
+                .filter(|done| *done == step)
+                .count();
             drive(writing, &test, &socket, Some((step, earlier))).await;
             assert!(
                 !test.0.join("props/fail-command").exists(),
