@@ -47,4 +47,18 @@ describe("the mirror status backfill", () => {
     ]);
     expect(await harness.runEffect(mirrorStatuses(organizationId, "vol2"))).toEqual([]);
   });
+
+  it("dates a mirror whose only row so far is a failed pull, and keeps the failure", async () => {
+    await sync("vol2", "done", "2026-10-11T00:00:00Z", "2026-10-11T00:05:00Z");
+    await harness.pool.query(
+      `insert into volume_mirror_status (organization_id, volume_id, machine_id, failed_at, failed_snapshot, failure) values ($1, 'vol2', $2, $3, 'w-1-5', 'no space left')`,
+      [organizationId, machine("web-2"), "2026-10-13T00:00:00Z"],
+    );
+
+    await harness.pool.query(await readFile(backfill, "utf8"));
+
+    expect(await harness.runEffect(mirrorStatuses(organizationId, "vol2"))).toEqual([
+      { machine: machine("web-2"), okAt: null, matchedAt: "2026-10-11T00:05:00.000Z", failedAt: "2026-10-13T00:00:00.000Z", failure: "no space left" },
+    ]);
+  });
 });
