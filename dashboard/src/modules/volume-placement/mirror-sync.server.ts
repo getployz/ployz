@@ -221,7 +221,7 @@ export const syncMirrors = Effect.fn("MirrorSync.sync")(function* (
   // A writer keeps its newest two snapshots, so a new one while a pull runs could prune that pull's source.
   if (busy.length > 0) return yield* answer(reported, { kind: "synced", mirrors: busy });
 
-  const snapshot = yield* ask(asker, writer.machine, { kind: "writer", epoch }, { kind: "snapshot", name: `w-${epoch}-${Math.floor(Date.now() / 1000)}` });
+  const snapshot = yield* ask(asker, writer.machine, { kind: "writer", epoch }, { kind: "snapshot", name: `w-${epoch}-${Date.now()}` });
   if (!snapshot.ok) return yield* answer(reported, { kind: "refused", message: snapshot.message });
   const target: Snapshot | null = snapshot.copy?.newest ?? null;
   if (target === null) return yield* answer(reported, { kind: "refused", message: `${named(writer)} made no snapshot` });
