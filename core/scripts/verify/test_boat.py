@@ -89,6 +89,18 @@ class Images(unittest.TestCase):
         self.assertEqual(sorted(image for image in baked if not image.startswith('"')), sorted(boat.IMAGES))
 
 
+class Bakes(unittest.TestCase):
+    def test_prune_keeps_the_newest_bakes_and_never_names_another_snapshot(self):
+        named = [dict(name="ployz-verify-024", createdAt="2026-01-01"), dict(name="someone-else", createdAt="2026-01-02"),
+                 *(dict(name=f"{boat.BAKED}{day}", createdAt=f"2026-10-{day}") for day in ["11", "13", "10", "12"])]
+        self.assertEqual(boat.stale_bakes(named, f"{boat.BAKED}14"),
+                         [f"{boat.BAKED}10", f"{boat.BAKED}11"])
+
+    def test_the_current_bake_is_never_pruned(self):
+        named = [dict(name=f"{boat.BAKED}{day}", createdAt=f"2026-10-{day}") for day in ["10", "11", "12", "13"]]
+        self.assertNotIn(f"{boat.BAKED}10", boat.stale_bakes(named, f"{boat.BAKED}10"))
+
+
 class Registry(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
