@@ -33,7 +33,7 @@ it("drops every removed repository from the picker cache and keeps the rest", as
   } finally { await harness.stop(); }
 }, 60_000);
 
-it("suspend empties the cache and keeps the installation and its links; deleted forgets all three", async () => {
+it("suspend marks the installation suspended, empties the cache and keeps its links; deleted forgets all three; both name the linked Organizations", async () => {
   const harness = await startPostgresTestHarness();
   try {
     const shop = "00000000-0000-4000-8000-000000000001";
@@ -44,18 +44,19 @@ it("suspend empties the cache and keeps the installation and its links; deleted 
     await harness.pool.query("insert into github_repository_cache(installation_id,repository_id,name,full_name,default_branch,private,html_url,repo_updated_at) values(7,41,'web','acme/web','main',true,'https://github.com/acme/web',now())");
     await harness.runEffect(linkGithubInstallation({ organizationId: shop, installationId: 7, connectedByUserId: user, connectedGithubLogin: "ada" }));
     const counts = async () => {
-      const { rows } = await harness.pool.query<{ installations: string; cached: string; links: string }>(
-        "select (select count(*) from github_installation where installation_id=7) installations, (select count(*) from github_repository_cache where installation_id=7) cached, (select count(*) from organization_github_installation where installation_id=7) links");
+      const { rows } = await harness.pool.query<{ installations: string; suspended: string; cached: string; links: string }>(
+        "select (select count(*) from github_installation where installation_id=7) installations, (select count(*) from github_installation where installation_id=7 and suspended_at is not null) suspended, (select count(*) from github_repository_cache where installation_id=7) cached, (select count(*) from organization_github_installation where installation_id=7) links");
       return rows[0];
     };
 
-    expect(await harness.runEffect(processGithubInstallationEvent(installation("suspend")))).toEqual({ installationId: 7, shouldSyncRepositories: false });
-    expect(await counts()).toEqual({ installations: "1", cached: "0", links: "1" });
+    expect(await harness.runEffect(processGithubInstallationEvent(installation("suspend")))).toEqual({ installationId: 7, shouldSyncRepositories: false, stopBuildsFor: [shop] });
+    expect(await counts()).toEqual({ installations: "1", suspended: "1", cached: "0", links: "1" });
 
-    expect(await harness.runEffect(processGithubInstallationEvent(installation("unsuspend")))).toEqual({ installationId: 7, shouldSyncRepositories: true });
-    expect(await counts()).toEqual({ installations: "1", cached: "0", links: "1" });
+    expect(await harness.runEffect(processGithubInstallationEvent(installation("unsuspend")))).toEqual({ installationId: 7, shouldSyncRepositories: true, stopBuildsFor: [] });
+    expect(await counts()).toEqual({ installations: "1", suspended: "0", cached: "0", links: "1" });
 
-    await harness.runEffect(processGithubInstallationEvent(installation("deleted")));
-    expect(await counts()).toEqual({ installations: "0", cached: "0", links: "0" });
+    expect(await harness.runEffect(processGithubInstallationEvent(installation("deleted"))))
+      .toEqual({ installationId: 7, shouldSyncRepositories: false, stopBuildsFor: [shop] });
+    expect(await counts()).toEqual({ installations: "0", suspended: "0", cached: "0", links: "0" });
   } finally { await harness.stop(); }
 }, 60_000);

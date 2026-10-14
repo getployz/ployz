@@ -112,6 +112,7 @@ it.live(
       assert.deepStrictEqual(installationResult, {
         installationId: 1717,
         shouldSyncRepositories: true,
+        stopBuildsFor: [],
       });
       assert.deepStrictEqual(installationStep.sendEvent.mock.calls, [
         [

@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 import type { GithubFileQuery, GithubFileView, GithubTreeQuery, GithubTreeView } from "@ployz/sdk";
 import { and, eq } from "drizzle-orm";
 import { Context, Effect, Layer } from "effect";
-import { cancelStoreGithubRuns } from "#/modules/config-store/config-store.server";
+import { stopGithubInstallationBuilds } from "#/modules/config-store/config-store.server";
 import { StoreRefused } from "#/modules/config-store/store.contract";
 import { accessFor } from "#/modules/github/github-access";
 import { listGithubRepositoryBranches, listGithubRepositoryFiles, readGithubRepositoryContents } from "#/modules/github/github.api";
@@ -185,9 +185,10 @@ export const GithubRepositoriesLive = Layer.effect(GithubRepositories, Effect.ge
 }));
 
 /**
- * `ployz github disconnect ID`: the Organization lets go of one installation it links (a `manage` call). Its builds
- * running on GitHub through that installation are cancelled first, while the link still mints their token; then the
- * link goes and their Deployments fail with the disconnect. Other Organizations linked to the installation keep it.
+ * `ployz github disconnect ID`: the Organization lets go of one installation it links (a `manage` call). The link goes
+ * first, so nothing new reads or builds through it; then its builds running on GitHub through that installation are
+ * cancelled as Cloud and their Deployments fail with the disconnect. A stop that fails is caught by the build walk's
+ * next look. Other Organizations linked to the installation keep it.
  * Uninstalling the App happens on GitHub.
  */
 export const disconnectGithub = Effect.fn("GithubCli.disconnect")(function* (caller: Caller, installationId: number) {
@@ -196,8 +197,10 @@ export const disconnectGithub = Effect.fn("GithubCli.disconnect")(function* (cal
   const installation = yield* getGithubInstallation(installationId);
   const link = yield* findInstallationLink(organization.id, installationId);
   if (installation === null || !link.linked) return yield* new NotFound({ message: "No such GitHub installation of yours." });
-  yield* cancelStoreGithubRuns(organization.id, installationId);
   yield* unlinkGithubInstallation({ organizationId: organization.id, installationId });
+  yield* stopGithubInstallationBuilds(installationId, [organization.id]).pipe(
+    Effect.catch((error) => Effect.logWarning("Could not stop a disconnected installation's GitHub builds.", error)),
+  );
   const settings = installation.accountType === "Organization"
     ? `${origins.web}/organizations/${installation.accountLogin}/settings/installations/${installation.installationId}`
     : `${origins.web}/settings/installations/${installation.installationId}`;

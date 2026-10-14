@@ -3,12 +3,13 @@ import { it } from "@effect/vitest";
 import type { ConfigCommand, JsonValue } from "@ployz/sdk";
 import { Effect, Layer } from "effect";
 import type { StoreCall } from "./store.contract";
-import { expect } from "vitest";
+import { expect, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { callStore, gatherTrusted } from "#/modules/config-store/config-store.server";
 import {
   checkInStoreGithubBuild, checkStoreGithubBuild, planStoreGithubBuilds, recordStoreGithubBuildSteps, startStoreGithubBuild,
 } from "#/modules/config-store/store-github-builds.server";
+import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { GithubOidcKeys } from "#/modules/github/github-oidc.server";
 import { unlinkGithubInstallation } from "#/modules/github/github.repository";
 import { type ConnectedRuntimeClient, OrganizationRuntime, type OrganizationRuntimeService } from "#/modules/runtime/organization-runtime.server";
@@ -176,3 +177,32 @@ it.live(
     }),
   60_000,
 );
+
+it.live("a build that checked in reports its steps until its Organization disconnects GitHub, then is refused", () =>
+  Effect.gen(function* () {
+    const services = yield* Layer.build(yield* storeTestCloud({ github: github.service }));
+    const provided = <A, E, R>(program: Effect.Effect<A, E, R>) => program.pipe(
+      Effect.provide(services),
+      Effect.provideService(GithubOidcKeys, { keys: Effect.succeed([jwk]) }),
+    );
+    // The runner checked in before the disconnect, so the Store takes its reports.
+    const githubReport = vi.spyOn(yield* provided(cloudStore), "githubReport").mockResolvedValue({ received: 1, ended: false });
+    yield* provided(seedStoreOrganization(ORGANIZATION));
+    const store = yield* provided(seedStoreGitService(ORGANIZATION, { project: PROJECT, environment: ENVIRONMENT, service: SERVICE }));
+    yield* Effect.promise(() => store.write(ORGANIZATION, {
+      command: "admit", admit: "deploy", id: DEPLOYMENT, environment: here, services: [], version: null, accept_volume_loss: [],
+    }, acmeWeb()));
+    yield* Effect.promise(() => store.pinSources(DEPLOYMENT, { web: HEAD }));
+    yield* Effect.promise(() => store.githubDispatched(BUILD, {
+      run_id: RUN, run_url: `https://github.com/acme/web/actions/runs/${RUN}`, workflow_ref: WORKFLOW, repository: "acme/web", installation_id: 7,
+    }));
+    const steps = () => recordStoreGithubBuildSteps(
+      new Request(`http://localhost:3000/api/builds/${BUILD}/steps`, { method: "POST", headers: { authorization: `Bearer ${oidcToken()}` } }),
+      BUILD, JSON.stringify({ from: 0, events: [] }),
+    );
+
+    expect(yield* provided(steps())).toEqual({ received: 1 });
+    expect(yield* provided(unlinkGithubInstallation({ organizationId: ORGANIZATION, installationId: 7 }))).toBe(true);
+    expect(yield* provided(Effect.flip(steps()))).toMatchObject({ _tag: "Forbidden", message: "GitHub account `acme` was disconnected" });
+    expect(githubReport).toHaveBeenCalledTimes(1);
+  }), 60_000);

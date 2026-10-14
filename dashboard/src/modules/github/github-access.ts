@@ -10,16 +10,20 @@ export type GithubAccess =
   | { readonly type: "organization"; readonly organizationId: string; readonly installationId: number }
   | { readonly type: "installation"; readonly installationId: number };
 
-/** The Organization no longer links the installation, so no token is minted or reused for it. */
+/**
+ * The Organization can't read through the installation now, so no token is minted or reused for it: it no longer links
+ * the installation, or GitHub suspended the installation.
+ */
 export class GithubDisconnected extends Data.TaggedError("GithubDisconnected")<{
   readonly organizationId: string;
   readonly installationId: number;
   readonly accountLogin: string;
+  readonly reason: "disconnected" | "suspended";
 }> {
   readonly publicErrorCategory = "forbidden" as const;
   readonly retriable = false as const;
   override get message() {
-    return `GitHub account \`${this.accountLogin}\` was disconnected`;
+    return `GitHub account \`${this.accountLogin}\` was ${this.reason}`;
   }
 }
 

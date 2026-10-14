@@ -8,6 +8,7 @@ export const githubInstallation = pgTable("github_installation", {
   accountLogin: text("account_login").notNull(),
   accountType: text("account_type").notNull(),
   accountAvatarUrl: text("account_avatar_url"),
+  suspendedAt: timestamp("suspended_at", { mode: "date", withTimezone: true }),
   createdAt,
   updatedAt,
 });

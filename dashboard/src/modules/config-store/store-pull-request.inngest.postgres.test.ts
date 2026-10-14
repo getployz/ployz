@@ -34,7 +34,7 @@ function github(pull: PullState, posted: unknown[]) {
       : path.includes("/check-runs?")
         ? { check_runs: [] }
         : path.endsWith("/check-runs") ? { id: 99 } : { id: 42, full_name: "acme/web", private: true };
-  }).service;
+  });
 }
 
 const delivery = (id: string) => ({
@@ -57,7 +57,8 @@ it.live(
         requested.push(event);
         return { ids: [] };
       });
-      const services = yield* Layer.build(yield* storeTestCloud({ github: github(pull, posted), inngest: checks }));
+      const githubApi = github(pull, posted);
+      const services = yield* Layer.build(yield* storeTestCloud({ github: githubApi.service, inngest: checks }));
       yield* Effect.all([seedStoreOrganization(ORGANIZATION), enrollStoreServer(ORGANIZATION)]).pipe(Effect.provide(services));
       const store = yield* cloudStore.pipe(Effect.provide(services));
       const write = (command: ConfigCommand, trusted?: ConfigTrusted) =>
@@ -91,6 +92,9 @@ it.live(
       expect(opened.admitted).toHaveLength(1);
       expect(opened.check).toBe("posted");
       expect(dispatched).toEqual(["open"]);
+      // Cloud reads the pull request as itself, once for all linked Organizations.
+      expect(githubApi.calls.filter((call) => call.path.endsWith("/pulls/5")).map((call) => call.access))
+        .toEqual([{ type: "installation", installationId: 7 }]);
       expect(yield* environments()).toEqual(["pr-5", "production"]);
       expect(posted).toMatchObject([{ head_sha: HEAD, conclusion: "success", output: { title: "No config changes" } }]);
 

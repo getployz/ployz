@@ -84,20 +84,29 @@ export const mintInstallationToken = Effect.fn("GithubTokens.mint")(function* (i
 
 export interface GithubTokensService {
   /**
-   * A token for the Organization's read through `installationId`. The link row is checked on every call, before the
-   * cache, so a disconnected Organization fails `GithubDisconnected` even while a token for the installation is cached.
+   * A token for the Organization's read through `installationId`. The link and the installation are checked on every
+   * call, before the cache, so an Organization that disconnected, or whose installation GitHub suspended, fails
+   * `GithubDisconnected` even while a token for the installation is cached.
    */
   readonly installationToken: (organizationId: string, installationId: number) => Effect.Effect<string, GithubObservationError | GithubDisconnected>;
-  /** A token for Cloud's own bookkeeping of an installation (repository sync, metadata). Never hands repository contents to an Organization. */
+  /**
+   * A token for Cloud's own acts on an installation: repository sync, a webhook's reads for its linked Organizations,
+   * cancelling a run Cloud dispatched. An installation GitHub suspended or Cloud forgot gets none, cached or not.
+   */
   readonly systemInstallationToken: (installationId: number) => Effect.Effect<string, GithubObservationError>;
 }
 
 export class GithubTokens extends Context.Service<GithubTokens, GithubTokensService>()("ployz/GithubTokens") {}
 
+/** What Cloud knows of an installation for one Organization: whether it links it, and whether GitHub suspended it. */
 export const findInstallationLink = Effect.fn("GithubTokens.findInstallationLink")(function* (organizationId: string, installationId: number) {
   const { drizzle } = yield* Database;
   const rows = yield* drizzle
-    .select({ accountLogin: githubInstallation.accountLogin, linked: organizationGithubInstallation.organizationId })
+    .select({
+      accountLogin: githubInstallation.accountLogin,
+      suspendedAt: githubInstallation.suspendedAt,
+      linked: organizationGithubInstallation.organizationId,
+    })
     .from(githubInstallation)
     .leftJoin(organizationGithubInstallation, and(
       eq(organizationGithubInstallation.installationId, githubInstallation.installationId),
@@ -106,7 +115,30 @@ export const findInstallationLink = Effect.fn("GithubTokens.findInstallationLink
     .where(eq(githubInstallation.installationId, installationId))
     .limit(1);
   const row = rows[0];
-  return { linked: row?.linked !== undefined && row.linked !== null, accountLogin: row?.accountLogin ?? `installation ${installationId}` };
+  return {
+    installed: row !== undefined,
+    linked: row?.linked !== undefined && row.linked !== null,
+    suspended: row?.suspendedAt !== undefined && row.suspendedAt !== null,
+    accountLogin: row?.accountLogin ?? `installation ${installationId}`,
+  };
+});
+
+type InstallationLink = Effect.Success<ReturnType<typeof findInstallationLink>>;
+
+const refusalOf = (organizationId: string, installationId: number, link: InstallationLink) => link.linked && !link.suspended
+  ? null
+  : new GithubDisconnected({ organizationId, installationId, accountLogin: link.accountLogin, reason: link.linked ? "suspended" : "disconnected" });
+
+/** Why the Organization can't use the installation now, or null when it can. */
+export const installationRefusal = Effect.fn("GithubTokens.installationRefusal")(function* (organizationId: string, installationId: number) {
+  return refusalOf(organizationId, installationId, yield* findInstallationLink(organizationId, installationId));
+});
+
+const installationUsable = Effect.fn("GithubTokens.installationUsable")(function* (installationId: number) {
+  const { drizzle } = yield* Database;
+  const rows = yield* drizzle.select({ suspendedAt: githubInstallation.suspendedAt }).from(githubInstallation)
+    .where(eq(githubInstallation.installationId, installationId)).limit(1);
+  return rows[0] !== undefined && rows[0].suspendedAt === null;
 });
 
 export const makeGithubTokens = Effect.fn("GithubTokens.make")(function* (
@@ -118,14 +150,22 @@ export const makeGithubTokens = Effect.fn("GithubTokens.make")(function* (
   const cached = (installationId: number) => Cache.get(cache, installationId).pipe(
     Effect.tapError(() => Cache.invalidate(cache, installationId)),
   );
+  // Every Cloud process holds its own cache, so a suspended or forgotten installation's token is dropped where it is
+  // next asked for, not where the webhook landed.
+  const forgotten = (installationId: number) =>
+    Cache.invalidate(cache, installationId).pipe(Effect.andThen(mintFailed({ code: "not_found", retriable: false })));
   const systemInstallationToken: GithubTokensService["systemInstallationToken"] = Effect.fn("GithubTokens.system")(function* (installationId) {
     if (!isValidGithubId(installationId)) return yield* mintFailed({ code: "request_failed", retriable: false });
+    const usable = yield* installationUsable(installationId).pipe(Effect.provideService(Database, database), Effect.orDie);
+    if (!usable) return yield* forgotten(installationId);
     return yield* cached(installationId);
   });
   const installationToken: GithubTokensService["installationToken"] = Effect.fn("GithubTokens.installation")(function* (organizationId, installationId) {
     if (!isValidGithubId(installationId)) return yield* mintFailed({ code: "request_failed", retriable: false });
     const link = yield* findInstallationLink(organizationId, installationId).pipe(Effect.provideService(Database, database), Effect.orDie);
-    if (!link.linked) return yield* new GithubDisconnected({ organizationId, installationId, accountLogin: link.accountLogin });
+    if (!link.installed || link.suspended) yield* Cache.invalidate(cache, installationId);
+    const refusal = refusalOf(organizationId, installationId, link);
+    if (refusal !== null) return yield* refusal;
     return yield* cached(installationId);
   });
   return { installationToken, systemInstallationToken } satisfies GithubTokensService;

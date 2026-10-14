@@ -16,6 +16,8 @@ import {
   getCachedGithubRepositoryForOrganization,
   listCachedGithubRepositoriesForOrganization,
   listGithubInstallationsForOrganization,
+  listLinkedOrganizationIds,
+  suspendGithubInstallation,
   upsertCachedGithubRepositories,
   upsertGithubInstallation,
 } from "#/modules/github/github.repository";
@@ -61,8 +63,9 @@ function githubRepositoryFromWebhook(
 
 /**
  * An installation webhook records what GitHub told us and grants nothing: only an Organization's link row does.
- * `suspend` empties the installation's repository cache and keeps every Organization's link, so `unsuspend` brings the
- * repositories back; `deleted` forgets the installation, which cascades to its cache and every link.
+ * `suspend` marks the installation suspended and empties its repository cache, keeping every Organization's link, so
+ * `unsuspend` brings it back; `deleted` forgets the installation, which cascades to its cache and every link. Both
+ * name the Organizations that were linked, whose builds through it must stop now.
  */
 export const processGithubInstallationEvent = Effect.fn(
   "Github.processInstallationEvent",
@@ -77,14 +80,19 @@ export const processGithubInstallationEvent = Effect.fn(
     return {
       installationId: payload.installation.id,
       shouldSyncRepositories: true,
+      stopBuildsFor: [],
     };
   }
 
-  if (payload.action === "suspend") yield* deleteCachedGithubRepositoriesForInstallation(payload.installation.id);
-  else yield* deleteGithubInstallation(payload.installation.id);
+  const stopBuildsFor = yield* listLinkedOrganizationIds(payload.installation.id);
+  if (payload.action === "suspend") {
+    yield* suspendGithubInstallation(payload.installation.id);
+    yield* deleteCachedGithubRepositoriesForInstallation(payload.installation.id);
+  } else yield* deleteGithubInstallation(payload.installation.id);
   return {
     installationId: payload.installation.id,
     shouldSyncRepositories: false,
+    stopBuildsFor,
   };
 });
 
@@ -169,7 +177,9 @@ const readableRepository = Effect.fn("Github.readableRepository")(function* (act
   const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
   const access: GithubAccess = accessFor(organization.id, input.installationId);
   const repository = input.installationId === null
-    ? yield* resolveGithubRepository(access, input.repositoryId)
+    // A private repository reads as absent to the public API.
+    ? yield* resolveGithubRepository(access, input.repositoryId).pipe(Effect.catchTag("GithubObservationError",
+      (error) => error.code === "not_found" ? Effect.succeed(null) : Effect.fail(error)))
     : yield* getCachedGithubRepositoryForOrganization({
       organizationId: organization.id, installationId: input.installationId, repositoryId: input.repositoryId,
     });

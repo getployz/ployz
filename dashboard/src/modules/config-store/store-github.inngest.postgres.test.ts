@@ -28,7 +28,7 @@ function github(state: { head: string; suite: { status: string; conclusion: stri
       ? { status: "ahead", files: [{ filename: "src/app.ts" }] }
       : path.includes("/check-suites/")
         ? { id: 9, head_sha: H2, ...state.suite }
-        : { id: 42, full_name: "acme/web", private: true }).service;
+        : { id: 42, full_name: "acme/web", private: true });
 }
 
 const push = (after: string) => ({
@@ -53,7 +53,8 @@ it.live(
   () =>
     Effect.gen(function* () {
       const state = { head: H1, suite: { status: "in_progress", conclusion: null as string | null, updated_at: "2026-09-29T10:00:00Z" } };
-      const services = yield* Layer.build(yield* storeTestCloud({ github: github(state) }));
+      const githubApi = github(state);
+      const services = yield* Layer.build(yield* storeTestCloud({ github: githubApi.service }));
       // A member of the Organization installed the GitHub App as installation 7.
       yield* Effect.all([seedStoreOrganization(ORGANIZATION), enrollStoreServer(ORGANIZATION)]).pipe(Effect.provide(services));
       const store = yield* cloudStore.pipe(Effect.provide(services));
@@ -79,6 +80,9 @@ it.live(
       const first = yield* run(push(H1));
       expect(first.admitted).toHaveLength(1);
       expect(yield* view(first.admitted[0])).toMatchObject({ builds: [{ commit: H1 }] });
+      // Cloud reads the push as itself, once for all linked Organizations.
+      expect(githubApi.calls.filter((call) => !call.path.includes("/compare/")).map((call) => call.access))
+        .toEqual([{ type: "installation", installationId: 7 }, { type: "installation", installationId: 7 }]);
       // A redelivery sees the same head: nothing more.
       expect((yield* run(push(H1))).admitted).toEqual([]);
 
