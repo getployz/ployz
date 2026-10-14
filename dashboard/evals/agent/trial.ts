@@ -1,21 +1,22 @@
 import { type AnyTextAdapter, EventType, type StreamChunk } from "@tanstack/ai";
 import { Effect, Option, Schema } from "effect";
-import type { JsonValue } from "#/db/tables";
 import { evalFixture } from "./fixture";
 import { changed, type Snapshot, snapshot } from "./snapshot";
 import type { Task } from "./tasks";
 
 /** One tool call the agent made: its input, and the JSON result it read back, empty while an approval holds it. */
-export type Call = { readonly tool: string; readonly input: JsonValue; result: string };
+export const Call = Schema.Struct({ tool: Schema.String, input: Schema.Json, result: Schema.mutableKey(Schema.String) });
+export type Call = typeof Call.Type;
 
 /** One sidebar run: a member's message, or `null` for the resumption after an approval card was answered. */
-export type Turn = {
-  readonly user: string | null;
-  readonly said: string;
-  readonly calls: ReadonlyArray<Call>;
-  readonly interrupted: boolean;
-  readonly errors: ReadonlyArray<string>;
-};
+export const Turn = Schema.Struct({
+  user: Schema.NullOr(Schema.String),
+  said: Schema.String,
+  calls: Schema.Array(Call),
+  interrupted: Schema.Boolean,
+  errors: Schema.Array(Schema.String),
+});
+export type Turn = typeof Turn.Type;
 
 /** The member's side of a trial: the opening message, then each reply to what the agent said, `null` to stop. */
 export type Member = {
@@ -86,8 +87,8 @@ const read = (user: string | null, chunks: ReadonlyArray<StreamChunk>, calls: Ma
   for (const chunk of chunks) {
     if (chunk.type === EventType.TOOL_CALL_START) names.set(chunk.toolCallId, chunk.toolCallName);
     if (chunk.type === EventType.TOOL_CALL_END) {
-      // SAFETY: the sidebar's tools take JSON objects, which the adapter parsed from the model's arguments.
-      const call: Call = { tool: names.get(chunk.toolCallId) ?? "", input: (chunk.input ?? null) as JsonValue, result: "" };
+      const input = Schema.decodeUnknownOption(Schema.Json)(chunk.input ?? null).pipe(Option.getOrElse(() => null));
+      const call: Call = { tool: names.get(chunk.toolCallId) ?? "", input, result: "" };
       calls.set(chunk.toolCallId, call);
       made.push(call);
     }
