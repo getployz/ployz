@@ -103,7 +103,7 @@ The instance runs `down.sh` by itself after 15 minutes with nothing connected to
   - `{"event":"push","installation":7,"repository":"acme/blog","ref":"refs/heads/main"}` sends a push of that branch's head.
   - `{"event":"check_suite","action":"completed","installation":7,"repository":"acme/blog","conclusion":"failure"}` sends a GitHub Actions check suite on the default branch head (`"head_sha"` overrides it), served at `/repos/acme/blog/check-suites/<id>`.
   - `POST /_fake/oidc` with `{"aud":"<audience>","repository_id":4242,"run_id":30001,"job_workflow_ref":"acme/blog/.github/workflows/ployz-build.yml@refs/heads/main"}` returns `{"token":"<RS256 JWT>"}` signed by the key at `/.well-known/jwks`, issued by the fake's origin.
-  - The build workflow exists only where a repository's fixture `files` hold `.github/workflows/ployz-build.yml`; dispatches start runs at 30001 that stay `in_progress` until `POST /_fake/run` with `{"repository":"acme/blog","run_id":30001,"status":"completed"}`.
+  - The build workflow exists only where a repository's fixture `files` hold `.github/workflows/ployz-build.yml`; dispatches start runs at 30001 that stay `in_progress` until `POST /_fake/run` with `{"repository":"acme/blog","run_id":30001,"status":"completed"}`, or until `{"event":"workflow_run","action":"completed","installation":7,"repository":"acme/blog","run_id":30001}` completes it and sends the `workflow_run` webhook that wakes Cloud's wait on it.
 
 ## Behavior reference
 

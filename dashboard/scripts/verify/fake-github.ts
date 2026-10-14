@@ -22,7 +22,7 @@ type PullRequestSeed = Pick<PullRequest, "number" | "head_branch"> & Partial<Pul
 type WebhookInput = {
   event?: string; action?: string; installation?: number; sender?: string; repositories?: string[];
   repository?: string; number?: number; head_branch?: string; target_branch?: string; merged?: boolean;
-  ref?: string; head_sha?: string; conclusion?: string;
+  ref?: string; head_sha?: string; conclusion?: string; run_id?: number;
 };
 type Run = { repository: string; status: "in_progress" | "completed"; conclusion: string | null };
 type Installation = { id: number; account: { id: number; login: string; type: "User" | "Organization" }; users: string[]; repositories: Repository[] };
@@ -210,12 +210,12 @@ export async function run() {
         repositories_added: input.action === "added" ? repositories : [], repositories_removed: input.action === "removed" ? repositories : [],
       });
     }
-    if (input.event === "pull_request" || input.event === "push" || input.event === "check_suite") {
+    if (input.event === "pull_request" || input.event === "push" || input.event === "check_suite" || input.event === "workflow_run") {
       const r = target.repositories.find((candidate) => fullName(target, candidate) === input.repository);
       if (!r) return { status: 400, body: "Unknown repository for this installation." };
       return repositoryWebhook(input, target, r, from);
     }
-    return { status: 400, body: "event must be installation, installation_repositories, pull_request, push or check_suite." };
+    return { status: 400, body: "event must be installation, installation_repositories, pull_request, push, check_suite or workflow_run." };
   }
 
   async function repositoryWebhook(input: WebhookInput, i: Installation, r: Repository, from: User) {
@@ -228,6 +228,15 @@ export async function run() {
       return webhook("push", {
         ...common, ref: input.ref, before: sha1("before", after), after, created: false, deleted: false, forced: false,
         pusher: { name: from.login, email: from.email },
+      });
+    }
+    if (input.event === "workflow_run") {
+      const id = Number(input.run_id);
+      const run = runs.get(id);
+      if (!run || run.repository !== fullName(i, r)) return { status: 400, body: "Unknown run for this repository." };
+      if (input.action === "completed") Object.assign(run, { status: "completed", conclusion: input.conclusion ?? "success" });
+      return webhook("workflow_run", {
+        ...common, action: input.action, workflow_run: { id, path: BUILD_WORKFLOW, status: run.status, conclusion: run.conclusion },
       });
     }
     if (input.event === "check_suite") {

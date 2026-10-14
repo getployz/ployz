@@ -130,8 +130,9 @@ describe("organization GitHub links migration", () => {
           `select organization_id, installation_id, connected_by_user_id, connected_github_login
            from organization_github_installation order by installation_id, organization_id`,
         );
+        const byText = (a: unknown[], b: unknown[]) => a.join().localeCompare(b.join());
         const byOrganization = (rows: typeof links.rows) =>
-          rows.map((row) => [row.organization_id, row.installation_id, row.connected_by_user_id, row.connected_github_login]).sort();
+          rows.map((row) => [row.organization_id, row.installation_id, row.connected_by_user_id, row.connected_github_login]).sort(byText);
         expect(byOrganization(links.rows)).toEqual([
           [adaLab, 7, ada, "acme"],
           [adaLab, 8, ada, "ada"],
@@ -139,7 +140,7 @@ describe("organization GitHub links migration", () => {
           [adaShop, 8, ada, "ada"],
           [bobOwn, 7, bob, "acme"],
           [hopper, 7, bob, "acme"],
-        ].sort());
+        ].sort(byText));
 
         const installations = await client.query(`select installation_id, account_login, created_at from github_installation order by installation_id`);
         expect(installations.rows.map((row) => [row.installation_id, row.account_login, row.created_at.toISOString()])).toEqual([
