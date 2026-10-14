@@ -1054,13 +1054,36 @@ fn a_server_that_does_not_answer_is_forgotten_without_a_reset() {
 }
 
 #[test]
-fn server_set_sends_only_the_values_it_was_given_even_to_a_silent_server() {
+fn server_set_refuses_a_server_that_does_not_answer() {
     let store = shop();
-    let mut acted = Vec::new();
     let mut offline = servers(&[("db-1", 'a'), ("db-2", 'b')]);
     offline["servers"][0]["state"] = json!("offline");
     let mut cloud = |cloud: Cloud| match cloud {
         Cloud::Ask(CloudQuery::Servers { .. }) => Ok(offline.clone()),
+        Cloud::Ask(query) => panic!("unexpected read: {query:?}"),
+        Cloud::Act(act) => panic!("nothing is asked of a silent server: {act:?}"),
+    };
+
+    let refusal = drive(
+        &store,
+        in_org(),
+        "server_set",
+        json!({ "server": "db-1", "accepts_services": false }),
+        "set-1",
+        &mut cloud,
+    )
+    .refused();
+
+    assert_eq!(refusal.code.as_str(), "unavailable");
+    assert_eq!(refusal.field.as_deref(), Some("server"));
+}
+
+#[test]
+fn server_set_sends_only_the_values_it_was_given() {
+    let store = shop();
+    let mut acted = Vec::new();
+    let mut cloud = |cloud: Cloud| match cloud {
+        Cloud::Ask(CloudQuery::Servers { .. }) => Ok(servers(&[("db-1", 'a')])),
         Cloud::Ask(query) => panic!("unexpected read: {query:?}"),
         Cloud::Act(act) => {
             acted.push(act.action.clone());
