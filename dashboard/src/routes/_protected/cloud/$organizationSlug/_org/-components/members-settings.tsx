@@ -264,7 +264,7 @@ export function InviteDialog({ organizationName, mail, invite: send, onInvited, 
           <DialogTitle>Invite to {organizationName}</DialogTitle>
           <DialogDescription>
             {invite.data
-              ? invite.data.message
+              ? invite.data.message?.replace(invite.data.link, "").trim()
               : !email.trim()
                 ? "Anyone with the link can join, once."
                 : mail

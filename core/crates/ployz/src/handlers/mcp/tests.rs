@@ -1910,7 +1910,13 @@ mod published {
             };
             assert_eq!(entry["agents"], true, "{tool} is not for agents");
             assert_eq!(tool["description"], entry["about"]);
-            assert_eq!(tool["inputSchema"], entry["input"], "{tool}");
+            let mut input = entry["input"].clone();
+            if entry["gate"] == "ask" {
+                input["properties"]["approval"] =
+                    tool["inputSchema"]["properties"]["approval"].clone();
+                assert_eq!(input["properties"]["approval"]["type"], "string", "{tool}");
+            }
+            assert_eq!(tool["inputSchema"], input, "{tool}");
             assert_eq!(tool["outputSchema"], entry["output"], "{tool}");
             assert_eq!(
                 tool["annotations"]["readOnlyHint"],
