@@ -13,14 +13,18 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as SplatRouteImport } from './routes/$'
 import { Route as ProtectedRouteRouteImport } from './routes/_protected/route'
 import { Route as PublicRouteRouteImport } from './routes/_public/route'
+import { Route as ConnectRouteImport } from './routes/connect'
 import { Route as DeviceRouteImport } from './routes/device'
 import { Route as HomeRouteImport } from './routes/home'
+import { Route as McpRouteImport } from './routes/mcp'
 import { Route as ProtectedCloudRouteRouteImport } from './routes/_protected/cloud/route'
 import { Route as ProtectedDashboardRouteImport } from './routes/_protected/dashboard'
 import { Route as PublicAuthRouteImport } from './routes/_public/auth'
 import { Route as ApiHealthRouteImport } from './routes/api/health'
 import { Route as AuthGithubRouteImport } from './routes/auth/github'
 import { Route as InviteTokenRouteImport } from './routes/invite/$token'
+import { Route as DotwellKnownOauthAuthorizationServerIndexRouteImport } from './routes/[.]well-known/oauth-authorization-server/index'
+import { Route as DotwellKnownOauthProtectedResourceMcpRouteImport } from './routes/[.]well-known/oauth-protected-resource/mcp'
 import { Route as ProtectedCloudIndexRouteImport } from './routes/_protected/cloud/index'
 import { Route as ProtectedCloudOrganizationSlugRouteRouteImport } from './routes/_protected/cloud/$organizationSlug/route'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
@@ -33,6 +37,7 @@ import { Route as ApiMailUnsubscribeRouteImport } from './routes/api/mail/unsubs
 import { Route as ApiOrgChangesRouteImport } from './routes/api/org/changes'
 import { Route as ApiRuntimeEventsRouteImport } from './routes/api/runtime/events'
 import { Route as ApiRuntimeLogsRouteImport } from './routes/api/runtime/logs'
+import { Route as DotwellKnownOauthAuthorizationServerApiAuthRouteImport } from './routes/[.]well-known/oauth-authorization-server/api/auth'
 import { Route as ProtectedCloudOrganizationSlugOrgRouteRouteImport } from './routes/_protected/cloud/$organizationSlug/_org/route'
 import { Route as ProtectedCloudOrganizationSlugProjectRouteRouteImport } from './routes/_protected/cloud/$organizationSlug/_project/route'
 import { Route as ProtectedCloudAccountIndexRouteImport } from './routes/_protected/cloud/account/index'
@@ -88,6 +93,11 @@ const PublicRouteRoute = PublicRouteRouteImport.update({
   id: '/_public',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ConnectRoute = ConnectRouteImport.update({
+  id: '/connect',
+  path: '/connect',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const DeviceRoute = DeviceRouteImport.update({
   id: '/device',
   path: '/device',
@@ -96,6 +106,11 @@ const DeviceRoute = DeviceRouteImport.update({
 const HomeRoute = HomeRouteImport.update({
   id: '/home',
   path: '/home',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const McpRoute = McpRouteImport.update({
+  id: '/mcp',
+  path: '/mcp',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ProtectedCloudRouteRoute = ProtectedCloudRouteRouteImport.update({
@@ -128,6 +143,18 @@ const InviteTokenRoute = InviteTokenRouteImport.update({
   path: '/invite/$token',
   getParentRoute: () => rootRouteImport,
 } as any)
+const DotwellKnownOauthAuthorizationServerIndexRoute =
+  DotwellKnownOauthAuthorizationServerIndexRouteImport.update({
+    id: '/.well-known/oauth-authorization-server/',
+    path: '/.well-known/oauth-authorization-server/',
+    getParentRoute: () => rootRouteImport,
+  } as any)
+const DotwellKnownOauthProtectedResourceMcpRoute =
+  DotwellKnownOauthProtectedResourceMcpRouteImport.update({
+    id: '/.well-known/oauth-protected-resource/mcp',
+    path: '/.well-known/oauth-protected-resource/mcp',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const ProtectedCloudIndexRoute = ProtectedCloudIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -189,6 +216,12 @@ const ApiRuntimeLogsRoute = ApiRuntimeLogsRouteImport.update({
   path: '/api/runtime/logs',
   getParentRoute: () => rootRouteImport,
 } as any)
+const DotwellKnownOauthAuthorizationServerApiAuthRoute =
+  DotwellKnownOauthAuthorizationServerApiAuthRouteImport.update({
+    id: '/.well-known/oauth-authorization-server/api/auth',
+    path: '/.well-known/oauth-authorization-server/api/auth',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const ProtectedCloudOrganizationSlugOrgRouteRoute =
   ProtectedCloudOrganizationSlugOrgRouteRouteImport.update({
     id: '/_org',
@@ -436,8 +469,10 @@ const ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasServi
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/$': typeof SplatRoute
+  '/connect': typeof ConnectRoute
   '/device': typeof DeviceRoute
   '/home': typeof HomeRoute
+  '/mcp': typeof McpRoute
   '/cloud': typeof ProtectedCloudRouteRouteWithChildren
   '/dashboard': typeof ProtectedDashboardRoute
   '/auth': typeof PublicAuthRoute
@@ -445,6 +480,7 @@ export interface FileRoutesByFullPath {
   '/auth/github': typeof AuthGithubRoute
   '/invite/$token': typeof InviteTokenRoute
   '/cloud/$organizationSlug': typeof ProtectedCloudOrganizationSlugRouteRouteWithChildren
+  '/.well-known/oauth-protected-resource/mcp': typeof DotwellKnownOauthProtectedResourceMcpRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/cli/$': typeof ApiCliSplatRoute
   '/api/cli/manifest': typeof ApiCliManifestRoute
@@ -455,7 +491,9 @@ export interface FileRoutesByFullPath {
   '/api/org/changes': typeof ApiOrgChangesRoute
   '/api/runtime/events': typeof ApiRuntimeEventsRoute
   '/api/runtime/logs': typeof ApiRuntimeLogsRoute
+  '/.well-known/oauth-authorization-server/': typeof DotwellKnownOauthAuthorizationServerIndexRoute
   '/cloud/': typeof ProtectedCloudIndexRoute
+  '/.well-known/oauth-authorization-server/api/auth': typeof DotwellKnownOauthAuthorizationServerApiAuthRoute
   '/api/agent/$organizationSlug/chat': typeof ApiAgentOrganizationSlugChatRoute
   '/api/builds/$build/check-in': typeof ApiBuildsBuildCheckInRoute
   '/api/builds/$build/steps': typeof ApiBuildsBuildStepsRoute
@@ -493,14 +531,17 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/$': typeof SplatRoute
+  '/connect': typeof ConnectRoute
   '/device': typeof DeviceRoute
   '/home': typeof HomeRoute
+  '/mcp': typeof McpRoute
   '/dashboard': typeof ProtectedDashboardRoute
   '/auth': typeof PublicAuthRoute
   '/api/health': typeof ApiHealthRoute
   '/auth/github': typeof AuthGithubRoute
   '/invite/$token': typeof InviteTokenRoute
   '/cloud/$organizationSlug': typeof ProtectedCloudOrganizationSlugRouteRouteWithChildren
+  '/.well-known/oauth-protected-resource/mcp': typeof DotwellKnownOauthProtectedResourceMcpRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/cli/$': typeof ApiCliSplatRoute
   '/api/cli/manifest': typeof ApiCliManifestRoute
@@ -511,7 +552,9 @@ export interface FileRoutesByTo {
   '/api/org/changes': typeof ApiOrgChangesRoute
   '/api/runtime/events': typeof ApiRuntimeEventsRoute
   '/api/runtime/logs': typeof ApiRuntimeLogsRoute
+  '/.well-known/oauth-authorization-server': typeof DotwellKnownOauthAuthorizationServerIndexRoute
   '/cloud': typeof ProtectedCloudIndexRoute
+  '/.well-known/oauth-authorization-server/api/auth': typeof DotwellKnownOauthAuthorizationServerApiAuthRoute
   '/api/agent/$organizationSlug/chat': typeof ApiAgentOrganizationSlugChatRoute
   '/api/builds/$build/check-in': typeof ApiBuildsBuildCheckInRoute
   '/api/builds/$build/steps': typeof ApiBuildsBuildStepsRoute
@@ -550,8 +593,10 @@ export interface FileRoutesById {
   '/_protected': typeof ProtectedRouteRouteWithChildren
   '/_public': typeof PublicRouteRouteWithChildren
   '/$': typeof SplatRoute
+  '/connect': typeof ConnectRoute
   '/device': typeof DeviceRoute
   '/home': typeof HomeRoute
+  '/mcp': typeof McpRoute
   '/_protected/cloud': typeof ProtectedCloudRouteRouteWithChildren
   '/_protected/dashboard': typeof ProtectedDashboardRoute
   '/_public/auth': typeof PublicAuthRoute
@@ -559,6 +604,7 @@ export interface FileRoutesById {
   '/auth/github': typeof AuthGithubRoute
   '/invite/$token': typeof InviteTokenRoute
   '/_protected/cloud/$organizationSlug': typeof ProtectedCloudOrganizationSlugRouteRouteWithChildren
+  '/.well-known/oauth-protected-resource/mcp': typeof DotwellKnownOauthProtectedResourceMcpRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/cli/$': typeof ApiCliSplatRoute
   '/api/cli/manifest': typeof ApiCliManifestRoute
@@ -569,9 +615,11 @@ export interface FileRoutesById {
   '/api/org/changes': typeof ApiOrgChangesRoute
   '/api/runtime/events': typeof ApiRuntimeEventsRoute
   '/api/runtime/logs': typeof ApiRuntimeLogsRoute
+  '/.well-known/oauth-authorization-server/': typeof DotwellKnownOauthAuthorizationServerIndexRoute
   '/_protected/cloud/': typeof ProtectedCloudIndexRoute
   '/_protected/cloud/$organizationSlug/_org': typeof ProtectedCloudOrganizationSlugOrgRouteRouteWithChildren
   '/_protected/cloud/$organizationSlug/_project': typeof ProtectedCloudOrganizationSlugProjectRouteRouteWithChildren
+  '/.well-known/oauth-authorization-server/api/auth': typeof DotwellKnownOauthAuthorizationServerApiAuthRoute
   '/api/agent/$organizationSlug/chat': typeof ApiAgentOrganizationSlugChatRoute
   '/api/builds/$build/check-in': typeof ApiBuildsBuildCheckInRoute
   '/api/builds/$build/steps': typeof ApiBuildsBuildStepsRoute
@@ -612,8 +660,10 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/$'
+    | '/connect'
     | '/device'
     | '/home'
+    | '/mcp'
     | '/cloud'
     | '/dashboard'
     | '/auth'
@@ -621,6 +671,7 @@ export interface FileRouteTypes {
     | '/auth/github'
     | '/invite/$token'
     | '/cloud/$organizationSlug'
+    | '/.well-known/oauth-protected-resource/mcp'
     | '/api/auth/$'
     | '/api/cli/$'
     | '/api/cli/manifest'
@@ -631,7 +682,9 @@ export interface FileRouteTypes {
     | '/api/org/changes'
     | '/api/runtime/events'
     | '/api/runtime/logs'
+    | '/.well-known/oauth-authorization-server/'
     | '/cloud/'
+    | '/.well-known/oauth-authorization-server/api/auth'
     | '/api/agent/$organizationSlug/chat'
     | '/api/builds/$build/check-in'
     | '/api/builds/$build/steps'
@@ -669,14 +722,17 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/$'
+    | '/connect'
     | '/device'
     | '/home'
+    | '/mcp'
     | '/dashboard'
     | '/auth'
     | '/api/health'
     | '/auth/github'
     | '/invite/$token'
     | '/cloud/$organizationSlug'
+    | '/.well-known/oauth-protected-resource/mcp'
     | '/api/auth/$'
     | '/api/cli/$'
     | '/api/cli/manifest'
@@ -687,7 +743,9 @@ export interface FileRouteTypes {
     | '/api/org/changes'
     | '/api/runtime/events'
     | '/api/runtime/logs'
+    | '/.well-known/oauth-authorization-server'
     | '/cloud'
+    | '/.well-known/oauth-authorization-server/api/auth'
     | '/api/agent/$organizationSlug/chat'
     | '/api/builds/$build/check-in'
     | '/api/builds/$build/steps'
@@ -725,8 +783,10 @@ export interface FileRouteTypes {
     | '/_protected'
     | '/_public'
     | '/$'
+    | '/connect'
     | '/device'
     | '/home'
+    | '/mcp'
     | '/_protected/cloud'
     | '/_protected/dashboard'
     | '/_public/auth'
@@ -734,6 +794,7 @@ export interface FileRouteTypes {
     | '/auth/github'
     | '/invite/$token'
     | '/_protected/cloud/$organizationSlug'
+    | '/.well-known/oauth-protected-resource/mcp'
     | '/api/auth/$'
     | '/api/cli/$'
     | '/api/cli/manifest'
@@ -744,9 +805,11 @@ export interface FileRouteTypes {
     | '/api/org/changes'
     | '/api/runtime/events'
     | '/api/runtime/logs'
+    | '/.well-known/oauth-authorization-server/'
     | '/_protected/cloud/'
     | '/_protected/cloud/$organizationSlug/_org'
     | '/_protected/cloud/$organizationSlug/_project'
+    | '/.well-known/oauth-authorization-server/api/auth'
     | '/api/agent/$organizationSlug/chat'
     | '/api/builds/$build/check-in'
     | '/api/builds/$build/steps'
@@ -788,11 +851,14 @@ export interface RootRouteChildren {
   ProtectedRouteRoute: typeof ProtectedRouteRouteWithChildren
   PublicRouteRoute: typeof PublicRouteRouteWithChildren
   SplatRoute: typeof SplatRoute
+  ConnectRoute: typeof ConnectRoute
   DeviceRoute: typeof DeviceRoute
   HomeRoute: typeof HomeRoute
+  McpRoute: typeof McpRoute
   ApiHealthRoute: typeof ApiHealthRoute
   AuthGithubRoute: typeof AuthGithubRoute
   InviteTokenRoute: typeof InviteTokenRoute
+  DotwellKnownOauthProtectedResourceMcpRoute: typeof DotwellKnownOauthProtectedResourceMcpRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
   ApiCliSplatRoute: typeof ApiCliSplatRoute
   ApiCliManifestRoute: typeof ApiCliManifestRoute
@@ -803,6 +869,8 @@ export interface RootRouteChildren {
   ApiOrgChangesRoute: typeof ApiOrgChangesRoute
   ApiRuntimeEventsRoute: typeof ApiRuntimeEventsRoute
   ApiRuntimeLogsRoute: typeof ApiRuntimeLogsRoute
+  DotwellKnownOauthAuthorizationServerIndexRoute: typeof DotwellKnownOauthAuthorizationServerIndexRoute
+  DotwellKnownOauthAuthorizationServerApiAuthRoute: typeof DotwellKnownOauthAuthorizationServerApiAuthRoute
   ApiAgentOrganizationSlugChatRoute: typeof ApiAgentOrganizationSlugChatRoute
   ApiBuildsBuildCheckInRoute: typeof ApiBuildsBuildCheckInRoute
   ApiBuildsBuildStepsRoute: typeof ApiBuildsBuildStepsRoute
@@ -844,6 +912,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof PublicRouteRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/connect': {
+      id: '/connect'
+      path: '/connect'
+      fullPath: '/connect'
+      preLoaderRoute: typeof ConnectRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/device': {
       id: '/device'
       path: '/device'
@@ -856,6 +931,13 @@ declare module '@tanstack/react-router' {
       path: '/home'
       fullPath: '/home'
       preLoaderRoute: typeof HomeRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/mcp': {
+      id: '/mcp'
+      path: '/mcp'
+      fullPath: '/mcp'
+      preLoaderRoute: typeof McpRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_protected/cloud': {
@@ -898,6 +980,20 @@ declare module '@tanstack/react-router' {
       path: '/invite/$token'
       fullPath: '/invite/$token'
       preLoaderRoute: typeof InviteTokenRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/.well-known/oauth-authorization-server/': {
+      id: '/.well-known/oauth-authorization-server/'
+      path: '/.well-known/oauth-authorization-server'
+      fullPath: '/.well-known/oauth-authorization-server/'
+      preLoaderRoute: typeof DotwellKnownOauthAuthorizationServerIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/.well-known/oauth-protected-resource/mcp': {
+      id: '/.well-known/oauth-protected-resource/mcp'
+      path: '/.well-known/oauth-protected-resource/mcp'
+      fullPath: '/.well-known/oauth-protected-resource/mcp'
+      preLoaderRoute: typeof DotwellKnownOauthProtectedResourceMcpRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_protected/cloud/': {
@@ -982,6 +1078,13 @@ declare module '@tanstack/react-router' {
       path: '/api/runtime/logs'
       fullPath: '/api/runtime/logs'
       preLoaderRoute: typeof ApiRuntimeLogsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/.well-known/oauth-authorization-server/api/auth': {
+      id: '/.well-known/oauth-authorization-server/api/auth'
+      path: '/.well-known/oauth-authorization-server/api/auth'
+      fullPath: '/.well-known/oauth-authorization-server/api/auth'
+      preLoaderRoute: typeof DotwellKnownOauthAuthorizationServerApiAuthRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_protected/cloud/$organizationSlug/_org': {
@@ -1444,11 +1547,15 @@ const rootRouteChildren: RootRouteChildren = {
   ProtectedRouteRoute: ProtectedRouteRouteWithChildren,
   PublicRouteRoute: PublicRouteRouteWithChildren,
   SplatRoute: SplatRoute,
+  ConnectRoute: ConnectRoute,
   DeviceRoute: DeviceRoute,
   HomeRoute: HomeRoute,
+  McpRoute: McpRoute,
   ApiHealthRoute: ApiHealthRoute,
   AuthGithubRoute: AuthGithubRoute,
   InviteTokenRoute: InviteTokenRoute,
+  DotwellKnownOauthProtectedResourceMcpRoute:
+    DotwellKnownOauthProtectedResourceMcpRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
   ApiCliSplatRoute: ApiCliSplatRoute,
   ApiCliManifestRoute: ApiCliManifestRoute,
@@ -1459,6 +1566,10 @@ const rootRouteChildren: RootRouteChildren = {
   ApiOrgChangesRoute: ApiOrgChangesRoute,
   ApiRuntimeEventsRoute: ApiRuntimeEventsRoute,
   ApiRuntimeLogsRoute: ApiRuntimeLogsRoute,
+  DotwellKnownOauthAuthorizationServerIndexRoute:
+    DotwellKnownOauthAuthorizationServerIndexRoute,
+  DotwellKnownOauthAuthorizationServerApiAuthRoute:
+    DotwellKnownOauthAuthorizationServerApiAuthRoute,
   ApiAgentOrganizationSlugChatRoute: ApiAgentOrganizationSlugChatRoute,
   ApiBuildsBuildCheckInRoute: ApiBuildsBuildCheckInRoute,
   ApiBuildsBuildStepsRoute: ApiBuildsBuildStepsRoute,

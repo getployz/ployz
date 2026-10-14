@@ -18,7 +18,7 @@ import { type AnthropicChatModelProviderOptionsByName, createAnthropicChat } fro
 import { withPersistence } from "@tanstack/ai-persistence";
 import { Config, Effect, Option, Redacted, Schema } from "effect";
 import { approvalInterrupt, type ToolOutcome } from "#/modules/agent/agent";
-import { AGENT_TOOLS, type AgentCaller, type AgentResult, runAgentCall } from "#/modules/agent/agent-runner.server";
+import { AGENT_TOOLS, type AgentCaller, type AgentResult, runAgentCall, shownOutcome } from "#/modules/agent/agent-runner.server";
 import { agentTracing, aiObservability } from "#/modules/agent/agent-telemetry.server";
 import { CATALOG, GATED } from "#/modules/agent/agent-tools";
 import {
@@ -45,14 +45,11 @@ type Run = <A, E>(effect: Effect.Effect<A, E, AgentServices>) => Promise<A>;
 
 const invalid = (message: string): ToolOutcome => ({ ok: false, refusal: { code: "invalid_argument", message, details: null } });
 
-/** A gated call as the sidebar shows it: the Store write it committed is the card's data, not the tool's own answer. */
-const shown = (result: AgentResult): Gated => {
-  if ("asking" in result) return { asking: { approvalId: result.asking.approvalId, message: result.asking.refusal.message } };
-  const { outcome, written } = result;
-  if (written === null) return { outcome };
-  if (outcome.ok && "nothing_destroyed" in outcome) return { outcome: { ok: true, value: written, nothing_destroyed: true } };
-  return { outcome: { ok: true, value: written } };
-};
+/** A gated call as the sidebar shows it: the Store write it committed is the card's data. */
+const shown = (result: AgentResult): Gated =>
+  "asking" in result
+    ? { asking: { approvalId: result.asking.approvalId, message: result.asking.refusal.message } }
+    : { outcome: shownOutcome(result) };
 
 const outcomeOf = (result: AgentResult): ToolOutcome => "asking" in result ? { ok: false, refusal: result.asking.refusal } : result.outcome;
 

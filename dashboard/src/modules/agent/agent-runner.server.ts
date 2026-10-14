@@ -36,6 +36,13 @@ export type AgentResult =
   | { readonly outcome: ToolOutcome; readonly written: ConfigWritten | null }
   | { readonly asking: Asking };
 
+/** A finished call as a person sees it: the Store write it committed stands in for the tool's own answer. */
+export const shownOutcome = ({ outcome, written }: { readonly outcome: ToolOutcome; readonly written: ConfigWritten | null }): ToolOutcome => {
+  if (written === null) return outcome;
+  if (outcome.ok && "nothing_destroyed" in outcome) return { ok: true, value: written, nothing_destroyed: true };
+  return { ok: true, value: written };
+};
+
 export type AgentTool = {
   readonly name: string;
   readonly description: string;

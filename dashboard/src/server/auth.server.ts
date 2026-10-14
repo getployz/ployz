@@ -1,7 +1,9 @@
 import "@tanstack/react-start/server-only";
 import { drizzleAdapter } from "@better-auth/drizzle-adapter";
+import { createMcpProtectedRequestHandler } from "@better-auth/mcp";
 import { polar, portal, webhooks } from "@polar-sh/better-auth";
 import { betterAuth } from "better-auth";
+import { createDpopReplayStore } from "better-auth/oauth2";
 import {
   bearer,
   deviceAuthorization,
@@ -51,7 +53,7 @@ import { Polar } from "#/modules/billing/polar-provider.server";
 import { recordSignUp } from "#/modules/analytics/posthog.server";
 import { makePolarCore } from "#/modules/billing/polar-api";
 import { asString } from "#/lib/json";
-import { hostedMcpPlugins } from "#/server/auth-mcp.server";
+import { type ConsentChoice, hostedMcpPlugins, MCP_SCOPES, mcpEndpoints, withConsentChoice } from "#/server/auth-mcp.server";
 import { AppConfig } from "#/server/config.server";
 import { BetterAuthDatabase, Database } from "#/server/database.server";
 import { Unauthorized } from "#/server/public-error";
@@ -102,6 +104,24 @@ export interface AuthService {
     Actor,
     Unauthorized | AuthenticationUnavailable | Schema.SchemaError
   >;
+  /** The remote MCP endpoint's authorization, on a hosted Cloud only. */
+  readonly mcp: RemoteMcpAuth | null;
+}
+
+type ProtectedHandler = Parameters<typeof createMcpProtectedRequestHandler>[1];
+
+export interface RemoteMcpAuth {
+  /** Verifies the request's access token, then answers with `handler`; a missing or bad token gets the challenge. */
+  readonly protect: (
+    request: Request,
+    handler: ProtectedHandler,
+  ) => Effect.Effect<Response, AuthenticationUnavailable>;
+  /** Accepts or denies the authorization request `oauthQuery` names, binding the grant to `choice`'s Organization. */
+  readonly consent: (
+    headers: Headers,
+    input: { readonly oauthQuery: string; readonly accept: boolean },
+    choice: ConsentChoice,
+  ) => Effect.Effect<{ readonly redirect: boolean; readonly url: string }, AuthenticationUnavailable>;
 }
 
 export class Auth extends Context.Service<Auth, AuthService>()("ployz/Auth") {}
@@ -282,10 +302,30 @@ const makeAuth = Effect.gen(function* () {
       tanstackStartCookies(),
     ],
   });
-  yield* Effect.tryPromise({
+  const context = yield* Effect.tryPromise({
     try: () => instance.$context,
     catch: (cause) => new AuthenticationUnavailable({ cause }),
   });
+  const replayStore = createDpopReplayStore(context.internalAdapter);
+  const endpoints = mcpEndpoints(config.app.url);
+  const mcp: RemoteMcpAuth | null = hosted
+    ? {
+      protect: (request, handler) => Effect.tryPromise({
+        try: () => createMcpProtectedRequestHandler({
+          issuer: endpoints.issuer,
+          audience: endpoints.resource,
+          jwksUrl: endpoints.jwks,
+          requiredScopes: [MCP_SCOPES[0]],
+          dpop: { replayStore },
+        }, handler)(request),
+        catch: (cause) => new AuthenticationUnavailable({ cause }),
+      }),
+      consent: (headers, { oauthQuery, accept }, choice) => Effect.tryPromise({
+        try: () => withConsentChoice(choice, () => instance.api.oauth2Consent({ headers, body: { accept, oauth_query: oauthQuery } })),
+        catch: (cause) => new AuthenticationUnavailable({ cause }),
+      }),
+    }
+    : null;
 
   const getSession = Effect.fn("Auth.getSession")(function* (headers: Headers) {
     const authSession = yield* Effect.tryPromise({
@@ -317,6 +357,7 @@ const makeAuth = Effect.gen(function* () {
         userId: authSession.user.id,
       }, { onExcessProperty: "error" });
     }),
+    mcp,
   } satisfies AuthService;
 });
 
