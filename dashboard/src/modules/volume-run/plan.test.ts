@@ -14,6 +14,9 @@ const restore = (from: string): PlanInput => ({ kind: "restore", args: { from },
 const seed: PlanInput = { kind: "seed", args: { into: { volumeId: "v2", dockerVolume: "ns_vol-v2", name: "data-1027" }, guid: "11", name: "w-1-4" }, volumeName: "data", orphan: false };
 const orphan: PlanInput = { kind: "delete_mirror", args: { slot: null, confirmed_name: null }, volumeName: "ns_vol-1", orphan: true };
 
+const bare = (server: string, epoch: number): Member =>
+  ({ machine: member(server, "cut").machine, address: "fdcc::1", answered: true, view: { copy: { ...COPIES.cut, epoch, newest: null } }, floorless: false });
+
 const names = (members: readonly Member[]) => (members.length === 0 ? "none" : members.map((each) => each.machine.name).join(","));
 
 function outcome(input: PlanInput, members: Member[]) {
@@ -201,18 +204,6 @@ describe("plan_from_copies_table", () => {
     });
   });
 
-  it("leaves a mirror beside two unfinished cuts, which the release of the cut kept does not need gone", () => {
-    const kept = member("fsn-2", "cut", { epoch: 9 });
-    expect(planFromCopies(release, [member("fsn-1", "cut", { epoch: 8 }), kept, member("fsn-3", "mirror")])).toEqual({
-      ok: false,
-      refusal: {
-        code: "volume_switching",
-        message: "data has unfinished cuts on fsn-1 and fsn-2, so release cannot pick a writer; server rm fsn-1, then ployz volume release data",
-      },
-    });
-    expect(outcome(release, [kept, member("fsn-3", "mirror")])).toBe("release cut fsn-2");
-  });
-
   it("keeps the mid-run refusal for a mirror rm beside cuts while a writer stands", () => {
     const members = [member("a", "writer", { epoch: 9 }), member("b", "cut", { epoch: 8 }), member("d", "cut", { epoch: 7 }), member("c", "mirror")];
     expect(planFromCopies(remove("c"), members)).toEqual({
@@ -233,16 +224,15 @@ describe("plan_from_copies_table", () => {
     });
   });
 
-  it("keeps the newer cut though it holds no snapshot, and moves it again once it stands alone", () => {
-    const kept = { ...member("fsn-2", "cut"), view: { copy: { ...COPIES.cut, epoch: 9, newest: null } } };
-    expect(planFromCopies(release, [member("fsn-1", "cut", { epoch: 8 }), kept])).toEqual({
+  it("keeps the newer cut though it holds no snapshot, and removes every slot but the one it moves onto", () => {
+    const members = [member("fsn-1", "cut", { epoch: 8 }), bare("fsn-2", 9), member("fsn-4", "behind"), member("fsn-3", "mirror")];
+    expect(planFromCopies(release, members)).toEqual({
       ok: false,
       refusal: {
         code: "volume_switching",
-        message: "data has unfinished cuts on fsn-1 and fsn-2, so release cannot pick a writer; server rm fsn-1, then ployz volume move data --to <another server>",
+        message: "data has unfinished cuts on fsn-1 and fsn-2, so release cannot pick a writer; server rm fsn-1 and fsn-4, then ployz volume move data --to fsn-3",
       },
     });
-    expect(outcome(move("fsn-3"), [kept, member("fsn-3", "mirror")])).toBe("move fsn-2->fsn-3 at cut");
   });
 
   it.each([
@@ -251,21 +241,20 @@ describe("plan_from_copies_table", () => {
     ["seed", seed],
     ["mirror rm", remove(null)],
     ["move onto its own Server", move("fsn-2")],
-  ])("sends %s on a lone cut with no snapshot to move it again, not to a release that cannot resume it", (_, input) => {
-    const cut = { ...member("fsn-2", "cut"), view: { copy: { ...COPIES.cut, epoch: 9, newest: null } } };
-    expect(planFromCopies(input, [cut, member("fsn-3", "mirror")])).toEqual({
+  ])("sends %s on a lone cut with no snapshot to move it onto its mirror's Server", (_, input) => {
+    expect(planFromCopies(input, [bare("fsn-2", 9), member("fsn-3", "mirror")])).toEqual({
       ok: false,
-      refusal: { code: "no_copy", message: "data on fsn-2 stopped before its first snapshot; volume move data --to <another server> again" },
+      refusal: { code: "no_copy", message: "data on fsn-2 stopped before its first snapshot; ployz volume move data --to fsn-3" },
     });
   });
 
-  it("limits the Servers to remove to the tied cuts, not the mirror beside them", () => {
-    const members = [member("fsn-1", "cut", { epoch: 9 }), member("fsn-2", "cut", { epoch: 9 }), member("fsn-3", "mirror")];
+  it("keeps the tied cut that holds a snapshot and removes the other, not the mirror beside them", () => {
+    const members = [bare("fsn-1", 9), member("fsn-2", "cut", { epoch: 9 }), member("fsn-3", "mirror")];
     expect(planFromCopies(release, members)).toEqual({
       ok: false,
       refusal: {
         code: "volume_switching",
-        message: "data has unfinished cuts on fsn-1 and fsn-2, so release cannot pick a writer; server rm all but one of fsn-1 and fsn-2, then ployz volume release data",
+        message: "data has unfinished cuts on fsn-1 and fsn-2, so release cannot pick a writer; server rm fsn-1, then ployz volume release data",
       },
     });
   });
@@ -329,6 +318,48 @@ describe("plan_from_copies_table", () => {
     });
     expect(planFromCopies(remove("fsn-2"), members)).toMatchObject({ ok: false, refusal: { code: "server_lacks" } });
     expect(planFromCopies(move("fsn-2"), members)).toMatchObject({ ok: false, refusal: { code: "server_lacks" } });
+  });
+});
+
+function follow(input: PlanInput, members: readonly Member[]) {
+  const planned = planFromCopies(input, members);
+  if (planned.ok) throw new Error(`planned ${planned.phase.kind}, not a refusal`);
+  const step = /; (?:server rm (.+), then )?ployz volume (release|move) data(?: --to (.+))?$/.exec(planned.refusal.message);
+  if (step === null) throw new Error(`no step in: ${planned.refusal.message}`);
+  const [, removed, verb, to] = step;
+  const gone = removed?.split(" and ") ?? [];
+  expect(members.map((each) => each.machine.name)).toEqual(expect.arrayContaining(gone));
+  const left = members.filter((each) => !gone.includes(each.machine.name));
+  const empty = left.find((each) => each.answered && each.view.copy === null)?.machine.name ?? "no empty Server";
+  if (verb === "release") {
+    expect(planFromCopies(release, left)).toMatchObject({ ok: true, phase: { kind: "release" } });
+    return;
+  }
+  const anyServer = to === "<another server>";
+  expect(planFromCopies(move(anyServer ? empty : to ?? ""), left)).toMatchObject({ ok: true, phase: { kind: "move", start: "cut" } });
+  if (!anyServer) expect(outcome(move(empty), left)).toBe("refuse second_mirror");
+}
+
+describe("follow every next step a refusal names", () => {
+  const beside: [string, Member[]][] = [
+    ["no slot", []],
+    ["one slot", [member("fsn-3", "mirror")]],
+    ["two slots", [member("fsn-4", "behind"), member("fsn-3", "mirror")]],
+  ];
+  const lone: [string, PlanInput][] = [["release", release], ["sync", sync()], ["seed", seed], ["mirror rm", remove(null)], ["move onto its own Server", move("fsn-2")]];
+  const fourth = member("fsn-9", "empty");
+
+  it.each<[string, PlanInput, Member[]]>([
+    ...beside.flatMap(([slots, each]): [string, PlanInput, Member[]][] => [
+      [`a newer cut with a snapshot beside ${slots}`, release, [member("fsn-1", "cut", { epoch: 8 }), member("fsn-2", "cut", { epoch: 9 }), ...each, fourth]],
+      [`a newer cut with no snapshot beside ${slots}`, release, [member("fsn-1", "cut", { epoch: 8 }), bare("fsn-2", 9), ...each, fourth]],
+      ...lone.map(([kind, input]): [string, PlanInput, Member[]] => [`${kind} on a lone cut with no snapshot beside ${slots}`, input, [bare("fsn-2", 9), ...each, fourth]]),
+    ]),
+    ["a tie where one cut holds a snapshot", release, [bare("fsn-1", 9), member("fsn-2", "cut", { epoch: 9 }), fourth]],
+    ["a tie where no cut holds a snapshot", release, [bare("fsn-1", 9), bare("fsn-2", 9), member("fsn-3", "mirror"), fourth]],
+    ["three cuts with the top two tied", release, [member("fsn-1", "cut", { epoch: 7 }), member("fsn-2", "cut", { epoch: 9 }), bare("fsn-3", 9), fourth]],
+  ])("%s", (_, input, members) => {
+    follow(input, members);
   });
 });
 

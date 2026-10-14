@@ -2068,7 +2068,7 @@ describe("volume runs", () => {
       expect(named("fsn-1").copy).toMatchObject({ kind: "root", readonly: false, epoch: 1 });
     });
 
-    it("a cut root with no snapshot fails Release with the move to run again", async () => {
+    it("a cut root with no snapshot refuses Release after floor, with the move to run again", async () => {
       named("fsn-1").copy = writerCopy(null, 0, true);
       for (const container of containers) container.running = false;
       const run = await requested({ kind: "release", args: {} });
@@ -2078,7 +2078,7 @@ describe("volume runs", () => {
       expect(output.result).toMatchObject({ refused: { code: "no_copy" } });
       expect(verbs).toEqual(["floor@fsn-1", "floor@fsn-2"]);
       expect(named("fsn-1").copy).toMatchObject({ kind: "root", readonly: true });
-      expect(await rows()).toMatchObject([{ state: "failed", message: "data on fsn-1 stopped before its first snapshot; volume move data --to <another server> again" }]);
+      expect(await rows()).toMatchObject([{ state: "failed", message: "data on fsn-1 stopped before its first snapshot; ployz volume move data --to <another server>" }]);
     });
 
     it("an idle writer is already where Release leaves it", async () => {
@@ -2470,7 +2470,7 @@ describe("volume runs", () => {
 
       expect(admitted).toMatchObject({
         ok: false,
-        refusal: { code: "conflict", message: "data on fsn-1 stopped before its first snapshot; volume move data --to <another server> again" },
+        refusal: { code: "conflict", message: "data on fsn-1 stopped before its first snapshot; ployz volume move data --to <another server>" },
       });
       expect(await rows()).toEqual([]);
       expect(send).not.toHaveBeenCalled();
