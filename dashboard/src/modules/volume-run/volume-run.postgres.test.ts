@@ -3147,6 +3147,36 @@ describe("volume runs", () => {
       expect(containers.filter((container) => container.running)).toEqual([{ machine: "fsn-2", id: `created-${volumeId}-${cut.guid}`, running: true }]);
     });
 
+    it("removing B clears a committed Move that fails with its release while the removal waits on another Volume, so nothing stays owed to B", async () => {
+      afterCut();
+      const taken = await moving("committed");
+      const [other] = (await harness.pool.query<{ id: string }>(`
+        insert into volume_run (organization_id, environment_id, volume_id, volume_name, docker_volume, refquota_bytes, kind, args, phase, current, state, finished_at)
+        select organization_id, environment_id, 'vol2', 'logs', 'logs-vol', refquota_bytes, kind, args, phase, current, 'failed', now()
+        from volume_run where id = $1 returning id`, [taken.id])).rows;
+      const holder = await harness.pool.connect();
+      try {
+        await holder.query("begin");
+        await holder.query("select id from volume_run where id = $1 for update", [other?.id]);
+        const removing = runEffect(Effect.exit(releaseLanesOff(organizationId, { id: idOf("fsn-2"), name: "fsn-2" }, [])));
+        await waitingOnLock();
+        expect(await runEffect(closeVolumeRun("run-move", "failure"))).toBe(1);
+        await harness.pool.query("update volume_run set state = 'running', inngest_run_id = 'run-release' where volume_id = $1 and kind = 'release'", [volumeId]);
+        expect(await runEffect(closeVolumeRun("run-release", "failure"))).toBe(1);
+        await holder.query("commit");
+
+        await expect(removing).resolves.toMatchObject({ _tag: "Success", value: [] });
+      } finally {
+        holder.release(true);
+      }
+      expect((await harness.pool.query("select kind, state from volume_run where volume_id = $1 order by gen", [volumeId])).rows)
+        .toEqual([{ kind: "move", state: "failed" }, { kind: "release", state: "failed" }]);
+      expect((await harness.pool.query("select id, volume_id from volume_run where organization_id = $1 and current = $2 and state <> 'done'",
+        [organizationId, idOf("fsn-2")])).rows).toEqual([]);
+      expect(await runEffect(isVolumeOwed(organizationId, volumeId))).toBe(false);
+      expect((await harness.pool.query("select current from volume_run where id = $1", [other?.id])).rows).toEqual([{ current: null }]);
+    });
+
     describe("on a committed Move whose run failed", () => {
       const failedCommit = async () => {
         const cut = afterCut();
