@@ -378,7 +378,7 @@ const named = (evidence: Evidence, tool: string) => calls(evidence).filter((call
 /** The tools that change a Machine or Cloud's view of one. */
 const ACTS = new Set([
   "service_restart", "service_start", "service_stop", "server_drain", "server_upgrade", "server_clean", "volume_mirror",
-  "volume_mirror_remove", "volume_move", "volume_release", "environment_remove", "project_remove", "server_remove",
+  "volume_mirror_remove", "volume_move", "volume_release", "volume_restore", "environment_remove", "project_remove", "server_remove",
 ]);
 const STORE_WRITES = new Set([...WRITES, "deploy", "publish", "config_add", "config_put", "config_mount", "service_add", "project_new", "project_create", "env_new"]);
 const acted = (evidence: Evidence) => calls(evidence).filter((call) => ACTS.has(call.tool) || STORE_WRITES.has(call.tool)).map((call) => call.tool);

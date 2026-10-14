@@ -178,6 +178,7 @@ const FIXTURES = [
   ["volume_move", { volume: "pgdata", to: "db-2", wait_seconds: 0 }],
   ["volume_mirror_remove", { volume: "pgdata" }],
   ["volume_release", { volume: "pgdata", wait_seconds: 0 }],
+  ["volume_restore", { volume: "pgdata", from: "db-2", wait_seconds: 0 }],
   ["config_remove", { config: "nginx", file: "nginx.conf" }],
   ["domain_remove", { domain: "store" }],
   ["service_rename", { service: "web", to: "www" }],

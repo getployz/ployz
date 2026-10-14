@@ -258,6 +258,7 @@ pub enum VolumeRun {
     Move { to: ServerRef },
     Release { loss: Option<AcceptedLoss> },
     RemoveMirror { loss: Option<AcceptedLoss> },
+    Restore { from: ServerRef },
 }
 
 /// Volumes whose data a caller accepted losing, bound to the version it read.

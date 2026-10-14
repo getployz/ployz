@@ -4653,7 +4653,7 @@ export type VolumeRemoval = { id: DockerVolumeId, outcome: VolumeRemovalOutcome,
 
 export type VolumeRemovalOutcome = { "status": "removed" } | { "status": "failed", error: RpcError, } | { "status": "omitted" };
 
-export type VolumeRun = { "run": "mirror", to: ServerRef, } | { "run": "sync", full: boolean, } | { "run": "move", to: ServerRef, } | { "run": "release", loss: AcceptedLoss | null, } | { "run": "remove_mirror", loss: AcceptedLoss | null, };
+export type VolumeRun = { "run": "mirror", to: ServerRef, } | { "run": "sync", full: boolean, } | { "run": "move", to: ServerRef, } | { "run": "release", loss: AcceptedLoss | null, } | { "run": "remove_mirror", loss: AcceptedLoss | null, } | { "run": "restore", from: ServerRef, };
 
 export type VolumeSource = { "kind": "bind", machine_path: MachinePath, create_machine_path: boolean, propagation: BindPropagation | null, recursive: BindRecursive | null, } | { "kind": "external", name: DockerVolumeName, } | { "kind": "ordinary", name: DockerVolumeName, driver: VolumeDriver, labels: { [key in string]: string }, } | { "kind": "provisioned",
 /**

@@ -73,7 +73,7 @@ Some things are not tools. Run these yourself in a terminal:
 
 Tools that can remove something are marked destructive: `publish`, `deploy`,
 `environment_remove`, `project_remove`, the server commands that drain, clean or remove a
-server, and the Volume commands that move, mirror or release a copy. When one of them needs your
+server, and the Volume commands that move, mirror, release or restore a copy. When one of them needs your
 approval (see
 [Destructive actions ask first](../account/organizations.md#destructive-actions-ask-first)),
 the agent's app shows you what it would remove and asks you to approve or deny it. Removing a

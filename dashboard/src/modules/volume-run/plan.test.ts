@@ -210,6 +210,14 @@ describe("plan_from_copies_table", () => {
       .toBe("refuse invalid");
   });
 
+  it("restores a pinned copy from its Machine when another Server took the name", () => {
+    const renamed = { ...member("fsn-3", "mirror"), machine: { id: "fsn-2".padEnd(32, "0") as MachineId, name: "fsn-3" } };
+    const reused = { ...member("fsn-2", "empty"), machine: { id: "fsn-9".padEnd(32, "0") as MachineId, name: "fsn-2" } };
+    const pinned = { from: "fsn-2", machine: "fsn-2".padEnd(32, "0") as MachineId };
+    expect(outcome({ kind: "restore", args: pinned, volumeName: "data", orphan: false }, [reused, renamed])).toBe("restore fsn-3 11");
+    expect(outcome({ kind: "restore", args: pinned, volumeName: "data", orphan: false }, [reused])).toBe("refuse invalid");
+  });
+
   it("names every other copy Restore would leave behind", () => {
     expect(planFromCopies(restore("fsn-2"), [member("fsn-1", "cut"), member("fsn-2", "mirror"), member("fsn-3", "behind")])).toEqual({
       ok: false,

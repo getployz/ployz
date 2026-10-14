@@ -148,6 +148,8 @@ const volumeRunInput = (run: VolumeRun, name: string): VolumeRunInput => {
       return { kind: "release", args: {} };
     case "remove_mirror":
       return { kind: "delete_mirror", args: { slot: null, confirmed_name: name } };
+    case "restore":
+      return { kind: "restore", args: { from: run.from.name, machine: run.from.machine } };
   }
 };
 
