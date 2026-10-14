@@ -176,7 +176,6 @@ impl LocalMachine {
         deployment_id: Option<ployz_core::DeploymentLogId>,
         registry_auth: Option<ployz_core::RegistryAuth>,
     ) -> Result<ContainerCreated, Error> {
-        // Once admitted, caller cancellation must not let reset overtake a Docker request.
         let (local, namespace, spec) = (self.clone(), namespace.clone(), spec.clone());
         self.finish_mutation(async move {
             local

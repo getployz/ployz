@@ -1741,9 +1741,7 @@ class VolumeMoveTests(unittest.TestCase):
         cases = {case["name"]: case for case in volume_move.CASES + volume_move.soak_cases()}
         # (case, how the first run ends, when it ends, when the trigger appears, whether the case may pass)
         for name, ended, ends, trips, passes in (
-                # Opus's repro: the claimed move fails before its snapshot, and a later sync trips the armed kill.
                 ("kill-snapshot", "failed", 0.5, 1.0, False),
-                # Codex's repro: the claimed move fails before any SetVolumeCopy, and a later sync's pull trips it.
                 ("kill-pull", "failed", 0.5, 1.0, False),
                 # A request no run picked up closes lost, and a sync after it trips the armed kill.
                 ("kill-snapshot", "lost", 0.5, 1.0, False),
@@ -1916,8 +1914,6 @@ class VolumeMoveTests(unittest.TestCase):
 
     def test_a_receive_an_earlier_sync_left_running_is_not_credited_to_the_first_run(self):
         cases = {case["name"]: case for case in volume_move.soak_cases()}
-        # Codex r3 finding 1: a sync holds the Volume, starts a receive and ends while the receive runs on; the first
-        # move sends no effect and fails, or is never claimed and closes lost.
         for name, state, ends, receive_ends in (
                 ("soak-1-rounds-runner-kill", "failed", 1, 30),
                 ("soak-1-rounds-kill-ployz-writer", "failed", 1, 30),
@@ -2089,7 +2085,6 @@ class VolumeMoveTests(unittest.TestCase):
                             or any(" could be credited: " in failure for failure in result["failures"]), result)
 
     def test_a_pull_admitted_before_its_receive_exists_is_not_credited_to_the_first_run(self):
-        # Codex r4 finding 1 and Opus S1: no process exists at the clean start, and the receive spawns 30 s later.
         for name in ("soak-1-rounds-runner-kill", "soak-1-rounds-kill-ployz-writer", "soak-1-rounds-kill-docker-other"):
             with self.subTest(name):
                 result, _ = self.run_with(name, lambda model: self.admit_pull(model, "machine-2", 30, 40))
@@ -2144,7 +2139,6 @@ class VolumeMoveTests(unittest.TestCase):
         self.assertIn("the trigger never fired before the run ended", result["failures"], result)
 
     def test_a_cut_an_earlier_move_left_waiting_in_the_daemon_is_not_credited_to_the_first_run(self):
-        # Codex r4's detached cut: the cut waits for the admission turn and stops the writer after the clean start.
         def waiting(model):
             model.task("machine-1", model.clock() + 20, "cut", lambda: model.cut("machine-1", model.clock()))
         result, model = self.run_with("soak-3-cut-runner-kill", waiting)
@@ -2152,8 +2146,6 @@ class VolumeMoveTests(unittest.TestCase):
         self.assertIn(("machine-1", "cut"), model.interrupted)
 
     def test_a_cancel_restarts_the_runner_exactly_once_even_when_its_lookup_raises(self):
-        # Codex bot round 8: act kills the runner before cancel, and an inngest_run that raises inside cancel left
-        # the runner dead for every later case.
         undo = CANCEL_UNDOS["undo-before-cut"]
         clean = volume_move.CASES[0]
         for raises in (False, True):
@@ -2202,8 +2194,6 @@ class VolumeMoveTests(unittest.TestCase):
                     self.assertIn("psql exited 1", results[undo["name"]]["failures"][0])
 
     def test_a_clean_start_read_that_does_not_prove_it_ran_skips_the_case(self):
-        # Codex r4 finding 3: the clean-start read fails while the leftover it would have shown is real, and the
-        # trigger polls that follow succeed.
         for unreadable in ("exec", "pgrep", "pull"):
             with self.subTest(unreadable):
                 def leftover(model, unreadable=unreadable):

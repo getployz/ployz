@@ -424,7 +424,6 @@ async fn listing_commands_emit_full_json_and_preserve_human_output() {
     service.machines.push(down);
     let (address, server) = serve_discovery(service).await;
 
-    // The down Machine is omitted from every listing, so each result is partial.
     let json_cases: &[(&[&str], &str, &str)] = &[(
         &["ps", "--json"],
         "/containers/0/resolved_spec/container/image",
@@ -470,8 +469,6 @@ async fn listing_commands_emit_full_json_and_preserve_human_output() {
         assert!(!stderr.contains(&"b".repeat(32)), "{args:?}: {stderr}");
     }
 
-    // A removed Service prints from the Servers that answered; the down one
-    // is named and the command is partial.
     let output = run_ployz(address, &["logs", "app/gone"]).await;
     assert_eq!(output.status.code(), Some(3), "{output:?}");
     let stdout = String::from_utf8(output.stdout).unwrap();
@@ -482,7 +479,6 @@ async fn listing_commands_emit_full_json_and_preserve_human_output() {
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(stderr.contains("! down did not answer"), "{stderr}");
 
-    // Asking only the down Server reads nothing and names it.
     let output = run_ployz(address, &["logs", "app/api", "--machine", "down"]).await;
     assert_eq!(output.status.code(), Some(3), "{output:?}");
     assert!(output.stdout.is_empty(), "{output:?}");

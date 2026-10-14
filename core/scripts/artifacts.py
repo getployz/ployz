@@ -59,6 +59,8 @@ KINDS = {
     "ployz": Kind("ployz", ("ployz",), ("ployz",), "dev-debug0-strip-v1"),
 }
 WORKSPACE = ("Cargo.toml", "Cargo.lock", ".cargo", "rust-toolchain.toml")
+# Files outside core/ a crate's build script embeds, keyed by crate.
+EMBEDDED = {"ployz-store": ("../docs/user",)}
 
 
 @dataclass(frozen=True)
@@ -137,7 +139,8 @@ def key(kind, extra="", rev=None):
     """The key of kind's artifact built from rev, or from the working tree, with extra build options."""
     spec = KINDS[kind]
     crates = closure(spec.roots, rev)
-    files = entries([*WORKSPACE, *spec.inputs, *crates.values()], rev)
+    embedded = [path for name in crates for path in EMBEDDED.get(name, ())]
+    files = entries([*WORKSPACE, *spec.inputs, *crates.values(), *embedded], rev)
     for path in spec.generated:
         files.pop(path, None)
     by_crate = {name: digest({path: blob for path, blob in files.items()

@@ -99,7 +99,6 @@ mod tests {
     const CASE: &str = "PLOYZ_OBSERVE_UNIT_CASE";
     const ROOT: &str = "PLOYZ_OBSERVE_UNIT_ROOT";
 
-    /// Logs every call; `show` answers the main PID in `main-pid`, or 0 when nothing runs.
     /// Models systemd's loaded copy of the unit in `loaded`. `daemon-reload` fails once when
     /// `fail-reload` exists; `start` and `restart` fail when `fail-start` exists. `show -p MainPID`
     /// answers the PID in `main-pid`, or 0 when nothing runs.

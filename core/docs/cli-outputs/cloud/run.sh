@@ -83,7 +83,6 @@ done
 up
 cd "$WORK/app" || exit 1
 
-# ---------- errors: not signed in, bad token, unreachable Cloud ----------
 export HOME=$WORK/home-anon; mkdir -p "$HOME"
 note errors "## Not signed in (fresh HOME, PLOYZ_CLOUD_URL set)"
 for cmd in "status" "token ls" "org ls" "github ls" "domain ls" "deployment ls" "deploy --plan" "logs" "ps" "cloud reset -y"; do
@@ -114,7 +113,6 @@ c errors "unknown subcommand" $P org frobnicate
 c errors "bad build-order value" $P org build-order sideways
 c errors "domain add without a service" $P domain add
 
-# ---------- auth ----------
 export HOME=$WORK/home-wait; mkdir -p "$HOME"
 note auth "## login from scratch, human (killed after 5s while it waits)"
 CAP_TIMEOUT=5 m auth "login, waiting for approval (timed out by the capture)" $P login
@@ -135,7 +133,6 @@ note auth "## status, signed in"
 c auth "status" $P status
 c auth "status --json" $P status --json
 
-# ---------- token ----------
 note token "## token new / ls / rm"
 need m token "token new ci" $P token new ci
 need m token "token new deploy --expires-in 7 --json" $P token new deploy --expires-in 7 --json
@@ -168,7 +165,6 @@ PLOYZ_TOKEN=$secret c token "token new with PLOYZ_TOKEN" $P token new nested
 PLOYZ_TOKEN=$revoked c token "status with a revoked PLOYZ_TOKEN" $P status
 PLOYZ_TOKEN=$revoked c token "token ls with a revoked PLOYZ_TOKEN --json" $P token ls --json
 
-# ---------- org ----------
 sql "WITH o AS (INSERT INTO organization (name, slug) VALUES ('Babbage Labs', 'babbage') RETURNING id)
   INSERT INTO member (user_id, organization_id, role) SELECT u.id, o.id, 'owner' FROM o, \"user\" u WHERE u.email = 'ada@example.com'" >/dev/null \
   || { echo "creating the Babbage Labs Organization failed" >&2; exit 1; }
@@ -197,7 +193,6 @@ c org "org ls after removal" $P org ls
 c org "status after removing the acting Organization" $P status
 "$REAL" org use ada >/dev/null 2>&1 || true
 
-# ---------- github ----------
 note github "## github (GitHub App is fake in verify)"
 c github "github (bare)" $P github
 c github "github ls" $P github ls
@@ -208,7 +203,6 @@ c github "github disconnect unknown" $P github disconnect 12345
 c github "github disconnect unknown --json" $P github disconnect 12345 --json
 c github "github ls REPO (unknown repository)" $P github ls acme/shop
 
-# ---------- domain ----------
 note domain "## domain (seed: acme.com on web; hosted DNS is dead in verify)"
 c domain "domain ls" $P domain ls
 c domain "domain ls --json" $P domain ls --json
@@ -233,7 +227,6 @@ c domain "domain rm unknown" $P domain rm nope.example.org
 c domain "domain rm unknown --json" $P domain rm nope.example.org --json
 c domain "domain ls --project nosuch" $P domain ls --project nosuch
 
-# ---------- deploy ----------
 note deploy "## deployment (seed: Deployment 1 queued; no Server answers)"
 c deploy "deployment ls" $P deployment ls
 c deploy "deployment ls --json" $P deployment ls --json

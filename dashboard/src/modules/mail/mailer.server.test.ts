@@ -61,6 +61,17 @@ describe("PostShiba Mailer", () => {
     }),
   );
 
+  it.effect("passes the message's own headers to PostShiba", () =>
+    Effect.gen(function* () {
+      const { fetch, requests } = fakeFetch(201, { message_id: "m-1@postshiba" });
+      const headers = { "List-Unsubscribe": "<https://cloud.example.com/api/mail/unsubscribe?token=t>" };
+      yield* makePostShibaMailer(config, fetch).send({ ...message, headers }, "key-1");
+
+      const [request] = requests;
+      assert.deepStrictEqual(JSON.parse(String(request?.init.body)).headers, headers);
+    }),
+  );
+
   it.effect("reports a throttled cluster", () =>
     Effect.gen(function* () {
       const failure = yield* Effect.flip(sendWith(429, { error: "throttled", retryable: true }));

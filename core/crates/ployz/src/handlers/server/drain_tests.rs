@@ -1,5 +1,4 @@
-//! The CLI's lines for a Drain report. The fixtures are the lines the handler printed
-//! before the report was typed, so every outcome that existed then prints the same now.
+//! Golden fixtures for the lines the CLI prints for a Drain report.
 
 use ployz_core::{Machine, MachineId, MachineName, QualifiedService, WireGuardPublicKey};
 

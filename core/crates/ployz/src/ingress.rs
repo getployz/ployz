@@ -10,7 +10,9 @@ use ployz_core::{
     caddy_service_spec,
 };
 use ployz_store::{IngressAction, IngressFailure, IngressRepair};
+use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
+use ts_rs::TS;
 
 use crate::{
     cluster::HealthWaitError,
@@ -74,9 +76,9 @@ pub(crate) async fn follow_roles(
     ))
 }
 
-/// What a Deploy's ingress step did, or would do, on each ingress Server.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct IngressCheck {
+/// What an ingress start did, or would do, on each Server that holds the ingress role.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, TS)]
+pub struct IngressCheck {
     pub repairs: Vec<IngressRepair>,
     /// One cause per ingress Server whose containers went unobserved, naming it.
     pub unchecked: Vec<String>,

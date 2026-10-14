@@ -161,6 +161,8 @@ export const runtimeStatusRecordSchema = Schema.Struct({
   error: Schema.NullOr(Schema.String),
   volumeCopies: Schema.Array(runtimeVolumeCopySchema),
   certificates: Schema.Array(runtimeCertificateRecordSchema),
+  /** The hostnames Service containers publish through ingress now. */
+  published: Schema.Array(Schema.String),
   incompleteIds: runtimeIncompleteIdsSchema,
   /** Null when Cloud has not received a Runtime Watch observation. */
   observedAt: Schema.NullOr(Schema.String),
@@ -177,6 +179,8 @@ export const runtimeSnapshotSchema = Schema.Struct({
   services: Schema.Array(runtimeServiceRecordSchema),
   volumeCopies: Schema.Array(runtimeVolumeCopySchema),
   certificates: Schema.Array(runtimeCertificateRecordSchema),
+  /** The hostnames Service containers publish through ingress now. */
+  published: Schema.Array(Schema.String),
   incompleteIds: runtimeIncompleteIdsSchema,
   observedAt: Schema.NullOr(Schema.String),
 });
@@ -194,6 +198,7 @@ function emptyRuntimeSnapshot(input: {
     services: [],
     volumeCopies: [],
     certificates: [],
+    published: [],
     incompleteIds: { ...EMPTY_RUNTIME_INCOMPLETE_IDS },
     observedAt: null,
   };
@@ -247,6 +252,7 @@ export function applyRuntimeSnapshot(input: {
       error: input.snapshot.error,
       volumeCopies: input.snapshot.volumeCopies,
       certificates: input.snapshot.certificates,
+      published: input.snapshot.published,
       incompleteIds: input.snapshot.incompleteIds,
       observedAt: input.snapshot.observedAt,
     },
@@ -269,6 +275,7 @@ export function getCachedRuntimeSnapshot(collections: RuntimeCollections) {
     ),
     volumeCopies: status.volumeCopies,
     certificates: status.certificates,
+    published: status.published,
     incompleteIds: status.incompleteIds,
     observedAt: status.observedAt,
   });
@@ -303,6 +310,7 @@ function createRuntimeCollections(organizationSlug: string, scope: CollectionSco
             error: snapshot.error,
             volumeCopies: snapshot.volumeCopies,
             certificates: snapshot.certificates,
+            published: snapshot.published,
             incompleteIds: snapshot.incompleteIds,
             observedAt: snapshot.observedAt,
           },

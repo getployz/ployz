@@ -179,7 +179,6 @@ async fn volume_mounts_and_partial_results_stay_machine_local() {
     };
     assert_eq!(failure.machine_id, second_machine.machine.id);
 
-    // The reachable Machine's Docker Volume goes; the other Machine is never asked.
     let partial_remove = client
         .remove_volumes(RemoveVolumesRequest {
             volumes: vec![DockerVolumeId {

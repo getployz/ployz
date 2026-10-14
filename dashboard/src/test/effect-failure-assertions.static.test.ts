@@ -12,8 +12,6 @@ const SRC = join(process.cwd(), "src");
 const EXIT_DIGGING =
   /Exit\.isFailure\(|\w+\._tag\s*===\s*"Failure"|\w+\._tag,\s*"Failure"\)/;
 
-// Temporary baseline: this file is edited by two open PRs; its `_tag`
-// assertions convert once they merge. Remove the entry with that conversion.
 const DEFERRED = new Set([
   "modules/runtime/organization-runtime.server.effect.test.ts",
 ]);

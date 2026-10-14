@@ -49,7 +49,6 @@ HELPER = CORE / "scripts" / "verify-cluster"
 CATALOG = CORE / "crates" / "ployz-core" / "src" / "rpc_catalog.rs"
 
 DOCKER_VOLUME_VERBS = {"CreateVolume", "InspectStorage", "PrepareVolumes", "ListVolumes", "InspectVolume", "RemoveVolume"}
-# CreateVolume and InspectVolume are dead verbs another change removes, so neither has to stay.
 KEPT_VERBS = DOCKER_VOLUME_VERBS - {"CreateVolume", "InspectVolume"} | {"MetricHistory"}
 MOVE_VERBS = {"InspectVolumeCopy", "SetVolumeCopy", "SeedVolume"}
 

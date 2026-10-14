@@ -40,4 +40,8 @@ describe("createOrganization", () => {
     const [opened] = await harness.db.select().from(session).where(eq(session.userId, actor));
     expect(opened).toMatchObject({ activeOrganizationId: created.id, activeOrganizationSlug: second });
   });
+
+  it("never takes a slug a Cloud page uses", async () => {
+    expect(await create({ name: "Account", slug: "Account" })).toMatch(/^account-[0-9a-f]{8}$/u);
+  });
 });

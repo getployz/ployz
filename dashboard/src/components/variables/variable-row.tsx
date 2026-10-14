@@ -56,7 +56,6 @@ export function VariableRow({
     ? "References a variable whose service was deleted — it resolves to empty at deploy."
     : null;
 
-  // Writes are optimistic: the writer rolls back and toasts if saving fails.
   function handleSave() {
     // A secret's edit seals the typed value: it never becomes plain text.
     if (isSealed) {

@@ -82,6 +82,8 @@ export const runtimeWatchFrameSchema = Schema.Struct({
   containers: Schema.Array(runtimeWatchContainerSchema),
   volumes: Schema.Array(runtimeWatchVolumeCopySchema),
   certificates: Schema.Array(runtimeWatchCertificateSchema),
+  /** The hostnames Service containers publish through ingress now. */
+  published: Schema.Array(Schema.String),
   incomplete_ids: Schema.Struct({
     machines: Schema.Array(Schema.String),
     containers: Schema.Array(Schema.String),
@@ -160,6 +162,10 @@ export function runtimeWatchFrameForTransport(
         : null,
       via_proxy: certificate.via_proxy,
     })),
+    // As in the runtime's `hostname_owners`, a pre-deploy hook keeps its spec's ports but serves nothing.
+    published: [...new Set(frame.containers.flatMap((container) => container.kind === "service_container"
+      ? container.resolved_spec.ports.flatMap((port) => port.mode === "ingress" ? [port.hostname] : [])
+      : []))],
     incomplete_ids: {
       machines: [...frame.incomplete_ids.machines],
       containers: [...frame.incomplete_ids.containers],
@@ -237,6 +243,7 @@ export function runtimeSnapshotFromWatchFrame(
         : null,
       viaProxy: certificate.via_proxy,
     })),
+    published: [...frame.published],
     incompleteIds: {
       machines: [...frame.incomplete_ids.machines],
       containers: [...frame.incomplete_ids.containers],
