@@ -45,6 +45,8 @@ pub(crate) struct FakeDocker {
     /// brings the Container back for every inspect after that.
     pub(crate) restart_after_stop: Arc<AtomicBool>,
     pub(crate) stopped_once: Arc<Mutex<BTreeSet<String>>>,
+    /// Every stop waits while a test holds this for writing; the request is recorded first.
+    pub(crate) stop_gate: Arc<tokio::sync::RwLock<()>>,
     pub(crate) list_warnings: Arc<Mutex<Vec<String>>>,
     /// Another start attaches the network first, so this connect finds it attached.
     pub(crate) connect_raced: Arc<AtomicBool>,
@@ -66,6 +68,9 @@ async fn fake_docker(
             path.clone(),
             serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null),
         ));
+    }
+    if method == Method::POST && path.ends_with("/stop") {
+        drop(fake.stop_gate.read().await);
     }
     if let Some(containers) = &fake.named_containers {
         let mut containers = containers.lock().unwrap();
