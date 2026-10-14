@@ -3084,6 +3084,38 @@ describe("volume runs", () => {
       });
     });
 
+    it("a Deploy that follows an ended commitment requests the release that settles it, once, and a Move is admitted after", async () => {
+      afterCut();
+      const taken = await moving("committed");
+      await harness.pool.query("update volume_run set state = 'failed', finished_at = now() where id = $1", [taken.id]);
+      const deploy = () => new InngestTestEngine({
+        function: createRunStoreDeployment(new Inngest({ id: "test" }), runEffect as Parameters<typeof createRunStoreDeployment>[1]),
+        events: [{ name: "config/deployment.admitted", data: { organizationId, environmentId: "env-1", deploymentId: "d-1" } }],
+        steps: [
+          { id: "record-run", handler: () => undefined },
+          { id: "plan-builds", handler: () => [] },
+          { id: "placement-0", handler: () => ({ kind: "done" }) },
+          { id: "refresh-mirrors", handler: () => undefined },
+          { id: "run-deployment", handler: () => ({ ran: { id: "d-1", status: "applied", remove: false } }) },
+          { id: "sync-uptime", handler: () => undefined },
+          { id: "forget-run", handler: () => undefined },
+          { id: "delete-orphan-mirrors", handler: () => undefined },
+        ],
+        transformCtx: (ctx) => ({ ...mockCtx(ctx), runId: DEPLOY }),
+      }).execute();
+
+      expect((await deploy()).error).toBeUndefined();
+      expect((await deploy()).error).toBeUndefined();
+
+      const releases = (await lanes()).filter((lane) => lane.kind === "release");
+      expect(releases).toMatchObject([{ state: "requested", phase: "committed" }]);
+      const output = await execute(releases[0]?.id ?? "", "run-3");
+      expect(output.result).toMatchObject({ moved: "fsn-2" });
+      expect((await rows()).at(-1)).toMatchObject({ kind: "release", state: "done" });
+      expect(await place()).toEqual([]);
+      expect(await requested({ kind: "move", args: { to: "fsn-1" } })).toMatchObject({ kind: "move", state: "requested" });
+    });
+
     it("on a committed lane whose B was renamed since the commit: it follows B by id and starts the app there", async () => {
       const cut = afterCut();
       await moving("committed");
