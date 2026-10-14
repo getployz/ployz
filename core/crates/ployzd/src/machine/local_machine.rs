@@ -284,7 +284,9 @@ impl LocalMachine {
             crate::retire::Ackers::Known(machines) if !machines.is_empty() => {
                 Some(machines.into_keys().collect())
             }
-            _ => None,
+            crate::retire::Ackers::Known(_)
+            | crate::retire::Ackers::Incomplete { .. }
+            | crate::retire::Ackers::Unread => None,
         })
     }
 

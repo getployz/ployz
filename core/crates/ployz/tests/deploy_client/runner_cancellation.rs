@@ -160,6 +160,10 @@ async fn a_run_another_runner_takes_over_mid_execution_records_it_interrupted() 
     let Some(ployz_store::Outcome::Executed { summary, .. }) = summary.outcome else {
         panic!("expected an executed outcome, got {:?}", summary.outcome);
     };
-    assert_eq!(summary["reason"], "interrupted", "{summary}");
+    assert_eq!(
+        summary.get("reason").and_then(serde_json::Value::as_str),
+        Some("interrupted"),
+        "{summary}"
+    );
     server.abort();
 }

@@ -720,9 +720,11 @@ fn a_scale_up_keeps_the_running_copy_in_its_flip() {
     let running = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(1).unwrap(),
     });
+    let copy = container('b', '1', &running, &service_id('a'));
+    let kept = vec![copy.container_id];
     let snapshot = DeploySnapshot {
         machines: vec![machine('1', "first"), machine('2', "second")],
-        containers: vec![container('b', '1', &running, &service_id('a'))],
+        containers: vec![copy],
         ..Default::default()
     };
     let scaled = requested(ServiceMode::Replicated {
@@ -740,10 +742,10 @@ fn a_scale_up_keeps_the_running_copy_in_its_flip() {
         operations(&plan).as_slice(),
         [DeployOperation::RunContainer { .. }]
     ));
-    let kept: Vec<_> = plan
+    let groups: Vec<_> = plan
         .groups()
         .iter()
         .map(|group| group.kept.clone())
         .collect();
-    assert_eq!(kept, [vec![snapshot.containers[0].container_id]]);
+    assert_eq!(groups, [kept]);
 }
