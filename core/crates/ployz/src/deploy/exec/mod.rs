@@ -16,9 +16,9 @@ use ployz_core::{
     FailedOperation, HEALTH_POLL_INTERVAL, HealthFailure, HealthVerdict, HookFailure,
     InspectContainerRequest, ListContainersRequest, MachineAction, MachineId, MachineTarget,
     MembershipObservation, Namespace, NewContainer, OperationPhase, PublishServingPointerRequest,
-    PullPolicy, QualifiedService, RemoveVolumeRequest, ResolvedServiceSpec, RpcError, RpcErrorCode,
-    RunTarget, ServingPointer, ServingPointerPublication, ServingPointerRead, SlotKey, StopOptions,
-    UpdateOrder, op,
+    PullPolicy, QualifiedService, RemoveContainerPurpose, RemoveVolumeRequest, ResolvedServiceSpec,
+    RpcError, RpcErrorCode, RunTarget, ServingPointer, ServingPointerPublication,
+    ServingPointerRead, SlotKey, StopOptions, UpdateOrder, op,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc::UnboundedSender;
@@ -586,6 +586,13 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
         .map(|operation| Task {
             machine: operation.machine_id(),
             starts: starts_container(operation),
+            unroutes: matches!(
+                operation,
+                DeployOperation::RemoveContainer {
+                    purpose: RemoveContainerPurpose::Rollout,
+                    ..
+                }
+            ),
         })
         .collect();
     let mut schedule = Schedule::new(plan.groups().to_vec(), tasks);
@@ -794,6 +801,9 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                         match client.read_pointer(&qualified).await {
                             Ok(read) => {
                                 if read.pointer.is_some_and(|pointer| &pointer.deploy == run) {
+                                    if read.all_routed {
+                                        schedule.apply(Event::Routed(service.clone()));
+                                    }
                                     for (machine, deploy) in read.acks {
                                         if &deploy == run {
                                             schedule.apply(Event::Acked {

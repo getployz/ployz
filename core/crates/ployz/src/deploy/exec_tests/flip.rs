@@ -197,6 +197,68 @@ async fn a_flip_retires_the_replaced_copy_and_removes_a_draining_one_after_the_s
         publication.read.as_ref().map(|read| &read.deploy),
         Some(&publication.pointer.previous.clone().unwrap())
     );
+    assert_eq!(*client.removed_after.lock().unwrap(), [(draining, 1)]);
+    client.assert_done();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_rollout_removal_waits_until_every_machine_routes_the_new_pointer() {
+    let lagging = machine('2');
+    let machine = machine('1');
+    let replaced = container('b');
+    let draining = container('c');
+    let new = container('d');
+    let plan = vec![
+        DeployOperation::ReplaceContainer(ReplacementOperation {
+            machine_id: machine,
+            old_container_id: replaced,
+            spec: spec(None, None, None),
+            skip_health_monitor: true,
+        }),
+        DeployOperation::RemoveContainer {
+            machine_id: machine,
+            container_id: draining,
+            purpose: ployz_core::RemoveContainerPurpose::Rollout,
+        },
+    ];
+    let client = Scripted {
+        unrouted_machine: Some(lagging),
+        ..Scripted::new(vec![created(
+            Call::Run(machine, ContainerKind::ServiceContainer),
+            &new,
+        )])
+    };
+    client.pointers.lock().unwrap().insert(
+        api(),
+        ServingPointer {
+            deploy: DeploymentLogId::parse("older").unwrap(),
+            containers: vec![replaced],
+            previous: None,
+            retiring: vec![draining],
+        },
+    );
+
+    let outcome = execute_groups(&plan, crate::deploy::planning::test_groups(&plan), &client).await;
+
+    assert!(
+        matches!(
+            &outcome,
+            DeployOutcome::Failed {
+                completed,
+                failed: FailedOperation::Operation {
+                    error: ExecutionError::DependencyHealth {
+                        failure: DependencyHealthFailure::NotRouted { .. },
+                        ..
+                    },
+                    ..
+                },
+                ..
+            } if completed.len() == 1
+        ),
+        "{outcome:?}"
+    );
+    assert_eq!(client.publications().len(), 1);
+    assert!(client.removed_after.lock().unwrap().is_empty());
     client.assert_done();
 }
 

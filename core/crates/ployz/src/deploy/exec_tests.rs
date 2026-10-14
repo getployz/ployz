@@ -108,6 +108,8 @@ struct Scripted {
     lost_reply: bool,
     pointers: Mutex<BTreeMap<QualifiedService, ServingPointer>>,
     publications: Mutex<Vec<PublishServingPointerRequest>>,
+    /// Each drained removal with the number of pointer writes before it.
+    removed_after: Mutex<Vec<(ContainerId, usize)>>,
 }
 
 impl Scripted {
@@ -127,6 +129,7 @@ impl Scripted {
             lost_reply: false,
             pointers: Mutex::new(BTreeMap::new()),
             publications: Mutex::new(Vec::new()),
+            removed_after: Mutex::new(Vec::new()),
         }
     }
 
@@ -139,6 +142,10 @@ impl Scripted {
     }
 
     fn next(&self, call: Call) -> Reply {
+        if let Call::Remove(_, container) = call {
+            let writes = self.publications.lock().unwrap().len();
+            self.removed_after.lock().unwrap().push((container, writes));
+        }
         let Step(expected, reply) = self
             .steps
             .lock()
@@ -356,7 +363,12 @@ impl MachineOperations for Scripted {
                 .collect(),
             _ => BTreeMap::new(),
         };
-        Ok(ServingPointerRead { pointer, acks })
+        let all_routed = pointer.is_some() && routed && self.unrouted_machine.is_none();
+        Ok(ServingPointerRead {
+            pointer,
+            acks,
+            all_routed,
+        })
     }
 
     async fn publish_pointer(

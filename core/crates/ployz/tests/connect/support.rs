@@ -1185,9 +1185,13 @@ impl MachineRpc for DiscoveryService {
             })
             .collect();
         Ok(Response::new(
-            RpcResponse::from(ServingPointerRead { pointer, acks })
-                .encode()
-                .unwrap(),
+            RpcResponse::from(ServingPointerRead {
+                all_routed: pointer.is_some(),
+                pointer,
+                acks,
+            })
+            .encode()
+            .unwrap(),
         ))
     }
     async fn prune_images(

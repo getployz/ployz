@@ -1,6 +1,10 @@
 //! Local Machine RPC. Listeners take [`super::MachineApi`], not this type.
 
-use std::{collections::BTreeSet, path::PathBuf, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::PathBuf,
+    sync::Arc,
+};
 
 use ployz_core::{
     CapabilityAdvertisement, CertificateMaterialChange, CertificateMaterialPublished,
@@ -677,7 +681,7 @@ impl MachineRpc for MachineService {
             Ok(pointer) => pointer,
             Err(error) => return respond(cluster_store_error(error)),
         };
-        let acks = match replicated.ingress_routes().await {
+        let acks: BTreeMap<_, _> = match replicated.ingress_routes().await {
             Ok(routes) => routes
                 .into_iter()
                 .filter(|((_, service), ack)| {
@@ -687,7 +691,18 @@ impl MachineRpc for MachineService {
                 .collect(),
             Err(error) => return respond(cluster_store_error(error)),
         };
-        respond(ServingPointerRead { pointer, acks })
+        let all_routed = match self.local.ingress_machines().await {
+            Ok(Some(machines)) => {
+                pointer.is_some() && machines.iter().all(|machine| acks.contains_key(machine))
+            }
+            Ok(None) => false,
+            Err(error) => return local_error(error),
+        };
+        respond(ServingPointerRead {
+            pointer,
+            acks,
+            all_routed,
+        })
     }
 }
 

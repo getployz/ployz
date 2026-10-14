@@ -1016,7 +1016,11 @@ impl MachineRpc for JoinDaemon {
             .iter()
             .map(|pointer| (machine, pointer.deploy.clone()))
             .collect();
-        rpc_ok(ServingPointerRead { pointer, acks })
+        rpc_ok(ServingPointerRead {
+            all_routed: pointer.is_some(),
+            pointer,
+            acks,
+        })
     }
     async fn prune_images(
         &self,

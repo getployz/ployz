@@ -14,6 +14,9 @@ pub(crate) struct Task {
     pub(crate) machine: MachineId,
     /// Creates a new Container, which takes a slot in its Machine's window.
     pub(crate) starts: bool,
+    /// Removes a copy the Service's previous pointer named, so it waits until
+    /// every Machine routes the new pointer.
+    pub(crate) unroutes: bool,
 }
 
 /// Operation indices that run one after another, or together.
@@ -55,6 +58,8 @@ pub(crate) enum Event {
         service: ServiceName,
         machine: MachineId,
     },
+    /// Every Machine routes `service` at this Deploy's pointer.
+    Routed(ServiceName),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -81,6 +86,7 @@ pub(crate) struct Schedule {
     published: BTreeSet<ServiceName>,
     publish_requested: BTreeSet<usize>,
     acked: BTreeSet<(ServiceName, MachineId)>,
+    routed: BTreeSet<ServiceName>,
     failed: bool,
 }
 
@@ -110,6 +116,7 @@ impl Schedule {
             published: BTreeSet::new(),
             publish_requested: BTreeSet::new(),
             acked: BTreeSet::new(),
+            routed: BTreeSet::new(),
             failed: false,
         }
     }
@@ -250,6 +257,9 @@ impl Schedule {
             Event::Acked { service, machine } => {
                 self.acked.insert((service, machine));
             }
+            Event::Routed(service) => {
+                self.routed.insert(service);
+            }
         }
     }
 
@@ -287,7 +297,9 @@ impl Schedule {
                     still_pending.push(task);
                     continue;
                 }
-                let Task { machine, starts } = self.task(task);
+                let Task {
+                    machine, starts, ..
+                } = self.task(task);
                 let window = windows.entry(*machine).or_insert(0);
                 let room = !*starts || *window < MACHINE_WINDOW;
                 if room && self.missing_ack(&self.slot(group).group, task).is_none() {
@@ -382,19 +394,25 @@ impl Schedule {
             })
     }
 
-    /// The published dependency `task`'s Machine has not acked yet, if any.
-    /// Only a new Container needs its dependencies routable where it runs.
+    /// The published dependency `task` still waits on, if any. A new Container
+    /// needs its dependencies routable where it runs; removing an old copy
+    /// needs every Machine routing past it.
     fn missing_ack(&self, group: &ServiceGroup, task: usize) -> Option<ServiceName> {
-        let Task { machine, starts } = self.task(task);
-        if !starts {
-            return None;
-        }
+        let Task {
+            machine,
+            starts,
+            unroutes,
+        } = self.task(task);
         group
             .dependencies
             .iter()
             .find(|dependency| {
                 self.published.contains(*dependency)
-                    && !self.acked.contains(&((*dependency).clone(), *machine))
+                    && if *unroutes {
+                        !self.routed.contains(*dependency)
+                    } else {
+                        *starts && !self.acked.contains(&((*dependency).clone(), *machine))
+                    }
             })
             .cloned()
     }
@@ -448,6 +466,7 @@ mod tests {
         Task {
             machine: self::machine(machine),
             starts: true,
+            unroutes: false,
         }
     }
 
@@ -601,10 +620,12 @@ mod tests {
         tasks.push(Task {
             machine: machine('1'),
             starts: false,
+            unroutes: false,
         });
         tasks.push(Task {
             machine: machine('2'),
             starts: false,
+            unroutes: false,
         });
         let mut schedule = Schedule::new(
             vec![
@@ -653,6 +674,7 @@ mod tests {
             Task {
                 machine: machine('1'),
                 starts: false,
+                unroutes: false,
             },
             start('1'),
             start('1'),
@@ -749,6 +771,7 @@ mod tests {
                 Task {
                     machine: machine('1'),
                     starts: false,
+                    unroutes: false,
                 },
                 start('1'),
                 start('1'),
@@ -778,6 +801,7 @@ mod tests {
                 Task {
                     machine: machine('1'),
                     starts: false,
+                    unroutes: false,
                 },
             ],
         );

@@ -904,7 +904,11 @@ impl MachineRpc for DeployService {
                     .map(move |observed| (observed.machine.id, pointer.deploy.clone()))
             })
             .collect();
-        encoded(RpcResponse::from(ServingPointerRead { pointer, acks }))
+        encoded(RpcResponse::from(ServingPointerRead {
+            all_routed: pointer.is_some(),
+            pointer,
+            acks,
+        }))
     }
     async fn prune_images(
         &self,

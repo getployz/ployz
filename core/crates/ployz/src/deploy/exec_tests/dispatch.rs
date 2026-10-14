@@ -353,25 +353,27 @@ fn ensured(machine_id: &MachineId, id: &ContainerId) -> ployz_core::RpcResponse 
 }
 
 #[tokio::test]
-async fn a_private_image_is_created_with_its_services_credentials_only() {
-    use ployz_core::{EnsureContainerRequest, OpaquePayload, RegistryAuth, RpcRequestBody};
+async fn a_private_image_is_pulled_with_its_services_credentials_only() {
+    use ployz_core::{OpaquePayload, PullImageRequest, RegistryAuth, RpcRequestBody};
     use std::sync::Arc;
     use tonic::{Request, Response};
 
-    let captured = Arc::new(Mutex::new(Vec::<EnsureContainerRequest>::new()));
+    let captured = Arc::new(Mutex::new(Vec::<PullImageRequest>::new()));
     let requests = captured.clone();
     let (mut client, server) =
         crate::connect::test_support::rpc_client(move |rpc: Request<OpaquePayload>| {
             let requests = requests.clone();
             async move {
-                let RpcRequestBody::EnsureContainer(request) =
+                let RpcRequestBody::PullImage(request) =
                     rpc.into_inner().decode_request().unwrap().body
                 else {
-                    panic!("only ensure is expected");
+                    panic!("only pull is expected");
                 };
                 requests.lock().unwrap().push(request);
                 Ok(Response::new(
-                    ensured(&machine('1'), &container('a')).encode().unwrap(),
+                    ployz_core::RpcResponse::from(ployz_core::ImagePulled {})
+                        .encode()
+                        .unwrap(),
                 ))
             }
         })
@@ -385,35 +387,19 @@ async fn a_private_image_is_created_with_its_services_credentials_only() {
         password: "token".into(),
     };
     client.registry_auth = std::collections::BTreeMap::from([(private.name.clone(), auth.clone())]);
-    for (kind, specification) in [
-        (ContainerKind::ServiceContainer, &private),
-        (ContainerKind::PreDeployHook, &private),
-        (ContainerKind::ServiceContainer, &public),
-    ] {
-        MachineOperations::ensure_container(
-            &client,
-            &machine('1'),
-            new_want(kind, specification, "run:0"),
-        )
-        .await
-        .unwrap();
+    for specification in [&private, &public] {
+        MachineOperations::ensure_image(&client, &machine('1'), specification)
+            .await
+            .unwrap();
     }
     server.abort();
     let sent = captured
         .lock()
         .unwrap()
         .iter()
-        .map(|request| {
-            let ContainerWant::Running {
-                container: RunTarget::New(new),
-            } = &request.want
-            else {
-                panic!("unexpected want {:?}", request.want);
-            };
-            new.registry_auth.clone()
-        })
+        .map(|request| request.registry_auth.clone())
         .collect::<Vec<_>>();
-    assert_eq!(sent, [Some(auth.clone()), Some(auth), None]);
+    assert_eq!(sent, [Some(auth), None]);
 }
 
 /// What the Machine is asked to want for a Container removed for `purpose`.
@@ -718,6 +704,7 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
                     RpcRequestBody::ReadServingPointer(_) => {
                         RpcResponse::from(ServingPointerRead::default())
                     }
+                    RpcRequestBody::PullImage(_) => RpcResponse::from(ployz_core::ImagePulled {}),
                     RpcRequestBody::ListContainers(_) => RpcResponse::from(ContainerList {
                         containers: remote.clone(),
                     }),

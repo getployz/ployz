@@ -265,6 +265,29 @@ impl LocalMachine {
         .await
     }
 
+    /// Machines whose ingress must route a Serving Pointer before a Deploy relies on
+    /// it, or `None` while the Machine list is partly replicated.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::ClusterStoreUnavailable`] without a Cluster store, and
+    /// [`Error::Cluster`] when the Machine list cannot be read.
+    pub(crate) async fn ingress_machines(&self) -> Result<Option<BTreeSet<MachineId>>, Error> {
+        let cluster = self
+            .cluster
+            .as_ref()
+            .ok_or(Error::ClusterStoreUnavailable)?;
+        let machines = cluster.replicated.machines().await?;
+        let ackers =
+            crate::retire::sample_ackers(machines, &self.record().id(), &cluster.admin).await;
+        Ok(match ackers {
+            crate::retire::Ackers::Known(machines) if !machines.is_empty() => {
+                Some(machines.into_keys().collect())
+            }
+            _ => None,
+        })
+    }
+
     pub(crate) fn replicated(&self) -> Result<&ReplicatedStore, Error> {
         self.cluster
             .as_ref()

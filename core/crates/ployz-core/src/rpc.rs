@@ -1206,6 +1206,10 @@ pub struct ServingPointerRead {
     /// Container it names, and which deploy that is. Empty without a pointer.
     #[serde(default)]
     pub acks: BTreeMap<MachineId, crate::DeploymentLogId>,
+    /// Every Machine not reported Down acks `pointer`. False without a pointer or
+    /// while the Machine list is partly replicated.
+    #[serde(default)]
+    pub all_routed: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]

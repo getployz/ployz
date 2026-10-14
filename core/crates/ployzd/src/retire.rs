@@ -59,19 +59,7 @@ impl RetireHost for DaemonHost {
         let Some(machines) = self.machines.current() else {
             return Ackers::Unread;
         };
-        let states =
-            match tokio::time::timeout(MEMBERSHIP_SAMPLE_TIMEOUT, self.admin.membership_states())
-                .await
-            {
-                Ok(Ok(states)) => Some(membership_states_by_address(states)),
-                _ => {
-                    tracing::warn!(
-                        "membership sample failed; every Machine must ack before retiring"
-                    );
-                    None
-                }
-            };
-        required_ackers(machines.as_ref().clone(), &self.machine_id, states.as_ref())
+        sample_ackers(machines.as_ref().clone(), &self.machine_id, &self.admin).await
     }
 
     async fn retire(&self, container: ContainerId) -> io::Result<()> {
@@ -122,6 +110,24 @@ impl Ackers {
             Self::Unread => vec!["unknown, the Machine list was never read".to_owned()],
         }
     }
+}
+
+/// Machines whose ingress must ack: every one not reported Down, or every one
+/// when membership cannot be sampled.
+pub(crate) async fn sample_ackers(
+    machines: ReplicatedObservations<Machine, MachineId>,
+    local: &MachineId,
+    admin: &AdminClient,
+) -> Ackers {
+    let states =
+        match tokio::time::timeout(MEMBERSHIP_SAMPLE_TIMEOUT, admin.membership_states()).await {
+            Ok(Ok(states)) => Some(membership_states_by_address(states)),
+            _ => {
+                tracing::warn!("membership sample failed; every Machine must ack");
+                None
+            }
+        };
+    required_ackers(machines, local, states.as_ref())
 }
 
 fn required_ackers(
