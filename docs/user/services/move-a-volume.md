@@ -167,8 +167,18 @@ Release stops the run on the volume and starts your service again on the old ser
 its data. Before `web-2` starts your service, Release deletes the copy on `web-2` first. Release
 deletes only the copies it named when you started it. If the copies changed since, it deletes
 nothing, your service stays stopped, and the run says to release again. With no
-run in progress, Release repairs a move that stopped. Once `web-2` is told to start your
-service, the move can only finish there, so Release is refused:
+run in progress, Release repairs a move that stopped. A move that stopped before its first
+snapshot has nothing to release from, so Release is refused and names the move to run again:
+
+```
+data on web-1 stopped before its first snapshot; ployz volume move data --to web-2
+```
+
+If moves left unfinished cuts on more than one server, Release is refused too. It keeps the
+newest cut and names a `ployz server rm` line for each server whose copy it can't keep, then the
+release or move to run.
+
+Once `web-2` is told to start your service, the move can only finish there, so Release is refused:
 
 ```
 data is starting on web-2; it finishes there

@@ -219,7 +219,7 @@ describe("plan_from_copies_table", () => {
       ok: false,
       refusal: {
         code: "volume_switching",
-        message: "data has unfinished cuts on fsn-1 and fsn-2 and fsn-3, so release cannot pick a writer; ployz server rm fsn-1 and fsn-3, then ployz volume release data",
+        message: "data has unfinished cuts on fsn-1 and fsn-2 and fsn-3, so release cannot pick a writer; ployz server rm fsn-1, then ployz server rm fsn-3, then ployz volume release data",
       },
     });
   });
@@ -230,7 +230,7 @@ describe("plan_from_copies_table", () => {
       ok: false,
       refusal: {
         code: "volume_switching",
-        message: "data has unfinished cuts on fsn-1 and fsn-2, so release cannot pick a writer; ployz server rm fsn-1 and fsn-4, then ployz volume move data --to fsn-3",
+        message: "data has unfinished cuts on fsn-1 and fsn-2, so release cannot pick a writer; ployz server rm fsn-1, then ployz server rm fsn-4, then ployz volume move data --to fsn-3",
       },
     });
   });
@@ -264,7 +264,7 @@ describe("plan_from_copies_table", () => {
       "of three cuts with the top two tied, keeps the one that holds a snapshot",
       [member("fsn-1", "cut", { epoch: 7 }), member("fsn-2", "cut", { epoch: 9 }), bare("fsn-3", 9)],
       "volume_switching",
-      "data has unfinished cuts on fsn-1 and fsn-2 and fsn-3, so release cannot pick a writer; ployz server rm fsn-1 and fsn-3, then ployz volume release data",
+      "data has unfinished cuts on fsn-1 and fsn-2 and fsn-3, so release cannot pick a writer; ployz server rm fsn-1, then ployz server rm fsn-3, then ployz volume release data",
     ],
     [
       "of tied cuts with no snapshot, keeps the first by Server name and moves it onto the mirror",
@@ -364,14 +364,14 @@ function keptCut(members: readonly Member[]) {
 function nextStep(message: string) {
   const step = new RegExp([
     /^data (?:has unfinished cuts on ([\w-]+(?: and [\w-]+)*), so release cannot pick a writer|on ([\w-]+) stopped before its first snapshot); /.source,
-    /(?:ployz server rm ([\w-]+(?: and [\w-]+)*), then )?ployz volume (?:(release) data|(move) data --to (<another server>|[\w-]+))$/.source,
+    /((?:ployz server rm [\w-]+, then )*)ployz volume (?:(release) data|(move) data --to (<another server>|[\w-]+))$/.source,
   ].join("")).exec(message);
   if (step === null) throw new Error(`no step in: ${message}`);
   const [, cuts, stopped, removed, released, moved, to] = step;
   return {
     stem: cuts === undefined ? "stopped" : "cuts",
     about: (cuts ?? stopped ?? "").split(" and ").sort(),
-    gone: removed?.split(" and ").sort() ?? [],
+    gone: [...(removed ?? "").matchAll(/ployz server rm ([\w-]+)/g)].flatMap(([, server]) => server ?? []).sort(),
     verb: released ?? moved,
     to,
   };
