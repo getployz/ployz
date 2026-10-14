@@ -11,6 +11,7 @@ import {
 import { AppConfig, type MailConfiguration } from "#/server/config.server";
 
 const config: NonNullable<MailConfiguration> = {
+  origin: "https://app.postshiba.com",
   apiKey: Redacted.make("test-key"),
   teamId: "team-1",
   clusterId: "cluster-1",

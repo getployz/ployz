@@ -36,8 +36,11 @@ export type PolarConfiguration =
       readonly productId: string;
     };
 
+const POSTSHIBA_ORIGIN = "https://app.postshiba.com";
+
 /** PostShiba sends Cloud's email; null (every variable unset) is Off. */
 export type MailConfiguration = {
+  readonly origin: string;
   readonly apiKey: Redacted.Redacted<string>;
   readonly teamId: string;
   readonly clusterId: string;
@@ -74,6 +77,7 @@ const rawFields = {
     "GITHUB_APP_WEBHOOK_SECRET",
   ),
   verifyGithubOrigin: optional(Config.url("PLOYZ_VERIFY_GITHUB_ORIGIN")),
+  verifyPostshibaOrigin: optional(Config.url("PLOYZ_VERIFY_POSTSHIBA_ORIGIN")),
   polarAccessToken: optional(
     Config.schema(NonEmptySecret, "POLAR_ACCESS_TOKEN"),
   ),
@@ -181,28 +185,36 @@ const resolveMailConfiguration = Effect.fn("Config.resolveMail")(function* (
         "Mail configuration must be entirely absent or include POSTSHIBA_API_KEY, POSTSHIBA_TEAM_ID, POSTSHIBA_CLUSTER_ID, and MAIL_FROM",
     });
   }
-  return { apiKey, teamId, clusterId, from } satisfies MailConfiguration;
+  const origin = yield* resolveVerifyOrigin(input.nodeEnv, "PLOYZ_VERIFY_POSTSHIBA_ORIGIN", input.verifyPostshibaOrigin);
+  return { origin: origin ?? POSTSHIBA_ORIGIN, apiKey, teamId, clusterId, from } satisfies MailConfiguration;
 });
 
-/** A verify lab's fake GitHub stands in for every GitHub host; it would receive every GitHub credential Cloud holds. */
-const resolveGithubOrigins = Effect.fn("Config.resolveGithubOrigins")(function* (
-  input: Effect.Success<typeof loadRawConfig>,
+/** A verify lab's fake stands in for a real service and receives every credential Cloud sends it. */
+const resolveVerifyOrigin = Effect.fn("Config.resolveVerifyOrigin")(function* (
+  nodeEnv: Effect.Success<typeof loadRawConfig>["nodeEnv"],
+  name: string,
+  origin: URL | undefined,
 ) {
-  const origin = input.verifyGithubOrigin;
-  if (origin === undefined) return GITHUB_ORIGINS;
-  if (input.nodeEnv === "production") {
-    return yield* new InvalidConfiguration({
-      message: "PLOYZ_VERIFY_GITHUB_ORIGIN is for verify labs and is refused when NODE_ENV is production",
-    });
+  if (origin === undefined) return undefined;
+  if (nodeEnv === "production") {
+    return yield* new InvalidConfiguration({ message: `${name} is for verify labs and is refused when NODE_ENV is production` });
   }
   const bare = `${origin.origin}/`;
   if ((origin.protocol !== "http:" && origin.protocol !== "https:") || origin.href !== bare) {
     return yield* new InvalidConfiguration({
-      message: `PLOYZ_VERIFY_GITHUB_ORIGIN must be an http(s) origin with no path, query or credentials, like http://127.0.0.1:4555, not ${origin.href}`,
+      message: `${name} must be an http(s) origin with no path, query or credentials, like http://127.0.0.1:4555, not ${origin.href}`,
     });
   }
-  yield* Effect.logInfo(`GitHub origin ${origin.origin} (PLOYZ_VERIFY_GITHUB_ORIGIN)`);
-  return { api: origin.origin, web: origin.origin, codeload: origin.origin } satisfies GithubOrigins;
+  yield* Effect.logInfo(`${name} ${origin.origin}`);
+  return origin.origin;
+});
+
+const resolveGithubOrigins = Effect.fn("Config.resolveGithubOrigins")(function* (
+  input: Effect.Success<typeof loadRawConfig>,
+) {
+  const origin = yield* resolveVerifyOrigin(input.nodeEnv, "PLOYZ_VERIFY_GITHUB_ORIGIN", input.verifyGithubOrigin);
+  if (origin === undefined) return GITHUB_ORIGINS;
+  return { api: origin, web: origin, codeload: origin } satisfies GithubOrigins;
 });
 
 /** Comma-separated user ids, taken exactly: no email or domain matching. */

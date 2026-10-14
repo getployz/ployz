@@ -254,7 +254,11 @@ function InviteDialog({ organizationSlug, onInvited, onOpenChange }: {
         <DialogHeader>
           <DialogTitle>Invite to {organizationSlug}</DialogTitle>
           <DialogDescription>
-            {invite.data ? "Send this link to the person you're inviting. It works once and lasts 7 days." : "Anyone with the link can join, once."}
+            {invite.data === undefined
+              ? "Anyone with the link can join, once."
+              : invite.data.emailed_to === null
+                ? "Send this link to the person you're inviting. It works once and lasts 7 days."
+                : `Emailed to ${invite.data.emailed_to}. The link works once and lasts 7 days.`}
           </DialogDescription>
         </DialogHeader>
         {invite.data ? (
