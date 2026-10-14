@@ -410,7 +410,12 @@ function allocateEnrollment(...args) {
 
 function setVolumeCopyRefusal(error) {
   const details = error?.details;
-  return details == null ? null : native.setVolumeCopyRefusal(details);
+  if (details == null) return null;
+  try {
+    return native.setVolumeCopyRefusal(details);
+  } catch {
+    return null;
+  }
 }
 
 function ployzVersion() {
