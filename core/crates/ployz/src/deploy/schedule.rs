@@ -158,7 +158,7 @@ impl Schedule {
             .collect()
     }
 
-    /// Where each Service group ended: published or done is new, started is
+    /// Where each Service group ended: done is new, started but not done is
     /// old, never started is not started.
     pub(crate) fn services(&self) -> Vec<ServiceOutcome> {
         self.slots
