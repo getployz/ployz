@@ -730,7 +730,7 @@ export function switchFailureMessage(reason: SwitchReason, ctx: Pick<RunContext,
     case "no_source":
       return `${name}'s mirror on ${machine.name} has no Server to pull from`;
     case "volume_switching":
-      return `${name} is mid-run; ployz volume release ${name} stops it`;
+      return `${name} on ${machine.name} is mid-run; try again once the run ends`;
     case "no_writer":
       return `${name} has no writer on ${machine.name}`;
     case "no_capacity":
