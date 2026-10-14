@@ -47,7 +47,9 @@ export function upgradeFailedMail({ organization, failures, origin }: UpgradeFai
     preview: `${first.name} didn't upgrade${target}.`,
     title: `${servers} didn't upgrade`,
     paragraphs: [
-      `An automatic upgrade in ${organization.name} didn't finish. Automatic upgrades skip this release until an Upgrade of it succeeds.`,
+      failures.some((failure) => failure.targetVersion !== null)
+        ? `An automatic upgrade in ${organization.name} didn't finish. Automatic upgrades skip this release until an Upgrade of it succeeds.`
+        : `An automatic upgrade in ${organization.name} didn't finish.`,
     ],
     action: one
       ? { label: "View Server", url: `${origin}/cloud/${organization.slug}/~/servers/${first.machineId}` }
