@@ -111,7 +111,8 @@ const DeleteConsent = Schema.Struct({ id: Schema.String });
  *
  * The binding is enforced where the provider resolves access token claims, which it does only for a JWT, and it mints
  * a JWT only for a request that names a resource. So a request must name the MCP resource, as the MCP spec has every
- * client do, or a resourceless one would mint an opaque token and a refresh row that skipped the binding.
+ * client do, or a resourceless one would mint an opaque token and a refresh row that skipped the binding. Every token
+ * request is checked, before its grant is read, because the provider reads the grant more loosely than this hook does.
  */
 const bindCredentialsToGrant = (resource: string): BetterAuthPlugin => ({
   id: "ployz-bind-credentials-to-grant",
@@ -120,12 +121,12 @@ const bindCredentialsToGrant = (resource: string): BetterAuthPlugin => ({
       {
         matcher: (ctx) => ctx.path === "/oauth2/token",
         handler: createAuthMiddleware(async (ctx) => {
-          const request = Schema.decodeUnknownOption(TokenRequest)(ctx.body);
-          if (Option.isNone(request)) return;
           const addressed = Schema.decodeUnknownOption(Addressed)(ctx.body);
           if (!Option.exists(addressed, (named) => [named.resource].flat().includes(resource))) {
             throw new APIError("BAD_REQUEST", { error: "invalid_target", error_description: `a token is only issued for ${resource}` });
           }
+          const request = Schema.decodeUnknownOption(TokenRequest)(ctx.body);
+          if (Option.isNone(request)) return;
           const credential = await presented(ctx.context.adapter, request.value);
           if (credential === undefined) return;
           const consent = await currentConsent(ctx.context.adapter, credential);

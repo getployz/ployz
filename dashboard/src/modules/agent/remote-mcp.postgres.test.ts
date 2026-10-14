@@ -552,7 +552,7 @@ it.live("a redemption without a resource, held and resumed after a disconnect an
     expect(answered.status).toBe(400);
   }).pipe(Effect.scoped), 30_000);
 
-it.live("a token request without a resource is refused, for a code and for a refresh token", () =>
+it.live("a token request without a resource is refused, for a code, a refresh token and a padded grant type", () =>
   Effect.gen(function* () {
     const shop = yield* hostedShop();
     const clientId = yield* registerAgent(shop);
@@ -562,6 +562,12 @@ it.live("a token request without a resource is refused, for a code and for a ref
     expect(yield* redeem(shop, yield* issueCode(shop, clientId), null)).toEqual(unaddressed);
     expect(yield* redeem(shop, yield* issueCode(shop, clientId, undefined, null), null)).toEqual(unaddressed);
     expect(yield* refresh(shop, clientId, refreshToken, null)).toEqual(unaddressed);
+    const padded = yield* issueCode(shop, clientId, undefined, null);
+    expect(yield* authJson(shop, "/api/auth/oauth2/token", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: form({ grant_type: " authorization_code ", code: padded.code, redirect_uri: REDIRECT, client_id: clientId, code_verifier: padded.verifier }).toString(),
+    })).toEqual(unaddressed);
     expect((yield* refresh(shop, clientId, refreshToken)).status).toBe(200);
   }).pipe(Effect.scoped), 30_000);
 
