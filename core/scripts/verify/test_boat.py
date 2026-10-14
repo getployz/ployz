@@ -534,6 +534,41 @@ class Pool(unittest.TestCase):
         self.assertEqual(held, [True])
         self.assertEqual([(row["id"], row["reason"]) for row in rows], [("bx_c", "retired bake")])
 
+# Docker as far as the image reset reaches it, backed by a JSON file of tags, image ids and build cache entries.
+FAKE_DOCKER = r"""#!/usr/bin/env python3
+import json, os, sys
+path = os.environ["FAKE_DOCKER_STATE"]
+state = json.load(open(path))
+tags, ids, args = state["tags"], state["ids"], sys.argv[1:]
+def drop(image):
+    for tag in [t for t, i in tags.items() if i == image]:
+        del tags[tag]
+    ids.remove(image)
+if args[:2] == ["image", "ls"] and "-q" in args:
+    print("\n".join(ids))
+elif args[:2] == ["image", "ls"]:
+    print("\n".join([f"{t} {i}" for t, i in tags.items()] + [f"<none>:<none> {i}" for i in ids if i not in tags.values()]))
+elif args[0] == "tag":
+    assert args[1] in ids, f"no image {args[1]}"
+    tags[args[2]] = args[1]
+elif args[:2] == ["rmi", "-f"]:
+    for name in args[2:]:
+        if name in tags:
+            image = tags.pop(name)
+            if image not in tags.values():
+                ids.remove(image)
+        elif name in ids:
+            drop(name)
+        else:
+            sys.exit(f"no such image {name}")
+elif args[:3] == ["builder", "prune", "-af"]:
+    state["cache"] = 0
+else:
+    sys.exit(f"unexpected docker {args}")
+json.dump(state, open(path, "w"))
+"""
+
+
 class Reset(unittest.TestCase):
     """The stash and restore shell, run against a scratch tree that stands in for the guest's /."""
 
@@ -591,6 +626,26 @@ class Reset(unittest.TestCase):
         self.sh("stash=$1\n" + boat.RESTORE, self.stash)
         # Reset keeps a bake file's path; it only proves the path list, and the fingerprint lists paths, not contents.
         self.assertEqual(self.tree(), expected)
+
+    def test_image_reset_puts_back_moved_tags_drops_new_images_and_tags_and_empties_the_build_cache(self):
+        bin_dir, state = Path(self.root.parent, "bin"), Path(self.root.parent, "docker.json")
+        bin_dir.mkdir()
+        Path(bin_dir, "docker").write_text(FAKE_DOCKER)
+        Path(bin_dir, "docker").chmod(0o755)
+        bake = {"tags": {"ployz/agent:v1": "sha256:aaa", "busybox:latest": "sha256:bbb"},
+                "ids": ["sha256:aaa", "sha256:bbb", "sha256:ccc"], "cache": 0}
+        state.write_text(json.dumps(bake))
+        env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "FAKE_DOCKER_STATE": str(state)}
+        run = lambda script: subprocess.run(["bash", "-ec", script, "sh", str(self.stash)], env=env, check=True,
+                                            capture_output=True, text=True)
+        run(f"{boat.IMAGE_TAGS} > \"$1.tags\"")
+        # A run rebuilt the agent under the bake's tag, tagged the bake's old image anew, pulled one more and built.
+        state.write_text(json.dumps({"tags": {"ployz/agent:v1": "sha256:ddd", "local/agent:old": "sha256:aaa",
+                                              "busybox:latest": "sha256:bbb", "nginx:latest": "sha256:eee"},
+                                     "ids": ["sha256:aaa", "sha256:bbb", "sha256:ccc", "sha256:ddd", "sha256:eee"],
+                                     "cache": 7}))
+        run("stash=$1\n" + boat.IMAGE_RESET)
+        self.assertEqual(json.loads(state.read_text()), bake)
 
 
 if __name__ == "__main__":

@@ -90,13 +90,26 @@ def scratch(depth=""):
 
 # Linux's default ip_local_port_range: avahi, Boat's wg0 and the kernel pick a new port here on every boot.
 EPHEMERAL = (32768, 60999)
-# Image ids a fresh clone holds once Docker restored the bake's containers; reset removes every other image.
-BAKE_IMAGES = STASH + ".images"
+# Each repo:tag and image id a fresh clone holds once Docker restored the bake's containers; reset brings the tags back
+# and removes every other image.
+TAGS = STASH + ".tags"
+IMAGE_TAGS = "docker image ls --no-trunc --format '{{.Repository}}:{{.Tag}} {{.ID}}' | LC_ALL=C sort -u"
 # Boat restores the bake's containers lazily after boot; until every holder is back, Docker's state is still moving.
 HOLDS = (f"for i in $(seq 240); do [ \"$(docker ps -aq --filter label=ployz.verify.hold=1 | wc -l)\" -ge {len(IMAGES) + 2} ]"
          " && break; sleep 0.5; done; ")
-RECORD_IMAGES = HOLDS + (f"[ -e {BAKE_IMAGES} ] || {{ docker image ls -q --no-trunc | sort -u > {BAKE_IMAGES}.next"
-                         f" && mv {BAKE_IMAGES}.next {BAKE_IMAGES}; }}\n")
+RECORD_IMAGES = HOLDS + f"[ -e {TAGS} ] || {{ " + IMAGE_TAGS + f" > {TAGS}.next && mv {TAGS}.next {TAGS}; }}\n"
+# Puts back each tag a run moved, untags what the bake lacks, removes every image the bake did not hold, and empties
+# the build cache, which a fresh clone holds none of.
+IMAGE_RESET = r"""
+[ -s "$stash.tags" ] || { echo "no record of the bake's images" >&2; exit 1; }
+while read -r tag id; do case $tag in *"<none>"*) ;; *) docker tag "$id" "$tag" ;; esac; done < "$stash.tags"
+for tag in $(""" + IMAGE_TAGS + r""" | LC_ALL=C comm -13 "$stash.tags" - | awk '$1 !~ /<none>/ {print $1}'); do
+    docker rmi -f "$tag" >/dev/null
+done
+extra=$(docker image ls -q --no-trunc | LC_ALL=C sort -u | LC_ALL=C comm -23 - <(awk '{print $2}' "$stash.tags" | LC_ALL=C sort -u))
+if [ -n "$extra" ]; then docker rmi -f $extra >/dev/null; fi
+docker builder prune -af >/dev/null
+"""
 KEEP_INSTALL = f"""
 if [ ! -e {STASH} ]; then
     cd / && shopt -s nullglob && found=()
@@ -110,6 +123,8 @@ fi
 FINGERPRINT = SETTLE + HOLDS + r"""
 section() { printf '== %s\n' "$1"; }
 section containers; docker ps -a --format '{{.Names}}|{{.Image}}|{{.State}}|{{.Label "ployz.verify.hold"}}' 2>&1
+section images; """ + IMAGE_TAGS + r""" 2>&1
+section build-cache; docker system df --format '{{.Type}} {{.TotalCount}}' 2>&1 | grep -i build
 section volumes; docker volume ls --format '{{.Driver}} {{.Name}}' 2>&1
 section networks; docker network ls --format '{{.Name}} {{.Driver}}' 2>&1
 section zpools; if command -v zpool >/dev/null; then zpool list -H -o name 2>&1; fi
@@ -154,9 +169,7 @@ volumes=$(docker volume ls -q)
 if [ -n "$volumes" ]; then docker volume rm -f $volumes >/dev/null; fi
 networks=$(docker network ls --format '{{.Name}}' | grep -vxE 'bridge|host|none' || true)
 if [ -n "$networks" ]; then docker network rm $networks >/dev/null; fi
-[ -s "$stash.images" ] || { echo "no record of the bake's images" >&2; exit 1; }
-extra=$(docker image ls -q --no-trunc | sort -u | comm -23 - "$stash.images")
-if [ -n "$extra" ]; then docker rmi -f $extra >/dev/null; fi
+""" + IMAGE_RESET + r"""
 observe="$(docker info -f '{{.DockerRootDir}}')/ployz-observe"
 if command -v zpool >/dev/null; then for pool in $(zpool list -H -o name); do zpool destroy -f "$pool"; done; fi
 # Boat's own WireGuard link is wg0; only ployz's links go.
