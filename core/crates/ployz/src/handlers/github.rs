@@ -343,8 +343,13 @@ fn repositories<T: serde::Serialize>(value: &T, connection: &Connection) -> Resu
             .as_deref()
             .map(|name| format!(", connected by {name}"))
             .unwrap_or_default();
+        let noun = if installation.repositories == 1 {
+            "repository"
+        } else {
+            "repositories"
+        };
         crate::ui::note(format_args!(
-            "{}: {} repositories{by}.",
+            "{}: {} {noun}{by}.",
             installation.account, installation.repositories
         ));
     }
