@@ -47,7 +47,7 @@ describe("progressOf", () => {
     { server: "b", machine: "m-b", container: "web-2", hook: false, stop: "done", start: "sent", reason: null },
     { server: "b", machine: "m-b", container: "web-3", hook: false, stop: null, start: null, reason: null },
   ];
-  const act = { id: "act-1", state: "running" as const, legs, reason: null };
+  const act = { id: "act-1", state: "running" as const, legs, reason: null, only: null };
 
   it("counts a restart by the containers it starts again, hooks aside", () => {
     expect(progressOf({ ...act, verb: "restart" })).toMatchObject({ total: 3, done: 1 });

@@ -108,14 +108,16 @@ export function ServiceActions({ state, namespace, act }: { state: StoreService;
 
 export function ServiceActAlert({ act }: { act: ServiceAct }) {
   if (act.alert === null) return null;
-  const { title, description, verb } = act.alert;
+  const { title, description, retry } = act.alert;
   return (
     <Alert variant="destructive" className="mt-3">
       <AlertTitle>{title}</AlertTitle>
       <AlertDescription>{description}</AlertDescription>
-      <AlertAction>
-        <Button variant="outline" size="sm" onClick={() => act.act(verb)}>Retry</Button>
-      </AlertAction>
+      {retry !== null && (
+        <AlertAction>
+          <Button variant="outline" size="sm" onClick={() => act.act(retry)}>Retry</Button>
+        </AlertAction>
+      )}
     </Alert>
   );
 }

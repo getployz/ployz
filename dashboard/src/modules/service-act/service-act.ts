@@ -88,14 +88,17 @@ export type ServiceActProgress = {
   readonly total: number;
   readonly done: number;
   readonly reason: string | null;
+  /** Whether the run moved only one server's containers, which a retry from the page can't target. */
+  readonly scoped: boolean;
 };
 
-export function progressOf(
-  act: { readonly id: string; readonly verb: ServiceVerb; readonly state: ServiceActState; readonly legs: readonly ServiceActLeg[]; readonly reason: string | null },
-): ServiceActProgress {
+export function progressOf(act: {
+  readonly id: string; readonly verb: ServiceVerb; readonly state: ServiceActState; readonly legs: readonly ServiceActLeg[];
+  readonly reason: string | null; readonly only: ServerRef | null;
+}): ServiceActProgress {
   const side = act.verb === "stop" ? "stop" : "start";
   const moved = act.legs.filter((leg) => takes(leg, side));
-  return { id: act.id, verb: act.verb, state: act.state, total: moved.length, done: moved.filter((leg) => confirmed(leg[side])).length, reason: act.reason };
+  return { id: act.id, verb: act.verb, state: act.state, total: moved.length, done: moved.filter((leg) => confirmed(leg[side])).length, reason: act.reason, scoped: act.only !== null };
 }
 
 const RECEIPTS = { sent: "unknown", unknown: "unknown", done: "yes", already_there: "yes", failed: "no" } as const satisfies Record<LegStep, Receipt>;

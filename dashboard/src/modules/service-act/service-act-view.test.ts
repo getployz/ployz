@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ServiceActProgress } from "./service-act";
 import { actAlert, actBadge } from "./service-act-view";
 
-const restart: ServiceActProgress = { id: "act-1", verb: "restart", state: "running", total: 12, done: 4, reason: null };
+const restart: ServiceActProgress = { id: "act-1", verb: "restart", state: "running", total: 12, done: 4, reason: null, scoped: false };
 
 describe("actBadge", () => {
   it("counts a running restart's containers", () => {
@@ -26,7 +26,11 @@ describe("actBadge", () => {
 describe("actAlert", () => {
   it("says why a restart stopped, with Retry running it again", () => {
     const reason = "Container 4 on web-2 didn't come back. The rest are untouched.";
-    expect(actAlert({ ...restart, state: "failed", reason })).toEqual({ title: "Restart stopped", description: reason, verb: "restart" });
+    expect(actAlert({ ...restart, state: "failed", reason })).toEqual({ title: "Restart stopped", description: reason, retry: "restart" });
+  });
+
+  it("offers no Retry for a run that targeted one server, since a retry here runs on every server", () => {
+    expect(actAlert({ ...restart, verb: "stop", state: "failed", scoped: true })).toMatchObject({ title: "Stop failed", retry: null });
   });
 
   it("shows nothing while a run moves or once it ended done", () => {
