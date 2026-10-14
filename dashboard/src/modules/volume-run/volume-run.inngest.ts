@@ -360,9 +360,6 @@ async function releaseVolume(steps: RunSteps, phase: PhaseOf<"release">, epoch: 
   try {
     if (from.kind === "cut" || from.kind === "writer") {
       const root = from.kind === "cut" ? from.root : from.writer;
-      if (from.kind === "cut" && (root.view.copy?.newest ?? null) === null) {
-        throw new NonRetriableError(`${run.volumeName} on ${root.machine.name} stopped before its first snapshot; volume move ${run.volumeName} --to <another server> again`);
-      }
       const holder = await kept("03-holder", [root.machine]);
       await resume("04-resume", root, holder?.containerId ?? null);
       if (from.kind === "writer") {
