@@ -89,6 +89,7 @@ export const volumeRunTakenEvent = "volume/run.taken";
 
 export type VolumeRunTakenEventData = { runId: string };
 export const serverDrainRequestedEvent = "server/drain.requested";
+export const serverWebTrafficRequestedEvent = "server/web-traffic.requested";
 export const namespaceCleanupRequestedEvent = "namespace/cleanup.requested";
 export const serviceActRequestedEvent = "service/act.requested";
 export const clusterDomainSyncRequestedEvent = "cluster-domain/sync.requested";
@@ -148,6 +149,13 @@ export type ServerDrainRequestedEventData = {
   machineId: string;
 };
 
+/** A web traffic change was requested: its row is written. `organizationId` keys the Organization's one-at-a-time changes. */
+export type ServerWebTrafficRequestedEventData = {
+  attemptId: string;
+  organizationId: string;
+  machineId: string;
+};
+
 /** A clean of a Namespace no Environment owns was requested: its row is written. */
 export type NamespaceCleanupRequestedEventData = {
   cleanupId: string;
@@ -196,7 +204,10 @@ export type ConfigDeploymentAdmittedEventData = {
   /** Deployments of one Environment run one at a time. */
   environmentId: string;
   deploymentId: string;
+  trigger?: DeploymentTrigger;
 };
+
+export type DeploymentTrigger = "github" | "user";
 
 export type InngestFunctionCancelledEventData = {
   function_id: string;
@@ -269,6 +280,10 @@ export const serverUpgradeRequestedEventType = eventType(
 export const serverDrainRequestedEventType = eventType(
   serverDrainRequestedEvent,
   { schema: staticSchema<ServerDrainRequestedEventData>() },
+);
+export const serverWebTrafficRequestedEventType = eventType(
+  serverWebTrafficRequestedEvent,
+  { schema: staticSchema<ServerWebTrafficRequestedEventData>() },
 );
 export const namespaceCleanupRequestedEventType = eventType(
   namespaceCleanupRequestedEvent,
@@ -402,6 +417,11 @@ export function createVolumeRunTakenEvent(data: VolumeRunTakenEventData) {
 /** Keyed by the Drain's row: sending it again for the same request runs nothing new. */
 export function createServerDrainRequestedEvent(data: ServerDrainRequestedEventData) {
   return { id: `server-drain-${data.attemptId}`, name: serverDrainRequestedEvent, data } as const;
+}
+
+/** Keyed by the change's row: sending it again for the same request runs nothing new. */
+export function createServerWebTrafficRequestedEvent(data: ServerWebTrafficRequestedEventData) {
+  return { id: `server-web-traffic-${data.attemptId}`, name: serverWebTrafficRequestedEvent, data } as const;
 }
 
 /** Keyed by the clean's row: sending it again for the same request runs nothing new. */
@@ -585,6 +605,7 @@ export type InngestSendableEvent =
   | ReturnType<typeof createServerUpgradeRequestedEvent>
   | ReturnType<typeof createCliServerUpgradeRequestedEvent>
   | ReturnType<typeof createServerDrainRequestedEvent>
+  | ReturnType<typeof createServerWebTrafficRequestedEvent>
   | ReturnType<typeof createNamespaceCleanupRequestedEvent>
   | ReturnType<typeof createServiceActRequestedEvent>
   | ReturnType<typeof createMailSendRequestedEvent>

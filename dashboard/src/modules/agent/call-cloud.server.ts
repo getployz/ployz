@@ -209,7 +209,7 @@ const act = Effect.fn("CallCloud.act")(function* (caller: Caller, { attempt, dig
         "Server",
       );
     case "set_server": {
-      if (action.accepts_ingress === true) return refusal("invalid_argument", "Only the terminal turns web traffic on.");
+      if (action.accepts_ingress === true) return refusal("invalid_argument", "Turn web traffic on from the Server page or the terminal.");
       return yield* admitted(
         yield* setServer(caller, action.server.machine, policyChangeOf(action), call),
         { kind: "server", machine: action.server.machine },

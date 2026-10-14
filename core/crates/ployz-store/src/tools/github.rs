@@ -132,9 +132,14 @@ fn listing(tree: &GithubTreeView, path: Option<&str>, globbed: bool) -> Value {
         .into_iter()
         .map(|(path, kind)| json!({ "path": path, "kind": kind }))
         .collect::<Vec<_>>();
-    let note = tree
-        .truncated
-        .then_some("GitHub cut this listing short; narrow it with path or match");
+    let note = match (tree.truncated, entries.is_empty(), globbed) {
+        (true, ..) => Some("GitHub cut this listing short; narrow it with path or match"),
+        (false, true, true) => {
+            Some("No file matches; the path may not exist or the glob matches nothing")
+        }
+        (false, true, false) => Some("This repository has no files at that ref"),
+        (false, false, _) => None,
+    };
     json!({
         "repository": tree.repository,
         "ref": tree.git_ref,
