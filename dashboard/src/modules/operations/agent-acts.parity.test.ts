@@ -16,8 +16,8 @@ describe("agent eval acts", () => {
     expect(writers.filter((tool) => !ACTS.has(tool) && !STORE_WRITES.has(tool))).toEqual([]);
   });
 
-  it("names only current tools, or a legacy tape name with its reason", () => {
-    const current = new Set(tools.map((tool) => tool.name));
+  it("names only current tools that write or act, or a legacy tape name with its reason", () => {
+    const current = new Set(writers);
     const named = [...ACTS, ...STORE_WRITES, ...TAPE_WRITES];
     expect(named.filter((name) => !current.has(name) && !(name in LEGACY_TAPE_TOOLS))).toEqual([]);
   });
