@@ -77,6 +77,7 @@ describe("PostShiba Mailer", () => {
         [503, { error: "inject_unavailable", retryable: true }],
         [503, { error: "idempotency_unavailable" }],
         [500, "not json"],
+        [429, "not json"],
       ];
       for (const [status, body] of answers) {
         const failure = yield* Effect.flip(sendWith(status, body));

@@ -57,8 +57,8 @@ const RETRYABLE_CODES = new Set(["throttled", "rate_limited", "idempotency_in_pr
 const failureOf = (status: number, failure: typeof SendFailure.Type): MailSendError => {
   const code = failure.error ?? `http_${status}`;
   const message = failure.message ?? `PostShiba answered ${status} (${code}).`;
-  // inject errors carry their own verdict: inject_failed can be final.
-  const retryable = RETRYABLE_CODES.has(code) || (failure.retryable ?? status >= 500);
+  // inject errors carry their own verdict: inject_failed can be final. A bare 429 sent nothing.
+  const retryable = RETRYABLE_CODES.has(code) || (failure.retryable ?? (status === 429 || status >= 500));
   return retryable
     ? new MailUnavailable({ status, code, message, throttled: code === "throttled" })
     : new MailRejected({ status, code, message });
