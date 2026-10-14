@@ -19,8 +19,8 @@ use super::{
     transfer::{Stop, ZfsChild, exited},
 };
 
-/// On a seed's copy once its receive completed, and on the root it lands as: the guid of
-/// the restore point it holds.
+/// On the root a seed lands as: the guid of the restore point it holds. Landing sets it on
+/// the slot just before the rename, so a completed copy that has not landed carries none.
 pub(super) const SEED_PROPERTY: &str = "ployz:seed";
 
 impl VolumeStorage {
