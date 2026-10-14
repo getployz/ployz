@@ -355,7 +355,7 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
             break;
         }
         let identity = slot.identity().clone();
-        let new = NewContainer {
+        let mut new = NewContainer {
             slot: SlotKey {
                 namespace: identity.namespace.clone(),
                 kind: ContainerKind::ServiceContainer,
@@ -382,6 +382,9 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
                 continue;
             }
         };
+        // The copy joins this Deploy's Serving Pointer. Fallback routing finds a
+        // previous Deploy's copies only by their deployment label.
+        new.deployment_id.clone_from(&started_under);
         observe(CatchUpFact::Creating(identity.clone()));
         match client.run_slot(&this_machine.id, new).await {
             Ok(Some(id)) => expected.push((slot, id, started_under)),

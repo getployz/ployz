@@ -9,7 +9,7 @@ async fn move_with(client: &Scripted) -> Result<ContainerId, MoveContainerError>
     move_container(
         client,
         &test_namespace(),
-        &spec(Some(0), None, None),
+        (&spec(Some(0), None, None), None),
         &machine(TO),
         (&machine(FROM), &container('a')),
         async || true,
@@ -43,7 +43,7 @@ async fn a_move_that_keeps_the_old_container_never_stops_or_removes_it() {
     let moved = move_container(
         &client,
         &test_namespace(),
-        &spec(Some(0), None, None),
+        (&spec(Some(0), None, None), None),
         &machine(TO),
         (&machine(FROM), &container('a')),
         async || false,
@@ -192,7 +192,7 @@ async fn a_cancelled_global_move_removes_its_replacement() {
     let moving = move_container(
         &client,
         &namespace,
-        &global,
+        (&global, None),
         &to,
         (&from, &old),
         async || true,
@@ -229,7 +229,7 @@ async fn a_cancelled_global_move_keeps_an_adopted_replica() {
     let moving = move_container(
         &client,
         &namespace,
-        &global,
+        (&global, None),
         &to,
         (&from, &old),
         async || true,
@@ -291,7 +291,7 @@ async fn a_first_pointer_published_while_the_replacement_starts_keeps_the_old_co
             move_container(
                 &client,
                 &namespace,
-                &spec,
+                (&spec, None),
                 &to,
                 (&from, &old),
                 remove_old,
@@ -333,10 +333,11 @@ async fn a_kept_old_copy_is_never_stopped_and_a_removed_one_is() {
         );
         let cancellation = CancellationToken::new();
         let mut at_removal = AtRemoval::from(old_copy);
+        let deploy = at_removal.replacement_deploy();
         let moved = move_container(
             &client,
             &namespace,
-            &spec,
+            (&spec, deploy.as_ref()),
             &to,
             (&from, &old),
             async || removes_old(&mut at_removal, &mut reader, &service, &old).await,
@@ -345,5 +346,11 @@ async fn a_kept_old_copy_is_never_stopped_and_a_removed_one_is() {
         .await;
         assert_eq!(moved.unwrap(), container('b'), "{old_copy:?}");
         client.assert_done();
+        let kept_deploy = (old_copy != OldCopy::Remove).then(|| kept.deploy.clone());
+        assert_eq!(
+            *client.deploys.lock().unwrap(),
+            vec![kept_deploy],
+            "a kept copy's replacement carries its pointer's deployment label"
+        );
     }
 }

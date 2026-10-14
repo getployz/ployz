@@ -3,11 +3,11 @@ use std::{future::Future, time::Duration};
 use ployz_core::{
     AnonymousVolumes, AnswerWhen, ContainerDetails, ContainerId, ContainerKind, ContainerLocator,
     ContainerNow, ContainerObservation, ContainerRuntimeObservation, ContainerWant, CreationKey,
-    DeployEvent, DockerVolumeId, Drain, ExecutionError, FailedOperation, HEALTH_POLL_INTERVAL,
-    HealthFailure, HealthVerdict, HookFailure, InspectContainerRequest, ListContainersRequest,
-    MachineAction, MachineId, MachineTarget, MembershipObservation, Namespace, NewContainer,
-    OperationPhase, QualifiedService, RemoveVolumeRequest, ResolvedServiceSpec, RpcError,
-    RpcErrorCode, RunTarget, SlotKey, StopOptions, UpdateOrder, op,
+    DeployEvent, DeploymentLogId, DockerVolumeId, Drain, ExecutionError, FailedOperation,
+    HEALTH_POLL_INTERVAL, HealthFailure, HealthVerdict, HookFailure, InspectContainerRequest,
+    ListContainersRequest, MachineAction, MachineId, MachineTarget, MembershipObservation,
+    Namespace, NewContainer, OperationPhase, QualifiedService, RemoveVolumeRequest,
+    ResolvedServiceSpec, RpcError, RpcErrorCode, RunTarget, SlotKey, StopOptions, UpdateOrder, op,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc::UnboundedSender;
@@ -173,7 +173,10 @@ impl MachineOperations for Client {
                 {
                     new.slot.creation_key = key;
                 }
-                new.deployment_id.clone_from(&self.deployment_id);
+                // A replacement joining a named Deploy keeps that Deploy's label.
+                if new.deployment_id.is_none() {
+                    new.deployment_id.clone_from(&self.deployment_id);
+                }
                 new.registry_auth = self.registry_auth.get(&new.resolved_spec.name).cloned();
                 crate::image::ensure_cluster_image(
                     self,
@@ -718,7 +721,7 @@ pub(in crate::deploy) enum MoveContainerError {
 pub(in crate::deploy) async fn move_container<C: MachineOperations>(
     client: &C,
     namespace: &Namespace,
-    spec: &ResolvedServiceSpec,
+    (spec, deploy): (&ResolvedServiceSpec, Option<&DeploymentLogId>),
     to: &MachineId,
     (from, old): (&MachineId, &ContainerId),
     remove_old_once_serving: impl AsyncFnOnce() -> bool,
@@ -743,7 +746,7 @@ pub(in crate::deploy) async fn move_container<C: MachineOperations>(
         &mut progress,
         to,
         slot.clone(),
-        spec,
+        (spec, deploy),
         AnswerWhen::Settled,
         cancellation,
     )
@@ -801,7 +804,7 @@ async fn start<C: MachineOperations>(
         progress,
         machine_id,
         slot.clone(),
-        spec,
+        (spec, None),
         answer,
         cancellation,
     )
@@ -861,7 +864,7 @@ async fn run_new<C: MachineOperations>(
     progress: &mut Progress,
     machine_id: &MachineId,
     slot: SlotKey,
-    spec: &ResolvedServiceSpec,
+    (spec, deploy): (&ResolvedServiceSpec, Option<&DeploymentLogId>),
     answer: AnswerWhen,
     cancellation: &CancellationToken,
 ) -> Result<(ContainerId, Option<HealthVerdict>), RpcError> {
@@ -870,7 +873,7 @@ async fn run_new<C: MachineOperations>(
         container: RunTarget::New(NewContainer {
             slot: slot.clone(),
             resolved_spec: spec.clone(),
-            deployment_id: None,
+            deployment_id: deploy.cloned(),
             registry_auth: None,
             answer,
         }),

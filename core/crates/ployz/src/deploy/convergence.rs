@@ -506,10 +506,11 @@ async fn move_one(
     };
     let mut reader = client.clone();
     let mut at_removal = AtRemoval::from(old);
+    let deploy = at_removal.replacement_deploy();
     let moved = super::exec::move_container(
         &*client,
         &container.namespace,
-        &spec,
+        (&spec, deploy.as_ref()),
         &dest.id,
         (&source.id, &container.container_id),
         async || {
@@ -575,6 +576,19 @@ pub(in crate::deploy) enum AtRemoval {
     Remove,
     Pointed(DeploymentLogId),
     Unread(String),
+}
+
+impl AtRemoval {
+    /// The Deploy a replacement is labelled with. A kept copy's replacement joins its
+    /// Serving Pointer's Deploy, and fallback routing finds a previous Deploy's copies
+    /// only by that label. A pointer first read at removal comes too late: the
+    /// replacement already runs unlabelled.
+    pub(in crate::deploy) fn replacement_deploy(&self) -> Option<DeploymentLogId> {
+        match self {
+            Self::Pointed(deploy) => Some(deploy.clone()),
+            Self::Remove | Self::Unread(_) => None,
+        }
+    }
 }
 
 impl From<OldCopy<'_>> for AtRemoval {

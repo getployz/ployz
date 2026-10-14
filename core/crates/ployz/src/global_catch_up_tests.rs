@@ -569,6 +569,29 @@ async fn a_healthy_copy_joins_the_pointer_and_what_it_replaced_retires() {
 }
 
 #[tokio::test]
+async fn a_copy_started_under_a_pointer_carries_that_deploys_label() {
+    for pointer in [Some(pointed("dep-a", &['d'], &[])), None] {
+        let row = FakeRow::default();
+        row.row.lock().unwrap().clone_from(&pointer);
+        let (joiner, mut client) = replacing_client(row);
+        catch_up_globals(
+            &mut client,
+            &joiner,
+            &tokio_util::sync::CancellationToken::new(),
+            |_| {},
+        )
+        .await
+        .unwrap();
+        let labels: Vec<_> = client
+            .run_calls
+            .iter()
+            .map(|new| new.deployment_id.clone())
+            .collect();
+        assert_eq!(labels, vec![pointer.map(|pointer| pointer.deploy)]);
+    }
+}
+
+#[tokio::test]
 async fn a_lost_publish_retries_over_the_winner() {
     let row = FakeRow::default();
     *row.row.lock().unwrap() = Some(pointed("dep-a", &['d'], &[]));
