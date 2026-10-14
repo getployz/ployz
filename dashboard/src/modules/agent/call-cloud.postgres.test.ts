@@ -151,28 +151,33 @@ describe("callCloud", () => {
       const services = yield* Layer.build(yield* storeTestCloud({ inngest }));
       const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
       const caller: Caller = { ...member, userId };
+      const set = {
+        action: "set_server",
+        server: { machine: MACHINE, name: "web-2" },
+        accepts_builds: null,
+        accepts_services: false,
+        accepts_ingress: false,
+        build_concurrency: { action: "set", value: 2 },
+      } as const satisfies Act["action"];
       const act: Act = {
         attempt: "c".repeat(32),
         digest: "d".repeat(64),
-        action: {
-          action: "set_server",
-          server: { machine: MACHINE, name: "web-2" },
-          accepts_builds: null,
-          accepts_services: false,
-          accepts_ingress: false,
-          build_concurrency: { action: "set", value: 2 },
-        },
+        action: set,
       };
       const heard = yield* callCloud(caller, { act }).pipe(Effect.provide(services));
       expect(heard).toEqual({ ok: true, value: expect.objectContaining({ run: "set web-2", state: "accepted" }) });
+      const id = `server-policy-${attemptIdOf(ORGANIZATION, "server_set", act.attempt)}`;
       expect(send.mock.calls).toEqual([[expect.objectContaining({
+        id,
         data: { organizationId: ORGANIZATION, machineId: MACHINE, change: { acceptsServices: false, acceptsIngress: false, buildConcurrency: 2 } },
       })]]);
-      // Catches a replayed act queuing the change again (Inngest runs one event per id), and an id another
-      // Organization's same attempt could share.
-      yield* callCloud(caller, { act }).pipe(Effect.provide(services));
-      const ids = send.mock.calls.map(([event]) => (event as { id?: string }).id);
-      const id = `server-policy-${attemptIdOf(ORGANIZATION, "server_set", act.attempt)}`;
-      expect(ids).toEqual([id, id]);
+      // Catches a replayed act queuing the change again, however long after the first.
+      const replayed = yield* callCloud(caller, { act }).pipe(Effect.provide(services));
+      expect(replayed).toEqual(heard);
+      expect(send).toHaveBeenCalledTimes(1);
+      // Catches the same attempt reused for another change, which would answer as the first one ran.
+      const reused = yield* callCloud(caller, { act: { ...act, action: { ...set, accepts_services: true } } }).pipe(Effect.provide(services));
+      expect(reused).toEqual({ ok: false, refusal: expect.objectContaining({ code: "conflict" }) });
+      expect(send).toHaveBeenCalledTimes(1);
     }));
 });

@@ -36,7 +36,7 @@ describe("Server Policy", () => {
   });
 
   it("settles a requested change only once observation shows all of it", () => {
-    const observed = { acceptsBuilds: true, acceptsServices: true, buildConcurrency: null };
+    const observed = { acceptsBuilds: true, acceptsServices: true, acceptsIngress: true, buildConcurrency: null };
     expect(policyChangeObserved(observed, { buildConcurrency: "automatic" })).toBe(true);
     expect(policyChangeObserved(observed, { buildConcurrency: 2 })).toBe(false);
     expect(
@@ -44,9 +44,11 @@ describe("Server Policy", () => {
     ).toBe(false);
     expect(policyChangeObserved(observed, { acceptsServices: true })).toBe(true);
     expect(policyChangeObserved(observed, { acceptsServices: false })).toBe(false);
+    expect(policyChangeObserved(observed, { acceptsIngress: false })).toBe(false);
+    expect(policyChangeObserved({ ...observed, acceptsIngress: false }, { acceptsIngress: false })).toBe(true);
     expect(
       policyChangeObserved(
-        { acceptsBuilds: false, acceptsServices: false, buildConcurrency: 2 },
+        { acceptsBuilds: false, acceptsServices: false, acceptsIngress: true, buildConcurrency: 2 },
         { acceptsBuilds: false, acceptsServices: false, buildConcurrency: 2 },
       ),
     ).toBe(true);

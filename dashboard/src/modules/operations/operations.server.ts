@@ -9,6 +9,8 @@ import { machineRemoveAttemptConsuming } from "#/modules/machines/machine-remova
 import { startMachineRemove } from "#/modules/machines/machine-removal.server";
 import { requestNamespaceCleanup } from "#/modules/machines/namespace-cleanup.server";
 import { requestCliServerDrain } from "#/modules/machines/server-drain.server";
+import type { ServerPolicyChange } from "#/modules/machines/server-policy";
+import { planKeyedServerPolicyChange } from "#/modules/machines/server-policy.server";
 import { planClean, planDrain, planRemove } from "#/modules/machines/server-operations.server";
 import { admitOperation, type Admission } from "#/modules/operations/keyed.server";
 import { OPERATIONS, VOLUME_TOOLS } from "#/modules/operations/operations";
@@ -67,6 +69,9 @@ export const drainServer = (caller: Caller, machineId: MachineId, call: Operatio
 
 export const upgradeServer = (caller: Caller, input: { readonly machineId: string; readonly channel: string | undefined }, call: OperationCall) =>
   admitOperation(caller.organization.id, { tool: OPERATIONS["server.upgrade"].idempotency, key: call.key, body: input }, planCliServerUpgrade(actor(caller), input));
+
+export const setServer = (caller: Caller, machineId: MachineId, change: ServerPolicyChange, call: OperationCall) =>
+  admitOperation(caller.organization.id, { tool: OPERATIONS["server.set"].idempotency, key: call.key, body: { machineId, change } }, planKeyedServerPolicyChange(caller, machineId, change));
 
 export const cleanNamespace = (caller: Caller, namespace: string, call: OperationCall) =>
   admitOperation(caller.organization.id, { tool: OPERATIONS["namespace.clean"].idempotency, key: call.key, body: { namespace } }, Effect.gen(function* () {

@@ -66,7 +66,7 @@ export function machineUpdateForPolicyChange(
 
 /** Whether Runtime observation already shows every value of `change`. */
 export function policyChangeObserved(
-  observed: { acceptsBuilds: boolean; acceptsServices: boolean; buildConcurrency: number | null },
+  observed: { acceptsBuilds: boolean; acceptsServices: boolean; acceptsIngress: boolean; buildConcurrency: number | null },
   change: ServerPolicyChange,
 ): boolean {
   return (
@@ -74,6 +74,8 @@ export function policyChangeObserved(
       change.acceptsBuilds === observed.acceptsBuilds) &&
     (change.acceptsServices === undefined ||
       change.acceptsServices === observed.acceptsServices) &&
+    (change.acceptsIngress === undefined ||
+      change.acceptsIngress === observed.acceptsIngress) &&
     (change.buildConcurrency === undefined ||
       change.buildConcurrency === (observed.buildConcurrency ?? "automatic"))
   );

@@ -1,7 +1,8 @@
 import "@tanstack/react-start/server-only";
 
 import { Data, Effect } from "effect";
-import type { Actor } from "#/modules/identity/actor";
+import type { StoreRefusal } from "#/modules/config-store/store.contract";
+import type { Actor, Caller } from "#/modules/identity/actor";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import {
   createKeyedServerPolicyChangeRequestedEvent,
@@ -15,7 +16,7 @@ import {
   type RequestServerPolicyChangeInput,
   type ServerPolicyChange,
 } from "#/modules/machines/server-policy";
-import { attemptIdOf } from "#/modules/operations/keyed.server";
+import { enqueueEvent } from "#/modules/operations/outbox.server";
 import { requireAccess } from "#/modules/organization/access.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { Conflict, Validation } from "#/server/public-error";
@@ -42,12 +43,11 @@ const refuseWhileDraining = Effect.fn("ServerPolicy.refuseWhileDraining")(functi
 
 /**
  * Queue one Server Policy change. Cloud keeps no desired-policy record; the
- * Servers page reads the result back from Runtime observation. A request
- * `key` keys the event within its Organization, so a replayed act queues nothing new.
+ * Servers page reads the result back from Runtime observation.
  */
 export const requestServerPolicyChange = Effect.fn(
   "ServerPolicy.requestChange",
-)(function* (actor: Actor, input: RequestServerPolicyChangeInput, key?: string) {
+)(function* (actor: Actor, input: RequestServerPolicyChangeInput) {
   if (isEmptyPolicyChange(input.change)) {
     return yield* new Validation({
       message: "A Server Policy change must set at least one value.",
@@ -55,12 +55,25 @@ export const requestServerPolicyChange = Effect.fn(
   }
   const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
   yield* refuseWhileDraining(organization.id, input.machineId, input.change);
-  const data = { organizationId: organization.id, machineId: input.machineId, change: input.change };
   yield* sendInngestEvent(
-    key === undefined
-      ? createServerPolicyChangeRequestedEvent(data)
-      : createKeyedServerPolicyChangeRequestedEvent(data, attemptIdOf(organization.id, "server_set", key)),
+    createServerPolicyChangeRequestedEvent({ organizationId: organization.id, machineId: input.machineId, change: input.change }),
   );
+});
+
+/** Plans a keyed Server Policy change: admitted, it queues one event keyed by its attempt in the same commit. */
+export const planKeyedServerPolicyChange = Effect.fn("ServerPolicy.planKeyed")(function* (
+  caller: Caller, machineId: string, change: ServerPolicyChange,
+) {
+  const refused = (code: string, message: string) =>
+    ({ ok: false, refusal: { code, message, details: null } }) as const satisfies { ok: false; refusal: StoreRefusal };
+  if (isEmptyPolicyChange(change)) return refused("invalid_argument", "A Server Policy change must set at least one value.");
+  const { organization } = yield* requireAccess(caller, caller.organization.slug, "operate");
+  if (change.acceptsServices === true && (yield* drainActiveOn(organization.id, machineId))) {
+    return refused("conflict", "A drain is running on this server. Wait for it to finish.");
+  }
+  return (attemptId: string) =>
+    enqueueEvent(createKeyedServerPolicyChangeRequestedEvent({ organizationId: organization.id, machineId, change }, attemptId))
+      .pipe(Effect.as({ ok: true, id: attemptId } as const));
 });
 
 export const applyServerPolicyChangeActivity = Effect.fn(

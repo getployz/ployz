@@ -9,7 +9,6 @@ import type { Caller } from "#/modules/identity/actor";
 import { loadOrganizationConnections } from "#/modules/machines/connections.server";
 import { UNREACHABLE_MESSAGE } from "#/modules/machines/server-operations.server";
 import type { ServerPolicyChange } from "#/modules/machines/server-policy";
-import { requestServerPolicyChange } from "#/modules/machines/server-policy.server";
 import type { Admission } from "#/modules/operations/keyed.server";
 import { dashedAttempt, operationsOn, serverNames } from "#/modules/operations/operation-history.server";
 import {
@@ -20,6 +19,7 @@ import {
   type OperationCall,
   removeServer,
   runVolume,
+  setServer,
   upgradeServer,
 } from "#/modules/operations/operations.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
@@ -201,13 +201,11 @@ const act = Effect.fn("CallCloud.act")(function* (caller: Caller, { attempt, dig
       );
     case "set_server": {
       if (action.accepts_ingress === true) return refusal("invalid_argument", "Only the terminal turns web traffic on.");
-      yield* requestServerPolicyChange(caller, {
-        organizationSlug: caller.organization.slug, machineId: action.server.machine, change: policyChangeOf(action),
-      }, attempt);
-      return answer<Operation>({
-        attempt: dashedAttempt(attempt), run: `set ${action.server.name}`, state: "accepted", requested_at: Math.floor(Date.now() / 1000),
-        ended_at: null, reason: null, servers: [], kept: [], unanswered: [],
-      });
+      return yield* admitted(
+        yield* setServer(caller, action.server.machine, policyChangeOf(action), call),
+        { kind: "server", machine: action.server.machine },
+        `set ${action.server.name}`,
+      );
     }
     case "clean":
       return yield* admitted(yield* cleanNamespace(caller, action.leftover, call), { kind: "leftover", namespace: action.leftover }, "leftover");
