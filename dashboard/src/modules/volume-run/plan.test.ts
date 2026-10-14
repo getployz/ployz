@@ -191,8 +191,32 @@ describe("plan_from_copies_table", () => {
     });
   });
 
-  it.each([["release", release], ["sync", sync()]])("tells a %s facing two unfinished cuts to keep one Server and restore from it", (_, input) => {
-    expect(planFromCopies(input, [member("fsn-1", "cut", { epoch: 9 }), member("fsn-2", "cut", { epoch: 8 })])).toEqual({
+  it.each([["release", release], ["sync", sync()], ["mirror rm", remove(null)]])("tells a %s facing two unfinished cuts to keep the newer and restore from it", (_, input) => {
+    expect(planFromCopies(input, [member("fsn-1", "cut", { epoch: 8 }), member("fsn-2", "cut", { epoch: 9 })])).toEqual({
+      ok: false,
+      refusal: {
+        code: "volume_switching",
+        message: "data has unfinished cuts on fsn-1 and fsn-2, so release cannot pick a writer; server rm fsn-1, then ployz volume restore data --from fsn-2",
+      },
+    });
+  });
+
+  it("names every older cut for server rm", () => {
+    const members = [member("fsn-1", "cut", { epoch: 7 }), member("fsn-2", "cut", { epoch: 9 }), member("fsn-3", "cut", { epoch: 8 })];
+    expect(planFromCopies(release, members)).toEqual({
+      ok: false,
+      refusal: {
+        code: "volume_switching",
+        message: "data has unfinished cuts on fsn-1 and fsn-2 and fsn-3, so release cannot pick a writer; server rm fsn-1 and fsn-3, then ployz volume restore data --from fsn-2",
+      },
+    });
+  });
+
+  it.each([
+    ["their epochs tie", [member("fsn-1", "cut", { epoch: 9 }), member("fsn-2", "cut", { epoch: 9 })]],
+    ["the newer holds no snapshot", [member("fsn-1", "cut", { epoch: 8 }), { ...member("fsn-2", "cut"), view: { copy: { ...COPIES.cut, epoch: 9, newest: null } } }]],
+  ])("leaves the Server to keep unnamed when two unfinished cuts %s", (_, members) => {
+    expect(planFromCopies(release, members)).toEqual({
       ok: false,
       refusal: {
         code: "volume_switching",
