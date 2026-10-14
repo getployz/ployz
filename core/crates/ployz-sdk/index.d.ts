@@ -238,6 +238,8 @@ export type RunningDeploy = AsyncIterable<DeployEvent> & {
 };
 
 export declare function connect(options: ConnectOptions): Promise<Client>;
+/** The `SetVolumeCopyRefused` a `volumeSwitch` rejection carries in its `details`, or null for any other error. */
+export declare function setVolumeCopyRefusal(error: unknown): import("./generated/payloads").SetVolumeCopyRefused | null;
 /** The ployz version every fingerprint covers; a GitHub runner installs exactly this one. */
 export declare function ployzVersion(): string;
 /** A call's state between steps. Keep it and hand it back unchanged; only the step machine reads it. */

@@ -408,6 +408,11 @@ function allocateEnrollment(...args) {
   try { return native.allocateEnrollment(...args); } catch (error) { throwRpcError(error); }
 }
 
+function setVolumeCopyRefusal(error) {
+  const details = error?.details;
+  return details == null ? null : native.setVolumeCopyRefusal(details);
+}
+
 function ployzVersion() {
   return native.ployzVersion();
 }
@@ -435,6 +440,7 @@ module.exports = {
   observeVolumes,
   observeCopies,
   allocateEnrollment,
+  setVolumeCopyRefusal,
   ployzVersion,
   agentTools,
   agentStart,
