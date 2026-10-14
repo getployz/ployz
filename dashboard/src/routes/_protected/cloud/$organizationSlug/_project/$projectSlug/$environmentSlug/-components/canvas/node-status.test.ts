@@ -65,6 +65,16 @@ describe("runtimeLine", () => {
     expect(runtimeLine({ ...service, change: "create" }, runtime(container("restarting")), seen)).toMatchObject({ word: "Crashed", down: true });
   });
 
+  it("says a grey Starting while a Deploy restarts it and nothing runs yet, but still says Crashed", () => {
+    const deploying = { ...seen, deploying: true };
+    const exited = (code: number) => ({ ...container("exited"), runtime: { state: "exited", code } });
+    expect(runtimeLine(service, null, deploying)).toMatchObject({ word: "Starting", tone: "quiet", down: false });
+    expect(runtimeLine(service, runtime(), deploying)).toMatchObject({ word: "Starting", tone: "quiet", down: false });
+    expect(runtimeLine(service, runtime(exited(0)), deploying)).toMatchObject({ word: "Starting", tone: "quiet", down: false });
+    expect(runtimeLine(service, runtime(exited(1)), deploying)).toMatchObject({ word: "Crashed", tone: "crashed", down: true });
+    expect(runtimeLine(service, runtime(container("restarting")), deploying)).toMatchObject({ word: "Crashed", down: true });
+  });
+
   it("says Degraded when fewer replicas serve than it asks for, except while a Deploy rolls them or a Server didn't report", () => {
     const one = runtime(container("running", "healthy"), container("exited"));
     expect(runtimeLine(service, one, { ...seen, desiredReplicas: 2 }).word).toBe("Degraded");

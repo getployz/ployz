@@ -27,11 +27,13 @@ export const NO_MOUNTS_CONFIGURED = line("No mounts configured", "idle");
 
 /** What evidence says of a Service (`runtime`, null when none names it; `whole`, no Server is missing from it). */
 function evidenceLine(runtime: Pick<RuntimeServiceRecord, "containers"> | null, whole: boolean, desiredReplicas: number | null, deploying: boolean) {
-  if (!runtime) return whole ? line("Not running", "bad", true) : line("Deployed", "quiet");
-  if (runtime.containers.length === 0) return line("Not running", "bad", true);
+  // A Deploy in flight stops old containers and starts new ones: nothing running yet is it starting, unless one crashed.
+  const absent = deploying ? line("Starting", "quiet") : line("Not running", "bad", true);
+  if (!runtime) return whole ? absent : line("Deployed", "quiet");
+  if (runtime.containers.length === 0) return absent;
   const running = runtime.containers.filter((container) => container.runtime?.state === "running");
   if (running.length === 0) return runtime.containers.every((container) => container.runtime?.state === "exited" && container.runtime.code === 0)
-    ? line("Stopped", "bad", true) : line("Crashed", "crashed", true);
+    ? deploying ? absent : line("Stopped", "bad", true) : line("Crashed", "crashed", true);
   const serving = running.filter(containerServing).length;
   if (serving === 0) return line("Starting", "quiet");
   const checkFailing = running.some((container) => container.runtime?.health === "failing");
@@ -47,8 +49,9 @@ function evidenceLine(runtime: Pick<RuntimeServiceRecord, "containers"> | null, 
 export type RuntimeLens = Pick<ReturnType<typeof useRuntimeLens>, "status" | "incomplete" | "observedAt" | "noServers">;
 
 /**
- * A Service's status line: what runs now, from runtime evidence. Staged work and Deploys never replace it, and it never
- * guesses: before evidence it waits, and evidence that isn't current reads grey with its age.
+ * A Service's status line: what runs now, from runtime evidence. Staged work never replaces it, and it never guesses:
+ * before evidence it waits, and evidence that isn't current reads grey with its age.
+ * `deploying`: a Deploy in flight restarts it, so nothing running, or a clean exit, reads Starting rather than down.
  * `desiredReplicas`: how many it asks for, when known; fewer serving reads Degraded, except while a Deploy rolls them.
  */
 export function runtimeLine(
