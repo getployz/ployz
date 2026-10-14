@@ -54,11 +54,49 @@ class ProbeRun(unittest.TestCase):
                 probe.stopping.set()
 
             session.stdin.write.side_effect = insert
+            probe.ready.set()
             with patch.object(probe, "query", side_effect=["", "100", "100"]), \
                  patch.object(probe, "session", return_value=(session, reader)):
                 result = probe.run()
             self.assertEqual(inserted, [100])
             self.assertEqual((result["sent"], result["acked"], result["lost"]), (1, 1, []))
+
+    def test_a_slow_connect_is_not_a_stall(self):
+        with tempfile.TemporaryDirectory() as directory:
+            probe = Probe("ployz", {}, directory, Path(directory) / "acks.jsonl", service="db",
+                          user="postgres", database="postgres", rate=200, window=16, stall=2)
+            self.addCleanup(probe.log.close)
+            self.addCleanup(probe.stderr.close)
+            clock = [0.0]
+            session, reader = Mock(), Mock()
+            session.poll.return_value = None
+            sessions = []
+
+            def sleep(seconds):
+                clock[0] += seconds
+                if clock[0] >= 2.5:
+                    probe.ready.set()
+
+            def insert(sql):
+                # Cloud's dial takes 2.5 s; an insert written before it lands is answered only after it.
+                if clock[0] >= 2.5:
+                    probe.in_flight.pop(int(re.search(r"VALUES \((\d+)\)", sql)[1]))
+                    probe.acks.append((100, clock[0]))
+                    probe.stopping.set()
+
+            def open_session():
+                sessions.append(clock[0])
+                probe.ready.clear()
+                return session, reader
+
+            session.stdin.write.side_effect = insert
+            with patch.object(probe, "query", side_effect=["", "100", "100"]), \
+                 patch.object(probe, "session", side_effect=open_session), \
+                 patch("ackprobe.time.monotonic", side_effect=lambda: clock[0]), \
+                 patch("ackprobe.time.sleep", side_effect=sleep), \
+                 patch("ackprobe.time.time", return_value=0.0):
+                result = probe.run()
+            self.assertEqual((len(sessions), result["acked"], result["lost"]), (1, 1, []))
 
 
 if __name__ == "__main__":
