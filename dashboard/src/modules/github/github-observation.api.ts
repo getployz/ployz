@@ -165,7 +165,7 @@ const installationTokenResponseSchema = Schema.Struct({
 
 export type GithubJsonRequest<S extends Schema.ConstraintDecoder<unknown>> = {
   installationId: number | null;
-  url: string;
+  path: `/${string}`;
   operation: GithubObservationOperation;
   schema: S;
   /** `app` calls as the GitHub App itself (`/app/...` endpoints), not as an installation; `installationId` is ignored. */
@@ -217,7 +217,7 @@ export const resolveGithubRepository = Effect.fn(
   const api = yield* GithubApi;
   const observed = yield* api.json({
     installationId,
-    url: `https://api.github.com/repositories/${repositoryId}`,
+    path: `/repositories/${repositoryId}`,
     operation,
     schema: repositoryResponseSchema,
   });
@@ -256,7 +256,7 @@ export const resolveGithubBranchHead = Effect.fn(
   const observed = yield* api
     .json({
       installationId,
-      url: `https://api.github.com/repos/${repositoryPath}/git/ref/${encodeURIComponent(gitRef)}`,
+      path: `/repos/${repositoryPath}/git/ref/${encodeURIComponent(gitRef)}`,
       operation,
       schema: branchRefResponseSchema,
     })
@@ -309,7 +309,7 @@ export const compareInstallationRepositoryCommits = Effect.fn(
   const api = yield* GithubApi;
   const testimony = yield* api.json({
     installationId,
-    url: `https://api.github.com/repos/${repositoryPath}/compare/${baseSha}...${headSha}`,
+    path: `/repos/${repositoryPath}/compare/${baseSha}...${headSha}`,
     operation,
     schema: compareResponseSchema,
   });
@@ -367,7 +367,7 @@ export const fetchInstallationCheckSuite = Effect.fn(
   const api = yield* GithubApi;
   const testimony = yield* api.json({
     installationId,
-    url: `https://api.github.com/repos/${repositoryPath}/check-suites/${checkSuiteId}`,
+    path: `/repos/${repositoryPath}/check-suites/${checkSuiteId}`,
     operation,
     schema: checkSuiteResponseSchema,
   });
@@ -398,7 +398,7 @@ export const fetchInstallationPullRequest = Effect.fn(
   const api = yield* GithubApi;
   const observed = yield* api.json({
     installationId,
-    url: `https://api.github.com/repositories/${repositoryId}/pulls/${number}`,
+    path: `/repositories/${repositoryId}/pulls/${number}`,
     operation,
     schema: pullRequestResponseSchema,
   });
@@ -434,7 +434,7 @@ export const fetchAppInstallationPermissions = Effect.fn(
   const installation = yield* api.json({
     auth: "app",
     installationId,
-    url: `https://api.github.com/app/installations/${installationId}`,
+    path: `/app/installations/${installationId}`,
     operation: "fetch_installation",
     schema: installationSchema,
   });
@@ -460,13 +460,13 @@ export const postInstallationCheckRun = Effect.fn(
     return yield* githubObservationError({ code: "invalid_input", operation: "create_check_run", retriable: false });
   }
   const api = yield* GithubApi;
-  const repository = `https://api.github.com/repositories/${repositoryId}`;
+  const repository: `/${string}` = `/repositories/${repositoryId}`;
   // Every run of that name, not only the latest one GitHub shows by default, page by page until it's found.
   let existing: { id: number } | undefined;
   for (let page = 1; !existing; page++) {
     const { check_runs: runs } = yield* api.json({
       installationId,
-      url: `${repository}/commits/${input.headSha}/check-runs?check_name=${encodeURIComponent(input.name)}&filter=all&per_page=100&page=${page}`,
+      path: `${repository}/commits/${input.headSha}/check-runs?check_name=${encodeURIComponent(input.name)}&filter=all&per_page=100&page=${page}`,
       operation: "list_check_runs",
       schema: checkRunsResponseSchema,
     });
@@ -478,8 +478,8 @@ export const postInstallationCheckRun = Effect.fn(
     output: { title: input.title, summary: input.summary },
   };
   return yield* api.json(existing
-    ? { installationId, url: `${repository}/check-runs/${existing.id}`, operation: "update_check_run", schema: checkRunSchema, method: "PATCH", body }
-    : { installationId, url: `${repository}/check-runs`, operation: "create_check_run", schema: checkRunSchema, method: "POST", body: { ...body, head_sha: input.headSha } });
+    ? { installationId, path: `${repository}/check-runs/${existing.id}`, operation: "update_check_run", schema: checkRunSchema, method: "PATCH", body }
+    : { installationId, path: `${repository}/check-runs`, operation: "create_check_run", schema: checkRunSchema, method: "POST", body: { ...body, head_sha: input.headSha } });
 });
 
 export function createGithubAppJwt(input: {
@@ -538,7 +538,7 @@ export const GithubApiLive = Layer.effect(
         const response = yield* Effect.tryPromise({
           try: (signal) =>
             fetch(
-              `https://api.github.com/app/installations/${installationId}/access_tokens`,
+              `${config.github.origins.api}/app/installations/${installationId}/access_tokens`,
               {
                 signal,
                 method: "POST",
@@ -636,7 +636,7 @@ export const GithubApiLive = Layer.effect(
         const headers: GithubRequestHeaders = { Accept: "application/vnd.github+json", "X-GitHub-Api-Version": GITHUB_API_VERSION };
         if (token !== null) headers.Authorization = `Bearer ${token}`;
         const response = yield* Effect.tryPromise({
-          try: (signal) => fetch(input.url, input.method
+          try: (signal) => fetch(`${config.github.origins.api}${input.path}`, input.method
             ? { signal, method: input.method, headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify(input.body ?? {}) }
             : { signal, headers }),
           catch: () =>
@@ -695,14 +695,14 @@ export const GithubApiLive = Layer.effect(
       return yield* Effect.tryPromise({
         try: async (signal) => {
           // Never forward installation credentials across the archive redirect.
-          const redirect = await fetch(`https://api.github.com/repos/${repository}/tarball/${input.sha}`, {
+          const redirect = await fetch(`${config.github.origins.api}/repos/${repository}/tarball/${input.sha}`, {
             signal, redirect: "manual", headers,
           });
           const location = redirect.headers.get("location");
           await redirect.body?.cancel();
           if (redirect.status !== 302 || !location) throw new Error("Archive redirect missing");
           const url = new URL(location);
-          if (url.protocol !== "https:" || url.hostname !== "codeload.github.com" || url.port || url.username || url.password) throw new Error("Invalid archive destination");
+          if (url.origin !== config.github.origins.codeload || url.username || url.password) throw new Error("Invalid archive destination");
           const response = await fetch(url, { signal, redirect: "error" });
           if (!response.ok || !response.body) { await response.body?.cancel(); throw new Error("Archive download failed"); }
           return response;

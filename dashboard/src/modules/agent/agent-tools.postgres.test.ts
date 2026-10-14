@@ -18,10 +18,10 @@ type Step = { readonly tool: string; readonly input: JsonValue; readonly callKey
 
 /** GitHub as the Store and github_ls read it: `acme/docs` is public, with a `dev` branch and `README.md` and `src/index.md` on `main`. */
 const github = fakeGithubApi({
-  "https://api.github.com/repos/acme/docs": { id: 12, full_name: "acme/docs", private: false, default_branch: "main" },
-  "https://api.github.com/repos/acme/docs/git/ref/heads%2Fdev": { ref: "refs/heads/dev", object: { type: "commit", sha: "a".repeat(40) } },
-  "https://api.github.com/repos/acme/docs/commits/main": { commit: { tree: { sha: "b".repeat(40) } } },
-  [`https://api.github.com/repos/acme/docs/git/trees/${"b".repeat(40)}?recursive=1`]: {
+  "/repos/acme/docs": { id: 12, full_name: "acme/docs", private: false, default_branch: "main" },
+  "/repos/acme/docs/git/ref/heads%2Fdev": { ref: "refs/heads/dev", object: { type: "commit", sha: "a".repeat(40) } },
+  "/repos/acme/docs/commits/main": { commit: { tree: { sha: "b".repeat(40) } } },
+  [`/repos/acme/docs/git/trees/${"b".repeat(40)}?recursive=1`]: {
     truncated: false,
     tree: [
       { path: "README.md", type: "blob", mode: "100644" },

@@ -32,7 +32,7 @@ export const githubConnection = Effect.fn("GithubCli.connection")(function* (cal
   const installations = yield* listGithubInstallationsForUser(caller.userId);
   const repositories = yield* listCachedGithubRepositoriesForUser(caller.userId);
   return {
-    install_url: getGithubAppInstallUrl({ slug: config.github.appSlug }),
+    install_url: getGithubAppInstallUrl(config.github),
     linked: linked.length > 0,
     ready: repositories.length > 0,
     installations: installations.map((installation) => ({
@@ -78,7 +78,7 @@ export const githubBranches = Effect.fn("GithubCli.branches")(function* (caller:
   const branches = yield* listGithubRepositoryBranches(readable.installationId, readable.fullName);
   return {
     repository: readable.fullName,
-    access: readable.installationId === null ? "public" : "installation",
+    access: readable.installationId === null ? "public" : "connected",
     default_branch: readable.defaultBranch,
     branches: branches.map((branch) => branch.name),
   };
@@ -181,10 +181,11 @@ export const GithubRepositoriesLive = Layer.effect(GithubRepositories, Effect.ge
 
 /** `ployz github disconnect ID`: forget one of the caller's installations; uninstalling the App happens on GitHub. */
 export const disconnectGithub = Effect.fn("GithubCli.disconnect")(function* (caller: Caller, installationId: number) {
+  const { origins } = (yield* AppConfig).github;
   const removed = yield* deleteGithubInstallationForUser({ userId: caller.userId, installationId });
   if (removed === null) return yield* new NotFound({ message: "No such GitHub installation of yours." });
   const settings = removed.accountType === "Organization"
-    ? `https://github.com/organizations/${removed.accountLogin}/settings/installations/${removed.installationId}`
-    : `https://github.com/settings/installations/${removed.installationId}`;
+    ? `${origins.web}/organizations/${removed.accountLogin}/settings/installations/${removed.installationId}`
+    : `${origins.web}/settings/installations/${removed.installationId}`;
   return { disconnected: { id: removed.installationId, account: removed.accountLogin }, uninstall_url: settings };
 });

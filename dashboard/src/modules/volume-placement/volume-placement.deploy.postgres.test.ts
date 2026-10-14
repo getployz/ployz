@@ -343,6 +343,17 @@ describe("deploying a Volume placement", () => {
     expect((await runRows()).map((row) => row.id)).toEqual([committed]);
   });
 
+  it("fails on another Deploy's lane rather than move under its Services, leaving the change staged for the next Deploy", async () => {
+    members = [member("web-1", "writer"), member("web-2", "mirror")];
+    const deploying = (await land("deploy", '{"deployment":"dep-0","resume":null}')).rows[0].id;
+    await stageMove("web-2", ["web-2"]);
+    expect(await run(advancePlacement(organizationId, "dep-1", null, inspect, answered)))
+      .toEqual({ kind: "failed", message: "data is deploying; the Deploy ends its run" });
+    expect(await placement()).toMatchObject({ staged: { primary: web("web-2") }, deploymentId: null });
+    expect(await runRows()).toEqual([{ id: deploying, kind: "deploy", state: "running", message: null }]);
+    expect(send).not.toHaveBeenCalled();
+  });
+
   it("fails on a run past its return on a restore's source, without failing the restore", async () => {
     const byVolume: MemberInspector = (_, _environment, id) => Effect.succeed(id === "vol2" ? [] : members);
     members = [member("web-1", "writer"), member("web-2", "mirror")];

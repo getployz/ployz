@@ -51,6 +51,12 @@ async function expectCode(code, promise) {
   const { containers: other } = await client.agentAsk({ query: "containers", namespace: "app", service: "api" });
   assert.deepEqual(other, []);
 
+  const daemon = await client.agentAsk({ query: "server_logs", process: "docker", server: null, lines: 100, since: null });
+  assert.deepEqual(daemon.notes, []);
+  assert.deepEqual(daemon.servers, [
+    { server: "one", text: { status: "shown", lines: ["Started ployzd.", "pulled with [redacted]"], cut: false, redacted: 1 } },
+  ]);
+
   await expectCode("unsupported", client.agentAsk({ query: "github_connection" }));
   await expectCode("invalid_argument", client.agentAsk({ query: "nowhere" }));
   await client.close();

@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 
-import { and, eq, lt, sql } from "drizzle-orm";
+import { and, eq, inArray, lt, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import {
   githubInstallation as schemaGithubInstallation,
@@ -124,7 +124,7 @@ export const deleteCachedGithubRepositoriesById = Effect.fn(
     .where(
       and(
         eq(schemaGithubRepositoryCache.installationId, installationId),
-        sql`${schemaGithubRepositoryCache.repositoryId} = any(${repositoryIds})`,
+        inArray(schemaGithubRepositoryCache.repositoryId, repositoryIds),
       ),
     );
 });

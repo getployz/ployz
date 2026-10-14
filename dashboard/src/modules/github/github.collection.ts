@@ -1,4 +1,4 @@
-import { githubInstallUrlQueryOptions, githubRepoAccessQueryOptions } from "./github.queries";
+import { githubRepoAccessQueryOptions } from "./github.queries";
 import { skipToken, useQuery, type QueryClient } from "@tanstack/react-query";
 import { createApiCollection, preloadCollection } from "#/collections/query-collection";
 import type { GithubRepositorySelection } from "#/modules/github/github";
@@ -72,11 +72,10 @@ export function useGithubReposReadState(scope: GithubCollectionScope) {
 }
 
 /**
- * Start a picker's reads together (repositories, access, install URL) when it opens or is about to;
+ * Start a picker's reads together (repositories, access) when it opens or is about to;
  * failures surface through `useGithubReposReadState` and the picker's own queries.
  */
 export function preloadGithubRepos(scope: GithubCollectionScope) {
   void preloadCollection(getGithubReposCollection(scope)).catch(() => {});
   void scope.queryClient.prefetchQuery(githubRepoAccessQueryOptions());
-  void scope.queryClient.prefetchQuery(githubInstallUrlQueryOptions());
 }

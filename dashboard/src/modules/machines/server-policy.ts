@@ -22,6 +22,8 @@ export const ServerPolicyChangeSchema = Schema.Struct({
   buildConcurrency: Schema.optionalKey(BuildConcurrencyChangeSchema),
   /** Off is a cordon: nothing new starts on the Server, and what runs there stays until it's drained. */
   acceptsServices: Schema.optionalKey(Schema.Boolean),
+  /** Only off: turning web traffic on also starts the Ingress Proxy, which only `ployz server set` does. */
+  acceptsIngress: Schema.optionalKey(Schema.Literal(false)),
 });
 
 export type ServerPolicyChange = typeof ServerPolicyChangeSchema.Type;
@@ -37,7 +39,8 @@ export type RequestServerPolicyChangeInput =
 
 /** A change that sets nothing changes nothing; the request refuses it. */
 export const isEmptyPolicyChange = (change: ServerPolicyChange) =>
-  change.acceptsBuilds === undefined && change.buildConcurrency === undefined && change.acceptsServices === undefined;
+  change.acceptsBuilds === undefined && change.buildConcurrency === undefined && change.acceptsServices === undefined &&
+  change.acceptsIngress === undefined;
 
 /** The Engine's partial MachineUpdate for one Server Policy change. */
 export function machineUpdateForPolicyChange(
@@ -50,6 +53,9 @@ export function machineUpdateForPolicyChange(
   if (change.acceptsServices !== undefined) {
     update.accepts_services = change.acceptsServices;
   }
+  if (change.acceptsIngress !== undefined) {
+    update.accepts_ingress = change.acceptsIngress;
+  }
   if (change.buildConcurrency === "automatic") {
     update.build_concurrency = { action: "automatic" };
   } else if (change.buildConcurrency !== undefined) {
@@ -60,7 +66,7 @@ export function machineUpdateForPolicyChange(
 
 /** Whether Runtime observation already shows every value of `change`. */
 export function policyChangeObserved(
-  observed: { acceptsBuilds: boolean; acceptsServices: boolean; buildConcurrency: number | null },
+  observed: { acceptsBuilds: boolean; acceptsServices: boolean; acceptsIngress: boolean; buildConcurrency: number | null },
   change: ServerPolicyChange,
 ): boolean {
   return (
@@ -68,6 +74,8 @@ export function policyChangeObserved(
       change.acceptsBuilds === observed.acceptsBuilds) &&
     (change.acceptsServices === undefined ||
       change.acceptsServices === observed.acceptsServices) &&
+    (change.acceptsIngress === undefined ||
+      change.acceptsIngress === observed.acceptsIngress) &&
     (change.buildConcurrency === undefined ||
       change.buildConcurrency === (observed.buildConcurrency ?? "automatic"))
   );

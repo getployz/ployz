@@ -59,7 +59,7 @@ pub use logs::{
     ContainerLogInput, ContainerLogRecord, ContainerLogStream, LogHistoryInput, LogHistoryRecord,
     LogHistoryStream,
 };
-pub(crate) use logs::{failed_tail, service_tail};
+pub(crate) use logs::{failed_tail, process_tail, service_tail};
 pub use metrics::{MetricHistory, MetricHistoryInput, MetricSubject, metric_history};
 pub use preparation::{
     BuildReceipt, BuildVariables, OutsideBuildInput, PreparationInput, UploadDigest, VERSION,
@@ -692,7 +692,7 @@ impl Session {
             .until_closed(client.invoke_raw(
                 &request,
                 path,
-                &target,
+                Some(&target),
                 Some(crate::connect::TARGET_RPC_TIMEOUT),
             ))
             .await?;

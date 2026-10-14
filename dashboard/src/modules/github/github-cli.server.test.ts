@@ -8,7 +8,7 @@ import { fakeGithubApi } from "#/test/fake-github";
 
 const web: ReadableRepository = { fullName: "acme/web", repositoryId: 11, installationId: 7, defaultBranch: "main" };
 const sha = "b".repeat(40);
-const base = "https://api.github.com/repos/acme/web";
+const base = "/repos/acme/web";
 
 function run<A, E>(effect: Effect.Effect<A, E, GithubApi>, answers: Readonly<Record<string, JsonValue>>) {
   return Effect.runPromise(Effect.result(effect).pipe(Effect.provide(Layer.succeed(GithubApi, fakeGithubApi(answers).service))));
