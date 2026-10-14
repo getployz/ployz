@@ -384,6 +384,28 @@ it.live("revoking the grant turns its token away, and connecting again issues on
     expect((yield* raw(shop, old)).status).toBe(401);
   }).pipe(Effect.scoped), 30_000);
 
+it.live("leaving Shop ends the grant, rejoining doesn't revive it, and connecting again issues one that works", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const clientId = yield* registerAgent(shop);
+    const old = yield* connect(shop, clientId);
+    expect((yield* raw(shop, old)).status).toBe(200);
+
+    const membership = (change: "leave" | "join") => shop.provided(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      yield* change === "leave"
+        ? drizzle.delete(member).where(sql`${member.userId} = ${shop.boId}`)
+        : drizzle.insert(member).values({ userId: shop.boId, organizationId: ORGANIZATION, role: "owner" });
+    }));
+    yield* membership("leave");
+    expect((yield* raw(shop, old)).status).toBe(401);
+    yield* aSecondLater;
+    yield* membership("join");
+    expect((yield* raw(shop, old)).status).toBe(401);
+
+    expect((yield* raw(shop, yield* connect(shop, clientId))).status).toBe(200);
+  }).pipe(Effect.scoped), 30_000);
+
 it.live("a parameter the browser adds to /connect leaves the consent standing", () =>
   Effect.gen(function* () {
     const shop = yield* hostedShop();
