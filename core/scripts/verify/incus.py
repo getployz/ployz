@@ -56,23 +56,23 @@ def runs():
 
 
 def capacity(pool):
-    """Free and total bytes that new VM roots can take from the storage pool.
+    """Free and total bytes of the storage pool, then of the host disk under it (None when the pool has no host disk).
 
-    A loop file grows into the host filesystem under it, so free space is the smaller of the two and the reserve follows
-    the host disk. A pool on a block device or a ZFS dataset (no absolute source path) has only its own numbers."""
+    A loop file grows into the host filesystem under it, so both limit new VM roots and the reserve follows the host
+    disk. A pool on a block device or a ZFS dataset (no absolute source path) has only its own numbers."""
     space = query(f"/1.0/storage-pools/{pool}/resources")["space"]
-    free, total = space["total"] - space["used"], space["total"]
+    own = space["total"] - space["used"], space["total"]
     source = query(f"/1.0/storage-pools/{pool}")["config"].get("source", "")
     if not source.startswith("/") or source.startswith("/dev/"):
-        return free, total
+        return own, None
     # statvfs on the file itself needs root; the nearest readable ancestor is on the same filesystem.
     for path in [source, *Path(source).parents]:
         try:
             usage = shutil.disk_usage(path)
         except OSError:
             continue
-        return min(free, usage.free), usage.total
-    return free, total
+        return own, (usage.free, usage.total)
+    return own, None
 
 
 class Provider:

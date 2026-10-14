@@ -110,7 +110,7 @@ The Incus host needs KVM, passwordless sudo, Python 3, Rust, `strip`, OpenSSH, I
 
 ## Shared host
 
-`up` refuses to launch when the host cannot hold the new Machines. It counts each running guest's memory limit as promised, because guests grow to their limit and earlyoom then kills QEMU. The refusal lists every run with its owner. It does not wait; retry after runs end, or down your own. `PLOYZ_VERIFY_MEMORY_RESERVE` and `PLOYZ_VERIFY_DISK_RESERVE` override the headroom kept free (a tenth of RAM, a twentieth of the pool).
+`up` refuses to launch when the host cannot hold the new Machines. It counts each running guest's memory limit as promised, because guests grow to their limit and earlyoom then kills QEMU. The refusal lists every run with its owner. It does not wait; retry after runs end, or down your own. `PLOYZ_VERIFY_MEMORY_RESERVE` and `PLOYZ_VERIFY_DISK_RESERVE` override the headroom kept free (a tenth of RAM, and a twentieth of the disk that backs the pool; for a loop-file pool that is the host disk).
 
 ```bash
 scripts/verify-cluster ls                      # every run on the host: owner, age, Machines, RAM, checkout

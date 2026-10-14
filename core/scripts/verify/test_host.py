@@ -25,7 +25,7 @@ def vm(status="Running", memory=2 * GiB, rss=2 * GiB):
 
 class Fit(unittest.TestCase):
     def fits(self, machines, available, running=(), pool_free=200 * GiB):
-        return shortfalls(machines, 2 * GiB, available, 32 * GiB, list(running), pool_free, 700 * GiB)
+        return shortfalls(machines, 2 * GiB, available, 32 * GiB, list(running), (pool_free, 700 * GiB))
 
     def test_one_machine_fits_an_idle_host(self):
         self.assertEqual(self.fits(1, available=20 * GiB), [])
@@ -50,14 +50,18 @@ class Fit(unittest.TestCase):
         self.assertEqual([problem.split(":")[0] for problem in problems], ["Disk"])
 
     def test_reserve_override_simulates_a_full_host(self):
-        problems = shortfalls(1, 2 * GiB, 20 * GiB, 32 * GiB, [], 200 * GiB, 700 * GiB, memory_reserve=19 * GiB)
+        problems = shortfalls(1, 2 * GiB, 20 * GiB, 32 * GiB, [], (200 * GiB, 700 * GiB), memory_reserve=19 * GiB)
         self.assertTrue(problems and problems[0].startswith("RAM:"))
 
+    def test_disk_reserve_override_applies_to_the_host_disk(self):
+        problems = shortfalls(1, 2 * GiB, 20 * GiB, 32 * GiB, [], (40 * GiB, 100 * GiB), (500 * GiB, 725 * GiB),
+                              disk_reserve=498 * GiB)
+        self.assertEqual([problem.split(":")[0] for problem in problems], ["Disk"])
 
 
 class PoolCapacity(unittest.TestCase):
-    def capacity(self, source, host_free):
-        pool = {"/1.0/storage-pools/p/resources": dict(space=dict(total=100 * GiB, used=8 * GiB)),
+    def capacity(self, source, host_free, used=8 * GiB, host_total=780 * GiB):
+        pool = {"/1.0/storage-pools/p/resources": dict(space=dict(total=100 * GiB, used=used)),
                 "/1.0/storage-pools/p": dict(config=dict(source=source, size="100GiB"))}
         seen = []
 
@@ -65,25 +69,34 @@ class PoolCapacity(unittest.TestCase):
             seen.append(str(path))
             if str(path) == source:
                 raise PermissionError(path)
-            return shutil._ntuple_diskusage(780 * GiB, 780 * GiB - host_free, host_free)
+            return shutil._ntuple_diskusage(host_total, host_total - host_free, host_free)
 
         with mock.patch.object(incus, "query", pool.__getitem__), mock.patch.object(shutil, "disk_usage", disk_usage):
             return incus.capacity("p"), seen
 
     def test_loop_file_pool_is_held_to_the_fuller_host_disk(self):
-        (free, total), seen = self.capacity("/var/lib/incus/disks/p.img", host_free=50 * GiB)
-        self.assertEqual((free, total), (50 * GiB, 780 * GiB))
+        space, seen = self.capacity("/var/lib/incus/disks/p.img", host_free=50 * GiB)
+        self.assertEqual(space, ((92 * GiB, 100 * GiB), (50 * GiB, 780 * GiB)))
         self.assertEqual(seen[-1], "/var/lib/incus/disks")
-        problems = shortfalls(3, 2 * GiB, 64 * GiB, 128 * GiB, [], free, total)
+        problems = shortfalls(3, 2 * GiB, 64 * GiB, 128 * GiB, [], *space)
         self.assertEqual([problem.split(":")[0] for problem in problems], ["Disk"])
 
     def test_loop_file_with_less_room_than_the_host_limits_the_pool(self):
-        (free, _), _ = self.capacity("/var/lib/incus/disks/p.img", host_free=300 * GiB)
-        self.assertEqual(free, 92 * GiB)
+        space, _ = self.capacity("/var/lib/incus/disks/p.img", host_free=300 * GiB)
+        self.assertEqual(shortfalls(18, 2 * GiB, 64 * GiB, 128 * GiB, [], *space), [])
+        self.assertEqual(shortfalls(19, 2 * GiB, 64 * GiB, 128 * GiB, [], *space)[0].split(":")[0], "Disk")
 
     def test_block_device_pool_uses_its_own_numbers(self):
-        (free, total), seen = self.capacity("/dev/nvme1n1", host_free=1 * GiB)
-        self.assertEqual(((free, total), seen), ((92 * GiB, 100 * GiB), []))
+        space, seen = self.capacity("/dev/nvme1n1", host_free=1 * GiB)
+        self.assertEqual((space, seen), (((92 * GiB, 100 * GiB), None), []))
+
+    def test_host_reserve_does_not_shrink_a_loop_pool_that_is_the_tighter_limit(self):
+        # 40 GiB left in the pool, 500 GiB free on a 725 GiB host: the 36 GiB host reserve is far from touched.
+        space, _ = self.capacity("/var/lib/incus/disks/p.img", host_free=500 * GiB, used=60 * GiB, host_total=725 * GiB)
+        self.assertEqual(shortfalls(1, 2 * GiB, 64 * GiB, 128 * GiB, [], *space), [])
+        self.assertEqual(shortfalls(8, 2 * GiB, 64 * GiB, 128 * GiB, [], *space), [])
+        self.assertEqual([problem.split(":")[0] for problem in shortfalls(9, 2 * GiB, 64 * GiB, 128 * GiB, [], *space)], ["Disk"])
+
 
 class Sizes(unittest.TestCase):
     def test_incus_units(self):
