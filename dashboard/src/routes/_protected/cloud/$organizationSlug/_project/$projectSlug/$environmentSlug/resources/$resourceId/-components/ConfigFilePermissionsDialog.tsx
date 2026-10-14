@@ -4,7 +4,7 @@ import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, Di
 import { FieldGroup } from "#/components/ui/field";
 import { appFormOptions, showErrorsAfterBlurOrSubmit, useAppForm, validateOnChangeOrBlur } from "#/form";
 import { strictParseOptions } from "#/lib/schema";
-import { fileAccessDraftSchema, type FileAccess } from "#/modules/config-store/store-configs";
+import { changedAccess, fileAccessDraftSchema, type FileAccess } from "#/modules/config-store/store-configs";
 
 const permissionsFormOptions = appFormOptions.strictSchema({
   defaultValues: { mode: "", uid: "", gid: "" },
@@ -13,13 +13,13 @@ const permissionsFormOptions = appFormOptions.strictSchema({
 });
 
 export function ConfigFilePermissionsDialog({ file, access, onClose, onSubmit }: {
-  file: string; access: FileAccess; onClose: () => void; onSubmit: (access: FileAccess) => void;
+  file: string; access: FileAccess; onClose: () => void; onSubmit: (change: Partial<FileAccess>) => void;
 }) {
   const form = useAppForm({
     ...permissionsFormOptions,
     defaultValues: Schema.encodeSync(fileAccessDraftSchema)(access),
     onSubmit: ({ schemaOutputs }) => {
-      onSubmit(schemaOutputs[0]);
+      onSubmit(changedAccess(access, schemaOutputs[0]));
       onClose();
     },
   });

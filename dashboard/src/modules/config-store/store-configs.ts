@@ -130,6 +130,15 @@ export function draftAccess(stored: FileAccess | undefined, draft: FileDraft | u
 
 const ACCESS_FIELDS = ["mode", "uid", "gid"] as const;
 
+/** The fields of `after` that differ from `before`, so a stale prefill never overwrites an owner set elsewhere. */
+export function changedAccess(before: FileAccess, after: FileAccess): Partial<FileAccess> {
+  return definedAccess({
+    mode: after.mode === before.mode ? undefined : after.mode,
+    uid: after.uid === before.uid ? undefined : after.uid,
+    gid: after.gid === before.gid ? undefined : after.gid,
+  });
+}
+
 function definedAccess({ mode, uid, gid }: Partial<FileAccess>): Partial<FileAccess> {
   return { ...(mode !== undefined && { mode }), ...(uid !== undefined && { uid }), ...(gid !== undefined && { gid }) };
 }

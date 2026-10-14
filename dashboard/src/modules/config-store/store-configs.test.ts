@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { ConfigItemView, ConfigListing, DiffView, EnvironmentView, RowId, ServiceListing } from "@ployz/sdk";
 import { asTestDouble } from "#/lib/test-double";
 import {
-  attachConfigCommand, configEdits, configFileSizeError, configReferenceValues, configTrays, createConfigCommand, draftAccess, executableToggle,
+  attachConfigCommand, changedAccess, configEdits, configFileSizeError, configReferenceValues, configTrays, createConfigCommand, draftAccess, executableToggle,
   fileAccessDraftSchema, fileAccessLabel, putConfigFileCommand, saveConfigCommand, utf8Bytes,
 } from "./store-configs";
 
@@ -195,6 +195,13 @@ describe("Permissions dialog", () => {
     expect(failure({ mode: "0644", uid: "0", gid: "1.5" })).toContain("Group ID is a whole number, like 1000.");
     expect(failure({ mode: "0644", uid: "4294967296", gid: "0" })).toContain("User ID is a whole number, like 1000.");
     expect(parse({ mode: "0644", uid: "4294967295", gid: "0" })).toEqual(Result.succeed({ mode: "0644", uid: 4294967295, gid: 0 }));
+  });
+
+  it("hands back only the fields the user changed, so an owner set elsewhere survives a mode change", () => {
+    const prefill = { mode: "0444", uid: 1000, gid: 1000 };
+    expect(changedAccess(prefill, { mode: "0640", uid: 1000, gid: 1000 })).toEqual({ mode: "0640" });
+    expect(changedAccess(prefill, { mode: "0444", uid: 0, gid: 1000 })).toEqual({ uid: 0 });
+    expect(changedAccess(prefill, prefill)).toEqual({});
   });
 
   it("prefills the fields from a file's access", () => {

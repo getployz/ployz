@@ -21,7 +21,7 @@ import { cn } from "#/lib/utils";
 import { previewSegments } from "#/modules/config-store/config-references";
 import {
   configBytesText, configEdits, configFileSizeError, configReferenceValues, draftAccess, EXECUTABLE_MODE, executableToggle, fileAccessLabel,
-  hiddenFile, READ_ONLY_MODE, saveConfigCommand, utf8Bytes, type FileAccess, type FileDraft,
+  hiddenFile, READ_ONLY_MODE, saveConfigCommand, utf8Bytes, type FileDraft,
 } from "#/modules/config-store/store-configs";
 import { changedProps, dnsLabelError } from "#/modules/config-store/store-services";
 import { storeReferenceTargets } from "#/modules/config-store/store-variables";
@@ -113,30 +113,19 @@ function ConfigBody({ state, item, services, targets, serviceNames, values, remo
     withResolver: true,
   });
 
-  function withDraft(prev: ReadonlyMap<string, FileDraft>, file: string, change: Partial<FileDraft>) {
-    return new Map(prev).set(file, { content: prev.get(file)?.content ?? item.contents[file] ?? "", ...prev.get(file), ...change });
-  }
-
   function draft(file: string, change: Partial<FileDraft>) {
     setSaveError(null);
-    setDrafts((prev) => withDraft(prev, file, change));
+    setDrafts((prev) => new Map(prev).set(file, { content: prev.get(file)?.content ?? item.contents[file] ?? "", ...prev.get(file), ...change }));
   }
 
-  function setAccess(file: string, access: FileAccess) {
-    const next = withDraft(drafts, file, access);
-    setDrafts(next);
-    save(next);
-  }
-
-  function save(next: ReadonlyMap<string, FileDraft> = drafts) {
-    const writes = configEdits(item, next, failedSaves);
-    if (writes.length === 0 || oversized) return;
-    const submitted = new Map([...next].filter(([file]) => writes.some((write) => write.file === file)));
+  function save() {
+    if (edits.length === 0 || oversized) return;
+    const submitted = new Map([...drafts].filter(([file]) => dirty.has(file)));
     for (const file of submitted.keys()) submittedFiles.current.set(file, submitted);
     setPendingSaves((current) => new Set(current).add(submitted));
     setFailedSaves((current) => new Set([...current].filter((file) => !submitted.has(file))));
     setSaveError(null);
-    writer.commit(saveConfigCommand(state.environment, state.config.name, writes), SHOWN_REFUSALS).isPersisted.promise.then(() => {
+    writer.commit(saveConfigCommand(state.environment, state.config.name, edits), SHOWN_REFUSALS).isPersisted.promise.then(() => {
       setDrafts((current) => new Map([...current].filter(([file, value]) => submitted.get(file) !== value)));
     }).catch((error) => {
       setFailedSaves((current) => new Set([...current, ...[...submitted.keys()].filter((file) => submittedFiles.current.get(file) === submitted)]));
@@ -172,7 +161,7 @@ function ConfigBody({ state, item, services, targets, serviceNames, values, remo
         <SettingsSection id="files" title="Files">
           <ConfigFiles fileNames={fileNames} current={current} onSelect={setSelected} item={item} drafts={drafts} dirty={dirty}
             textOf={textOf} hidden={hidden} targets={targets} serviceNames={serviceNames} values={values} readOnly={removing}
-            onDraft={draft} onSave={save} onRemove={removeFile} onAccess={setAccess}
+            onDraft={draft} onSave={save} onRemove={removeFile}
             onAdd={(file) => { draft(file, { content: "" }); setSelected(file); }}
             footer={removing ? null : (
               <div className="flex items-center justify-end gap-3">
@@ -180,7 +169,7 @@ function ConfigBody({ state, item, services, targets, serviceNames, values, remo
                 {unsaved.size > 0 ? (
                   <Button variant="ghost" onClick={() => { submittedFiles.current.clear(); setPendingSaves(new Set()); setFailedSaves(new Set()); setDrafts(new Map()); setSaveError(null); }}>Discard</Button>
                 ) : null}
-                {unsaved.size > 0 ? <Button onClick={() => save()} disabled={dirty.size === 0 || oversized !== undefined}>Save</Button> : null}
+                {unsaved.size > 0 ? <Button onClick={save} disabled={dirty.size === 0 || oversized !== undefined}>Save</Button> : null}
                 {pendingSaves.size > 0 ? <span role="status" className="text-sm text-muted-foreground">Saving…</span> : null}
               </div>
             )} />
@@ -210,12 +199,12 @@ function ConfigBody({ state, item, services, targets, serviceNames, values, remo
 }
 
 function ConfigFiles({ fileNames, current, onSelect, item, drafts, dirty, textOf, hidden, targets, serviceNames, values, readOnly,
-  onDraft, onSave, onRemove, onAccess, onAdd, footer }: {
+  onDraft, onSave, onRemove, onAdd, footer }: {
   fileNames: readonly string[]; current: string | null; onSelect: (file: string) => void; item: ConfigItemView;
   drafts: ReadonlyMap<string, FileDraft>; dirty: ReadonlySet<string>; textOf: (file: string) => string; hidden: (file: string) => boolean;
   targets: readonly ReferenceTarget[]; serviceNames: readonly string[]; values: ReturnType<typeof configReferenceValues>;
   readOnly: boolean; onDraft: (file: string, change: Partial<FileDraft>) => void; onSave: () => void; onRemove: (file: string) => void;
-  onAccess: (file: string, access: FileAccess) => void; onAdd: (file: string) => void; footer: React.ReactNode;
+  onAdd: (file: string) => void; footer: React.ReactNode;
 }) {
   const ConfigFileEditor = useConfigFileEditor();
   const [view, setView] = useState<"edit" | "preview">("edit");
@@ -320,7 +309,7 @@ function ConfigFiles({ fileNames, current, onSelect, item, drafts, dirty, textOf
       {footer}
       {permissionsFor === null ? null : (
         <ConfigFilePermissionsDialog file={permissionsFor} access={accessOf(permissionsFor)} onClose={() => setPermissionsFor(null)}
-          onSubmit={(access) => onAccess(permissionsFor, access)} />
+          onSubmit={(change) => onDraft(permissionsFor, change)} />
       )}
     </div>
   );
