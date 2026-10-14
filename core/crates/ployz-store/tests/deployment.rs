@@ -1686,6 +1686,44 @@ fn a_new_runner_leaves_the_replaced_deployment_unknown() {
     );
 }
 
+#[test]
+fn a_taken_over_run_moves_only_what_it_confirmed_into_applied_state() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(
+            &id(1),
+            &a,
+            RunEvidence::Confirmed(vec![ServiceName::parse("web").unwrap()]),
+        )
+        .unwrap();
+    admit(&store, &who, 2, &[], None).unwrap();
+    let b = runner("runner-b");
+    store.claim(&id(2), &b).unwrap();
+    // api finished after the last confirmation, but another runner owns the Environment now.
+    let interrupted = RunEvidence::Executed {
+        progress: Vec::new(),
+        outcome: Box::new(outcome(json!({
+            "type": "interrupted",
+            "completed": [operation("web"), operation("api")],
+            "unexecuted": []
+        }))),
+        removed: Vec::new(),
+    };
+    store.record(&id(1), &a, interrupted).unwrap();
+    assert_eq!(status(&store, &who, 1), DeploymentStatus::Unknown);
+    // With nothing in flight, the diff is against Applied State alone.
+    store
+        .record(&id(2), &b, RunEvidence::NotExecuted("stopped".into()))
+        .unwrap();
+    assert_eq!(changed(&store, &who), ["api"]);
+}
+
 fn cancel(store: &ConfigStore, who: &Actor, n: u8) -> Result<DeploymentSummary, RpcError> {
     store.write(who, &Cancel { deployment: id(n) })
 }
