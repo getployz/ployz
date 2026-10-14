@@ -3,7 +3,7 @@ import { Effect, Schema } from "effect";
 import { defineCommand, refused } from "#/modules/commands/command.server";
 import type { Caller } from "#/modules/identity/actor";
 import { createInvite, listPendingInvites, revokeInvite } from "#/modules/organization/invitation.server";
-import { listMembers, removeMembership, setMemberRole } from "#/modules/organization/membership.server";
+import { listMembers, MANAGE, OWN, removeMembership, setMemberRole } from "#/modules/organization/membership.server";
 import { AppConfig } from "#/server/config.server";
 import type { Conflict } from "#/server/public-error";
 
@@ -40,20 +40,15 @@ const Removed = Schema.Struct({ email: Schema.String });
 const Revoked = Schema.Struct({ id: Schema.String, email: Schema.NullOr(Schema.String) });
 const Left = Schema.Struct({ organization: Schema.String });
 
-const MANAGE = "Only an owner or admin of this Organization can do this.";
-const OWN = "Only an owner can make or remove an owner.";
-
 const manages = (caller: Caller) => caller.role === "owner" || caller.role === "admin";
 
 const conflictRefused = (conflict: Conflict) => Effect.succeed(refused("conflict", conflict.message));
 
-/** One member by exact email, else by name; a name two members share is ambiguous. */
+/** One member by email when the selector has an @, else by name; a name two members share is ambiguous. */
 const pick = Effect.fn("Members.pick")(function* (caller: Caller, selector: string) {
   const members = yield* listMembers(caller.organization.id);
   const wanted = selector.trim().toLowerCase();
-  const byEmail = members.find((row) => row.email.toLowerCase() === wanted);
-  if (byEmail !== undefined) return { ok: true, member: byEmail } as const;
-  const named = members.filter((row) => row.name.trim().toLowerCase() === wanted);
+  const named = members.filter((row) => (wanted.includes("@") ? row.email : row.name.trim()).toLowerCase() === wanted);
   const [only, ...rest] = named;
   if (only === undefined) return refused("not_found", `No member of ${caller.organization.slug} is ${selector}.`);
   if (rest.length > 0) {
@@ -123,7 +118,7 @@ export const orgMemberInvite = defineCommand({
 export const orgMemberRole = defineCommand({
   name: "org_member_role",
   path: ["org", "member", "role"],
-  about: "Change a member's role. Only an owner makes or removes an owner",
+  about: "Change a member's role. Only an owner can make or remove an owner",
   examples: ["ployz org member role bob@example.com admin"],
   kind: "write",
   gate: "never",
@@ -139,7 +134,7 @@ export const orgMemberRole = defineCommand({
     if (!picked.ok) return picked;
     const target = picked.member;
     if ((input.role === "owner" || target.role === "owner") && caller.role !== "owner") return refused("forbidden", OWN);
-    yield* setMemberRole(caller.organization.id, target.userId, input.role, caller.role === "owner");
+    yield* setMemberRole(caller.organization.id, target.userId, input.role, caller.userId);
     return { ok: true, output: { email: target.email, role: input.role }, message: `${target.email} is now ${input.role}.` } as const;
   }).pipe(Effect.catchTag("Conflict", conflictRefused)),
 });
@@ -163,7 +158,7 @@ export const orgMemberRm = defineCommand({
     if (!picked.ok) return picked;
     const target = picked.member;
     if (target.role === "owner" && caller.role !== "owner") return refused("forbidden", OWN);
-    yield* removeMembership(caller.organization.id, target.userId);
+    yield* removeMembership(caller.organization.id, target.userId, caller.userId);
     return { ok: true, output: { email: target.email }, message: `${target.email} is no longer a member of ${caller.organization.slug}.` } as const;
   }).pipe(Effect.catchTag("Conflict", conflictRefused)),
 });
@@ -225,7 +220,7 @@ export const orgLeave = defineCommand({
   input: Schema.Struct({}),
   output: Left,
   render: "message",
-  run: (caller) => removeMembership(caller.organization.id, caller.userId).pipe(
+  run: (caller) => removeMembership(caller.organization.id, caller.userId, caller.userId).pipe(
     Effect.as({ ok: true, output: { organization: caller.organization.slug }, message: `You left ${caller.organization.slug}.` } as const),
     Effect.catchTag("Conflict", conflictRefused),
   ),

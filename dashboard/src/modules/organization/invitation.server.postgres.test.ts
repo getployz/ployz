@@ -147,6 +147,19 @@ describe("invite links", () => {
     expect(await revoke).toBe("Conflict");
     expect((await run(readInvite(tokenOf(link))))?.state).toBe("accepted");
   });
+
+  it("refuses a link whose sender stops being an admin while someone joins through it", async () => {
+    const { link } = await invite("carol", {});
+    const { joined } = await harness.db.transaction(async (tx) => {
+      await tx.update(member).set({ role: "member" }).where(and(eq(member.organizationId, ACME), eq(member.userId, ids.carol)));
+      const joined = outcome(acceptInvite(tokenOf(link), ids.dan));
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      return { joined };
+    });
+    expect(await joined).toBe("Conflict");
+    expect(await roleOf(ids.dan)).toBeNull();
+    await harness.db.update(member).set({ role: "admin" }).where(and(eq(member.organizationId, ACME), eq(member.userId, ids.carol)));
+  });
 });
 
 describe("member commands", () => {
@@ -187,6 +200,12 @@ describe("member commands", () => {
       ok: false,
       refusal: { code: "ambiguous" },
     });
+    expect(await roleOf(ids.bob)).toBe("admin");
+  });
+
+  it("reads a selector with an @ as an email only, never as a name", async () => {
+    await harness.db.update(user).set({ name: "dan@example.test" }).where(eq(user.id, ids.bob));
+    expect(await as("carol", "org_member_rm", { member: "dan@example.test" })).toMatchObject({ ok: false, refusal: { code: "not_found" } });
     expect(await roleOf(ids.bob)).toBe("admin");
   });
 });

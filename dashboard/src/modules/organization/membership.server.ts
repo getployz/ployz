@@ -9,12 +9,24 @@ import { organization } from "#/modules/organization/tables";
 import { afterDatabaseCommit, Database } from "#/server/database.server";
 import { Conflict, NotFound } from "#/server/public-error";
 
+export const MANAGE = "Only an owner or admin of this Organization can do this.";
+export const OWN = "Only an owner can make or remove an owner.";
+
+/** Refuses `by` as the locked rows show them now, so a role changed after the request was authorized still counts. */
+const refusalFor = (members: ReadonlyArray<{ userId: string; role: Role }>, by: string, touchesOwner: boolean) => {
+  const role = members.find((row) => row.userId === by)?.role;
+  if (role !== "owner" && role !== "admin") return new Conflict({ message: MANAGE, userFacing: true });
+  if (touchesOwner && role !== "owner") return new Conflict({ message: OWN, userFacing: true });
+  return null;
+};
+
 /**
  * The one place a membership ends. The user's Organization Tokens there go with it, their sessions acting there move to
  * their next Organization or none, and their devices' holders on its Servers are retired once it commits. It refuses
- * to remove the last owner. Locks the Organization's member rows, so a concurrent removal or role change waits.
+ * to remove the last owner. `by` is who asks: a member may always leave, and removing someone else follows `refusalFor`.
+ * Locks the Organization's member rows, so a concurrent removal or role change waits.
  */
-export const removeMembership = Effect.fn("Organization.removeMembership")(function* (organizationId: string, userId: string) {
+export const removeMembership = Effect.fn("Organization.removeMembership")(function* (organizationId: string, userId: string, by: string) {
   const database = yield* Database;
   yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
@@ -22,6 +34,8 @@ export const removeMembership = Effect.fn("Organization.removeMembership")(funct
       .where(eq(member.organizationId, organizationId)).orderBy(asc(member.userId)).for("update");
     const leaving = members.find((row) => row.userId === userId);
     if (leaving === undefined) return yield* new NotFound({ message: "That user is not a member of this Organization." });
+    const refusal = by === userId ? null : refusalFor(members, by, leaving.role === "owner");
+    if (refusal !== null) return yield* refusal;
     if (leaving.role === "owner" && !members.some((row) => row.role === "owner" && row.userId !== userId)) {
       return yield* new Conflict({ message: "An Organization needs an owner. Make someone else an owner first.", userFacing: true });
     }
@@ -48,14 +62,14 @@ export const listMembers = Effect.fn("Organization.listMembers")(function* (orga
 });
 
 /**
- * Gives a member a new role. It refuses to demote the last owner, and refuses a Caller who is not an owner when the
- * member is or would become one, checked against the locked rows. Locks the member rows in the order `removeMembership` does.
+ * Gives a member a new role on behalf of `by`, refused per `refusalFor` and when it would demote the last owner.
+ * Locks the member rows in the order `removeMembership` does.
  */
 export const setMemberRole = Effect.fn("Organization.setMemberRole")(function* (
   organizationId: string,
   userId: string,
   role: Role,
-  byOwner: boolean,
+  by: string,
 ) {
   const database = yield* Database;
   yield* database.transaction(Effect.gen(function* () {
@@ -64,9 +78,8 @@ export const setMemberRole = Effect.fn("Organization.setMemberRole")(function* (
       .where(eq(member.organizationId, organizationId)).orderBy(asc(member.userId)).for("update");
     const target = members.find((row) => row.userId === userId);
     if (target === undefined) return yield* new NotFound({ message: "That user is not a member of this Organization." });
-    if ((target.role === "owner" || role === "owner") && !byOwner) {
-      return yield* new Conflict({ message: "Only an owner makes or removes an owner.", userFacing: true });
-    }
+    const refusal = refusalFor(members, by, target.role === "owner" || role === "owner");
+    if (refusal !== null) return yield* refusal;
     if (target.role === "owner" && role !== "owner" && !members.some((row) => row.role === "owner" && row.userId !== userId)) {
       return yield* new Conflict({ message: "An Organization needs an owner. Make someone else an owner first.", userFacing: true });
     }

@@ -7,14 +7,14 @@ import { organization } from "#/modules/organization/tables";
 import { Database } from "#/server/database.server";
 import { Conflict, NotFound } from "#/server/public-error";
 
-export const INVITE_DAYS = 7;
+const INVITE_DAYS = 7;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-export type InviteRole = typeof invitation.$inferSelect.role;
+type InviteRole = typeof invitation.$inferSelect.role;
 
 const hashInviteToken = (token: string) => createHash("sha256").update(token).digest("hex");
 
-export type InviteState = "pending" | "accepted" | "revoked" | "expired";
+type InviteState = "pending" | "accepted" | "revoked" | "expired";
 
 const stateOf = (row: { status: typeof invitation.$inferSelect.status; expiresAt: Date }, now: Date): InviteState =>
   row.status === "pending" && row.expiresAt <= now ? "expired" : row.status;
@@ -113,7 +113,8 @@ const UNUSABLE = {
 
 /**
  * Makes `userId` a member through the invite and spends it. Someone already a member keeps their role and the invite
- * stays unspent. Locks the invite row, so two people opening one link cannot both join.
+ * stays unspent. Locks the invite row, so two people opening one link cannot both join, and share-locks the inviter's
+ * membership: an invite from someone no longer an owner or admin there reads as revoked.
  */
 export const acceptInvite = Effect.fn("Invitation.accept")(function* (token: string, userId: string) {
   const database = yield* Database;
@@ -122,6 +123,7 @@ export const acceptInvite = Effect.fn("Invitation.accept")(function* (token: str
     const [row] = yield* drizzle.select({
       id: invitation.id,
       organizationId: invitation.organizationId,
+      inviterId: invitation.inviterId,
       slug: organization.slug,
       role: invitation.role,
       status: invitation.status,
@@ -135,6 +137,9 @@ export const acceptInvite = Effect.fn("Invitation.accept")(function* (token: str
     if (already !== undefined) return { slug: row.slug };
     const state = stateOf(row, new Date());
     if (state !== "pending") return yield* new Conflict({ message: UNUSABLE[state], userFacing: true });
+    const [inviter] = yield* drizzle.select({ role: member.role }).from(member)
+      .where(and(eq(member.organizationId, row.organizationId), eq(member.userId, row.inviterId))).for("share");
+    if (inviter?.role !== "owner" && inviter?.role !== "admin") return yield* new Conflict({ message: UNUSABLE.revoked, userFacing: true });
     yield* drizzle.insert(member).values({ organizationId: row.organizationId, userId, role: row.role });
     yield* drizzle.update(invitation).set({ status: "accepted", acceptedByUserId: userId }).where(eq(invitation.id, row.id));
     return { slug: row.slug };
