@@ -268,7 +268,14 @@ export const releaseChangedMessage = (volumeName: string) => `${volumeName} chan
 
 const releaseChanged = (volumeName: string): StoreRefusal => ({ code: "conflict", message: releaseChangedMessage(volumeName), details: null });
 
-export const followSettledMessage = (volumeName: string) => `${volumeName} no longer finishes on the Server this Deploy followed`;
+const followSettled = (volumeName: string): StoreRefusal => ({
+  code: "conflict",
+  message: `${volumeName} no longer finishes on the Server this Deploy followed`,
+  details: { reason: "follow_settled" },
+});
+
+/** Whether a Deploy's release was refused because the commitment it followed had settled. */
+export const refusedAsSettled = Schema.is(Schema.Struct({ details: Schema.Struct({ reason: Schema.Literal("follow_settled") }) }));
 
 const enqueueRun = (row: VolumeRunRow, took?: VolumeRunKind) =>
   enqueueEvent(createVolumeRunRequestedEvent({
@@ -601,8 +608,7 @@ const admitOwed = Effect.fn("VolumeRun.admitOwed")(function* (inserted: VolumeRu
   const plan = input.kind === "release" ? input.args.plan : undefined;
   const follows = input.kind === "release" ? input.args.follows : undefined;
   if (follows !== undefined && pending?.current !== follows) {
-    const refusal: StoreRefusal = { code: "conflict", message: followSettledMessage(inserted.volumeName), details: null };
-    return yield* new LaneRefused({ refusal, busy: volumeRunView(newest ?? inserted) });
+    return yield* new LaneRefused({ refusal: followSettled(inserted.volumeName), busy: volumeRunView(newest ?? inserted) });
   }
   if (pending === null) {
     if (plan?.forward === undefined) return inserted;

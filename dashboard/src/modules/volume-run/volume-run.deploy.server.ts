@@ -13,7 +13,6 @@ import {
   contextOf,
   type CopyAnswer,
   ended,
-  followSettledMessage,
   holdDeployLane,
   insertRun,
   keptOn,
@@ -25,6 +24,7 @@ import {
   owedCommitments,
   pastReturn,
   readRow,
+  refusedAsSettled,
   requeueTakenMoves,
   type RunContext,
   setVolumeCopy,
@@ -318,7 +318,7 @@ export const releaseFollowed = Effect.fn("VolumeRun.releaseFollowed")(function* 
       continue;
     }
     const note = `${run.volumeName}'s release on ${lane.to} was not requested after its Deploy: ${release.refusal.message}`;
-    yield* release.refusal.message === followSettledMessage(run.volumeName) ? Effect.logInfo(note) : Effect.logWarning(note);
+    yield* refusedAsSettled(release.refusal) ? Effect.logInfo(note) : Effect.logWarning(note);
   }
   return requested;
 });
