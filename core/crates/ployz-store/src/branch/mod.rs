@@ -424,7 +424,7 @@ pub enum PlannedRole {
     LeftOut,
 }
 
-/// Read a Branch's [`BranchView`]; refused as `invalid` unless the Environment is a Branch.
+/// Read a Branch's [`BranchView`]; refused as `invalid_argument` unless the Environment is a Branch.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct BranchQuery {

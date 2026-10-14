@@ -150,7 +150,7 @@ pub struct Automated {
     pub cancelled: Vec<DeploymentId>,
 }
 
-/// A Deployment an event admitted, and the Environment it deploys.
+/// A Deployment that an event admitted, and the Environment it deploys to.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct AutoDeployed {
     pub environment: EnvironmentId,

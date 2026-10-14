@@ -25,7 +25,7 @@ use crate::settings::{SettingPath, Target};
 use crate::storage::Tx;
 
 /// The most bytes of text one Config file holds, as written before references
-/// resolve; a longer file is refused as `invalid`.
+/// resolve; a longer file is refused as `invalid_argument`.
 pub const MAX_FILE_BYTES: usize = 256 * 1024;
 
 /// Create a Config, optionally mounted into Services.
