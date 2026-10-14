@@ -2,6 +2,18 @@ import { ConfirmDialog } from "#/components/confirm-dialog";
 import { Item, ItemContent, ItemGroup, ItemTitle } from "#/components/ui/item";
 import type { WebTrafficReach } from "#/modules/machines/server-web-traffic-view";
 
+const empty = {
+  away: "This stops the web server still running here.",
+  last: "No other server takes web traffic.",
+  shared: "Your other servers keep taking web traffic.",
+} satisfies Record<WebTrafficReach, string>;
+
+const listed = {
+  away: "This stops the web server still running here. These may still point at it:",
+  last: "No other server takes web traffic. These stop working:",
+  shared: "Your other servers keep serving these:",
+} satisfies Record<WebTrafficReach, string>;
+
 /** The confirm before web traffic goes off: which domains this affects, and whether another Server keeps serving them. */
 export function WebTrafficDialog({ serverName, domains, partial, reach, open, onOpenChange, onConfirm }: {
   serverName: string;
@@ -21,13 +33,11 @@ export function WebTrafficDialog({ serverName, domains, partial, reach, open, on
       title={`Stop web traffic on ${serverName}?`}
       description={
         <div className="flex flex-col gap-4">
-          {reach === "away" ? (
-            <p>Your domains don’t point here.</p>
-          ) : domains.length === 0 ? (
-            <p>{reach === "last" ? "No other server takes web traffic." : "Your other servers keep taking web traffic."}</p>
+          {domains.length === 0 ? (
+            <p>{empty[reach]}</p>
           ) : (
             <>
-              <p>{reach === "last" ? "No other server takes web traffic. These stop working:" : "Your other servers keep serving these:"}</p>
+              <p>{listed[reach]}</p>
               <ItemGroup aria-label="Domains" className="max-h-72 overflow-y-auto text-foreground">
                 {domains.map((domain) => (
                   <Item key={domain} variant="outline" size="xs" data-row={domain}>
@@ -39,7 +49,7 @@ export function WebTrafficDialog({ serverName, domains, partial, reach, open, on
               </ItemGroup>
             </>
           )}
-          {partial && reach !== "away" ? <p>Some servers haven’t reported their domains yet, so this may affect more.</p> : null}
+          {partial ? <p>Some servers haven’t reported their domains yet, so this may affect more.</p> : null}
         </div>
       }
       actionLabel="Stop"

@@ -31,9 +31,9 @@ it("warns that more domains may stop when some weren't reported", () => {
   expect(screen.queryByText(warning)).toBeNull();
 });
 
-it("never promises other servers keep serving when the domains already left this one", () => {
-  render(<WebTrafficDialog serverName="web-1" domains={["a.example.com"]} partial reach="away" open onOpenChange={() => {}} onConfirm={() => {}} />);
-  expect(screen.getByText("Your domains don’t point here.")).toBeTruthy();
-  expect(screen.queryByText(/other servers keep/)).toBeNull();
-  expect(screen.queryByText("a.example.com")).toBeNull();
+it("never promises other servers keep serving once this one is out of web traffic", () => {
+  render(<WebTrafficDialog serverName="web-1" domains={["a.example.com"]} partial={false} reach="away" open onOpenChange={() => {}} onConfirm={() => {}} />);
+  expect(screen.getByText("This stops the web server still running here. These may still point at it:")).toBeTruthy();
+  expect(screen.getByText("a.example.com")).toBeTruthy();
+  expect(screen.queryByText(/other server/)).toBeNull();
 });

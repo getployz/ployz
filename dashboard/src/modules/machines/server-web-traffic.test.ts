@@ -101,7 +101,7 @@ describe("webTrafficReach", () => {
     expect(webTrafficReach(here, [other()])).toBe("shared");
   });
 
-  it("is away without a public IP or once its role is off, since no domain points here", () => {
+  it("is away without a public IP or once its role is off, since it no longer takes web traffic", () => {
     expect(webTrafficReach({ ...here, publicIp: null }, [])).toBe("away");
     expect(webTrafficReach({ ...here, acceptsIngress: false }, [])).toBe("away");
   });

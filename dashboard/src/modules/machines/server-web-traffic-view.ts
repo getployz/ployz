@@ -22,7 +22,7 @@ export const webTrafficChecked = (view: WebTrafficView) =>
 
 type IngressServer = { readonly id: string; readonly acceptsIngress: boolean; readonly publicIp: string | null };
 
-/** What turning `server` off does to your domains: `away` when they don't point here, `last` when it stops every one, `shared` when another online Server keeps serving them. */
+/** What turning `server` off does to your domains: `away` when this Server no longer takes web traffic or has no public IP, though DNS may still point here until it syncs, `last` when it stops every one, `shared` when another online Server keeps serving them. */
 export type WebTrafficReach = "away" | "last" | "shared";
 
 export const webTrafficReach = (
