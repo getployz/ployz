@@ -25,11 +25,14 @@ const line = (word: string, tone: Tone, down = false): RuntimeLine => ({ word, t
 /** No Service is configured to mount the Volume; deployed containers may still use it. */
 export const NO_MOUNTS_CONFIGURED = line("No mounts configured", "idle");
 
-/** What evidence says of a Service (`runtime`, null when none names it; `whole`, no Server is missing from it). */
-function evidenceLine(runtime: Pick<RuntimeServiceRecord, "containers"> | null, whole: boolean, desiredReplicas: number | null, deploying: boolean) {
+/**
+ * What evidence says of a Service (`runtime`, null when none names it; `whole`, no Server is missing from it).
+ * `starting`: current evidence while a Deploy starts it; stale evidence keeps its last word.
+ */
+function evidenceLine(runtime: Pick<RuntimeServiceRecord, "containers"> | null, whole: boolean, desiredReplicas: number | null, deploying: boolean, starting: boolean) {
   const absent = line("Not running", "bad", true);
   // No Server has ever named it and a Deploy is starting it: its first containers are on their way.
-  if (!runtime) return !whole ? line("Deployed", "quiet") : deploying ? line("Starting", "quiet") : absent;
+  if (!runtime) return !whole ? line("Deployed", "quiet") : starting ? line("Starting", "quiet") : absent;
   if (runtime.containers.length === 0) return absent;
   const running = runtime.containers.filter((container) => container.runtime?.state === "running");
   if (running.length === 0) return runtime.containers.every((container) => container.runtime?.state === "exited" && container.runtime.code === 0)
@@ -52,6 +55,7 @@ export type RuntimeLens = Pick<ReturnType<typeof useRuntimeLens>, "status" | "in
  * A Service's status line: what runs now, from runtime evidence. Staged work never replaces it, and it never guesses:
  * before evidence it waits, and evidence that isn't current reads grey with its age.
  * `deploying`: a Deploy in flight restarts it. Current evidence that names no record of it then reads Starting, not Not running;
+ * evidence that isn't current keeps its last word;
  * any record it has still says what it says: a Service already down stays down.
  * `desiredReplicas`: how many it asks for, when known; fewer serving reads Degraded, except while a Deploy rolls them.
  */
@@ -74,9 +78,9 @@ export function runtimeLine(
     case "unavailable":
       // The connection dropped: retain the last evidence, or explain why none is available.
       return lens.observedAt === null ? line("Status unavailable", "quiet")
-        : { ...evidenceLine(runtime, !lens.incomplete, desiredReplicas, deploying), tone: "quiet", down: false, since: new Date(lens.observedAt), checkFailing: false };
+        : { ...evidenceLine(runtime, !lens.incomplete, desiredReplicas, deploying, false), tone: "quiet", down: false, since: new Date(lens.observedAt), checkFailing: false };
     case "observed":
-      return evidenceLine(runtime, !lens.incomplete, desiredReplicas, deploying);
+      return evidenceLine(runtime, !lens.incomplete, desiredReplicas, deploying, deploying);
   }
 }
 
