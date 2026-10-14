@@ -168,11 +168,12 @@ to stop a move or a mirror that's still running, release the volume:
 ployz volume release data
 ```
 
-Release stops the run on the volume and starts your service again on the old server, with all
-its data. Before `web-2` starts your service, Release deletes the copy on `web-2` first. Release
-deletes only the copies it named when you started it. If the copies changed since, it deletes
-nothing, your service stays stopped, and the run says to release again. With no
-run in progress, Release repairs a move that stopped. A move that stopped before its first
+Release stops the run on the volume. Until `web-2` is told to start your service, Release starts
+it again on the old server, with all its data, and deletes the copy on `web-2` first. After
+that, Release finishes the move on `web-2` instead, as described below. Release deletes only the
+copies it named when you started it. If the copies changed since, it deletes nothing, your service
+stays stopped, and the run says to release again. With no run in progress, Release repairs a move
+that stopped. A move that stopped before its first
 snapshot has nothing to release from, so Release is refused and names the move to run again:
 
 ```
