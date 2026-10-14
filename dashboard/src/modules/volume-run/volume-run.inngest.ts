@@ -127,11 +127,13 @@ export async function runVolume(
 async function floor({ step, runEffect, run, runId }: RunSteps, members: readonly Member[]): Promise<Member[]> {
   const floored: Member[] = [];
   for (const member of members) {
-    if (!member.answered) {
+    // An empty Machine with the floor is floored too, so the taken run's late Mirror cannot make a copy there. One
+    // without the floor needs none: observeVolumeMembers reads a floorless destination as lacking, so a run toward it
+    // was refused when it planned and has no late Mirror to land.
+    if (!member.answered || member.floorless) {
       floored.push(member);
       continue;
     }
-    // A Machine with no copy is floored too, so the taken run's late Mirror cannot make one there.
     const answer = await step.run(`01-floor-${member.machine.name}`, () => runEffect(setVolumeCopy(run, runId, member.machine, expectOf(member.view.copy), { kind: "floor" })));
     floored.push({ ...member, view: { ...member.view, copy: answer.copy } });
   }
@@ -358,9 +360,6 @@ async function releaseVolume(steps: RunSteps, phase: PhaseOf<"release">, epoch: 
   try {
     if (from.kind === "cut" || from.kind === "writer") {
       const root = from.kind === "cut" ? from.root : from.writer;
-      if (from.kind === "cut" && (root.view.copy?.newest ?? null) === null) {
-        throw new NonRetriableError(`${run.volumeName} on ${root.machine.name} stopped before its first snapshot; volume move ${run.volumeName} --to <another server> again`);
-      }
       const holder = await kept("03-holder", [root.machine]);
       await resume("04-resume", root, holder?.containerId ?? null);
       if (from.kind === "writer") {

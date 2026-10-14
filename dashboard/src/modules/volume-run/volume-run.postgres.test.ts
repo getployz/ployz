@@ -351,6 +351,9 @@ describe("volume runs", () => {
       const key = verb.replace(/\(.*$/, "");
       sent.push(request.payload);
       verbs.push(verb);
+      if (want.kind === "floor" && fake.capabilities?.includes(requirements.volumeFloor.capability) === false) {
+        return Effect.fail(new ServerLacks({ machineId: target, capability: requirements.volumeFloor.capability }));
+      }
       const hook = beforeSet.get(key);
       beforeSet.delete(key);
       return Effect.promise(async () => hook?.()).pipe(Effect.andThen((): Effect.Effect<VolumeCopyView, PloyzSdkError> => {
@@ -854,6 +857,21 @@ describe("volume runs", () => {
     it("a release that took a warm Move on a Volume with no Service floors and plans on its own, and ends done", async () => {
       containers = [];
       machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
+      await move();
+      const released = await release();
+      if (!released.ok) throw new Error(released.refusal.message);
+
+      const output = await deliver(released.run.id, "run-2");
+
+      expect(output.error).toBeUndefined();
+      expect(verbs).toEqual(["floor@fsn-1", "floor@fsn-2", "writer@fsn-1(none)"]);
+      expect((await lanes()).find((lane) => lane.id === released.run.id)).toMatchObject({ state: "done" });
+    });
+
+    it("a release skips the floor on an empty Server that predates it, so a fleet mid-upgrade can still release", async () => {
+      containers = [];
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
+      machines.push({ name: "fsn-3", pool: true, copy: null, capabilities: [requirements.volumeMove.capability] });
       await move();
       const released = await release();
       if (!released.ok) throw new Error(released.refusal.message);
@@ -2050,17 +2068,17 @@ describe("volume runs", () => {
       expect(named("fsn-1").copy).toMatchObject({ kind: "root", readonly: false, epoch: 1 });
     });
 
-    it("a cut root with no snapshot fails Release with the move to run again", async () => {
+    it("a cut root with no snapshot refuses Release after floor, with the move to run again", async () => {
       named("fsn-1").copy = writerCopy(null, 0, true);
       for (const container of containers) container.running = false;
       const run = await requested({ kind: "release", args: {} });
 
       const output = await execute(run.id);
 
-      expect(output.error).toBeDefined();
+      expect(output.result).toMatchObject({ refused: { code: "no_copy" } });
       expect(verbs).toEqual(["floor@fsn-1", "floor@fsn-2"]);
       expect(named("fsn-1").copy).toMatchObject({ kind: "root", readonly: true });
-      expect(await rows()).toMatchObject([{ state: "failed", message: "data on fsn-1 stopped before its first snapshot; volume move data --to <another server> again" }]);
+      expect(await rows()).toMatchObject([{ state: "failed", message: "data on fsn-1 stopped before its first snapshot; ployz volume move data --to <another server>" }]);
     });
 
     it("an idle writer is already where Release leaves it", async () => {
@@ -2336,7 +2354,7 @@ describe("volume runs", () => {
         .then(() => null, (error: Error) => error);
 
       expect(failure).toBeInstanceOf(NonRetriableError);
-      expect(await rows()).toMatchObject([{ state: "failed", message: "data is mid-run; ployz volume release data stops it" }]);
+      expect(await rows()).toMatchObject([{ state: "failed", message: "data on fsn-1 is mid-run; try again once the run ends" }]);
     });
   });
 
@@ -2442,6 +2460,19 @@ describe("volume runs", () => {
         refusal: { code: "conflict", message: "VolumeBusy: data is busy with a mirror refresh; ployz volume release data stops it", details: { run: expect.objectContaining({ id: busy.id }) } },
       });
       expect((await rows()).map((row) => row.id)).toEqual([busy.id]);
+      expect(send).not.toHaveBeenCalled();
+    });
+
+    it("a Release of a cut root with no snapshot is refused before any row, with the move to run again", async () => {
+      named("fsn-1").copy = writerCopy(null, 0, true);
+
+      const admitted = await run({ kind: "release", args: {} });
+
+      expect(admitted).toMatchObject({
+        ok: false,
+        refusal: { code: "conflict", message: "data on fsn-1 stopped before its first snapshot; ployz volume move data --to <another server>" },
+      });
+      expect(await rows()).toEqual([]);
       expect(send).not.toHaveBeenCalled();
     });
 
