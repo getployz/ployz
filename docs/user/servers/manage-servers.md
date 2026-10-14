@@ -251,7 +251,8 @@ on.
 > [!WARNING]
 > Volumes stay on the removed server's disk as copies, and your services lose them until you
 > make a copy the writer again with `ployz volume restore`. The server's mirrors of volumes
-> written on other servers are deleted. Copy off any data you need first.
+> written on other servers are deleted, and so is a restore still copying there. Copy off any
+> data you need first.
 
 1. Open the server and click **Remove server**.
 2. Ployz lists the volumes on the server. Type the server's name and click **Remove**.
@@ -283,6 +284,9 @@ ployz server rm web-2 --no-reset --confirm dead
 
 `--no-reset` is refused while the server answers and holds a copy of any volume: drop
 `--no-reset`, and the reset makes its copies read-only and deletes its mirrors.
+
+The reset first stops every copy in progress on the server. If one doesn't stop within 30 seconds,
+the removal fails and names its volume; remove the server again.
 
 If the server resets but your other servers can't forget it, `ployz server rm` says "Server web-2
 reset but is still listed." and prints `ployz server rm web-2 --no-reset` to finish. Ployz Cloud
