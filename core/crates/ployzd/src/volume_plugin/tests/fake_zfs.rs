@@ -382,16 +382,28 @@ case "$*" in
       *) echo "unexpected fake zfs command: $*" >&2; exit 2 ;;
     esac
     echo $$ > '{props}/receive-pid'
-    if [ -e '{props}/stall-read' ]; then exec sleep 30; fi
-    read -r verb arg guid || verb=empty
-    if [ -e '{props}/stall-exit' ]; then cat >/dev/null; exec sleep 30; fi
-    if [ -e '{props}/receive-fails' ]; then cat >/dev/null; echo 'cannot receive: out of space' >&2; exit 1; fi
+    # Like OpenZFS, a resumable receive makes its dataset and sets every -o property but
+    # refquota, keylocation and sharesmb before it reads any stream data.
     case "$fs" in
       tank/ployz-mirror/data/fs) touch '{mirror_fs}' ;;
       *) touch '{seed_fs}' ;;
     esac
     d='{props}'/"$fs"
     mkdir -p "$d"
+    previous=
+    for option in "$@"; do
+      if [ "$previous" = -o ]; then
+        case "$option" in
+          refquota=*|keylocation=*|sharesmb=*) ;;
+          *) printf '%s\n' "${{option#*=}}" > "$d/${{option%%=*}}" ;;
+        esac
+      fi
+      previous=$option
+    done
+    if [ -e '{props}/stall-read' ]; then exec sleep 30; fi
+    read -r verb arg guid || verb=empty
+    if [ -e '{props}/stall-exit' ]; then cat >/dev/null; exec sleep 30; fi
+    if [ -e '{props}/receive-fails' ]; then cat >/dev/null; echo 'cannot receive: out of space' >&2; exit 1; fi
     case "$verb" in
       snapshot)
         rm -f "$d/receive_resume_token"
@@ -402,8 +414,6 @@ case "$*" in
         if [ -e '{readonly_lost}' ]; then echo off > "$d/readonly.new"; else echo on > "$d/readonly.new"; fi
         mv "$d/readonly.new" "$d/readonly"
         printf '%s\n' "${{7#refquota=}}" > "$d/refquota"
-        # Like ZFS, a property given with -o lands with the completed receive only.
-        if [ "$8" = -o ]; then printf '%s\n' "${{9#*=}}" > "$d/${{9%%=*}}"; fi
         ;;
       break)
         cat >/dev/null
