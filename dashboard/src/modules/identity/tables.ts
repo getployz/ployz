@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import { createdAt, updatedAt } from "#/db/tables";
 
 import { organization } from "#/modules/organization/tables";
@@ -96,7 +97,8 @@ export const account = pgTable(
 export const verification = pgTable(
   "verification",
   {
-    id: uuid("id").defaultRandom().primaryKey(),
+    // better-auth reserves one-shot values (DPoP proof ids) under a digest id, not a uuid.
+    id: text("id").default(sql`gen_random_uuid()::text`).primaryKey(),
     createdAt,
     updatedAt,
     identifier: text("identifier").notNull(),

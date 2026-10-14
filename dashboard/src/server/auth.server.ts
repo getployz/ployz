@@ -20,6 +20,17 @@ import {
   user,
   verification,
 } from "#/modules/identity/tables";
+import {
+  jwks,
+  oauthAccessToken,
+  oauthClient,
+  oauthClientAssertion,
+  oauthClientResource,
+  oauthConsent,
+  oauthRefreshToken,
+  oauthResource,
+  rateLimit,
+} from "#/modules/identity/oauth-tables";
 import { organization } from "#/modules/organization/tables";
 import {
   createOrganizationBillingSyncEventsFromCustomerStatePayload,
@@ -40,6 +51,7 @@ import { Polar } from "#/modules/billing/polar-provider.server";
 import { recordSignUp } from "#/modules/analytics/posthog.server";
 import { makePolarCore } from "#/modules/billing/polar-api";
 import { asString } from "#/lib/json";
+import { hostedMcpPlugins } from "#/server/auth-mcp.server";
 import { AppConfig } from "#/server/config.server";
 import { BetterAuthDatabase, Database } from "#/server/database.server";
 import { Unauthorized } from "#/server/public-error";
@@ -100,8 +112,17 @@ const AuthSchema = {
   account,
   deviceCode,
   invitation,
+  jwks,
   member,
+  oauthAccessToken,
+  oauthClient,
+  oauthClientAssertion,
+  oauthClientResource,
+  oauthConsent,
+  oauthRefreshToken,
+  oauthResource,
   organization,
+  rateLimit,
   session,
   user,
   verification,
@@ -189,6 +210,7 @@ const makeAuth = Effect.gen(function* () {
   const organizations = organizationPlugin({
     schema: { invitation: { additionalFields: { tokenHash: { type: "string", required: true, input: false } } } },
   });
+  const hosted = config.polar.mode !== "self_hosted";
   const instance = betterAuth({
     secret: Redacted.value(config.auth.secret),
     baseURL: {
@@ -216,6 +238,7 @@ const makeAuth = Effect.gen(function* () {
     user: {
       additionalFields: userAdditionalFields,
     },
+    rateLimit: { storage: hosted ? "database" : "memory" },
     advanced: { database: { generateId: "uuid" }, ipAddress: { ipAddressHeaders: config.auth.clientIpHeaders } },
     databaseHooks: {
       user: {
@@ -255,6 +278,7 @@ const makeAuth = Effect.gen(function* () {
       organizations,
       ...cliSignInPlugins,
       ...(polarPlugin === null ? [] : [polarPlugin]),
+      ...(hosted ? hostedMcpPlugins(config.app.url) : []),
       tanstackStartCookies(),
     ],
   });

@@ -1,6 +1,7 @@
 export * from "#/db/tables";
 export * from "#/modules/organization/tables";
 export * from "#/modules/identity/tables";
+export * from "#/modules/identity/oauth-tables";
 export * from "#/modules/runtime/tables";
 export * from "#/modules/machines/tables";
 export * from "#/modules/github/tables";
