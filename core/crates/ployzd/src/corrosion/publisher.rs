@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, io, sync::Arc, time::Duration};
 
 use tokio_util::sync::CancellationToken;
 
-use super::{Error, ReplicatedStore};
+use super::{Error, MachineView, ReplicatedStore};
 use crate::machine::{LocalMachineBody, RecordOwner};
 
 /// Waits for replication through the target, retrying store failures.
@@ -33,15 +33,19 @@ pub async fn wait_for_catch_up(
 }
 
 /// Publish this Machine now and every minute, and whenever its record (a
-/// policy edit) or the number of Builds it runs changes: the one path that
-/// publishes this Machine.
+/// policy edit), the number of Builds it runs, or the Machines table changes:
+/// the one path that publishes this Machine.
 pub async fn run_machine_publisher(
     replicated: Option<ReplicatedStore>,
+    machines: Option<MachineView>,
     local: RecordOwner,
     mut running_builds: tokio::sync::watch::Receiver<u32>,
     shutdown: CancellationToken,
 ) -> io::Result<()> {
     let mut records = local.watch();
+    // A closed channel (no Cluster store) never changes again.
+    let mut machines =
+        machines.map_or_else(|| tokio::sync::watch::channel(None).1, |view| view.watch());
     if let Some(replicated) = &replicated {
         let target = match local.record().body() {
             LocalMachineBody::Joining {
@@ -102,6 +106,9 @@ pub async fn run_machine_publisher(
             // A closed channel (no Build runner) never changes again.
             Ok(()) = running_builds.changed() => {}
             Ok(()) = records.changed() => {}
+            // Another writer (an Entry's Register, a Forget) can replace this
+            // Machine's row; restore it now rather than on the next minute.
+            Ok(()) = machines.changed() => {}
             () = shutdown.cancelled() => {
                 return Ok(());
             }

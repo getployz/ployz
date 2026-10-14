@@ -319,6 +319,7 @@ impl Daemon {
         );
         let publisher = run_machine_publisher(
             replicated_store.clone(),
+            machine_view.clone(),
             local.clone(),
             running_builds,
             shutdown.clone(),

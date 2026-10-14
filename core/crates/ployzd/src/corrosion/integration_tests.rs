@@ -171,6 +171,7 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
     let shutdown = CancellationToken::new();
     let publisher = tokio::spawn(run_machine_publisher(
         Some(store.clone()),
+        None,
         local.clone(),
         tokio::sync::watch::channel(0).1,
         shutdown.clone(),
@@ -214,6 +215,7 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
     let shutdown = CancellationToken::new();
     let publisher = tokio::spawn(run_machine_publisher(
         Some(unavailable),
+        None,
         interrupted.clone(),
         tokio::sync::watch::channel(0).1,
         shutdown.clone(),
