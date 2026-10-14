@@ -377,7 +377,8 @@ impl Tool for DeploymentRetry {
                     answer => Some(cx.view::<DeploymentQuery>(answer)?.deployment),
                 };
                 // The reads run together, so the original can land between them
-                // and show up only as the latest.
+                // and show up only as the latest; see
+                // a_keyed_retry_that_lands_between_its_replays_reads_is_the_replay.
                 let recorded = recorded
                     .or_else(|| page.deployments.first().cloned())
                     .filter(|recorded| recorded.id == id)

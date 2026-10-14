@@ -1245,6 +1245,35 @@ fn a_keyed_retry_of_the_latest_replays_after_it_becomes_the_latest() {
 }
 
 #[test]
+fn a_keyed_retry_that_lands_between_its_replays_reads_is_the_replay() {
+    let (store, _) = deploying();
+    call(&store, "deployment_cancel", json!({}), "cancel-1").ok();
+
+    let retry = json!({ "request_key": "retry-race-1" });
+    let (step, state) = start(
+        "deployment_retry",
+        retry.clone(),
+        &place(in_org()),
+        "retry-2",
+    );
+    let Step::Read { asks } = step else {
+        panic!("reads first")
+    };
+    let [_, newest]: [Ask; 2] = asks.try_into().unwrap();
+    let not_yet = Err(rpc_error("not_found", Value::Null));
+    call(&store, "deployment_retry", retry, "retry-1").ok();
+    let newest = answer(&store, &who(), &mut no_cloud, newest);
+    let (Step::Done { result }, _) = resume(state, vec![not_yet, newest]) else {
+        panic!("a replay writes nothing")
+    };
+    let ToolResult::Ok(replayed) = result else {
+        panic!("refused: {result:?}")
+    };
+    assert_eq!(replayed["deployment"], 2, "{replayed}");
+    assert_eq!(replayed["retries"], Value::Null);
+}
+
+#[test]
 fn an_applied_deployment_has_nothing_to_retry() {
     let (store, _) = ended(
         json!({ "type": "completed" }),
