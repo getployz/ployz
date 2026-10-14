@@ -1384,19 +1384,26 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
             self.setup()
             self.start_probe()
             for case in cases:
+                armed = bool(case["fault"])
                 try:
                     result = self.run_case(case, baseline)
+                    armed = False
                 except (AssertionError, RuntimeError, subprocess.TimeoutExpired) as error:
                     result = dict(case, passed=False, failures=[f"{type(error).__name__}: {error}"[:2000]])
                     if isinstance(error, Skipped):
                         result["skipped"] = str(error)
                     try:
-                        failed = self.fault(None) if case["fault"] else []
+                        disarm, armed = armed, False
+                        failed = self.fault(None) if disarm else []
                         if failed:
                             raise RuntimeError(f"disarming the fault failed on {', '.join(failed)}")
                         result["heal"] = self.heal(self.other(self.writer()))
                     except (AssertionError, RuntimeError, subprocess.TimeoutExpired) as cleanup:
                         result["heal"] = dict(healed=False, error=f"{type(cleanup).__name__}: {cleanup}")
+                finally:
+                    # An Interrupted passes the handler above, and the next run's setup, which disarms too, may never come.
+                    if armed:
+                        self.fault(None)
                 heal = result.get("heal", dict(healed=True))
                 if not heal["healed"]:
                     # A later case would run on what this one left, armed or unhealed, and pass or fail on it.
