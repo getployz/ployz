@@ -123,6 +123,13 @@ const closeRollout = Effect.fn("ServerUpgrade.closeRollout")(function* (runId: s
   return closed;
 });
 
+/** The sweep's close of attempts whose run was lost, then each lost automatic Rollout's email. */
+const closeStaleRollouts = Effect.fn("ServerUpgrade.closeStaleRollouts")(function* () {
+  const runIds = yield* closeStaleUpgradeAttempts();
+  yield* Effect.forEach(new Set(runIds), (runId) => mailUpgradeFailures(runId, { inngestRunId: runId }, new Map()), { discard: true });
+  return { closed: runIds.length };
+});
+
 /**
  * Upgrade one Server: observe it online and idle → record the attempt → request the Upgrade along the channel → poll
  * until the outcome is terminal → record it. Twenty minutes from the attempt's `startedAt` without one records
@@ -185,7 +192,7 @@ const lifecycle = attemptLifecycle({
   closeRun: closeRollout,
   sweep: {
     id: "schedule-server-upgrades",
-    closeStale: () => Effect.map(closeStaleUpgradeAttempts(), (closed) => ({ closed })),
+    closeStale: closeStaleRollouts,
     afterSweep: async (step, runEffect) => {
       const organizationIds = await step.run("list-automatic-organizations", () => runEffect(listAutomaticUpgradeOrganizationIds()));
       if (organizationIds.length > 0) {

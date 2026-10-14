@@ -378,19 +378,24 @@ export const finishUpgradeAttempt = Effect.fn("ServerUpgrade.finish")(function* 
   return true;
 });
 
-/** Close every attempt matching `where` that is still `running` as `unknown`; how many this call closed. */
+/** Close every attempt matching `where` that is still `running` as `unknown`; the Inngest run of each this call closed. */
 const closeRunningAttempts = Effect.fn("ServerUpgrade.closeRunning")(function* (where: SQL | undefined) {
   const { drizzle } = yield* Database;
-  const running = yield* drizzle.select({ organizationId: serverUpgradeAttempt.organizationId, attemptId: serverUpgradeAttempt.attemptId })
+  const running = yield* drizzle.select({
+    organizationId: serverUpgradeAttempt.organizationId,
+    attemptId: serverUpgradeAttempt.attemptId,
+    inngestRunId: serverUpgradeAttempt.inngestRunId,
+  })
     .from(serverUpgradeAttempt)
     .where(and(eq(serverUpgradeAttempt.outcome, "running"), where));
-  const closed = yield* Effect.forEach(running, (row) => finishUpgradeAttempt({ ...row, outcome: "unknown", stage: null, error: null }));
-  return closed.filter(Boolean).length;
+  const closed = yield* Effect.forEach(running, ({ inngestRunId, ...row }) =>
+    finishUpgradeAttempt({ ...row, outcome: "unknown", stage: null, error: null }).pipe(Effect.map((finished) => finished ? [inngestRunId] : [])));
+  return closed.flat();
 });
 
 /** A Rollout run that failed or was cancelled lost track of its attempts: each still `running` reads `unknown`. */
 export const closeRunUpgradeAttempts = (inngestRunId: string) =>
-  closeRunningAttempts(eq(serverUpgradeAttempt.inngestRunId, inngestRunId));
+  closeRunningAttempts(eq(serverUpgradeAttempt.inngestRunId, inngestRunId)).pipe(Effect.map((runIds) => runIds.length));
 
 /** One automatic Rollout's attempts: those it recorded in an Organization, or every one of an Inngest run. */
 export type RolloutAttempts =
@@ -438,7 +443,10 @@ export const observeServerNames = (organizationId: string) =>
     return new Map<string, string>(frame.machines.map(({ machine }) => [machine.id, machine.name]));
   }).pipe(Effect.scoped, Effect.orElseSucceed(() => new Map<string, string>()));
 
-/** The hourly sweep: an attempt still `running` after the observation limit lost its Rollout run, so it reads `unknown`. */
+/**
+ * The hourly sweep: an attempt still `running` after the observation limit lost its Rollout run, so it reads `unknown`.
+ * The Inngest run of each attempt it closed, once per attempt.
+ */
 export const closeStaleUpgradeAttempts = () =>
   closeRunningAttempts(lt(serverUpgradeAttempt.startedAt, new Date(Date.now() - UPGRADE_OBSERVATION_LIMIT_MS)));
 
