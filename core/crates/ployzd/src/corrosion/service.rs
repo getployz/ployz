@@ -32,8 +32,6 @@ pub const DEFAULT_CONTAINER_NAME: &str = "ployz-corrosion";
 const TOKEN_FILE: &str = ".api-token";
 const SCHEMA: &str = include_str!("schema.sql");
 const START_TIMEOUT: Duration = Duration::from_secs(4 * 60 + 30);
-// A daemon restart no longer restarts a running Corrosion, so a kept container that stays
-// silent this long is treated as wedged and replaced once, as every restart used to do.
 const KEPT_READY_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Where Corrosion keeps its files under the Ployz data and run directories.
