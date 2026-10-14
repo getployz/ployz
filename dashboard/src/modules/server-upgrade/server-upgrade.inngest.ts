@@ -19,7 +19,9 @@ import {
   observeUpgradeableServer,
   organizationReleaseChannel,
   pollUpgradeOnServer,
+  observeServerNames,
   readUpgradeFailures,
+  type RolloutAttempts,
   recordUpgradeAttempt,
   requestUpgradeOnServer,
 } from "#/modules/server-upgrade/server-upgrade.server";
@@ -76,23 +78,35 @@ export async function executeRollOutServerUpgrade(
     if (result.kind === "attempted" && result.outcome !== "succeeded") break;
   }
   const failed = results.flatMap((result) =>
-    result.kind === "attempted" && result.outcome !== "succeeded" ? [{ attemptId: result.attemptId, name: result.name }] : []);
+    result.kind === "attempted" && result.outcome !== "succeeded" ? [result] : []);
   if (request.trigger === "automatic" && failed.length > 0) {
-    await step.run("mail-upgrade-failures", () => runEffect(mailUpgradeFailures(request.organizationId, runId, failed)));
+    await step.run("mail-upgrade-failures", () => runEffect(mailUpgradeFailures(
+      runId,
+      { organizationId: request.organizationId, attemptIds: failed.map(({ attemptId }) => attemptId) },
+      new Map(failed.flatMap(({ machineId, name }) => name === undefined ? [] : [[machineId, name]])),
+    )));
   }
   return { results };
 }
 
-/** Queue one email per member naming the Rollout's failed attempts; how many members it queued for. */
+/**
+ * Queue one email per member naming the Rollout's failed attempts, keyed on its run so the handler and the lifecycle
+ * close send it once; how many members it queued for. A Server `names` lacks is named from the Runtime Watch.
+ */
 const mailUpgradeFailures = Effect.fn("ServerUpgrade.mailFailures")(function* (
-  organizationId: string,
   runId: string,
-  failed: ReadonlyArray<{ readonly attemptId: string; readonly name: string | undefined }>,
+  rollout: RolloutAttempts,
+  names: ReadonlyMap<string, string>,
 ) {
-  const names = new Map(failed.map(({ attemptId, name }) => [attemptId, name]));
-  const { organization, failures } = yield* readUpgradeFailures(organizationId, [...names.keys()]);
-  const [first, ...rest] = failures.map((failure) => ({ ...failure, name: names.get(failure.attemptId) ?? failure.machineId.slice(0, 12) }));
-  if (organization === null || first === undefined) return 0;
+  const read = yield* readUpgradeFailures(rollout);
+  if (read === null) return 0;
+  const { organizationId, organization, failures } = read;
+  const watched = failures.every(({ machineId }) => names.has(machineId)) ? names : yield* observeServerNames(organizationId);
+  const [first, ...rest] = failures.map((failure) => ({
+    ...failure,
+    name: names.get(failure.machineId) ?? watched.get(failure.machineId) ?? failure.machineId.slice(0, 12),
+  }));
+  if (first === undefined) return 0;
   const config = yield* AppConfig;
   return yield* queueOrganizationMail({
     organizationId,
@@ -100,6 +114,13 @@ const mailUpgradeFailures = Effect.fn("ServerUpgrade.mailFailures")(function* (
     key: `upgrade-rollout:${runId}`,
     content: upgradeFailedMail({ organization, failures: [first, ...rest], origin: config.app.url.origin }),
   });
+});
+
+/** Close the run's running attempts as `unknown`, then mail an automatic Rollout's failures as the handler would have. */
+const closeRollout = Effect.fn("ServerUpgrade.closeRollout")(function* (runId: string) {
+  const closed = yield* closeRunUpgradeAttempts(runId);
+  yield* mailUpgradeFailures(runId, { inngestRunId: runId }, new Map());
+  return closed;
 });
 
 /**
@@ -161,7 +182,7 @@ const lifecycle = attemptLifecycle({
     handler: executeRollOutServerUpgrade,
   },
   cancelId: "cancel-server-upgrade",
-  closeRun: closeRunUpgradeAttempts,
+  closeRun: closeRollout,
   sweep: {
     id: "schedule-server-upgrades",
     closeStale: () => Effect.map(closeStaleUpgradeAttempts(), (closed) => ({ closed })),

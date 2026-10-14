@@ -392,15 +392,16 @@ const closeRunningAttempts = Effect.fn("ServerUpgrade.closeRunning")(function* (
 export const closeRunUpgradeAttempts = (inngestRunId: string) =>
   closeRunningAttempts(eq(serverUpgradeAttempt.inngestRunId, inngestRunId));
 
-/** The Organization, and which of `attemptIds` ended other than `succeeded`, oldest first. */
-export const readUpgradeFailures = Effect.fn("ServerUpgrade.readFailures")(function* (
-  organizationId: string,
-  attemptIds: readonly string[],
-) {
+/** One automatic Rollout's attempts: those it recorded in an Organization, or every one of an Inngest run. */
+export type RolloutAttempts =
+  | { readonly organizationId: string; readonly attemptIds: readonly string[] }
+  | { readonly inngestRunId: string };
+
+/** The Rollout's automatic attempts that ended other than `succeeded`, oldest first, with their Organization; null when none did. */
+export const readUpgradeFailures = Effect.fn("ServerUpgrade.readFailures")(function* (rollout: RolloutAttempts) {
   const { drizzle } = yield* Database;
-  const [named] = yield* drizzle.select({ name: organization.name, slug: organization.slug }).from(organization)
-    .where(eq(organization.id, organizationId));
-  const failures = yield* drizzle.select({
+  const rows = yield* drizzle.select({
+    organizationId: serverUpgradeAttempt.organizationId,
     attemptId: serverUpgradeAttempt.attemptId,
     machineId: serverUpgradeAttempt.machineId,
     fromVersion: serverUpgradeAttempt.fromVersion,
@@ -410,17 +411,32 @@ export const readUpgradeFailures = Effect.fn("ServerUpgrade.readFailures")(funct
     error: serverUpgradeAttempt.error,
   }).from(serverUpgradeAttempt)
     .where(and(
-      eq(serverUpgradeAttempt.organizationId, organizationId),
-      inArray(serverUpgradeAttempt.attemptId, [...attemptIds]),
+      "inngestRunId" in rollout
+        ? eq(serverUpgradeAttempt.inngestRunId, rollout.inngestRunId)
+        : and(
+          eq(serverUpgradeAttempt.organizationId, rollout.organizationId),
+          inArray(serverUpgradeAttempt.attemptId, [...rollout.attemptIds]),
+        ),
+      eq(serverUpgradeAttempt.trigger, "automatic"),
       inArray(serverUpgradeAttempt.outcome, ["failed", "interrupted", "unknown"]),
     ))
     .orderBy(serverUpgradeAttempt.startedAt);
-  return {
-    organization: named ?? null,
-    failures: failures.flatMap(({ outcome, ...failure }) =>
-      outcome === "failed" || outcome === "interrupted" || outcome === "unknown" ? [{ ...failure, outcome }] : []),
-  };
+  const failures = rows.flatMap(({ outcome, ...failure }) =>
+    outcome === "failed" || outcome === "interrupted" || outcome === "unknown" ? [{ ...failure, outcome }] : []);
+  const [first] = failures;
+  if (first === undefined) return null;
+  const [named] = yield* drizzle.select({ name: organization.name, slug: organization.slug }).from(organization)
+    .where(eq(organization.id, first.organizationId));
+  return named === undefined ? null : { organizationId: first.organizationId, organization: named, failures };
 });
+
+/** Each Server's name by machine id as the Runtime Watch sees it, online or not; empty when the cluster doesn't answer. */
+export const observeServerNames = (organizationId: string) =>
+  Effect.gen(function* () {
+    const session = yield* openSession(organizationId);
+    const frame = yield* session.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS);
+    return new Map<string, string>(frame.machines.map(({ machine }) => [machine.id, machine.name]));
+  }).pipe(Effect.scoped, Effect.orElseSucceed(() => new Map<string, string>()));
 
 /** The hourly sweep: an attempt still `running` after the observation limit lost its Rollout run, so it reads `unknown`. */
 export const closeStaleUpgradeAttempts = () =>

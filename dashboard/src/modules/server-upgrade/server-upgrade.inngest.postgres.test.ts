@@ -658,6 +658,22 @@ describe("roll-out-server-upgrade", () => {
         expect(new Set(keys)).toEqual(new Set([`mail-upgrade-rollout:run-1:${userId}`, `mail-upgrade-rollout:run-1:${otherUserId}`]));
         expect(requests).toHaveLength(2);
       });
+
+      it("a cancelled automatic run mails its attempt as unknown, named from the Runtime Watch", async () => {
+        await harness.pool.query(`
+          insert into server_upgrade_attempt (organization_id, machine_id, attempt_id, trigger, channel, from_version, target_version, stage, inngest_run_id, started_at)
+          values ('${organizationId}', '${serverId("2")}', '${"b".repeat(32)}', 'automatic', 'stable', '0.2.1', '0.2.2', 'restarting', 'run-9', now());
+        `);
+
+        await new InngestTestEngine({
+          function: createCancelServerUpgrade(new Inngest({ id: "test" }), runEffect),
+          events: [{ name: "inngest/function.cancelled", data: { function_id: "test-roll-out-server-upgrade", run_id: "run-9" } }],
+        }).execute();
+
+        const queued = mails();
+        expect(new Set(queued.map(({ id }) => id))).toEqual(new Set([`mail-upgrade-rollout:run-9:${userId}`, `mail-upgrade-rollout:run-9:${otherUserId}`]));
+        expect(queued[0]?.text).toContain("web-2: 0.2.1 to 0.2.2. Outcome unknown, last seen at restarting");
+      });
     });
   });
 
