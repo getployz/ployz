@@ -363,8 +363,8 @@ RestrictNamespaces=true
     )
 }
 
-/// Earlier releases installed the Observe Store here. The daemon
-/// now writes it as a runtime unit, which an `/etc` copy would shadow.
+/// The daemon writes the Observe Store as a runtime unit, which a
+/// leftover `/etc` copy would shadow.
 fn remove_legacy_observe_unit(systemd_dir: &Path) -> Result<(), Error> {
     for path in [
         systemd_dir.join("multi-user.target.wants/ployz-observe.service"),

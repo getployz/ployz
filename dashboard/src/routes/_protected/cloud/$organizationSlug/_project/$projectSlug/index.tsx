@@ -6,7 +6,6 @@ export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/",
 )({
   loader: async ({ params, context }) => {
-    // A project opens its Default Environment.
     const environmentSlug = (await requireStoreProjects(context, params.organizationSlug))
       .find((project) => project.name === params.projectSlug)?.default_environment;
     if (!environmentSlug) throw notFound();

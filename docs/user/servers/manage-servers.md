@@ -71,7 +71,7 @@ An entry marked **Not in any Project** is left over from a deleted project or en
 Every server runs builds, runs services and takes web traffic. To turn one off, see
 [Give servers different jobs](../services/scaling.md#give-servers-different-jobs). The
 [Ployz agent](../account/agent-sidebar.md) can change these too, but it can't turn web traffic
-back on: that starts the server's ingress proxy, which only `ployz server set` does.
+back on: that starts the server's web server, which the switch below and `ployz server set` do.
 
 Under **Services** on a server's page, turn off **Run services here** and nothing new starts on
 the server. What already runs there stays until you drain it. Your next deploy also moves it.
@@ -116,11 +116,22 @@ button. Unlike the button, it waits for approval first when a global service wou
 The CLI stops waiting after 30 minutes and says so; the drain keeps running in Ployz Cloud. Add
 `--context` to drain from your computer instead.
 
-Turning web traffic off stops advertising the server, not serving from
-it: your generated addresses stop pointing at it within the hour, or when you click **Check
-again** under **Domain** in **Organization → General**. Until then, visitors still sent to it are
-served from wherever your services run. [Removing the server](#remove-a-server) is what stops it
-taking traffic.
+Under **Web traffic** on a server's page, **Takes web traffic** is a switch. On, the line under it
+reads **Your domains point at 203.0.113.10**: the server's address. Turn it off and a dialog lists the
+domains pointed at your servers. When another server takes web traffic, it keeps serving them; when
+this is the only one, the dialog warns that they stop working. Confirm with **Stop**: the row reads
+**Stopping…** while the web server on it stops, and then **Web traffic is off**. Your
+generated addresses stop pointing at it within the hour, or when you click **Check again** under
+**Domain** in **Organization → General**. Until then, anyone sent to it gets no answer on ports 80
+and 443; to keep the internet out for good, also close them in its firewall.
+
+Turn the switch on and the row reads **Starting the web server…** until the web server runs there,
+then your domains point at it. When the web server can't start, say because something else on the
+server holds port 80, the switch goes back off and the section says why: **Couldn't start web
+traffic · Port 80 is in use on web-1. Free it, then try again.** Fix the cause and click **Retry**.
+
+From the CLI, `ployz server set web-1 --accepts-ingress=false` turns the role off but leaves the web
+server running; use the switch to stop it.
 
 ## Upgrade Ployz on a server
 
@@ -145,6 +156,10 @@ If a server's upgrade doesn't install, that server goes back to the release it r
 other servers wait: automatic upgrades skip that release until a newer one is out. That server
 reads **Upgrade failed**, and the top of the page offers **Upgrade to `0.2.2`** to carry on yourself.
 On the server's page, **Show details** has the exact error to copy, and **Try again** retries. Once an upgrade of that release succeeds, automatic upgrades pick it up again.
+
+Every member of the organization gets one email about it, naming the server, the release, and
+whether it went back to the release it ran before. Members who set **Failed automatic upgrades** to **None** under
+[Notifications](../account/notifications.md) don't. An upgrade you start by hand sends no email.
 
 ### Upgrade one server
 

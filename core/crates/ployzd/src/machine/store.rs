@@ -486,7 +486,6 @@ impl LocalMachineStore {
         &mut self,
         label: &ManagementClientLabel,
     ) -> Result<(), StoreError> {
-        // An absent label or a tombstone has no live slot to clear.
         let Some(was) = self
             .record
             .management_clients

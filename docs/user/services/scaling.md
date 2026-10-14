@@ -47,9 +47,9 @@ services.
 
 Every server runs builds, runs services and takes web traffic. Turn jobs off to split the
 work, for example a build server that keeps builds away from your app, or a database server
-the internet can't reach. **Run builds here** and **Run services here** are on each server's
-page. Web traffic has no switch on the page: ask the [Ployz agent](../account/agent-sidebar.md)
-to turn it off, or use the CLI, which also turns it back on:
+the internet can't reach. **Run builds here**, **Run services here** and **Takes web traffic** are
+on each server's page. The [Ployz agent](../account/agent-sidebar.md) turns web traffic off but
+not on; the CLI does both:
 
 ```sh
 # A build server: no services, no web traffic
@@ -62,9 +62,10 @@ ployz server set db-1 --accepts-ingress=false
 For a build server, also turn off **Run builds here** on your other servers. Running replicas
 move on your next deploy, or right away when you click **Drain** on the server's page (see
 [Change what a server does](../servers/manage-servers.md#change-what-a-server-does)). Keep services on for a server that holds a volume: the services that
-use it can only run there. Turning web traffic off drops the server from your generated addresses
-but keeps it serving anyone who reaches it directly; to keep the internet out, also close ports 80
-and 443 in its firewall.
+use it can only run there. Turning web traffic off drops the server from your generated addresses;
+the switch also stops its web server, while the CLI leaves it serving anyone who reaches the server
+directly until the next deploy. To keep the internet out, also close ports 80 and 443 in its
+firewall.
 
 ## When a server goes down
 

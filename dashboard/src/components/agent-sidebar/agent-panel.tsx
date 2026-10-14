@@ -154,8 +154,6 @@ function Conversation({ organizationSlug, scope, page, threadId, onChat, dock }:
   const waiting = (pending ?? []).filter((approval) => !ours.has(approval.id));
 
   return (
-    // Follows the reply as it streams. Anchoring each question to the top made the scroller jump back to an older one
-    // whenever the Thinking marker gave way to the reply, because the message count stayed the same.
     <MessageScrollerProvider autoScroll>
       <header className="flex h-12 shrink-0 items-center gap-1 border-b px-3">
         <h2 className="min-w-0 flex-1 truncate text-sm font-semibold" title={title}>{title}</h2>

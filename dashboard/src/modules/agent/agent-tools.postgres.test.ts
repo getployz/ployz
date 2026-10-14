@@ -16,7 +16,7 @@ const place: Place = { project: "shop", environment: "production", store: { at: 
 
 type Step = { readonly tool: string; readonly input: JsonValue; readonly callKey?: string; readonly hears: object };
 
-/** GitHub as the Store and github_ls read it: `acme/docs` is public, with a `dev` branch and two files on `main`. */
+/** GitHub as the Store and github_ls read it: `acme/docs` is public, with a `dev` branch and `README.md` and `src/index.md` on `main`. */
 const github = fakeGithubApi({
   "/repos/acme/docs": { id: 12, full_name: "acme/docs", private: false, default_branch: "main" },
   "/repos/acme/docs/git/ref/heads%2Fdev": { ref: "refs/heads/dev", object: { type: "commit", sha: "a".repeat(40) } },
@@ -28,6 +28,9 @@ const github = fakeGithubApi({
       { path: "src", type: "tree", mode: "040000" },
       { path: "src/index.md", type: "blob", mode: "100644" },
     ],
+  },
+  "/repos/acme/docs/contents/README.md?ref=main": {
+    type: "file", size: 7, encoding: "base64", content: Buffer.from("# Docs\n").toString("base64"),
   },
 });
 
@@ -124,6 +127,22 @@ const cases: ReadonlyArray<{ readonly name: string; readonly seed?: boolean; rea
       tool: "github_ls",
       input: { repository: "acme/docs" },
       hears: { ok: true, value: { repository: "acme/docs", ref: "main", entries: [{ path: "README.md", kind: "file" }, { path: "src", kind: "directory" }] } },
+    }],
+  },
+  {
+    name: "github_ls reads a top-level file",
+    steps: [{
+      tool: "github_ls",
+      input: { repository: "acme/docs", path: "README.md" },
+      hears: { ok: true, value: { repository: "acme/docs", ref: "main", path: "README.md", content: "# Docs\n" } },
+    }],
+  },
+  {
+    name: "github_ls refuses a path the repository doesn't have",
+    steps: [{
+      tool: "github_ls",
+      input: { repository: "acme/docs", path: "Dockerfile" },
+      hears: { ok: false, refusal: { code: "not_found", message: "No file or directory at that path", next: [{ tool: "github_ls", input: { repository: "acme/docs", ref: "main" } }] } },
     }],
   },
   {

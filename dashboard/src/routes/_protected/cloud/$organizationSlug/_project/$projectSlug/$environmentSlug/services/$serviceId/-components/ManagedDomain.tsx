@@ -89,7 +89,6 @@ export function ManagedDomainDialog({
       errorVisibility: showErrorsAfterBlurOrSubmit,
       validators: [validateOnChangeOrBlur(schema)],
     }),
-    // Optimistic: saving rolls back and toasts on failure.
     onSubmit: ({ schemaOutputs }) => {
       onSubmit(schemaOutputs[0]);
       onClose();

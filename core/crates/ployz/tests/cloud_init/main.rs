@@ -998,7 +998,6 @@ async fn join_fails_visibly_when_expected_ingress_cannot_be_placed() {
         .output()
         .await
         .unwrap();
-    // The join committed, so its result prints first and the missing Ingress Proxy exits partial.
     assert_eq!(
         output.status.code(),
         Some(3),

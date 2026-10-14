@@ -29,6 +29,10 @@ wildcard_enum_match_arm = "warn"
 fn_params_excessive_bools = "warn"
 must_use_candidate = "warn"
 
+[profile.dev]
+# Line tables keep backtraces readable; full DWARF made each test binary ~85% debug info.
+debug = "line-tables-only"
+
 [profile.release]
 # ponytail: DWARF only; keeps the symbol table so release backtraces stay readable.
 strip = "debuginfo"

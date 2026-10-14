@@ -72,14 +72,18 @@ it.live(
         Effect.provide(services))));
       const inngest = new Inngest({ id: "store-pull-request-test" });
       const dispatched: string[] = [];
-      const run = (id: string) => Effect.promise(async () =>
-        (await new InngestTestEngine({
+      const sent: unknown[] = [];
+      const run = (id: string) => Effect.promise(async () => {
+        const { result, ctx } = await new InngestTestEngine({
           function: createStorePullRequest(inngest, runner),
           events: [delivery(id)],
           steps: [
             { id: "dispatch", handler: () => dispatched.push(id) },
           ],
-        }).execute()).result as { admitted: string[]; removals: string[]; check: string });
+        }).execute();
+        sent.push(...ctx.step.sendEvent.mock.calls.map((call) => call[1]));
+        return result as { admitted: string[]; removals: string[]; check: string };
+      });
       const environments = () => Effect.promise(async () => {
         const view = await store.read(ORGANIZATION, { query: "environments", project: null });
         return view.environments.map((listing) => listing.name);
@@ -90,6 +94,7 @@ it.live(
       expect(opened.admitted).toHaveLength(1);
       expect(opened.check).toBe("posted");
       expect(dispatched).toEqual(["open"]);
+      expect(sent).toEqual([[expect.objectContaining({ data: expect.objectContaining({ deploymentId: opened.admitted[0], trigger: "github" }) })]]);
       expect(yield* environments()).toEqual(["pr-5", "production"]);
       expect(posted).toMatchObject([{ head_sha: HEAD, conclusion: "success", output: { title: "No config changes" } }]);
 
