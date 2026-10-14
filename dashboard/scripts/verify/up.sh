@@ -72,6 +72,8 @@ else
   if [ "$build_sdk" = 1 ]; then
     echo "up.sh: building the native SDK ($run/sdk.log)"
     bash "$wt/core/scripts/build-cloud-sdk.sh" > "$run/sdk.log" 2>&1 || { tail -20 "$run/sdk.log" >&2; exit 1; }
+    # A cached SDK keeps its old mtime, older than a fresh checkout's sources; without this every rerun rebuilds.
+    touch "$sdk"
   fi
 
   # A fake Hosted DNS grants Cluster Domains, so generated https addresses deploy (log: $run/hosted-dns.log).
