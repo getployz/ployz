@@ -1375,6 +1375,67 @@ mod set_volume_copy {
     }
 
     #[tokio::test]
+    async fn a_machine_outside_the_cluster_refuses_a_cut_forget_or_floor_and_raises_no_floor() {
+        let data_dir =
+            std::env::temp_dir().join(format!("ployzd-copy-outside-{}", MachineId::random()));
+        let store = RecordOwner::spawn(LocalMachineStore::open(&data_dir).unwrap()).unwrap();
+        let (runtime, _fake) =
+            crate::docker::test_support::fake_runtime_with(FakeDocker::default()).await;
+        let service =
+            MachineService::with_cluster(store, None).with_optional_containers(Some(runtime));
+
+        for request in [
+            at_gen(draining_cut(0), 5),
+            at_gen(forget(json!({"kind":"writer", "epoch":0})), 5),
+            floor(5),
+        ] {
+            let error = refusal(&set_copy(&service, request).await);
+            assert_eq!(error.message, "Machine is not participating", "{error:?}");
+        }
+        let lower = service
+            .containers()
+            .unwrap()
+            .floor_turn()
+            .await
+            .admit(&VOLUME.parse().unwrap(), ployz_core::VolumeGen::new(0))
+            .await
+            .unwrap();
+        assert_eq!(lower, Ok(()), "a refused request left a floor behind");
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_floor_queued_on_the_floor_lock_across_a_reset_refuses_and_raises_no_floor() {
+        let (data_dir, store, service, _fake) = fake_docker_service("ployzd-copy-reset").await;
+        let turn = service.containers().unwrap().floor_turn().await;
+        let queued = tokio::spawn({
+            let service = service.clone();
+            async move { set_copy(&service, floor(5)).await }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        store
+            .mutate(LocalMachineStore::begin_reset)
+            .await
+            .unwrap()
+            .unwrap();
+        drop(turn);
+
+        let response = queued.await.unwrap();
+        let lower = service
+            .containers()
+            .unwrap()
+            .floor_turn()
+            .await
+            .admit(&VOLUME.parse().unwrap(), ployz_core::VolumeGen::new(0))
+            .await
+            .unwrap();
+        assert_eq!(lower, Ok(()), "the Floor raised a floor after the reset");
+        let error = refusal(&response);
+        assert_eq!(error.message, "Machine is not participating", "{error:?}");
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
     #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
     async fn a_floor_want_answers_the_root_while_a_cut_drains_then_the_slot() {
         let (data_dir, _store, service, fake) = fake_docker_service("ployzd-copy-floor").await;
