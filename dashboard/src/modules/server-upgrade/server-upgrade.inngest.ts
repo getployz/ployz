@@ -15,6 +15,7 @@ import {
   finishUpgradeAttempt,
   listAutomaticUpgradeOrganizationIds,
   listServersBehind,
+  listUnknownAutomaticRollouts,
   mintAttemptId,
   observeUpgradeableServer,
   organizationReleaseChannel,
@@ -32,6 +33,7 @@ type StepTools = Pick<PloyzStepTools, "run" | "sleep">;
 type EffectRunner = typeof runInngestEffect;
 
 const POLL_INTERVAL_MS = 15_000;
+const SWEEP_INTERVAL_MS = 60 * 60_000;
 
 const AttemptIdType = Schema.declare<MachineUpgradeAttemptId>(
   (value): value is MachineUpgradeAttemptId => typeof value === "string",
@@ -123,11 +125,15 @@ const closeRollout = Effect.fn("ServerUpgrade.closeRollout")(function* (runId: s
   return closed;
 });
 
-/** The sweep's close of attempts whose run was lost, then each lost automatic Rollout's email. */
+/**
+ * Close attempts whose run was lost, then mail every automatic Rollout that ended `unknown` within two sweeps. A retry
+ * after a failed send finds nothing left to close but the same Rollouts to mail; their keys send each once.
+ */
 const closeStaleRollouts = Effect.fn("ServerUpgrade.closeStaleRollouts")(function* () {
-  const runIds = yield* closeStaleUpgradeAttempts();
-  yield* Effect.forEach(new Set(runIds), (runId) => mailUpgradeFailures(runId, { inngestRunId: runId }, new Map()), { discard: true });
-  return { closed: runIds.length };
+  const closed = yield* closeStaleUpgradeAttempts();
+  const runIds = yield* listUnknownAutomaticRollouts(new Date(Date.now() - 2 * SWEEP_INTERVAL_MS));
+  yield* Effect.forEach(runIds, (runId) => mailUpgradeFailures(runId, { inngestRunId: runId }, new Map()), { discard: true });
+  return { closed };
 });
 
 /**

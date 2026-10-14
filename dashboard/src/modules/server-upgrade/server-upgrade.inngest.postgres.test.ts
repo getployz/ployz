@@ -687,6 +687,17 @@ describe("roll-out-server-upgrade", () => {
         expect(new Set(queued.map(({ id }) => id))).toEqual(new Set([`mail-upgrade-rollout:run-7:${userId}`, `mail-upgrade-rollout:run-7:${otherUserId}`]));
         expect(queued[0]?.text).toContain("web-3: 0.2.1 to 0.2.2. Outcome unknown, last seen at activating");
       });
+
+      it("a sweep retried after its send failed mails the Rollout it already closed", async () => {
+        await harness.pool.query(`
+          insert into server_upgrade_attempt (organization_id, machine_id, attempt_id, trigger, channel, from_version, target_version, stage, outcome, inngest_run_id, started_at, ended_at)
+          values ('${organizationId}', '${serverId("3")}', '${"c".repeat(32)}', 'automatic', 'stable', '0.2.1', '0.2.2', 'activating', 'unknown', 'run-8', now() - interval '25 minutes', now() - interval '1 minute');
+        `);
+
+        expect((await schedule()).result).toMatchObject({ closed: 0 });
+
+        expect(new Set(mails().map(({ id }) => id))).toEqual(new Set([`mail-upgrade-rollout:run-8:${userId}`, `mail-upgrade-rollout:run-8:${otherUserId}`]));
+      });
     });
   });
 
