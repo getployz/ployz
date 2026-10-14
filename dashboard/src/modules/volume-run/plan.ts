@@ -234,18 +234,15 @@ function planRestore(name: string, { from, machine }: VolumeRunArgs["restore"], 
   return { ok: true, phase: { kind: "restore", from: source, lostAfter: copy.kind === "slot" ? copy.newest : null } };
 }
 
-/**
- * The copy to restore from once the writer's Server is gone: a stopped copy holding a snapshot, the newest of them.
- * Restore itself refuses while other copies remain, naming them to remove.
- */
 export function restoreSource(members: readonly Member[]): MachineName | undefined {
-  let source: { readonly name: MachineName; readonly newest: Snapshot } | undefined;
-  for (const member of members) {
+  if (members.some((member) => !member.answered)) return undefined;
+  const stopped = members.flatMap((member) => {
     const newest = member.answered ? member.view.copy?.newest ?? null : null;
-    if (newest === null || roleOf(member) === "writer") continue;
-    if (source === undefined || newest.created_unix_seconds > source.newest.created_unix_seconds) source = { name: member.machine.name, newest };
-  }
-  return source?.name;
+    return newest === null || roleOf(member) === "writer" ? [] : [{ name: member.machine.name, newest }];
+  });
+  const second = Math.max(...stopped.map(({ newest }) => newest.created_unix_seconds));
+  const top = stopped.filter(({ newest }) => newest.created_unix_seconds === second);
+  return new Set(top.map(({ newest }) => newest.guid)).size === 1 ? top[0]?.name : undefined;
 }
 
 export const writerRemovedMessage = (volumeName: string, removed: string, holder: MachineName | undefined) =>
