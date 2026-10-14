@@ -41,9 +41,17 @@ fn fake_cloud(browser: Arc<Mutex<Browser>>, routes: Arc<Mutex<Vec<String>>>) -> 
                     length = value.trim().parse().unwrap();
                 }
             }
-            reader.read_exact(&mut vec![0; length]).unwrap();
+            let mut sent = vec![0; length];
+            reader.read_exact(&mut sent).unwrap();
             let route = request_line.rsplit_once(' ').unwrap().0.to_owned();
             routes.lock().unwrap().push(route.clone());
+            if route == "POST /api/cli/run/org_leave" {
+                let sent: Value = serde_json::from_slice(&sent).unwrap();
+                routes
+                    .lock()
+                    .unwrap()
+                    .push(format!("org_leave input {}", sent.get("input").unwrap()));
+            }
             let (status, body) = match route.as_str() {
                 "POST /api/auth/device/code" => (
                     200,
@@ -383,6 +391,7 @@ fn org_leave_with_yes_leaves_then_moves_the_device_to_another_organization() {
         at("POST /api/cli/run/org_leave") < at("POST /api/auth/organization/set-active"),
         "moves only once it left"
     );
+    at(r#"org_leave input {"organization":"acme"}"#);
     let human = ployz(&config, &["org", "leave", "--yes"]);
     assert!(
         String::from_utf8_lossy(&human.stderr)

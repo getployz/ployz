@@ -441,6 +441,7 @@ it.live("a destructive operation waits on one approval of exactly its preview, a
       approval: operationDigest(asked),
       approval_id: expect.any(String),
       operation: { verb: "drain", name: "fra-1" },
+      organization: caller.organization.slug,
     });
     expect(refusedWith(yield* gate(asked)).approval_id).toBe(first.approval_id);
     expect(refusedWith(yield* gate(asked, first.approval_id)).approval_id).toBe(first.approval_id);

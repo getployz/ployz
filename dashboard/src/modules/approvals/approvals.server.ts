@@ -256,7 +256,7 @@ const requestOperationApproval = Effect.fn("Approvals.requestOperation")(functio
   return {
     code: "approval_required",
     message: `A human must approve this ${asked.verb.replaceAll("_", " ")} of ${asked.name} before it runs.`,
-    details: { effects: asked.effects, approval: digest, approval_id: recorded.id, operation },
+    details: { effects: asked.effects, approval: digest, approval_id: recorded.id, operation, organization: caller.organization.slug },
   } satisfies StoreRefusal;
 });
 

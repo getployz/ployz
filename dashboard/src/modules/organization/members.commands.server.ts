@@ -4,6 +4,7 @@ import { Effect, Schema } from "effect";
 import { defineCommand, refused } from "#/modules/commands/command.server";
 import { StoreRefused } from "#/modules/config-store/store.contract";
 import type { Caller } from "#/modules/identity/actor";
+import { callerOrganizations } from "#/modules/identity/caller.server";
 import type { Role } from "#/modules/organization/access.server";
 import { createInvite, INVITE_DAYS, listPendingInvites, revokeInvite } from "#/modules/organization/invitation.server";
 import { listMembers, MANAGE, OWN, removeMembership, setMemberRole } from "#/modules/organization/membership.server";
@@ -257,11 +258,15 @@ export const orgLeave = defineCommand({
   agents: false,
   typed: null,
   positional: [],
-  input: Schema.Struct({}),
+  input: Schema.Struct({ organization: Schema.NonEmptyString.annotate({ description: "The Organization to leave, by slug" }) }),
   output: Left,
   render: "message",
-  run: (caller) => removeMembership(caller.organization.id, caller.userId, caller.userId).pipe(
-    Effect.as({ ok: true, output: { organization: caller.organization.slug }, message: `You left ${caller.organization.slug}.` } as const),
-    Effect.catchTag("Conflict", conflictRefused),
-  ),
+  // Leaves the Organization the input names, never the session's active one: a browser moves every session of the
+  // user, so the active one can differ from the Organization `ployz` confirmed.
+  run: (caller, input) => Effect.gen(function* () {
+    const leaving = (yield* callerOrganizations(caller)).find((row) => row.slug === input.organization);
+    if (leaving === undefined) return refused("not_found", `You are not a member of Organization ${input.organization}. Nothing changed.`);
+    yield* removeMembership(leaving.id, caller.userId, caller.userId);
+    return { ok: true, output: { organization: leaving.slug }, message: `You left ${leaving.slug}.` } as const;
+  }).pipe(Effect.catchTag("Conflict", conflictRefused)),
 });

@@ -368,7 +368,10 @@ fn org_leave(root: &ArgMatches) -> Result<(), Error> {
             Credential::Token { .. } => Vec::new(),
         };
         let key = uuid::Uuid::new_v4().to_string();
-        crate::published::run_on(&credential, "org_leave", serde_json::json!({}), None, &key)
+        // Cloud leaves the Organization named here, not the session's active one, which a
+        // browser may have moved since this device last acted.
+        let input = serde_json::json!({ "organization": organization.slug });
+        crate::published::run_on(&credential, "org_leave", input, None, &key)
             .await
             .0?;
         let acting = match others.first() {

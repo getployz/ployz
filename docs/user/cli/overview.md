@@ -131,13 +131,14 @@ Any member can run `ployz org member ls`. Pending invites name who was invited, 
 Pick a member by email or by name. When two members share a name, the command refuses with
 `ambiguous`, lists both emails and exits 2, so name the one you mean by email.
 
-`role`, `rm` and `revoke` show what they will change and ask before they run. In a terminal you
-type the email it names, or the invite id for a link with no email, to go ahead. Without a
-terminal they wait until someone approves them in Ployz Cloud. Through `ployz mcp`, your agent
-gets back an approval to show you and changes nothing until you approve it. The dashboard's
+`role`, `rm` and `revoke` show what they will change, and in which Organization, and ask before
+they run. In a terminal you type the email it names, or the invite id for a link with no email, to
+go ahead. Without a terminal they wait until someone approves them in Ployz Cloud. Through
+`ployz mcp`, your agent gets back an approval to show you and changes nothing until you approve it. The dashboard's
 Members page never asks. `ployz org member ls` and `ployz org invite ls` never ask.
 
-`ployz org leave` takes you out of the Organization this device acts in, after you confirm.
+`ployz org leave` takes you out of the Organization this device acts in, after you confirm. It
+leaves that Organization even if you switched to another one in the dashboard since.
 Pass `--yes` to skip the question. It then moves this device to another Organization of yours,
 the way `ployz org rm` does, and prints which one.
 

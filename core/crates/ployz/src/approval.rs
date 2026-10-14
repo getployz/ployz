@@ -24,6 +24,10 @@ pub(crate) struct Asked {
     pub(crate) effects: Vec<DestructiveEffect>,
     #[serde(flatten)]
     pub(crate) subject: Subject,
+    /// The Organization an operation acts in, which can differ from the one this device
+    /// last acted in once a browser has moved the session.
+    #[serde(default)]
+    organization: Option<String>,
 }
 
 /// What the approval covers: a Store write, which carries its diff, or an operation on one
@@ -139,16 +143,32 @@ impl Asked {
     }
 
     pub(crate) fn review(&self, verb: Verb) -> Vec<String> {
-        let mut lines = vec![format!(
-            "This {} destroys {}:",
-            verb.noun(),
-            things(self.effects.len())
-        )];
-        lines.extend(
-            self.effects
+        let within = match &self.organization {
+            Some(organization) => format!(" in Organization {organization}"),
+            None => String::new(),
+        };
+        let changes_only = !self.effects.is_empty()
+            && self
+                .effects
                 .iter()
-                .map(|effect| format!("  ✕ {}", line(effect))),
-        );
+                .all(|effect| effect.kind == DestructiveKind::ChangesRole);
+        let mut lines = vec![if changes_only {
+            format!("This {}{within}:", verb.noun())
+        } else {
+            format!(
+                "This {}{within} destroys {}:",
+                verb.noun(),
+                things(self.effects.len())
+            )
+        }];
+        lines.extend(self.effects.iter().map(|effect| {
+            let mark = if effect.kind == DestructiveKind::ChangesRole {
+                "~"
+            } else {
+                "✕"
+            };
+            format!("  {mark} {}", line(effect))
+        }));
         let others = match &self.subject {
             Subject::Diff(diff) => diff.total_count.saturating_sub(self.effects.len()),
             Subject::Operation(_) => 0,
@@ -320,7 +340,42 @@ pub(crate) async fn decide(
 
 #[cfg(test)]
 mod tests {
-    use super::Verb;
+    use super::{Asked, Verb};
+
+    fn asked(verb: &str, kind: &str) -> Asked {
+        serde_json::from_value(serde_json::json!({
+            "approval_id": "a1",
+            "approval": "d1",
+            "effects": [{ "kind": kind, "name": "bob@example.com", "node": "u1", "path": "members/u1" }],
+            "operation": { "verb": verb, "name": "bob@example.com" },
+            "organization": "acme",
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_role_change_reads_as_a_change_in_its_organization() {
+        let asked = asked("set", "changes_role");
+        assert_eq!(
+            asked.review(asked.verb()),
+            [
+                "This change in Organization acme:",
+                "  ~ changes the role of bob@example.com",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_member_removal_names_its_organization_and_what_it_destroys() {
+        let asked = asked("remove", "removes_member");
+        assert_eq!(
+            asked.review(asked.verb()),
+            [
+                "This removal in Organization acme destroys 1 thing:",
+                "  ✕ removes member bob@example.com",
+            ]
+        );
+    }
 
     /// Cloud names every operation it gates with one of its `OperationVerb`s; one this CLI
     /// cannot read leaves its `approval_required` refusal unasked.

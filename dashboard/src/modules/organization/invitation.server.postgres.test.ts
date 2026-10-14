@@ -199,12 +199,12 @@ describe("member commands", () => {
 
   it("refuses the last owner who leaves or steps down, and lets them once another owner exists", async () => {
     expect(await as("ada", "org_member_rm", { member: "eve@example.test" })).toMatchObject({ ok: true });
-    expect(await as("ada", "org_leave", {})).toMatchObject({ ok: false, refusal: { code: "conflict" } });
+    expect(await as("ada", "org_leave", { organization: "acme" })).toMatchObject({ ok: false, refusal: { code: "conflict" } });
     expect(await as("ada", "org_member_role", { member: "ada@example.test", role: "admin" })).toMatchObject({ ok: false, refusal: { code: "conflict" } });
     expect(await roleOf(ids.ada)).toBe("owner");
 
     expect(await as("ada", "org_member_role", { member: "Carol", role: "owner" })).toMatchObject({ ok: true });
-    expect(await as("ada", "org_leave", {})).toMatchObject({ ok: true });
+    expect(await as("ada", "org_leave", { organization: "acme" })).toMatchObject({ ok: true });
     expect(await roleOf(ids.ada)).toBeNull();
   });
 
@@ -222,6 +222,44 @@ describe("member commands", () => {
     await harness.db.update(user).set({ name: "dan@example.test" }).where(eq(user.id, ids.bob));
     expect(await as("carol", "org_member_rm", { member: "dan@example.test" })).toMatchObject({ ok: false, refusal: { code: "not_found" } });
     expect(await roleOf(ids.bob)).toBe("admin");
+  });
+});
+
+describe("org leave", () => {
+  const BRAVO = "00000000-0000-4000-8000-00000000c002";
+  const CHARLIE = "00000000-0000-4000-8000-00000000c003";
+  let fay = "";
+  const leave = (credential: Caller["credential"], acting: { id: string; slug: string }, organization: string) =>
+    run(orgLeave.invoke({ userId: fay, organization: acting, credential, role: "member", support: null, via: "cli" }, { organization }, { approvalId: null, key: null }));
+  const membershipsOf = async (userId: string) => (await harness.db.select({ slug: organization.slug }).from(member)
+    .innerJoin(organization, eq(organization.id, member.organizationId)).where(eq(member.userId, userId)))
+    .map((row) => row.slug).sort();
+
+  beforeAll(async () => {
+    const [row] = await harness.db.insert(user).values({ email: "fay@example.test", name: "Fay" }).returning({ id: user.id });
+    fay = row?.id ?? "";
+    await harness.db.insert(organization).values([{ id: BRAVO, name: "Bravo", slug: "bravo" }, { id: CHARLIE, name: "Charlie", slug: "charlie" }]);
+    await harness.db.insert(member).values([
+      { userId: ids.ada, organizationId: BRAVO, role: "owner" },
+      { userId: fay, organizationId: BRAVO, role: "member" },
+      { userId: fay, organizationId: CHARLIE, role: "owner" },
+      { userId: ids.ada, organizationId: CHARLIE, role: "owner" },
+    ]);
+  });
+
+  it("leaves the Organization it names even when the session acts in another", async () => {
+    const session = { kind: "session", id: "fay-session" } as const;
+    expect(await leave(session, { id: CHARLIE, slug: "charlie" }, "bravo")).toMatchObject({ ok: true, output: { organization: "bravo" } });
+    expect(await membershipsOf(fay)).toEqual(["charlie"]);
+  });
+
+  it("refuses an Organization the caller may not act in and changes nothing", async () => {
+    const session = { kind: "session", id: "fay-session" } as const;
+    expect(await leave(session, { id: CHARLIE, slug: "charlie" }, "acme")).toMatchObject({ ok: false, refusal: { code: "not_found" } });
+    const token = { kind: "token", id: "fay-token" } as const;
+    await harness.db.insert(member).values({ userId: fay, organizationId: BRAVO, role: "member" });
+    expect(await leave(token, { id: CHARLIE, slug: "charlie" }, "bravo")).toMatchObject({ ok: false, refusal: { code: "not_found" } });
+    expect(await membershipsOf(fay)).toEqual(["bravo", "charlie"]);
   });
 });
 
