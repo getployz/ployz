@@ -29,7 +29,7 @@ const github = fakeGithubApi({
       { path: "src/index.md", type: "blob", mode: "100644" },
     ],
   },
-  "https://api.github.com/repos/acme/docs/contents/README.md?ref=main": {
+  "/repos/acme/docs/contents/README.md?ref=main": {
     type: "file", size: 7, encoding: "base64", content: Buffer.from("# Docs\n").toString("base64"),
   },
 });
