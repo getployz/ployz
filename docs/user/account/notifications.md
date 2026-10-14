@@ -3,8 +3,8 @@ title: Notifications
 description: Choose which emails Ployz Cloud sends you, and turn one off from the email itself.
 ---
 
-Ployz Cloud can email you when something needs you. Open the account menu and click
-**Account** to choose which emails you get. Your choices are yours alone, and they apply in
+Ployz Cloud can email you when something needs you. Click your avatar at the bottom of the
+sidebar and choose **Account**, then pick under **Notifications** which emails you get. Your choices are yours alone, and they apply in
 every organization you belong to.
 
 Each kind of email has a row, set to **Email** or **None**:
