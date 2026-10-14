@@ -54,7 +54,6 @@ pub struct Move {
     pub to: MachineRef,
 }
 
-/// A move whose old copy keeps serving until `deploy`'s Serving Pointer retires it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Replacement {
     pub(crate) old: ContainerId,
@@ -62,8 +61,6 @@ pub(crate) struct Replacement {
     pub(crate) deploy: DeploymentLogId,
 }
 
-/// What a move does with the copy it replaces: remove it, unless a Serving Pointer names
-/// it by then, or keep every one for `pointer` to retire.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum OldCopy<'a> {
     Remove,
@@ -573,15 +570,10 @@ async fn move_one(
     }
 }
 
-/// What the Serving Pointer says of a moved Container's old copy once its replacement
-/// serves.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(in crate::deploy) enum AtRemoval {
-    /// No pointer names it: it goes.
     Remove,
-    /// `deploy`'s pointer names it, so that pointer retires it.
     Pointed(DeploymentLogId),
-    /// The pointer could not be read, so it stays.
     Unread(String),
 }
 
@@ -594,8 +586,6 @@ impl From<OldCopy<'_>> for AtRemoval {
     }
 }
 
-/// Whether `old` stops now its replacement serves. A copy already kept stays kept; one
-/// set to go is checked against the pointer once more.
 pub(in crate::deploy) async fn removes_old<C: PointerClient>(
     at_removal: &mut AtRemoval,
     reader: &mut C,
@@ -608,9 +598,6 @@ pub(in crate::deploy) async fn removes_old<C: PointerClient>(
     *at_removal == AtRemoval::Remove
 }
 
-/// Read at the last moment before `old` would stop, so a first publish that names it
-/// since the move began keeps it. One landing after this read is lost to the stop; the
-/// next deploy's publish recovers it.
 async fn at_removal_of<C: PointerClient>(
     reader: &mut C,
     service: &QualifiedService,

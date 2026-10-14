@@ -369,13 +369,12 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
             registry_auth: None,
             answer: ployz_core::AnswerWhen::Started,
         };
-        // The deploy this copy starts under; only its pointer may take the copy.
-        let before = tokio::select! {
+        let started_under = tokio::select! {
             biased;
             () = cancel.cancelled() => break,
             read = client.read_pointer(&identity) => read,
         };
-        let before = match before {
+        let started_under = match started_under {
             Ok(pointer) => pointer.map(|pointer| pointer.deploy),
             Err(error) => {
                 observe(CatchUpFact::Failed(identity.clone()));
@@ -385,7 +384,7 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
         };
         observe(CatchUpFact::Creating(identity.clone()));
         match client.run_slot(&this_machine.id, new).await {
-            Ok(Some(id)) => expected.push((slot, id, before)),
+            Ok(Some(id)) => expected.push((slot, id, started_under)),
             Ok(None) => {
                 unresolved.retain(|service| service != &identity);
                 observe(CatchUpFact::Excluded(identity));
@@ -410,7 +409,7 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
             )
         })?;
     let target_services = service_containers(target_containers);
-    for (slot, id, before) in &expected {
+    for (slot, id, started_under) in &expected {
         let identity = slot.identity();
         if !slot.is_running_on(&target_services, this_machine) {
             observe(CatchUpFact::Failed(identity.clone()));
@@ -421,7 +420,7 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
             service: identity,
             spec: slot.resolved_spec(),
             running: id,
-            before: before.as_ref(),
+            started_under: started_under.as_ref(),
         };
         let pointer_retries = match point_at(client, at, cancel).await {
             Ok(Amendment::Published { retries }) => retries,
@@ -479,18 +478,14 @@ fn names_another_spec(
     })
 }
 
-/// A running catch-up copy and the deploy whose pointer it started under.
 struct PointAt<'a> {
     this_machine: &'a Machine,
     service: &'a QualifiedService,
     spec: &'a ResolvedServiceSpec,
     running: &'a ContainerId,
-    before: Option<&'a DeploymentLogId>,
+    started_under: Option<&'a DeploymentLogId>,
 }
 
-/// Joins the copy to the pointer it started under, retiring only the copies that
-/// pointer named on this Machine. Any other deploy's pointer is `Outdated`, whatever
-/// the listing shows of its copies.
 async fn point_at<C: CatchUpClient>(
     client: &mut C,
     at: PointAt<'_>,
@@ -501,18 +496,13 @@ async fn point_at<C: CatchUpClient>(
         service,
         spec,
         running,
-        before,
+        started_under,
     } = at;
-    // A read that answers at once still settles a cancelled catch-up's copy.
-    let read = tokio::select! {
-        biased;
-        read = client.read_pointer(service) => read.map_err(Failure::from)?,
-        () = cancel.cancelled() => return Err(Failure::cancelled()),
-    };
-    let Some(read) = read else {
+    let Some(read) = read_settling_cancelled_copy(client, service, cancel).await? else {
         return Ok(Amendment::NoPointer);
     };
-    let Some(before) = before.filter(|before| **before == read.deploy) else {
+    let Some(started_under) = started_under.filter(|started_under| **started_under == read.deploy)
+    else {
         return Ok(Amendment::Outdated);
     };
     let live = tokio::select! {
@@ -543,7 +533,7 @@ async fn point_at<C: CatchUpClient>(
         .iter()
         .map(|member| member.container_id)
         .collect::<Vec<_>>();
-    amend_pointer(client, service, Some(before), cancel, |current| {
+    amend_pointer(client, service, Some(started_under), cancel, |current| {
         rotated(
             current,
             std::slice::from_ref(running),
@@ -553,6 +543,18 @@ async fn point_at<C: CatchUpClient>(
     })
     .await
     .map_err(Failure::from)
+}
+
+async fn read_settling_cancelled_copy<C: CatchUpClient>(
+    client: &mut C,
+    service: &QualifiedService,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<Option<ServingPointer>, Failure> {
+    tokio::select! {
+        biased;
+        read = client.read_pointer(service) => read.map_err(Failure::from),
+        () = cancel.cancelled() => Err(Failure::cancelled()),
+    }
 }
 
 #[cfg(test)]

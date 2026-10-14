@@ -322,7 +322,6 @@ async fn a_kept_old_copy_is_never_stopped_and_a_removed_one_is() {
             ]);
         }
         let client = Scripted::new(steps);
-        // No pointer names the old copy, so only `old_copy` keeps it.
         let mut reader = FakeRow::default();
         let service = QualifiedService::parse("app/web").unwrap();
         let (namespace, spec, to, from, old) = (

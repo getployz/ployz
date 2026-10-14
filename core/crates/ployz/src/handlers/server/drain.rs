@@ -230,7 +230,7 @@ fn remaining(report: &DrainReport) -> Result<String, String> {
             "Still on {server}: {}",
             services
                 .iter()
-                .map(|service| if moved(report, service) {
+                .map(|service| if still_retiring(report, service) {
                     format!("{service} (retiring)")
                 } else {
                     service.to_string()
@@ -244,8 +244,7 @@ fn remaining(report: &DrainReport) -> Result<String, String> {
     }
 }
 
-/// A moved Service still listed keeps an old copy its Serving Pointer is retiring.
-fn moved(report: &DrainReport, service: &QualifiedService) -> bool {
+fn still_retiring(report: &DrainReport, service: &QualifiedService) -> bool {
     report.services.iter().any(|drained| {
         drained.service == *service && matches!(drained.outcome, DrainOutcome::Moved { .. })
     })

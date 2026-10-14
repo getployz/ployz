@@ -160,13 +160,6 @@ pub(crate) enum Amendment {
     Outdated,
 }
 
-/// Amends `service`'s pointer with `change`, retrying lost compare-and-sets. With
-/// `deploy`, a pointer under any other deploy is `Outdated` and left alone.
-///
-/// # Errors
-///
-/// Cancellation before the guarded write is sent is reported as such. Cancellation after
-/// it was sent is an uncertain outcome: the write may have landed.
 pub(crate) async fn amend_pointer<C: PointerClient>(
     client: &mut C,
     service: &QualifiedService,
@@ -267,9 +260,6 @@ pub(crate) fn complete_members<E>(
     )
 }
 
-/// `pointer` with `joining` added to its Containers and `leaving` moved to `retiring`,
-/// or `None` when it already holds exactly that. With the complete Container listing in
-/// `listed`, a retiring id it no longer holds is gone and leaves `retiring`.
 pub(crate) fn rotated(
     pointer: &ServingPointer,
     joining: &[ployz_core::ContainerId],

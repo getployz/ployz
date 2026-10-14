@@ -76,12 +76,7 @@ impl RetireClient for Client {
                 {
                     return Ok(());
                 }
-                // A first pointer published since that read keeps the copies for its
-                // retirement. One landing after this read is lost to the removal.
-                if cancellable(cancellation, self.read_pointer(identity))
-                    .await?
-                    .is_none()
-                {
+                if unpointed_at_removal(self, identity, cancellation).await? {
                     return remove_slot(self, machine_id, &identity.namespace, &identity.name)
                         .await;
                 }
@@ -150,6 +145,16 @@ impl CopyLister for Client {
             .map(|container| container.container_id)
             .collect())
     }
+}
+
+async fn unpointed_at_removal<C: PointerClient>(
+    client: &mut C,
+    service: &QualifiedService,
+    cancellation: &CancellationToken,
+) -> Result<bool, RpcError> {
+    Ok(cancellable(cancellation, client.read_pointer(service))
+        .await?
+        .is_none())
 }
 
 pub(crate) async fn retire_pointed<C: CopyLister>(

@@ -12,7 +12,7 @@ use tokio_util::sync::CancellationToken;
 use super::{
     DrainClient, DrainOutcome, DrainReport, DrainScope, DrainStop, Lost, MachineRef, Move,
     MoveFailure, Ready, Remaining, ServiceDrain, ServicesRole, StayReason, execute,
-    publish_replacements,
+    publish_replacements_past_cancel,
 };
 use crate::deploy::{Converged, OldCopy, Replacement};
 use crate::drain::retirement::Retirement;
@@ -662,7 +662,7 @@ async fn a_drain_publishes_its_replacements_by_id_and_retires_what_they_replaced
     let fake = FakeRow::default();
     *fake.row.lock().unwrap() = Some(pointer('a', &['1', '2'], &[]));
     let deploy = DeploymentLogId::parse("dep-a").unwrap();
-    let amended = publish_replacements(
+    let amended = publish_replacements_past_cancel(
         &mut fake.clone(),
         &qualified("web"),
         &deploy,
@@ -687,7 +687,7 @@ async fn a_drain_publishes_nothing_once_a_newer_deploy_owns_the_pointer() {
         .unwrap()
         .push(pointer('b', &['7'], &['1', '2']));
     let deploy = DeploymentLogId::parse("dep-a").unwrap();
-    let amended = publish_replacements(
+    let amended = publish_replacements_past_cancel(
         &mut fake.clone(),
         &qualified("web"),
         &deploy,

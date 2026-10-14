@@ -126,7 +126,6 @@ async fn an_amendment_gives_up_after_three_lost_retries() {
     assert_eq!(*fake.publishes.lock().unwrap(), AMEND_RETRIES + 1);
 }
 
-/// A pointer server that never answers `stalled`.
 struct Stalled {
     row: FakeRow,
     publisher: bool,

@@ -422,8 +422,6 @@ mod rpc {
 
     use super::*;
 
-    /// Retires `app/a` from an ineligible Server whose pointer row starts as `initial`
-    /// and becomes `published_after_first_read` once the first read has answered.
     async fn retire_from_ineligible(
         initial: Option<ServingPointer>,
         published_after_first_read: Option<ServingPointer>,

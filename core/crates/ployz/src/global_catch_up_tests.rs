@@ -345,7 +345,6 @@ struct FakeCatchUpClient {
     omissions: Vec<MachineId>,
     relisted: Option<Vec<ServiceObservation>>,
     listings: u32,
-    /// Becomes the Serving Pointer while the copy starts.
     published_while_running: Option<ployz_core::ServingPointer>,
 }
 

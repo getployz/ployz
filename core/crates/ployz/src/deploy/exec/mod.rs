@@ -721,7 +721,7 @@ pub(in crate::deploy) async fn move_container<C: MachineOperations>(
     spec: &ResolvedServiceSpec,
     to: &MachineId,
     (from, old): (&MachineId, &ContainerId),
-    remove_old: impl AsyncFnOnce() -> bool,
+    remove_old_once_serving: impl AsyncFnOnce() -> bool,
     cancellation: &CancellationToken,
 ) -> Result<ContainerId, MoveContainerError> {
     let client = RestartTolerant {
@@ -759,8 +759,7 @@ pub(in crate::deploy) async fn move_container<C: MachineOperations>(
             });
         }
     };
-    // Asked only once the new Container serves, the last moment before `old` stops.
-    if !remove_old().await {
+    if !remove_old_once_serving().await {
         return Ok(new);
     }
     // Stopped first, so a failed removal can say whether the old Container still serves.

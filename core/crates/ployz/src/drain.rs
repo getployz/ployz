@@ -196,9 +196,6 @@ pub enum DrainOutcome {
 }
 
 impl DrainOutcome {
-    /// The Drain has nothing left to do for this Service. A moved one may still have an
-    /// old copy on the Server that its Serving Pointer retires;
-    /// [`DrainReport::complete`] waits for that copy to leave the listing.
     fn complete(&self) -> bool {
         match self {
             Self::Moved { .. } | Self::NothingToMove | Self::Retired => true,
@@ -452,13 +449,11 @@ impl DrainClient for Client {
         deploy: &DeploymentLogId,
         replaced: &[Replacement],
     ) -> Result<Amendment, RpcError> {
-        publish_replacements(self, service, deploy, replaced).await
+        publish_replacements_past_cancel(self, service, deploy, replaced).await
     }
 }
 
-/// Publishes moves already made, whose old copies serve until it lands, so it runs to
-/// its own bounded end even once the Drain is cancelled.
-async fn publish_replacements<C: PointerClient>(
+async fn publish_replacements_past_cancel<C: PointerClient>(
     client: &mut C,
     service: &QualifiedService,
     deploy: &DeploymentLogId,
@@ -615,7 +610,6 @@ async fn execute<C: DrainClient>(
     }
 }
 
-/// Publishes each kept old copy's replacement under the deploy whose pointer named it.
 async fn repoint<C: DrainClient>(
     client: &mut C,
     service: &QualifiedService,
