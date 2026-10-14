@@ -188,7 +188,7 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
 const holds = (member: AnsweredMember) => newestGuid(member.view.copy) !== null;
 const byServer = (a: AnsweredMember, b: AnsweredMember) => a.machine.name.localeCompare(b.machine.name);
 const servers = (each: readonly AnsweredMember[]) => each.map((member) => member.machine.name).join(" and ");
-const serverRm = (remove: readonly AnsweredMember[]) => (remove.length === 0 ? "" : `server rm ${servers(remove)}, then `);
+const serverRm = (remove: readonly AnsweredMember[]) => (remove.length === 0 ? "" : `ployz server rm ${servers(remove)}, then `);
 
 /** Release resumes a cut from its newest snapshot, so a cut with none moves again, onto the slot a root may keep. */
 function releaseOrMoveOntoSlot(name: string, kept: AnsweredMember, slots: readonly AnsweredMember[]) {
