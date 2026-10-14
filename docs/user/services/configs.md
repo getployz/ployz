@@ -76,7 +76,8 @@ For an app that reads files as user `1000`, set the owner and permissions togeth
 1. In the file's options menu, click **Permissions…**.
 2. Enter a **Mode** of three octal digits, such as `0440`, and a **User ID** and **Group ID**,
    such as `1000`.
-3. Click **Save**. The file shows as a staged change until you deploy.
+3. Click **Save** in the dialog. The file shows as unsaved, like a text edit.
+4. Click **Save** below the files. The file shows as a staged change until you deploy.
 
 A file with custom permissions shows them in its options menu, and **Executable** is unavailable.
 Use **Permissions…** to change them, or set `0444` or `0555` with user and group ID `0` to use
