@@ -182,6 +182,7 @@ class Registry(unittest.TestCase):
             # %C expands to 40 hex characters and ssh adds a 17-character suffix while it binds.
             self.assertLessEqual(len(path(run).replace("%C", "0" * 40)) + 17, 107)
         self.assertNotEqual(path("a"), path("b"))
+        self.assertTrue(path("a", "/tmp/" + "é" * 20).startswith("/tmp/ployz-boat-"))
         long = path("a", "/" + "r" * 74)
         self.assertTrue(long.startswith(f"/tmp/ployz-boat-{os.getuid()}/"))
         self.assertLessEqual(len(long.replace("%C", "0" * 40)) + 17, 107)
@@ -231,6 +232,17 @@ class Registry(unittest.TestCase):
         with unittest.mock.patch.object(cluster, "save"), contextlib.suppress(KeyError):
             cluster.teardown(run, None, backend)
         backend.destroy.assert_called_once()
+
+    def test_one_provider_failing_to_parse_keeps_the_other_providers_runs(self):
+        for failure in [json.JSONDecodeError("notice", "", 0), KeyError("sandboxes")]:
+            def provider(name):
+                if name == "boat":
+                    raise failure
+                return unittest.mock.Mock(runs=lambda: [dict(id="incus-run")])
+            with unittest.mock.patch.object(cluster.importlib, "import_module", side_effect=provider), \
+                 unittest.mock.patch.object(cluster.shutil, "which", return_value="/usr/bin/incus"), \
+                 contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(cluster.host_runs(), [dict(id="incus-run", provider="incus")])
 
     def test_prepare_spares_a_bake_a_live_run_uses(self):
         bakes = [f"{boat.BAKED}{day}" + "0" * 8 for day in ["10", "11", "12", "13"]]
