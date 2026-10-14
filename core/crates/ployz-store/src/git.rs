@@ -32,11 +32,9 @@ use crate::{Actor, ServiceStaged, Trusted};
 pub struct AuthorizedRepository {
     /// Its `owner/name`, as GitHub spells it.
     pub repository: RepositoryName,
-    /// GitHub's ID for it.
     pub repository_id: RepositoryId,
     /// How Cloud reads it: publicly, or through a GitHub installation.
     pub access: ServiceGitAccess,
-    /// Its default branch.
     pub default_branch: BranchName,
     /// Other branches Cloud saw exist.
     #[serde(default)]

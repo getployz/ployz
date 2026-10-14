@@ -86,7 +86,6 @@ impl DeploymentStatus {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct DeploymentSummary {
     pub id: DeploymentId,
-    /// The Environment it deploys.
     pub environment_id: EnvironmentId,
     /// Counts from 1 within its Environment.
     pub number: u64,
@@ -503,7 +502,6 @@ impl TargetNode {
         })
     }
 
-    /// Its node ID.
     pub(crate) fn id(&self) -> &str {
         match self {
             Self::Service { id, .. } => id.as_str(),
@@ -560,7 +558,7 @@ impl DeployedNode {
         }
     }
 
-    /// Its node ID.
+    /// Its ID as text; a Service's is its lineage ID.
     #[must_use]
     pub fn id(&self) -> &str {
         match self {

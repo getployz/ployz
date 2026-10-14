@@ -86,7 +86,6 @@ impl Kind {
 pub(crate) enum Stop {
     /// It needs this step's answers.
     Step(Box<Step>, Kind),
-    /// It refuses.
     Refuse(Box<Refusal>),
 }
 
@@ -137,7 +136,6 @@ pub(crate) struct Cx<'run> {
 }
 
 impl Cx<'_> {
-    /// The call being run.
     pub(crate) const fn call(&self) -> &Call {
         &self.call
     }
@@ -494,7 +492,6 @@ pub(crate) struct Entry {
     local_next: Option<&'static str>,
 }
 
-/// `T`'s table entry.
 pub(crate) const fn entry<T: Tool>() -> Entry {
     Entry {
         name: T::NAME,

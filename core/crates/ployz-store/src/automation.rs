@@ -150,7 +150,7 @@ pub struct Automated {
     pub cancelled: Vec<DeploymentId>,
 }
 
-/// One auto-deploy.
+/// A Deployment an event admitted, and the Environment it deploys.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct AutoDeployed {
     pub environment: EnvironmentId,
@@ -391,7 +391,6 @@ enum Select<'a> {
 /// How many of a branch's latest heads the Store remembers.
 const RECENT: usize = 50;
 
-/// Remember `head` among the branch's recent heads.
 fn remember(
     tx: &mut dyn Tx,
     who: &Actor,

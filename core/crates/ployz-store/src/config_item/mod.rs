@@ -24,7 +24,8 @@ use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
 use crate::settings::{SettingPath, Target};
 use crate::storage::Tx;
 
-/// The most text one Config file holds.
+/// The most bytes of text one Config file holds, as written before references
+/// resolve; a longer file is refused as `invalid`.
 pub const MAX_FILE_BYTES: usize = 256 * 1024;
 
 /// Create a Config, optionally mounted into Services.
@@ -33,7 +34,6 @@ pub const MAX_FILE_BYTES: usize = 256 * 1024;
 pub struct CreateConfig {
     /// The new Config's ID, also its lineage.
     pub id: ConfigId,
-    /// The Environment to create it in.
     #[serde(default)]
     pub environment: EnvironmentRef,
     /// Its name, unique among the Environment's Configs.
@@ -47,7 +47,6 @@ pub struct CreateConfig {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigMountAt {
-    /// The Service, by name.
     pub service: ServiceName,
     /// The absolute directory in its containers where the Config's files appear.
     pub dir: String,
@@ -58,10 +57,8 @@ pub struct ConfigMountAt {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct PutConfigFile {
-    /// The Environment it is in.
     #[serde(default)]
     pub environment: EnvironmentRef,
-    /// The Config, by name.
     pub config: ConfigName,
     /// The file's path inside the Config.
     pub file: ConfigFileName,
@@ -85,10 +82,8 @@ pub struct PutConfigFile {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct RemoveConfigFile {
-    /// The Environment it is in.
     #[serde(default)]
     pub environment: EnvironmentRef,
-    /// The Config, by name.
     pub config: ConfigName,
     /// The file's path inside the Config.
     pub file: ConfigFileName,
@@ -99,7 +94,6 @@ pub struct RemoveConfigFile {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct RenameConfig {
-    /// The Environment it is in.
     #[serde(default)]
     pub environment: EnvironmentRef,
     /// Its current name.
@@ -112,10 +106,8 @@ pub struct RenameConfig {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct DeleteConfig {
-    /// The Environment it is in.
     #[serde(default)]
     pub environment: EnvironmentRef,
-    /// Its name.
     pub config: ConfigName,
 }
 
@@ -124,12 +116,9 @@ pub struct DeleteConfig {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct AttachConfig {
-    /// The Environment they are in.
     #[serde(default)]
     pub environment: EnvironmentRef,
-    /// The Service, by name.
     pub service: ServiceName,
-    /// The Config, by name.
     pub config: ConfigName,
     /// The absolute directory in the Service's containers.
     pub dir: String,
@@ -139,19 +128,15 @@ pub struct AttachConfig {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct DetachConfig {
-    /// The Environment they are in.
     #[serde(default)]
     pub environment: EnvironmentRef,
-    /// The Service, by name.
     pub service: ServiceName,
-    /// The Config, by name.
     pub config: ConfigName,
 }
 
 /// A Config changed in Working State, staged until a Deploy.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct ConfigStaged {
-    /// The Config.
     pub config: ConfigSummary,
     /// The Environment, at its revision after the change.
     pub environment: EnvironmentSummary,
@@ -163,11 +148,10 @@ pub struct ConfigStaged {
 /// A Config as results name it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct ConfigSummary {
-    /// Its durable identity.
     pub id: ConfigId,
     /// Its name, which mount paths address it by.
     pub name: ConfigName,
-    /// Its files, by path.
+    /// Sorted by path.
     pub files: Vec<ConfigFileSummary>,
 }
 
@@ -178,11 +162,8 @@ pub struct ConfigFileSummary {
     pub name: ConfigFileName,
     /// How many bytes its text is, as written, references unresolved.
     pub bytes: usize,
-    /// Its permission bits.
     pub mode: FileMode,
-    /// The user ID that owns it.
     pub uid: u32,
-    /// The group ID that owns it.
     pub gid: u32,
     /// The Services its text references, by name.
     pub references: Vec<String>,

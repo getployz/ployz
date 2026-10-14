@@ -66,7 +66,7 @@ use crate::{Actor, registry, review};
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct CreateBranch {
-    /// The new Branch's ID.
+    /// Its ID, chosen by the caller.
     pub id: EnvironmentId,
     /// Its Parent; the Branch joins the Parent's Project.
     #[serde(default)]
@@ -99,7 +99,6 @@ pub struct CreateBranch {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct SetupCommand {
-    /// The Service it runs in.
     pub service: ServiceName,
     /// A shell command.
     pub command: String,
@@ -179,7 +178,6 @@ impl std::fmt::Display for NamedRow {
 #[serde(from = "String", into = "String")]
 #[ts(as = "String")]
 pub enum RowRef {
-    /// A row by its RowId.
     Row(RowId),
     /// A row's name, or a prefix of names.
     Name(String),
@@ -331,7 +329,7 @@ pub(crate) fn resolve_all<'asked>(
 pub struct Taken {
     /// The Parent the values came from.
     pub from: EnvironmentSummary,
-    /// Where they landed.
+    /// The Branch they were staged in.
     pub into: EnvironmentSummary,
     /// Nodes staged in `into`'s Working State.
     pub staged: Vec<NodeName>,
@@ -426,7 +424,7 @@ pub enum PlannedRole {
     LeftOut,
 }
 
-/// Read a Branch.
+/// Read a Branch's [`BranchView`]; refused as `invalid` unless the Environment is a Branch.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct BranchQuery {
