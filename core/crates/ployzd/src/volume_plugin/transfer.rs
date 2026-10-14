@@ -9,10 +9,22 @@ use std::{
 };
 
 use futures_util::StreamExt as _;
-use ployz_core::{ManagementAddress, SendStream};
+use ployz_core::{ManagementAddress, SendSource, SendStream};
+use ployzd::faults::{Identity, Want};
 use tokio::{io::AsyncWriteExt as _, process::Command};
 
 use super::{DockerVolumeName, VolumeStorage};
+
+/// The Volume and target a pull of `stream` lands.
+pub(super) fn pulling(stream: &SendStream) -> Identity<'_> {
+    let (SendSource::Full { target }
+    | SendSource::Incremental { target, .. }
+    | SendSource::Resume { target, .. }) = &stream.source;
+    Identity {
+        volume: &stream.name,
+        want: Want::Mirror { target },
+    }
+}
 
 /// A receive's `kill-daemon` fault fires once this much of the stream is in, so ZFS holds a
 /// partial receive to resume.
@@ -94,7 +106,8 @@ impl std::fmt::Display for ReceiveFailure {
 impl VolumeStorage {
     /// Pulls one stream into `fs`, then re-asserts and verifies the slot's bound and
     /// read-only state, which ZFS drops on an interrupted first receive. `fault` names
-    /// the kill point that fires once the stream passes [`KILL_AFTER_BYTES`].
+    /// the kill point that fires once the stream passes [`KILL_AFTER_BYTES`], for the
+    /// Volume and target `stream` names.
     pub(super) async fn receive(
         &self,
         from: ManagementAddress,
@@ -104,7 +117,8 @@ impl VolumeStorage {
         fault: &'static str,
     ) -> Result<(), ReceiveFailure> {
         let opened = self.open_stream(from, stream).await?;
-        self.receive_opened(opened, fs, bound, fault).await
+        self.receive_opened(opened, fs, bound, fault, pulling(stream))
+            .await
     }
 
     /// The writer's answer to `stream`, before anything touches the slot.
@@ -148,6 +162,7 @@ impl VolumeStorage {
         fs: &str,
         bound: u64,
         fault: &'static str,
+        identity: Identity<'_>,
     ) -> Result<(), ReceiveFailure> {
         let refquota = format!("refquota={bound}");
         let mut child = Command::new(&self.zfs)
@@ -191,7 +206,7 @@ impl VolumeStorage {
                     let before = received;
                     received += bytes.len() as u64;
                     if before < KILL_AFTER_BYTES && received >= KILL_AFTER_BYTES {
-                        ployzd::faults::kill_inside(fault);
+                        ployzd::faults::kill_inside(fault, Some(identity));
                     }
                 }
                 Err(error) => {

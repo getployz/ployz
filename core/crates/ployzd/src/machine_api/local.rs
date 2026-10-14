@@ -155,7 +155,7 @@ impl MachineService {
         if let Err(error) = self.require_joined() {
             return respond(error);
         }
-        crate::faults::apply(verb).await;
+        crate::faults::apply(verb, None).await;
         match self.local.plugin().call::<T>(route, request).await {
             Ok(reply) => respond(reply),
             Err(error) => respond(error),

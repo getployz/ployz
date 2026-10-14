@@ -10,6 +10,7 @@ use tonic::{Request, Response, Status};
 
 use super::{MachineService, expect, local_error, respond};
 use crate::{
+    faults::{Identity, Want},
     machine::LocalMachineError,
     volume_copy::{
         CUT_ROUTE, CopyRequest, CutRequest, DESTROY_ROUTE, FORGET_ROUTE, INSPECT_ROUTE, PULL_ROUTE,
@@ -39,7 +40,11 @@ impl MachineService {
         if let Err(error) = self.require_joined() {
             return respond(error);
         }
-        crate::faults::apply("SetVolumeCopy").await;
+        crate::faults::apply(
+            "SetVolumeCopy",
+            Some(Identity::new(&request.name, &request.want)),
+        )
+        .await;
         // Detached with the switch guard, so a caller that hangs up mid-drain does not
         // free the next request to plan against a cut still running.
         let service = self.clone();
@@ -80,7 +85,7 @@ impl MachineService {
             }
             CopyPlan::Transition(transition) => transition,
         };
-        crate::faults::apply(fault_point(transition)).await;
+        crate::faults::apply(fault_point(transition), Some(Identity::new(&name, &want))).await;
         match (transition, want) {
             (CopyTransition::WriterToWriter, WantedCopy::Writer { at, epoch, start }) => {
                 let copy = match copy {
@@ -112,10 +117,15 @@ impl MachineService {
                 Ok(copy)
             }
             (CopyTransition::MirrorToWriter, WantedCopy::Writer { at, epoch, start }) => {
-                let copy = self
-                    .plugin_copy(WRITER_ROUTE, &WriterRequest { name, at, epoch })
-                    .await?;
-                crate::faults::kill_inside("SetVolumeCopy.MirrorToWriter");
+                let request = WriterRequest { name, at, epoch };
+                let copy = self.plugin_copy(WRITER_ROUTE, &request).await?;
+                crate::faults::kill_inside(
+                    "SetVolumeCopy.MirrorToWriter",
+                    Some(Identity {
+                        volume: &request.name,
+                        want: Want::Writer { at, epoch },
+                    }),
+                );
                 if let Some(start) = start {
                     self.run_start(&start).await?;
                 }
