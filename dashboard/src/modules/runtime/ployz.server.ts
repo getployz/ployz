@@ -223,7 +223,11 @@ export function asSdkFailure(operation: string, cause: unknown): PloyzSdkError {
 
 /** The code of the runtime's RPC error a failure carries, such as "not_found"; undefined for any other failure. */
 export function rpcErrorCode(error: PloyzSdkError) {
-  const rpc = Schema.decodeUnknownOption(Schema.Struct({ code: Schema.String }))("cause" in error ? error.cause : undefined);
+  return rpcCode("cause" in error ? error.cause : undefined);
+}
+
+function rpcCode(cause: unknown) {
+  const rpc = Schema.decodeUnknownOption(Schema.Struct({ code: Schema.String }))(cause);
   return Option.isSome(rpc) ? rpc.value.code : undefined;
 }
 
@@ -319,7 +323,10 @@ function wrapClient(client: Client): PloyzSession {
   };
 }
 
-/** The first frame a runtime watch yields, failing when none comes within `timeoutMs`. */
+/**
+ * The first frame a runtime watch yields, failing when none comes within `timeoutMs`. Only that timeout and an
+ * unavailable transport are waitable; an error the Cluster answered with, or a watch it ended, is not.
+ */
 export function firstFrame(
   watch: (options: { readonly signal: AbortSignal }) => AsyncIterable<RuntimeWatchView>,
   timeoutMs: number,
@@ -329,11 +336,11 @@ export function firstFrame(
       for await (const frame of watch({ signal })) return frame;
       throw new Error("Runtime watch ended before the first frame");
     },
-    catch: (cause) => new RuntimeConnectionFailure({ cause }),
+    catch: (cause) => new RuntimeConnectionFailure({ cause, waitable: rpcCode(cause) === "unavailable" }),
   }).pipe(
     Effect.timeoutOrElse({
       duration: timeoutMs,
-      orElse: () => Effect.fail(new RuntimeConnectionFailure({ cause: new Error("Runtime watch timed out") })),
+      orElse: () => Effect.fail(new RuntimeConnectionFailure({ cause: new Error("Runtime watch timed out"), waitable: true })),
     }),
   );
 }

@@ -1237,14 +1237,14 @@ export const observeMembers = Effect.fn("VolumeRun.observe")(function* (ctx: Run
 });
 
 /**
- * observeMembers, or null when Cloud could not reach the Cluster, which a forward release waits out like a silent
- * Server.
+ * observeMembers, or null when Cloud could not reach the Cluster or it did not answer in time, which a forward release
+ * waits out like a silent Server.
  */
 export const observeReachable = Effect.fn("VolumeRun.observeReachable")(function* (ctx: RunContext, inngestRunId: string) {
   yield* requireOwner(ctx.id, inngestRunId);
   return yield* observeVolumeMembers(ctx.organizationId, ctx.dockerVolume, ctx).pipe(
     Effect.catchIf(
-      (error) => error instanceof ClusterUnreachable || error instanceof RuntimeConnectionFailure,
+      (error) => error instanceof ClusterUnreachable || (error instanceof RuntimeConnectionFailure && error.waitable),
       () => Effect.succeed(null),
     ),
   );
