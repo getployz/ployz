@@ -11,10 +11,12 @@ use tonic::{Request, Response, Status};
 use super::{MachineService, expect, local_error, respond};
 use crate::{
     docker::FloorTurn,
+    faults::{Identity, Want},
     machine::{CutRefusal, LocalMachineError},
     volume_copy::{
-        CUT_ROUTE, CopyRequest, CutRequest, DESTROY_ROUTE, FORGET_ROUTE, INSPECT_ROUTE, PULL_ROUTE,
-        PullRequest, SNAPSHOT_ROUTE, SnapshotRequest, WRITER_ROUTE, WriterRequest,
+        CUT_ROUTE, CopyRequest, CutRequest, DESTROY_ROUTE, FORGET_ROUTE, ForgetRequest,
+        INSPECT_ROUTE, PULL_ROUTE, PullRequest, SNAPSHOT_ROUTE, SnapshotRequest, WRITER_ROUTE,
+        WriterRequest,
     },
 };
 
@@ -46,7 +48,11 @@ impl MachineService {
         let guard = std::sync::Arc::clone(&self.switch_mutation)
             .lock_owned()
             .await;
-        crate::faults::apply("SetVolumeCopy").await;
+        crate::faults::apply(
+            "SetVolumeCopy",
+            Some(Identity::new(&request.name, &request.want, request.r#gen)),
+        )
+        .await;
         // Detached with the switch guard, so a caller that hangs up mid-drain does not
         // free the next request to plan against a cut still running.
         let service = self.clone();
@@ -96,7 +102,11 @@ impl MachineService {
             }
             CopyPlan::Transition(transition) => transition,
         };
-        crate::faults::apply(fault_point(transition)).await;
+        crate::faults::apply(
+            fault_point(transition),
+            Some(Identity::new(&name, &want, r#gen)),
+        )
+        .await;
         match (transition, want) {
             (CopyTransition::WriterToWriter, WantedCopy::Writer { at, epoch, start }) => {
                 let copy = match copy {
@@ -109,6 +119,7 @@ impl MachineService {
                             name: name.clone(),
                             at,
                             epoch,
+                            r#gen,
                         };
                         self.plugin_copy(WRITER_ROUTE, &request).await?
                     }
@@ -132,9 +143,17 @@ impl MachineService {
                     name: name.clone(),
                     at,
                     epoch,
+                    r#gen,
                 };
                 let copy = self.plugin_copy(WRITER_ROUTE, &request).await?;
-                crate::faults::kill_inside("SetVolumeCopy.MirrorToWriter");
+                crate::faults::kill_inside(
+                    "SetVolumeCopy.MirrorToWriter",
+                    Some(Identity {
+                        volume: &name,
+                        want: Want::Writer { at, epoch },
+                        r#gen,
+                    }),
+                );
                 if let Some(start) = start {
                     self.run_start(start, &name, r#gen).await?;
                 }
@@ -145,10 +164,20 @@ impl MachineService {
                 let request = CutRequest {
                     name: name.clone(),
                     target,
+                    r#gen,
                 };
                 let cut = self
                     .local
                     .cut_volume_copy(name.clone(), r#gen, drain, move || async move {
+                        // This closure runs only past the Busy re-check, so the line means every
+                        // holder is stopped, whoever signalled it. The verify harness credits that
+                        // moment by this line's Volume, target and gen, after its restart cursor.
+                        tracing::info!(
+                            volume = %request.name,
+                            target = %request.target,
+                            r#gen = %request.r#gen,
+                            "cut: holders stopped"
+                        );
                         plugin
                             .call::<Copy>(CUT_ROUTE, &request)
                             .await
@@ -169,11 +198,19 @@ impl MachineService {
                 }
             }
             (CopyTransition::WriterToSnapshot, WantedCopy::Snapshot { name: snapshot }) => {
-                self.plugin_copy(SNAPSHOT_ROUTE, &SnapshotRequest { name, snapshot })
-                    .await
+                self.plugin_copy(
+                    SNAPSHOT_ROUTE,
+                    &SnapshotRequest {
+                        name,
+                        snapshot,
+                        r#gen,
+                    },
+                )
+                .await
             }
             (CopyTransition::WriterToForget, WantedCopy::Forget) => {
-                self.plugin_copy(FORGET_ROUTE, &CopyRequest { name }).await
+                self.plugin_copy(FORGET_ROUTE, &ForgetRequest { name, r#gen })
+                    .await
             }
             (
                 CopyTransition::MirrorToMirror | CopyTransition::NoneToMirror,
@@ -183,11 +220,20 @@ impl MachineService {
                     ..
                 },
             ) => {
-                self.plugin_copy(PULL_ROUTE, &PullRequest { name, from, target })
-                    .await
+                self.plugin_copy(
+                    PULL_ROUTE,
+                    &PullRequest {
+                        name,
+                        from,
+                        target,
+                        r#gen,
+                    },
+                )
+                .await
             }
             (CopyTransition::MirrorToForget | CopyTransition::SeedToForget, WantedCopy::Forget) => {
-                self.plugin_copy(DESTROY_ROUTE, &CopyRequest { name }).await
+                self.plugin_copy(DESTROY_ROUTE, &ForgetRequest { name, r#gen })
+                    .await
             }
             (transition, want) => {
                 unreachable!("the planner paired {transition:?} with {want:?}")

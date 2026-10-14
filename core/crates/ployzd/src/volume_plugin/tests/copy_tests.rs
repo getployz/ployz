@@ -1454,6 +1454,7 @@ async fn a_receive_that_stalls_answers_only_once_its_child_is_gone() {
                 SLOT_FS,
                 BOUND,
                 "test",
+                ployz_core::VolumeGen::default(),
                 &Stop::unowned(),
             )
             .await;
@@ -2902,6 +2903,193 @@ async fn a_snapshot_resent_at_its_want_prunes_past_the_newest_two() {
         "{reply}"
     );
     assert_eq!(snapshot_names(&a.test, ROOT), ["w-1-3", "w-1-2"]);
+}
+
+/// Each kill aborts the plugin, so each parent re-runs this binary with one ignored child
+/// armed through its own fault file and reads the child's line from its stderr.
+#[cfg(feature = "verify-faults")]
+mod fault_lines {
+    use std::os::unix::process::ExitStatusExt;
+
+    use super::*;
+
+    const SIGABRT: i32 = 6;
+
+    fn laned(mut request: Value) -> Value {
+        request
+            .as_object_mut()
+            .unwrap()
+            .insert("gen".into(), json!(9));
+        request
+    }
+
+    /// The `fault:` lines the ignored test `child` logged before `kill-daemon:<verb>`
+    /// aborted it.
+    fn killed(child: &str, verb: &str) -> Vec<String> {
+        let child = format!("volume_plugin::tests::copy_tests::fault_lines::{child}");
+        let armed = tempfile::tempdir().unwrap();
+        let fault = armed.path().join("fault");
+        fs::write(&fault, format!("kill-daemon:{verb}")).unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &child, "--ignored", "--nocapture"])
+            .env(ployzd::faults::PATH_ENV, &fault)
+            .env_remove(ployzd::diag::ENV)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            output.status.signal(),
+            Some(SIGABRT),
+            "{child} was not aborted:\n{}\n{stderr}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        stderr
+            .lines()
+            .filter(|line| line.contains("fault:"))
+            .map(str::to_owned)
+            .collect()
+    }
+
+    #[test]
+    fn a_cut_kill_line_names_the_volume_and_the_target() {
+        assert_eq!(
+            killed("a_cut_under_a_kill", "SetVolumeCopy.WriterToMirror"),
+            [
+                r#" WARN fault: killing daemon inside the effect verb="SetVolumeCopy.WriterToMirror" volume=data target=f-1 gen=9"#
+            ]
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "a child of a_cut_kill_line_names_the_volume_and_the_target"]
+    async fn a_cut_under_a_kill() {
+        ployzd::diag::init(None).unwrap();
+        let test = TestDir::new();
+        let (socket, _server) = writer(&test, &[("w-1-1", 11)]);
+        let request = json!({"name": "data", "target": "f-1", "gen": 9});
+        let answered = post(&socket, "/Volume.Copy.Cut", request).await;
+        panic!("the cut outlived its kill: {answered}");
+    }
+
+    #[test]
+    fn a_snapshot_kill_line_names_the_volume_and_the_snapshot() {
+        assert_eq!(
+            killed("a_snapshot_under_a_kill", "SetVolumeCopy.WriterToSnapshot"),
+            [
+                r#" WARN fault: killing daemon inside the effect verb="SetVolumeCopy.WriterToSnapshot" volume=data snapshot=w-1-3 gen=9"#
+            ]
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "a child of a_snapshot_kill_line_names_the_volume_and_the_snapshot"]
+    async fn a_snapshot_under_a_kill() {
+        ployzd::diag::init(None).unwrap();
+        let test = TestDir::new();
+        let (socket, _server) = writer(&test, &[("w-1-2", 12), ("w-1-1", 11)]);
+        let request = json!({"name": "data", "snapshot": "w-1-3", "gen": 9});
+        let answered = post(&socket, "/Volume.Copy.Snapshot", request).await;
+        panic!("the snapshot outlived its kill: {answered}");
+    }
+
+    #[test]
+    fn a_forget_kill_line_names_the_volume() {
+        assert_eq!(
+            killed("a_forget_under_a_kill", "SetVolumeCopy.WriterToForget"),
+            [
+                r#" WARN fault: killing daemon inside the effect verb="SetVolumeCopy.WriterToForget" volume=data gen=9"#
+            ]
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "a child of a_forget_kill_line_names_the_volume"]
+    async fn a_forget_under_a_kill() {
+        ployzd::diag::init(None).unwrap();
+        let test = TestDir::new();
+        let (socket, _server) = writer(&test, &[("w-1-2", 12), ("w-1-1", 11)]);
+        let answered = post(
+            &socket,
+            "/Volume.Copy.Forget",
+            json!({"name": "data", "gen": 9}),
+        )
+        .await;
+        panic!("the forget outlived its kill: {answered}");
+    }
+
+    #[test]
+    fn a_first_pull_kill_line_names_the_volume_and_the_target() {
+        assert_eq!(
+            killed("a_first_pull_under_a_kill", "SetVolumeCopy.NoneToMirror"),
+            [
+                r#" WARN fault: killing daemon inside the effect verb="SetVolumeCopy.NoneToMirror" volume=data target=w-1-1 gen=9"#
+            ]
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "a child of a_first_pull_kill_line_names_the_volume_and_the_target"]
+    async fn a_first_pull_under_a_kill() {
+        ployzd::diag::init(None).unwrap();
+        let source = Source::start(Some(BOUND), "snapshot w-1-1 77\n").await;
+        let test = TestDir::new();
+        let (socket, _server) = puller(&test, &["root"], source.port);
+        let answered = post(&socket, "/Volume.Copy.Pull", laned(pull("w-1-1"))).await;
+        panic!("the first pull outlived its kill: {answered}");
+    }
+
+    #[test]
+    fn a_receive_kill_line_names_the_volume_and_the_target() {
+        assert_eq!(
+            killed("a_receive_under_a_kill", "SetVolumeCopy.MirrorToMirror"),
+            [
+                r#" WARN fault: killing daemon inside the effect verb="SetVolumeCopy.MirrorToMirror" volume=data target=w-1-1 gen=9"#
+            ]
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "a child of a_receive_kill_line_names_the_volume_and_the_target"]
+    async fn a_receive_under_a_kill() {
+        ployzd::diag::init(None).unwrap();
+        let stream = format!("snapshot w-1-1 77\n{}", "x".repeat(2 << 20));
+        let source = Source::start(Some(BOUND), &stream).await;
+        let test = TestDir::new();
+        fs::create_dir_all(test.0.join("props")).unwrap();
+        fs::write(test.0.join("props").join("receive-fails"), "").unwrap();
+        let (socket, _server) = puller(&test, &["root"], source.port);
+        post(&socket, "/Volume.Copy.Pull", laned(pull("w-1-1"))).await;
+        let settled = landed(&socket, "w-1-1").await;
+        panic!("the receive outlived its kill: {settled}");
+    }
+
+    #[test]
+    fn a_slot_destroy_kill_line_names_the_volume() {
+        assert_eq!(
+            killed(
+                "a_slot_destroy_under_a_kill",
+                "SetVolumeCopy.MirrorToForget"
+            ),
+            [
+                r#" WARN fault: killing daemon inside the effect verb="SetVolumeCopy.MirrorToForget" volume=data gen=9"#
+            ]
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "a child of a_slot_destroy_kill_line_names_the_volume"]
+    async fn a_slot_destroy_under_a_kill() {
+        ployzd::diag::init(None).unwrap();
+        let test = TestDir::new();
+        let (socket, _server) = slot(&test, &[("w-1-1", 11)]);
+        let answered = post(
+            &socket,
+            "/Volume.Copy.Destroy",
+            json!({"name": "data", "gen": 9}),
+        )
+        .await;
+        panic!("the slot destroy outlived its kill: {answered}");
+    }
 }
 
 /// A head writer path the crash table stops after each of its effects.
