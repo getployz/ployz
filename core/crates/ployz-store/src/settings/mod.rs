@@ -638,15 +638,16 @@ impl ServiceSetting {
         Ok(())
     }
 
-    /// Text that spells a number becomes the number, for numeric Settings.
+    /// Text that spells a number becomes the number, for numeric Settings, and text
+    /// that spells an object becomes the object, for object Settings.
     fn coerce(self, value: Value) -> Value {
-        let numeric = matches!(
-            self.expected().get("type").and_then(Value::as_str),
-            Some("integer" | "number")
-        );
-        match numeric {
-            true => self.coerce_number(value),
-            false => value,
+        match self.expected().get("type").and_then(Value::as_str) {
+            Some("integer" | "number") => self.coerce_number(value),
+            Some("object") => match value.as_str().map(serde_json::from_str::<Value>) {
+                Some(Ok(object @ Value::Object(_))) => object,
+                _ => value,
+            },
+            _ => value,
         }
     }
 
