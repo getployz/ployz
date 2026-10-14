@@ -67,6 +67,10 @@ the switch also stops its web server, while the CLI leaves it serving anyone who
 directly until the next deploy. To keep the internet out, also close ports 80 and 443 in its
 firewall.
 
+When no other online server with a public IP takes web traffic, turning it off takes your domains
+dark, so the CLI asks first. Add `--yes` to skip the question. Without a terminal, or with `--json`,
+it refuses and names the command with `--yes`. Turning web traffic on never asks.
+
 ## When a server goes down
 
 > [!WARNING]
