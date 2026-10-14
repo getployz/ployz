@@ -14,9 +14,9 @@ without installing anything.
 
 A service with a public address leads with its [uptime](uptime.md) and **Response time**. Then
 come **CPU**, **Memory**, **Network** and **Disk**, all on one time axis, so hovering one chart
-moves the cursor on every chart. A dashed line on **CPU** and **Memory** marks the service's
-limit. A vertical rule marks each deploy, and a marker shows each OOM kill, exit and restart. A
-service with a managed volume ends with a **Managed volume** row that names the volume and its
+moves the cursor on every chart. **CPU** reads as a share of one core, so 100% is one full
+core. A dashed line on **CPU** and **Memory** marks the service's limit. A vertical rule marks
+each deploy, and a marker shows each OOM kill, exit and restart. A service with a managed volume ends with a **Managed volume** row that names the volume and its
 size limit.
 
 The charts cover the last hour. Pick a range from 5 minutes to 30 days with the same picker as
