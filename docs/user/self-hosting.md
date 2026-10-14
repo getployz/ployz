@@ -81,11 +81,12 @@ or your GitHub organization:
 | Webhook URL | `https://cloud.example.com/api/github/webhook`, with **Active** checked |
 | Webhook secret | The output of `openssl rand -hex 32`. Keep it for step 2. |
 | Repository permissions | Contents: Read-only. Checks: Read and write. Metadata: Read-only. Actions: Read and write. Pull requests: Read-only. |
+| Organization permissions | Members: Read-only. Ployz Cloud uses it to check that the person connecting a GitHub organization is one of its owners. |
 | Subscribe to events | Push, Check suite, Workflow run, Pull request |
 
 Then generate a private key and a client secret on the app's page, and note its **App ID**, its
 **Client ID**, and its slug, the name in its URL `github.com/apps/<slug>`. Ployz Cloud uses the
-app's client ID and secret to ask GitHub which installations the person connecting can reach.
+app's client ID and secret to ask GitHub which installations the person connecting owns.
 
 ## 2. Configure
 

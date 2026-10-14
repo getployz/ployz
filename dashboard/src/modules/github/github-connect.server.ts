@@ -4,6 +4,7 @@ import { Effect, Redacted, Schema } from "effect";
 import {
   linkGithubInstallation,
   listCachedGithubRepositoriesForOrganization,
+  listGithubInstallationsById,
   listGithubInstallationsForOrganization,
   upsertGithubInstallation,
 } from "#/modules/github/github.repository";
@@ -20,11 +21,20 @@ import { Forbidden, Validation } from "#/server/public-error";
 
 const TOKEN_TTL_MS = 15 * 60_000;
 
-const ConnectState = Schema.Struct({ organizationId: Schema.String, userId: Schema.String, expiresAt: Schema.Number });
+const ConnectState = Schema.Struct({
+  organizationId: Schema.String,
+  userId: Schema.String,
+  expiresAt: Schema.Number,
+  /** "Use existing" asks for every installation the user reaches; a fresh install names one installation. */
+  existing: Schema.Boolean,
+});
+/** Ids only, so a long offer still fits a URL; the picker reads display data from the stored installations. */
 const ConnectOffer = Schema.Struct({
-  ...ConnectState.fields,
+  organizationId: Schema.String,
+  userId: Schema.String,
+  expiresAt: Schema.Number,
   githubLogin: Schema.String,
-  accounts: Schema.Array(Schema.Struct({ installationId: githubIdSchema, login: Schema.String, avatarUrl: Schema.NullOr(Schema.String) })),
+  installationIds: Schema.Array(githubIdSchema),
 });
 
 type Signed<S extends Schema.Top> = { readonly purpose: string; readonly schema: S };
@@ -61,7 +71,7 @@ const settingsPath = (organizationSlug: string, search: { connect: ConnectNotice
 export const startGithubConnect = Effect.fn("GithubConnect.start")(function* (actor: Actor, organizationSlug: string, existing: boolean) {
   const config = yield* AppConfig;
   const { organization } = yield* requireAccess(actor, organizationSlug, "manage");
-  const state = yield* sign(STATE, { organizationId: organization.id, userId: actor.userId, expiresAt: Date.now() + TOKEN_TTL_MS });
+  const state = yield* sign(STATE, { organizationId: organization.id, userId: actor.userId, expiresAt: Date.now() + TOKEN_TTL_MS, existing });
   if (!existing) return `${getGithubAppInstallUrl(config.github)}?${new URLSearchParams({ state }).toString()}`;
   return `${config.github.origins.web}/login/oauth/authorize?${new URLSearchParams({
     client_id: config.github.appClientId,
@@ -84,6 +94,54 @@ const linkChosen = Effect.fn("GithubConnect.linkChosen")(function* (input: {
   );
 });
 
+const nonEmptyString = Schema.String.check(Schema.isMinLength(1));
+const githubUserSchema = Schema.Struct({ login: nonEmptyString });
+const userInstallationsSchema = Schema.Struct({
+  installations: Schema.Array(Schema.Struct({
+    id: githubIdSchema,
+    account: Schema.Struct({ login: nonEmptyString, type: nonEmptyString, avatar_url: Schema.NullOr(Schema.String) }),
+    suspended_at: Schema.NullOr(Schema.String),
+  })),
+});
+const membershipSchema = Schema.Struct({ state: Schema.String, role: Schema.String });
+type UserInstallation = typeof userInstallationsSchema.Type["installations"][number];
+const INSTALLATIONS_PAGE_SIZE = 100;
+const MAX_INSTALLATION_PAGES = 10;
+
+/**
+ * Reads, as the person who just authorized the App, who they are and which installations they reach.
+ * Reaching an installation is not owning it: a collaborator on one repository reaches it too, so linking asks `administers`.
+ * The user token lives only in this closure and dies with the callback.
+ */
+const authorizedGithubUser = Effect.fn("GithubConnect.authorizedUser")(function* (code: string) {
+  const api = yield* GithubApi;
+  const token = yield* api.exchangeUserCode(code);
+  const { login } = yield* api.userJson({ token, path: "/user", operation: "list_user_installations", schema: githubUserSchema });
+  const installations: UserInstallation[] = [];
+  for (let page = 1; page <= MAX_INSTALLATION_PAGES; page++) {
+    const listed = yield* api.userJson({
+      token,
+      path: `/user/installations?per_page=${INSTALLATIONS_PAGE_SIZE}&page=${page}`,
+      operation: "list_user_installations",
+      schema: userInstallationsSchema,
+    });
+    installations.push(...listed.installations);
+    if (listed.installations.length < INSTALLATIONS_PAGE_SIZE) break;
+  }
+  const administers = (account: UserInstallation["account"]) => account.type === "Organization"
+    ? api.userJson({
+      token,
+      path: `/user/memberships/orgs/${encodeURIComponent(account.login)}`,
+      operation: "read_user_membership",
+      schema: membershipSchema,
+    }).pipe(
+      Effect.map((membership) => membership.state === "active" && membership.role === "admin"),
+      Effect.catchIf((error) => error.code === "not_found", () => Effect.succeed(false)),
+    )
+    : Effect.succeed(account.type === "User" && account.login.toLowerCase() === login.toLowerCase());
+  return { login, installations, administers };
+});
+
 export const completeGithubConnect = Effect.fn("GithubConnect.complete")(function* (actor: Actor, params: URLSearchParams) {
   const state = yield* verify(STATE, params.get("state") ?? "");
   if (state === null || state.userId !== actor.userId) {
@@ -91,23 +149,31 @@ export const completeGithubConnect = Effect.fn("GithubConnect.complete")(functio
   }
   const { organization } = yield* requireAccessById(actor, state.organizationId, "manage");
   const land = (search: Parameters<typeof settingsPath>[1]) => settingsPath(organization.slug, search);
+  // An org member asked an owner to install; nothing is theirs to link yet, whatever else the redirect carries.
+  if (params.get("setup_action") === "request") return land({ connect: "pending" });
   const code = params.get("code");
-  if (code === null) return land({ connect: params.get("setup_action") === "request" ? "pending" : "failed" });
+  const requestedInstallationId = params.get("installation_id");
+  if (code === null || (!state.existing && requestedInstallationId === null)) return land({ connect: "failed" });
 
-  const api = yield* GithubApi;
-  const authorized = yield* api.userInstallations(code).pipe(
+  const authorized = yield* authorizedGithubUser(code).pipe(
     Effect.tapError((error) => Effect.logWarning("GitHub did not complete a connect.", error)),
     Effect.orElseSucceed(() => null),
   );
   if (authorized === null) return land({ connect: "failed" });
   const reachable = authorized.installations.filter((installation) => installation.suspended_at === null);
-  const requestedInstallationId = params.get("installation_id");
-  const chosen = requestedInstallationId === null ? reachable : reachable.filter((installation) => String(installation.id) === requestedInstallationId);
-  if (requestedInstallationId !== null && chosen.length === 0) return land({ connect: "not-yours" });
+  const chosen = state.existing ? reachable : reachable.filter((installation) => String(installation.id) === requestedInstallationId);
+  if (!state.existing && chosen.length === 0) return land({ connect: "not-yours" });
 
   const linked = new Set((yield* listGithubInstallationsForOrganization(organization.id)).map((row) => row.installationId));
-  if (requestedInstallationId !== null && linked.has(Number(requestedInstallationId))) return land({ connect: "linked" });
-  const candidates = chosen.filter((installation) => !linked.has(installation.id));
+  if (!state.existing && linked.has(Number(requestedInstallationId))) return land({ connect: "linked" });
+  const unlinked = chosen.filter((installation) => !linked.has(installation.id));
+  const owned = yield* Effect.forEach(unlinked, (installation) => authorized.administers(installation.account), { concurrency: 8 }).pipe(
+    Effect.tapError((error) => Effect.logWarning("GitHub did not say who owns an account during a connect.", error)),
+    Effect.orElseSucceed(() => null),
+  );
+  if (owned === null) return land({ connect: "failed" });
+  const candidates = unlinked.filter((_, index) => owned[index]);
+  if (candidates.length === 0) return land({ connect: unlinked.length > 0 ? "not-admin" : "none" });
   for (const installation of candidates) {
     yield* upsertGithubInstallation({
       installationId: installation.id,
@@ -116,17 +182,13 @@ export const completeGithubConnect = Effect.fn("GithubConnect.complete")(functio
       accountAvatarUrl: installation.account.avatar_url,
     });
   }
-  const [only, ...more] = candidates;
-  if (only === undefined) return land({ connect: "none" });
   const base = { organizationId: organization.id, userId: actor.userId, githubLogin: authorized.login };
-  if (more.length === 0) {
-    yield* linkChosen({ ...base, installationIds: [only.id] });
+  const installationIds = candidates.map((installation) => installation.id);
+  if (installationIds.length === 1) {
+    yield* linkChosen({ ...base, installationIds });
     return land({ connect: "linked" });
   }
-  const accounts = candidates.map((installation) => ({
-    installationId: installation.id, login: installation.account.login, avatarUrl: installation.account.avatar_url,
-  }));
-  const offer = yield* sign(OFFER, { ...base, accounts, expiresAt: Date.now() + TOKEN_TTL_MS });
+  const offer = yield* sign(OFFER, { ...base, installationIds, expiresAt: Date.now() + TOKEN_TTL_MS });
   return land({ offer });
 });
 
@@ -140,7 +202,12 @@ const readOffer = Effect.fn("GithubConnect.readOffer")(function* (actor: Actor, 
 });
 
 export const listGithubOffer = Effect.fn("GithubConnect.listOffer")(function* (actor: Actor, organizationSlug: string, token: string) {
-  return (yield* readOffer(actor, organizationSlug, token)).accounts;
+  const offer = yield* readOffer(actor, organizationSlug, token);
+  const rows = new Map((yield* listGithubInstallationsById(offer.installationIds)).map((row) => [row.installationId, row]));
+  return offer.installationIds.flatMap((installationId) => {
+    const row = rows.get(installationId);
+    return row ? [{ installationId, login: row.accountLogin, avatarUrl: row.accountAvatarUrl }] : [];
+  });
 });
 
 export const acceptGithubOffer = Effect.fn("GithubConnect.acceptOffer")(function* (
@@ -148,7 +215,7 @@ export const acceptGithubOffer = Effect.fn("GithubConnect.acceptOffer")(function
 ) {
   const offer = yield* readOffer(actor, input.organizationSlug, input.offer);
   const picked = [...new Set(input.installationIds)];
-  if (picked.length === 0 || picked.some((id) => !offer.accounts.some((account) => account.installationId === id))) {
+  if (picked.length === 0 || picked.some((id) => !offer.installationIds.includes(id))) {
     return yield* new Validation({ message: "Pick from the accounts GitHub offered.", userFacing: true });
   }
   yield* linkChosen({ organizationId: offer.organizationId, userId: offer.userId, githubLogin: offer.githubLogin, installationIds: picked });

@@ -198,7 +198,8 @@ function github(state: { branchGone: boolean; heads: number; archives: string[] 
     },
     app: () => Effect.die("unused"),
     installationRepositories: () => Effect.die("unused"),
-    userInstallations: () => Effect.die("unused"),
+    exchangeUserCode: () => Effect.die("unused"),
+    userJson: () => Effect.die("unused"),
   };
 }
 

@@ -31,6 +31,7 @@ const NOTICES = {
   linked: { title: "GitHub connected", description: "Repositories appear in a moment.", tone: "default" },
   none: { title: "Nothing new to connect", description: "Every installation you can reach is already here.", tone: "default" },
   "not-yours": { title: "Not connected", description: "GitHub doesn't list that installation for you.", tone: "destructive" },
+  "not-admin": { title: "Not an owner", description: "Only an owner of a GitHub account can connect it.", tone: "destructive" },
   pending: { title: "Waiting on GitHub", description: "An owner of that GitHub account has to approve the app. Then use an existing installation.", tone: "default" },
   failed: { title: "GitHub didn't finish", description: "Nothing was connected. Try again.", tone: "destructive" },
 } satisfies Record<ConnectNotice, { title: string; description: string; tone: "default" | "destructive" }>;

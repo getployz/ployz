@@ -62,7 +62,8 @@ export type GithubObservationOperation =
   | "create_check_run"
   | "update_check_run"
   | "exchange_user_code"
-  | "list_user_installations";
+  | "list_user_installations"
+  | "read_user_membership";
 
 export type GithubObservationErrorCode =
   | "invalid_input"
@@ -180,18 +181,6 @@ const installationRepositoriesSchema = Schema.Struct({
 });
 export type GithubInstallationRepositoriesResponse = typeof installationRepositoriesSchema.Type;
 const userAccessTokenSchema = Schema.Struct({ access_token: nonEmptyString });
-const userSchema = Schema.Struct({ login: nonEmptyString });
-const userInstallationsSchema = Schema.Struct({
-  installations: Schema.Array(Schema.Struct({
-    id: githubIdSchema,
-    account: Schema.Struct({ login: nonEmptyString, type: nonEmptyString, avatar_url: Schema.NullOr(Schema.String) }),
-    suspended_at: Schema.NullOr(Schema.String),
-  })),
-});
-export type GithubUserInstallations = {
-  readonly login: string;
-  readonly installations: ReadonlyArray<typeof userInstallationsSchema.Type["installations"][number]>;
-};
 export const GITHUB_REPOSITORIES_PAGE_SIZE = 100;
 
 export type GithubJsonRequest<S extends Schema.ConstraintDecoder<unknown>> = {
@@ -210,6 +199,14 @@ export type GithubAppRequest<S extends Schema.ConstraintDecoder<unknown>> = {
   schema: S;
 };
 
+/** A read as the person who authorized the App, with the token their OAuth code exchanged for. */
+export type GithubUserRequest<S extends Schema.ConstraintDecoder<unknown>> = {
+  token: Redacted.Redacted<string>;
+  path: `/user${string}`;
+  operation: GithubObservationOperation;
+  schema: S;
+};
+
 export type GithubReadError = GithubObservationError | GithubDisconnected;
 
 export interface GithubApiService {
@@ -224,7 +221,10 @@ export interface GithubApiService {
   readonly installationRepositories: (
     input: { installationId: number; page: number },
   ) => Effect.Effect<GithubInstallationRepositoriesResponse, GithubObservationError>;
-  readonly userInstallations: (code: string) => Effect.Effect<GithubUserInstallations, GithubObservationError>;
+  readonly exchangeUserCode: (code: string) => Effect.Effect<Redacted.Redacted<string>, GithubObservationError>;
+  readonly userJson: <S extends Schema.ConstraintDecoder<unknown>>(
+    input: GithubUserRequest<S>,
+  ) => Effect.Effect<S["Type"], GithubObservationError>;
 }
 
 export class GithubApi extends Context.Service<GithubApi, GithubApiService>()(
@@ -653,7 +653,7 @@ export const GithubApiLive = Layer.effect(
         catch: () => githubObservationError({ code: "request_failed", operation: "download_source", retriable: false }),
       });
     });
-    const userInstallations: GithubApiService["userInstallations"] = Effect.fn("GithubApi.userInstallations")(function* (code) {
+    const exchangeUserCode: GithubApiService["exchangeUserCode"] = Effect.fn("GithubApi.exchangeUserCode")(function* (code) {
       const failed = (status?: number) =>
         githubObservationError({ code: "request_failed", operation: "exchange_user_code", status, retriable: false });
       const exchanged = yield* Effect.tryPromise({
@@ -671,12 +671,13 @@ export const GithubApiLive = Layer.effect(
         catch: (error) => error instanceof GithubObservationError ? error : failed(),
       });
       const { access_token: token } = yield* Schema.decodeUnknownEffect(userAccessTokenSchema)(exchanged).pipe(Effect.mapError(() => failed()));
-      const user = yield* request({ token, path: "/user", operation: "list_user_installations", schema: userSchema });
-      const listed = yield* request({
-        token, path: "/user/installations?per_page=100", operation: "list_user_installations", schema: userInstallationsSchema,
-      });
-      return { login: user.login, installations: listed.installations };
+      return Redacted.make(token);
     });
-    return { json, app, installationRepositories, archive, userInstallations };
+    const userJson: GithubApiService["userJson"] = Effect.fn("GithubApi.userJson")(
+      function* <S extends Schema.ConstraintDecoder<unknown>>({ token, ...input }: GithubUserRequest<S>) {
+        return yield* request({ ...input, token: Redacted.value(token) });
+      },
+    );
+    return { json, app, installationRepositories, archive, exchangeUserCode, userJson };
   }),
 );

@@ -126,8 +126,9 @@ members see the list.
 
 One installation can be connected to more than one organization. To connect one you already
 installed, open **Settings → GitHub** in the other organization and click **Use existing
-installation**. Ployz connects only installations GitHub lists for you. When GitHub lists
-several new ones, Ployz asks which to connect.
+installation**. Ployz connects only GitHub accounts you own: your own user account, or a GitHub
+organization where you are an owner. Collaborating on one of its repositories is not enough. When
+you own several new ones, Ployz asks which to connect.
 
 To stop an organization from using an account, click **Disconnect** on its row, or run
 `ployz github ls` and then `ployz github disconnect <login>`. Builds that organization has in

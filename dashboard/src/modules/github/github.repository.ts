@@ -111,6 +111,18 @@ export const getGithubInstallation = Effect.fn("Github.getInstallation")(
   },
 );
 
+export const listGithubInstallationsById = Effect.fn("Github.listInstallationsById")(
+  function* (installationIds: ReadonlyArray<number>) {
+    if (installationIds.length === 0) return [];
+    const database = yield* Database;
+    return yield* database.drizzle.select({
+      installationId: schemaGithubInstallation.installationId,
+      accountLogin: schemaGithubInstallation.accountLogin,
+      accountAvatarUrl: schemaGithubInstallation.accountAvatarUrl,
+    }).from(schemaGithubInstallation).where(inArray(schemaGithubInstallation.installationId, [...installationIds]));
+  },
+);
+
 export const listAllGithubInstallationIds = Effect.fn(
   "Github.listAllInstallationIds",
 )(function* () {
