@@ -119,8 +119,10 @@ if [ -e '{props}/fail-command' ] && [ "$(cat '{props}/fail-command')" = "$*" ]; 
   fi
 fi
 # A test writes the exact argument line of one command into props/stall-command; that
-# command waits until the marker goes.
+# command waits until the marker goes, and writes props/stalled once it waits, so a test
+# can tell a stall that began after it wrote the marker from that command's earlier runs.
 if [ -e '{props}/stall-command' ] && [ "$(cat '{props}/stall-command')" = "$*" ]; then
+  printf '%s\n' "$*" > '{props}/stalled'
   while [ -e '{props}/stall-command' ]; do sleep 0.01; done
 fi
 case "$*" in

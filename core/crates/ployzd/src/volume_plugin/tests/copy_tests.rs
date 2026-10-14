@@ -1138,18 +1138,17 @@ async fn departure_stops_a_pull_into_a_slot_it_keeps() {
         let pid = receive_pid(&test).await;
         let scan =
             "list -Hp -o name,refquota,used,usedbydataset,mountpoint,mounted,readonly -r tank";
+        // The pull ran this scan before it answered, so only a stall proves the departure's.
+        let stalled = test.0.join("props/stalled");
+        let _ = fs::remove_file(&stalled);
         fs::write(test.0.join("props/stall-command"), scan).unwrap();
 
         let departure = tokio::spawn({
             let socket = socket.clone();
             async move { post(&socket, "/Storage.Demote", json!(null)).await }
         });
-        let scanning = format!("zfs {scan}");
         eventually(&format!("{mark}: the departure's scan"), || {
-            fs::read_to_string(test.0.join("commands"))
-                .unwrap_or_default()
-                .lines()
-                .any(|line| line == scanning)
+            fs::read_to_string(&stalled).is_ok_and(|line| line.trim() == scan)
         })
         .await;
         // A receive still running at the scan lands now, before the departure judges.
