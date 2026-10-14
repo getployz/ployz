@@ -132,16 +132,19 @@ const KIND_WORDS = {
   deploy: "deploy",
 } satisfies Record<VolumeRunKind, string>;
 
+// A Machine may already be destroying the copy, and no floor retracts that, so a release cannot promise to stop it.
 export const volumeBusyMessage = (lane: Pick<VolumeRunRow, "kind" | "volumeName">) =>
-  `VolumeBusy: ${lane.volumeName} is busy with a ${KIND_WORDS[lane.kind]}; ployz volume release ${lane.volumeName} stops it`;
+  `VolumeBusy: ${lane.volumeName} is busy with a ${KIND_WORDS[lane.kind]}; ${lane.kind === "delete_mirror" ? "it finishes on its own" : `ployz volume release ${lane.volumeName} stops it`}`;
 
 export const finishesThere = (volumeName: string, server: string) => `${volumeName} is starting on ${server}; it finishes there`;
 
 /** A lane past its point of no return: a Move that committed, or a restore, which commits from its first step. */
 export const pastReturn = (lane: Pick<VolumeRunRow, "phase" | "kind">) => lane.phase === "committed" || lane.kind === "restore";
 type LaneEnd = "cancelled" | "yielded";
-// A seed's copy into the new Volume runs on without its row, so a release could only stop watching it.
-const keepsLane = (lane: VolumeRunRow, end: LaneEnd) => pastReturn(lane) || ((lane.kind === "deploy" || lane.kind === "seed") && end === "cancelled");
+// A seed's copy into the new Volume runs on without its row, and a Machine destroying a mirror's copy runs on without
+// its removal's, so a release could only stop watching them.
+const keepsLane = (lane: VolumeRunRow, end: LaneEnd) =>
+  pastReturn(lane) || ((lane.kind === "deploy" || lane.kind === "seed" || lane.kind === "delete_mirror") && end === "cancelled");
 
 // SAFETY: the row's kind and args were written together from one VolumeRunInput.
 const laneInput = (lane: Pick<VolumeRunRow, "kind" | "args">) => ({ kind: lane.kind, args: lane.args }) as VolumeRunInput;
@@ -405,7 +408,8 @@ const TAKE_ROUNDS = 3;
 
 /**
  * The insert waits on any lane committing concurrently, so a conflict means a lane landed between the read and the
- * insert; the next round reads it under the lock and takes it over too.
+ * insert; the next round reads it under the lock and takes it over too. A lane that ended before the read leaves the
+ * Volume free, so any taker inserts again.
  */
 const takeLane = Effect.fn("VolumeRun.takeLane")(function* (caller: Caller, { input, volume, id, lane: only }: LaneTaker, end: LaneEnd | null, inngestRunId: string | null = null) {
   const { drizzle } = yield* Database;
@@ -441,6 +445,7 @@ const takeLane = Effect.fn("VolumeRun.takeLane")(function* (caller: Caller, { in
     }
     if (end !== null && round < TAKE_ROUNDS) continue;
     const active = yield* activeLane(input.volumeId, true);
+    if (active === undefined && round < TAKE_ROUNDS) continue;
     if (active === undefined) return yield* new LaneChurn({ message: `runs on ${volume.volumeName} keep landing and ending; try again` });
     return yield* new LaneRefused({ refusal: yield* laneRefusal(active, input.kind), busy: volumeRunView(active) });
   }

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { ConfigTrusted, Connection, MachineId } from "@ployz/sdk";
 import { ConfigProvider, Effect, Layer } from "effect";
 import { Inngest } from "inngest";
+import { vi } from "vitest";
 import { Polar, type PolarService } from "#/modules/billing/polar-provider.server";
 import { cloudStore, CloudStoreLive } from "#/modules/config-store/store-sdk.server";
 import { GithubRepositories, GithubRepositoriesLive } from "#/modules/github/github-cli.server";
@@ -21,6 +22,13 @@ import { postgresTestDatabase } from "#/test/postgres";
 import { organizationMachine } from "#/modules/machines/tables";
 import { organizationPairing } from "#/modules/runtime/tables";
 import { SecretEncryption, SecretEncryptionLive } from "#/utils/encrypted-secret.server";
+
+/** An Inngest client whose sends succeed without leaving the process. */
+const sendsNowhere = () => {
+  const inngest = new Inngest({ id: "store-test" });
+  vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
+  return inngest;
+};
 
 /**
  * Cloud with the Config Store in a fresh database, and everything its Store workers use: GitHub as `github` answers
@@ -52,7 +60,7 @@ export const storeTestCloud = Effect.fn(function* (options: {
       ? GithubRepositoriesLive.pipe(Layer.provide(Layer.merge(database, Layer.succeed(GithubApi, github))))
       : Layer.succeed(GithubRepositories, options.repositories),
     Layer.succeed(Polar, options.polar ?? { mode: "self_hosted" }),
-    Layer.succeed(InngestClient, options.inngest ?? new Inngest({ id: "store-test" })),
+    Layer.succeed(InngestClient, options.inngest ?? sendsNowhere()),
     fleet == null
       // No Cluster is paired: domains read as unobserved.
       ? Layer.succeed(OrganizationRuntime, { cancel: () => Effect.void, open: () => Effect.succeed({ status: "no_connection" as const }) })
