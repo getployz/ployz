@@ -1,3 +1,5 @@
+import { Schema } from "effect";
+
 /** The emails Cloud sends. Each has one preference row per user, Email unless they chose None. */
 export const NOTIFICATION_TYPES = {
   uptime: {
@@ -29,3 +31,15 @@ export type NotificationChannel = (typeof NOTIFICATION_CHANNELS)[number];
 
 /** No stored preference means Email. */
 export const DEFAULT_NOTIFICATION_CHANNEL: NotificationChannel = "email";
+
+export const SetNotificationChannel = Schema.Struct({
+  type: Schema.Literals(NOTIFICATION_TYPE_IDS),
+  channel: Schema.Literals(NOTIFICATION_CHANNELS),
+});
+export type SetNotificationChannel = typeof SetNotificationChannel.Type;
+
+/** `mailOn` is false on a Cloud with no Mailer, where the choices show but can't be changed. */
+export type NotificationSettings = {
+  readonly mailOn: boolean;
+  readonly channels: Readonly<Record<NotificationType, NotificationChannel>>;
+};
