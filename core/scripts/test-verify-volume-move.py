@@ -127,7 +127,8 @@ DAEMON, PLUGIN = "ployz.service", "ployz-volume-plugin.service"
 CGROUP = "/sys/fs/cgroup/system.slice"
 RESTART = (f"test -d {CGROUP} || {{ echo 'no cgroup v2 system.slice'; exit 1; }}; "
            f"systemctl stop {DAEMON} {PLUGIN} || {{ echo 'failed stop'; exit 1; }}; "
-           f"for u in {DAEMON} {PLUGIN}; do echo \"procs $u $(cat {CGROUP}/$u/cgroup.procs 2>/dev/null | tr '\\n' ' ')\"; done; "
+           f"for u in {DAEMON} {PLUGIN}; do if test -d {CGROUP}/$u; then s=0; p=$(cat {CGROUP}/$u/cgroup.procs 2>/dev/null) || s=$?; "
+           "echo \"procs $u $s $(printf %s \"$p\" | tr '\\n' ' ')\"; else echo \"procs $u absent\"; fi; done; "
            f"systemctl start {DAEMON} || {{ echo 'failed {DAEMON}'; exit 1; }}; "
            f"for i in $(seq 60); do systemctl is-active --quiet {DAEMON} && break; sleep 1; done; "
            f"systemctl is-active --quiet {DAEMON} || {{ echo 'failed {DAEMON}'; exit 1; }}; "
@@ -643,14 +644,18 @@ class VolumeMove:
         problems = []
         if result.returncode or lines[-1:] != ["end"]:
             problems.append(f"the restart exited {result.returncode}: {result.stdout.strip()[:200]}")
-        procs, cursor = {}, None
+        cursor = None
         for line in lines:
             if line.startswith("procs "):
-                _, unit, *pids = line.split()
-                procs[unit] = pids
+                _, unit, status, *pids = line.split() if len(line.split()) > 2 else (*line.split(), "unread")
+                if status == "absent":
+                    continue
+                if status != "0":
+                    problems.append(f"cgroup.procs of {unit} was not read: cat exited {status}")
+                elif pids:
+                    problems.append(f"{unit} still holds {' '.join(pids)} after its stop")
             elif line.startswith("-- cursor: "):
                 cursor = line.removeprefix("-- cursor: ").strip()
-        problems += [f"{unit} still holds {' '.join(pids)} after its stop" for unit, pids in procs.items() if pids]
         if not cursor:
             problems.append("no journal cursor")
         if problems:

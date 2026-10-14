@@ -126,6 +126,10 @@ class ClusterModel:
         # first round; and a Machine whose receive sits in D state and stays in the plugin's cgroup after the stop.
         self.pull_targets = {}
         self.stuck_receive = set()
+        # A Machine whose plugin cgroup.procs cannot be read, and a restart reply cut short: "exit 1", "no end" or
+        # "no cursor".
+        self.unread_procs = set()
+        self.restart_reply = {}
 
     def process(self):
         self.ids += 1
@@ -214,10 +218,18 @@ class ClusterModel:
         plugin = [str(old_plugin)] if old_plugin in self.alive else []
         if machine in self.stuck_receive:
             plugin.append("4242")
-        lines = [f"procs {DAEMON}", f"procs {PLUGIN} " + " ".join(plugin)]
-        if "--show-cursor" in script:
+        if "absent" in script:
+            # systemd drops an emptied control group; one with a leftover stays, as does one `cat` cannot read.
+            status = "1" if machine in self.unread_procs else "0"
+            lines = [f"procs {DAEMON} absent",
+                     f"procs {PLUGIN} {status} " + " ".join(plugin) if plugin or status != "0" else f"procs {PLUGIN} absent"]
+        else:
+            lines = [f"procs {DAEMON}", f"procs {PLUGIN} " + " ".join([] if machine in self.unread_procs else plugin)]
+        if "--show-cursor" in script and self.restart_reply.get(machine) != "no cursor":
             lines.append(self.tail_cursor(machine).rstrip("\n"))
-        return 0, "\n".join(lines + ["end"]) + "\n"
+        if self.restart_reply.get(machine) == "no end":
+            return 0, "\n".join(lines) + "\n"
+        return (1 if self.restart_reply.get(machine) == "exit 1" else 0), "\n".join(lines + ["end"]) + "\n"
 
     def arm(self, machine, script):
         value = (found := re.search(r"echo '?PLOYZD_FAULT=([^'\s]+)", script)) and found[1]
@@ -2159,6 +2171,25 @@ finally:
         self.assertFalse(result["passed"], result)
         self.assertIn("the clean-start restart is unproven on machine-2 before move", result.get("skipped") or "",
                       result)
+
+    def test_a_cgroup_procs_read_that_fails_skips_the_case(self):
+        # A `cat` that failed printed an empty procs line, which read as a proven-empty control group.
+        result, _ = self.run_cut(plant=lambda model: model.unread_procs.add("machine-2"))
+        self.assertFalse(result["passed"], result)
+        self.assertIn("the clean-start restart is unproven on machine-2 before move", result.get("skipped") or "",
+                      result)
+        self.assertIn("cgroup.procs of ployz-volume-plugin.service was not read: cat exited 1",
+                      result.get("skipped") or "", result)
+
+    def test_a_restart_reply_that_exits_nonzero_or_stops_short_skips_the_case(self):
+        for reply, problem in (("exit 1", "the restart exited 1"), ("no end", "the restart exited 0"),
+                               ("no cursor", "no journal cursor")):
+            with self.subTest(reply):
+                result, _ = self.run_cut(plant=lambda model, reply=reply: model.restart_reply.update({"machine-2": reply}))
+                self.assertFalse(result["passed"], result)
+                self.assertIn("the clean-start restart is unproven on machine-2 before move",
+                              result.get("skipped") or "", result)
+                self.assertIn(problem, result.get("skipped") or "", result)
 
     def test_a_fault_line_from_an_older_epoch_is_not_credited(self):
         # A late step of the closed epoch-1 run reaches its fault point after the clean start, naming snapshot w-1-0.
