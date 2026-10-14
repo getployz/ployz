@@ -1081,6 +1081,42 @@ async fn departure_during_a_receive_stops_it_and_destroys_the_mirror() {
     server.abort();
 }
 
+/// Waits for the fake receive to start, and answers its pid.
+async fn receive_pid(test: &TestDir) -> String {
+    let pid = test.0.join("props/receive-pid");
+    for _ in 0..300 {
+        if pid.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    fs::read_to_string(pid).unwrap().trim().to_owned()
+}
+
+#[tokio::test]
+async fn departure_stops_a_pull_into_a_slot_it_keeps() {
+    for (mark, value) in [("ployz:cut", "on"), ("ployz:epoch", "3")] {
+        let source = Source::start(Some(BOUND), "snapshot w-1-2 12\n").await;
+        let test = TestDir::new();
+        let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
+        set_snapshots(&test, SLOT_FS, &[("w-1-1", 11)]);
+        set_property(&test, SLOT_FS, mark, value);
+        fs::write(test.0.join("props/stall-read"), "").unwrap();
+        post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
+        let pid = receive_pid(&test).await;
+
+        let reply = post(&socket, "/Storage.Demote", json!(null)).await;
+        assert_eq!(reply, json!({"Ok": []}), "{mark}");
+        assert!(
+            !Path::new(&format!("/proc/{pid}")).exists(),
+            "{mark}: the receive still runs"
+        );
+        assert!(test.0.join("mirror-fs").exists(), "{mark}");
+        assert_eq!(property(&test, SLOT_FS, mark).as_deref(), Some(value));
+        server.abort();
+    }
+}
+
 #[tokio::test]
 async fn a_pull_into_a_slot_smaller_than_the_writer_raises_the_slot_to_the_writer_bound() {
     let source = Source::start(Some(2 * BOUND), "snapshot w-1-2 12\n").await;
