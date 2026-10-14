@@ -196,7 +196,10 @@ export type ConfigDeploymentAdmittedEventData = {
   /** Deployments of one Environment run one at a time. */
   environmentId: string;
   deploymentId: string;
+  trigger?: DeploymentTrigger;
 };
+
+export type DeploymentTrigger = "github" | "user";
 
 export type InngestFunctionCancelledEventData = {
   function_id: string;
