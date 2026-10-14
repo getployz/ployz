@@ -25,9 +25,9 @@ export const WEB_TRAFFIC_SETTLE_MS = 30_000;
 /**
  * The row for `server`, from what the Server reports (`acceptsIngress`), its latest change, and the change this tab
  * asked for (`requested`, until its row arrives). A change under way shows as such; a finished one whose outcome the
- * Server hasn't shown yet keeps showing until `settled`. A failed stop shows its reason only while the Server still
- * takes web traffic. A failed start always shows it: the role is on after one only when putting it back failed too,
- * and then your domains point at a Server whose web server may not run.
+ * Server hasn't shown yet keeps showing until `settled`. A failed change always shows its reason. After a failed stop
+ * the role may be off while the web server still runs. After a failed start the role is on only when putting it back
+ * failed too, and then your domains point at a Server whose web server may not run.
  */
 export function webTrafficView(input: {
   readonly server: { readonly id: string; readonly acceptsIngress: boolean; readonly publicIp: string | null };
@@ -50,7 +50,6 @@ export function webTrafficView(input: {
       if (own.want === observed || settled) return steady;
       return own.want === "on" ? { kind: "starting" } : { kind: "stopping" };
     case "failed":
-      if (own.want === "off" && observed === "off") return steady;
       return { kind: "failed", want: own.want, on: observed === "on", reason: own.failure, address: server.publicIp };
   }
 }

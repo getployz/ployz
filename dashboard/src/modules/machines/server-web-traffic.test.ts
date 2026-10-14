@@ -50,10 +50,10 @@ describe("webTrafficView", () => {
     expect(view(failed, { acceptsIngress: true })).toEqual({ kind: "failed", want: "on", on: true, reason, address: "203.0.113.10" });
   });
 
-  it("shows a failed stop only while the Server still takes web traffic", () => {
+  it("shows a failed stop even once the role is off, since the web server may still run", () => {
     const failed = change("failed", "off");
     expect(view(failed, { acceptsIngress: true })).toEqual({ kind: "failed", want: "off", on: true, reason: "why", address: "203.0.113.10" });
-    expect(view(failed)).toEqual({ kind: "off" });
+    expect(view(failed)).toEqual({ kind: "failed", want: "off", on: false, reason: "why", address: "203.0.113.10" });
   });
 
   it("moves the switch only when the Server does", () => {

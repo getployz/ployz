@@ -5,6 +5,7 @@ import { toErrorMessage } from "#/lib/error-message";
 import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
 import { useRuntimeStatus } from "#/providers/runtime-provider";
 import type { WebTrafficWant } from "./server-web-traffic";
+import { needsAttention, type ServerStatus } from "./server-status";
 import { WEB_TRAFFIC_SETTLE_MS, webTrafficView, type WebTrafficView } from "./server-web-traffic-view";
 import { requestServerWebTrafficServerFn } from "./server-web-traffic.functions";
 import { serverWebTrafficKeys, useServerWebTrafficChanges } from "./server-web-traffic.queries";
@@ -16,7 +17,7 @@ export type ServerWebTraffic = {
   readonly view: WebTrafficView;
   /** The domains that point at Servers taking web traffic: what turning off here affects. */
   readonly domains: readonly string[];
-  /** No other Server takes web traffic: turning off here stops every domain. */
+  /** No other online Server takes web traffic: turning off here stops every domain. */
   readonly last: boolean;
   /** Turn on now (the switch, and Retry). */
   readonly turnOn: () => void;
@@ -35,7 +36,7 @@ export function useServerWebTraffic(
   organizationSlug: string,
   server: { readonly id: string; readonly name: string },
   machine: RuntimeMachineRecord,
-  servers: ReadonlyArray<{ readonly machine: RuntimeMachineRecord }>,
+  servers: ReadonlyArray<{ readonly machine: RuntimeMachineRecord; readonly status: ServerStatus }>,
 ): ServerWebTraffic {
   const queryClient = useQueryClient();
   const { servers: latest } = useServerWebTrafficChanges(organizationSlug);
@@ -90,7 +91,8 @@ export function useServerWebTraffic(
       settled: finished !== null && settledId === finished.attemptId,
     }),
     domains: [...new Set(certificates.map((certificate) => certificate.hostname))],
-    last: !servers.some((other) => other.machine.id !== server.id && other.machine.acceptsIngress && other.machine.publicIp !== null),
+    last: !servers.some((other) =>
+      other.machine.id !== server.id && other.machine.acceptsIngress && other.machine.publicIp !== null && !needsAttention(other.status)),
     turnOn: () => send("on"),
     ask: () => setOpen(true),
     dialog: {
