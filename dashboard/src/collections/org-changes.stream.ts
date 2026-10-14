@@ -12,6 +12,7 @@ import { serverDrainKeys } from "#/modules/machines/server-drain.queries";
 import { volumeRunKeys } from "#/modules/volume-run/volume-run.queries";
 import { volumePlacementKeys } from "#/modules/volume-placement/volume-placement.queries";
 import { serverUpgradeKeys } from "#/modules/server-upgrade/server-upgrade.queries";
+import { membersKey } from "#/modules/organization/members.queries";
 import { liveStream } from "#/lib/live.stream";
 
 const orgChangesEventSchema = Schema.Struct({ collections: Schema.Array(changeNameSchema) });
@@ -37,6 +38,7 @@ const refetches = {
   server_drain: (_organizationSlug: string, scope: CollectionScope) => void scope.queryClient.invalidateQueries({ queryKey: serverDrainKeys.all }),
   volume_run: (_organizationSlug: string, scope: CollectionScope) => void scope.queryClient.invalidateQueries({ queryKey: volumeRunKeys.all }),
   volume_placement: (_organizationSlug: string, scope: CollectionScope) => void scope.queryClient.invalidateQueries({ queryKey: volumePlacementKeys.all }),
+  members: (organizationSlug: string, scope: CollectionScope) => void scope.queryClient.invalidateQueries({ queryKey: membersKey(organizationSlug) }),
 } satisfies Record<Exclude<ChangeName, StoreViewName>, Refetch>;
 
 const storeViews: ReadonlySet<ChangeName> = new Set(storeViewNames);

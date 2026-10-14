@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
-import { useNavigate } from "@tanstack/react-router";
+import { getRouteApi, useNavigate } from "@tanstack/react-router";
 import { UserPlusIcon } from "lucide-react";
 import { toast } from "sonner";
 import { CopyButton } from "#/components/copy-button";
@@ -37,6 +37,11 @@ type InviteRole = Exclude<Role, "owner">;
 
 const ROLE_LABELS = { owner: "Owner", admin: "Admin", member: "Member" } satisfies Record<Role, string>;
 
+const organizationRoute = getRouteApi("/_protected/cloud/$organizationSlug");
+
+/** Both tables share these widths so their columns line up. */
+const WIDTHS = { role: "w-32", date: "hidden w-32 sm:table-cell", actions: "w-24" };
+
 const formatDate = (iso: string) => new Date(iso).toLocaleDateString(undefined, { dateStyle: "medium" });
 
 type Pending = { kind: "remove"; email: string; name: string } | { kind: "leave" } | null;
@@ -45,6 +50,7 @@ export function MembersSettings({ organizationSlug }: { organizationSlug: string
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const { data } = useSuspenseQuery(organizationMembersQueryOptions(organizationSlug));
+  const { organizationName } = organizationRoute.useLoaderData();
   const [inviting, setInviting] = useState(false);
   const [confirming, setConfirming] = useState<Pending>(null);
   const queryKey = membersKey(organizationSlug);
@@ -107,13 +113,13 @@ export function MembersSettings({ organizationSlug }: { organizationSlug: string
           </Button>
         ) : null}
       >
-        <Table>
+        <Table className="table-fixed">
           <TableHeader>
             <TableRow>
               <TableHead>Name</TableHead>
-              <TableHead>Role</TableHead>
-              <TableHead className="hidden sm:table-cell">Joined</TableHead>
-              <TableHead><span className="sr-only">Actions</span></TableHead>
+              <TableHead className={WIDTHS.role}>Role</TableHead>
+              <TableHead className={WIDTHS.date}>Joined</TableHead>
+              <TableHead className={WIDTHS.actions}><span className="sr-only">Actions</span></TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -131,7 +137,7 @@ export function MembersSettings({ organizationSlug }: { organizationSlug: string
                     {editable ? (
                       <NativeSelect
                         size="sm"
-                        className="min-w-28"
+                        className="w-28"
                         aria-label={`Role of ${row.name}`}
                         value={row.role}
                         onChange={(event) => {
@@ -159,14 +165,13 @@ export function MembersSettings({ organizationSlug }: { organizationSlug: string
       </SettingsSection>
       {data.invites.length > 0 ? (
         <SettingsSection id="invites" title="Pending invites">
-          <Table>
+          <Table className="table-fixed">
             <TableHeader>
               <TableRow>
                 <TableHead>For</TableHead>
-                <TableHead className="hidden sm:table-cell">Role</TableHead>
-                <TableHead className="hidden sm:table-cell">Sent by</TableHead>
-                <TableHead className="hidden sm:table-cell">Expires</TableHead>
-                <TableHead><span className="sr-only">Actions</span></TableHead>
+                <TableHead className={WIDTHS.role}>Role</TableHead>
+                <TableHead className={WIDTHS.date}>Expires</TableHead>
+                <TableHead className={WIDTHS.actions}><span className="sr-only">Actions</span></TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -175,13 +180,12 @@ export function MembersSettings({ organizationSlug }: { organizationSlug: string
                   <TableCell className="whitespace-normal wrap-anywhere">
                     <div className="flex flex-col">
                       <span>{invite.email ?? <span className="text-muted-foreground">Anyone with the link</span>}</span>
-                      <span className="text-xs text-muted-foreground sm:hidden">
-                        {ROLE_LABELS[invite.role]} · from {invite.invited_by} · expires {formatDate(invite.expires_at)}
+                      <span className="text-xs text-muted-foreground">
+                        From {invite.invited_by}<span className="sm:hidden"> · expires {formatDate(invite.expires_at)}</span>
                       </span>
                     </div>
                   </TableCell>
-                  <TableCell className="hidden sm:table-cell">{ROLE_LABELS[invite.role]}</TableCell>
-                  <TableCell className="hidden sm:table-cell">{invite.invited_by}</TableCell>
+                  <TableCell>{ROLE_LABELS[invite.role]}</TableCell>
                   <TableCell className="hidden text-muted-foreground sm:table-cell">{formatDate(invite.expires_at)}</TableCell>
                   <TableCell className="text-right">
                     {manager ? (
@@ -194,7 +198,7 @@ export function MembersSettings({ organizationSlug }: { organizationSlug: string
           </Table>
         </SettingsSection>
       ) : null}
-      {inviting ? <InviteDialog organizationSlug={organizationSlug} onInvited={refresh} onOpenChange={setInviting} /> : null}
+      {inviting ? <InviteDialog organizationSlug={organizationSlug} organizationName={organizationName} onInvited={refresh} onOpenChange={setInviting} /> : null}
       <AlertDialog
         open={confirming !== null}
         onOpenChange={(open) => {
@@ -205,11 +209,11 @@ export function MembersSettings({ organizationSlug }: { organizationSlug: string
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>{confirming?.kind === "remove" ? `Remove ${confirming.name}?` : `Leave ${organizationSlug}?`}</AlertDialogTitle>
+            <AlertDialogTitle>{confirming?.kind === "remove" ? `Remove ${confirming.name}?` : `Leave ${organizationName}?`}</AlertDialogTitle>
             <AlertDialogDescription>
               {confirming?.kind === "remove"
-                ? "Their organization tokens stop working and their devices lose access to its servers."
-                : "Your organization tokens stop working and your devices lose access to its servers. Someone must invite you to come back."}
+                ? "They lose dashboard access, their organization tokens stop working, and their devices lose access to its servers."
+                : "You lose dashboard access, your organization tokens stop working, and your devices lose access to its servers. Someone must invite you to come back."}
             </AlertDialogDescription>
           </AlertDialogHeader>
           {confirming?.kind === "leave" && leave.error ? (
@@ -236,8 +240,9 @@ export function MembersSettings({ organizationSlug }: { organizationSlug: string
   );
 }
 
-function InviteDialog({ organizationSlug, onInvited, onOpenChange }: {
+function InviteDialog({ organizationSlug, organizationName, onInvited, onOpenChange }: {
   organizationSlug: string;
+  organizationName: string;
   onInvited: () => void;
   onOpenChange: (open: boolean) => void;
 }) {
@@ -252,9 +257,13 @@ function InviteDialog({ organizationSlug, onInvited, onOpenChange }: {
     <Dialog open onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Invite to {organizationSlug}</DialogTitle>
+          <DialogTitle>Invite to {organizationName}</DialogTitle>
           <DialogDescription>
-            {invite.data ? "Send this link to the person you're inviting. It works once and lasts 7 days." : "Anyone with the link can join, once."}
+            {invite.data
+              ? "Send this link to the person you're inviting. It works once and lasts 7 days."
+              : email.trim()
+                ? "The email only labels the invite. Anyone with the link can join, once."
+                : "Anyone with the link can join, once."}
           </DialogDescription>
         </DialogHeader>
         {invite.data ? (
