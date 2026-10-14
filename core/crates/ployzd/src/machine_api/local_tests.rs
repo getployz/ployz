@@ -1405,6 +1405,24 @@ mod set_volume_copy {
     }
 
     #[tokio::test]
+    async fn a_machine_outside_the_cluster_without_docker_says_it_is_not_participating() {
+        let data_dir =
+            std::env::temp_dir().join(format!("ployzd-copy-bare-{}", MachineId::random()));
+        let store = RecordOwner::spawn(LocalMachineStore::open(&data_dir).unwrap()).unwrap();
+        let service = MachineService::with_cluster(store, None);
+
+        for request in [
+            at_gen(draining_cut(0), 5),
+            at_gen(forget(json!({"kind":"writer", "epoch":0})), 5),
+            floor(5),
+        ] {
+            let error = refusal(&set_copy(&service, request).await);
+            assert_eq!(error.message, "Machine is not participating", "{error:?}");
+        }
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
     async fn a_floor_queued_on_the_floor_lock_across_a_reset_refuses_and_raises_no_floor() {
         let (data_dir, store, service, _fake) = fake_docker_service("ployzd-copy-reset").await;
         let turn = service.containers().unwrap().floor_turn().await;
