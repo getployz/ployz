@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import unittest.mock
 
@@ -316,12 +317,28 @@ class Registry(unittest.TestCase):
         self.registered(**{"machine-1": dict(id="bx_a", state="running"), "machine-2": dict(id="bx_b", state="running"),
                            "machine-3": dict(id="bx_c", state="deleted")})
         self.answers[("extend", "bx_b")] = result(1, {"event": "error", "code": "internal", "status": 500})
+        self.provider.record(lambda record: record.update(extended=0))
         with contextlib.redirect_stderr(io.StringIO()) as said:
             self.provider.refresh()
         self.assertEqual(sorted(self.calls), [["extend", "bx_a", "--ttl", boat.TTL], ["extend", "bx_b", "--ttl", boat.TTL]])
         self.assertEqual(said.getvalue().count("\n"), 1)
         self.assertIn("bx_b", said.getvalue())
         self.assertNotIn("bx_a", said.getvalue())
+
+    def test_refresh_extends_only_once_half_the_ttl_is_spent_and_remembers_a_full_success(self):
+        self.registered(**{"machine-1": dict(id="bx_a", state="running")})
+        self.provider.refresh()
+        self.assertEqual(self.calls, [])
+        self.provider.record(lambda record: record.update(extended=int(time.time()) - boat.TTL // 2 - 1))
+        self.provider.refresh()
+        self.provider.refresh()
+        self.assertEqual(self.calls, [["extend", "bx_a", "--ttl", boat.TTL]])
+        self.provider.record(lambda record: record.update(extended=0))
+        self.answers[("extend", "bx_a")] = result(1, {"event": "error", "code": "internal", "status": 500})
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.provider.refresh()
+            self.provider.refresh()
+        self.assertEqual(len(self.calls), 3)
 
     def test_a_sandbox_on_a_peers_node_is_refused(self):
         self.registered(**{"machine-1": dict(id="bx_a", state="running", ip="2001:41d0:1004:4161:100::33"),

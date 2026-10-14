@@ -518,7 +518,9 @@ class Provider:
         if self.registry.exists():
             raise RuntimeError(f"Boat registry already exists for this run: {self.registry}")
         write(self.registry, dict(run=self.run["id"], manifest=self.run["manifest"], owner=self.run.get("owner", {}),
-                                  image=self.run.get("image"), created=int(time.time()), sandboxes={}))
+                                  image=self.run.get("image"), created=int(time.time()), sandboxes={},
+                                  # Each sandbox is claimed or launched with a full TTL after this, so it bounds the last extend.
+                                  extended=int(time.time())))
         if POOL_SIZE and self.run.get("image") not in (None, SNAPSHOT):
             self.claim()
 
@@ -702,13 +704,18 @@ systemctl enable --now {PLOYZ_UNITS} $observe
         return None
 
     def refresh(self):
-        """Push each live sandbox's auto-stop TTL seconds out, so a suite longer than the TTL keeps its Machines."""
-        ids = [entry["id"] for entry in (self.record() or {}).get("sandboxes", {}).values()
+        """Push each live sandbox's auto-stop TTL seconds out once half the TTL is spent, so a long suite keeps its Machines."""
+        record, now = self.record() or {}, time.time()
+        if now - record.get("extended", 0) < TTL / 2:
+            return
+        ids = [entry["id"] for entry in record.get("sandboxes", {}).values()
                if entry.get("id") and entry.get("state") == "running"]
         results = each(lambda sandbox: self.boat("extend", sandbox, "--ttl", TTL, check=False), ids)
         failed = [sandbox for sandbox, result in zip(ids, results) if result.returncode]
         if failed:
             print(f"Could not extend the auto-stop of {', '.join(failed)}; they stop on their earlier deadline.", file=sys.stderr)
+        else:
+            self.record(lambda record: record.update(extended=int(now)))
 
     def wait_agent(self, node):
         deadline = time.monotonic() + 180
