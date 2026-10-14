@@ -16,8 +16,15 @@ const hashInviteToken = (token: string) => createHash("sha256").update(token).di
 
 type InviteState = "pending" | "accepted" | "revoked" | "expired";
 
-const stateOf = (row: { status: typeof invitation.$inferSelect.status; expiresAt: Date }, now: Date): InviteState =>
-  row.status === "pending" && row.expiresAt <= now ? "expired" : row.status;
+/** Whether the invite's sender is still an owner or admin of its Organization; an invite from anyone else is revoked. */
+const fromManager = sql<boolean>`exists (select 1 from ${member} where ${member.organizationId} = ${invitation.organizationId}
+  and ${member.userId} = ${invitation.inviterId} and ${member.role} in ('owner', 'admin'))`;
+
+const stateOf = (row: { status: typeof invitation.$inferSelect.status; expiresAt: Date; fromManager: boolean }, now: Date): InviteState => {
+  if (row.status !== "pending") return row.status;
+  if (!row.fromManager) return "revoked";
+  return row.expiresAt <= now ? "expired" : "pending";
+};
 
 /** Makes an invite link. The token is returned here and never again; only its hash is kept. */
 export const createInvite = Effect.fn("Invitation.create")(function* (
@@ -33,7 +40,7 @@ export const createInvite = Effect.fn("Invitation.create")(function* (
       .where(and(eq(member.organizationId, organizationId), sql`lower(${user.email}) = ${email}`)).limit(1);
     if (joined !== undefined) return yield* new Conflict({ message: `${email} is already a member.`, userFacing: true });
     const [waiting] = yield* drizzle.select({ id: invitation.id }).from(invitation)
-      .where(and(eq(invitation.organizationId, organizationId), eq(invitation.email, email), eq(invitation.status, "pending"), gt(invitation.expiresAt, new Date())))
+      .where(and(eq(invitation.organizationId, organizationId), eq(invitation.email, email), eq(invitation.status, "pending"), gt(invitation.expiresAt, new Date()), fromManager))
       .limit(1);
     if (waiting !== undefined) return yield* new Conflict({ message: `${email} has a pending invite. Revoke it to send a new one.`, userFacing: true });
   }
@@ -61,7 +68,7 @@ export const listPendingInvites = Effect.fn("Invitation.listPending")(function* 
     expiresAt: invitation.expiresAt,
   }).from(invitation)
     .innerJoin(user, eq(user.id, invitation.inviterId))
-    .where(and(eq(invitation.organizationId, organizationId), eq(invitation.status, "pending"), gt(invitation.expiresAt, new Date())))
+    .where(and(eq(invitation.organizationId, organizationId), eq(invitation.status, "pending"), gt(invitation.expiresAt, new Date()), fromManager))
     .orderBy(asc(invitation.createdAt));
 });
 
@@ -72,7 +79,7 @@ export const listPendingInvites = Effect.fn("Invitation.listPending")(function* 
 export const revokeInvite = Effect.fn("Invitation.revoke")(function* (organizationId: string, selector: string) {
   const { drizzle } = yield* Database;
   const wanted = selector.trim().toLowerCase();
-  const rows = yield* drizzle.select({ id: invitation.id, email: invitation.email, status: invitation.status, expiresAt: invitation.expiresAt })
+  const rows = yield* drizzle.select({ id: invitation.id, email: invitation.email, status: invitation.status, expiresAt: invitation.expiresAt, fromManager })
     .from(invitation).where(eq(invitation.organizationId, organizationId));
   const now = new Date();
   const byId = rows.find((row) => row.id === selector.trim());
@@ -97,6 +104,7 @@ export const readInvite = Effect.fn("Invitation.read")(function* (token: string)
     role: invitation.role,
     status: invitation.status,
     expiresAt: invitation.expiresAt,
+    fromManager,
   }).from(invitation)
     .innerJoin(organization, eq(organization.id, invitation.organizationId))
     .innerJoin(user, eq(user.id, invitation.inviterId))
@@ -135,11 +143,10 @@ export const acceptInvite = Effect.fn("Invitation.accept")(function* (token: str
     const [already] = yield* drizzle.select({ id: member.id }).from(member)
       .where(and(eq(member.organizationId, row.organizationId), eq(member.userId, userId))).limit(1);
     if (already !== undefined) return { slug: row.slug };
-    const state = stateOf(row, new Date());
-    if (state !== "pending") return yield* new Conflict({ message: UNUSABLE[state], userFacing: true });
     const [inviter] = yield* drizzle.select({ role: member.role }).from(member)
       .where(and(eq(member.organizationId, row.organizationId), eq(member.userId, row.inviterId))).for("share");
-    if (inviter?.role !== "owner" && inviter?.role !== "admin") return yield* new Conflict({ message: UNUSABLE.revoked, userFacing: true });
+    const state = stateOf({ ...row, fromManager: inviter?.role === "owner" || inviter?.role === "admin" }, new Date());
+    if (state !== "pending") return yield* new Conflict({ message: UNUSABLE[state], userFacing: true });
     yield* drizzle.insert(member).values({ organizationId: row.organizationId, userId, role: row.role });
     yield* drizzle.update(invitation).set({ status: "accepted", acceptedByUserId: userId }).where(eq(invitation.id, row.id));
     return { slug: row.slug };

@@ -160,6 +160,17 @@ describe("invite links", () => {
     expect(await roleOf(ids.dan)).toBeNull();
     await harness.db.update(member).set({ role: "admin" }).where(and(eq(member.organizationId, ACME), eq(member.userId, ids.carol)));
   });
+
+  it("shows a link from a sender who is no longer an admin as revoked, and lets someone else invite that email again", async () => {
+    const sent = await invite("carol", { email: "dan@example.test" });
+    await harness.db.update(member).set({ role: "member" }).where(and(eq(member.organizationId, ACME), eq(member.userId, ids.carol)));
+    expect((await run(readInvite(tokenOf(sent.link))))?.state).toBe("revoked");
+    const listed = await as("ada", "org_invite_ls", {});
+    expect(listed.ok ? (listed.output as Array<{ id: string }>).map((row) => row.id) : null).not.toContain(sent.id);
+    const again = await invite("ada", { email: "dan@example.test" });
+    expect(await as("ada", "org_invite_revoke", { invite: "dan@example.test" })).toMatchObject({ ok: true, output: { id: again.id } });
+    await harness.db.update(member).set({ role: "admin" }).where(and(eq(member.organizationId, ACME), eq(member.userId, ids.carol)));
+  });
 });
 
 describe("member commands", () => {
