@@ -78,7 +78,7 @@ const sidebar = Effect.fn(function* (options: { removeWeb: boolean }) {
       from config_saved, lateral jsonb_array_elements(intent::jsonb->'services') service where environment_id = ${ENVIRONMENT}`);
   }));
   if (options.removeWeb) yield* write({ command: "remove_service", environment: here, service: "web" });
-  const caller: Caller = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "session", id: "session-1" }, support: null };
+  const caller: Caller = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "session", id: "session-1" }, role: "owner", support: null };
   let runs = 0;
   const say = (content: string, forwardedProps: Forwarded = {}, model?: AnyTextAdapter) =>
     provided(agentChat(caller, { messages: [{ role: "user", content }], threadId: THREAD, runId: `run-${++runs}`, forwardedProps }, model))

@@ -128,7 +128,7 @@ export const evalFixture = Effect.fn("Eval.fixture")(function* (scenario?: Fleet
   const sources: Effect.Effect<Sources> = Effect.gen(function* () {
     return { dispatched: [...dispatched], ledger: fleet === null ? [] : yield* fleet.ledger };
   });
-  const caller: Caller = { userId, organization: { id: ORGANIZATION, slug: "acme" }, credential: { kind: "session", id: "session-eval" }, support: null };
+  const caller: Caller = { userId, organization: { id: ORGANIZATION, slug: "acme" }, credential: { kind: "session", id: "session-eval" }, role: "owner", support: null };
   /** One sidebar thread of the fixture's member: each turn's stream, and the approval its last turn waits on. */
   const conversation = (model: AnyTextAdapter, thread: string) => {
     let runs = 0;

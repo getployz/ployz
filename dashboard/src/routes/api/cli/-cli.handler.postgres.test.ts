@@ -3,7 +3,7 @@ import { assert, it } from "@effect/vitest";
 import { vi } from "vitest";
 import { createHash } from "node:crypto";
 import type { Client, DockerVolumeName, MachineId, RuntimeWatchView } from "@ployz/sdk";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { Cause, ConfigProvider, Effect, Exit, Layer } from "effect";
 import { Inngest } from "inngest";
 import { Polar } from "#/modules/billing/polar-provider.server";
@@ -615,6 +615,69 @@ it.live(
         assert.lengthOf(yield* database.drizzle.select().from(organization).where(eq(organization.id, alice.organization.id)), 0);
         assert.lengthOf(yield* database.drizzle.select().from(organizationPairing), 0);
         assert.lengthOf(yield* database.drizzle.select().from(serverAccess), 0);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "org rm is an owner's alone: an admin or a member is refused and the Organization stays",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cliLayer();
+      yield* Effect.gen(function* () {
+        const database = yield* Database;
+        const alice = yield* signUp("alice");
+        const bob = yield* signUp("bob");
+        const slug = alice.organization.slug;
+        const [personal] = yield* database.drizzle.select({ userId: member.userId }).from(member)
+          .where(eq(member.organizationId, bob.organization.id));
+        const bobId = personal?.userId ?? assert.fail("no member");
+        yield* database.drizzle.insert(member).values({ userId: bobId, organizationId: alice.organization.id, role: "admin" });
+        yield* database.drizzle.update(session).set({ activeOrganizationId: alice.organization.id, activeOrganizationSlug: slug })
+          .where(eq(session.userId, bobId));
+        for (const role of ["admin", "member"] as const) {
+          yield* database.drizzle.update(member).set({ role })
+            .where(and(eq(member.userId, bobId), eq(member.organizationId, alice.organization.id)));
+          const refused = yield* cli("DELETE", `organizations/${slug}`, bob);
+          assert.strictEqual(refused.status, 403);
+          assert.strictEqual(refused.json.error?.code, "forbidden");
+          assert.lengthOf(yield* database.drizzle.select().from(organization).where(eq(organization.id, alice.organization.id)), 1);
+        }
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+/** Every route better-auth 1.7.6's organization plugin mounts with Ployz's options, but set-active, `ployz org use`. */
+const CLOSED_ORGANIZATION_ROUTES = [
+  "accept-invitation", "cancel-invitation", "check-slug", "create", "delete", "get-active-member", "get-active-member-role",
+  "get-full-organization", "get-invitation", "get-organization", "has-permission", "invite-member", "leave", "list",
+  "list-invitations", "list-members", "list-user-invitations", "reject-invitation", "remove-member", "update",
+  "update-member-role",
+];
+
+it.live(
+  "better-auth's organization routes but set-active answer 404 to a signed-in member, so membership changes only go through Ployz",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cliLayer();
+      yield* Effect.gen(function* () {
+        const auth = yield* Auth;
+        const alice = yield* signUp("alice");
+        const body = JSON.stringify({ organizationId: alice.organization.id, email: "eve@example.test", role: "owner" });
+        const call = (method: "GET" | "POST", path: string) => {
+          const init: RequestInit = { method, headers: { cookie: alice.cookie, "content-type": "application/json", origin } };
+          if (method === "POST") init.body = body;
+          return auth.handler(new Request(`${origin}/api/auth${path}`, init));
+        };
+        assert.strictEqual((yield* call("GET", "/get-session")).status, 200);
+        for (const route of CLOSED_ORGANIZATION_ROUTES) {
+          for (const path of [`/organization/${route}`, `/organization/${route}/`]) {
+            assert.strictEqual((yield* call("POST", path)).status, 404, `POST ${path}`);
+            assert.strictEqual((yield* call("GET", path)).status, 404, `GET ${path}`);
+          }
+        }
       }).pipe(Effect.provide(layer));
     }),
   60_000,

@@ -49,7 +49,7 @@ const parity = Effect.fn(function* () {
   const services = yield* Layer.build(Layer.mergeAll(AuthLive.pipe(Layer.provide(cloud)), cloud, stub));
   const provided = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.provide(services));
   const userId = yield* provided(seedStoreOrganization(ORGANIZATION));
-  const caller: Caller = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "session", id: "session-1" }, support: null };
+  const caller: Caller = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "session", id: "session-1" }, role: "owner", support: null };
   const { secret } = yield* provided(createOrganizationToken(caller, { name: "parity", expiresInDays: 1 }));
   const approvals = yield* provided(Effect.gen(function* () {
     const { drizzle } = yield* Database;

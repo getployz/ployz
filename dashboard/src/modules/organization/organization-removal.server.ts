@@ -21,7 +21,7 @@ import { Database } from "#/server/database.server";
  * Cloud's own key on each Server. A Server that doesn't confirm keeps the Organization, its pairing disabled, until a
  * rerun confirms it; only then do Cloud's rows go.
  */
-export const removeOrganization = Effect.fn("Organization.remove")(function* (caller: Pick<Caller, "userId" | "organization">, slug: string) {
+export const removeOrganization = Effect.fn("Organization.remove")(function* (caller: Pick<Caller, "userId" | "organization" | "role">, slug: string) {
   const { id, slug: current } = caller.organization;
   if (slug !== current) {
     return refused({
@@ -29,6 +29,9 @@ export const removeOrganization = Effect.fn("Organization.remove")(function* (ca
       message: `This credential acts in Organization ${current}, not ${slug}. No changes made.`,
       details: { next: `ployz org use ${slug}` },
     });
+  }
+  if (caller.role !== "owner") {
+    return refused({ code: "forbidden", message: "Only an owner of this Organization can remove it. No changes made.", details: null });
   }
   const refusal = yield* cloudStore.pipe(
     Effect.flatMap((store) => storeTry(() => store.removeOrganization(id))),
@@ -53,10 +56,10 @@ type OrganizationRemoval = { organization: string; removed: boolean; servers: { 
 const removal = (value: OrganizationRemoval): StoreResult<OrganizationRemoval> => ({ ok: true, value });
 const refused = (refusal: StoreRefusal): StoreResult<OrganizationRemoval> => ({ ok: false, refusal });
 
-/** The dashboard's Delete organization: the same removal, by whoever may operate the Organization named by `organizationSlug`. */
+/** The dashboard's Delete organization: the same removal, by an owner of the Organization named by `organizationSlug`. */
 export const removeOrganizationAsMember = Effect.fn("Organization.removeAsMember")(function* (actor: Actor, organizationSlug: string) {
-  const { organization } = yield* requireAccess(actor, organizationSlug, "operate");
-  return yield* removeOrganization({ userId: actor.userId, organization }, organizationSlug);
+  const { organization } = yield* requireAccess(actor, organizationSlug, "own");
+  return yield* removeOrganization({ userId: actor.userId, organization, role: "owner" }, organizationSlug);
 });
 
 /** Cloud's own rows of an Organization whose pairing is gone; returns its Cluster Domain, if any, to release. */
