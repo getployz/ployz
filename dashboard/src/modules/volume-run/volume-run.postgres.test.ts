@@ -5,6 +5,7 @@ import type {
   CopyRefusal,
   ExpectedCopy,
   MachineId,
+  RuntimeWatchView,
   SetVolumeCopyReply,
   SetVolumeCopyRequest,
   Snapshot,
@@ -23,8 +24,7 @@ import { CloudStore } from "#/modules/config-store/store-sdk.server";
 import { InngestClient } from "#/modules/inngest/client";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { requirements, ServerLacks } from "#/modules/runtime/daemon-compat";
-import { PloyzProviderError, type PloyzSdkError, type PloyzSession } from "#/modules/runtime/ployz.server";
-import { RuntimeConnectionFailure } from "#/modules/runtime/runtime-connection-errors";
+import { firstFrame, PloyzProviderError, type PloyzSdkError, type PloyzSession } from "#/modules/runtime/ployz.server";
 import { createCancelStoreDeployment, createRunStoreDeployment } from "#/modules/config-store/store-deployment.inngest";
 import type { InngestRunStatus } from "#/modules/inngest/client";
 import { configDeploymentAdmittedEvent } from "#/modules/inngest/events";
@@ -108,6 +108,15 @@ class RawFault {
   constructor(readonly cause: { code: string; message: string; details: unknown }) {}
 }
 
+/** An RPC error shaped as the SDK's RpcError. */
+type RpcFault = Error & { code: string };
+const rpcFault = (code: string, message: string): RpcFault => Object.assign(new Error(message), { code });
+
+/** A runtime watch that never yields, or that fails its first read with the Cluster's RPC error. */
+const answering = (fault: true | RpcFault): AsyncIterable<RuntimeWatchView> => ({
+  [Symbol.asyncIterator]: () => ({ next: () => (fault === true ? new Promise(() => {}) : Promise.reject(fault)) }),
+});
+
 const at = 1_790_000_000;
 const snap = (guid: string, name = `dep-${guid}`): Snapshot => ({ name, guid, created_unix_seconds: at });
 const base = snap("10");
@@ -151,8 +160,11 @@ describe("volume runs", () => {
   let beforeSet: Map<string, () => void | Promise<void>>;
   /** Runs while a writer start reads the kept Container's spec, between the commit and the send. */
   let beforeStart: (() => Promise<void>) | null;
-  /** Fails a runtime frame read, counted from 1 in `frames`, as a Server that never answers its first frame. */
-  let frameFault: ((read: number) => boolean) | null;
+  /**
+   * Fails a runtime frame read, counted from 1 in `frames`: true as a Server that never answers its first frame, an RPC
+   * error as the Cluster answering with it.
+   */
+  let frameFault: ((read: number) => boolean | RpcFault) | null;
   let frames: number;
   /** Fails a session open, counted from 1 in `opens`: an Error as Cloud failing on its own side, or a Cluster it cannot reach. */
   let openFault: ((open: number) => Error | "unreachable" | null) | null;
@@ -304,9 +316,9 @@ describe("volume runs", () => {
   };
 
   const session = asTestDouble<PloyzSession>()({
-    watchFirstFrame: () => frameFault?.(++frames) === true
-      ? Effect.fail(new RuntimeConnectionFailure({ cause: new Error("Runtime watch timed out") }))
-      : Effect.succeed({
+    watchFirstFrame: (timeoutMs: number) => {
+      const fault = frameFault?.(++frames) ?? false;
+      return fault !== false ? firstFrame(() => answering(fault), fault === true ? 1 : timeoutMs) : Effect.succeed({
       machines: machines.map((fake) => ({
         machine: { id: fake.id ?? idOf(fake.name), name: fake.name, public_key: Array.from({ length: 32 }, (_, index) => index), runtime: { daemon_version: fake.lacks ?? "", capabilities: fake.capabilities } },
         storage: fake.stateless === true ? { state: "stateless" } : fake.pool ? { state: "pool", size_bytes: 1, used_bytes: 0, free_bytes: 1 } : { state: "ready" },
@@ -321,7 +333,8 @@ describe("volume runs", () => {
         created_at_unix_nanos: container.created ?? 0,
       })),
       incomplete_ids: { machines: [] },
-    }),
+    });
+    },
     inspectContainer: (target: string, container: string) => Effect.promise(async () => {
       await beforeStart?.();
       return {
@@ -1805,6 +1818,19 @@ describe("volume runs", () => {
         expect(output.error).toMatchObject({ message: "could not decrypt the pairing" });
         expect(verbs).toEqual([]);
         expect((await rows()).at(-1)).toMatchObject({ id, state: "running", message: null });
+      });
+
+      it("fails the observe step, without waiting, when the Cluster answers its first frame with an error", async () => {
+        await pending();
+        const id = (await requested({ kind: "release", args: {} })).id;
+        const broken = frames + 1;
+        frameFault = (read) => read === broken && rpcFault("internal", "decoding the runtime frame failed");
+
+        const output = await execute(id, "run-3", [{ id: "01-observe-1", handler: () => { throw new Error("waited"); } }]);
+
+        expect((await rows()).at(-1)).toMatchObject({ id, state: "running", message: null });
+        expect(output.error).toMatchObject({ message: expect.stringContaining("decoding the runtime frame failed") });
+        expect(verbs).toEqual([]);
       });
 
       it("fails once A stays silent past fifteen minutes of checks, keeping the commitment for the next release", async () => {

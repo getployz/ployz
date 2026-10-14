@@ -315,26 +315,27 @@ function wrapClient(client: Client): PloyzSession {
     publishCertificateMaterial: (request) =>
       sdkPromise("publish certificate material", () => client.publishCertificateMaterial(request).then(() => undefined)),
     watch,
-    watchFirstFrame: (timeoutMs) =>
-      Effect.tryPromise({
-        try: async (signal) => {
-          const frames = client.runtime.watch({ signal });
-          for await (const frame of frames) return frame;
-          throw new Error("Runtime watch ended before the first frame");
-        },
-        catch: (cause) => new RuntimeConnectionFailure({ cause }),
-      }).pipe(
-        Effect.timeoutOrElse({
-          duration: timeoutMs,
-          orElse: () =>
-            Effect.fail(
-              new RuntimeConnectionFailure({
-                cause: new Error("Runtime watch timed out"),
-              }),
-            ),
-        }),
-      ),
+    watchFirstFrame: (timeoutMs) => firstFrame((options) => client.runtime.watch(options), timeoutMs),
   };
+}
+
+/** The first frame a runtime watch yields, failing when none comes within `timeoutMs`. */
+export function firstFrame(
+  watch: (options: { readonly signal: AbortSignal }) => AsyncIterable<RuntimeWatchView>,
+  timeoutMs: number,
+) {
+  return Effect.tryPromise({
+    try: async (signal) => {
+      for await (const frame of watch({ signal })) return frame;
+      throw new Error("Runtime watch ended before the first frame");
+    },
+    catch: (cause) => new RuntimeConnectionFailure({ cause }),
+  }).pipe(
+    Effect.timeoutOrElse({
+      duration: timeoutMs,
+      orElse: () => Effect.fail(new RuntimeConnectionFailure({ cause: new Error("Runtime watch timed out") })),
+    }),
+  );
 }
 
 function closeSession(session: Client) {
