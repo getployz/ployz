@@ -203,7 +203,7 @@ A cut left unfinished on another server blocks that finish. Release and removing
 name every such server to remove first:
 
 ```
-data has unfinished cuts on web-1 and web-3, so release cannot finish it on web-2; ployz server rm web-1 and web-3, then ployz volume release data
+data has unfinished cuts on web-1 and web-3, so release cannot finish it on web-2; ployz server rm web-1, then ployz server rm web-3, then ployz volume release data
 ```
 
 If another server's copy is still a writer, both print that first instead:

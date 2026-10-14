@@ -585,9 +585,8 @@ describe("planForwardRelease", () => {
     const members = [member("fsn-1", "cut", { epoch: 8 }), member("fsn-3", "cut", { epoch: 9 }), member("fsn-2", "final"), member("fsn-4", "mirror")];
     const planned = planForwardRelease("data", B, members);
     if (planned.kind !== "blocked") throw new Error(`planned ${planned.kind}, not a refusal`);
-    expect(planned.message).toBe("data has unfinished cuts on fsn-1 and fsn-3, so release cannot finish it on fsn-2; ployz server rm fsn-1 and fsn-3, then ployz volume release data");
-    const step = /; ployz server rm (.+), then ployz volume release data$/.exec(planned.message);
-    const gone = step?.[1]?.split(" and ") ?? [];
+    expect(planned.message).toBe("data has unfinished cuts on fsn-1 and fsn-3, so release cannot finish it on fsn-2; ployz server rm fsn-1, then ployz server rm fsn-3, then ployz volume release data");
+    const gone = [...planned.message.matchAll(/ployz server rm ([\w-]+), then /g)].flatMap(([, server]) => server ?? []);
     expect(forward(members.filter((each) => !gone.includes(each.machine.name)))).toBe("ready on fsn-2, removing on fsn-4");
   });
 });

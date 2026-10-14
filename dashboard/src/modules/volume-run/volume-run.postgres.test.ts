@@ -3301,7 +3301,7 @@ describe("volume runs", () => {
           { name: "fsn-3", pool: true, copy: writerCopy(cut, 9, true) },
           { name: "fsn-4", pool: true, copy: slotCopy(cut) },
         ];
-        const advice = "data has unfinished cuts on fsn-1 and fsn-3, so release cannot finish it on fsn-2; ployz server rm fsn-1 and fsn-3, then ployz volume release data";
+        const advice = "data has unfinished cuts on fsn-1 and fsn-3, so release cannot finish it on fsn-2; ployz server rm fsn-1, then ployz server rm fsn-3, then ployz volume release data";
         const plan = (input: VolumeRunInput) => runEffect(planVolumeRun(organizationId, { volumeId, environment, ...input }));
 
         expect(await plan({ kind: "release", args: {} })).toMatchObject({ ok: false, refusal: { message: advice } });
