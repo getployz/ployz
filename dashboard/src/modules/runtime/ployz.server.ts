@@ -29,7 +29,7 @@ import type {
   VolumeSwitchRequest,
   WatchOptions,
 } from "@ployz/sdk";
-import { connect as connectSdk, observeCopies, ployzVersion, setVolumeCopyRefusal } from "@ployz/sdk";
+import { connect as connectSdk, machineUpgradeAttemptId, observeCopies, ployzVersion, setVolumeCopyRefusal } from "@ployz/sdk";
 import { Context, Data, Effect, Layer, Option, Schema, type Scope } from "effect";
 import type { JsonValue } from "#/db/tables";
 import { describeFailureCause } from "#/lib/error-message";
@@ -42,7 +42,7 @@ import { RuntimeConnectionFailure } from "#/modules/runtime/runtime-connection-e
 /** The release this SDK speaks; it needs no Machine. */
 export { ployzVersion };
 
-export { setVolumeCopyRefusal };
+export { machineUpgradeAttemptId, setVolumeCopyRefusal };
 
 export const observeVolumeCopies = (connections: Parameters<typeof observeCopies>[0]) =>
   sdkPromise("observe copies", () => observeCopies(connections));
