@@ -623,9 +623,9 @@ describe("volume runs", () => {
     it("a mirror removal under way says it finishes on its own, and a release leaves it to, since it cannot retract a destroy a Machine started", async () => {
       const removal = await requested({ kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null } });
 
-      const busy = { ok: false, refusal: { code: "conflict", message: "VolumeBusy: data is busy with a mirror removal; it finishes on its own" } };
-      expect(await request({ kind: "sync", args: { full: false } })).toMatchObject(busy);
-      expect(await request({ kind: "release", args: {} })).toMatchObject(busy);
+      const removing = "data is busy with a mirror removal; it finishes on its own";
+      expect(await request({ kind: "sync", args: { full: false } })).toMatchObject({ ok: false, refusal: { code: "conflict", message: `VolumeBusy: ${removing}` } });
+      expect(await request({ kind: "release", args: {} })).toMatchObject({ ok: false, refusal: { code: "conflict", message: removing } });
       expect(await rows()).toMatchObject([{ id: removal.id, kind: "delete_mirror", state: "requested" }]);
     });
 

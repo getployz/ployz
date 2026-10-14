@@ -785,6 +785,10 @@ class VolumeMoveTests(unittest.TestCase):
         self.assertEqual(volume_move.busy(refusal), run)
         ended = dict(error=dict(code="conflict", message="A run on this Volume just ended. Try again.", details=None))
         self.assertEqual(volume_move.busy(ended), dict(id="ended"))
+        removal = dict(id="run-4", kind="delete_mirror", state="running")
+        release = dict(error=dict(code="conflict", message="db is busy with a mirror removal; it finishes on its own",
+                                  details=dict(run=removal)))
+        self.assertEqual(volume_move.busy(release), removal)
         for name, reply in [("other conflict", dict(error=dict(code="conflict", message="Volume data is not "
                                                                 "attached.", details=None))),
                             ("approval", dict(error=dict(code="approval_required", details=dict(approval="x")))),
