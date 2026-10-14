@@ -17,28 +17,27 @@ const mail = (fields: Partial<DeploymentView>, sources = [source("web")]) =>
 it("names the push, the Service and the Environment, and links the failed build's logs", () => {
   const failed = mail({ builds: [{ service: "web", commit: "8a7ed6e", status: "failed", message: "npm ci exited 1" }] });
   expect(failed).toMatchObject({
-    subject: "Deploy failed: web in shop / pr 7",
-    preview: "8a7ed6e on feature/login failed. The logs show why.",
+    subject: "web failed to deploy to shop / pr 7",
+    preview: "8a7ed6e on feature/login didn't deploy. The logs show why.",
     title: "web failed to deploy to pr 7",
-    paragraphs: ["GitHub started this deploy from feature/login, and it failed. The logs show why."],
+    paragraphs: ["GitHub started this deploy from feature/login. The logs show what went wrong."],
     action: { label: "View logs", url: "https://ployz.dev/cloud/shop%20co/shop/pr%207/deployments/dep%201?logs=build" },
   });
   expect(failed.facts).toEqual([
     { label: "Repository", value: "acme/web", mono: true },
     { label: "Branch", value: "feature/login", mono: true },
     { label: "Commit", value: "8a7ed6e", mono: true },
-    { label: "Service", value: "web" },
     { label: "Environment", value: "shop / pr 7" },
-    { label: "Failed with", value: "npm ci exited 1" },
+    { label: "Error", value: "npm ci exited 1" },
   ]);
 });
 
-it("gives the run's reason over a build's, links deploy logs when no build failed, and says when Cloud lost track", () => {
+it("gives the run's reason over a build's, links deploy logs when no build failed, and says when Ployz lost track", () => {
   const ran = mail({ outcome: { type: "executed", summary: null, reason: "web did not start", cause: ["exit 137"] } });
-  expect(ran.facts?.at(-1)).toEqual({ label: "Failed with", value: "web did not start: exit 137" });
+  expect(ran.facts?.at(-1)).toEqual({ label: "Error", value: "web did not start: exit 137" });
   expect(ran.action?.url).toMatch(/\?logs=deploy$/);
-  expect(mail({ status: "unknown" }).facts?.at(-1)?.value).toBe("Cloud lost track of it partway, so some of it may have applied.");
-  expect(mail({}).facts?.at(-1)?.value).toBe("It failed before it reported why.");
+  expect(mail({ status: "unknown" }).facts?.at(-1)?.value).toBe("Ployz lost track of it partway through, so some of it may be live.");
+  expect(mail({}).facts?.at(-1)?.value).toBe("It stopped before it said why.");
 });
 
 it("describes the Service whose build failed and opens its build log", () => {
@@ -62,12 +61,12 @@ it("names Services as authored, not by their Private DNS names", () => {
 
 it("counts several Services, names no source when no build failed, and falls back to the Environment when the deploy had no Git source", () => {
   expect(mail({}, [source("web"), source("api"), source("web")])).toMatchObject({
-    subject: "Deploy failed: 2 services in shop / pr 7",
-    paragraphs: ["GitHub started this deploy, and it failed. The logs show why."],
+    subject: "2 services failed to deploy to shop / pr 7",
+    paragraphs: ["GitHub started this deploy. The logs show what went wrong."],
     facts: expect.arrayContaining([{ label: "Services", value: "web, api" }]),
   });
-  expect(mail({}, [source("web"), source("api")]).facts?.map((fact) => fact.label)).toEqual(["Services", "Environment", "Failed with"]);
+  expect(mail({}, [source("web"), source("api")]).facts?.map((fact) => fact.label)).toEqual(["Services", "Environment", "Error"]);
   const bare = mail({}, []);
-  expect(bare).toMatchObject({ subject: "Deploy failed in shop / pr 7", title: "A deploy to pr 7 failed", preview: "The logs show why." });
-  expect(bare.facts?.map((fact) => fact.label)).toEqual(["Environment", "Failed with"]);
+  expect(bare).toMatchObject({ subject: "A deploy to shop / pr 7 failed", title: "A deploy to pr 7 failed", preview: "The logs show why." });
+  expect(bare.facts?.map((fact) => fact.label)).toEqual(["Environment", "Error"]);
 });
