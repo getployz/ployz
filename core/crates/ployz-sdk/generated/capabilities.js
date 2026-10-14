@@ -32,6 +32,8 @@ exports.capabilities = Object.freeze([
   "ployz.metrics.history.v1",
   "ployz.rpc.describe-contract.v1",
   "ployz.runtime.watch.v1",
+  "ployz.serving.publish.v1",
+  "ployz.serving.read.v1",
   "ployz.storage.inspect.v1",
   "ployz.storage.prepare.v1",
   "ployz.volume.copy.floor.v1",

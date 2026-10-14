@@ -193,6 +193,6 @@ step "Click 'Reveal test key' on the Secret key row, then copy it."
 ask_secret STRIPE_SECRET_KEY "Paste the secret key:"
 write_env STRIPE_PUBLISHABLE_KEY "$STRIPE_PUBLISHABLE_KEY"
 write_env STRIPE_SECRET_KEY "$STRIPE_SECRET_KEY"
-set_secret STRIPE_SECRET_KEY "$STRIPE_SECRET_KEY"   # CI needs this one
+set_secret STRIPE_SECRET_KEY "$STRIPE_SECRET_KEY"
 
 finish

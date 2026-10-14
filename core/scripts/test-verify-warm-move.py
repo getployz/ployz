@@ -127,6 +127,13 @@ def text_of(row, data):
     return say(row if row is not None else data)
 
 
+def still_answering(forget_reply):
+    """Until a dead Server's handshake goes stale, the entry Server asks it for its copies and the ask times out."""
+    text = say(forget_reply)
+    return ("does not match" in text or "aren't answering" in text
+            or find_key(forget_reply, "code") == "unavailable")
+
+
 def http(method, url, body=None, token=None):
     data = json.dumps(body).encode() if body is not None else None
     headers = {"content-type": "application/json"} | ({"authorization": f"Bearer {token}"} if token else {})
@@ -274,13 +281,13 @@ class Cluster:
         text = say(listed)
         return {machine for machine in self.machines if f'"{machine}"' in text}
 
-    def fault(self, machine, value):
-        """Arm or disarm without a restart: the daemons read /run/ployz/fault on every check."""
-        if value:
-            self.sh(machine, f"mkdir -p /run/ployz && printf '%s\\n' {shlex.quote(value)} > /run/ployz/fault.tmp "
-                             "&& mv /run/ployz/fault.tmp /run/ployz/fault")
-        else:
-            self.sh(machine, "rm -f /run/ployz/fault")
+    def arm_fault(self, machine, value):
+        """No restart needed: the daemons read /run/ployz/fault on every check."""
+        self.sh(machine, f"mkdir -p /run/ployz && printf '%s\\n' {shlex.quote(value)} > /run/ployz/fault.tmp "
+                         "&& mv /run/ployz/fault.tmp /run/ployz/fault")
+
+    def disarm_fault(self, machine):
+        self.sh(machine, "rm -f /run/ployz/fault")
 
     def fault_lines(self, machine, since):
         output = self.sh(machine, f"journalctl -u ployz.service --since @{int(since) - 2} --no-pager -o short-unix "
@@ -349,7 +356,7 @@ class Cluster:
             time.sleep(1)
         return f"{TIMED_OUT} {limit}s"
 
-    def approve(self, reply):
+    def approve(self, reply) -> str | None:
         """Approve as the operator would in Cloud and return the approval id, or None when nothing asked."""
         error = reply.get("error") if isinstance(reply, dict) else None
         if not isinstance(error, dict) or error.get("code") != "approval_required":
@@ -506,25 +513,24 @@ class Cluster:
     def stop_move(self, volume, phys, source, target):
         """Hold a Move to `target` in its last pull after the cut, before it commits, then cancel it with the
         runner down. The Move ends warm, so Cloud starts a release back to `source`."""
-        self.fault(target, "delay-rpc:SetVolumeCopy.MirrorToMirror:25")
+        self.arm_fault(target, "delay-rpc:SetVolumeCopy.MirrorToMirror:25")
         since = time.time()
         code, row, data = self.start_run("volume", "move", volume, "--to", target)
         if row is None:
-            self.fault(target, None)
+            self.disarm_fault(target)
             raise CheckError(f"move refused: {say(data)[:600]}")
         held = self.wait_held(volume, row, phys, source, target, "MirrorToMirror", since)
         self.runner("kill")
         try:
             cancelled = self.cancel(row["id"])
         finally:
-            self.fault(target, None)
+            self.disarm_fault(target)
             self.runner("start")
         stopped = self.wait_run(volume, row["id"], limit=300)
         return dict(held=held, cancel=cancelled, run=stopped)
 
     def remove_dead(self, machine, limit=900):
-        """`server forget --confirm dead`, retried while the entry Server still lists it as answering:
-        until its handshake goes stale, the copies it holds are asked for and the ask times out."""
+        """`server forget --confirm dead`, retried while the entry Server still lists it as answering."""
         deadline = time.monotonic() + limit
         attempts = []
         while True:
@@ -532,9 +538,7 @@ class Cluster:
             attempts.append(f"exit {code} {say(data)[:300]}")
             if code == 0:
                 return attempts
-            retry = ("does not match" in say(data) or "aren't answering" in say(data)
-                     or find_key(data, "code") == "unavailable")
-            if not retry or time.monotonic() > deadline:
+            if not still_answering(data) or time.monotonic() > deadline:
                 raise CheckError(f"server forget {machine} --confirm dead refused: {attempts[-3:]}")
             time.sleep(2)
 
@@ -733,11 +737,11 @@ def rejoin_verdict(vc, name):
 def rm_target_then_readd(vc):
     phys = vc.physical("juliet")
     vc.seed(A, phys, 1)
-    vc.fault(B, "delay-rpc:SetVolumeCopy.MirrorToWriter:900")
+    vc.arm_fault(B, "delay-rpc:SetVolumeCopy.MirrorToWriter:900")
     since = time.time()
     _, row, data = vc.start_run("volume", "move", "juliet", "--to", B)
     if row is None:
-        vc.fault(B, None)
+        vc.disarm_fault(B)
         raise CheckError(f"move refused: {say(data)[:600]}")
     held = vc.wait_held("juliet", row, phys, A, B, "MirrorToWriter", since)
     stale_txg = vc.prop(B, fs(phys), "createtxg")
@@ -752,7 +756,7 @@ def rm_target_then_readd(vc):
     finally:
         vc.power("on", B)
     vc.daemon_up(B)
-    vc.fault(B, None)
+    vc.disarm_fault(B)
     joined = vc.rejoin(B)
     _, again, data = vc.move("juliet", B)
     rows = vc.rows(B, phys) if vc.ready(B, phys, limit=300) else "no db"
@@ -963,7 +967,7 @@ def deploy_mid_move(vc):
     legs = []
     for source, target, value, cell in plan:
         if value:
-            vc.fault(target, value)
+            vc.arm_fault(target, value)
         else:
             vc.slow_runc(target, "charlie", phys, 30)
         since = time.time()
@@ -988,7 +992,7 @@ def deploy_mid_move(vc):
             if sampler.is_alive():
                 sampler.join()
             if value:
-                vc.fault(target, None)
+                vc.disarm_fault(target)
             else:
                 vc.plain_runc(target, "charlie")
         final = requeued or original

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { ConfigTrusted, Connection, MachineId } from "@ployz/sdk";
+import type { ConfigTrusted, Connection } from "@ployz/sdk";
 import { ConfigProvider, Effect, Layer } from "effect";
 import { Inngest } from "inngest";
 import { vi } from "vitest";
@@ -17,6 +17,7 @@ import { AppConfig } from "#/server/config.server";
 import { Database, DatabaseLive } from "#/server/database.server";
 import { testConfigEnvironment } from "#/test/config-environment";
 import { fakeGithubApi } from "#/test/fake-github";
+import { machineId } from "#/test/ids";
 import { noPairingChanges } from "#/test/organization-runtime";
 import { postgresTestDatabase } from "#/test/postgres";
 import { organizationMachine } from "#/modules/machines/tables";
@@ -87,15 +88,14 @@ export const seedStoreOrganization = Effect.fn(function* (id: string, named: { n
 export const enrollStoreServer = Effect.fn(function* (id: string) {
   const { drizzle } = yield* Database;
   const encryption = yield* SecretEncryption;
-  // SAFETY: 32 lowercase hex digits, the Machine ID representation.
-  const machineId = "0".repeat(32) as MachineId;
+  const server = machineId("0");
   const secret = "ppair_fixture_store";
   yield* drizzle.insert(organizationPairing).values({
-    organizationId: id, encryptedPairingSecret: encryption.encrypt(secret), founderPublicKey: "founder-key", founderClaimMachineId: machineId,
+    organizationId: id, encryptedPairingSecret: encryption.encrypt(secret), founderPublicKey: "founder-key", founderClaimMachineId: server,
   });
   yield* drizzle.insert(organizationMachine).values({
-    organizationId: id, machineId, clusterKey: createHash("sha256").update(secret).digest("hex"),
-    encryptedCapability: encryption.encrypt(`ployz1:cloud:${machineId}`), isDialEntry: true,
+    organizationId: id, machineId: server, clusterKey: createHash("sha256").update(secret).digest("hex"),
+    encryptedCapability: encryption.encrypt(`ployz1:cloud:${server}`), isDialEntry: true,
   });
 });
 

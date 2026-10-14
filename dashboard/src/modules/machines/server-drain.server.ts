@@ -241,7 +241,7 @@ export const listLatestServerDrains = Effect.fn("ServerDrain.listLatest")(functi
 });
 
 /** Whether a Cloud Drain is pending or running on the Server: turning services back on would undo it. */
-export const drainActiveOn = Effect.fn("ServerDrain.activeOn")(function* (organizationId: string, machineId: string) {
+export const drainActiveOn = Effect.fn("ServerDrain.activeOn")(function* (organizationId: string, machineId: MachineId) {
   const { drizzle } = yield* Database;
   const [row] = yield* drizzle.select({ id: serverDrainAttempt.id }).from(serverDrainAttempt).where(and(
     eq(serverDrainAttempt.organizationId, organizationId),

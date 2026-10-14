@@ -1,6 +1,6 @@
 import { testConfigEnvironment } from "#/test/config-environment";
 import { assert, it } from "@effect/vitest";
-import { Cause, ConfigProvider, Effect, Layer } from "effect";
+import { Cause, ConfigProvider, Effect, Layer, Schema } from "effect";
 import { Inngest } from "inngest";
 import { Auth, AuthLive, CLI_CLIENT_ID, Unauthorized } from "#/server/auth.server";
 import { AppConfig } from "#/server/config.server";
@@ -92,17 +92,22 @@ it.live(
 );
 
 /** The fields these tests read from better-auth's device-flow and session replies. */
-type AuthReply = {
-  readonly error?: string;
-  readonly device_code?: string;
-  readonly user_code?: string;
-  readonly verification_uri?: string;
-  readonly access_token?: string;
-  readonly status?: string;
-  readonly client_id?: string;
-  readonly user?: { readonly email: string };
-  readonly session?: { readonly activeOrganizationId: string | null; readonly activeOrganizationSlug: string | null };
-};
+const AuthReply = Schema.Struct({
+  error: Schema.optionalKey(Schema.String),
+  device_code: Schema.optionalKey(Schema.String),
+  user_code: Schema.optionalKey(Schema.String),
+  verification_uri: Schema.optionalKey(Schema.String),
+  access_token: Schema.optionalKey(Schema.String),
+  status: Schema.optionalKey(Schema.String),
+  client_id: Schema.optionalKey(Schema.String),
+  user: Schema.optionalKey(Schema.Struct({ email: Schema.String })),
+  session: Schema.optionalKey(Schema.Struct({
+    activeOrganizationId: Schema.NullOr(Schema.String), activeOrganizationSlug: Schema.NullOr(Schema.String),
+  })),
+});
+/** Checks the fields the tests read and keeps the rest, so whole-reply assertions still see every field. */
+const decodeAuthReply = (text: string) =>
+  Schema.decodeUnknownSync(Schema.NullOr(AuthReply))(text === "" ? null : JSON.parse(text), { onExcessProperty: "preserve" });
 
 type Call = {
   readonly cookie?: string;
@@ -127,8 +132,7 @@ const call = Effect.fn(function* (path: string, { cookie, bearer, body }: Call =
   }
   const response = yield* auth.handler(new Request(`${origin}/api/auth${path}`, init));
   const text = yield* Effect.promise(() => response.text());
-  // SAFETY: test-only view of better-auth's JSON; assertions check every field read.
-  const json = (text === "" ? null : JSON.parse(text)) as AuthReply | null;
+  const json = decodeAuthReply(text);
   return { status: response.status, json, cookie: response.headers.get("set-cookie")?.split(";", 1)[0] };
 });
 

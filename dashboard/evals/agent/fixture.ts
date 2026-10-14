@@ -34,8 +34,7 @@ const CLUSTER_DOMAIN = "acme.ployz.test";
 /** Every task happens in staging, and a member asks from the page they view: staging's architecture. */
 const STAGING_PAGE = { page: "architecture", project: "app", environment: "staging" };
 
-/** What made staging's Deployment 4 fail, as its runner recorded it. */
-export const FAILURE = "Building worker failed: npm ERR! Missing script: \"start\"";
+export const STAGING_DEPLOYMENT_4_FAILURE = "Building worker failed: npm ERR! Missing script: \"start\"";
 
 export const environmentRef = (environment: EnvironmentName): EnvironmentRef => ({ project: "app", environment });
 
@@ -112,7 +111,7 @@ export const evalFixture = Effect.fn("Eval.fixture")(function* (scenario?: Fleet
   for (const number of [1, 2, 3, 4]) {
     const deployment = id("staging", 30 + number);
     yield* write({ command: "admit", admit: "deploy", id: deployment, environment: environmentRef("staging"), services: [], version: null, accept_volume_loss: [] });
-    if (number === 4) yield* Effect.promise(() => store.runDeployment(ORGANIZATION, deployment, "eval-runner", [], { failure: FAILURE }));
+    if (number === 4) yield* Effect.promise(() => store.runDeployment(ORGANIZATION, deployment, "eval-runner", [], { failure: STAGING_DEPLOYMENT_4_FAILURE }));
     else yield* provided(applied(deployment));
   }
   dispatched.length = 0;

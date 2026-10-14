@@ -1,9 +1,10 @@
-import type { MachineUpgradeAttemptId } from "@ployz/sdk";
+import type { MachineId, MachineUpgradeAttemptId } from "@ployz/sdk";
 import { Effect, Option, Schema } from "effect";
+import { newMachineUpgradeAttemptId } from "#/lib/ids";
 import { attemptLifecycle } from "#/modules/inngest/attempt-lifecycle";
 import type { PloyzStepTools } from "#/modules/inngest/client";
 import { createServerUpgradeRequestedEvent, serverUpgradeRequestedEventType } from "#/modules/inngest/events";
-import { machineIdStringSchema } from "#/modules/machines/enrollment";
+import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import { upgradeFailedMail } from "#/modules/mail/templates/servers/upgrade-failed";
 import { queueOrganizationMail } from "#/modules/notifications/recipients.server";
 import { type FinalOutcome, type ReleaseChannel, UPGRADE_TRIGGERS } from "#/modules/server-upgrade/server-upgrade";
@@ -16,7 +17,6 @@ import {
   listAutomaticUpgradeOrganizationIds,
   listServersBehind,
   listUnknownAutomaticRollouts,
-  mintAttemptId,
   observeUpgradeableServer,
   organizationReleaseChannel,
   pollUpgradeOnServer,
@@ -41,7 +41,7 @@ const AttemptIdType = Schema.declare<MachineUpgradeAttemptId>(
 
 const ServerUpgradeRequestedData = Schema.Struct({
   organizationId: Schema.String.check(Schema.isNonEmpty()),
-  machineId: Schema.NullOr(machineIdStringSchema),
+  machineId: Schema.NullOr(rustMachineIdSchema),
   trigger: Schema.Literals(UPGRADE_TRIGGERS),
   userId: Schema.NullOr(Schema.String),
   attemptId: Schema.optional(Schema.String.check(Schema.isPattern(/^[0-9a-f]{32}$/)).pipe(Schema.decodeTo(AttemptIdType))),
@@ -142,7 +142,7 @@ const closeStaleRollouts = Effect.fn("ServerUpgrade.closeStaleRollouts")(functio
  * `unknown` with the last stage seen.
  */
 async function upgradeServer(
-  { request, machineId, step, runId }: { request: Request; machineId: string; step: StepTools; runId: string },
+  { request, machineId, step, runId }: { request: Request; machineId: MachineId; step: StepTools; runId: string },
   runEffect: EffectRunner,
 ): Promise<ServerResult> {
   const { organizationId, channel, attemptId: requested, ...event } = request;
@@ -153,7 +153,7 @@ async function upgradeServer(
       return null;
     }
     // Minted here so every retry of a later step reuses it.
-    return { name: server.name, fromVersion: server.version, attemptId: requested ?? mintAttemptId() };
+    return { name: server.name, fromVersion: server.version, attemptId: requested ?? newMachineUpgradeAttemptId() };
   });
   if (observed === null) return { kind: "skipped", reason: "not-online" };
   const { name, fromVersion, attemptId } = observed;

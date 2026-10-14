@@ -47,7 +47,6 @@ pub enum At {
 
 /// A Service setting a row can address. Declaration order is landing order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[expect(missing_docs, reason = "each is the setting its path names")]
 pub enum Setting {
     Source,
     Branch,

@@ -7,12 +7,13 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { eq, sql } from "drizzle-orm";
 import * as tar from "tar";
-import { Cause, Effect, Exit, Layer } from "effect";
+import { Cause, Effect, Exit, Layer, Schema } from "effect";
 import { Inngest } from "inngest";
 import type { PolarService } from "#/modules/billing/polar-provider.server";
 import { startFakeHostedDns } from "#/modules/cluster-domain/hosted-dns.test-fixture";
 import { callStoreAsMember } from "#/modules/config-store/config-store.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
+import * as ids from "#/test/ids";
 import { enrollStoreServer, storeTestCloud } from "#/test/store-cloud";
 import { handleConfigRequest } from "#/routes/api/config/-config.handler";
 import { runStoreDeployment } from "#/modules/config-store/store-deployment.server";
@@ -72,16 +73,28 @@ const cloudLayer = Effect.fn(function* (
 });
 
 /** The fields these tests read from Store results and refusals. */
-type Reply = {
-  readonly written?: string;
-  readonly view?: string;
-  readonly staged?: ReadonlyArray<string>;
-  readonly settings?: ReadonlyArray<{ readonly path: string; readonly value: number; readonly default: number; readonly apply: string }>;
-  readonly values?: Readonly<Record<string, string | number>>;
-  readonly error?: { readonly code: string; readonly details: { readonly revision?: number; readonly next?: string } | null };
-  readonly domain?: { readonly kind: string; readonly prefix?: string; readonly hostname: string | null };
-  readonly domains?: ReadonlyArray<{ readonly hostname: string | null; readonly status: string; readonly action: { readonly type: string } | null }>;
-};
+const Reply = Schema.Struct({
+  written: Schema.optionalKey(Schema.String),
+  view: Schema.optionalKey(Schema.String),
+  staged: Schema.optionalKey(Schema.Array(Schema.String)),
+  settings: Schema.optionalKey(Schema.Array(Schema.Struct({
+    path: Schema.String, value: Schema.Unknown, default: Schema.Unknown, apply: Schema.String,
+  }))),
+  values: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
+  error: Schema.optionalKey(Schema.Struct({
+    code: Schema.String,
+    details: Schema.NullOr(Schema.Struct({ revision: Schema.optionalKey(Schema.Number), next: Schema.optionalKey(Schema.String) })),
+  })),
+  domain: Schema.optionalKey(Schema.Struct({
+    kind: Schema.String, prefix: Schema.optionalKey(Schema.String), hostname: Schema.NullOr(Schema.String),
+  })),
+  domains: Schema.optionalKey(Schema.Array(Schema.Struct({
+    hostname: Schema.NullOr(Schema.String), status: Schema.String, action: Schema.NullOr(Schema.Struct({ type: Schema.String })),
+  }))),
+});
+type Reply = typeof Reply.Type;
+/** Checks the fields the tests read and keeps the rest, so whole-reply assertions still see every field. */
+const decodeReply = (text: string) => Schema.decodeUnknownSync(Reply)(JSON.parse(text), { onExcessProperty: "preserve" });
 
 /** One CLI request; `json` is the Store's result, or its refusal under `error`. */
 const request = Effect.fn(function* (path: string, cookie: string | undefined, body: Body | undefined, method = "POST") {
@@ -95,8 +108,7 @@ const request = Effect.fn(function* (path: string, cookie: string | undefined, b
     return { status: statusForPublicError(encodePublicError(Cause.squash(exit.cause))), json: empty };
   }
   const text = yield* Effect.promise(() => exit.value.text());
-  // SAFETY: test-only view of the Store's JSON; assertions check every field read.
-  return { status: exit.value.status, json: JSON.parse(text) as Reply };
+  return { status: exit.value.status, json: decodeReply(text) };
 });
 
 const signUp = Effect.fn(function* (name: string) {
@@ -317,8 +329,8 @@ it.live(
         const VOLUME = "00000000-0000-4000-8000-000000000004";
         yield* request("write", alice, { command: "create_volume", id: VOLUME, environment: here, name: "data", storage: { kind: "docker" }, mounts: [] });
         const { drizzle } = yield* Database;
-        const web1 = "1".repeat(32) as MachineId;
-        const web2 = "2".repeat(32) as MachineId;
+        const web1 = ids.machineId("1");
+        const web2 = ids.machineId("2");
         yield* drizzle.insert(volumePlacement).values({
           volumeId: VOLUME, organizationId, environmentId: ENVIRONMENT, mirrors: [web2], staged: { primary: web1, mirrors: [], deletes: [] },
         });
@@ -347,14 +359,14 @@ it.live(
         yield* request("write", alice, web);
         // Cloud's Cluster has this Server and `other`, which leaves first without a reset. It resets this one when
         // asked; the first reset doesn't finish.
-        const machineId = "0".repeat(32);
-        const other = "1".repeat(32);
+        const machineId = ids.machineId("0");
+        const other = ids.machineId("1");
         const { drizzle } = yield* Database;
         const encryption = yield* SecretEncryption;
         const [enrolled] = yield* drizzle.select().from(organizationMachine);
         if (!enrolled) return assert.fail("no Server enrolled");
         yield* drizzle.insert(organizationMachine).values({
-          ...enrolled, machineId: other as MachineId, isDialEntry: false, encryptedCapability: encryption.encrypt("ployz1:other"),
+          ...enrolled, machineId: other, isDialEntry: false, encryptedCapability: encryption.encrypt("ployz1:other"),
         });
         const warnings: Array<string | null> = ["Docker reset failed: busy volume", null];
         // No Server answers the runtime watch, so their capabilities are unknown and every removal still goes out.
@@ -369,7 +381,7 @@ it.live(
         };
         const userId = (yield* resolveCaller(new Headers({ cookie: alice }))).userId;
         let runs = 0;
-        const removeServer = (server: string, noReset: boolean) => Effect.gen(function* () {
+        const removeServer = (server: MachineId, noReset: boolean) => Effect.gen(function* () {
           const removal = { organizationId, machineId: server, confirmDataLoss: [], noReset };
           const attempt = yield* requestMachineRemoveAttempt({ ...removal, requestedByUserId: userId });
           const inngestRunId = `run-${++runs}`;
@@ -414,7 +426,7 @@ it.live(
         // A replay of that release after a new Cluster was paired, even through a Server of the same ID, touches nothing.
         yield* drizzle.insert(organizationPairing).values({
           organizationId, encryptedPairingSecret: encryption.encrypt("ppair_replacement"),
-          founderPublicKey: "founder-key", founderClaimMachineId: "1".repeat(32) as MachineId,
+          founderPublicKey: "founder-key", founderClaimMachineId: ids.machineId("1"),
         });
         yield* drizzle.insert(organizationMachine).values({
           ...enrolled, clusterKey: createHash("sha256").update("ppair_replacement").digest("hex"),
@@ -438,7 +450,7 @@ it.live(
         const caller = yield* resolveCaller(new Headers({ cookie: alice }));
         const organizationId = caller.organization.id;
         yield* enrollStoreServer(organizationId);
-        const machineId = "0".repeat(32);
+        const machineId = ids.machineId("0");
         const { drizzle } = yield* Database;
         const sent: Array<{ machine: string; confirmed: readonly unknown[] }> = [];
         const replies = [
@@ -498,7 +510,7 @@ it.live(
         const caller = yield* resolveCaller(new Headers({ cookie: alice }));
         const organizationId = caller.organization.id;
         yield* enrollStoreServer(organizationId);
-        const machineId = "0".repeat(32);
+        const machineId = ids.machineId("0");
         const resetWarning = "Docker reset failed";
         const sent: string[] = [];
         const forgets = [
@@ -677,8 +689,7 @@ const upload = Effect.fn(function* (deploymentId: string, cookie: string, body: 
   const response = yield* handleConfigRequest(new Request(`${origin}/api/config/upload/${deploymentId}`, {
     method: "POST", headers: { cookie, "content-type": "application/gzip" }, body: new Blob([new Uint8Array(body)]),
   }));
-  // SAFETY: test-only view of Cloud's JSON; assertions check every field read.
-  return { status: response.status, json: (yield* Effect.promise(() => response.json())) as Reply };
+  return { status: response.status, json: decodeReply(yield* Effect.promise(() => response.text())) };
 });
 
 it.live(

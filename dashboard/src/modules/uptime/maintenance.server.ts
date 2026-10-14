@@ -84,10 +84,6 @@ const pruneStatements = {
       WHERE state IN ('sent', 'failed', 'expired') AND updated_at < ${before}::timestamptz LIMIT ${PRUNE_BATCH_ROWS})`,
 } satisfies Record<Retained, (before: string) => SQL>;
 
-export const prunedKinds =
-  // SAFETY: pruneStatements is a literal checked by `satisfies`, so its own keys are exactly the Retained kinds.
-  Object.keys(pruneStatements) as ReadonlyArray<Retained>;
-
 /** `uptime-prune`: delete one batch of `kind` past its retention at `now`. Returns the rows deleted. */
 export const pruneUptimeBatch = Effect.fn("Uptime.prune")(function* (kind: Retained, now: Date) {
   const { drizzle } = yield* Database;

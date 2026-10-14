@@ -1,6 +1,5 @@
 import { it } from "@effect/vitest";
-import type { Approval, ConfigCommand, ConfigStore, RpcError as SdkRpcError, RuntimeWatchView } from "@ployz/sdk";
-import { createRequire } from "node:module";
+import { type Approval, type ConfigCommand, type ConfigStore, RpcError, type RuntimeWatchView } from "@ployz/sdk";
 import { sql } from "drizzle-orm";
 import { Deferred, Effect, Fiber, Layer } from "effect";
 import { expect, vi } from "vitest";
@@ -29,8 +28,6 @@ import { handleConfigRequest } from "#/routes/api/config/-config.handler";
 import { AuthLive } from "#/server/auth.server";
 import { Database } from "#/server/database.server";
 import { acmeWeb, seedStoreGitService, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
-
-const { RpcError } = createRequire(import.meta.url)("@ployz/sdk") as { RpcError: typeof SdkRpcError };
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000a501";
 const OTHER = "00000000-0000-4000-8000-00000000a502";

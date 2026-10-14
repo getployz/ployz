@@ -2,7 +2,7 @@ import { Option, Schema } from "effect";
 import { attemptLifecycle } from "#/modules/inngest/attempt-lifecycle";
 import type { PloyzStepTools } from "#/modules/inngest/client";
 import { createClusterDomainSyncRequestedEvent, serverWebTrafficRequestedEventType } from "#/modules/inngest/events";
-import { machineIdStringSchema } from "#/modules/machines/enrollment";
+import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import {
   bindWebTrafficRun,
   closeStaleWebTraffic,
@@ -17,7 +17,7 @@ type EffectRunner = typeof runInngestEffect;
 const ServerWebTrafficRequestedData = Schema.Struct({
   attemptId: Schema.String.check(Schema.isUUID()),
   organizationId: Schema.String.check(Schema.isNonEmpty()),
-  machineId: machineIdStringSchema,
+  machineId: rustMachineIdSchema,
 });
 
 /**

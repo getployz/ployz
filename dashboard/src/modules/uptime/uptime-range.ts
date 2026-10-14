@@ -8,8 +8,10 @@ const SECOND_MS = 1000;
 const MINUTE_MS = 60 * SECOND_MS;
 const HOUR_MS = 60 * MINUTE_MS;
 const DAY_MS = 24 * HOUR_MS;
-const UNIT_MS = { s: SECOND_MS, m: MINUTE_MS, h: HOUR_MS, d: DAY_MS, w: 7 * DAY_MS } as const;
-type Unit = keyof typeof UNIT_MS;
+const Unit = Schema.Literals(["s", "m", "h", "d", "w"]);
+type Unit = typeof Unit.Type;
+const isUnit = Schema.is(Unit);
+const UNIT_MS = { s: SECOND_MS, m: MINUTE_MS, h: HOUR_MS, d: DAY_MS, w: 7 * DAY_MS } as const satisfies Record<Unit, number>;
 
 const AGO = /^([1-9]\d{0,5})([smhdw])$/u;
 const INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
@@ -45,8 +47,8 @@ export const instantEdge = (ms: number) => new Date(ms).toISOString();
 export function edgeMs(edge: string, now: number): number {
   if (edge === "now") return now;
   const ago = AGO.exec(edge);
-  // SAFETY: AGO's second group only matches a key of UNIT_MS.
-  return ago ? now - Number(ago[1]) * UNIT_MS[ago[2] as Unit] : Date.parse(edge);
+  const unit = ago?.[2];
+  return ago && isUnit(unit) ? now - Number(ago[1]) * UNIT_MS[unit] : Date.parse(edge);
 }
 
 export type RangeWindow = { readonly from: number; readonly to: number };

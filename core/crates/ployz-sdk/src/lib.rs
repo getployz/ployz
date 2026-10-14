@@ -875,6 +875,7 @@ pub(crate) fn from_js<T: serde::de::DeserializeOwned>(
     ployz_core::decode::decode(&whole_numbers(value))
 }
 
+/// Turn every float in `value` that holds a JS-safe whole number back into an integer.
 pub(crate) fn whole_numbers(value: serde_json::Value) -> serde_json::Value {
     use serde_json::Value;
     const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;

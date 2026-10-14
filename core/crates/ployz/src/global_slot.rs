@@ -1,10 +1,8 @@
-//! A Global's slot on one Machine: its fresh eligibility there, and the removal of its
-//! Containers there. Global catch-up and Drain's retirement both act on one slot this way.
+//! A Global's slot on one Machine: its fresh eligibility there.
 
 use ployz_core::{
-    ContainerKind, EnvironmentValues, InspectRequest, ListContainersRequest, MachineId,
-    MachineTarget, Namespace, ResolvedServiceSpec, RpcError, RpcErrorCode, ServiceName,
-    ServicePlacementEligibility, ServicePlacementUnknownReason, op,
+    InspectRequest, MachineId, MachineTarget, Namespace, ResolvedServiceSpec, RpcError,
+    RpcErrorCode, ServicePlacementEligibility, ServicePlacementUnknownReason, op,
 };
 
 use crate::connect::Client;
@@ -42,47 +40,6 @@ pub(crate) async fn slot_eligibility(
             cause: Vec::new(),
         })?;
     Ok(spec.placement_eligibility_in_namespace(namespace, &machine, details.storage.as_ref()))
-}
-
-/// Stop and remove every Service Container of `namespace`/`name` on `machine_id`.
-///
-/// # Errors
-///
-/// Fails at the first listing, stop or removal the Machine does not acknowledge.
-pub(crate) async fn remove_slot(
-    client: &mut Client,
-    machine_id: &MachineId,
-    namespace: &Namespace,
-    name: &ServiceName,
-) -> Result<(), RpcError> {
-    let target = MachineTarget::from(machine_id);
-    let containers = client
-        .read::<op::ListContainers>(
-            ListContainersRequest {
-                environment: EnvironmentValues::Redacted,
-            },
-            &target,
-        )
-        .await?;
-    for container in containers.containers.into_iter().filter(|container| {
-        container.machine_id == *machine_id
-            && container.kind == ContainerKind::ServiceContainer
-            && container.namespace == *namespace
-            && container.resolved_spec.name == *name
-    }) {
-        client
-            .ensure_container(
-                machine_id,
-                ployz_core::ContainerWant::Gone {
-                    container: ployz_core::ContainerLocator::Id(container.container_id),
-                    drain: ployz_core::Drain::DEFAULT,
-                    anonymous_volumes: ployz_core::AnonymousVolumes::Remove,
-                },
-                None,
-            )
-            .await?;
-    }
-    Ok(())
 }
 
 /// The refusal for a slot whose eligibility on the Server can't be told.

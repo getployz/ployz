@@ -1,14 +1,13 @@
 import { QueryClient } from "@tanstack/react-query";
-import type { ConfigItemView, ConfigsView, DeploymentView, DiffView, DomainsView, EnvironmentView, MergeRow, OnMerge, RowId, ServiceId, ServiceListing, ServicesView, SyncView } from "@ployz/sdk";
+import type { ConfigItemView, ConfigsView, DeploymentView, DiffView, DomainsView, EnvironmentView, MergeRow, OnMerge, ServiceListing, ServicesView, SyncView } from "@ployz/sdk";
 import { asTestDouble } from "#/lib/test-double";
+import { rowId, serviceId } from "#/test/ids";
 import { describe, expect, it } from "vitest";
 import { applyOptimistic } from "./store-optimistic";
 import { onMergeQuery } from "./store-pull-requests";
 import { diffQuery, environmentSettingsQuery, servicesQuery, storeViewOptions, syncQuery } from "./store-view.queries";
 
 const ref = { project: "shop", environment: "production" };
-// SAFETY: test ids stand in for the Store's UUIDs.
-const id = (value: string) => value as ServiceId;
 const environment = { id: "env", project: "shop", name: "production", revision: 3 };
 
 function cached() {
@@ -19,11 +18,11 @@ function cached() {
     queryClient.setQueryData<unknown>(key(query), { ok: true, value });
   put(diffQuery(ref), {
     environment, version: "3:1:1", saved: 1, published: false, incoming: [], follow_hints: [], included: [], total_count: 3, changes: [
-      { type: "service", id: "w", row: "w:node" as RowId, name: "web", lifecycle: "update", comparison: null, data: null, restarts: [], settings: [
+      { type: "service", id: "w", row: rowId("w:node"), name: "web", lifecycle: "update", comparison: null, data: null, restarts: [], settings: [
         { path: "web.replicas", kind: "update", before: 1, after: 3, canRestore: true, row: null },
         { path: "web.startCommand", kind: "update", before: null, after: "serve", canRestore: true, row: null },
       ] },
-      { type: "service", id: "c", row: "c:node" as RowId, name: "cache", lifecycle: "create", comparison: null, data: null, restarts: [], settings: [] },
+      { type: "service", id: "c", row: rowId("c:node"), name: "cache", lifecycle: "create", comparison: null, data: null, restarts: [], settings: [] },
     ],
   } satisfies DiffView);
   put(environmentSettingsQuery(ref), { environment, settings: [
@@ -31,8 +30,8 @@ function cached() {
     { path: "web.startCommand", value: "serve", default: null, apply: "staged" },
   ] } satisfies EnvironmentView);
   put(servicesQuery(ref), { environment, services: [
-    { id: id("w"), row: "w:node" as RowId, name: "web", private_dns: "web", source: "image", change: "update", template: null },
-    { id: id("c"), row: "c:node" as RowId, name: "cache", private_dns: "cache", source: "image", change: "create", template: null },
+    { id: serviceId("w"), row: rowId("w:node"), name: "web", private_dns: "web", source: "image", change: "update", template: null },
+    { id: serviceId("c"), row: rowId("c:node"), name: "cache", private_dns: "cache", source: "image", change: "create", template: null },
   ] } satisfies ServicesView);
   const read = <V,>(query: Parameters<typeof storeViewOptions>[2]) => (queryClient.getQueryData<{ value: V }>(key(query)))?.value;
   return { queryClient, read };
@@ -58,7 +57,7 @@ it("keeps exact Config files and affected Services visible until Discard answers
   const key = storeViewOptions("acme", { queryClient, sessionId: "s", userId: "u" }, diffQuery(ref)).queryKey;
   queryClient.setQueryData<unknown>(key, { ok: true, value: {
     ...read<DiffView>(diffQuery(ref)), changes: [{
-      type: "config", id: "s", row: "s:node" as RowId, name: "sentry", lifecycle: "update", comparison: null, data: null, restarts: ["web"],
+      type: "config", id: "s", row: rowId("s:node"), name: "sentry", lifecycle: "update", comparison: null, data: null, restarts: ["web"],
       settings: ["app.conf", "app.conf.bak"].map((name) => ({
         path: `configs.sentry.files.${name}`, kind: "update", before: null, after: null, canRestore: true, row: null,
       })),
@@ -159,7 +158,7 @@ it("shows each command of a Batch at once, as it would alone", async () => {
 
 it("shows a mark and an unmark at once, by the rows they name", async () => {
   const { queryClient, read } = cached();
-  const row = (name: string) => `w:variables.${name}` as RowId;
+  const row = (name: string) => rowId(`w:variables.${name}`);
   queryClient.setQueryData<{ ok: true; value: EnvironmentView }>(
     storeViewOptions("acme", { queryClient, sessionId: "s", userId: "u" }, environmentSettingsQuery(ref)).queryKey,
     (cached) => cached && { ok: true, value: { ...cached.value, never_synced: [row("A"), row("B")] } },
@@ -174,7 +173,7 @@ it("shows a mark and an unmark at once, by the rows they name", async () => {
 it("stages an edit of a Service the review lacks under its listing's row", async () => {
   const { queryClient, read } = cached();
   // A Branch's copy: its own id, its lineage's row.
-  const db: ServiceListing = { id: id("d2"), row: "d:node" as RowId, name: "db", private_dns: "db", source: "image", change: null, template: null };
+  const db: ServiceListing = { id: serviceId("d2"), row: rowId("d:node"), name: "db", private_dns: "db", source: "image", change: null, template: null };
   queryClient.setQueryData<{ ok: true; value: ServicesView }>(
     storeViewOptions("acme", { queryClient, sessionId: "s", userId: "u" }, servicesQuery(ref)).queryKey,
     (cached) => cached && { ok: true, value: { ...cached.value, services: [...cached.value.services, db] } },
@@ -188,7 +187,7 @@ it("takes a newly marked row out of a Sync from the marking Environment at once,
   const fix = { project: "shop", environment: "fix-api" };
   const query = syncQuery(fix, "production");
   const offer = (name: string) => ({
-    row: `a:variables.${name}` as RowId, node: "api", kind: "service" as const, name: `env.${name}`,
+    row: rowId(`a:variables.${name}`), node: "api", kind: "service" as const, name: `env.${name}`,
     change: "changed" as const, from: "x", into: "y", ticked: true, requires: null, secret: null, held_by: null,
   });
   queryClient.setQueryData<unknown>(storeViewOptions("acme", { queryClient, sessionId: "s", userId: "u" }, query).queryKey, { ok: true, value: {
@@ -205,8 +204,8 @@ it("takes an unmarked row's mark out of a Sync at once, dropping a row left with
   const fix = { project: "shop", environment: "fix-api" };
   const query = syncQuery(fix, "production");
   const marked = (name: string, environments: string[]) => ({
-    row: `a:variables.${name}` as RowId, node: "api", kind: "service" as const, name: `env.${name}`,
-    marks: environments.map((environment) => ({ environment, row: `a:variables.${name}` as RowId })),
+    row: rowId(`a:variables.${name}`), node: "api", kind: "service" as const, name: `env.${name}`,
+    marks: environments.map((environment) => ({ environment, row: rowId(`a:variables.${name}`) })),
   });
   queryClient.setQueryData<unknown>(storeViewOptions("acme", { queryClient, sessionId: "s", userId: "u" }, query).queryKey, { ok: true, value: {
     from: { ...environment, name: "fix-api" }, into: environment, version: "1", rows: [], proposal: null,
@@ -220,7 +219,7 @@ it("takes an unmarked row's mark out of a Sync at once, dropping a row left with
 describe("the On merge list", () => {
   const pr = { project: "shop", environment: "pr-146" };
   const merging = (name: string, production: MergeRow["production"], preview: MergeRow["preview"]): MergeRow => ({
-    row: `w:variables.${name}` as RowId, node: "web", kind: "service", name: `env.${name}`, production, preview,
+    row: rowId(`w:variables.${name}`), node: "web", kind: "service", name: `env.${name}`, production, preview,
     lands: preview, ride: "rides", conflict: false, requires: null,
   });
   function listed() {
@@ -248,7 +247,7 @@ describe("the On merge list", () => {
     const queryClient = new QueryClient();
     const key = storeViewOptions("acme", { queryClient, sessionId: "s", userId: "u" }, onMergeQuery(pr)).queryKey;
     const node = (name: string, ride: MergeRow["ride"], lands: MergeRow["lands"]): MergeRow => ({
-      row: `${name}:node` as RowId, node: name, kind: name.startsWith("volumes.") ? "volume" : "service", name: null,
+      row: rowId(`${name}:node`), node: name, kind: name.startsWith("volumes.") ? "volume" : "service", name: null,
       production: { image: "x" }, preview: null, lands, ride, conflict: false, requires: null,
     });
     queryClient.setQueryData<unknown>(key, { ok: true, value: {
@@ -357,7 +356,7 @@ it("waits for the Store when no Config listing establishes an optimistic target 
 it("keeps both same-name Config identities visible while Discard is pending", async () => {
   const { queryClient, read } = cached();
   const key = storeViewOptions("acme", { queryClient, sessionId: "s", userId: "u" }, diffQuery(ref)).queryKey;
-  const node = (id: string): DiffView["changes"][number] => ({ type: "config", id, row: `${id}:node` as RowId,
+  const node = (id: string): DiffView["changes"][number] => ({ type: "config", id, row: rowId(`${id}:node`),
     name: "sentry", lifecycle: "update", comparison: null, data: null, restarts: [], settings: [
       { path: `configs.@${id}.files.app.conf`, kind: "update", before: null, after: null, canRestore: true, row: null },
     ] });

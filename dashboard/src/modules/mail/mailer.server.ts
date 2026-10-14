@@ -133,10 +133,16 @@ export const offMailer: MailerService = {
     ),
 };
 
+/** A verify lab's fake PostShiba serves PostShiba's paths at its own origin. */
+const fetchAt = (origin: string): typeof globalThis.fetch => (input, init) => {
+  const url = new URL(input instanceof Request ? input.url : input);
+  return globalThis.fetch(new URL(`${url.pathname}${url.search}`, origin), init);
+};
+
 export const MailerLive = Layer.effect(
   Mailer,
   Effect.map(AppConfig, ({ mail }) =>
-    mail === null ? offMailer : makePostShibaMailer(mail, globalThis.fetch)),
+    mail === null ? offMailer : makePostShibaMailer(mail, mail.verifyOrigin === null ? globalThis.fetch : fetchAt(mail.verifyOrigin))),
 );
 
 export const sendMail = Effect.fn("Mail.send")(function* (message: MailMessage, idempotencyKey: string) {

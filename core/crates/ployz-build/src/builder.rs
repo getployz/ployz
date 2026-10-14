@@ -134,7 +134,7 @@ impl<'a> Builder<'a> {
                 .platforms
                 .iter()
                 .map(String::as_str)
-                .chain(target.platforms.is_empty().then_some(native.as_str()))
+                .chain(target.is_native().then_some(native.as_str()))
         }) {
             if !nodes.iter().any(|node| {
                 node.get("Status").and_then(serde_json::Value::as_str) == Some("running")

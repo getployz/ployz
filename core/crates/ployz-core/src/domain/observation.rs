@@ -10,7 +10,8 @@ use ts_rs::TS;
 
 use super::spec::{HealthcheckSpec, ResolvedServiceSpec};
 use crate::{
-    ContainerAddress, ContainerId, MachineId, Namespace, QualifiedService, ServiceId, ServiceName,
+    ContainerAddress, ContainerId, DEPLOYMENT_ID_LABEL, DeploymentLogId, MachineId, Namespace,
+    QualifiedService, ServiceId, ServiceName,
 };
 
 /// Value that replaces each environment value in a redacted observation.
@@ -303,6 +304,16 @@ impl std::ops::Deref for ContainerObservation {
 impl From<ContainerObservation> for ContainerObservationParts {
     fn from(observation: ContainerObservation) -> Self {
         observation.parts
+    }
+}
+
+impl ContainerObservationParts {
+    /// The Deploy this Container was created under, from its `DEPLOYMENT_ID_LABEL`.
+    #[must_use]
+    pub fn deploy_label(&self) -> Option<DeploymentLogId> {
+        self.labels
+            .get(DEPLOYMENT_ID_LABEL)
+            .and_then(|label| DeploymentLogId::parse(label).ok())
     }
 }
 

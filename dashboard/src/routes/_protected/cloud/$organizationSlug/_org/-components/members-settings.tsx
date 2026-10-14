@@ -198,7 +198,7 @@ export function MembersSettings({ organizationSlug }: { organizationSlug: string
           </Table>
         </SettingsSection>
       ) : null}
-      {inviting ? <InviteDialog organizationSlug={organizationSlug} organizationName={organizationName} onInvited={refresh} onOpenChange={setInviting} /> : null}
+      {inviting ? <InviteDialog organizationName={organizationName} mail={data.mail} invite={(input) => inviteMemberServerFn({ data: { organizationSlug, ...input } })} onInvited={refresh} onOpenChange={setInviting} /> : null}
       <AlertDialog
         open={confirming !== null}
         onOpenChange={(open) => {
@@ -240,16 +240,20 @@ export function MembersSettings({ organizationSlug }: { organizationSlug: string
   );
 }
 
-function InviteDialog({ organizationSlug, organizationName, onInvited, onOpenChange }: {
-  organizationSlug: string;
+type InviteInput = { email: string | null; role: InviteRole };
+type Invited = Awaited<ReturnType<typeof inviteMemberServerFn>>;
+
+export function InviteDialog({ organizationName, mail, invite: send, onInvited, onOpenChange }: {
   organizationName: string;
+  mail: boolean;
+  invite: (input: InviteInput) => Promise<Invited>;
   onInvited: () => void;
   onOpenChange: (open: boolean) => void;
 }) {
   const [email, setEmail] = useState("");
   const [role, setRole] = useState<InviteRole>("member");
   const invite = useMutation({
-    mutationFn: () => inviteMemberServerFn({ data: { organizationSlug, email: email.trim() || null, role } }),
+    mutationFn: () => send({ email: email.trim() || null, role }),
     onSuccess: onInvited,
   });
 
@@ -260,10 +264,12 @@ function InviteDialog({ organizationSlug, organizationName, onInvited, onOpenCha
           <DialogTitle>Invite to {organizationName}</DialogTitle>
           <DialogDescription>
             {invite.data
-              ? "Send this link to the person you're inviting. It works once and lasts 7 days."
-              : email.trim()
-                ? "The email only labels the invite. Anyone with the link can join, once."
-                : "Anyone with the link can join, once."}
+              ? invite.data.message?.replace(invite.data.link, "").trim()
+              : !email.trim()
+                ? "Anyone with the link can join, once."
+                : mail
+                  ? "Ployz emails the link to this address. Anyone with the link can join, once."
+                  : "The email only labels the invite. Anyone with the link can join, once."}
           </DialogDescription>
         </DialogHeader>
         {invite.data ? (
