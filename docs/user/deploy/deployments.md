@@ -151,6 +151,9 @@ their recorded outcomes.
 - On a queued deployment, **Deploy now** starts it if nothing is running ahead of it, and **⋮ →
   Cancel deployment…** takes it out of the queue.
 
+The CLI does the same with `ployz deployment retry`, `start` and `cancel`, and
+[the agent](../account/agent-sidebar.md) can too, without asking you first.
+
 ## Deploy without downtime
 
 Ployz swaps in the new version one replica at a time: it starts a new one, waits until it's

@@ -3401,6 +3401,155 @@
     ]
   },
   {
+    "tool": "deployment_list",
+    "input": {
+      "environment": "staging",
+      "limit": 10
+    },
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
+    },
+    "call_key": "call-deployment_list",
+    "turns": [
+      {
+        "step": {
+          "step": "read",
+          "asks": [
+            {
+              "at": "store",
+              "ask": {
+                "query": "deployments",
+                "environment": {
+                  "project": "shop",
+                  "environment": "staging"
+                },
+                "limit": 10,
+                "cursor": null
+              }
+            }
+          ]
+        },
+        "answers": [
+          {
+            "error": {
+              "code": "not_found",
+              "message": "No Environment named staging in Project shop",
+              "details": {
+                "next": "ployz env new staging --project shop"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": false,
+            "refusal": {
+              "code": "not_found",
+              "message": "No Environment named staging in Project shop",
+              "retry": {
+                "tool": "deployment_list",
+                "input": {
+                  "environment": "staging",
+                  "limit": 10
+                }
+              },
+              "writes": "none",
+              "next": [],
+              "details": {
+                "fix": {
+                  "fix": "open_dashboard",
+                  "page": "environments"
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "tool": "deployment_list",
+    "input": {
+      "environment": "staging",
+      "limit": 10
+    },
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": {
+        "at": "local"
+      }
+    },
+    "call_key": "call-deployment_list",
+    "turns": [
+      {
+        "step": {
+          "step": "read",
+          "asks": [
+            {
+              "at": "store",
+              "ask": {
+                "query": "deployments",
+                "environment": {
+                  "project": "shop",
+                  "environment": "staging"
+                },
+                "limit": 10,
+                "cursor": null
+              }
+            }
+          ]
+        },
+        "answers": [
+          {
+            "error": {
+              "code": "not_found",
+              "message": "No Environment named staging in Project shop",
+              "details": {
+                "next": "ployz env new staging --project shop"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": false,
+            "refusal": {
+              "code": "not_found",
+              "message": "No Environment named staging in Project shop",
+              "retry": {
+                "tool": "deployment_list",
+                "input": {
+                  "environment": "staging",
+                  "limit": 10
+                }
+              },
+              "writes": "none",
+              "next": [],
+              "details": {
+                "fix": {
+                  "fix": "open_dashboard",
+                  "page": "environments"
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
     "tool": "deployment_show",
     "input": {
       "deployment": 12,
@@ -3463,7 +3612,7 @@
               "writes": "none",
               "next": [
                 {
-                  "tool": "deployment_show",
+                  "tool": "deployment_list",
                   "input": {}
                 }
               ]
@@ -3535,7 +3684,293 @@
               "writes": "none",
               "next": [
                 {
-                  "tool": "deployment_show",
+                  "tool": "deployment_list",
+                  "input": {}
+                }
+              ]
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "tool": "deployment_retry",
+    "input": {
+      "deployment": 12,
+      "request_key": "r8Tq2wLm5XcV"
+    },
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
+    },
+    "call_key": "call-deployment_retry",
+    "turns": [
+      {
+        "step": {
+          "step": "read",
+          "asks": [
+            {
+              "at": "store",
+              "ask": {
+                "query": "numbered_deployment",
+                "environment": {
+                  "project": "shop",
+                  "environment": null
+                },
+                "number": 12
+              }
+            }
+          ]
+        },
+        "answers": [
+          {
+            "error": {
+              "code": "not_found",
+              "message": "shop/production has no Deployment #12",
+              "details": {
+                "next": "ployz deployment ls"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": false,
+            "refusal": {
+              "code": "not_found",
+              "message": "shop/production has no Deployment #12",
+              "retry": {
+                "tool": "deployment_retry",
+                "input": {
+                  "deployment": 12,
+                  "request_key": "r8Tq2wLm5XcV"
+                }
+              },
+              "writes": "none",
+              "next": [
+                {
+                  "tool": "deployment_list",
+                  "input": {}
+                }
+              ]
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "tool": "deployment_retry",
+    "input": {
+      "deployment": 12,
+      "request_key": "r8Tq2wLm5XcV"
+    },
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": {
+        "at": "local"
+      }
+    },
+    "call_key": "call-deployment_retry",
+    "turns": [
+      {
+        "step": {
+          "step": "read",
+          "asks": [
+            {
+              "at": "store",
+              "ask": {
+                "query": "numbered_deployment",
+                "environment": {
+                  "project": "shop",
+                  "environment": null
+                },
+                "number": 12
+              }
+            }
+          ]
+        },
+        "answers": [
+          {
+            "error": {
+              "code": "not_found",
+              "message": "shop/production has no Deployment #12",
+              "details": {
+                "next": "ployz deployment ls"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": false,
+            "refusal": {
+              "code": "not_found",
+              "message": "shop/production has no Deployment #12",
+              "retry": {
+                "tool": "deployment_retry",
+                "input": {
+                  "deployment": 12,
+                  "request_key": "r8Tq2wLm5XcV"
+                }
+              },
+              "writes": "none",
+              "next": [
+                {
+                  "tool": "deployment_list",
+                  "input": {}
+                }
+              ]
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "tool": "deployment_start",
+    "input": {
+      "deployment": 12
+    },
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
+    },
+    "call_key": "call-deployment_start",
+    "turns": [
+      {
+        "step": {
+          "step": "read",
+          "asks": [
+            {
+              "at": "store",
+              "ask": {
+                "query": "numbered_deployment",
+                "environment": {
+                  "project": "shop",
+                  "environment": null
+                },
+                "number": 12
+              }
+            }
+          ]
+        },
+        "answers": [
+          {
+            "error": {
+              "code": "not_found",
+              "message": "shop/production has no Deployment #12",
+              "details": {
+                "next": "ployz deployment ls"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": false,
+            "refusal": {
+              "code": "not_found",
+              "message": "shop/production has no Deployment #12",
+              "retry": {
+                "tool": "deployment_start",
+                "input": {
+                  "deployment": 12
+                }
+              },
+              "writes": "none",
+              "next": [
+                {
+                  "tool": "deployment_list",
+                  "input": {}
+                }
+              ]
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "tool": "deployment_start",
+    "input": {
+      "deployment": 12
+    },
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": {
+        "at": "local"
+      }
+    },
+    "call_key": "call-deployment_start",
+    "turns": [
+      {
+        "step": {
+          "step": "read",
+          "asks": [
+            {
+              "at": "store",
+              "ask": {
+                "query": "numbered_deployment",
+                "environment": {
+                  "project": "shop",
+                  "environment": null
+                },
+                "number": 12
+              }
+            }
+          ]
+        },
+        "answers": [
+          {
+            "error": {
+              "code": "not_found",
+              "message": "shop/production has no Deployment #12",
+              "details": {
+                "next": "ployz deployment ls"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": false,
+            "refusal": {
+              "code": "not_found",
+              "message": "shop/production has no Deployment #12",
+              "retry": {
+                "tool": "deployment_start",
+                "input": {
+                  "deployment": 12
+                }
+              },
+              "writes": "none",
+              "next": [
+                {
+                  "tool": "deployment_list",
                   "input": {}
                 }
               ]
@@ -3606,7 +4041,7 @@
               "writes": "none",
               "next": [
                 {
-                  "tool": "deployment_show",
+                  "tool": "deployment_list",
                   "input": {}
                 }
               ]
@@ -3676,7 +4111,7 @@
               "writes": "none",
               "next": [
                 {
-                  "tool": "deployment_show",
+                  "tool": "deployment_list",
                   "input": {}
                 }
               ]
@@ -4765,7 +5200,7 @@
               "writes": "none",
               "next": [
                 {
-                  "tool": "deployment_show",
+                  "tool": "deployment_list",
                   "input": {}
                 }
               ]
@@ -4936,7 +5371,7 @@
               "writes": "none",
               "next": [
                 {
-                  "tool": "deployment_show",
+                  "tool": "deployment_list",
                   "input": {}
                 }
               ]

@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use ployz_store::tools::{INSTRUCTIONS, catalog};
 use serde_json::{Value, json};
 
-const CAP_BYTES: usize = 50_350;
+const CAP_BYTES: usize = 52_360;
 
 fn snapshot_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots/agent_tools.json")

@@ -1361,6 +1361,39 @@
       "read_only": false
     },
     {
+      "description": "An Environment's Deployments, newest first, with each one's status. Never asks a human to approve.",
+      "gate": "never",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "type": "string"
+          },
+          "environment": {
+            "description": "Environment name, e.g. staging. Omit for the one you are in.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "limit": {
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "project": {
+            "description": "Project name. Omit for the one you are in.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "deployment_list",
+      "output_schema": {
+        "type": "object"
+      },
+      "read_only": true
+    },
+    {
       "description": "One Deployment, the latest unless you name its number: status, each Service's outcome, the step and server that failed, and a short log excerpt with secrets replaced by their names. Can wait for it to end. Never asks a human to approve.",
       "gate": "never",
       "input_schema": {
@@ -1395,6 +1428,70 @@
         "type": "object"
       },
       "read_only": true
+    },
+    {
+      "description": "Ship a failed, unknown or cancelled Deployment again as a new one; changes saved since wait for the next deploy. Never asks a human to approve.",
+      "gate": "never",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "deployment": {
+            "description": "The Deployment's number. Omit for the latest.",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "environment": {
+            "description": "Environment name, e.g. staging. Omit for the one you are in.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "project": {
+            "description": "Project name. Omit for the one you are in.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "request_key": {
+            "pattern": "^[A-Za-z0-9_-]{8,64}$",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "deployment_retry",
+      "output_schema": {
+        "type": "object"
+      },
+      "read_only": false
+    },
+    {
+      "description": "Hand a queued Deployment to a runner now. Never asks a human to approve.",
+      "gate": "never",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "deployment": {
+            "description": "The Deployment's number. Omit for the latest.",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "environment": {
+            "description": "Environment name, e.g. staging. Omit for the one you are in.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "project": {
+            "description": "Project name. Omit for the one you are in.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "deployment_start",
+      "output_schema": {
+        "type": "object"
+      },
+      "read_only": false
     },
     {
       "description": "Cancel a queued or running Deployment. What already changed on servers stays. Never asks a human to approve.",
