@@ -14,6 +14,7 @@ import {
   type CopyAnswer,
   ended,
   holdDeployLane,
+  insertRun,
   keptOn,
   laneInputOf,
   laneTarget,
@@ -31,15 +32,23 @@ import {
   takeEpoch,
 } from "#/modules/volume-run/volume-run.server";
 import { Database } from "#/server/database.server";
+import { uuidFrom } from "#/server/uuid-from";
 
 /**
  * Plain JSON: a step result. A took lane is the Deploy's own row; a followed lane is the other run's row, read once.
  * `machine` is the Server the lane committed to, by id, so a rename since cannot redirect the Deploy; null follows `to`
- * by name.
+ * by name. `ended` marks a commitment no run holds, which only a release the Deploy requests settles.
  */
 export type DeployLane =
   | { readonly kind: "took"; readonly run: RunContext; readonly resume: VolumeRunArgs["move"] | null }
-  | { readonly kind: "follow"; readonly run: RunContext; readonly to: MachineName; readonly machine: MachineId | null; readonly epoch: number | null };
+  | {
+    readonly kind: "follow";
+    readonly run: RunContext;
+    readonly to: MachineName;
+    readonly machine: MachineId | null;
+    readonly epoch: number | null;
+    readonly ended: boolean;
+  };
 
 const CLOUD = (organizationId: string) => ({ userId: null, organizationId });
 
@@ -91,7 +100,7 @@ export const placeDeployVolumes = Effect.fn("VolumeRun.placeDeploy")(function* (
       if (pastReturn(lane)) {
         const to = yield* laneTarget(lane);
         if (to === null) return yield* Effect.fail(new NonRetriableError(`${lane.volumeName} is moving to a Server its run never named`));
-        placed.push({ kind: "follow", run: contextOf(lane), to, machine: lane.current ?? pinned(lane), epoch: lane.epoch });
+        placed.push({ kind: "follow", run: contextOf(lane), to, machine: lane.current ?? pinned(lane), epoch: lane.epoch, ended: false });
         if (targets.has(lane.volumeId)) beside.push(lane.id);
         continue;
       }
@@ -124,7 +133,7 @@ export const placeDeployVolumes = Effect.fn("VolumeRun.placeDeploy")(function* (
       if (lanes.some((lane) => lane.volumeId === row.volumeId)) continue;
       const to = yield* laneTarget(row);
       if (to === null) return yield* Effect.fail(new NonRetriableError(`${row.volumeName} is moving to a Server its run never named`));
-      placed.push({ kind: "follow", run: contextOf(row), to, machine: row.current, epoch: row.epoch });
+      placed.push({ kind: "follow", run: contextOf(row), to, machine: row.current, epoch: row.epoch, ended: true });
     }
     return placed;
   }));
@@ -247,6 +256,38 @@ const fenceFollowed = Effect.fn("VolumeRun.fenceFollowed")(function* (lane: Extr
 
 export const fenceDeployVolume = (lane: DeployLane, inngestRunId: string) =>
   lane.kind === "took" ? fenceTaken(lane.run, inngestRunId) : fenceFollowed(lane);
+
+/**
+ * After the Deploy ran, each ended commitment it followed gets a Cloud release, which inherits it and settles it on B.
+ * The ID is the Deploy's and the Volume's, so a retried step finds its own release and requests none. A refusal is
+ * logged: the lane that refused owns the Volume now.
+ */
+export const releaseFollowed = Effect.fn("VolumeRun.releaseFollowed")(function* (
+  environmentId: string,
+  inngestRunId: string,
+  lanes: readonly DeployLane[],
+) {
+  const requested: string[] = [];
+  for (const lane of lanes) {
+    if (lane.kind !== "follow" || !lane.ended) continue;
+    const { run } = lane;
+    const id = uuidFrom(`ployz.deploy-release:${inngestRunId}:${run.volumeId}`);
+    const { owed } = yield* commitment(run.volumeId);
+    if (owed === null || owed.id === id) continue;
+    const release = yield* insertRun(
+      CLOUD(run.organizationId),
+      { volumeId: run.volumeId, kind: "release", args: {} },
+      { environmentId, volumeName: run.volumeName, dockerVolume: run.dockerVolume, refquotaBytes: run.refquotaBytes },
+      id,
+    );
+    if (release.ok) {
+      requested.push(release.run.id);
+      continue;
+    }
+    yield* Effect.logWarning(`${run.volumeName}'s release on ${lane.to} was not requested after its Deploy: ${release.refusal.message}`);
+  }
+  return requested;
+});
 
 const DEPLOY_ENDS = { done: null, failed: "the Deploy failed", cancelled: "the Deploy was cancelled" } as const;
 

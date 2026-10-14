@@ -18,7 +18,7 @@ import { followUp } from "#/modules/config-store/store-github.inngest";
 import { sweepStore } from "#/modules/config-store/store-pull-request.server";
 import { advancePlacement, type PlacementAdvance, type PlacementWait, refreshMirrors } from "#/modules/volume-placement/volume-placement.deploy.server";
 import { syncUptimeChecks } from "#/modules/uptime/uptime-sync.server";
-import { fenceDeployVolume, finishDeployVolumes, placeDeployVolumes } from "#/modules/volume-run/volume-run.deploy.server";
+import { fenceDeployVolume, finishDeployVolumes, placeDeployVolumes, releaseFollowed } from "#/modules/volume-run/volume-run.deploy.server";
 import { finishedVolumeRun } from "#/modules/volume-run/volume-run.inngest";
 import { cleanOrphans, closeVolumeRun } from "#/modules/volume-run/volume-run.server";
 import { runInngestEffect } from "#/server/run.server";
@@ -77,6 +77,9 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Store
       for (const lane of lanes) await step.run(`fence-${lane.run.volumeId}`, () => runEffect(fenceDeployVolume(lane, runId)));
       const ran = await step.run("run-deployment", () => runEffect(runStoreDeployment(event.data, storeDeploymentRunner(runId))));
       await step.run("finish-volumes", () => runEffect(finishDeployVolumes(runId, "done")));
+      if (lanes.some((lane) => lane.kind === "follow" && lane.ended)) {
+        await step.run("release-followed", () => runEffect(releaseFollowed(environmentId, runId, lanes)));
+      }
       const applied = "ran" in ran && ran.ran.status === "applied";
       // A failed Deployment can still have advanced Applied State, so the checks follow it either way. Only an applied
       // one is probed: a failed one may have stopped partway, and the schedule still checks what it reached.
