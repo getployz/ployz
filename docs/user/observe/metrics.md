@@ -52,7 +52,7 @@ When a service's replicas were OOM killed in the last hour, its card shows **⚠
 replica crashed with a non-zero exit code and came back twice, each time within 10 minutes of the
 last, the card shows **⚠ Restarting** until that replica stays up for 10 minutes. A restart after a clean
 exit or a stop, such as `ployz service restart`, a Deploy or a rollback, shows nothing, even when
-the app exits with 143 or 137 on the stop signal.
+the app exits non-zero on the stop signal, as with SIGTERM (143), SIGINT (130) or SIGKILL (137).
 When other issues share the card, the badge adds their count, as in **⚠ OOM +1**. The badge is
 amber, or red when the service is down. Click the ⚠ to open the service's Monitoring tab. A
 server that needs an upgrade or doesn't answer adds nothing to the card.

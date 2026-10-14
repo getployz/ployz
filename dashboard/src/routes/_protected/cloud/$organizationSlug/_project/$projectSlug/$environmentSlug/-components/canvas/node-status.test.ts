@@ -168,11 +168,11 @@ describe("containerTrouble", () => {
     expect(containerTrouble([...loop, deploy, ...crashed("web-1", web1, now - 2 * 60_000)], now)).toBeNull();
   });
 
-  it("takes a stop by SIGTERM or SIGKILL for a requested stop, not a crash", () => {
-    const stopped = (code: number) =>
+  it("takes an exit by a signal only a stop sends for a requested stop, and a fault signal for a crash", () => {
+    const exits = (code: number) =>
       [8, 6].flatMap((ago) => [{ ...marker("exit", "web-1", web1, now - ago * 60_000), exitCode: code }, marker("restart", "web-1", web1, now - ago * 60_000 + 1_000)]);
-    expect(containerTrouble(stopped(143), now)).toBeNull();
-    expect(containerTrouble(stopped(137), now)).toBeNull();
+    for (const stop of [129, 130, 131, 137, 138, 140, 143]) expect(containerTrouble(exits(stop), now)).toBeNull();
+    for (const fault of [2, 132, 134, 135, 136, 139]) expect(containerTrouble(exits(fault), now)).toBe("Restarting");
   });
 
   it("starts a new loop when a crash comes after ten quiet minutes", () => {

@@ -86,14 +86,15 @@ export const TROUBLE_WINDOW_MS = 60 * 60_000;
 export const LOOP_QUIET_MS = 10 * 60_000;
 
 /**
- * Exit codes of a container stopped by SIGTERM, or SIGKILL once the stop times out. Docker never restarts a stopped
- * container and an OOM kill has its own marker, so a restart after one was asked for, not a crash.
+ * Exit codes (128 + signal) of the signals a stop sends rather than a fault raises: SIGHUP, SIGINT, SIGQUIT, SIGKILL,
+ * SIGUSR1, SIGUSR2 and SIGTERM. Docker never restarts a stopped container and an OOM kill has its own marker, so a
+ * restart after one of these was asked for. Faults such as SIGSEGV or SIGABRT stay crashes.
  */
-const STOP_SIGNAL_EXITS: ReadonlySet<number> = new Set([137, 143]);
+const STOP_SIGNAL_EXITS: ReadonlySet<number> = new Set([129, 130, 131, 137, 138, 140, 143]);
 
 /**
  * What `markers` say at `now` (Unix milliseconds): only those in the hour before it count, however old the read is.
- * A replica's crash loop is its run of restarts that each followed a crash: a non-zero exit not from a stop signal. Any
+ * A replica's crash loop is its run of restarts that each followed a crash: a non-zero exit not from a signal a stop sends. Any
  * other exit, as a Deploy or a requested restart leaves, ends the run, and so does staying up for `LOOP_QUIET_MS`. The
  * replica is Restarting while its run is two or more.
  */
