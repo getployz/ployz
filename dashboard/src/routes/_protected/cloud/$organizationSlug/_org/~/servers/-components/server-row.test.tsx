@@ -26,7 +26,7 @@ afterEach(() => {
 function server(input: { membership?: RuntimeMachineRecord["membership"]; services?: string[]; storage?: RuntimeMachineRecord["storage"]; acceptsBuilds?: boolean } = {}): Server {
   const machine: RuntimeMachineRecord = {
     id: "1".repeat(32), name: "fsn-1", publicIp: null, acceptsIngress: true, endpoints: [], acceptsBuilds: input.acceptsBuilds ?? false,
-    acceptsServices: true, storage: input.storage ?? "pool", buildConcurrency: null, effectiveBuildConcurrency: 1, runningBuilds: 0,
+    acceptsServices: true, storage: input.storage === undefined ? "pool" : input.storage, buildConcurrency: null, effectiveBuildConcurrency: 1, runningBuilds: 0,
     daemonVersion: "0.3.0-beta.2", capabilities: [], membership: input.membership ?? "up", observedContainerCount: 0, observedAt: "2026-10-14T00:00:00Z",
   };
   const services = (input.services ?? []).map((name) => ({
@@ -54,10 +54,12 @@ it("shows three Services and counts the rest", async () => {
   expect(link.textContent).toBe("fsn-1apiwebworker+2Online");
 });
 
-it("says what an idle Server does, and that a Docker-only Server takes no volumes", async () => {
+it("says what an idle Server does, that a Docker-only Server takes no volumes, and when Ployz cannot tell", async () => {
   expect((await row(server({ acceptsBuilds: true }))).textContent).toBe("fsn-1Only runs buildsOnline");
   cleanup();
   expect((await row(server({ storage: "stateless" }))).textContent).toBe("fsn-1Nothing runningDocker onlyOnline");
+  cleanup();
+  expect((await row(server({ storage: null, services: ["api", "web", "worker", "cron", "mail"] }))).textContent).toBe("fsn-1apiwebworker+2Volume support unknownOnline");
 });
 
 it("names the state that needs someone", async () => {

@@ -33,6 +33,14 @@ export function serverRowState(status: ServerStatus, line: ServerUpgradeLine): S
 
 const MAX_CHIPS = 3;
 
+/** Storage named on the row only when the Server can't hold managed volumes, or Ployz couldn't tell. */
+const STORAGE = {
+  pool: null,
+  ready: null,
+  stateless: <Badge variant="outline">Docker only</Badge>,
+  unknown: <Badge variant="outline">Volume support unknown</Badge>,
+};
+
 /** The list's column template, shared by its rows and its skeleton so both line up. */
 export const SERVER_ROW_GRID = cn(
   "grid grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-x-4 gap-y-1 px-3 py-2.5 text-sm",
@@ -63,14 +71,17 @@ export function ServerRow({ organizationSlug, server, upgrade, stale }: {
     >
       <span aria-hidden="true" className={cn("size-2 rounded-full", stale ? "bg-muted-foreground" : dot)} />
       <span className="truncate font-medium">{server.name}</span>
-      <span className="col-2 row-2 flex min-w-0 items-center gap-1 overflow-hidden @xl:col-auto @xl:row-auto">
+      <span className="col-2 row-2 flex min-w-0 items-center gap-1 @xl:col-auto @xl:row-auto">
         {names.length === 0 ? <span className="truncate text-muted-foreground">{runsHere(server)}</span> : (
           <>
-            {names.slice(0, MAX_CHIPS).map((name) => <Badge key={name} variant="secondary">{name}</Badge>)}
+            {/* Only the names clip; the count and the storage badge after them always show. */}
+            <span className="flex min-w-0 gap-1 overflow-hidden">
+              {names.slice(0, MAX_CHIPS).map((name) => <Badge key={name} variant="secondary">{name}</Badge>)}
+            </span>
             {names.length > MAX_CHIPS ? <Badge variant="outline">+{names.length - MAX_CHIPS}</Badge> : null}
           </>
         )}
-        {server.machine.storage === "stateless" ? <Badge variant="outline">Docker only</Badge> : null}
+        {STORAGE[server.machine.storage ?? "unknown"]}
       </span>
       <ServerMeters organizationSlug={organizationSlug} server={server} />
       <span className={cn("col-3 row-[1/span_2] text-right whitespace-nowrap @xl:col-auto @xl:row-auto", stale ? "text-muted-foreground" : tone)}>

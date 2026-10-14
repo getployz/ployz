@@ -8,25 +8,29 @@ turn builds on or off, or remove it.
 
 ## Check your servers
 
-Each row shows a server's name, the services on it, what it can store, and its status. Above the
-list, a summary reads **All 3 online**, or puts problems first, like **1 offline · 2 online**.
+Each row shows a server's name and the services on it, up to three by name and then a count like
+**+2**. A green dot means the server is online, and the row says nothing more. A row names its
+status only when someone should look.
 
 ![The Servers page, listing each server, what runs on it and its status](../images/servers-page.png)
 
 | Status | What it means |
 | --- | --- |
-| **Online** | The server is up and in touch with your other servers. |
+| Green dot, no word | The server is up and in touch with your other servers. |
 | **Building** | Online, and running builds right now. |
 | **Offline** | Your other servers can't reach it. See [A server shows Offline](../troubleshooting/servers.md#a-server-shows-offline). |
 | **Unknown** | Ployz can't tell whether it's up. Check it as you would an offline one. |
+| **Upgrading** | Ployz is upgrading it. See [Upgrade Ployz on a server](#upgrade-ployz-on-a-server). |
+| **Upgrade failed** | Its last upgrade didn't install, and it went back to the release it ran before. |
 
-On a wide window, each row also shows how much of the server's CPU, memory and disk is in use
-right now. A server that didn't reply in time reads **Didn't answer**. A server on a release
-without metrics reads **Upgrade to see metrics**. A dash means the server sent no recent reading
-for that meter, and **No readings** means it sent none for any of them.
+When the list is wide enough, each row also shows how much of the server's CPU and memory is in
+use right now. The meters stay empty until the server sends a reading, and an offline server shows
+none. A dash means the server sent no recent reading for that meter. The server's page has disk
+and the full picture.
 
-**Managed volumes available** means the server can hold [managed volumes](../services/volumes.md).
+A server that can hold [managed volumes](../services/volumes.md) shows nothing about storage.
 **Docker only** means it was added with **Start without it** and holds plain Docker volumes only.
+**Volume support unknown** means Ployz couldn't tell what it can store.
 
 If the page shows **Can't reach your servers right now**, see
 [Troubleshooting servers](../troubleshooting/servers.md#cant-reach-your-servers-right-now).
@@ -118,26 +122,26 @@ taking traffic.
 
 ## Upgrade Ployz on a server
 
-Each server on the **Servers** page shows the Ployz release it runs. When a newer release is out on
-your organization's channel (Stable unless you [choose Beta](#choose-stable-or-beta-releases)),
-each server behind is tagged **→ `0.2.2`**, and the top of the page offers **Upgrade to `0.2.2`**.
+Each server's page shows the Ployz release it runs. When a newer release is out on your
+organization's channel (Stable unless you [choose Beta](#choose-stable-or-beta-releases)) and a
+server is behind, the top of the **Servers** page offers **Upgrade to `0.2.2`**.
 Click it to upgrade every server that's behind, one at a time in name order. Your apps keep running
-while they do. While an upgrade runs, the top of the page reads **Upgrading to `0.2.2` · 1 of 4**,
-and the server upgrading is tagged **Upgrading**.
+while they do. While an upgrade runs, the top of the page reads **Upgrading 1/4**, and the server
+upgrading reads **Upgrading**.
 
 ### Turn on automatic upgrades
 
-Automatic upgrades are off until you turn them on. Click **Upgrades: Manual** at the top of the
-**Servers** page (on a phone, its settings icon) and turn on **Upgrade automatically**. Any member can change it. Ployz starts
-upgrading right away, then checks every hour, and the button then reads **Upgrades: Automatic**.
-Turn the switch off to go back to upgrading by hand.
+Automatic upgrades are off until you turn them on. Click the **Upgrade settings** icon at the top
+of the **Servers** page and turn on **Upgrade automatically**. Any member can change it. Ployz
+starts upgrading right away, then checks every hour. Turn the switch off to go back to upgrading by
+hand.
 
 Servers that are offline or building are skipped and upgrade at a later check. An offline server
-behind is tagged **→ `0.2.2` when back**, and its page reads **Upgrades to `0.2.2` when it's back**.
+that's behind reads **Upgrades to `0.2.2` when it's back** on its page.
 
 If a server's upgrade doesn't install, that server goes back to the release it ran before, and the
-other servers wait: automatic upgrades skip that release until a newer one is out. That server is
-tagged **Upgrade failed**, and the top of the page offers **Upgrade to `0.2.2`** to carry on yourself.
+other servers wait: automatic upgrades skip that release until a newer one is out. That server
+reads **Upgrade failed**, and the top of the page offers **Upgrade to `0.2.2`** to carry on yourself.
 On the server's page, **Show details** has the exact error to copy, and **Try again** retries. Once an upgrade of that release succeeds, automatic upgrades pick it up again.
 
 ### Upgrade one server
@@ -148,8 +152,8 @@ per organization, so **Upgrade** and **Try again** wait while one is running.
 
 ### Choose Stable or Beta releases
 
-Click **Upgrades: Manual** (or **Upgrades: Automatic**) at the top of the **Servers** page and pick
-**Releases: Stable** or **Beta**. Stable is the default; Beta gets fixes early, as prereleases like `0.2.3-beta.1`. Any
+Click the **Upgrade settings** icon at the top of the **Servers** page and set **Releases** to
+**Stable** or **Beta**. Stable is the default; Beta gets fixes early, as prereleases like `0.2.3-beta.1`. Any
 member can change it, and it applies to every upgrade, automatic or by hand. The **Servers** page
 and each server's page then show the newest release on that channel.
 
