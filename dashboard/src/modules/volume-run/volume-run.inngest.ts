@@ -127,7 +127,7 @@ export async function runVolume(
 async function floor({ step, runEffect, run, runId }: RunSteps, members: readonly Member[]): Promise<Member[]> {
   const floored: Member[] = [];
   for (const member of members) {
-    if (!member.answered) {
+    if (!member.answered || member.floorless) {
       floored.push(member);
       continue;
     }
