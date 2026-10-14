@@ -81,8 +81,11 @@ class Probe:
                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.stderr)
         self.ready.clear()
         # Inserts wait for this answer, so the stall clock never counts the connect through Cloud.
-        session.stdin.write("SELECT 'ready';\n")
-        session.stdin.flush()
+        try:
+            session.stdin.write("SELECT 'ready';\n")
+            session.stdin.flush()
+        except (BrokenPipeError, OSError):
+            pass
         reader = threading.Thread(target=self.read, args=(session,), daemon=True)
         reader.start()
         self.sessions += 1

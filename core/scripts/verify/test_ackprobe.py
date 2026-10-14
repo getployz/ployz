@@ -98,6 +98,20 @@ class ProbeRun(unittest.TestCase):
                 result = probe.run()
             self.assertEqual((len(sessions), result["acked"], result["lost"]), (1, 1, []))
 
+    def test_a_session_that_exits_before_ready_is_replaced_not_fatal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            probe = Probe("ployz", {}, directory, Path(directory) / "acks.jsonl", service="db",
+                          user="postgres", database="postgres", rate=200, window=16, stall=2)
+            self.addCleanup(probe.log.close)
+            self.addCleanup(probe.stderr.close)
+            gone = Mock()
+            gone.stdin.write.side_effect = BrokenPipeError
+            gone.stdout = iter([])
+            with patch("ackprobe.subprocess.Popen", return_value=gone):
+                session, reader = probe.session()
+            reader.join(1)
+            self.assertIs(session, gone)
+
 
 if __name__ == "__main__":
     unittest.main()
