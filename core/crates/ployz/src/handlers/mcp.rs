@@ -342,7 +342,7 @@ struct Server {
     place: Locate,
     deadline: Duration,
     session: String,
-    keys: fn(&str, &RequestId) -> String,
+    keys: fn(&str, &RequestId, &str) -> String,
     tools: Vec<Tool>,
     gates: HashMap<&'static str, Gate>,
     waiting: Waiting,
@@ -524,7 +524,7 @@ impl Server {
             ))
             .into());
         }
-        let key = RequestKey::effective(None, &(self.keys)(&self.session, &context.id));
+        let key = RequestKey::effective(None, &(self.keys)(&self.session, &context.id, tool));
         let (ran, revision) = tokio::select! {
             biased;
             ran = published::run_on(&credential, tool, Value::Object(input), approval.as_deref(), key.as_str()) => ran,
@@ -626,7 +626,7 @@ impl Server {
 
 /// MCP forbids reusing a request ID within a session, so the session and the ID name
 /// one request: a replay of it keeps its key, and a restarted `ployz mcp` never reuses one.
-fn call_key(session: &str, id: &RequestId) -> String {
+fn call_key(session: &str, id: &RequestId, _tool: &str) -> String {
     format!("{session}:{}", json!(id))
 }
 
@@ -780,7 +780,7 @@ impl Server {
                     Ok(place) => place,
                     Err(error) => return Ok(refused(error.to_string()).into()),
                 };
-                let key = (self.keys)(&self.session, &context.id);
+                let key = (self.keys)(&self.session, &context.id, tool);
                 let (step, state) = tools::start(tool, input.clone(), &place, &key);
                 (
                     step,
