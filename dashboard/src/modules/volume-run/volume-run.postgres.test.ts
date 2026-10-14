@@ -993,7 +993,8 @@ describe("volume runs", () => {
 
         expect(await releasing).toEqual([]);
       } finally {
-        committing.release();
+        // Destroying the client rolls back a transaction a failed lock poll left open, so the removal it blocks ends.
+        committing.release(true);
       }
       expect(await lanes()).toMatchObject([{
         id: move.id, state: "failed", message: "data's writer was on fsn-2 (removed). Restore from fsn-1's copy: ployz volume restore data --from fsn-1",
@@ -1019,7 +1020,7 @@ describe("volume runs", () => {
 
         await releasing;
       } finally {
-        failing.release();
+        failing.release(true);
       }
       expect(await lanes()).toMatchObject([
         { id: move.id, state: "failed" },

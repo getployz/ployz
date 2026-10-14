@@ -73,28 +73,38 @@ describe("asRemoveMachineOutcome", () => {
 describe("heldOff", () => {
   const id = (server: string) => server.padEnd(32, "0") as MachineId;
   const servers = ["a", "b", "c"].map((server) => ({ id: id(server), name: `fsn-${server}` }));
+  const answered = (copies: ObservedCopy[], unanswered: MachineId[] = []) => ({ copies, unanswered });
 
   it("names the source writer of a Move whose lane commits to the leaving Server after the observation", () => {
     const copies: ObservedCopy[] = [{ machine_id: id("a"), name: "data", role: "writer" }, { machine_id: id("b"), name: "data", role: "slot" }];
-    expect(heldOff(copies, servers, id("b"))).toEqual({ data: "fsn-a" });
+    expect(heldOff(answered(copies), servers, id("b"))).toEqual({ data: "fsn-a" });
   });
 
   it("names the source writer over a slot on a third Server listed before it", () => {
     const copies: ObservedCopy[] = [{ machine_id: id("c"), name: "data", role: "slot" }, { machine_id: id("a"), name: "data", role: "writer" }];
-    expect(heldOff(copies, servers, id("b"))).toEqual({ data: "fsn-a" });
+    expect(heldOff(answered(copies), servers, id("b"))).toEqual({ data: "fsn-a" });
+  });
+
+  it("names the source writer even when a third Server did not answer", () => {
+    expect(heldOff(answered([{ machine_id: id("a"), name: "data", role: "writer" }], [id("c")]), servers, id("b"))).toEqual({ data: "fsn-a" });
   });
 
   it("names no copy when a Move committed before the observation left two slots and no writer", () => {
     const copies: ObservedCopy[] = [{ machine_id: id("c"), name: "data", role: "slot" }, { machine_id: id("a"), name: "data", role: "slot" }];
-    expect(heldOff(copies, servers, id("b"))).toEqual({});
+    expect(heldOff(answered(copies), servers, id("b"))).toEqual({});
   });
 
-  it("names the only slot off the leaving Server", () => {
-    expect(heldOff([{ machine_id: id("a"), name: "data", role: "slot" }, { machine_id: id("b"), name: "data", role: "slot" }], servers, id("b")))
-      .toEqual({ data: "fsn-a" });
+  it("names the only slot off the leaving Server when every other Server answered", () => {
+    const copies: ObservedCopy[] = [{ machine_id: id("a"), name: "data", role: "slot" }, { machine_id: id("b"), name: "data", role: "slot" }];
+    expect(heldOff(answered(copies), servers, id("b"))).toEqual({ data: "fsn-a" });
+    expect(heldOff(answered(copies, [id("b")]), servers, id("b"))).toEqual({ data: "fsn-a" });
+  });
+
+  it("names no slot when a third Server that may hold another did not answer", () => {
+    expect(heldOff(answered([{ machine_id: id("a"), name: "data", role: "slot" }], [id("c")]), servers, id("b"))).toEqual({});
   });
 
   it("names no copy on the leaving Server", () => {
-    expect(heldOff([{ machine_id: id("b"), name: "data", role: "writer" }], servers, id("b"))).toEqual({});
+    expect(heldOff(answered([{ machine_id: id("b"), name: "data", role: "writer" }]), servers, id("b"))).toEqual({});
   });
 });

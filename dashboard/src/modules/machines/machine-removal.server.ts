@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 
-import type { LocalMachineRemoved, MachineId, MachineIdentity, MachineName, ObservedCopy } from "@ployz/sdk";
+import type { CopyObservation, LocalMachineRemoved, MachineId, MachineIdentity, MachineName } from "@ployz/sdk";
 import { Data, Effect, Option } from "effect";
 import { createMachineRemoveRequestedEvent } from "#/modules/inngest/events";
 import type { Actor } from "#/modules/identity/actor";
@@ -35,7 +35,7 @@ import { dropRemovedServer, forgetEmptiedPairing } from "#/modules/machines/pair
 import { loadOrganizationConnections } from "#/modules/machines/connections.server";
 import { planRemove } from "#/modules/machines/server-operations.server";
 import { storeSystem } from "#/modules/config-store/config-store.server";
-import { namedMachines, observeOrganizationCopies, releaseLanesOff } from "#/modules/volume-run/volume-run.server";
+import { namedMachines, observeOrganization, releaseLanesOff } from "#/modules/volume-run/volume-run.server";
 
 function asMachineId(machineId: string): MachineId {
   // SAFETY: Cloud machine ids are the same strings rust brands as MachineId.
@@ -165,26 +165,28 @@ export const observeLeavingServerActivity = Effect.fn("MachineRemoval.observeLea
   const id = asMachineId(input.machineId);
   const servers = yield* namedMachines(input.organizationId);
   const machine = { id, name: servers.find((server) => server.id === id)?.name ?? null };
-  const copies = yield* observeOrganizationCopies(input.organizationId).pipe(Effect.orElseSucceed(() => []));
-  const writes = copies.flatMap((copy) => copy.machine_id === id && copy.role === "writer" ? [copy.name] : []);
-  return { machine, writes, held: heldOff(copies, servers, id) };
+  const observed = yield* observeOrganization(input.organizationId).pipe(Effect.orElseSucceed(() => ({ copies: [], unanswered: [] })));
+  const writes = observed.copies.flatMap((copy) => copy.machine_id === id && copy.role === "writer" ? [copy.name] : []);
+  return { machine, writes, held: heldOff(observed, servers, id) };
 });
 
 /**
- * The copy on another Server, by Docker Volume, that a lane committed to the leaving Server names to restore from: the
- * writer, which the source's cut makes a slot holding the newest snapshot by the time the lane ends, or else the only
- * copy. Slots' snapshots are not observed here, so several slots and no writer name none: the Move's source is one of
- * them, but another may be a slot whose Server did not answer when the Move planned, holding older data.
+ * The copy on another Server, by Docker Volume, that a lane committed to the leaving Server names to restore from. The
+ * writer is the Move's source, whose cut makes it a slot holding the newest snapshot by the time the lane ends, so it is
+ * named whoever else answered. Slots' snapshots are not observed here, so with no writer a slot is named only when it is
+ * the only copy and every other Server answered: a second slot, or a Server that did not answer and may hold one, could
+ * be the newest instead.
  */
-export function heldOff(copies: readonly ObservedCopy[], servers: readonly MachineIdentity[], leaving: MachineId) {
-  const off = copies.flatMap((copy) => {
+export function heldOff(observed: CopyObservation, servers: readonly MachineIdentity[], leaving: MachineId) {
+  const complete = observed.unanswered.every((machine) => machine === leaving);
+  const off = observed.copies.flatMap((copy) => {
     const holder = copy.machine_id === leaving ? undefined : servers.find((server) => server.id === copy.machine_id);
     return holder === undefined ? [] : [{ ...copy, holder: holder.name }];
   });
   const held: Record<string, MachineName> = {};
   for (const name of new Set(off.map((copy) => copy.name))) {
     const copiesOf = off.filter((copy) => copy.name === name);
-    const source = copiesOf.find((copy) => copy.role === "writer") ?? (copiesOf.length === 1 ? copiesOf[0] : undefined);
+    const source = copiesOf.find((copy) => copy.role === "writer") ?? (complete && copiesOf.length === 1 ? copiesOf[0] : undefined);
     if (source !== undefined) held[name] = source.holder;
   }
   return held;

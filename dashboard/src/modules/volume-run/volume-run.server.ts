@@ -1164,12 +1164,15 @@ const configVolumeNames = Effect.fn("VolumeRun.configVolumeNames")(function* (or
 
 export type CopyObserver = (organizationId: string) => Effect.Effect<CopyObservation["copies"], unknown, Database | SecretEncryption>;
 
-export const observeOrganizationCopies: CopyObserver = (organizationId) =>
+export const observeOrganization = (organizationId: string) =>
   Effect.gen(function* () {
     const loaded = yield* loadOrganizationConnections(organizationId);
-    if (loaded.kind !== "ready" || loaded.connections.length === 0) return [];
-    return (yield* observeVolumeCopies(loaded.connections)).copies;
+    if (loaded.kind !== "ready" || loaded.connections.length === 0) return { copies: [], unanswered: [] } satisfies CopyObservation;
+    return yield* observeVolumeCopies(loaded.connections);
   });
+
+export const observeOrganizationCopies: CopyObserver = (organizationId) =>
+  observeOrganization(organizationId).pipe(Effect.map((observed) => observed.copies));
 
 function unheldRootNames(copies: CopyObservation["copies"], configNames: ReadonlySet<string>): string[] {
   const roots = copies.filter((copy) => copy.role !== "slot" && !configNames.has(copy.name));
