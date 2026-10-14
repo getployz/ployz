@@ -87,6 +87,7 @@ def healthy_states():
 
 STEP = 2.0
 PLAIN_DEPLOY = 12.0
+DEPLOY_ERROR = "Error: rolling out cache: the new container exited 1\n"
 MOUNT_FAILURE = ("Error: invalid Docker Provisioned Volume observation: Provisioned Volume status has an invalid "
                  "mountpoint\nrollback: Docker 500: error while mounting volume\n")
 
@@ -674,6 +675,8 @@ class ClusterModel:
         if lane and lane["row"]["phase"] == "committed":
             self.clock.now = max(self.clock(), lane["until"])
             self.advance()
+            if self.mutation == "deploy-errors":
+                return 1, DEPLOY_ERROR
         elif lane:
             if self.mutation == "deploy-waits":
                 self.clock.now = max(self.clock(), lane["until"])
@@ -3213,6 +3216,18 @@ finally:
         self.assertIn("a followed committed lane leaves no row", self.recorded(case["name"]).get("skipped") or "",
                       result)
         self.assertEqual(model.runs[0]["state"], "done")
+
+    def test_a_failed_deploy_that_follows_a_committed_lane_fails_with_its_error_and_the_missing_overlap(self):
+        # The skip says only that nothing places the Deploy inside the run, so it never hides a failure judge found.
+        case = next(case for case in volume_move.CASES if case["name"] == "deploy-committed")
+        summary, model = self.run_cases([case], mutation="deploy-errors")
+        result, recorded = summary["cases"][0], self.recorded(case["name"])
+        self.assertFalse(result["passed"], result)
+        self.assertIsNone(result["skipped"], result)
+        failures = "\n".join(recorded["failures"])
+        self.assertIn("the Deploy exited 1: " + DEPLOY_ERROR.strip(), failures, recorded)
+        self.assertIn("a followed committed lane leaves no row", failures, recorded)
+        self.assertEqual(recorded["acted"]["exit_code"], 1, recorded)
 
     def test_a_release_on_a_committed_lane_is_credited_only_by_a_refusal_naming_the_first_run(self):
         # The refusal carries the lane Cloud read inside the release, so it must be the first run's.
