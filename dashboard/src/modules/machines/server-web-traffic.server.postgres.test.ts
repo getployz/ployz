@@ -104,12 +104,12 @@ describe("executeWebTrafficOnce", () => {
     expect(await row()).toEqual({ state: "failed", failure: "Your servers didn't answer in time. Try again." });
   });
 
-  it("puts the role back on when the stop throws", async () => {
+  it("keeps the role off when the stop throws, since the web server may already be gone", async () => {
     role = true;
     stopAnswer = () => unreachable("connection reset");
     await pending("off");
     await harness.runEffect(execute());
-    expect(role).toBe(true);
+    expect(role).toBe(false);
     expect(await row()).toEqual({ state: "failed", failure: "connection reset" });
   });
 });

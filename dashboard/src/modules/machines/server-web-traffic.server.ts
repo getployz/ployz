@@ -170,8 +170,9 @@ const REVERT_LIMIT_MS = 30_000;
 
 /**
  * Apply `want`: the role first, then the web server. On, the Cluster advertises the Server before its web server
- * starts; off, nothing new is sent here before it stops. Any change that doesn't finish, refused, thrown, or out of
- * time, puts the role back, so the Server is never advertised with nothing listening.
+ * starts; off, nothing new is sent here before it stops. An on that doesn't finish, refused, thrown, or out of time,
+ * turns the role back off, so the Server is never advertised with nothing listening. An off that doesn't finish keeps
+ * the role off: its web server may already be gone.
  */
 const applyWant = Effect.fn("ServerWebTraffic.apply")(function* (session: PloyzSession, request: WebTrafficRequest, want: WebTrafficWant) {
   const machine = request.machineId;
@@ -193,8 +194,8 @@ const applyWant = Effect.fn("ServerWebTraffic.apply")(function* (session: PloyzS
       orElse: () => Effect.succeed(failed("Your servers didn't answer in time. Try again.")),
     }),
   );
-  if (end.state === "failed") {
-    yield* session.updateMachine(machine, { accepts_ingress: !role }).pipe(Effect.timeout(REVERT_LIMIT_MS),
+  if (end.state === "failed" && role) {
+    yield* session.updateMachine(machine, { accepts_ingress: false }).pipe(Effect.timeout(REVERT_LIMIT_MS),
       Effect.ignoreCause({ log: true, message: "Web traffic role not put back" }));
   }
   return end;
