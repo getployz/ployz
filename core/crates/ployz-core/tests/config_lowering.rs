@@ -44,14 +44,13 @@ fn lowering_owns_port_defaults_and_domain_overrides() {
         intent["target"][0]["container"]["environment"]["PORT"],
         "3000"
     );
-    assert_eq!(
-        intent["target"][0]["container"]["healthcheck"]["port"],
-        3000
-    );
+    assert_eq!(intent["target"][0]["container"]["healthcheck"]["port"], 80);
 
+    let mut unrouted = config.clone();
+    unrouted["routes"] = json!([]);
     for invalid in ["", "0", "65536", "not-a-port"] {
         assert_eq!(
-            lower(config.clone(), json!({"PORT":invalid}))
+            lower(unrouted.clone(), json!({"PORT":invalid}))
                 .unwrap_err()
                 .path,
             "healthcheck"
@@ -64,7 +63,6 @@ fn lowering_owns_port_defaults_and_domain_overrides() {
         );
     }
 
-    explicit["healthcheck"] = json!({"type":"none"});
     assert!(lower(explicit, json!({"PORT":"not-a-port"})).is_ok());
 }
 

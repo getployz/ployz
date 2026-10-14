@@ -53,8 +53,9 @@ or a command's exit code and output.
 
 - **Check the command.** Exit code 127 means the shell didn't find it in the image. Run it in
   the image yourself, and use `127.0.0.1` to reach the service from inside its container.
-- **Listen on `PORT`.** The health check calls the `PORT` variable, `8080` unless you set it.
-  Make your app listen on it, or set `PORT` under **Variables** to the port it uses.
+- **Listen on the checked port.** The health check calls the port your domains send traffic to.
+  With no domain, or domains on different ports, it calls `PORT`, `8080` unless you set it. Make
+  your app listen there, or set the domain's port or `PORT` to the port it uses.
 - **Listen on `0.0.0.0`**, not `127.0.0.1`. See
   [This app didn't respond](app-not-reachable.md#this-app-didnt-respond).
 - **Answer with a 2xx status, not a redirect** to `https://` or `/login`. See
