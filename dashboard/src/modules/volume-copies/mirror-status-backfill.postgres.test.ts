@@ -10,10 +10,10 @@ const backfill = new URL("../../../drizzle/20261014082609_volume_mirror_status_b
 describe("the mirror status backfill", () => {
   let harness: PostgresTestHarness;
 
-  const sync = (volumeId: string, state: string, createdAt: string, finishedAt: string) => harness.pool.query(
-    `insert into volume_run (organization_id, environment_id, volume_id, volume_name, docker_volume, kind, args, state, created_at, finished_at)
-     values ($1, 'env-1', $2, 'data', 'data', 'sync', '{"full":false}', $3, $4, $5)`,
-    [organizationId, volumeId, state, createdAt, finishedAt],
+  const sync = (volumeId: string, state: string, createdAt: string, finishedAt: string | null, epoch: number | null = 1) => harness.pool.query(
+    `insert into volume_run (organization_id, environment_id, volume_id, volume_name, docker_volume, kind, args, state, created_at, finished_at, epoch)
+     values ($1, 'env-1', $2, 'data', 'data', 'sync', '{"full":false}', $3, $4, $5, $6)`,
+    [organizationId, volumeId, state, createdAt, finishedAt, epoch],
   );
 
   beforeAll(async () => { harness = await startPostgresTestHarness(); }, 60_000);
@@ -59,6 +59,18 @@ describe("the mirror status backfill", () => {
 
     expect(await harness.runEffect(mirrorStatuses(organizationId, "vol2"))).toEqual([
       { machine: machine("web-2"), okAt: null, matchedAt: "2026-10-11T00:05:00.000Z", failedAt: "2026-10-13T00:00:00.000Z", failure: "no space left" },
+    ]);
+  });
+
+  it("passes over a done sync that moved nothing or never recorded its finish", async () => {
+    await sync("vol2", "done", "2026-10-11T00:00:00Z", "2026-10-11T00:05:00Z");
+    await sync("vol2", "done", "2026-10-12T00:00:00Z", "2026-10-12T00:00:01Z", null);
+    await sync("vol2", "done", "2026-10-13T00:00:00Z", null);
+
+    await harness.pool.query(await readFile(backfill, "utf8"));
+
+    expect(await harness.runEffect(mirrorStatuses(organizationId, "vol2"))).toEqual([
+      { machine: machine("web-2"), okAt: null, matchedAt: "2026-10-11T00:05:00.000Z", failedAt: null, failure: null },
     ]);
   });
 });
