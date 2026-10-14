@@ -2695,9 +2695,20 @@ finally:
         self.assertTrue(any(failure.startswith("the kill-ployz landed after the first run")
                             for failure in result["failures"]), result["failures"])
 
-    UNREAD_LISTS = {"a failed list": (1, json.dumps(dict(error=dict(code="internal", message="list failed")))),
-                    "malformed JSON": (0, '{"runs": [{"id": '),
-                    "a list without the first run": (0, json.dumps(dict(runs=[])))}
+    @staticmethod
+    def renamed(text, state):
+        data = json.loads(text)
+        for row in volume_move.run_rows(data):
+            row["state"] = state
+        return json.dumps(data)
+
+    # Each shape turns the list Cloud would answer, as (exit, stdout), into one the harness must not read as the row.
+    UNREAD_LISTS = {"a failed list": lambda code, text: (1, json.dumps(dict(error=dict(code="internal",
+                                                                                        message="list failed")))),
+                    "malformed JSON": lambda code, text: (0, '{"runs": [{"id": '),
+                    "a list without the first run": lambda code, text: (0, json.dumps(dict(runs=[]))),
+                    "a failed list that still prints the runs": lambda code, text: (1, text),
+                    "a state Cloud has no name for": lambda code, text: (0, VolumeMoveTests.renamed(text, "paused"))}
 
     def unread_once(self, model, reply):
         """The first runs list after the kill lands answers reply instead of what Cloud holds."""
@@ -2706,7 +2717,7 @@ finally:
         def unread(args):
             if args[:2] == ["volume", "runs"] and model.kills and not spent:
                 spent.append(args)
-                return reply
+                return reply(*cli(args))
             return cli(args)
         model.cli = unread
 
@@ -2773,7 +2784,7 @@ finally:
                             inside.append(args)
                         elif args[:2] == ["volume", "runs"] and inside and not spent:
                             spent.append(args)
-                            return reply
+                            return reply(*cli(args))
                         return cli(args)
                     model.cli = unread
                     with redirect_stdout(io.StringIO()):
