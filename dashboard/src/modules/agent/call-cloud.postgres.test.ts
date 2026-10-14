@@ -23,7 +23,7 @@ describe("callCloud", () => {
       const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
       const { drizzle } = yield* Database.pipe(Effect.provide(services));
       yield* drizzle.insert(serverDrainAttempt).values({ id: DRAIN, organizationId: ORGANIZATION, machineId: MACHINE, requestedByUserId: userId });
-      const caller: Caller = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "session", id: "session-1" }, support: null, via: "agent" };
+      const caller: Caller = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "session", id: "session-1" }, role: "owner", support: null, via: "agent" };
 
       const heard = yield* callCloud(caller, { ask: { query: "operations", subject: { kind: "server", machine: MACHINE }, attempt: null, limit: 5 } })
         .pipe(Effect.provide(services));
@@ -50,7 +50,7 @@ describe("callCloud", () => {
     seen: { seen_by: null, observed_at: 1, read_at: 1, age_seconds: 0, from: "server", unanswered: [] },
     notes: [],
   };
-  const member: Caller = { userId: "user-1", organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "session", id: "session-1" }, support: null, via: "agent" };
+  const member: Caller = { userId: "user-1", organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "session", id: "session-1" }, role: "owner", support: null, via: "agent" };
 
   const runtime = (opened: ScopedRuntimeClientSession, opens: Array<string>) => Effect.provideService(OrganizationRuntime, {
     cancel: () => Effect.void,
@@ -87,7 +87,7 @@ describe("callCloud", () => {
     Effect.gen(function* () {
       const asked: Array<CloudQuery> = [];
       const opens: Array<string> = [];
-      const support: Caller = { ...member, support: { variables: true, configs: true, logs: false } };
+      const support: Caller = { ...member, role: null, support: { variables: true, configs: true, logs: false } };
       const services = yield* Layer.build(yield* storeTestCloud());
       const heard = yield* callCloud(support, { ask: LOGS }).pipe(runtime(connected(asked), opens), Effect.provide(services));
       expect(heard).toEqual({
