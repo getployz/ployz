@@ -314,9 +314,9 @@ class ClusterModel:
         if kept:
             masked = f"{PLUGIN} || true" in script
             return (0, "") if masked else (1, f"failed {PLUGIN}\n")
-        if machine not in self.survives:
-            self.alive.discard(units[PLUGIN]["pid"])
-        units[PLUGIN] = self.process() if machine in self.reactivated else dict(pid=0, invocation="", state="inactive")
+        survivor = units[PLUGIN]["pid"] if machine in self.survives else 0
+        self.alive.discard(units[PLUGIN]["pid"] if not survivor else None)
+        units[PLUGIN] = self.process() if machine in self.reactivated else dict(pid=survivor, invocation="", state="inactive")
         return 0, ""
 
     def tick(self):
@@ -914,7 +914,7 @@ class VolumeMoveTests(unittest.TestCase):
                         return 1, "Cloud did not answer"
                     return cli(args)
                 def arming(machine, script):
-                    if "echo" in script and "PLOYZD_FAULT" in script and not model.holds:
+                    if re.search(r"echo '?PLOYZD_FAULT=", script) and not model.holds:
                         model.hold(5, "cron-sync")
                         reply = guest(machine, script)
                         model.clock.advance(10)
@@ -944,7 +944,7 @@ class VolumeMoveTests(unittest.TestCase):
         guest = model.guest
 
         def arming(machine, script):
-            if "echo" in script and "PLOYZD_FAULT" in script and not model.holds:
+            if re.search(r"echo '?PLOYZD_FAULT=", script) and not model.holds:
                 model.hold(30, "cron-sync")
             return guest(machine, script)
         model.guest = arming
@@ -962,7 +962,7 @@ class VolumeMoveTests(unittest.TestCase):
         cli, guest, armed_ops = model.cli, model.guest, []
 
         def arming(machine, script):
-            if "echo" in script and "PLOYZD_FAULT" in script and not model.holds:
+            if re.search(r"echo '?PLOYZD_FAULT=", script) and not model.holds:
                 model.hold(5, "cron-sync")
                 reply = guest(machine, script)
                 model.clock.advance(10)
@@ -1045,7 +1045,11 @@ class VolumeMoveTests(unittest.TestCase):
 
     def test_a_failed_disarm_stops_the_run_and_still_writes_the_summary(self):
         checks, model = self.checks()
-        model.disarm_fails = True
+        guest = model.guest
+        def failing_once_armed(machine, script):
+            model.disarm_fails = model.disarm_fails or bool(re.search(r"echo '?PLOYZD_FAULT=", script))
+            return guest(machine, script)
+        model.guest = failing_once_armed
         with redirect_stdout(io.StringIO()):
             summary = checks.run_all([volume_move.KILLS[0], volume_move.CASES[0]])
         self.assertEqual([case["name"] for case in summary["cases"]], [volume_move.KILLS[0]["name"]])
@@ -1093,7 +1097,7 @@ class VolumeMoveTests(unittest.TestCase):
         checks, model = self.checks()
         guest, disarmed = model.guest, []
         def unreadable(machine, script):
-            if "PLOYZD_FAULT" in script and not re.search(r"echo '?PLOYZD_FAULT=", script):
+            if checks.case_name and "PLOYZD_FAULT" in script and not re.search(r"echo '?PLOYZD_FAULT=", script):
                 disarmed.append(machine)
             if disarmed and script.startswith("for d in"):
                 return 255, ""
@@ -1856,7 +1860,8 @@ class VolumeMoveTests(unittest.TestCase):
         result, model = self.run_with("soak-1-rounds-runner-kill", before, 2, receive_in_run)
         self.assertTrue(result["passed"], result)
         self.assertEqual(model.interrupted, [])
-        self.assertGreaterEqual(min(at for _, at in model.restarts) - self.planted, volume_move.BUSY_LIMIT)
+        self.assertGreaterEqual(min(at for _, at in model.restarts if at >= self.planted) - self.planted,
+                                volume_move.BUSY_LIMIT)
         self.assertEqual(model.pulls, {"machine-2"})
 
     def run_cut(self, name="soak-3-cut-runner-kill", plant=None, ends=10, effect=None):
@@ -1965,7 +1970,10 @@ class VolumeMoveTests(unittest.TestCase):
         # Codex r8 C: `|| true` hid a plugin stop that failed, and nothing checked the daemon and plugin were new.
         for name, plant, machine in (
                 ("plugin stop fails", lambda model: model.plugin_stop_fails.add("machine-2"), "machine-2"),
-                ("old plugin outlives its stop", lambda model: model.survives.add("machine-2"), "machine-2"),
+                ("old plugin outlives its stop", lambda model: (
+                    # setup's restart left the plugin inactive; prepare's volume create socket-activated it again
+                    model.units["machine-2"].__setitem__(PLUGIN, model.process()), model.survives.add("machine-2")),
+                 "machine-2"),
                 ("plugin socket-activated again", lambda model: model.reactivated.add("machine-2"), None)):
             with self.subTest(name):
                 result, _ = self.run_cut(plant=plant)
@@ -2190,6 +2198,31 @@ finally:
                 self.assertIn("the clean-start restart is unproven on machine-2 before move",
                               result.get("skipped") or "", result)
                 self.assertIn(problem, result.get("skipped") or "", result)
+
+    def test_setup_disarms_a_fault_an_earlier_run_left_behind_before_anything_else(self):
+        # A run killed while armed leaves PLOYZD_FAULT in /etc/default/ployz, and the first case would fire it.
+        checks, model = self.checks()
+        model.fault["machine-2"] = "kill-daemon:SetVolumeCopy.MirrorToMirror"
+        cli, seen = model.cli, []
+
+        def recording(args):
+            seen.append(dict(model.fault))
+            return cli(args)
+        model.cli = recording
+        checks.setup()
+        self.assertEqual(seen[0], {"machine-1": None, "machine-2": None}, seen)
+        self.assertEqual(sorted(machine for machine, _ in model.restarts), ["machine-1", "machine-2"])
+
+    def test_a_leftover_fault_that_cannot_be_disarmed_stops_the_run_before_any_case(self):
+        checks, model = self.checks()
+        model.disarm_fails = True
+        with redirect_stdout(io.StringIO()), self.assertRaises(RuntimeError) as raised:
+            checks.run_all([volume_move.KILLS[0], volume_move.CASES[0]])
+        self.assertIn("disarming a leftover fault failed on machine-1, machine-2", str(raised.exception))
+        summary = json.loads((self.root / "out" / "summary.json").read_text())
+        self.assertEqual(summary["cases"], [])
+        self.assertIn("disarming a leftover fault failed", summary["error"])
+        self.assertFalse(summary["passed"])
 
     def test_a_fault_line_from_an_older_epoch_is_not_credited(self):
         # A late step of the closed epoch-1 run reaches its fault point after the clean start, naming snapshot w-1-0.

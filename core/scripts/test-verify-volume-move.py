@@ -441,6 +441,9 @@ class VolumeMove:
 
     def setup(self):
         first, second = self.machines
+        # A run killed while armed leaves PLOYZD_FAULT behind, and the first case would fire it.
+        if failed := self.fault(None, check=False):
+            raise RuntimeError(f"disarming a leftover fault failed on {', '.join(failed)}")
         self.cli("server", "set", second, "--accepts-services=false")
         self.cli("project", "new", "verify")
         self.cli("link", "--project", "verify")
