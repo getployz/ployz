@@ -5,7 +5,7 @@ export type AcceptedLoss = { volumes: Array<string>, version: string, };
 
 export type Act = { attempt: AttemptId, digest: BodyDigest, action: Action, };
 
-export type Action = { "action": "service", environment: EnvironmentId, service: ServiceName, only: ServerRef | null, verb: ServiceVerb, } | { "action": "drain", server: ServerRef, } | { "action": "upgrade", server: ServerRef, } | { "action": "clean", leftover: Namespace, loss: AcceptedLoss | null, } | { "action": "remove_server", server: ServerRef, loss: AcceptedLoss | null, } | { "action": "forget_server", server: ServerRef, } | { "action": "volume", volume: VolumeId, run: VolumeRun, };
+export type Action = { "action": "service", environment: EnvironmentId, service: ServiceName, only: ServerRef | null, verb: ServiceVerb, } | { "action": "drain", server: ServerRef, } | { "action": "upgrade", server: ServerRef, } | { "action": "set_server", server: ServerRef, accepts_builds: boolean | null, accepts_services: boolean | null, accepts_ingress: boolean | null, build_concurrency: BuildConcurrencyUpdate, } | { "action": "clean", leftover: Namespace, loss: AcceptedLoss | null, } | { "action": "remove_server", server: ServerRef, loss: AcceptedLoss | null, } | { "action": "forget_server", server: ServerRef, } | { "action": "volume", volume: VolumeId, run: VolumeRun, };
 
 export type AddDomain = { environment: EnvironmentRef, service: ServiceName,
 /**
@@ -449,7 +449,7 @@ conclusion: CheckConclusion | null,
  */
 updated: GithubTimestamp, };
 
-export type CloudQuery = { "query": "github_tree" } & GithubTreeQuery | { "query": "github_file" } & GithubFileQuery | { "query": "github_connection" } | { "query": "github_branches", repository: string, } | { "query": "servers", only: MachineName | null, } | { "query": "containers", namespace: Namespace, service: ServiceName | null, } | { "query": "logs" } & LogsQuery | { "query": "metrics" } & MetricsQuery | { "query": "copies", namespace: Namespace, volume: VolumeName | null, } | { "query": "operations" } & OperationsQuery;
+export type CloudQuery = { "query": "github_tree" } & GithubTreeQuery | { "query": "github_file" } & GithubFileQuery | { "query": "github_connection" } | { "query": "github_branches", repository: string, } | { "query": "servers", only: MachineName | null, } | { "query": "containers", namespace: Namespace, service: ServiceName | null, } | { "query": "logs" } & LogsQuery | { "query": "server_logs" } & ServerLogsQuery | { "query": "metrics" } & MetricsQuery | { "query": "copies", namespace: Namespace, volume: VolumeName | null, } | { "query": "operations" } & OperationsQuery;
 
 export type ClusterDomain = { name: Hostname, status: ClusterDomainStatus, };
 
@@ -3687,6 +3687,8 @@ export type SelectedEndpoint = string;
 
 export type ServerLog = { server: MachineName, text: LogText, };
 
+export type ServerLogsQuery = { process: MachineLogService, server: ServerRef | null, lines: LineCap, since: { secs: number, nanos: number } | null, };
+
 export type ServerRef = { machine: MachineId, name: MachineName, };
 
 export type ServerReport = { machine: MachineId, name: MachineName, state: ServerState,
@@ -4653,7 +4655,7 @@ export type VolumeRemoval = { id: DockerVolumeId, outcome: VolumeRemovalOutcome,
 
 export type VolumeRemovalOutcome = { "status": "removed" } | { "status": "failed", error: RpcError, } | { "status": "omitted" };
 
-export type VolumeRun = { "run": "mirror", to: ServerRef, } | { "run": "sync", full: boolean, } | { "run": "move", to: ServerRef, } | { "run": "release", loss: AcceptedLoss | null, } | { "run": "remove_mirror", loss: AcceptedLoss | null, };
+export type VolumeRun = { "run": "mirror", to: ServerRef, } | { "run": "sync", full: boolean, } | { "run": "move", to: ServerRef, } | { "run": "release", loss: AcceptedLoss | null, } | { "run": "remove_mirror", loss: AcceptedLoss | null, } | { "run": "restore", from: ServerRef, };
 
 export type VolumeSource = { "kind": "bind", machine_path: MachinePath, create_machine_path: boolean, propagation: BindPropagation | null, recursive: BindRecursive | null, } | { "kind": "external", name: DockerVolumeName, } | { "kind": "ordinary", name: DockerVolumeName, driver: VolumeDriver, labels: { [key in string]: string }, } | { "kind": "provisioned",
 /**

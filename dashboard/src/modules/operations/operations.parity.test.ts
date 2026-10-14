@@ -1,12 +1,12 @@
 import { readFileSync } from "node:fs";
 import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
-import { OPERATIONS } from "#/modules/operations/operations";
+import { OPERATION_TOOLS, OPERATIONS } from "#/modules/operations/operations";
 
 const AGENT_TOOLS = new URL("../../../../core/crates/ployz-store/tests/snapshots/agent_tools.json", import.meta.url);
 const CLI_HANDLER = new URL("../../routes/api/cli/-cli.handler.ts", import.meta.url);
 
-/** Store tools that edit a config, not run an operation. */
+/** Store tools that edit a config, not run an operation; A8 registers them. */
 const CONFIG_STORE_TOOLS = new Set(["volume_add", "volume_update", "volume_remove"]);
 /** Fields that address or key a call rather than carry an option. */
 const ADDRESSING = {
@@ -20,6 +20,7 @@ const AgentTools = Schema.fromJsonString(Schema.Struct({
   tools: Schema.Array(Schema.Struct({
     name: Schema.String,
     read_only: Schema.Boolean,
+    gate: Schema.Literals(["never", "store", "cloud"]),
     input_schema: Schema.Struct({ properties: Schema.optional(Schema.Record(Schema.String, Schema.Struct({}))) }),
   })),
 }));
@@ -92,8 +93,15 @@ function drift(): string[] {
       }
     }
   }
+  const idempotent = new Set<unknown>(Object.values(OPERATIONS).map(({ idempotency }) => idempotency));
+  for (const tool of OPERATION_TOOLS) {
+    if (!idempotent.has(tool)) problems.push(`operation tool ${tool}: no operation is idempotent under it`);
+  }
+  const operationTools = new Set<string>(OPERATION_TOOLS);
+  const runsInCloud = ({ name, gate }: (typeof agentTools)[number]) =>
+    operationTools.has(name) || gate === "cloud" || /^(server|volume)_/.test(name);
   for (const tool of agentTools) {
-    if (tool.read_only || CONFIG_STORE_TOOLS.has(tool.name) || !/^(server|volume)_/.test(tool.name)) continue;
+    if (tool.read_only || CONFIG_STORE_TOOLS.has(tool.name) || !runsInCloud(tool)) continue;
     const claimed = agentClaims.get(tool.name);
     if (claimed === undefined) {
       problems.push(`agent tool ${tool.name}: no operation carries it`);
@@ -114,7 +122,8 @@ describe("operation parity", () => {
   });
 
   it("reads real surfaces, so a stale registry cannot pass by reading nothing", () => {
-    expect(agentTools.some(({ name }) => name === "server_forget")).toBe(true);
+    const swept = agentTools.filter(({ name, read_only }) => !read_only && (OPERATION_TOOLS as readonly string[]).includes(name)).map(({ name }) => name);
+    expect(swept).toEqual(expect.arrayContaining(["server_forget", "service_restart", "service_start", "service_stop"]));
     expect(cliHandler).toContain(`case "POST servers/:id/forget"`);
   });
 });

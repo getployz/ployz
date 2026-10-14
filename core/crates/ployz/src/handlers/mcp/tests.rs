@@ -1430,6 +1430,64 @@ fn servers_answer() -> Value {
     })
 }
 
+/// Cloud's refusal of turning web traffic off on `web-2`, the last Server that serves
+/// `shop.example.com`, as its operation gate words it.
+fn set_asks() -> Value {
+    json!({ "error": {
+        "code": "approval_required",
+        "message": "A human must approve this set of web-2 before it runs.",
+        "details": {
+            "effects": [{
+                "kind": "removes_domain", "name": "shop.example.com",
+                "node": "shop.example.com", "path": "domains/shop.example.com",
+            }],
+            "approval": "set:5c6f2b1d8e0a47f39b3c6d2e8f1a0b4c7d9e2f5a8b1c4d7e0f3a6b9c2d5e8f1a",
+            "approval_id": "apr_1",
+            "operation": { "verb": "set", "name": "web-2" },
+        },
+    }})
+}
+
+async fn web_traffic_off(capabilities: Value) -> Value {
+    let read = Scripted {
+        path: "/api/cli/agent/ask".to_owned(),
+        body: json!({ "ask": { "query": "servers", "only": null } }),
+        answer: Answered::Value(servers_answer()),
+    };
+    let fake = fake_cloud(vec![read], Some(set_asks()), Duration::ZERO);
+    let place = transcript("server_set", in_org()).place;
+    let mut client = Client::initialized(on_cloud(&fake, place), capabilities).await;
+    client
+        .send(&request(
+            2,
+            "tools/call",
+            json!({ "name": "server_set", "arguments": { "server": "web-2", "accepts_ingress": false } }),
+        ))
+        .await;
+    client.reply().await
+}
+
+#[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+#[tokio::test]
+async fn turning_web_traffic_off_asks_the_human_or_names_where_to_approve() {
+    let asking = web_traffic_off(json!({ "elicitation": {} })).await;
+    assert_eq!(
+        asking["params"]["message"],
+        "Approve this change to web-2?\nThis change destroys 1 thing:\n  ✕ removes domain shop.example.com",
+        "{asking}"
+    );
+    let refused = web_traffic_off(json!({})).await;
+    assert_eq!(refused["result"]["isError"], true, "{refused}");
+    assert_eq!(
+        refused["result"]["content"][0]["text"],
+        "A human must approve this change to web-2 first, and this agent cannot ask them. Show \
+         them what it destroys, then ask them to approve this change to web-2 in the Ployz Cloud \
+         sidebar. Once they approve, call this tool again with `approval` set to `apr_1`.\n\
+         This change destroys 1 thing:\n  ✕ removes domain shop.example.com",
+        "{refused}"
+    );
+}
+
 #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
 #[tokio::test]
 async fn a_lost_reply_to_a_write_says_it_may_have_landed_and_retries_under_the_same_key() {

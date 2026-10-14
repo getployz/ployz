@@ -235,10 +235,16 @@ if [ "$with_inngest" = 1 ]; then
   echo "inngest: http://127.0.0.1:$inngest_port (function runs; logs $run/inngest.log, $run/worker.log)" | tee -a "$run/info"
 fi
 if [ "${FAKE_GITHUB:-0}" = 1 ]; then
+  bob_credentials=$(node -e 'const { bob } = JSON.parse(process.argv[1]); process.stdout.write(JSON.stringify(bob))' "$seed")
+  bob_cookie=$(curl -s -o /dev/null -D - -X POST "$base/api/auth/sign-in/email" -H 'content-type: application/json' \
+    -H "origin: $base" -d "$bob_credentials" | tr -d '\r' | sed -n 's/^set-cookie: better-auth\.session_token=\([^;]*\).*/\1/Ip')
+  [ -n "$bob_cookie" ] || { echo "up.sh: Bob's email sign-in returned no session cookie" >&2; exit 1; }
   cat <<EOF | tee -a "$run/info"
 github origin: $fake_github (PLOYZ_VERIFY_GITHUB_ORIGIN), every GitHub URL Cloud builds points at this fake
 fake github on $fake_github (requests $run/fake-github.log, fixtures $dash/.verify/github.json)
-  bob: sign in at $base/auth as $(node -e 'const { bob } = JSON.parse(process.argv[1]); process.stdout.write(`${bob.email} / ${bob.password}`)' "$seed")
+  bob ($bob_credentials, signed in through POST $base/api/auth/sign-in/email):
+  agent-browser --session $name-bob cookies set better-auth.session_token '$bob_cookie' --url $base --httpOnly --sameSite Lax
+  agent-browser --session $name-bob open $base/cloud
   webhook: curl -X POST $fake_github/_fake/webhook -d '{"event":"installation_repositories","action":"added","installation":7,"repositories":["acme/docs"]}'
 EOF
 fi

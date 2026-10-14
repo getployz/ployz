@@ -48,7 +48,8 @@ services.
 Every server runs builds, runs services and takes web traffic. Turn jobs off to split the
 work, for example a build server that keeps builds away from your app, or a database server
 the internet can't reach. **Run builds here** and **Run services here** are on each server's
-page; turning web traffic off is CLI-only for now:
+page. Web traffic has no switch on the page: ask the [Ployz agent](../account/agent-sidebar.md)
+to turn it off, or use the CLI, which also turns it back on:
 
 ```sh
 # A build server: no services, no web traffic

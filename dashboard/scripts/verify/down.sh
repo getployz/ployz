@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Stops this checkout's verify instance: the cluster, vite dev server, Inngest dev server and worker, fake Hosted DNS,
-# fake GitHub and Postgres container up.sh started, and its agent-browser session (KEEP_BROWSER=1 keeps it). Keeps
+# fake GitHub and Postgres container up.sh started, and its agent-browser sessions (KEEP_BROWSER=1 keeps them). Keeps
 # dashboard/.verify/evidence and the cluster's evidence.
 # Usage: scripts/verify/down.sh
 set -uo pipefail
@@ -17,6 +17,8 @@ for process in idle seed-uptime worker vite inngest hosted-dns fake-github; do
   kill -KILL -- "-$pid" 2>/dev/null || true
 done
 docker rm --force "$name" >/dev/null 2>&1 || true
-[ "${KEEP_BROWSER:-0}" = 1 ] || agent-browser --session "$name" close >/dev/null 2>&1 || true
+if [ "${KEEP_BROWSER:-0}" != 1 ]; then
+  for session in "$name" "$name-bob"; do agent-browser --session "$session" close >/dev/null 2>&1 || true; done
+fi
 rm -rf "$run"
 echo "down: $name (evidence kept in $dash/.verify/evidence)"
