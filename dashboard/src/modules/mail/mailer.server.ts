@@ -42,6 +42,7 @@ export type MailerService = {
 export class Mailer extends Context.Service<Mailer, MailerService>()("ployz/Mailer") {}
 
 const POSTSHIBA_ORIGIN = "https://app.postshiba.com";
+const REQUEST_TIMEOUT_MS = 15_000;
 
 const SendAccepted = Schema.Struct({ message_id: Schema.String });
 const SendFailure = Schema.Struct({
@@ -66,6 +67,7 @@ const failureOf = (status: number, failure: typeof SendFailure.Type): MailSendEr
 export const makePostShibaMailer = (
   config: NonNullable<MailConfiguration>,
   fetch: typeof globalThis.fetch,
+  timeoutMs = REQUEST_TIMEOUT_MS,
 ): MailerService => ({
   send: Effect.fn("Mailer.send")(function* (message, idempotencyKey) {
     const url = `${POSTSHIBA_ORIGIN}/api/v1/teams/${encodeURIComponent(config.teamId)}/clusters/${encodeURIComponent(config.clusterId)}/sends`;
@@ -77,11 +79,11 @@ export const makePostShibaMailer = (
       text: message.text,
       html: message.html,
     };
-    const response = yield* Effect.tryPromise({
-      try: (signal) =>
-        fetch(url, {
+    const { response, body } = yield* Effect.tryPromise({
+      try: async (signal) => {
+        const response = await fetch(url, {
           method: "POST",
-          signal,
+          signal: AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]),
           headers: {
             authorization: `Bearer ${Redacted.value(config.apiKey)}`,
             accept: "application/json",
@@ -89,7 +91,11 @@ export const makePostShibaMailer = (
             "idempotency-key": idempotencyKey,
           },
           body: JSON.stringify(payload),
-        }),
+        });
+        // A stalled or unreadable body falls through to the status, and a 2xx without one retries.
+        const body: unknown = await response.json().catch(() => null);
+        return { response, body };
+      },
       catch: (cause) =>
         new MailUnavailable({
           status: null,
@@ -98,7 +104,6 @@ export const makePostShibaMailer = (
           retryAfter: null,
         }),
     });
-    const body: unknown = yield* Effect.promise(() => response.json().catch(() => null));
     if (!response.ok) {
       const failure = Option.getOrElse(Schema.decodeUnknownOption(SendFailure)(body), () => ({}));
       return yield* failureOf(response.status, failure);

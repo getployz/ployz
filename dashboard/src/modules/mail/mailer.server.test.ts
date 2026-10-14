@@ -112,6 +112,22 @@ describe("PostShiba Mailer", () => {
       assert.strictEqual(failure.code, "network");
     }),
   );
+
+  it.effect("retries when PostShiba stalls on the response body", () =>
+    Effect.gen(function* () {
+      const fetch = asTestDouble<typeof globalThis.fetch>()(
+        (_url: string, init: RequestInit) => {
+          const body = new ReadableStream({
+            start: (controller) => init.signal?.addEventListener("abort", () => controller.error(init.signal?.reason)),
+          });
+          return Promise.resolve(new Response(body, { status: 201 }));
+        },
+      );
+      const error = yield* Effect.flip(makePostShibaMailer(config, fetch, 50).send(message, "key-1"));
+
+      assert.instanceOf(error, MailUnavailable);
+    }),
+  );
 });
 
 describe("MailerLive", () => {
