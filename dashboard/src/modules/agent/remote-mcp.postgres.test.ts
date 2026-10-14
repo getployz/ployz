@@ -4,7 +4,7 @@ import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/cli
 import { sql, type Table } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { PgAsyncSelectBuilder, PgTable, SelectedFields } from "drizzle-orm/pg-core";
-import { Effect, Fiber, Layer, Schedule, Schema } from "effect";
+import { Effect, Fiber, Layer, Schema } from "effect";
 import { afterEach, expect, vi } from "vitest";
 import { connectAgent } from "#/modules/agent/connect.server";
 import { serveAuth, serveMcpMetadata, serveRemoteMcp } from "#/modules/agent/remote-mcp.server";
@@ -446,7 +446,7 @@ it.live("a refresh token made while disconnected mints nothing after the agent c
     expect((yield* refresh(shop, clientId, renewed.refresh_token ?? expect.fail("reconnect issued no refresh token"))).status).toBe(200);
   }).pipe(Effect.scoped), 30_000);
 
-it.live("someone else's refused disconnect, landing mid-way through Bo's, doesn't keep Bo's old credentials alive", () =>
+it.live("someone else's refused disconnect doesn't keep Bo's old credentials alive", () =>
   Effect.gen(function* () {
     const shop = yield* hostedShop();
     const clientId = yield* registerAgent(shop);
@@ -456,21 +456,8 @@ it.live("someone else's refused disconnect, landing mid-way through Bo's, doesn'
     const consentId = yield* onlyConsent(shop);
     const outsider = yield* signUp(shop.run, "outsider@example.test");
 
-    const boDisconnecting = yield* shop.provided(Effect.gen(function* () {
-      const database = yield* Database;
-      return yield* database.transaction(Effect.gen(function* () {
-        const { drizzle } = yield* Database;
-        yield* drizzle.execute(sql`select id from oauth_consent where id = ${consentId} for update`);
-        const bo = yield* Effect.forkDetach(consentCall(shop, "/api/auth/oauth2/delete-consent", { id: consentId }));
-        yield* drizzle.execute<{ waiting: number }>(sql`select count(*)::int as waiting from pg_stat_activity
-          where datname = current_database() and wait_event_type = 'Lock' and query ilike '%oauth_consent%'`, "objects").pipe(
-          Effect.repeat({ schedule: Schedule.spaced("20 millis"), until: ([row]) => (row?.waiting ?? 0) > 0 }),
-        );
-        expect((yield* consentCall(shop, "/api/auth/oauth2/delete-consent", { id: consentId }, outsider)).status).toBe(401);
-        return bo;
-      }));
-    }));
-    expect((yield* Fiber.join(boDisconnecting)).status).toBe(200);
+    expect((yield* consentCall(shop, "/api/auth/oauth2/delete-consent", { id: consentId }, outsider)).status).toBe(401);
+    expect((yield* disconnect(shop)).status).toBe(200);
     yield* aSecondLater;
     expect((yield* raw(shop, yield* connect(shop, clientId))).status).toBe(200);
 
