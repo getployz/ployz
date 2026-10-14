@@ -1332,6 +1332,21 @@ async fn departure_keeps_a_pulled_slot_whose_promote_stopped_before_the_rename()
     server.abort();
 }
 
+/// v0.3.0-beta.1 promoted a pulled slot without dropping its pull record, so a promote
+/// it stopped before the rename leaves the record naming the newest point.
+#[tokio::test]
+async fn departure_keeps_a_beta1_promote_that_stopped_before_the_rename() {
+    let test = TestDir::new();
+    let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], 1);
+    landed_before_a_restart(&test, "ployz:epoch", "2");
+    set_property(&test, SLOT_FS, "ployz:promote", "on");
+
+    let reply = post(&socket, "/Storage.Demote", json!(null)).await;
+    assert_eq!(reply, json!({"Ok": {"demoted": [], "stuck": []}}));
+    assert!(test.0.join("mirror-fs").exists());
+    server.abort();
+}
+
 /// A pull of the point a cut slot already holds lands nothing, so the slot never records
 /// a pull: a daemon stopped partway through must not leave the cut looking pulled.
 #[tokio::test]
