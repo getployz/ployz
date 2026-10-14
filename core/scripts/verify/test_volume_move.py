@@ -120,6 +120,8 @@ class ClusterModel:
         self.poll_fails = False
         # journald on each Machine: one boot id, and a cursor is a position in the journal within that boot.
         self.boot = {"machine-1": "boot-1a", "machine-2": "boot-2a"}
+        # Journal positions journald vacuumed: a read skips them and every other entry keeps its cursor.
+        self.vacuumed = set()
         # The `ployz:pull` target a Machine's slot parent names while its receive runs, when not the first run's own
         # first round; and a Machine whose receive sits in D state and stays in the plugin's cgroup after the stop.
         self.pull_targets = {}
@@ -193,7 +195,8 @@ class ClusterModel:
             return 1, ""
         lines = [dict(__CURSOR=self.cursor(machine, index), _BOOT_ID=self.boot[machine], _SYSTEMD_UNIT=DAEMON,
                       __REALTIME_TIMESTAMP=str(int(at * 1e6)), MESSAGE=text)
-                 for index, (where, at, text) in enumerate(self.journal) if where == machine and index > int(found[1])]
+                 for index, (where, at, text) in enumerate(self.journal)
+                 if where == machine and index > int(found[1]) and index not in self.vacuumed]
         return (1 if self.poll_fails else 0), "".join(json.dumps(line) + "\n" for line in lines)
 
     def tail_cursor(self, machine):
@@ -1339,7 +1342,7 @@ class VolumeMoveTests(unittest.TestCase):
                 with redirect_stdout(io.StringIO()):
                     summary = checks.run_all([undo])
                 result = json.loads((self.root / "out" / "undo-before-cut.json").read_text())
-                self.assertTrue(result["triggered"], result)
+                self.assertTrue(result.get("triggered"), result.get("failures"))
                 if failure:
                     self.assertFalse(result["passed"], result)
                     self.assertIn(failure, result["failures"])
@@ -2013,6 +2016,24 @@ class VolumeMoveTests(unittest.TestCase):
             model.log_fault("machine-1", begun + 0.3)
         result, _ = self.run_with("kill-snapshot", lambda model: setattr(self, "model", model), 0.1, effect)
         self.assert_not_credited(result)
+
+    def test_a_credited_fault_line_vacuumed_before_the_case_end_fails_the_case(self):
+        # journald vacuums the credited line; a retry that crossed the armed point again may have logged a later one,
+        # which must not stand in for it.
+        for retried in (False, True):
+            with self.subTest(retried=retried):
+                def effect(begun):
+                    model = self.model
+                    line = model.fault_text("machine-1")
+                    model.log_fault("machine-1", begun + 1, line)
+                    if retried:
+                        model.log_fault("machine-1", begun + 2.5, line)
+                    model.at(begun + 3, lambda: model.vacuumed.add(next(
+                        index for index, (where, _, text) in enumerate(model.journal)
+                        if where == "machine-1" and text.startswith("fault: "))))
+                result, _ = self.run_with("kill-snapshot", lambda model: setattr(self, "model", model), 5, effect)
+                self.assertTrue(any("did not re-qualify at the case end" in failure for failure in result["failures"]),
+                                result)
 
     def test_a_persistent_vm_clock_change_cannot_replace_the_credited_fault_with_a_later_one(self):
         # Codex r6 2, Opus r7 1: machine-2 moves 20 s ahead and stays there. The warm-round fault then stamps after
