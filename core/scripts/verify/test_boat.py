@@ -192,6 +192,8 @@ class Registry(unittest.TestCase):
         self.assertTrue(path("a", str(accented)).startswith("/tmp/ployz-boat-"))
         # su without "-" keeps another user's runtime directory, and a logout removes one.
         self.assertTrue(path("a", "/run/user/4294967295").startswith(f"/tmp/ployz-boat-{os.getuid()}/"))
+        Path(runtime, "file").touch()
+        self.assertTrue(path("a", f"{runtime}/file").startswith(f"/tmp/ployz-boat-{os.getuid()}/"))
         if os.getuid():
             self.assertTrue(path("a", "/").startswith(f"/tmp/ployz-boat-{os.getuid()}/"))
         long = path("a", str(long))
