@@ -91,19 +91,44 @@ MOUNT_FAILURE = ("Error: invalid Docker Provisioned Volume observation: Provisio
                  "mountpoint\nrollback: Docker 500: error while mounting volume\n")
 
 
+# The harness's imports, all at module scope. Each reads no clock; a new one joins after the same check.
+HARNESS_IMPORTS = {"argparse", "hashlib", "json", "re", "shlex", "signal", "statistics", "subprocess", "sys", "time",
+                   "urllib.error", "urllib.request", "pathlib.Path", "cloud_recovery.alive"}
+HOST_CLOCKS = {"monotonic", "sleep", "strftime"}
+DYNAMIC_NAMES = {"__import__", "__builtins__", "getattr", "eval", "exec", "compile", "globals", "vars", "locals"}
+CLOCK_ATTRS = {"modules", "__dict__", "__globals__", "st_atime", "st_mtime", "st_ctime", "st_atime_ns", "st_mtime_ns",
+               "st_ctime_ns", "st_birthtime", "getatime", "getmtime", "getctime"}
+CLOCK_TEXT = re.compile(r"\bdate\b|REALTIME|--since|FinishedAt|\b(?:created|started|updated|finished)_at\b|/proc/uptime")
+
+
 def clock_escapes(source):
     """Every path in the harness source to a clock the property test does not perturb. The model replaces the
-    module's one `time` binding, so a clock read any other way runs on the real clock and hides from it."""
+    module's one `time` binding, so a clock reached through any other binding, a stat, a shell or a stamp runs on
+    the real clock and hides from it."""
     tree = ast.parse(source)
-    escapes = [f"time.{node.attr}" for node in ast.walk(tree) if isinstance(node, ast.Attribute)
-               and isinstance(node.value, ast.Name) and node.value.id == "time"
-               and node.attr not in ("monotonic", "sleep", "strftime")]
-    imported = {alias.name.split(".")[0] for node in ast.walk(tree) if isinstance(node, (ast.Import, ast.ImportFrom))
-                for alias in node.names} | {node.module.split(".")[0] for node in ast.walk(tree)
-                                            if isinstance(node, ast.ImportFrom) and node.module}
-    escapes += sorted(imported & {"datetime", "calendar"})
-    escapes += [f"from time import, line {node.lineno}" for node in ast.walk(tree)
-                if isinstance(node, ast.ImportFrom) and node.module == "time"]
+    top = {id(node) for node in tree.body}
+    called = {id(node.func) for node in ast.walk(tree) if isinstance(node, ast.Call)}
+    receivers, escapes = set(), []
+    for node in ast.walk(tree):
+        where = f"line {getattr(node, 'lineno', '?')}"
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            prefix = f"{node.module}." if isinstance(node, ast.ImportFrom) else ""
+            escapes += [f"{where}: {'nested ' if id(node) not in top else ''}import {prefix}{alias.name}"
+                        + (f" as {alias.asname}" if alias.asname else "") for alias in node.names
+                        if id(node) not in top or alias.asname or f"{prefix}{alias.name}" not in HARNESS_IMPORTS]
+        elif isinstance(node, ast.Attribute):
+            if isinstance(node.value, ast.Name) and node.value.id == "time":
+                receivers.add(id(node.value))
+                if node.attr not in HOST_CLOCKS or id(node) not in called:
+                    escapes.append(f"{where}: time.{node.attr} not called as a sanctioned host clock")
+            if node.attr in CLOCK_ATTRS:
+                escapes.append(f"{where}: .{node.attr}")
+        elif isinstance(node, ast.Name) and node.id in DYNAMIC_NAMES:
+            escapes.append(f"{where}: {node.id}")
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str) and CLOCK_TEXT.search(node.value):
+            escapes.append(f"{where}: {CLOCK_TEXT.search(node.value).group()} in a string")
+    escapes += [f"line {node.lineno}: time bound or passed whole" for node in ast.walk(tree)
+                if isinstance(node, ast.Name) and node.id == "time" and id(node) not in receivers]
     return escapes
 
 
