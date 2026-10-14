@@ -237,8 +237,10 @@ ployz server forget web-1 --confirm dead
 ```
 
 The wait ends at the next check. The old server's stopped container goes with it, so the release
-fails with "data has no stopped Service container to start on web-2". Restore from `web-2`'s copy
-instead, then deploy your service:
+fails. A release Ployz started on its own fails with "data has no stopped Service container to
+start on web-2". One you ran with `ployz volume release data` fails with "data changed since this
+release was planned; release it again". Either way, restore from `web-2`'s copy instead, then
+deploy your service:
 
 ```sh
 ployz volume restore data --from web-2
