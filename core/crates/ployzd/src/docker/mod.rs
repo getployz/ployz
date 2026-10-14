@@ -53,7 +53,7 @@ pub(crate) use create::container_log_config;
 pub(crate) use lifecycle::{ContainerCreated, ContainerRequest, require_eligible, same_creation};
 pub(crate) use managed_service::{DesiredContainer, Ensure, ManagedService};
 pub(crate) use peer_pull::pull_from_ingest;
-pub use spec_store::{Error as SpecStoreError, MachineSpecStore};
+pub use spec_store::{Error as SpecStoreError, FloorTurn, MachineSpecStore};
 pub use unregistry::ImageIngest;
 
 #[cfg(test)]
@@ -198,6 +198,14 @@ impl ContainerRuntime {
         }
     }
 
+    pub async fn floor_turn(&self) -> FloorTurn<'_> {
+        self.specs.floor_turn().await
+    }
+
+    pub async fn clear_floors(&self) -> Result<(), Error> {
+        Ok(self.specs.clear_floors().await?)
+    }
+
     /// Report this Container as `stopping` until its stop runs,
     /// so the Ingress Proxies stop routing to it before it stops.
     pub fn mark_stopping(&self, container_id: ContainerId) {
@@ -205,7 +213,8 @@ impl ContainerRuntime {
             .send_if_modified(|stopping| stopping.insert(container_id));
     }
 
-    fn clear_stopping(&self, container_id: &ContainerId) {
+    /// Route this Container again: a drain that ends without a stop puts it back.
+    pub fn clear_stopping(&self, container_id: &ContainerId) {
         self.stopping
             .send_if_modified(|stopping| stopping.remove(container_id));
     }

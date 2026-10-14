@@ -125,9 +125,19 @@ reports the Machine's copy as it is now. A Writer reports its epoch, and the
 Machine never checks it. No Machine keeps a record of the run, claims the
 Cluster's view of the Volume, or reads another Machine's copy.
 
-**Red flags:** fencing tokens, leases, leader election, quorum reads, any API or
-message claiming a complete or canonical Cluster view. A request that names the
-copy it expects on one Machine is none of these.
+**One lease, one fence.** Fencing and leases are allowed in one shape. The
+operator's lease is a Volume's open run, numbered in Postgres as its `gen`. A
+Machine keeps a floor for its own copy, raised and checked only by the
+operator's `SetVolumeCopy` calls to it, and refuses a `gen` below the newest it
+accepted. The floor lets a newer run stop an older run's late cut, which the
+expected copy alone cannot do until the newer run has already changed the copy.
+Neither number goes in Corrosion, and no Machine sends, asks for or checks
+another Machine's number. The lease never has to reach a Machine the run does
+not touch (bet 6).
+
+**Red flags:** any other fencing token, lease, leader election or quorum read,
+and any API or message claiming a complete or canonical Cluster view. A request
+that names the copy it expects on one Machine is none of these.
 
 ## 2. AP over C — inside the Cluster
 
