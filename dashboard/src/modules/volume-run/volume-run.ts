@@ -31,7 +31,7 @@ export type ReleasePlan = {
 export type VolumeRunArgs = {
   mirror: Destination;
   sync: { readonly full: boolean };
-  delete_mirror: { readonly slot: MachineName | null; readonly confirmed_name: string | null };
+  delete_mirror: { readonly slot: MachineName | null; readonly confirmed_name: string | null; readonly machine?: MachineId };
   move: Destination;
   /** `follows` marks a Deploy's release: it is admitted only while the Volume still finishes on that Machine. */
   release: { readonly plan?: ReleasePlan; readonly follows?: MachineId };

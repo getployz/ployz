@@ -230,7 +230,7 @@ export function placementChanges(volume: PlacementVolume, members: readonly Memb
 const clock = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit" });
 export const lossTime = (at: Date) => clock.format(at);
 
-const deleteSlot = (server: MachineRef): VolumeRunInput => ({ kind: "delete_mirror", args: { slot: server.name, confirmed_name: null } });
+const deleteSlot = (server: MachineRef): VolumeRunInput => ({ kind: "delete_mirror", args: { slot: server.name, confirmed_name: null, machine: server.id } });
 
 /** Each change's runs; deletions free the one copy slot before a move or a mirror fills it. */
 const STEPS = {

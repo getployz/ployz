@@ -192,6 +192,7 @@ data finishes on web-2; ployz volume release data finishes it now
 ```
 
 Renaming `web-2` changes only the name in that message. Its mirror stays protected under the new name.
+While Cloud cannot read your servers, `mirror rm` on the volume is refused until it can.
 
 Restoring the volume stays open, except while a release waits for a silent server. Once a restore
 takes over, the move no longer needs finishing.

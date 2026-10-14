@@ -238,23 +238,31 @@ const OWED_KINDS: ReadonlySet<VolumeRunKind> = new Set<VolumeRunKind>(["move", "
 
 /**
  * A run that would undo or copy around a Move still owed its finish, or destroy the copy it finishes on. That copy is
- * known by its Machine's id, since the Server may be renamed; the recorded name stands in while the Cluster is silent.
+ * known by its Machine's id, since the Server may be renamed, so a removal whose slot resolved to no id is refused.
  */
-const refusedWhileOwed = Effect.fn("VolumeRun.refusedWhileOwed")(function* (input: VolumeLaneInput, pending: Owed) {
+const refusedWhileOwed = (input: VolumeLaneInput, pending: Owed) => {
   if (OWED_KINDS.has(input.kind)) return true;
   if (input.kind !== "delete_mirror") return false;
-  const { slot } = input.args;
-  if (slot === null) return true;
-  const named = (yield* namedMachines(pending.organizationId)).find((machine) => machine.name === slot);
-  return named === undefined ? slot === (yield* laneTarget(pending)) : named.id === pending.current;
+  return input.args.machine === undefined || input.args.machine === pending.current;
+};
+
+const owedRefusal = (pending: Owed, target: string | null): StoreRefusal => ({
+  code: "conflict",
+  message: `${pending.volumeName} finishes on ${target ?? "its new Server"}; ployz volume release ${pending.volumeName} finishes it now`,
+  details: { run: volumeRunView(pending) },
 });
 
-const owedRefusal = Effect.fn("VolumeRun.owedRefusal")(function* (pending: Owed) {
+const namedOwedRefusal = Effect.fn("VolumeRun.namedOwedRefusal")(function* (pending: Owed) {
   const { name } = yield* machineNamed(pending.organizationId, pending.current);
-  const target = name ?? (yield* laneTarget(pending)) ?? "its new Server";
-  const message = `${pending.volumeName} finishes on ${target}; ployz volume release ${pending.volumeName} finishes it now`;
-  return { code: "conflict", message, details: { run: volumeRunView(pending) } } satisfies StoreRefusal;
+  return owedRefusal(pending, name ?? (yield* laneTarget(pending)));
 });
+
+type DeleteMirrorArgs = VolumeRunArgs["delete_mirror"];
+
+const withSlotMachine = ({ slot, confirmed_name }: DeleteMirrorArgs, machines: readonly MachineRef[]): DeleteMirrorArgs => {
+  const machine = machines.find((entry) => entry.name === slot)?.id;
+  return machine === undefined ? { slot, confirmed_name } : { slot, confirmed_name, machine };
+};
 
 export const releaseChangedMessage = (volumeName: string) => `${volumeName} changed since this release was planned; release it again`;
 
@@ -415,10 +423,16 @@ export const planVolumeRun = Effect.fn("VolumeRun.plan")(function* (
     return { ok: false, refusal: yield* laneRefusal(lane, input.kind) } satisfies VolumeRunPlan;
   }
   const { owed: pending } = yield* commitment(input.volumeId);
-  if (pending !== null && (yield* refusedWhileOwed(input, pending))) return { ok: false, refusal: yield* owedRefusal(pending) } satisfies VolumeRunPlan;
+  if (pending !== null && input.kind !== "delete_mirror" && refusedWhileOwed(input, pending)) {
+    return { ok: false, refusal: yield* namedOwedRefusal(pending) } satisfies VolumeRunPlan;
+  }
   const members = yield* observeVolumeMembers(organizationId, volume.dockerVolume, input).pipe(Effect.option);
   if (Option.isNone(members)) return { ok: false, refusal: unanswered } satisfies VolumeRunPlan;
   if (pending !== null && input.kind === "release") return yield* planForward(volume, input, pending, members.value);
+  const resolved = input.kind === "delete_mirror"
+    ? { ...input, args: withSlotMachine(input.args, members.value.map((member) => member.machine)) }
+    : input;
+  if (pending !== null && refusedWhileOwed(resolved, pending)) return { ok: false, refusal: yield* namedOwedRefusal(pending) } satisfies VolumeRunPlan;
   if (pending !== null && input.kind === "delete_mirror") {
     const target = members.value.find((member): member is AnsweredMember => member.answered && member.machine.id === pending.current);
     const cuts = target === undefined ? null : unfinishedCutsBefore(volume.volumeName, target, members.value);
@@ -453,7 +467,7 @@ export const planVolumeRun = Effect.fn("VolumeRun.plan")(function* (
     effects,
   };
   const ids = (members: readonly AnsweredMember[]) => members.map((member) => member.machine.id);
-  const pinned = input.kind === "release" ? { ...input, args: { plan: { sources: ids(release.sources), forgets: ids(release.forgets) } } } : input;
+  const pinned = input.kind === "release" ? { ...input, args: { plan: { sources: ids(release.sources), forgets: ids(release.forgets) } } } : resolved;
   return { ok: true, volume, asked, input: pinned } satisfies VolumeRunPlan;
 });
 
@@ -486,13 +500,15 @@ export const requestVolumeRun = Effect.fn("VolumeRun.request")(function* (
   input: { readonly volumeId: string; readonly environment: EnvironmentRef } & VolumeRunInput,
   options: RequestOptions = {},
 ) {
-  const database = yield* Database;
   const volume = yield* resolveVolume(caller.organizationId, input.environment, input.volumeId);
   if (input.kind === "seed") {
     const refusal = yield* seedLandingRefusal(caller.organizationId, input.environment, input.volumeId, input.args.into.volumeId);
     if (refusal !== null) return { ok: false, refusal, busy: null } as const;
   }
-  return yield* database.transaction(insertRun(caller, input, volume, options.id ?? crypto.randomUUID(), options.end ?? endOf(input.kind), options.fences));
+  const resolved = input.kind === "delete_mirror" && input.args.slot !== null && input.args.machine === undefined
+    ? { ...input, args: withSlotMachine(input.args, yield* namedMachines(caller.organizationId)) }
+    : input;
+  return yield* insertRun(caller, resolved, volume, options.id ?? crypto.randomUUID(), options.end ?? endOf(input.kind), options.fences);
 });
 
 export type LaneTaker = {
@@ -513,7 +529,8 @@ const TAKEN_BY = {
   yielded: "a Deploy took this run over",
 } satisfies Record<LaneEnd, string>;
 
-class LaneRefused extends Data.TaggedError("LaneRefused")<{ readonly refusal: StoreRefusal; readonly busy: VolumeRunView }> {}
+/** `owed` marks a refusal whose Server is named only after the transaction ends, so no row waits on the Cluster. */
+class LaneRefused extends Data.TaggedError("LaneRefused")<{ readonly refusal: StoreRefusal; readonly busy: VolumeRunView; readonly owed?: Owed }> {}
 
 class LaneMoved extends Data.TaggedError("LaneMoved")<{ readonly active: VolumeRunRow | undefined }> {}
 
@@ -592,8 +609,8 @@ const admitOwed = Effect.fn("VolumeRun.admitOwed")(function* (inserted: VolumeRu
     return yield* new LaneRefused({ refusal: releaseChanged(inserted.volumeName), busy: volumeRunView(newest ?? inserted) });
   }
   if (input.kind !== "release") {
-    if (!(yield* refusedWhileOwed(input, pending))) return inserted;
-    return yield* new LaneRefused({ refusal: yield* owedRefusal(pending), busy: volumeRunView(pending) });
+    if (!refusedWhileOwed(input, pending)) return inserted;
+    return yield* new LaneRefused({ refusal: owedRefusal(pending, yield* laneTarget(pending)), busy: volumeRunView(pending), owed: pending });
   }
   if (plan !== undefined && (plan.forward?.after !== pending.id || plan.forward.to !== pending.current)) {
     return yield* new LaneRefused({ refusal: releaseChanged(inserted.volumeName), busy: volumeRunView(pending) });
@@ -604,15 +621,28 @@ const admitOwed = Effect.fn("VolumeRun.admitOwed")(function* (inserted: VolumeRu
   return inherited ?? inserted;
 });
 
-const refused = (error: LaneRefused) => Effect.succeed({ ok: false, refusal: error.refusal, busy: error.busy } as const);
-
-export const insertRun = Effect.fn("VolumeRun.insert")(function* (
+/** A run admitted in its own transaction; an owed refusal still names the Server by its recorded name. */
+export const admitRun = Effect.fn("VolumeRun.admit")(function* (
   caller: Caller, input: { readonly volumeId: string } & VolumeRunInput, volume: ResolvedVolume, id: string, end: LaneEnd | null = endOf(input.kind),
   fences?: VolumeRunKind,
 ) {
   const database = yield* Database;
-  const taken = yield* database.transaction(takeLane(caller, { input, volume, id, fences }, end)).pipe(Effect.catchTag("LaneRefused", refused));
-  return "ok" in taken ? taken : { ok: true, run: taken.run, took: taken.ended !== null } as const;
+  return yield* database.transaction(takeLane(caller, { input, volume, id, fences }, end)).pipe(
+    Effect.map(({ run, ended }) => ({ ok: true, run, took: ended !== null }) as const),
+    Effect.catchTag("LaneRefused", ({ refusal, busy, owed }) => Effect.succeed({ ok: false, refusal, busy, owed: owed ?? null } as const)),
+  );
+});
+
+/** Names the Server an owed refusal finishes on as the Cluster names it now. Call it with no row locked. */
+export const nameRefusal = Effect.fn("VolumeRun.nameRefusal")(function* (
+  { refusal, busy, owed }: { readonly refusal: StoreRefusal; readonly busy: VolumeRunView; readonly owed: Owed | null },
+) {
+  return { ok: false, refusal: owed === null ? refusal : yield* namedOwedRefusal(owed), busy } as const;
+});
+
+export const insertRun = Effect.fn("VolumeRun.insert")(function* (...args: Parameters<typeof admitRun>) {
+  const admitted = yield* admitRun(...args);
+  return admitted.ok ? admitted : yield* nameRefusal(admitted);
 });
 
 /** A Deploy's own lane, running under `inngestRunId` from the start; a warm lane found there yields to it. */
@@ -1257,7 +1287,7 @@ export const requeueTakenMoves = Effect.fn("VolumeRun.requeueTakenMoves")(functi
     if (input.kind !== "deploy") continue;
     const { resume } = input.args;
     if (resume === null) continue;
-    const again = yield* insertRun(
+    const again = yield* admitRun(
       { userId: null, organizationId: row.organizationId },
       { volumeId: row.volumeId, kind: "move", args: resume },
       { environmentId: row.environmentId, volumeName: row.volumeName, dockerVolume: row.dockerVolume, refquotaBytes: row.refquotaBytes },
