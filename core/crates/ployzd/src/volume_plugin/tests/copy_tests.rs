@@ -1176,6 +1176,117 @@ async fn a_pull_of_the_slots_newest_keeps_its_cut() {
     server.abort();
 }
 
+/// The state a pull leaves when the daemon stops between landing the target and the
+/// resend that settles it: the slot's parent still names the pull, and marks from the
+/// copy's own past are still on it.
+fn landed_before_a_restart(test: &TestDir, mark: &str, value: &str) {
+    set_snapshots(test, SLOT_FS, &[("w-1-2", 12)]);
+    set_property(test, SLOT, "ployz:pull", "w-1-2");
+    set_property(test, SLOT_FS, mark, value);
+}
+
+#[tokio::test]
+async fn departure_destroys_a_landed_pull_whose_marks_were_never_dropped() {
+    for (mark, value) in [("ployz:cut", "on"), ("ployz:epoch", "3")] {
+        let test = TestDir::new();
+        let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], 1);
+        landed_before_a_restart(&test, mark, value);
+
+        let reply = post(&socket, "/Storage.Demote", json!(null)).await;
+        assert_eq!(reply, json!({"Ok": ["data"]}), "{mark}");
+        assert!(!test.0.join("mirror").exists(), "{mark}");
+        server.abort();
+    }
+}
+
+#[tokio::test]
+async fn a_resend_of_a_landed_pull_drops_the_marks_of_the_older_point() {
+    for (mark, value) in [("ployz:cut", "on"), ("ployz:epoch", "3")] {
+        let test = TestDir::new();
+        let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], 1);
+        landed_before_a_restart(&test, mark, value);
+
+        let reply = post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
+        assert_eq!(reply.pointer("/Ok/pull"), Some(&Value::Null), "{reply}");
+        assert_eq!(property(&test, SLOT_FS, mark), None, "{mark}");
+        let reply = post(&socket, "/Storage.Demote", json!(null)).await;
+        assert_eq!(reply, json!({"Ok": ["data"]}), "{mark}");
+        server.abort();
+    }
+}
+
+#[tokio::test]
+async fn a_pull_started_over_a_landed_one_leaves_a_mirror_the_departure_destroys() {
+    for (mark, value) in [("ployz:cut", "on"), ("ployz:epoch", "3")] {
+        let source = Source::start(Some(BOUND), "snapshot w-1-3 13\n").await;
+        let test = TestDir::new();
+        let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
+        landed_before_a_restart(&test, mark, value);
+        fs::write(test.0.join("props/stall-read"), "").unwrap();
+        post(&socket, "/Volume.Copy.Pull", pull("w-1-3")).await;
+        let pid = receive_pid(&test).await;
+
+        let reply = post(&socket, "/Storage.Demote", json!(null)).await;
+        assert_eq!(reply, json!({"Ok": ["data"]}), "{mark}");
+        assert!(
+            !Path::new(&format!("/proc/{pid}")).exists(),
+            "{mark}: the receive still runs"
+        );
+        assert!(!test.0.join("mirror").exists(), "{mark}");
+        server.abort();
+    }
+}
+
+#[tokio::test]
+async fn a_pull_whose_mark_cleanup_fails_leaves_a_mirror_the_departure_destroys() {
+    for (mark, value) in [("ployz:cut", "on"), ("ployz:epoch", "3")] {
+        let source = Source::start(Some(BOUND), "snapshot w-1-2 12\n").await;
+        let test = TestDir::new();
+        let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
+        set_snapshots(&test, SLOT_FS, &[("w-1-1", 11)]);
+        set_property(&test, SLOT_FS, mark, value);
+        fs::write(test.0.join("inherit-fails"), "").unwrap();
+
+        post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
+        let copy = landed(&socket, "w-1-2").await;
+        assert_eq!(copy.pointer("/Ok/newest/name"), Some(&json!("w-1-2")), "{copy}");
+        post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
+
+        let reply = post(&socket, "/Storage.Demote", json!(null)).await;
+        assert_eq!(reply, json!({"Ok": ["data"]}), "{mark}");
+        assert!(!test.0.join("mirror").exists(), "{mark}");
+        server.abort();
+    }
+}
+
+/// A pull of the point a cut slot already holds lands nothing, so the slot never records
+/// a pull: a daemon stopped partway through must not leave the cut looking pulled.
+#[tokio::test]
+#[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+async fn a_pull_of_a_cut_slots_own_newest_never_records_a_pull() {
+    let test = TestDir::new();
+    let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], 1);
+    set_snapshots(&test, SLOT_FS, &[("w-1-1", 11)]);
+    set_property(&test, SLOT_FS, "ployz:cut", "on");
+    fs::write(
+        test.0.join("props/fail-command"),
+        "inherit ployz:pull tank/ployz-mirror/data",
+    )
+    .unwrap();
+
+    post(&socket, "/Volume.Copy.Pull", pull("w-1-1")).await;
+    assert_eq!(property(&test, SLOT, "ployz:pull"), None);
+    assert_eq!(
+        post(&socket, "/VolumeDriver.Get", json!({"Name": "data"})).await["Err"],
+        json!(""),
+        "Docker keeps its record for a cut Volume"
+    );
+    let reply = post(&socket, "/Storage.Demote", json!(null)).await;
+    assert_eq!(reply, json!({"Ok": []}));
+    assert!(test.0.join("mirror-fs").exists());
+    server.abort();
+}
+
 /// A receive that fails on its own deadline has reaped its child by the time it answers:
 /// a `zfs receive` still exiting holds the slot busy for the departure's destroy.
 #[tokio::test]
