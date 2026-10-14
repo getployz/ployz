@@ -74,6 +74,14 @@ export const aiObservability = (posthog: PostHogService, caller: Caller) => {
     onAfterToolCall: (ctx, { toolCallId, toolName, ok, result, duration }) => {
       const failed = !ok || refused(result);
       toolFailed ||= failed;
+      void Effect.runPromise(posthog.toolCall({
+        userId: caller.userId,
+        organizationId: caller.organization.id,
+        threadId: ctx.threadId,
+        tool: toolLabel(ctx, toolName),
+        durationMs: duration,
+        failed,
+      }));
       return capture("$ai_span", {
         $ai_trace_id: ctx.runId,
         $ai_session_id: ctx.threadId,

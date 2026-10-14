@@ -120,8 +120,12 @@ fn rename(root: &ArgMatches) -> Result<(), Error> {
         rename.project, renamed.name
     ));
     // The rename is committed; moving this device's links is a follow-up.
-    let links =
-        super::link::rename_project(&config, acting.as_ref(), &rename.project, &renamed.name);
+    let links = super::link::rename_project(
+        &config,
+        acting.as_ref().map(|organization| organization.id.as_str()),
+        &rename.project,
+        &renamed.name,
+    );
     match links {
         Ok(1) => crate::ui::stream("Moved 1 linked directory on this device to it."),
         Ok(moved @ 2..) => crate::ui::stream(format_args!(
