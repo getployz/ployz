@@ -98,6 +98,23 @@ describe("the mirror sync", () => {
     for (const name of names) expect(name).toMatch(/^w-1-1790000000000\d+$/);
   });
 
+  it("skips a sync of a Volume another sync is running, without waiting for it or taking a snapshot", async () => {
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let reached = () => {};
+    const snapshotting = new Promise<void>((resolve) => { reached = resolve; });
+    const observe = () => Effect.succeed(members);
+    const gated: CopyAsk = (asker, machine, expected, want) => want.kind === "snapshot"
+      ? Effect.promise(() => { reached(); return gate; }).pipe(Effect.andThen(ask(asker, machine, expected, want)))
+      : ask(asker, machine, expected, want);
+    const first = run(syncMirrors(organizationId, volume, observe, gated));
+    await snapshotting;
+    expect((await run(syncMirrors(organizationId, volume, observe, gated))).lines).toEqual(["skipped db, another sync of it is running"]);
+    release();
+    expect((await first).lines).toEqual(["db-web-2 is pulling w-1-5"]);
+    expect(asked).toEqual(["snapshot web-1", "mirror web-2"]);
+  });
+
   it("takes no snapshot while a lane is open, and names the lane", async () => {
     const release = await run(requestVolumeRun({ userId: null, organizationId }, { volumeId, environment, kind: "release", args: {} }));
     if (!release.ok) throw new Error(release.refusal.message);
