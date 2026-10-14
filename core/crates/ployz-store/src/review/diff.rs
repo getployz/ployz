@@ -13,7 +13,6 @@ use crate::{Actor, Trusted};
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct DiffQuery {
-    /// The Environment to review.
     #[serde(default)]
     pub environment: EnvironmentRef,
 }

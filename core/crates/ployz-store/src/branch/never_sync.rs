@@ -8,7 +8,6 @@ use super::*;
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct NeverSync {
-    /// The Environment.
     #[serde(default)]
     pub environment: EnvironmentRef,
     /// Its rows, by name in its own configuration (with `off`, among its marks), or
@@ -25,7 +24,6 @@ pub struct NeverSync {
 /// An Environment's rows marked Never sync, after a change.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct NeverSynced {
-    /// The Environment.
     pub environment: EnvironmentSummary,
     /// Every row it marks Never sync.
     pub never_synced: Vec<NamedRow>,

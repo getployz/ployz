@@ -45,7 +45,8 @@ pub struct Call<'s> {
 
 /// A [`Command`], or one of its payloads, and what it answers with.
 pub trait Tell: Serialize {
-    /// What it answers with.
+    /// The result `write` returns for it: a [`Written`] variant's payload, or
+    /// [`Written`] itself for a whole [`Command`].
     type Written: Serialize + DeserializeOwned;
 
     /// Run it in `at`'s transaction, once for a create's IDs.
@@ -369,7 +370,6 @@ pub enum BatchCommand {
 }
 
 impl BatchCommand {
-    /// Apply this command to the Batch's `environment`.
     fn apply(&self, environment: &EnvironmentRef, at: &mut Call<'_>) -> Result<Written, RpcError> {
         let unnamed = EnvironmentRef::default();
         let named = match self {
@@ -541,13 +541,11 @@ pub struct Batched {
 pub enum Written {
     /// A Project was created.
     Project(ProjectCreated),
-    /// A Project was renamed.
     ProjectRenamed(ProjectSummary),
     /// An Environment was created.
     Environment(EnvironmentCreated),
     /// A Service was created.
     Service(ServiceStaged),
-    /// A Service was renamed.
     ServiceRenamed(ServiceStaged),
     /// A Service was removed from Working State.
     ServiceRemoved(ServiceStaged),
@@ -555,19 +553,14 @@ pub enum Written {
     Volume(VolumeStaged),
     /// A Volume was removed from Working State.
     VolumeRemoved(VolumeStaged),
-    /// A Volume was renamed.
     VolumeRenamed(VolumeStaged),
     /// A Config was created, a file put or removed, or a mount changed.
     Config(ConfigStaged),
     /// A Config was deleted from Working State.
     ConfigRemoved(ConfigStaged),
-    /// A Config was renamed.
     ConfigRenamed(ConfigStaged),
-    /// Settings were edited.
     Edited(Edited),
-    /// Working State was published.
     Published(Published),
-    /// Changes were discarded.
     Discarded(Discarded),
     /// A Saved revision was restored or undone into the draft.
     HistoryStaged(HistoryStaged),
@@ -585,7 +578,6 @@ pub enum Written {
     BuildOrder(crate::BuildOrderView),
     /// Changes synced into another Environment.
     Synced(crate::Synced),
-    /// A Sync was undone.
     Undone(crate::Undone),
     /// A proposal was removed from its draft, or was gone already.
     Removed(crate::Removed),
@@ -601,7 +593,6 @@ pub enum Written {
     BranchSetup(crate::EnvironmentsView),
     /// Where a removal stands.
     Removal(crate::Removal),
-    /// A removal stopped.
     RemovalCancelled(crate::RemovalCancelled),
     /// A PR plan changed: the Project's PR plans after it.
     PrPlans(crate::PrPlansView),

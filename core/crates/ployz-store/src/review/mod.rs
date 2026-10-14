@@ -38,7 +38,6 @@ use crate::storage::Tx;
 /// An Environment's staged changes, grouped by node, and the version to act on them.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct DiffView {
-    /// The Environment reviewed.
     pub environment: EnvironmentSummary,
     /// Pass back to `publish` or `discard` to act on exactly this review.
     pub version: String,
@@ -46,7 +45,6 @@ pub struct DiffView {
     pub saved: Option<Revision>,
     /// Whether Saved State already holds this Working State.
     pub published: bool,
-    /// Every changed node.
     pub changes: Vec<NodeChange>,
     /// How many changes there are, counting each node and each Setting.
     pub total_count: usize,
@@ -117,11 +115,9 @@ pub struct NodeChange {
     /// The node's type and ID.
     #[serde(flatten)]
     pub node: ReviewNodeIdentity,
-    /// Its name.
     pub name: String,
     /// Its own Sync row, which joins it to what moved it.
     pub row: RowId,
-    /// Whether it is created, changed or removed.
     pub lifecycle: ReviewLifecycleKind,
     /// What `settings` compare against; `None` when nothing exists to compare.
     pub comparison: Option<ReviewComparisonRole>,

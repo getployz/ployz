@@ -113,6 +113,15 @@ fn failed(store: &Target, args: &[&str], exit: i32) -> Value {
     json.get("error").cloned().unwrap()
 }
 
+const UNREACHABLE_SERVER: [&str; 4] = ["--connect", "tcp://127.0.0.1:1", "--ssh-timeout", "1"];
+
+/// Run `ployz --json ARGS` where no Server answers, so its Deployment ends not executed: exit 3.
+fn no_server_answers(store: &Target, args: &[&str]) -> Value {
+    let (code, json) = ployz(Some(store), &[args, &UNREACHABLE_SERVER].concat());
+    assert_eq!(code, Some(3), "{args:?}: {json}");
+    json
+}
+
 /// Cloud's `/api/config` contract over one in-memory Store: the bearer
 /// `ployz_<org>` acts in Organization `<org>`; any other caller is refused 401.
 /// Its GitHub: installation 7 grants `acme/web`, with branches `main` and `dev`.
@@ -316,7 +325,6 @@ fn evidence() -> Trusted {
             }),
             ..DomainEvidence::default()
         },
-        // Its Cluster has one Server, which never answers.
         servers: Some(1),
         ..github()
     }
@@ -694,7 +702,7 @@ fn answer<T: serde::Serialize>(result: Result<T, RpcError>) -> (u16, Value) {
 }
 
 #[test]
-fn an_agent_creates_and_edits_an_image_service() {
+fn an_agent_creates_an_image_service_and_reads_its_settings() {
     for store in &targets() {
         let created = ok(store, &["project", "new", "shop"]);
         assert_eq!(created.pointer("/project/name"), Some(&json!("shop")));
@@ -765,21 +773,35 @@ fn an_agent_creates_and_edits_an_image_service() {
         let got = ok(store, &["get", "web.replicas"]);
         assert_eq!(got.pointer("/settings/0/value"), Some(&json!(1)));
         assert_eq!(got.get("domains"), None);
+    }
+}
 
-        let value = |path: &str| ok(store, &["get", path])["settings"][0]["value"].clone();
+fn shop_with_web(store: &Target) {
+    ok(store, &["project", "new", "shop"]);
+    ok(store, &["service", "add", "web", "--image", "nginx:1"]);
+}
+
+fn setting(store: &Target, path: &str) -> Value {
+    ok(store, &["get", path])["settings"][0]["value"].clone()
+}
+
+#[test]
+fn a_healthcheck_is_set_by_path_or_patch_and_refuses_control_characters() {
+    for store in &targets() {
+        shop_with_web(store);
         ok(store, &["set", "web.healthcheck=/up"]);
         assert_eq!(
-            value("web.healthcheck"),
+            setting(store, "web.healthcheck"),
             json!({ "path": "/up", "timeoutSeconds": 300 })
         );
         let patch = json!({"healthcheck":{"command":"pg_isready","timeoutSeconds":60}}).to_string();
         ok(store, &["set", "web", "--patch", &patch]);
         assert_eq!(
-            value("web.healthcheck"),
+            setting(store, "web.healthcheck"),
             json!({ "command": "pg_isready", "timeoutSeconds": 60 })
         );
         ok(store, &["unset", "web.healthcheck"]);
-        assert_eq!(value("web.healthcheck"), Value::Null);
+        assert_eq!(setting(store, "web.healthcheck"), Value::Null);
         let before_invalid = ok(store, &["diff"]);
         for path in [
             "/private\u{1}probe",
@@ -794,16 +816,31 @@ fn an_agent_creates_and_edits_an_image_service() {
             assert_eq!(ok(store, &["diff"]), before_invalid);
         }
         ok(store, &["set", "web.healthcheck=/café?escaped=%0A"]);
-        assert_eq!(value("web.healthcheck")["path"], "/café?escaped=%0A");
-        ok(store, &["unset", "web.healthcheck"]);
-        ok(store, &["set", "web.privateDns=front"]);
-        assert_eq!(value("web.privateDns"), json!("front"));
-        ok(store, &["unset", "web.privateDns"]);
-        assert_eq!(value("web.privateDns"), json!("web"));
+        assert_eq!(
+            setting(store, "web.healthcheck")["path"],
+            "/café?escaped=%0A"
+        );
+    }
+}
 
+#[test]
+fn unsetting_private_dns_restores_the_service_name() {
+    for store in &targets() {
+        shop_with_web(store);
+        ok(store, &["set", "web.privateDns=front"]);
+        assert_eq!(setting(store, "web.privateDns"), json!("front"));
+        ok(store, &["unset", "web.privateDns"]);
+        assert_eq!(setting(store, "web.privateDns"), json!("web"));
+    }
+}
+
+#[test]
+fn an_env_value_prints_on_one_escaped_line_for_humans() {
+    for store in &targets() {
+        shop_with_web(store);
         let text = "alpha\nweb.env.SPOOF = true\t\u{1b}[31mcafé";
         ok(store, &["set", &format!("web.env.DISPLAY={text}")]);
-        assert_eq!(value("web.env.DISPLAY"), text);
+        assert_eq!(setting(store, "web.env.DISPLAY"), text);
         let home = tempfile::tempdir().unwrap();
         let human = store
             .command(home.path())
@@ -816,8 +853,13 @@ fn an_agent_creates_and_edits_an_image_service() {
         assert!(!human.contains('\u{1b}'));
         assert!(!human.contains('\t'));
         assert!(human.contains(r#""alpha\nweb.env.SPOOF = true\t\u001b[31mcafé""#));
+    }
+}
 
-        // Unsetting the image disconnects the source: the Service is empty again.
+#[test]
+fn unsetting_the_image_leaves_an_empty_service() {
+    for store in &targets() {
+        shop_with_web(store);
         ok(store, &["unset", "web.image"]);
         let listed = ok(store, &["service", "ls"]);
         assert_eq!(listed.pointer("/services/0/source"), Some(&json!("empty")));
@@ -2213,7 +2255,7 @@ fn get_patch_get_round_trips_and_the_environment_shows_only_what_is_set() {
             "{\"env\":{\"PRIVATE\":\"fixture-private-value\"",
             &format!("{{\"cpuLimit\":{}0{}}}", "[".repeat(140), "]".repeat(140)),
         ] {
-            let (exit, output) = piped(store, &["set", "web", "--patch", "-"], patch);
+            let (exit, output) = ployz_with_stdin(store, &["set", "web", "--patch", "-"], patch);
             assert_eq!(exit, Some(2));
             assert_eq!(
                 serde_json::from_str::<Value>(&output).unwrap()["error"]["code"],
@@ -2555,20 +2597,8 @@ fn an_agent_plans_deploys_and_reads_the_deployment() {
             ))
         );
 
-        let (code, deployed) = ployz(
-            Some(store),
-            &[
-                "deploy",
-                "--connect",
-                "tcp://127.0.0.1:1",
-                "--ssh-timeout",
-                "1",
-            ],
-        );
+        let deployed = no_server_answers(store, &["deploy"]);
         assert_eq!(deployed["saved"], json!(1));
-        // Its runner (this CLI, or Cloud's that `deploy` follows) finds no Server
-        // answering, so it records that nothing ran.
-        assert_eq!(code, Some(3), "{deployed}");
         assert_eq!(deployed["status"], json!("failed"));
         assert_eq!(deployed["outcome"]["type"], json!("not_executed"));
         assert_eq!(deployed["nodes"][0]["outcome"], json!("not_attempted"));
@@ -2643,32 +2673,24 @@ fn an_upload_is_recorded_with_its_base_commit_and_kept_for_later_deploys() {
     let head = String::from_utf8(head.stdout).unwrap().trim().to_owned();
     std::fs::write(source.path().join("app.txt"), "not committed").unwrap();
     let dir = source.path().to_str().unwrap();
-    let unreachable = ["--connect", "tcp://127.0.0.1:1", "--ssh-timeout", "1"];
     for store in &targets() {
         ok(store, &["project", "new", "shop"]);
         ok(store, &["service", "add", "app"]);
-        let mut args = vec!["deploy", "--upload", dir];
-        args.extend(unreachable);
+        let args = ["deploy", "--upload", dir];
         match store {
             Target::Local(_) => {
-                // The CLI runs it; no Server answers, so nothing was built or ran.
-                let (code, deployed) = ployz(Some(store), &args);
-                assert_eq!(code, Some(3), "{deployed}");
+                let deployed = no_server_answers(store, &args);
                 let upload = &deployed["upload"];
                 assert_eq!(upload["base"], json!({"commit": head, "changed": true}));
                 let digest = upload["digest"].as_str().unwrap();
                 assert!(ployz_core::is_lower_hex(digest, 64), "{digest}");
                 // A later deploy without a new upload reuses the latest one's images.
-                let mut again = vec!["deploy"];
-                again.extend(unreachable);
-                let (code, redeployed) = ployz(Some(store), &again);
-                assert_eq!(code, Some(3), "{redeployed}");
+                let redeployed = no_server_answers(store, &["deploy"]);
                 assert_eq!(&redeployed["upload"], upload);
             }
             Target::Cloud { .. } => {
-                // Cloud takes the upload first and names who sent it; its runner reaches no Server.
-                let (code, deployed) = ployz(Some(store), &args);
-                assert_eq!(code, Some(3), "{deployed}");
+                // Cloud takes the upload first and names who sent it.
+                let deployed = no_server_answers(store, &args);
                 assert_eq!(
                     deployed["upload"]["base"],
                     json!({"commit": head, "changed": true})
@@ -2681,22 +2703,16 @@ fn an_upload_is_recorded_with_its_base_commit_and_kept_for_later_deploys() {
 
 #[test]
 fn an_agent_retries_a_failed_deployment_and_reads_its_logs() {
-    let unreachable = ["--connect", "tcp://127.0.0.1:1", "--ssh-timeout", "1"];
     for store in &targets() {
         ok(store, &["project", "new", "shop"]);
         ok(store, &["service", "add", "web", "--image", "nginx:1"]);
-        let (code, deployed) = ployz(Some(store), &[&["deploy"][..], &unreachable].concat());
-        assert_eq!(code, Some(3), "{deployed}");
+        let deployed = no_server_answers(store, &["deploy"]);
         let failed_id = deployed["id"].as_str().unwrap().to_owned();
         // Saved since: a retry still ships what the failed one froze.
         ok(store, &["set", "web.replicas=2"]);
         ok(store, &["publish"]);
 
-        let (code, retried) = ployz(
-            Some(store),
-            &[&["deployment", "retry", &failed_id][..], &unreachable].concat(),
-        );
-        assert_eq!(code, Some(3), "{retried}");
+        let retried = no_server_answers(store, &["deployment", "retry", &failed_id]);
         assert_eq!(
             (&retried["number"], &retried["saved"], &retried["status"]),
             (&json!(2), &json!(1), &json!("failed"))
@@ -2722,7 +2738,6 @@ fn an_agent_retries_a_failed_deployment_and_reads_its_logs() {
         assert_eq!(missing["code"], json!("not_found"));
         failed(store, &["deployment", "cancel", "not-an-id"], 2);
 
-        // Logs of a Deployment look in its Environment; this Cluster never answers.
         failed(store, &["logs", "--deployment", "not-an-id"], 2);
         let unknown = error(
             store,
@@ -2778,7 +2793,7 @@ fn up_ships_a_directory_without_git() {
     assert_eq!(code, Some(1), "{unsigned}");
     assert_eq!(unsigned["error"]["details"]["next"], json!("ployz login"));
 
-    let args = ["up", "--connect", "tcp://127.0.0.1:1", "--ssh-timeout", "1"];
+    let args = [&["up"][..], &UNREACHABLE_SERVER].concat();
     for store in &targets() {
         let home = tempfile::tempdir().unwrap();
         let (first, second) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
@@ -2786,7 +2801,6 @@ fn up_ships_a_directory_without_git() {
         std::fs::create_dir(&dir).unwrap();
         std::fs::write(dir.join("Dockerfile"), "FROM scratch\nEXPOSE 80\n").unwrap();
 
-        // No Server answers, so the Deployment doesn't apply.
         let (code, up) = in_dir(store, home.path(), &dir, &args, &[]);
         assert_eq!(code, Some(3), "{up}");
         assert_eq!(up["directory"], json!(dir.to_str().unwrap()));
@@ -3171,8 +3185,7 @@ fn labels(rows: &Value) -> Vec<String> {
     rows.as_array().unwrap().iter().map(label).collect()
 }
 
-/// Run `ployz --json ARGS` against `store` with `input` on stdin; returns (exit code, stdout).
-fn piped(store: &Target, args: &[&str], input: &str) -> (Option<i32>, String) {
+fn ployz_with_stdin(store: &Target, args: &[&str], input: &str) -> (Option<i32>, String) {
     let home = tempfile::tempdir().unwrap();
     let mut command = store.command(home.path());
     command
@@ -3211,7 +3224,8 @@ fn secrets_arrive_on_stdin_or_an_env_file_and_never_print() {
         );
         assert_eq!(set["staged"], json!(["web.env.DB_HOST", "api.env.URL"]));
         assert_eq!(set["next"], json!("ployz deploy"));
-        let (code, sealed) = piped(store, &["set", "web.env.TOKEN", "--secret"], "s3cr3t\n");
+        let (code, sealed) =
+            ployz_with_stdin(store, &["set", "web.env.TOKEN", "--secret"], "s3cr3t\n");
         assert_eq!(code, Some(0), "{sealed}");
         assert!(!sealed.contains("s3cr3t"));
         assert_eq!(
@@ -3321,16 +3335,7 @@ fn secrets_arrive_on_stdin_or_an_env_file_and_never_print() {
 
         let diff = ok(store, &["diff"]).to_string();
         assert!(!diff.contains("s3cr3t"), "{diff}");
-        let (_, deployed) = ployz(
-            Some(store),
-            &[
-                "deploy",
-                "--connect",
-                "tcp://127.0.0.1:1",
-                "--ssh-timeout",
-                "1",
-            ],
-        );
+        let deployed = no_server_answers(store, &["deploy"]);
         assert!(!deployed.to_string().contains("s3cr3t"), "{deployed}");
     }
 }
@@ -3342,7 +3347,7 @@ fn a_synced_secret_arrives_not_set_and_never_blocks_a_deploy() {
         ok(store, &["service", "add", "web", "--image", "web:1"]);
         ok(store, &["env", "branch", "fix-web", "--copy", "web"]);
         let secret = ["set", "web.env.API_KEY", "--secret"];
-        let (code, set) = piped(
+        let (code, set) = ployz_with_stdin(
             store,
             &[&secret[..], &["--env", "fix-web"]].concat(),
             "test-key\n",
@@ -3367,7 +3372,7 @@ fn a_synced_secret_arrives_not_set_and_never_blocks_a_deploy() {
         let (_, deployed) = ployz(Some(store), &["deploy"]);
         assert_eq!(deployed["number"], json!(1), "{deployed}");
         assert!(!deployed.to_string().contains("ployz set"), "{deployed}");
-        let (code, set) = piped(store, &secret, "prod-key\n");
+        let (code, set) = ployz_with_stdin(store, &secret, "prod-key\n");
         assert_eq!(code, Some(0), "{set}");
         let (_, deployed) = ployz(Some(store), &["deploy"]);
         assert_eq!(deployed["number"], json!(2), "{deployed}");
@@ -3375,10 +3380,10 @@ fn a_synced_secret_arrives_not_set_and_never_blocks_a_deploy() {
         // A sync can give the receiver its value, a line of stdin per --value.
         ok(store, &["env", "branch", "fix-key", "--copy", "web"]);
         let other = ["set", "web.env.OTHER_KEY", "--secret", "--env", "fix-key"];
-        let (code, set) = piped(store, &other, "branch-key\n");
+        let (code, set) = ployz_with_stdin(store, &other, "branch-key\n");
         assert_eq!(code, Some(0), "{set}");
         let to = ["env", "sync", "--to", "--env", "fix-key"];
-        let (code, short) = piped(
+        let (code, short) = ployz_with_stdin(
             store,
             &[
                 &to[..],
@@ -3388,7 +3393,7 @@ fn a_synced_secret_arrives_not_set_and_never_blocks_a_deploy() {
             "given-key\n",
         );
         assert_eq!(code, Some(2), "{short}");
-        let (code, synced) = piped(
+        let (code, synced) = ployz_with_stdin(
             store,
             &[&to[..], &["--value", "web.env.OTHER_KEY"]].concat(),
             "given-key\n",
@@ -3409,7 +3414,7 @@ fn a_private_image_credential_arrives_on_stdin_and_rotates_at_once() {
             &["service", "add", "web", "--image", "ghcr.io/acme/web:1"],
         );
         let path = "web.registryCredential";
-        let (code, first) = piped(store, &["set", path, "--secret"], "first-token\n");
+        let (code, first) = ployz_with_stdin(store, &["set", path, "--secret"], "first-token\n");
         assert_eq!(code, Some(0), "{first}");
         let first: Value = serde_json::from_str(&first).unwrap();
         assert_eq!(first["staged"], json!([path]));
@@ -3419,7 +3424,7 @@ fn a_private_image_credential_arrives_on_stdin_and_rotates_at_once() {
             json!({ "secret": true })
         );
         let body = r#"{"registryCredential":{"username":"octocat","secret":"second-token"}}"#;
-        let (code, rotated) = piped(store, &["set", "web", "--patch", "-"], body);
+        let (code, rotated) = ployz_with_stdin(store, &["set", "web", "--patch", "-"], body);
         assert_eq!(code, Some(0), "{rotated}");
         let rotated: Value = serde_json::from_str(&rotated).unwrap();
         assert_eq!(rotated["staged"], json!([]));
@@ -3457,9 +3462,7 @@ fn an_agent_uploads_a_directory_to_cloud_and_is_told_when_to_upload_again() {
     let source = tempfile::tempdir().unwrap();
     std::fs::write(source.path().join("Dockerfile"), "FROM scratch\n").unwrap();
     let dir = source.path().to_str().unwrap();
-    // Its only Server never answers, so nothing runs; the upload is Cloud's already.
-    let (code, uploaded) = ployz(Some(&cloud), &["deploy", "--upload", dir]);
-    assert_eq!(code, Some(3), "{uploaded}");
+    let uploaded = no_server_answers(&cloud, &["deploy", "--upload", dir]);
     assert_eq!(uploaded["upload"]["uploader"], json!("alice"));
     let id = uploaded["id"].as_str().unwrap();
     let archive = UPLOADS.lock().unwrap().get(id).cloned().unwrap();
@@ -3689,7 +3692,7 @@ fn a_sync_from_a_pr_environment_stages_in_production_now() {
     drop(local);
 
     ok(&store, &["set", "--env", "pr-5", "web.env.MODE=fast"]);
-    let (code, set) = piped(
+    let (code, set) = ployz_with_stdin(
         &store,
         &["set", "web.env.TOKEN", "--secret", "--env", "pr-5"],
         "pr-token\n",

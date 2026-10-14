@@ -51,7 +51,7 @@ pub enum Step {
     Write { write: Box<Write> },
     /// Sleep `ms`, answer every ask in `then`, then resume.
     Wait { ms: u32, then: Vec<Ask> },
-    /// The call's result.
+    /// The answer; the call is over, so don't resume.
     Done { result: ToolResult },
 }
 

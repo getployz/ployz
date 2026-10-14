@@ -22,7 +22,6 @@ use crate::volume::{Mount, VolumeSummary, summary as volume_summary};
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct VolumesQuery {
-    /// The Environment to list.
     #[serde(default)]
     pub environment: EnvironmentRef,
 }
@@ -39,7 +38,6 @@ pub struct VolumesView {
 /// One Volume, where it is mounted, and what the next Deploy does to it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct VolumeListing {
-    /// The Volume.
     #[serde(flatten)]
     pub volume: VolumeSummary,
     /// The Services mounting it in Working State.
@@ -52,23 +50,22 @@ pub struct VolumeListing {
     pub change: Option<ReviewLifecycleKind>,
 }
 
-/// One Volume by name.
+/// Read one Volume by name, including a deployed one Working State dropped; the
+/// Working State one wins a shared name.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct VolumeQuery {
-    /// The Environment it is in.
     #[serde(default)]
     pub environment: EnvironmentRef,
-    /// Its name.
     pub volume: VolumeName,
 }
 
-/// One Volume.
+/// A [`VolumeQuery`]'s answer: the Volume's listing and lineage, with its
+/// Environment at the revision read.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct VolumeView {
     /// The Environment, at the revision read.
     pub environment: EnvironmentSummary,
-    /// The Volume.
     #[serde(flatten)]
     pub volume: VolumeListing,
     /// The lineage its Environment copies share.
@@ -79,7 +76,6 @@ pub struct VolumeView {
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct RemovalsQuery {
-    /// The Environment.
     #[serde(default)]
     pub environment: EnvironmentRef,
     /// Ask about the Deploy that removes the Environment from the Servers, which

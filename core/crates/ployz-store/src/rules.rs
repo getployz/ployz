@@ -25,7 +25,6 @@ use crate::scope::EnvironmentSummary;
 /// What the rules read of one Environment.
 #[derive(Clone, Copy)]
 pub(crate) struct Facts<'a> {
-    /// Its Working State.
     pub(crate) working: &'a SavedEnvironmentIntent,
     /// The name of each node it uses live, by lineage.
     pub(crate) live: &'a BTreeMap<String, String>,
