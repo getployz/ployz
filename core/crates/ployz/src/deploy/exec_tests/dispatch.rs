@@ -577,7 +577,7 @@ async fn global_replacement_scopes_creation_to_the_old_container_and_retires_it_
         execute_with(&[operation], &client, &CancellationToken::new()).await,
         DeployOutcome::Success { .. }
     ));
-    let publications = client.publications();
+    let publications = [client.pins(), client.publications()].concat();
     let [pin, publication] = publications.as_slice() else {
         panic!("a pin of what served, then one pointer flip");
     };
@@ -650,13 +650,16 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
     let keys = Arc::new(Mutex::new(Vec::new()));
     let captured = keys.clone();
     let listed_target = target.clone();
+    let row = Arc::new(Mutex::new(None));
     let (client, server) =
         crate::connect::test_support::rpc_client(move |rpc: Request<OpaquePayload>| {
             let remote = remote.clone();
             let captured = captured.clone();
             let fake_target = listed_target.clone();
+            let row = row.clone();
             async move {
                 let mut remote = remote.lock().unwrap();
+                let mut row = row.lock().unwrap();
                 #[expect(
                     clippy::wildcard_enum_match_arm,
                     reason = "fixture exercises only replacement failure and retry primitives"
@@ -682,7 +685,15 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
                         )],
                     }),
                     RpcRequestBody::ReadServingPointer(_) => {
-                        RpcResponse::from(ServingPointerRead::default())
+                        RpcResponse::from(ServingPointerRead {
+                            all_routed: row.is_some(),
+                            pointer: row.clone(),
+                            acks: BTreeMap::new(),
+                        })
+                    }
+                    RpcRequestBody::PublishServingPointer(publish) => {
+                        *row = Some(publish.pointer);
+                        RpcResponse::from(ServingPointerPublication::Published)
                     }
                     RpcRequestBody::PullImage(_) => RpcResponse::from(ployz_core::ImagePulled {}),
                     RpcRequestBody::ListContainers(_) => RpcResponse::from(ContainerList {

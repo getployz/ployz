@@ -100,17 +100,22 @@ struct Scripted {
     runs_global: bool,
     pull_error: Option<RpcError>,
     pulled: Mutex<BTreeSet<MachineId>>,
+    /// No Machine acks this run's pointer of this Service.
     unrouted: Option<ServiceName>,
-    /// This Machine never acks any pointer.
+    /// This Machine never acks this run's pointers.
     unrouted_machine: Option<MachineId>,
     superseded: Option<ServiceName>,
     /// The row lands but the reply never arrives.
     lost_reply: bool,
     /// The write fails in transit and never lands.
     dropped_publish: bool,
+    /// No Machine routes a pin.
+    unrouted_pin: bool,
+    /// Another Deploy writes this row just before this run's pin.
+    rival: Option<ServingPointer>,
     pointers: Mutex<BTreeMap<QualifiedService, ServingPointer>>,
     publications: Mutex<Vec<PublishServingPointerRequest>>,
-    /// Each drained removal with the number of pointer writes before it.
+    /// Each drained removal with the number of flips before it.
     removed_after: Mutex<Vec<(ContainerId, usize)>>,
 }
 
@@ -130,14 +135,31 @@ impl Scripted {
             superseded: None,
             lost_reply: false,
             dropped_publish: false,
+            unrouted_pin: false,
+            rival: None,
             pointers: Mutex::new(BTreeMap::new()),
             publications: Mutex::new(Vec::new()),
             removed_after: Mutex::new(Vec::new()),
         }
     }
 
+    /// This run's flips, without the pins written before any start.
     fn publications(&self) -> Vec<PublishServingPointerRequest> {
-        self.publications.lock().unwrap().clone()
+        self.writes(true)
+    }
+
+    fn pins(&self) -> Vec<PublishServingPointerRequest> {
+        self.writes(false)
+    }
+
+    fn writes(&self, flips: bool) -> Vec<PublishServingPointerRequest> {
+        self.publications
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|write| (write.pointer.deploy == run_id()) == flips)
+            .cloned()
+            .collect()
     }
 
     fn answers(&self) -> Vec<AnswerWhen> {
@@ -146,7 +168,7 @@ impl Scripted {
 
     fn next(&self, call: Call) -> Reply {
         if let Call::Remove(_, container) = call {
-            let writes = self.publications.lock().unwrap().len();
+            let writes = self.publications().len();
             self.removed_after.lock().unwrap().push((container, writes));
         }
         let Step(expected, reply) = self
@@ -354,19 +376,28 @@ impl MachineOperations for Scripted {
         service: &QualifiedService,
     ) -> Result<ServingPointerRead, RpcError> {
         let pointer = self.pointers.lock().unwrap().get(service).cloned();
-        let routed = self.unrouted.as_ref() != Some(&service.name);
+        // Lagging ingress routes every row up to this run's, never this run's.
+        let ours = pointer
+            .as_ref()
+            .is_some_and(|pointer| pointer.deploy == run_id());
+        let routed = if ours {
+            self.unrouted.as_ref() != Some(&service.name)
+        } else {
+            !self.unrouted_pin
+        };
+        let lagging = ours.then_some(self.unrouted_machine).flatten();
         let acks = match &pointer {
             Some(pointer) if routed => self
                 .pulled
                 .lock()
                 .unwrap()
                 .iter()
-                .filter(|machine| self.unrouted_machine.as_ref() != Some(machine))
+                .filter(|machine| lagging.as_ref() != Some(*machine))
                 .map(|machine| (*machine, pointer.deploy.clone()))
                 .collect(),
             _ => BTreeMap::new(),
         };
-        let all_routed = pointer.is_some() && routed && self.unrouted_machine.is_none();
+        let all_routed = pointer.is_some() && routed && lagging.is_none();
         Ok(ServingPointerRead {
             pointer,
             acks,
@@ -379,16 +410,22 @@ impl MachineOperations for Scripted {
         request: PublishServingPointerRequest,
     ) -> Result<ServingPointerPublication, RpcError> {
         self.publications.lock().unwrap().push(request.clone());
-        if self.dropped_publish {
+        let flip = request.pointer.deploy == run_id();
+        if flip && self.dropped_publish {
             return Err(error("connection reset"));
         }
         let mut pointers = self.pointers.lock().unwrap();
+        if let Some(rival) = self.rival.clone().filter(|_| !flip) {
+            pointers.insert(request.service.clone(), rival);
+        }
         let current = pointers.get(&request.service).cloned();
-        if self.superseded.as_ref() == Some(&request.service.name) || current != request.read {
+        if flip && self.superseded.as_ref() == Some(&request.service.name)
+            || current != request.read
+        {
             return Ok(ServingPointerPublication::Superseded { current });
         }
         pointers.insert(request.service, request.pointer);
-        if self.lost_reply {
+        if flip && self.lost_reply {
             return Err(error("reply lost"));
         }
         Ok(ServingPointerPublication::Published)

@@ -596,13 +596,29 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
         })
         .collect();
     let mut schedule = Schedule::new(plan.groups().to_vec(), tasks);
+    let mut admitted = BTreeMap::new();
     for group in 0..plan.groups().len() {
         let Some(service) = schedule.group(group).publishing_service() else {
             continue;
         };
         let service = QualifiedService::new(plan.namespace.clone(), service.clone());
-        if let Err(error) = pin_reality(&client, run, &service).await {
-            return untouched(&progress, operations, schedule.first_task(group), error);
+        let first = schedule.first_task(group);
+        let machine_id = operation_at(operations, first).machine_id();
+        match pin_reality(&client, run, &service, machine_id, cancellation).await {
+            Ok(Pin::Admitted(row)) => {
+                admitted.insert(group, row);
+            }
+            Ok(Pin::Superseded) => {
+                progress.settle_unexecuted();
+                let outcome = outcome_from(
+                    operations,
+                    &BTreeSet::new(),
+                    Some(Stop::Superseded(service)),
+                );
+                progress.outcome(outcome.clone());
+                return outcome;
+            }
+            Err(error) => return untouched(&progress, operations, first, error),
         }
     }
 
@@ -639,11 +655,16 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                     let spec = schedule.group(group).clone();
                     let new = started.get(&group).cloned().unwrap_or_default();
                     let old = replaced.get(&group).cloned().unwrap_or_default();
+                    let current = admitted.get(&group).cloned().flatten();
                     Either::Right(async move {
                         let result = if cancellation.is_cancelled() {
                             Err(ExecutionError::Cancelled)
                         } else {
-                            publish_group(client, run, &plan.namespace, &spec, &new, &old).await
+                            let service = QualifiedService::new(
+                                plan.namespace.clone(),
+                                spec.service.clone().expect("only Service groups publish"),
+                            );
+                            publish_group(client, run, service, current, &spec, &new, &old).await
                         };
                         Done::Publish(group, result)
                     })
@@ -908,20 +929,30 @@ fn retain_unpointed(started: &mut Vec<(MachineId, ContainerId)>, pointer: Option
     started.retain(|(_, id)| !pointer.containers.contains(id) && !pointer.retiring.contains(id));
 }
 
-/// With no pointer row, names what the Service serves now before any start,
-/// so every later publish replaces a known row. Unlabelled Containers get a
-/// Deploy id of this run's making.
+/// The row each later publish of a Service replaces, or Superseded when
+/// another Deploy wrote one first.
+enum Pin {
+    Admitted(Option<ServingPointer>),
+    Superseded,
+}
+
+/// With no pointer row, names what the Service serves now, even nothing, and
+/// waits until every Machine routes that pin before any start, so no new copy
+/// serves before its flip. Unlabelled Containers get a Deploy id of this
+/// run's making.
 async fn pin_reality<C: MachineOperations>(
     client: &C,
     run: &DeploymentLogId,
     service: &QualifiedService,
-) -> Result<(), ExecutionError> {
+    machine_id: MachineId,
+    cancellation: &CancellationToken,
+) -> Result<Pin, ExecutionError> {
     let read = client
         .read_pointer(service)
         .await
         .map_err(|error| machine_error(MachineAction::ReadServingPointer, error))?;
     if read.pointer.is_some() {
-        return Ok(());
+        return Ok(Pin::Admitted(read.pointer));
     }
     let observed = client
         .service_containers(service)
@@ -929,16 +960,11 @@ async fn pin_reality<C: MachineOperations>(
         .map_err(|error| machine_error(MachineAction::ListContainers, error))?;
     let members = ployz_core::service_containers(observed);
     let serving = ployz_core::serving_containers(&members, |_| None);
-    let Some(newest) = serving
+    let deploy = serving
         .iter()
         .map(|serving| serving.as_observation())
         .max_by_key(|observation| (observation.created_at_unix_nanos, observation.container_id))
-    else {
-        return Ok(());
-    };
-    let deploy = newest
-        .labels
-        .get(ployz_core::DEPLOYMENT_ID_LABEL)
+        .and_then(|newest| newest.labels.get(ployz_core::DEPLOYMENT_ID_LABEL))
         .and_then(|label| DeploymentLogId::parse(label).ok())
         .unwrap_or_else(|| {
             DeploymentLogId::parse(format!("pin-{run}")).expect("a run id prefixed stays valid")
@@ -952,15 +978,40 @@ async fn pin_reality<C: MachineOperations>(
         previous: None,
         retiring: Vec::new(),
     };
-    client
+    let publication = client
         .publish_pointer(PublishServingPointerRequest {
             service: service.clone(),
             read: None,
-            pointer,
+            pointer: pointer.clone(),
         })
         .await
-        .map(|_| ())
-        .map_err(|error| machine_error(MachineAction::PublishServingPointer, error))
+        .map_err(|error| machine_error(MachineAction::PublishServingPointer, error))?;
+    if let ServingPointerPublication::Superseded { .. } = publication {
+        return Ok(Pin::Superseded);
+    }
+    let since = Instant::now();
+    loop {
+        let read = client
+            .read_pointer(service)
+            .await
+            .map_err(|error| machine_error(MachineAction::ReadServingPointer, error))?;
+        if read.pointer.as_ref() != Some(&pointer) {
+            return Ok(Pin::Superseded);
+        }
+        if read.all_routed {
+            return Ok(Pin::Admitted(Some(pointer)));
+        }
+        if cancellation.is_cancelled() {
+            return Err(ExecutionError::Cancelled);
+        }
+        if since.elapsed() >= ACK_WAIT {
+            return Err(ExecutionError::DependencyHealth {
+                dependency: service.clone(),
+                failure: DependencyHealthFailure::NotRouted { machine_id },
+            });
+        }
+        ack_tick(cancellation, Some(since)).await;
+    }
 }
 
 enum Done {
@@ -1014,30 +1065,25 @@ fn strength(policy: PullPolicy) -> u8 {
 
 /// Points the Service at the Containers it keeps plus the ones this Deploy
 /// started. Start-first copies this Deploy replaced retire behind `previous`;
-/// with no pointer to name as `previous`, nothing retires.
+/// with no pointer to name as `previous`, nothing retires. The CAS value is
+/// `current`, the row this Deploy admitted before any start, so a row another
+/// Deploy wrote since answers Superseded.
 async fn publish_group<C: MachineOperations>(
     client: &C,
     run: &DeploymentLogId,
-    namespace: &Namespace,
+    service: QualifiedService,
+    current: Option<ServingPointer>,
     group: &ServiceGroup,
     started: &[(MachineId, ContainerId)],
     replaced: &[ContainerId],
 ) -> Result<ServingPointerPublication, ExecutionError> {
-    let service = QualifiedService::new(
-        namespace.clone(),
-        group.service.clone().expect("only Service groups publish"),
-    );
-    let read = client
-        .read_pointer(&service)
-        .await
-        .map_err(|error| machine_error(MachineAction::ReadServingPointer, error))?;
     let mut containers = group.kept.clone();
     for (_, id) in started {
         if !containers.contains(id) {
             containers.push(*id);
         }
     }
-    let previous = read.pointer.as_ref().map(|current| current.deploy.clone());
+    let previous = current.as_ref().map(|current| current.deploy.clone());
     let retiring = if previous.is_some() {
         replaced
             .iter()
@@ -1056,7 +1102,7 @@ async fn publish_group<C: MachineOperations>(
     client
         .publish_pointer(PublishServingPointerRequest {
             service,
-            read: read.pointer,
+            read: current,
             pointer,
         })
         .await

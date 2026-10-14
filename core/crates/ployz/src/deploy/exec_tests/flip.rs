@@ -395,8 +395,8 @@ async fn a_labelled_first_deploy_pins_what_serves_and_retires_it_behind_previous
         "{outcome:?}"
     );
     let labelled = DeploymentLogId::parse("dep-x").unwrap();
-    let pointers: Vec<_> = client
-        .publications()
+    let pointers: Vec<_> = [client.pins(), client.publications()]
+        .concat()
         .into_iter()
         .map(|publication| publication.pointer)
         .collect();
@@ -497,8 +497,8 @@ async fn a_first_flip_keeps_the_replicas_the_plan_left_running() {
         "{outcome:?}"
     );
     let pin = DeploymentLogId::parse("pin-run").unwrap();
-    let pointers: Vec<_> = client
-        .publications()
+    let pointers: Vec<_> = [client.pins(), client.publications()]
+        .concat()
         .into_iter()
         .map(|publication| publication.pointer)
         .collect();
@@ -817,5 +817,97 @@ async fn a_hook_that_ran_stays_completed_when_its_service_fails_to_flip() {
         "{outcome:?}"
     );
     assert!(client.publications().is_empty());
+    client.assert_done();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_first_deploy_of_an_empty_service_starts_nothing_until_its_pin_is_routed() {
+    let machine = machine('1');
+    let plan = vec![run(&machine, spec(None, None, None), true)];
+    let client = Scripted {
+        observations: Some(Vec::new()),
+        unrouted_pin: true,
+        ..Scripted::new(Vec::new())
+    };
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert!(
+        matches!(
+            &outcome,
+            DeployOutcome::Failed {
+                completed,
+                failed: FailedOperation::Operation {
+                    error: ExecutionError::DependencyHealth {
+                        failure: DependencyHealthFailure::NotRouted { .. },
+                        ..
+                    },
+                    ..
+                },
+                ..
+            } if completed.is_empty()
+        ),
+        "{outcome:?}"
+    );
+    let pins: Vec<_> = client
+        .pins()
+        .into_iter()
+        .map(|pin| pin.pointer.containers)
+        .collect();
+    assert_eq!(pins, [Vec::<ContainerId>::new()]);
+    assert!(client.publications().is_empty());
+    client.assert_done();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_labelled_first_deploy_starts_nothing_until_its_pin_is_routed() {
+    let machine = machine('1');
+    let old = container('a');
+    let plan = vec![global_replacement(&machine, &old, UpdateOrder::StartFirst)];
+    let client = Scripted {
+        observations: Some(vec![serving(&machine, &old, Some("dep-x"))]),
+        unrouted_pin: true,
+        ..Scripted::new(Vec::new())
+    };
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Failed { ref completed, .. } if completed.is_empty()),
+        "{outcome:?}"
+    );
+    assert_eq!(client.pins().len(), 1);
+    assert!(client.publications().is_empty());
+    client.assert_done();
+}
+
+#[tokio::test]
+async fn a_pin_that_loses_to_another_deploy_stops_with_nothing_touched() {
+    let machine = machine('1');
+    let plan = vec![run(&machine, spec(None, None, None), true)];
+    let winner = ServingPointer {
+        deploy: DeploymentLogId::parse("winner").unwrap(),
+        containers: vec![container('e')],
+        previous: None,
+        retiring: Vec::new(),
+    };
+    let client = Scripted {
+        observations: Some(Vec::new()),
+        rival: Some(winner.clone()),
+        ..Scripted::new(Vec::new())
+    };
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert_eq!(
+        outcome,
+        DeployOutcome::Superseded {
+            completed: Vec::new(),
+            service: api(),
+            unexecuted: plan,
+        }
+    );
+    assert!(client.publications().is_empty());
+    assert_eq!(client.pointers.lock().unwrap().get(&api()), Some(&winner));
     client.assert_done();
 }
