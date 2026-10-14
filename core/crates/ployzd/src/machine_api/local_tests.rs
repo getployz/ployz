@@ -1379,33 +1379,88 @@ mod set_volume_copy {
     /// cannot set in-process without `unsafe`, so the child re-runs this binary with it.
     #[cfg(feature = "verify-faults")]
     mod fault_lines {
+        use std::os::unix::process::ExitStatusExt;
+
         use super::*;
 
-        const CHILD: &str =
-            "machine_api::local::tests::set_volume_copy::fault_lines::a_cut_under_a_switch_delay";
+        const SIGABRT: i32 = 6;
+
+        /// Runs the ignored test `child` of this module alone, under `fault`.
+        fn run(child: &str, fault: &str) -> (std::process::Output, String) {
+            let child = format!("machine_api::local::tests::set_volume_copy::fault_lines::{child}");
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &child, "--ignored", "--nocapture"])
+                .env("PLOYZD_FAULT", fault)
+                .env_remove(crate::diag::ENV)
+                .output()
+                .unwrap();
+            (output, child)
+        }
+
+        fn fault_lines(text: &str) -> Vec<&str> {
+            text.lines()
+                .filter(|line| line.contains("fault:"))
+                .collect()
+        }
 
         #[test]
         fn a_switch_fault_line_names_the_volume_and_the_want() {
-            let output = std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", CHILD, "--ignored", "--nocapture"])
-                .env("PLOYZD_FAULT", "delay-rpc:SetVolumeCopy.WriterToMirror:0")
-                .output()
-                .unwrap();
+            let (output, child) = run(
+                "a_cut_under_a_switch_delay",
+                "delay-rpc:SetVolumeCopy.WriterToMirror:0",
+            );
             let stdout = String::from_utf8_lossy(&output.stdout);
             assert!(
                 output.status.success() && stdout.contains("1 passed"),
-                "{CHILD}:\n{stdout}\n{}",
+                "{child}:\n{stdout}\n{}",
                 String::from_utf8_lossy(&output.stderr)
             );
             assert_eq!(
-                stdout
-                    .lines()
-                    .filter(|line| line.contains("fault:"))
-                    .collect::<Vec<_>>(),
+                fault_lines(&stdout),
                 vec![
                     r#" WARN fault: delaying switch verb verb="SetVolumeCopy.WriterToMirror" secs=0 volume=app_data target=f-1"#
                 ]
             );
+        }
+
+        /// The kill aborts the child, so its line is read from the child's stderr.
+        #[test]
+        fn a_promote_kill_line_names_the_volume_and_the_want() {
+            let (output, child) = run(
+                "a_promote_under_a_kill",
+                "kill-daemon:SetVolumeCopy.MirrorToWriter",
+            );
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert_eq!(
+                output.status.signal(),
+                Some(SIGABRT),
+                "{child} was not aborted:\n{}\n{stderr}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+            assert_eq!(
+                fault_lines(&stderr),
+                vec![
+                    r#" WARN fault: killing daemon inside the effect verb="SetVolumeCopy.MirrorToWriter" volume=app_data at=900 epoch=1"#
+                ]
+            );
+        }
+
+        #[tokio::test]
+        #[ignore = "a child of a_promote_kill_line_names_the_volume_and_the_want"]
+        async fn a_promote_under_a_kill() {
+            crate::diag::init(None).unwrap();
+            let (data_dir, _store, service, _fake) = fake_docker_service("ployzd-copy-kill").await;
+            let plugin = FakePlugin::default();
+            plugin.reply(INSPECT_ROUTE, slot(Some(snapshot("f-1", 900))));
+            plugin.reply(WRITER_ROUTE, writer_root(1, Some(snapshot("f-1", 900))));
+            let (socket, _server) = plugin.serve(&data_dir);
+            let service = service.with_volume_plugin(socket);
+            let promote = json!({"name":VOLUME,
+                "expect":{"kind":"mirror", "newest":"900", "slot":"1"},
+                "want":{"kind":"writer", "at":"900", "epoch":1, "start":null}});
+
+            let answered = set_copy(&service, promote).await;
+            panic!("the promote outlived its kill: {answered:?}");
         }
 
         #[tokio::test]
