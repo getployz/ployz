@@ -31,7 +31,7 @@ import { organizationMachine } from "#/modules/machines/tables";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { type Requirement, requirementFor, requirements, serverSupports } from "#/modules/runtime/daemon-compat";
 import { observeVolumeCopies, type PloyzSdkError, sdkFailureMessage } from "#/modules/runtime/ployz.server";
-import { alreadyOn, newestGuid, type PlanInput, type Planned, planFromCopies, type Refusal, type RefusalCode } from "#/modules/volume-run/plan";
+import { alreadyOn, newestGuid, type PlanInput, type Planned, planFromCopies, type Refusal, type RefusalCode, type ReleaseFrom } from "#/modules/volume-run/plan";
 import { isBehind, isCurrent, releaseLine } from "#/modules/server-upgrade/server-upgrade";
 import { channelRelease, organizationReleaseChannel } from "#/modules/server-upgrade/server-upgrade.server";
 import { volumeRun } from "#/modules/volume-run/tables";
@@ -268,22 +268,32 @@ const deletesCopy = (volume: ResolvedVolume, member: AnsweredMember): Destructiv
   path: `volumes/${member.machine.id}/${volume.dockerVolume}`,
 });
 
+type PlannedRelease = { readonly sources: readonly AnsweredMember[]; readonly forgets: readonly AnsweredMember[] };
+
+/**
+ * The slots a Release may resume from and forget. A Release from slots resumes where the stopped Container is and
+ * forgets the slots at its snapshot. A source the plan could not read may be any slot, so every slot may go; a read
+ * that found no single stopped Container resumes nowhere.
+ */
+function releasePlan(from: ReleaseFrom | null, source: Option.Option<MachineId | null>): PlannedRelease {
+  if (from?.kind !== "slots") return { sources: [], forgets: [] };
+  if (Option.isNone(source)) return { sources: from.slots, forgets: from.slots };
+  const kept = from.slots.find((member) => member.machine.id === source.value);
+  if (kept === undefined) return { sources: [], forgets: [] };
+  const at = newestGuid(kept.view.copy);
+  return { sources: [kept], forgets: from.slots.filter((member) => member !== kept && newestGuid(member.view.copy) === at) };
+}
+
 /**
  * The copies a phase deletes with no other copy left: a Mirror Remove with no writer, or a Release that undoes a cut
- * and discards the copy its target pulled. `source` is the slot that keeps the cut's stopped Container.
+ * and discards the copies its plan `forgets`.
  */
-function phaseEffects(volume: ResolvedVolume, phase: PlannedPhase, source: MachineId | null): DestructiveEffect[] {
+function phaseEffects(volume: ResolvedVolume, phase: PlannedPhase, forgets: readonly AnsweredMember[]): DestructiveEffect[] {
   switch (phase.kind) {
     case "delete_mirror":
       return phase.forget === null ? phase.destroy.map((member) => deletesCopy(volume, member)) : [];
-    case "release": {
-      const { from } = phase;
-      if (from.kind !== "slots") return [];
-      const kept = from.slots.find((member) => member.machine.id === source);
-      if (kept === undefined) return [];
-      const at = newestGuid(kept.view.copy);
-      return from.slots.filter((member) => member !== kept && newestGuid(member.view.copy) === at).map((member) => deletesCopy(volume, member));
-    }
+    case "release":
+      return forgets.map((member) => deletesCopy(volume, member));
     case "mirror":
     case "sync":
     case "move":
@@ -306,9 +316,14 @@ const VERBS = {
   deploy: null,
 } satisfies Record<VolumeRunKind, OperationVerb | null>;
 
+type PlanRequest = { readonly volumeId: string; readonly environment: EnvironmentRef } & VolumeRunInput;
+
+/** `input` is the request to insert: a Release carries the plan its approval showed. */
 export type VolumeRunPlan =
-  | { readonly ok: true; readonly volume: ResolvedVolume; readonly asked: OperationAsked | null }
+  | { readonly ok: true; readonly volume: ResolvedVolume; readonly asked: OperationAsked | null; readonly input: PlanRequest }
   | { readonly ok: false; readonly refusal: StoreRefusal };
+
+const unanswered: StoreRefusal = { code: "unavailable", message: "Your servers aren't answering. Try again once they are.", details: null };
 
 /**
  * A requested run planned against the copies the Servers hold now, so a refusal reaches the caller before any row
@@ -316,7 +331,7 @@ export type VolumeRunPlan =
  */
 export const planVolumeRun = Effect.fn("VolumeRun.plan")(function* (
   organizationId: string,
-  input: { readonly volumeId: string; readonly environment: EnvironmentRef } & VolumeRunInput,
+  input: PlanRequest,
 ) {
   const volume = yield* resolveVolume(organizationId, input.environment, input.volumeId);
   if (input.kind === "seed") {
@@ -328,9 +343,7 @@ export const planVolumeRun = Effect.fn("VolumeRun.plan")(function* (
     return { ok: false, refusal: yield* laneRefusal(lane, input.kind) } satisfies VolumeRunPlan;
   }
   const members = yield* observeVolumeMembers(organizationId, volume.dockerVolume, input).pipe(Effect.option);
-  if (Option.isNone(members)) {
-    return { ok: false, refusal: { code: "unavailable", message: "Your servers aren't answering. Try again once they are.", details: null } } satisfies VolumeRunPlan;
-  }
+  if (Option.isNone(members)) return { ok: false, refusal: unanswered } satisfies VolumeRunPlan;
   const planned = planFromCopies({ ...input, volumeName: volume.volumeName, orphan: false }, members.value);
   if (!planned.ok) {
     const { code, message } = planned.refusal;
@@ -339,16 +352,19 @@ export const planVolumeRun = Effect.fn("VolumeRun.plan")(function* (
   const verb = VERBS[input.kind];
   const { phase } = planned;
   if (phase.kind === "landed") {
-    const source = yield* keptOn(organizationId, volume.dockerVolume, phase.behind.map((member) => member.machine)).pipe(Effect.orElseSucceed(() => null));
-    if (source === null) {
+    const source = yield* keptOn(organizationId, volume.dockerVolume, phase.behind.map((member) => member.machine)).pipe(Effect.option);
+    if (Option.isNone(source)) return { ok: false, refusal: unanswered } satisfies VolumeRunPlan;
+    if (source.value === null) {
       const { code, message } = alreadyOn(volume.volumeName, phase.target.machine.name);
       return { ok: false, refusal: { code: refusalCode[code], message, details: null } } satisfies VolumeRunPlan;
     }
   }
-  const source = phase.kind === "release" && phase.from.kind === "slots"
-    ? yield* keptOn(organizationId, volume.dockerVolume, phase.from.slots.map((member) => member.machine)).pipe(Effect.orElseSucceed(() => null))
-    : null;
-  const effects = phaseEffects(volume, phase, source?.machine.id ?? null);
+  const from = phase.kind === "release" ? phase.from : null;
+  const source = from?.kind === "slots"
+    ? yield* keptOn(organizationId, volume.dockerVolume, from.slots.map((member) => member.machine)).pipe(Effect.map((kept) => kept?.machine.id ?? null), Effect.option)
+    : Option.some(null);
+  const release = releasePlan(from, source);
+  const effects = phaseEffects(volume, phase, release.forgets);
   const asked: OperationAsked | null = verb === null ? null : {
     subject: `volume:${input.volumeId}`,
     verb,
@@ -356,7 +372,9 @@ export const planVolumeRun = Effect.fn("VolumeRun.plan")(function* (
     preview: { volume: input.volumeId, copies: effects.map((effect) => effect.node) },
     effects,
   };
-  return { ok: true, volume, asked } satisfies VolumeRunPlan;
+  const ids = (members: readonly AnsweredMember[]) => members.map((member) => member.machine.id);
+  const pinned = input.kind === "release" ? { ...input, args: { plan: { sources: ids(release.sources), forgets: ids(release.forgets) } } } : input;
+  return { ok: true, volume, asked, input: pinned } satisfies VolumeRunPlan;
 });
 
 export type RequestOptions = {

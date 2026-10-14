@@ -125,7 +125,7 @@ export const runVolume = (
       const gated = yield* gate(caller, call, planned.asked);
       if (!gated.ok) return refused(gated.refusal);
     }
-    return (runId: string) => insertRun(actor(caller), input, planned.volume, runId)
+    return (runId: string) => insertRun(actor(caller), planned.input, planned.volume, runId)
       .pipe(Effect.map((inserted) => inserted.ok ? { ok: true, id: inserted.run.id } as const : inserted));
   }));
 

@@ -24,6 +24,7 @@ import { InngestClient } from "#/modules/inngest/client";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { requirements, ServerLacks } from "#/modules/runtime/daemon-compat";
 import { PloyzProviderError, type PloyzSdkError, type PloyzSession } from "#/modules/runtime/ployz.server";
+import { RuntimeConnectionFailure } from "#/modules/runtime/runtime-connection-errors";
 import { createCancelStoreDeployment, createRunStoreDeployment } from "#/modules/config-store/store-deployment.inngest";
 import type { InngestRunStatus } from "#/modules/inngest/client";
 import { createCloseFinishedVolumeRun, createCloseStaleVolumeRuns, createRunVolume } from "#/modules/volume-run/volume-run.inngest";
@@ -51,6 +52,7 @@ import { member } from "#/modules/volume-run/volume-run.test-fixture";
 import { type DeployLane, fenceDeployVolume, finishDeployVolumes, placeDeployVolumes } from "#/modules/volume-run/volume-run.deploy.server";
 import type { Caller } from "#/modules/identity/actor";
 import { runVolume } from "#/modules/operations/operations.server";
+import { decideApproval } from "#/modules/approvals/approvals.server";
 import type { Database } from "#/server/database.server";
 import { makeInngestEffectRunner, type runInngestEffect } from "#/server/run.server";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
@@ -141,6 +143,9 @@ describe("volume runs", () => {
   let beforeSet: Map<string, () => void | Promise<void>>;
   /** Runs while a writer start reads the kept Container's spec, between the commit and the send. */
   let beforeStart: (() => Promise<void>) | null;
+  /** Fails a runtime frame read, counted from 1 in `frames`, as a Server that never answers its first frame. */
+  let frameFault: ((read: number) => boolean) | null;
+  let frames: number;
   let sent: SetVolumeCopyRequest[];
   let held: Map<string, () => CopyRefusal | null>;
   let storeVolumes: Array<{ id: string; name: string; storage: { kind: "provisioned"; maximumBytes: number } | { kind: "docker" }; change?: "delete" }>;
@@ -286,7 +291,9 @@ describe("volume runs", () => {
   };
 
   const session = asTestDouble<PloyzSession>()({
-    watchFirstFrame: () => Effect.succeed({
+    watchFirstFrame: () => frameFault?.(++frames) === true
+      ? Effect.fail(new RuntimeConnectionFailure({ cause: new Error("Runtime watch timed out") }))
+      : Effect.succeed({
       machines: machines.map((fake) => ({
         machine: { id: fake.id ?? idOf(fake.name), name: fake.name, public_key: Array.from({ length: 32 }, (_, index) => index), runtime: { daemon_version: fake.lacks ?? "", capabilities: fake.capabilities } },
         storage: fake.stateless === true ? { state: "stateless" } : fake.pool ? { state: "pool", size_bytes: 1, used_bytes: 0, free_bytes: 1 } : { state: "ready" },
@@ -454,6 +461,8 @@ describe("volume runs", () => {
     failNext = new Map();
     beforeSet = new Map();
     beforeStart = null;
+    frameFault = null;
+    frames = 0;
     sent = [];
     held = new Map();
     guids = 0;
@@ -2357,6 +2366,81 @@ describe("volume runs", () => {
 
       expect(admitted).toMatchObject({ ok: false, refusal: { message: "data's writer is already on fsn-2" } });
       expect(await rows()).toEqual([]);
+    });
+
+    describe("a Release from slots", () => {
+      const slots = () => {
+        const at = newSnap("f-1");
+        machines = [
+          { name: "fsn-1", pool: true, copy: slotCopy(at) },
+          { name: "fsn-2", pool: true, copy: slotCopy(at) },
+        ];
+        containers = [{ machine: "fsn-1", id: "web-fsn-1", running: false }];
+      };
+      const release = (approvalId: string | null = null) =>
+        runEffect(runVolume(caller, { volumeId, environment, kind: "release", args: {} }, { key: null, approvalId }));
+      const approve = async (asked: Awaited<ReturnType<typeof release>>) => {
+        if (asked.ok || asked.refusal.code !== "approval_required") throw new Error(`expected an ask, got ${JSON.stringify(asked)}`);
+        // SAFETY: an approval_required refusal carries the digest and id of the approval it recorded.
+        const { approval, approval_id } = asked.refusal.details as { approval: string; approval_id: string };
+        await runEffect(decideApproval(caller, approval_id, { approve: { digest: approval } }));
+        return release(approval_id);
+      };
+      const admittedId = (admitted: Awaited<ReturnType<typeof release>>) => {
+        if (!admitted.ok) throw new Error(admitted.refusal.message);
+        return admitted.id;
+      };
+      const changed = (holder: string) =>
+        `data's copies changed since this release was planned; nothing was forgotten and data's Service stays stopped on ${holder}. Run ployz volume release data again`;
+
+      it("whose kept-source read times out asks for every slot it may forget, and the approved run forgets only the copy beside the source", async () => {
+        slots();
+        frameFault = (read) => read % 2 === 0;
+
+        const asked = await release();
+
+        expect(asked).toMatchObject({
+          ok: false,
+          refusal: { code: "approval_required", details: { effects: [{ node: `${idOf("fsn-1")}/${dockerVolume}` }, { node: `${idOf("fsn-2")}/${dockerVolume}` }] } },
+        });
+        expect(await rows()).toEqual([]);
+        expect(send).not.toHaveBeenCalled();
+
+        const id = admittedId(await approve(asked));
+        frameFault = null;
+        const output = await execute(id);
+
+        expect(output.result).toEqual({ runId: id, released: "fsn-1" });
+        expect(verbs).toEqual(["floor@fsn-1", "floor@fsn-2", "forget@fsn-2", "writer@fsn-1(kept)"]);
+      });
+
+      it("planned with two stopped Containers forgets nothing once one of them goes", async () => {
+        slots();
+        containers.push({ machine: "fsn-2", id: "web-fsn-2", running: false });
+        const id = admittedId(await release());
+        containers = containers.filter((container) => container.machine !== "fsn-2");
+
+        const output = await execute(id);
+
+        expect(verbs).toEqual(["floor@fsn-1", "floor@fsn-2"]);
+        expect(output.error).toBeDefined();
+        expect(machines.map((fake) => fake.copy?.kind)).toEqual(["slot", "slot"]);
+        expect(containers).toEqual([{ machine: "fsn-1", id: "web-fsn-1", running: false }]);
+        expect(await rows()).toMatchObject([{ state: "failed", message: changed("fsn-1") }]);
+      });
+
+      it("approved to keep fsn-1 fails rather than forget fsn-1 when fsn-2 holds the stopped Container instead", async () => {
+        slots();
+        const id = admittedId(await approve(await release()));
+        containers = [{ machine: "fsn-2", id: "web-fsn-2", running: false }];
+
+        const output = await execute(id);
+
+        expect(verbs).toEqual(["floor@fsn-1", "floor@fsn-2"]);
+        expect(output.error).toBeDefined();
+        expect(machines.map((fake) => fake.copy?.kind)).toEqual(["slot", "slot"]);
+        expect(await rows()).toMatchObject([{ state: "failed", message: changed("fsn-2") }]);
+      });
     });
   });
 
