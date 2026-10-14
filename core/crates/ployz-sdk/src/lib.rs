@@ -497,6 +497,23 @@ impl Client {
         to_json(&report)
     }
 
+    /// Start the Ingress Proxy on `machine` once its ingress role is on.
+    #[napi]
+    pub async fn start_ingress(&self, machine: String) -> Result<serde_json::Value> {
+        let check = self
+            .inner
+            .start_ingress(&machine)
+            .await
+            .map_err(rpc_to_napi)?;
+        to_json(&check)
+    }
+
+    /// Stop and remove the Ingress Proxy on `machine` once its ingress role is off.
+    #[napi]
+    pub async fn stop_ingress(&self, machine: String) -> Result<()> {
+        self.inner.stop_ingress(&machine).await.map_err(rpc_to_napi)
+    }
+
     /// Take `machine` out of the Cluster without resetting it.
     ///
     /// # Errors
