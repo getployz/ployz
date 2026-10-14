@@ -535,38 +535,95 @@ class Pool(unittest.TestCase):
         self.assertEqual([(row["id"], row["reason"]) for row in rows], [("bx_c", "retired bake")])
 
 # Docker as far as the image reset reaches it, backed by a JSON file of tags, image ids and build cache entries.
-FAKE_DOCKER = r"""#!/usr/bin/env python3
+FAKE_GUEST = r"""#!/usr/bin/env python3
 import json, os, sys
-path = os.environ["FAKE_DOCKER_STATE"]
+path = os.environ["FAKE_GUEST_STATE"]
 state = json.load(open(path))
 tags, ids, args = state["tags"], state["ids"], sys.argv[1:]
+containers, volumes = state.setdefault("containers", []), state.setdefault("volumes", [])
+networks, zpools = state.setdefault("networks", ["bridge", "host", "none"]), state.setdefault("zpools", [])
+links = state.setdefault("links", ["lo"])
 def drop(image):
     for tag in [t for t, i in tags.items() if i == image]:
         del tags[tag]
     ids.remove(image)
-if args[:2] == ["image", "ls"] and "-q" in args:
-    print("\n".join(ids))
-elif args[:2] == ["image", "ls"]:
-    print("\n".join([f"{t} {i}" for t, i in tags.items()] + [f"<none>:<none> {i}" for i in ids if i not in tags.values()]))
-elif args[0] == "tag":
-    assert args[1] in ids, f"no image {args[1]}"
-    tags[args[2]] = args[1]
-elif args[:2] == ["rmi", "-f"]:
-    for name in args[2:]:
-        if name in tags:
-            image = tags.pop(name)
-            if image not in tags.values():
-                ids.remove(image)
-        elif name in ids:
-            drop(name)
-        else:
-            sys.exit(f"no such image {name}")
-elif args[:3] == ["builder", "prune", "-af"]:
-    state["cache"] = 0
-else:
-    sys.exit(f"unexpected docker {args}")
-json.dump(state, open(path, "w"))
+def docker():
+    if args[:2] == ["image", "ls"] and "-q" in args:
+        print("\n".join(ids))
+    elif args[:2] == ["image", "ls"]:
+        print("\n".join([f"{t} {i}" for t, i in tags.items()] + [f"<none>:<none> {i}" for i in ids if i not in tags.values()]))
+    elif args[0] == "tag":
+        assert args[1] in ids, f"no image {args[1]}"
+        tags[args[2]] = args[1]
+    elif args[:2] == ["rmi", "-f"]:
+        for name in args[2:]:
+            if name in tags:
+                image = tags.pop(name)
+                if image not in tags.values():
+                    ids.remove(image)
+            elif name in ids:
+                drop(name)
+            else:
+                sys.exit(f"no such image {name}")
+    elif args[:3] == ["builder", "prune", "-af"]:
+        state["cache"] = 0
+    elif args[:2] == ["ps", "-aq"]:
+        hold = "--filter" in args
+        print("\n".join(c["id"] for c in containers if c["hold"] or not hold))
+    elif args[:3] == ["ps", "-a", "--format"]:
+        print("\n".join(f"{c['id']}|{c['image']}|exited|{'1' if c['hold'] else ''}" for c in containers))
+    elif args[:2] == ["rm", "-f"]:
+        containers[:] = [c for c in containers if c["id"] not in args[2:]]
+    elif args[:3] == ["volume", "ls", "-q"]:
+        print("\n".join(volumes))
+    elif args[:3] == ["volume", "ls", "--format"]:
+        print("\n".join(f"local {v}" for v in volumes))
+    elif args[:3] == ["volume", "rm", "-f"]:
+        volumes[:] = [v for v in volumes if v not in args[3:]]
+    elif args[:3] == ["network", "ls", "--format"]:
+        print("\n".join(n + (" bridge" if "Driver" in args[3] else "") for n in networks))
+    elif args[:2] == ["network", "rm"]:
+        networks[:] = [n for n in networks if n not in args[2:]]
+    elif args[:2] == ["info", "-f"]:
+        print(os.environ["FAKE_DOCKER_ROOT"])
+    elif args[:3] == ["system", "df", "--format"]:
+        print(f"Images {len(ids)}\nContainers {len(containers)}\nLocal Volumes {len(volumes)}\nBuild Cache {state['cache']}")
+    else:
+        sys.exit(f"unexpected docker {args}")
+def zpool():
+    if args == ["list", "-H", "-o", "name"]:
+        print("\n".join(zpools))
+    elif args[:2] == ["destroy", "-f"]:
+        zpools.remove(args[2])
+    else:
+        sys.exit(f"unexpected zpool {args}")
+def ip():
+    if args == ["-br", "link"]:
+        print("\n".join(f"{link} UP" for link in links))
+    elif args == ["-o", "link", "show"]:
+        print("\n".join(f"{n}: {link}: <UP> mtu 1500" for n, link in enumerate(links, 1)))
+    elif args[:2] == ["link", "del"]:
+        links.remove(args[2])
+    else:
+        sys.exit(f"unexpected ip {args}")
+def systemctl():
+    if args[0] == "list-units":
+        print("ployz.service loaded active running Ployz")
+    elif args[0] == "list-unit-files":
+        print("docker.service enabled enabled" if "--state=enabled" in args else "ployz.service enabled enabled")
+    elif args[0] not in ("list-jobs", "unmask", "stop", "start"):
+        sys.exit(f"unexpected systemctl {args}")
+command = os.path.basename(sys.argv[0])
+if command == "journalctl":
+    assert args == ["--rotate"], args
+elif command not in ("ss", "sleep"):
+    globals()[command]()
+# Scripts run reads side by side, as in comm's process substitution, so a write must never show a reader a torn file.
+if state != json.load(open(path)):
+    json.dump(state, open(path + ".next", "w"))
+    os.replace(path + ".next", path)
 """
+GUEST_COMMANDS = ["docker", "zpool", "ip", "systemctl", "ss", "sleep", "journalctl"]
 
 
 class Reset(unittest.TestCase):
@@ -594,6 +651,82 @@ class Reset(unittest.TestCase):
     def write(self, name, content=""):
         Path(self.root, name).parent.mkdir(parents=True, exist_ok=True)
         Path(self.root, name).write_text(content)
+
+    def fakes(self, state):
+        """An environment whose guest commands are fakes over the `state` file; returns it and the Docker root dir."""
+        bin_dir, docker_root = Path(self.root.parent, "fakes"), Path(self.root.parent, "docker-root")
+        bin_dir.mkdir()
+        Path(bin_dir, "guest").write_text(FAKE_GUEST)
+        Path(bin_dir, "guest").chmod(0o755)
+        for command in GUEST_COMMANDS:
+            Path(bin_dir, command).symlink_to("guest")
+        env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "FAKE_GUEST_STATE": str(state),
+               "FAKE_DOCKER_ROOT": str(docker_root)}
+        return env, docker_root
+
+    def guest(self, script, env, *args, flags="-ec"):
+        """Run a guest script as Provider does, with / as the scratch tree; returns its output."""
+        script = script.replace(boat.STASH, str(self.stash))
+        script = re.sub(r"(?<=[\s\"'(])/(?=(var|run|opt|usr|etc|root)\b)", f"{self.root}/", script)
+        script = script.replace("cd / ", f"cd {self.root} ").replace("cd /\n", f"cd {self.root}\n")
+        left = script.replace(str(self.root), "ROOT")
+        assert not re.search(r"cd /[\s;]|[\s\"'(]/(var|run|opt|usr|etc|root)\b", left), "a guest path escapes the scratch tree"
+        return subprocess.run(["bash", flags, script, "sh", *args], cwd=self.root, env=env, check=True,
+                              capture_output=True, text=True).stdout
+
+    def baked(self):
+        """A bake's guest: its install stashed, its images recorded, and its fingerprint; returns env, state and fingerprint."""
+        state = Path(self.root.parent, "guest.json")
+        holds = [dict(id=f"hold{n}", image=f"image{n}", hold=True) for n in range(len(boat.IMAGES) + 2)]
+        state.write_text(json.dumps({"tags": {"caddy:2": "sha256:aaa", "nginx:1.29-alpine": "sha256:bbb"},
+                                     "ids": ["sha256:aaa", "sha256:bbb"], "cache": 0, "containers": holds}))
+        self.write("root/.ssh/authorized_keys", "key\n")
+        Path(self.root, "run/systemd/system").mkdir(parents=True)
+        env, _ = self.fakes(state)
+        self.guest(boat.KEEP_INSTALL + boat.RECORD_IMAGES, env)
+        return env, state, self.fingerprint(env)
+
+    def fingerprint(self, env):
+        # Provider.fingerprint runs it without -e: a find over a path the guest lacks fails.
+        return boat.fingerprint(self.guest(boat.FINGERPRINT, env, flags="-c"))
+
+    def test_reset_returns_a_used_guest_to_the_bakes_files_docker_state_and_fingerprint(self):
+        env, state, bake = self.baked()
+        files, docker = self.tree(), json.loads(state.read_text())
+        self.write("usr/local/bin/ployz", "run ployz")
+        self.write("usr/bin/runc", "wrapper")
+        self.write("var/lib/ployz/run-state", "run")
+        self.write("run/systemd/system/ployz-mirror.service", "unit")
+        self.write("root/.ssh/authorized_keys", "other key\n")
+        self.write("srv/data", "run")
+        used = json.loads(state.read_text())
+        used["containers"].append(dict(id="app", image="nginx:latest", hold=False))
+        used["tags"].update({"caddy:2": "sha256:ccc", "nginx:latest": "sha256:ddd"})
+        used["ids"] += ["sha256:ccc", "sha256:ddd"]
+        used.update(cache=3, volumes=["ployz-data"], networks=["bridge", "host", "none", "ployz"], zpools=["ployz-pool"],
+                    links=["lo", "ployz0"])
+        state.write_text(json.dumps(used))
+        Path(env["FAKE_DOCKER_ROOT"], "ployz-observe").mkdir(parents=True)
+        self.assertTrue(boat.differences(bake, self.fingerprint(env)))
+        self.guest(boat.RESET, env, str(self.stash), "key")
+        self.assertEqual(self.tree(), files)
+        self.assertEqual(json.loads(state.read_text()), docker)
+        self.assertFalse(Path(env["FAKE_DOCKER_ROOT"]).exists() and any(Path(env["FAKE_DOCKER_ROOT"]).iterdir()))
+        self.assertEqual(boat.differences(bake, self.fingerprint(env)), [])
+
+    def test_the_fingerprint_tells_a_moved_tag_a_build_cache_and_a_replaced_runc_from_the_bake(self):
+        env, state, bake = self.baked()
+        clean = state.read_text()
+        for section, change in [("images", lambda guest: guest["tags"].update({"caddy:2": "sha256:bbb"})),
+                                ("build-cache", lambda guest: guest.update(cache=2)),
+                                ("replaced", lambda guest: self.write("usr/bin/runc", "wrapper"))]:
+            with self.subTest(section=section):
+                guest = json.loads(clean)
+                change(guest)
+                state.write_text(json.dumps(guest))
+                found = boat.differences(bake, self.fingerprint(env))
+                self.write("usr/bin/runc", "bake runc")
+                self.assertEqual([line.split(" ")[0] for line in found], [section])
 
     def test_restore_puts_back_the_bakes_runc_and_install_and_drops_a_wrapper_and_its_original(self):
         self.sh(boat.KEEP_INSTALL)
@@ -628,14 +761,11 @@ class Reset(unittest.TestCase):
         self.assertEqual(self.tree(), expected)
 
     def test_image_reset_puts_back_moved_tags_drops_new_images_and_tags_and_empties_the_build_cache(self):
-        bin_dir, state = Path(self.root.parent, "bin"), Path(self.root.parent, "docker.json")
-        bin_dir.mkdir()
-        Path(bin_dir, "docker").write_text(FAKE_DOCKER)
-        Path(bin_dir, "docker").chmod(0o755)
+        state = Path(self.root.parent, "docker.json")
         bake = {"tags": {"ployz/agent:v1": "sha256:aaa", "busybox:latest": "sha256:bbb"},
                 "ids": ["sha256:aaa", "sha256:bbb", "sha256:ccc"], "cache": 0}
         state.write_text(json.dumps(bake))
-        env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "FAKE_DOCKER_STATE": str(state)}
+        env, _ = self.fakes(state)
         run = lambda script: subprocess.run(["bash", "-ec", script, "sh", str(self.stash)], env=env, check=True,
                                             capture_output=True, text=True)
         run(f"{boat.IMAGE_TAGS} > \"$1.tags\"")
@@ -645,7 +775,7 @@ class Reset(unittest.TestCase):
                                      "ids": ["sha256:aaa", "sha256:bbb", "sha256:ccc", "sha256:ddd", "sha256:eee"],
                                      "cache": 7}))
         run("stash=$1\n" + boat.IMAGE_RESET)
-        self.assertEqual(json.loads(state.read_text()), bake)
+        self.assertEqual({name: json.loads(state.read_text())[name] for name in bake}, bake)
 
     def test_journal_reset_drops_the_runs_archives_and_other_machines_and_keeps_the_open_journal(self):
         bin_dir = Path(self.root.parent, "bin")
