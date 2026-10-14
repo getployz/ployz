@@ -8,7 +8,7 @@ import {
   listGithubInstallationsForOrganization,
   upsertGithubInstallation,
 } from "#/modules/github/github.repository";
-import type { ConnectNotice } from "#/modules/github/github-connect";
+import { MAX_OFFERED_INSTALLATIONS, type ConnectNotice } from "#/modules/github/github-connect";
 import { GithubApi } from "#/modules/github/github-observation.api";
 import { getGithubAppInstallUrl } from "#/modules/github/github.server";
 import { githubIdSchema } from "#/modules/github/github-ingestion.contracts";
@@ -172,7 +172,8 @@ export const completeGithubConnect = Effect.fn("GithubConnect.complete")(functio
     Effect.orElseSucceed(() => null),
   );
   if (owned === null) return land({ connect: "failed" });
-  const candidates = unlinked.filter((_, index) => owned[index]);
+  // Past the bound, the next connect offers the rest: linked accounts drop out of `unlinked`.
+  const candidates = unlinked.filter((_, index) => owned[index]).slice(0, MAX_OFFERED_INSTALLATIONS);
   if (candidates.length === 0) return land({ connect: unlinked.length > 0 ? "not-admin" : "none" });
   for (const installation of candidates) {
     yield* upsertGithubInstallation({

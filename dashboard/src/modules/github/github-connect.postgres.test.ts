@@ -1,6 +1,8 @@
 import { it } from "@effect/vitest";
 import { Effect, Layer } from "effect";
 import { expect } from "vitest";
+import { MAX_OFFERED_INSTALLATIONS } from "./github-connect";
+import { acceptGithubOfferInput } from "./github-connect.functions";
 import { acceptGithubOffer, completeGithubConnect, listGithubOffer, startGithubConnect } from "./github-connect.server";
 import { listGithubInstallationsForOrganization } from "./github.repository";
 import { member, user } from "#/modules/identity/tables";
@@ -11,7 +13,9 @@ import { seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
 
 const SHOP = "00000000-0000-4000-8000-00000000c001";
 const LAB = "00000000-0000-4000-8000-00000000c002";
-const MANY = Array.from({ length: 120 }, (_, index) => ({ id: 1000 + index, login: `org-${index}`, type: "Organization" as const }));
+// Past the offer bound, with ids as long as the installation column stores, so the offer is as large as it gets.
+const MANY = Array.from({ length: MAX_OFFERED_INSTALLATIONS + 20 }, (_, index) => ({ id: 2_147_483_647 - index, login: `org-${index}`, type: "Organization" as const }));
+const OFFERED = MANY.slice(0, MAX_OFFERED_INSTALLATIONS).map((installation) => installation.id);
 
 const users = fakeGithubUsers({
   "ada-code": {
@@ -121,8 +125,11 @@ it.live("links only installations the person who started the connect owns on Git
     expect(manyLanding.length).toBeLessThan(8192);
     expect(users.calls).toContain("/user/installations?per_page=100&page=2");
     const manyOffer = landing(manyLanding)["offer"] ?? "";
-    expect((yield* run(listGithubOffer(bob, "lab", manyOffer))).map((account) => account.installationId)).toEqual(MANY.map((installation) => installation.id));
-    const firstHundred = MANY.slice(0, 100).map((installation) => installation.id);
-    expect(yield* run(acceptGithubOffer(bob, { organizationSlug: "lab", offer: manyOffer, installationIds: firstHundred }))).toEqual({ linked: 100 });
-    expect(yield* linked(LAB)).toEqual([7, 9, ...firstHundred]);
+    expect(users.calls).toContain("/user/installations?per_page=100&page=4");
+    expect((yield* run(listGithubOffer(bob, "lab", manyOffer))).map((account) => account.installationId)).toEqual(OFFERED);
+    const everyOffered = yield* Effect.promise(async () =>
+      acceptGithubOfferInput["~standard"].validate({ organizationSlug: "lab", offer: manyOffer, installationIds: OFFERED }));
+    if (everyOffered.issues !== undefined) throw new Error(`accept rejected the full offer: ${everyOffered.issues[0]?.message}`);
+    expect(yield* run(acceptGithubOffer(bob, everyOffered.value))).toEqual({ linked: MAX_OFFERED_INSTALLATIONS });
+    expect(yield* linked(LAB)).toEqual([7, 9, ...[...OFFERED].sort((a, b) => a - b)]);
   }), 60_000);
