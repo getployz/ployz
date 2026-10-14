@@ -641,6 +641,40 @@ async fn a_publish_with_no_reply_keeps_its_copies_while_the_row_reads_unchanged(
 }
 
 #[tokio::test]
+async fn a_dropped_publish_is_not_landed_by_an_earlier_row_of_the_same_deploy() {
+    let machine = machine('1');
+    let earlier = ServingPointer {
+        deploy: run_id(),
+        containers: vec![container('a')],
+        previous: None,
+        retiring: Vec::new(),
+    };
+    let plan = vec![run(&machine, spec(None, None, None), true)];
+    let client = Scripted {
+        dropped_publish: true,
+        pointers: Mutex::new(BTreeMap::from([(api(), earlier.clone())])),
+        ..Scripted::new(vec![created(
+            Call::Run(machine, ContainerKind::ServiceContainer),
+            &container('b'),
+        )])
+    };
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Failed { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(client.publications().len(), 1);
+    assert_eq!(
+        client.pointers.lock().unwrap().get(&api()),
+        Some(&earlier),
+        "the earlier attempt's row stands and is not this write"
+    );
+    client.assert_done();
+}
+
+#[tokio::test]
 async fn a_first_flip_keeps_the_replicas_the_plan_left_running() {
     let machine = machine('1');
     let kept = container('a');

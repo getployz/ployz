@@ -665,6 +665,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                     let spec = schedule.group(group).clone();
                     let new = started.get(&group).cloned().unwrap_or_default();
                     let current = rows.admitted.lock().await.get(&group).cloned();
+                    let pointer = proposed(current.as_ref(), run, &spec, &new);
                     Either::Right(async move {
                         let result = if cancellation.is_cancelled() {
                             Err(ExecutionError::Cancelled)
@@ -673,9 +674,9 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                                 plan.namespace.clone(),
                                 spec.service.clone().expect("only Service groups publish"),
                             );
-                            publish_group(client, run, service, current, &spec, &new).await
+                            publish_group(client, service, current, &pointer).await
                         };
-                        Done::Publish(group, result)
+                        Done::Publish(group, pointer, result)
                     })
                 }
             };
@@ -750,7 +751,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                     }
                 }
             }
-            Some(Done::Publish(group, result)) => {
+            Some(Done::Publish(group, pointer, result)) => {
                 let service = QualifiedService::new(
                     plan.namespace.clone(),
                     schedule
@@ -762,7 +763,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                 let new = started.entry(group).or_default();
                 let result = match result {
                     Ok(publication) => Ok(publication),
-                    Err(_) if publish_landed(client, &service, run).await => {
+                    Err(_) if publish_landed(client, &service, &pointer).await => {
                         Ok(ServingPointerPublication::Published)
                     }
                     Err(error) => {
@@ -922,18 +923,19 @@ async fn ack_tick(cancellation: &CancellationToken, since: Option<Instant>) {
     }
 }
 
-/// Whether a publish whose reply was lost wrote this run's row. Any other
-/// answer leaves the write pending, so the group keeps every started copy a
-/// late commit may still point at.
+/// Whether a publish whose reply was lost wrote `pointer`. A row from an
+/// earlier attempt of the same Deploy carries its id but not this membership,
+/// so only the whole row counts. Any other answer leaves the write pending, and
+/// the group keeps every started copy a late commit may still point at.
 async fn publish_landed<C: MachineOperations>(
     client: &C,
     service: &QualifiedService,
-    run: &DeploymentLogId,
+    pointer: &ServingPointer,
 ) -> bool {
     client
         .read_pointer(service)
         .await
-        .is_ok_and(|read| read.pointer.is_some_and(|pointer| &pointer.deploy == run))
+        .is_ok_and(|read| read.pointer.as_ref() == Some(pointer))
 }
 
 /// Keeps only the started Containers `pointer` does not name, so cleanup never
@@ -1049,7 +1051,11 @@ async fn live_pin<C: MachineOperations>(
 
 enum Done {
     Task(usize, Result<Option<ContainerId>, OperationFailure>),
-    Publish(usize, Result<ServingPointerPublication, ExecutionError>),
+    Publish(
+        usize,
+        ServingPointer,
+        Result<ServingPointerPublication, ExecutionError>,
+    ),
 }
 
 async fn pull_images<C: MachineOperations>(
@@ -1096,26 +1102,33 @@ fn strength(policy: PullPolicy) -> u8 {
     }
 }
 
-async fn publish_group<C: MachineOperations>(
-    client: &C,
+/// The row this run publishes for `group`: the kept copies plus every started one.
+fn proposed(
+    current: Option<&ServingPointer>,
     run: &DeploymentLogId,
-    service: QualifiedService,
-    current: Option<ServingPointer>,
     group: &ServiceGroup,
     started: &[(MachineId, ContainerId)],
-) -> Result<ServingPointerPublication, ExecutionError> {
+) -> ServingPointer {
     let mut containers = group.kept.clone();
     for (_, id) in started {
         if !containers.contains(id) {
             containers.push(*id);
         }
     }
-    let pointer = succession(current.as_ref(), run.clone(), containers);
+    succession(current, run.clone(), containers)
+}
+
+async fn publish_group<C: MachineOperations>(
+    client: &C,
+    service: QualifiedService,
+    current: Option<ServingPointer>,
+    pointer: &ServingPointer,
+) -> Result<ServingPointerPublication, ExecutionError> {
     client
         .publish_pointer(PublishServingPointerRequest {
             service,
             read: current,
-            pointer,
+            pointer: pointer.clone(),
         })
         .await
         .map_err(|error| machine_error(MachineAction::PublishServingPointer, error))
