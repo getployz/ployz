@@ -1,4 +1,5 @@
 import "@tanstack/react-start/server-only";
+import { isDeepStrictEqual } from "node:util";
 import type { CopyObservation, EnvironmentRef, MachineId, NodeOutcome } from "@ployz/sdk";
 import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { Effect } from "effect";
@@ -20,8 +21,8 @@ import {
 } from "#/modules/volume-run/volume-run.server";
 import { Database } from "#/server/database.server";
 
-/** A run of the Deploy's own, the one it started for `step`. */
-export type PlacementWait = { readonly runId: string; readonly volumeId: string; readonly step: PlacementStep };
+/** A run of the Deploy's own, the one it started for `step`. `fenced`: it took over a lane, so it fences before it plans. */
+export type PlacementWait = { readonly runId: string; readonly volumeId: string; readonly step: PlacementStep; readonly fenced?: boolean };
 
 export type PlacementAdvance =
   | { readonly kind: "wait"; readonly wait: PlacementWait }
@@ -89,6 +90,14 @@ const remainingAfterFailure = Effect.fn("VolumePlacement.remainingAfterFailure")
   // A change the Servers no longer show landed despite the failure, so the step's mirrors are what they hold, as on success.
   const landed = !placementChanges(volume, members, placement).some((change) => sameChange(changeKey(change), step.change));
   return { remaining: dropChange(volume, members, placement, step.change), mirrors: landed ? step.mirrors : null };
+});
+
+const failStep = Effect.fn("VolumePlacement.failStep")(function* (
+  organizationId: string, deploymentId: string, environment: EnvironmentRef, volumes: readonly PlacementVolume[], waited: PlacementWait,
+  message: string, inspect: MemberInspector,
+) {
+  const { remaining, mirrors } = yield* remainingAfterFailure(organizationId, deploymentId, environment, volumes, waited.volumeId, waited.step, inspect);
+  return yield* fail(organizationId, deploymentId, waited.volumeId, remaining, message, mirrors);
 });
 
 /**
@@ -167,7 +176,8 @@ const unseededVolume = Effect.fn("VolumePlacement.unseededVolume")(function* (
  * Volumes stay staged. A run that fails fails the Deploy: its change is dropped, and the changes it never reached, on that
  * Volume and the others, stay staged. A failed restore is dropped once the Store records the failure. A warm run already
  * on the Volume yields to the Deploy's; a run that keeps the Volume, one past its return or another Deploy's, fails the
- * Deploy, with that change and every one it never reached staged for the next Deploy.
+ * Deploy, with that change and every one it never reached staged for the next Deploy. A fenced run that fails is planned
+ * again from the copies its fence left, failing the Deploy only if that plans the same run; a replanned run never replans.
  */
 export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
   organizationId: string, deploymentId: string, waited: PlacementWait | null, inspect: MemberInspector = inspectVolumeCopies,
@@ -185,6 +195,7 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
     yield* release(organizationId, deploymentId, true);
     return unseeded;
   }
+  let replanning: { readonly waited: PlacementWait; readonly message: string } | null = null;
   if (waited !== null) {
     const run = yield* getVolumeRun(organizationId, waited.runId);
     if (isActive(run.state)) return { kind: "wait", wait: waited } satisfies PlacementAdvance;
@@ -196,11 +207,12 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
         yield* release(organizationId, deploymentId, true);
         return { kind: "failed", message } satisfies PlacementAdvance;
       }
-      const { remaining, mirrors } = yield* remainingAfterFailure(organizationId, deploymentId, environment, volumes, waited.volumeId, waited.step, inspect);
-      return yield* fail(organizationId, deploymentId, waited.volumeId, remaining, message, mirrors);
+      if (run.state === "failed" && waited.fenced === true) replanning = { waited, message };
+      else return yield* failStep(organizationId, deploymentId, environment, volumes, waited, message, inspect);
+    } else {
+      // The run this Deploy started has ended, so its mirrors are what the Servers hold, whoever claims the row now.
+      yield* settle(waited.volumeId, { mirrors: [...waited.step.mirrors] });
     }
-    // The run this Deploy started has ended, so its mirrors are what the Servers hold, whoever claims the row now.
-    yield* settle(waited.volumeId, { mirrors: [...waited.step.mirrors] });
   }
   const { drizzle } = yield* Database;
   const stamped = yield* drizzle.select().from(volumePlacement)
@@ -248,10 +260,15 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
       yield* settleClaimed(row.volumeId, deploymentId, { mirrors: [...(row.staged?.mirrors ?? [])], staged: null, deploymentId: null });
       continue;
     }
+    if (replanning?.waited.volumeId === row.volumeId && isDeepStrictEqual(step.run, replanning.waited.step.run)) {
+      return yield* failStep(organizationId, deploymentId, environment, volumes, replanning.waited, replanning.message, inspect);
+    }
     // Touching the row without changing it confirms the claim right before the run starts.
     if (!(yield* settleClaimed(row.volumeId, deploymentId, {}))) return { kind: "stopped" } satisfies PlacementAdvance;
     const requested = yield* requestVolumeRun(CLOUD(organizationId), { volumeId: runsOn, environment, ...step.run }, { end: "yielded" });
-    if (requested.ok) return { kind: "wait", wait: { runId: requested.run.id, volumeId: row.volumeId, step } } satisfies PlacementAdvance;
+    if (requested.ok) {
+      return { kind: "wait", wait: { runId: requested.run.id, volumeId: row.volumeId, step, fenced: requested.took && replanning === null } } satisfies PlacementAdvance;
+    }
     if (requested.busy !== null) {
       // A run that keeps the Volume, one past its return or another Deploy's, fails the Deploy here; the changes it never
       // reached stay staged.

@@ -482,7 +482,7 @@ export const insertRun = Effect.fn("VolumeRun.insert")(function* (
 ) {
   const database = yield* Database;
   const taken = yield* database.transaction(takeLane(caller, { input, volume, id }, end)).pipe(Effect.catchTag("LaneRefused", refused));
-  return "ok" in taken ? taken : { ok: true, run: taken.run } as const;
+  return "ok" in taken ? taken : { ok: true, run: taken.run, took: taken.ended !== null } as const;
 });
 
 /** A Deploy's own lane, running under `inngestRunId` from the start; a warm lane found there yields to it. */
