@@ -73,7 +73,8 @@ the server. What already runs there stays until you drain it. Your next deploy a
 To move everything off now, click **Drain** and confirm. The dialog lists what runs on the server and
 badges what won't move: **Skipped** when no project owns it, which draining leaves where it is,
 **Stays** when the last drain left it because its data is on the server, and **Stops** for a global
-service that runs on no other server, which the drain removes. Draining turns services off for the server and stops its global services there. Then it moves
+service that runs on no other server, which the drain removes.
+Draining turns services off for the server and stops its global services there. Then it moves
 each replicated service's containers to your other servers one at a time. Each new container runs
 the same image, and each one starts and is healthy before the old container is removed.
 Pre-deploy commands don't run again, and nothing is deployed. The drain starts once you confirm:
@@ -104,7 +105,7 @@ reads **Drain again**. Turning services back on doesn't move anything back.
 
 From the CLI, `ployz server drain web-2` does the same and prints the report. If anything stayed or
 failed, it exits non-zero. When you're signed in, Ployz Cloud runs the drain, as it does for the
-button, and waits for approval first when a global service would run on no other server (see
+button. Unlike the button, it waits for approval first when a global service would run on no other server (see
 [Destructive actions ask first](../account/organizations.md#destructive-actions-ask-first)).
 The CLI stops waiting after 30 minutes and says so; the drain keeps running in Ployz Cloud. Add
 `--context` to drain from your computer instead.
