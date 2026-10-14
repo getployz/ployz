@@ -3104,6 +3104,17 @@ describe("volume runs", () => {
         expect(await place()).toMatchObject([{ kind: "follow", to: "fsn-2", ended: true }]);
       });
 
+      it("protects B by its id after a rename: removing its mirror by the new name is refused, naming the new name", async () => {
+        await failedCommit();
+        machines = machines.map((fake) => fake.name === "fsn-2" ? { ...fake, name: "web-2", id: idOf("fsn-2") } : fake);
+        const owes = "data finishes on web-2; ployz volume release data finishes it now";
+        const plan = (input: VolumeRunInput) => runEffect(planVolumeRun(organizationId, { volumeId, environment, ...input }));
+
+        expect(await plan({ kind: "delete_mirror", args: { slot: "web-2", confirmed_name: null } })).toMatchObject({ ok: false, refusal: { message: owes } });
+        expect(await request({ kind: "delete_mirror", args: { slot: "web-2", confirmed_name: null } })).toMatchObject({ ok: false, refusal: { message: owes } });
+        expect(await request({ kind: "move", args: { to: "fsn-1" } })).toMatchObject({ ok: false, refusal: { message: owes } });
+      });
+
       it("cuts outside B name the step that finishes the commitment, from a release and from a mirror removal, and that step is accepted", async () => {
         await failedCommit();
         const cut = newSnap("f-2");
